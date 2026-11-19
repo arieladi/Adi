@@ -9719,7 +9719,13 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Off &&
               root.recordState(4).monitor == Monitor::In,
           "track.setMonitorMode In on 3 Audio alone");
-    check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again changes nothing");
+    check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again is accepted");
+    frame();
+    check(root.command(AppCommands::Undo), "undo");
+    frame();
+    check(states().at(4).monitor == Monitor::Off, "the same choice again changed nothing: one Undo puts 3 Audio back on Off");
+    check(root.command(AppCommands::Redo), "redo");
+    frame();
     check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring");
     // Arrangement Record: F9 records both armed audio tracks; 2 MIDI, armed too, records nothing yet.
     juce::ApplicationCommandInfo recordInfo(AppCommands::ArrangementRecord);
@@ -9755,7 +9761,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         block();
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
-    check(!document->recording() && !record.getToggleState() && document->mailbox().playing(),
+    check(!document->recording() && !record.getToggleState() && document->mailbox().desiredPlaying(),
           "stops the recording; the transport plays on, as Live's");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
         block();
@@ -9773,7 +9779,58 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     frame();
     check(root.reader().findTrack(4)->clips.empty() && root.reader().findTrack(5)->clips.empty(),
           "takes both takes back");
-    check(root.command(AppCommands::Stop), "Stop");
+    // Punch-in: Record while playing records from the playhead, and Stop ends the take with the transport.
+    check(root.command(AppCommands::ArrangementRecord) && document->recording() && document->mailbox().desiredPlaying(),
+          "Record while playing records; the transport keeps rolling");
+    for (int b = 0; b < 8; ++b)
+        block();
+    check(root.command(AppCommands::Stop), "Stop mid-take");
+    check(!document->recording() && !document->mailbox().desiredPlaying(), "Stop ends the recording and the transport");
+    for (int i = 0; i < 5000 && document->landingTake(); ++i) {
+        block();
+        document->tick(++now);
+        if (document->landingTake())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    landed = document->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 2, "the punched-in takes land");
+    frame();
+    // A Count-In is playing for the window: Space during it stops, it does not start again.
+    {
+        OpRequest countIn;
+        countIn.opType = "transport.setCountIn";
+        countIn.payload = {{"bars", 1}};
+        check(document->ops().submit(countIn).ok && document->synchronise(), "Count-In of one bar");
+        frame();
+        block();
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(), "Record from stopped, with a Count-In");
+        block();
+        check(document->mailbox().playing() && document->session().transport().countInRemaining() > 0,
+              "during the Count-In the window reads the transport as playing");
+        check(root.command(AppCommands::PlayStop) && !document->recording() && !document->mailbox().desiredPlaying(),
+              "Space during the Count-In stops it and the recording");
+        block();
+        check(!document->mailbox().playing() && document->session().transport().countInRemaining() == 0,
+              "the Count-In is cancelled");
+        for (int i = 0; i < 5000 && document->landingTake(); ++i) {
+            block();
+            document->tick(++now);
+            if (document->landingTake())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        (void)document->takeLanded();
+    }
+    // With the loop on, Record says it waits for take lanes.
+    {
+        OpRequest loop;
+        loop.opType = "transport.setLoop";
+        loop.payload = {{"on", true}, {"start", 0}, {"end", 3840}};
+        check(document->ops().submit(loop).ok && document->synchronise(), "the loop on");
+        frame();
+        check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
+                  root.error().find("loop") != std::string::npos,
+              "Record with the loop on is refused, saying why");
+    }
     // Without the application's hooks Record says where it runs.
     root.startRecording = nullptr;
     check(!root.command(AppCommands::ArrangementRecord) && root.error().find("in the application") != std::string::npos,

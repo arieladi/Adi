@@ -512,6 +512,42 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(doc->ops().canUndo() && doc->ops().undo().ok && doc->synchronise() &&
               db.execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
           "one Undo takes the whole take back");
+    // A capture that ends on its own while recording (here a locate mid-take: a discontinuity) ends the
+    // recording on the next tick, says why, and leaves no private take behind.
+    const auto before = std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{});
+    check(doc->startRecording(0, 1, true) && doc->recording(), "Record while playing");
+    for (int b = 0; b < 4; ++b) {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    }
+    doc->mailbox().post(ui::TransportMailbox::Command::Locate, 48000);
+    std::optional<ui::ProjectDocument::TakeLanded> failed;
+    for (int i = 0; i < 5000 && !failed; ++i) {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+        doc->tick(i);
+        failed = doc->takeLanded();
+        if (!failed)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(failed && !failed->ok && failed->message.find("jumped") != std::string::npos && !doc->recording(),
+          "a locate mid-take ends the recording at once and says the take was not kept");
+    check(std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{}) == before,
+          "and leaves no private take in the project's folder");
+    // The device stopped while a take lands: settled when the document is told the driver is gone.
+    check(doc->startRecording(0, 1, true), "Record again");
+    for (int b = 0; b < 4; ++b) {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    }
+    doc->release();
+    doc->settleRecording();
+    const auto settled = doc->takeLanded();
+    check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
+          "a take whose device stopped is settled into the project, not lost");
 }
 void peakSpans() {
     media::MediaPeaks p;

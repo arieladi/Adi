@@ -21,6 +21,7 @@
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
+#include <atomic>
 #include <optional>
 namespace adi::ui {
 using media::pathFromUtf8;
@@ -135,6 +136,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
     // Stops the recorder (the transport is the caller's); the takes land on a later `tick()`.
     void stopRecording();
+    // Lands a running or stopping take now, with the driver detached (a project replaced, Quit): call it
+    // after the audio callback is gone and before the document goes.
+    void settleRecording();
     bool recording() const noexcept { return recording_; }
     bool landingTake() const noexcept { return landing_; }
     // What the last take did, once: the clips it added (one undo step for all of them), or nothing and
@@ -243,6 +247,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
     void landTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
+    std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
     ParameterFeed feed_;
     struct AnalysisSource { engine::ScopeLease lease; double seconds = 0; };

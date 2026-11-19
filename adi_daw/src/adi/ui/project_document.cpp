@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <mutex>
+#include <thread>
 namespace adi::ui {
 // Where the document's file is now. The message thread moves it at Save As; the waveform worker
 // reads it at each build.
@@ -298,9 +299,13 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
-    // A stopped recording's take, once the driver has moved past it and its worker has finished.
-    if (landing_)
-        if (auto result = session_.recording().poll()) {
+    // A take, once the driver has moved past it and its worker has finished: a stopped one, or one that
+    // ended on its own while recording (a locate, an overflow, a device change), which lands at once and
+    // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
+    // callback on, so the take is settled as the driver's is.
+    if (recording_ || landing_)
+        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire) && landing_)) {
+            recording_ = false;
             landing_ = false;
             landTake(*result);
         }
@@ -725,13 +730,31 @@ std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &p
     return "The plug-in did not take the value.";
 }
 void ProjectDocument::prepare(double rate, std::int32_t frames) {
+    deviceStopped_.store(false, std::memory_order_release);
     engineRate_ = rate;
     engineFrames_ = frames;
     session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
     analysis_->refreshSources(true);
 }
-void ProjectDocument::release() { session_.release(); }
+void ProjectDocument::release() {
+    session_.release(); // stops a running capture; the timer lands what it holds
+    deviceStopped_.store(true, std::memory_order_release);
+}
+void ProjectDocument::settleRecording() {
+    // The driver is detached: nothing will move the callback past the capture, so it is settled here.
+    if (recording_)
+        stopRecording();
+    // The recorder's worker finishes writing on its own thread: wait for it, up to ten seconds.
+    for (int waited = 0; landing_ && waited < 5000; ++waited) {
+        if (auto result = session_.recording().poll(true)) {
+            landing_ = false;
+            landTake(*result);
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
 void ProjectDocument::process(const engine::AudioIo &io) noexcept {
     // One render handle for the callback, so a Record start (`startPlayback`, which applies the saved
     // song start and Count-In) and the block it starts in read the same graph.
@@ -767,6 +790,12 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     }
     if (inputs <= 0) {
         error_ = "The audio device has no inputs to record from. Choose an input device in the Settings' Audio page.";
+        return false;
+    }
+    // A loop pass is a take of its own in Live; ADI's recorder captures loop passes, but their publication
+    // as takes is not on main yet (CT-02), and a linear capture fails at the loop's end.
+    if (current->transport.loopEnabled) {
+        error_ = "Recording with the loop on waits for take lanes (CT-02); turn the loop off to record.";
         return false;
     }
     engine::AudioRecordingSpec spec;
@@ -830,9 +859,9 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     TakeLanded outcome;
     if (result.failure != engine::RecordingFailure::None) {
         outcome.message = "The take was not kept: " + recordingFailure(result) + ".";
-        // Nothing was captured, or the capture was cancelled: nothing to recover.
-        if (result.failure == engine::RecordingFailure::NoFrames || result.failure == engine::RecordingFailure::Cancelled)
-            result.discard();
+        // Nothing recovers a failed capture yet, so its private files go with it rather than stay hidden in
+        // the project's folder.
+        result.discard();
         landed_ = std::move(outcome);
         return;
     }
@@ -851,8 +880,8 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     auto edit = recording::prepareCommit(*store_, result, ids);
     if (!edit.ok) {
         outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + edit.error +
-                          ". It is kept beside the project for another try.";
+        outcome.message = "The take was recorded but could not be added: " + edit.error + ".";
+        result.discard();
         landed_ = std::move(outcome);
         return;
     }

@@ -204,6 +204,9 @@ class AdiApplication final : public juce::JUCEApplication,
             delete snapshotPrompt_.getComponent();
         manager_.removeChangeListener(this);
         detachAudio();
+        // A take still recording or landing goes into its project before the project closes (MX-09).
+        if (document_)
+            document_->settleRecording();
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
@@ -259,6 +262,13 @@ class AdiApplication final : public juce::JUCEApplication,
         importStop_.request_stop();
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
+        // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
+        // could not be kept says so before that project goes.
+        if (document_) {
+            document_->settleRecording();
+            if (auto landed = document_->takeLanded(); landed && !landed->ok)
+                report(landed->message);
+        }
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();

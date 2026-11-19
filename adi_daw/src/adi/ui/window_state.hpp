@@ -176,7 +176,8 @@ class TransportMailbox {
         read_.store(r, std::memory_order_release);
     }
     void publish(const engine::Transport &t) noexcept {
-        playing_.store(t.playing(), std::memory_order_relaxed);
+        // A Count-In before a recording is playing for the window: Space or Stop then stops it.
+        playing_.store(t.playing() || t.countInRemaining() > 0, std::memory_order_relaxed);
         position_.store(t.position(), std::memory_order_relaxed);
     }
     // UI producer sees the last queued intent until the driver acknowledges it.
