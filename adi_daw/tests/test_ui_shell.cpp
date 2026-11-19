@@ -10862,11 +10862,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             auto &box = menuPanel.controls.front()->menu;
             sent.clear();
             if (item % 2 == 0)
-                box.setSelectedId(item, juce::sendNotificationAsync); // the mouse: a pick from the list
+                box.setSelectedId(item, juce::dontSendNotification); // the mouse: a pick from the list
             else
-                box.setSelectedItemIndex(item - 1, juce::sendNotificationAsync); // the keyboard's step
+                box.setSelectedItemIndex(item - 1, juce::dontSendNotification); // the keyboard's step
             menuPanel.present(menuDevice); // a frame before the pick is sent: the value playing is the old one
-            juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+            box.onChange(); // JUCE's delivery of the pick, after the frame
             const double v = (item - 1) / 4.0;
             everyPick = sent.size() == 3 && sent[0].first == engine::ParamEventKind::Begin &&
                         sent[2].first == engine::ParamEventKind::End && std::abs(sent[2].second - v) < 1e-9;
@@ -10878,9 +10878,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(everyPick, "every item of a menu parameter, picked by mouse or keyboard, is sent as one gesture");
         // A pick the plug-in refuses goes back to what plays.
         menuPanel.parameterGesture = [](const std::string &, engine::ParamEventKind, double) { return false; };
-        menuPanel.controls.front()->menu.setSelectedId(2, juce::sendNotificationAsync);
+        menuPanel.controls.front()->menu.setSelectedId(2, juce::dontSendNotification);
         menuPanel.present(menuDevice);
-        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        menuPanel.controls.front()->menu.onChange();
         menuPanel.present(menuDevice);
         check(menuPanel.controls.front()->menu.getSelectedId() == 5, "a refused pick shows the value playing again");
     }
