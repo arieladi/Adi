@@ -1,5 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Narrow overlay for libpd 0.16.1 / Pd f009fd8d. Never edit the fetched tree.
+
+# DEV-09 (ADR-0207 d2, ON11): the Pd tier built in double precision for the
+# 64-bit Processing Precision mode. PD_FLOATSIZE changes t_float, t_sample and
+# t_word in m_pd.h, so it is PUBLIC on libpd_static: every translation unit that
+# includes Pd (adi_core, the compiled-in externals) sees the same layout.
+option(ADI_PD_FLOATSIZE_64 "Build the Pure Data tier with PD_FLOATSIZE=64" OFF)
+if(ADI_PD_FLOATSIZE_64)
+    target_compile_definitions(libpd_static PUBLIC PD_FLOATSIZE=64)
+    message(STATUS "Pd tier: PD_FLOATSIZE=64 (double-precision t_float and t_sample)")
+endif()
 function(adi_pd_replace needle replacement)
     string(FIND "${adi_pd_text}" "${needle}" found)
     if(found EQUAL -1)
@@ -174,8 +184,34 @@ foreach(adi_pd_fenced IN ITEMS
     adi_pd_replace("(t_method)${adi_pd_fenced});" "(t_method)adi_glob_refused, ${adi_pd_name}, A_GIMME, 0);")
 endforeach()
 file(WRITE "${adi_pd_overlay}/m_glob.c" "${adi_pd_text}")
+# DEV-09 (PD2, AR18): the #A overlay, from plugdata-pd bdb30eedee ("Correct fix
+# for pd bindlist crash (detected by ASAN)"; Pd's own BSD-3 licence). An
+# abstraction's canvas binds #A when it finishes loading (canvas_popabstraction)
+# and nothing unbinds it; a file load saves and restores #A around itself, but an
+# abstraction made at run time (dynamic patching, an attached editor) and then
+# freed leaves #A pointing at freed memory, which the next array or text free
+# dereferences. pd_free now unbinds whatever it frees from #A first.
+file(READ "${adi_pd_source}/m_pd.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[void pd_free(t_pd *x)
+{
+    t_class *c = *x;]=] [=[static t_class *bindlist_class;
+
+void pd_free(t_pd *x)
+{
+    t_class *c = *x;
+        /* ADI (DEV-09; plugdata-pd bdb30eedee): abstraction canvases, [clone]
+        and others bind #A while loading and are never explicitly unbound; if
+        x is freed while still bound, #A would point at freed memory. */
+    {
+        t_symbol *a = gensym("#A");
+        if (a->s_thing && (a->s_thing == x || *a->s_thing == bindlist_class))
+            pd_unbind(x, a);
+    }]=])
+file(WRITE "${adi_pd_overlay}/m_pd.c" "${adi_pd_text}")
 get_target_property(adi_pd_sources libpd_static SOURCES)
-list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob)\\.c$")
+list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd)\\.c$")
 set_property(TARGET libpd_static PROPERTY SOURCES "${adi_pd_sources}")
 target_sources(libpd_static PRIVATE "${adi_pd_overlay}/s_loader.c" "${adi_pd_overlay}/m_class.c"
-                                    "${adi_pd_overlay}/g_io.c" "${adi_pd_overlay}/m_glob.c")
+                                    "${adi_pd_overlay}/g_io.c" "${adi_pd_overlay}/m_glob.c"
+                                    "${adi_pd_overlay}/m_pd.c")

@@ -13,12 +13,19 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <new>
 #include <thread>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 // Allocations of exactly failSize bytes are numbered and number failAt throws. Other
 // buffers can share the encoded peaks' size (MS STL and libc++ round std::string capacity
 // up, so a 107-character SQL query takes 112 bytes like four encoded bins), so a dry run
@@ -91,6 +98,78 @@ void files() {
     const auto unrelated=temp.path()/"library.sqlite";{std::ofstream user(unrelated);user<<"user Warp settings";}
     check(cache.remove(data.identity.hash,error)==AnalysisCacheProblem::None && !fs::exists(target) && fs::exists(unrelated),"per-sample cleanup removes only its analysis file, preserving persistent library data");
 }
+void trimming() {
+    test::TempDirectory temp{"analysis","budget"};AnalysisCache cache(temp.path()/"analysed");std::string error="old error";
+    const auto empty=cache.trimToBytes(0,error);
+    check(empty && empty.inventoryComplete && empty.bytesBefore==0 && !fs::exists(cache.folder()) && error.empty(),"empty budget inventory does not create a cache folder");
+    auto a=sample(),b=sample(),c=sample();b.identity.hash=std::string(64,'b');c.identity.hash=std::string(64,'c');
+    auto write=[&](const SampleAnalysis& data){for(const auto& [tag,section]:data.sections)if(cache.update(data.identity,tag,section,error)!=AnalysisCacheProblem::None)throw std::runtime_error(error);};
+    auto path=[&](const SampleAnalysis& data){return cache.folder()/(data.identity.hash+".adia");};
+    write(a);write(b);write(c);
+    const auto old=fs::file_time_type::clock::now()-std::chrono::hours(3);
+    fs::last_write_time(path(a),old);fs::last_write_time(path(b),old+std::chrono::hours(1));fs::last_write_time(path(c),old+std::chrono::hours(2));
+    const auto held=cache.read(a.identity);const auto size=fs::file_size(path(a));
+    const auto limited=cache.trimToBytes(2*size,error);
+    check(limited && limited.inventoryComplete && limited.bytesBefore==3*size && limited.bytesAfter==2*size && limited.filesRemoved==1 && limited.ignoredEntries==0,"explicit budget accounts exact eligible file bytes");
+    check(fs::exists(path(a)) && !fs::exists(path(b)) && fs::exists(path(c)),"successful read promotes the oldest entry before least-recent stamp eviction");
+    const auto exact=cache.trimToBytes(2*size,error);
+    check(exact && exact.filesRemoved==0 && exact.bytesBefore==exact.bytesAfter,"a cache at the exact budget is retained");
+    std::stop_source stop;stop.request_stop();error="keep";const auto cancelled=cache.trimToBytes(0,error,stop.get_token());
+    check(cancelled.problem==AnalysisCacheProblem::Cancelled && !cancelled.inventoryComplete && cancelled.filesRemoved==0 && error=="keep" && fs::exists(path(a)),"pre-cancelled eviction neither deletes nor changes caller error");
+    const auto io=audio::callbackFileIo.load(),allocated=allocations.load(),freed=frees.load();AnalysisTrimResult realtime;
+    {audio::CallbackScope callback;realtime=cache.trimToBytes(0,error);}
+    check(realtime.problem==AnalysisCacheProblem::Realtime && !realtime.budgetMet && error=="keep" && io==audio::callbackFileIo.load() && allocated==allocations.load() && freed==frees.load(),"trim callback refusal has no allocation, free, I/O or caller mutation");
+    auto index=library::Index::open(temp.path()/"library.sqlite",error,false);if(!index)throw std::runtime_error(error);
+    library::SampleSettings defaults;defaults.sampleRate=48000;defaults.channels=2;defaults.frames=96000;defaults.sourceLength=96000;defaults.gainDb=-7;defaults.reverse=true;
+    if(index->saveSampleSettings(a.identity.hash,defaults,error)!=library::SampleSettingsProblem::None)throw std::runtime_error(error);
+    {std::ofstream foreign(cache.folder()/"notes.txt");foreign<<"authored data";}
+    const auto damaged=cache.folder()/(std::string(64,'d')+".adia");{std::ofstream out(damaged);out<<"not analysis";}
+    const auto mismatched=cache.folder()/(std::string(64,'e')+".adia");fs::copy_file(path(a),mismatched);
+    const auto future=cache.folder()/(std::string(64,'f')+".adia");{auto bytes=encodeAnalysis(a);bytes[4]=std::byte{2};std::ofstream out(future,std::ios::binary);out.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));}
+    const auto noncanonical=cache.folder()/"user.adia";fs::copy_file(path(a),noncanonical);
+    const auto unicode=cache.folder()/fs::path(u8"unrelated-\u97f3\U0001f3b5.adia");fs::copy_file(path(a),unicode);
+    const auto nested=cache.folder()/".stage-unowned";fs::create_directory(nested);fs::copy_file(path(a),nested/(a.identity.hash+".adia"));
+    const auto directory=cache.folder()/(std::string(64,'0')+".adia");fs::create_directory(directory);
+    const auto zero=cache.trimToBytes(0,error);
+    check(zero && zero.filesRemoved==2 && zero.bytesBefore==2*size && zero.bytesAfter==0 && zero.ignoredEntries==8,"zero budget deletes only authenticated direct-child ADIA entries");
+    check(fs::exists(damaged) && fs::exists(mismatched) && fs::exists(future) && fs::exists(noncanonical) && fs::exists(unicode) && fs::exists(nested/(a.identity.hash+".adia")) && fs::is_directory(directory),"damaged, unsupported, mismatched, Unicode, unowned and nested files survive eviction");
+    const auto saved=index->sampleSettings(a.identity.hash);
+    check(saved && *saved.data==defaults && fs::exists(temp.path()/"library.sqlite"),"actual authored library sample defaults survive analysis budget cleanup");
+    check(held && *held.data==a && cache.read(a.identity).problem==AnalysisCacheProblem::Missing,"already-returned analysis owns its payload after on-disk eviction");
+    AnalysisCache relative("relative"),noHome({}),notDirectory(damaged);
+    check(relative.trimToBytes(0,error).problem==AnalysisCacheProblem::Io && noHome.trimToBytes(0,error).problem==AnalysisCacheProblem::Io && notDirectory.trimToBytes(0,error).problem==AnalysisCacheProblem::Io,"trim refuses relative, unavailable and non-directory roots");
+    // A canonical-looking symlink must not make its target eligible. Windows
+    // permits creating this fixture only with developer mode or the privilege.
+    const auto link=cache.folder()/(std::string(64,'1')+".adia");std::error_code ec;fs::create_symlink(mismatched,link,ec);
+    if(!ec) {
+        const auto links=cache.trimToBytes(0,error);check(links && links.ignoredEntries==9 && fs::is_symlink(fs::symlink_status(link)) && fs::exists(mismatched),"entry symlinks are never followed or deleted");
+        const auto rootLink=temp.path()/"linked-analysis";fs::create_directory_symlink(cache.folder(),rootLink,ec);
+        if(!ec)check(AnalysisCache(rootLink).trimToBytes(0,error).problem==AnalysisCacheProblem::Io,"trim refuses a symlink cache root");
+    }else std::printf("SKIP: symlink fixture unavailable (%s)\n",ec.message().c_str());
+    // Equal stamps have a stable filename tie-break, independent of directory
+    // enumeration order. Reads of ignored entries do not enter this ordering.
+    write(a);write(b);fs::last_write_time(path(a),old);fs::last_write_time(path(b),old);
+    const auto tie=cache.trimToBytes(size,error);
+    check(tie && tie.filesRemoved==1 && !fs::exists(path(a)) && fs::exists(path(b)),"equal recency stamps evict in deterministic filename order");
+#if defined(_WIN32)
+    write(a);fs::last_write_time(path(a),old-std::chrono::hours(1));
+    const auto file=CreateFileW(path(b).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE)throw std::runtime_error("open active analysis reader");
+    const auto lockedRead=cache.read(b.identity);
+    check(lockedRead && *lockedRead.data==b,"an externally held Windows reader does not invalidate a complete cache read");
+    const auto blocked=cache.trimToBytes(0,error);CloseHandle(file);
+    check(blocked.problem==AnalysisCacheProblem::Io && blocked.inventoryComplete && blocked.filesRemoved==1 && blocked.bytesBefore==2*size && blocked.bytesAfter==size && !blocked.budgetMet && !fs::exists(path(a)) && fs::exists(path(b)),"Windows active reader refuses deletion and partial eviction accounts only the file actually removed");
+#endif
+    check(cache.trimToBytes(0,error) && !fs::exists(path(b)),"maintenance can retry after an active reader releases the cache");
+    // The production mutex serializes reads, publication and eviction. No open
+    // reader is removed mid-read; a subsequent read can see an explicit miss.
+    std::atomic<unsigned> bad{0};
+    std::thread writer([&]{for(unsigned i=0;i<32;++i){std::string why;if(cache.update(a.identity,"APKS",a.sections.at("APKS"),why)!=AnalysisCacheProblem::None)++bad;}});
+    std::thread reader([&]{for(unsigned i=0;i<64;++i){const auto data=cache.read(a.identity);if(data.problem!=AnalysisCacheProblem::Missing && (!data || data.data->sections.at("APKS")!=a.sections.at("APKS")))++bad;}});
+    std::thread trimmer([&]{for(unsigned i=0;i<32;++i){std::string why;if(!cache.trimToBytes(0,why))++bad;}});
+    writer.join();reader.join();trimmer.join();
+    check(bad==0,"concurrent owner reads, updates and trims return complete payloads or explicit cache misses");
+}
 void waveform() {
     test::TempDirectory temp{"analysis","waveform"};AnalysisCache analysis(temp.path()/"analysed");audio::DecodeCache decode(temp.path()/"decoded",{1ULL<<30,0});StoreError error{};auto store=Store::createEmpty(temp.path()/"project.adi",error);if(!store)throw std::runtime_error("create project");
     const auto source=temp.path()/"source.wav";{audio::WavWriter writer(source,48000,1,audio::WavFormat::Float32);std::array<float,8> samples{-.5f,.5f,-.25f,.75f,0,1,-1,0};writer.write(samples.data(),8);writer.close();}
@@ -123,4 +202,4 @@ int main(){try{adi::test::TempDirectory home{"analysis","portable"};
 #else
     setenv("ADI_HOME",home.path().c_str(),1);
 #endif
-    codec();files();waveform();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+    codec();files();trimming();waveform();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
