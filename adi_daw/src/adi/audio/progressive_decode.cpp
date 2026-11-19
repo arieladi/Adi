@@ -348,10 +348,7 @@ std::shared_ptr<ProgressiveFile> ProgressiveDecoder::openHashed(const fs::path& 
         const auto bytes=*state->info.frames*state->info.channels*4+4096;
         if(bytes>impl_->cache.limits_.maxBytes || impl_->reserved>impl_->cache.limits_.maxBytes-bytes)
             throw DecodeError(DecodeProblem::NoSpace,"progressive jobs exceed cache budget");
-        impl_->cache.evict(bytes+impl_->reserved,hash.hex);
-        const auto free=impl_->cache.freeBytes();
-        if(free<impl_->cache.limits_.minFreeBytes || bytes+impl_->reserved>free-impl_->cache.limits_.minFreeBytes)
-            throw DecodeError(DecodeProblem::NoSpace,"progressive jobs would consume minimum free space");
+        impl_->cache.admitSpace(bytes+impl_->reserved,hash.hex);
     }
     static std::atomic<std::uint64_t> serial{0};
     const auto root=impl_->cache.folder()/"progressive";fs::create_directories(root);
