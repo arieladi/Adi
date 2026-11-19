@@ -237,6 +237,73 @@ void timePd() {
         }
     }
 }
+
+void orderPd(bool driveFirst) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    constexpr int count = 1024;
+    Engine native(ADI_SHAPER_PATCH_DIR, "ADi-SHAPER.pd", 2, 2);
+    Engine editable(ADI_SHAPER_PATCH_DIR, "ADi-SHAPER.pd", 2, 2, Engine::Execution::PureData,
+                    Engine::BlockMode::Buffered);
+    const auto decl = adi::device::parsePdDeclarations(adi::builtinCanvas(uid));
+    std::array<std::array<float, count>, 2> signal{}, expected{};
+    adi::dsp::AdiShaperDrive drive;
+    drive.prepare(48000);
+    drive.setMode(adi::dsp::AdiShaperDrive::Mode::HardClip);
+    for (int f = 0; f < count; ++f) {
+        const auto i = static_cast<std::size_t>(f);
+        signal[0][i] = static_cast<float>(.42 * std::sin(.05236 * f));
+        signal[1][i] = static_cast<float>(.28 * std::sin(.09595 * f + .23));
+        float l = signal[0][i], r = signal[1][i];
+        if (!driveFirst) { l *= .25f; r *= .25f; }
+        drive.process(l, r, .5f);
+        expected[0][i] = driveFirst ? l * .25f : l;
+        expected[1][i] = driveFirst ? r * .25f : r;
+    }
+    std::array<adi::device::PdLatencyReceiver, 2> latency;
+    std::array<Engine*, 2> paths{&native, &editable};
+    for (std::size_t p = 0; p < paths.size(); ++p) {
+        auto& path = *paths[p];
+        path.addSearchPath(ADI_PD_PATCH_DIR);
+        std::string error;
+        check(path.open(latency[p], error), "open order fixture");
+        path.prepare(48000, 91);
+        path.bindParameters(decl);
+        auto send = [&](Shaper::Param id, float value) {
+            check(path.sendParameter(static_cast<int>(id) + 1, value), "order fixture control");
+        };
+        constexpr auto mid = Shaper::Band::Mid;
+        send(Shaper::DriveOn, 1);
+        send(Shaper::driveParam(mid, Shaper::DriveStyle), 1);
+        for (int j = 0; j < 8; ++j) {
+            send(Shaper::bandParam(Shaper::Stage::Volume, mid, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 25);
+            send(Shaper::driveParam(mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + j)), 50);
+        }
+        if (driveFirst) send(Shaper::orderParam(Shaper::Stage::Drive), 0);
+        path.requestLatencyReport();
+        check(latency[p].latencySamples() == 16, "stage move retains the same Drive PDC in both paths");
+        std::array<std::array<float, count>, 2> result{};
+        constexpr std::array sizes{13, 7, 91, 64, 29};
+        for (int f = 0, block = 0; f < count; ++block) {
+            const int n = std::min(count - f, sizes[static_cast<std::size_t>(block) % sizes.size()]);
+            const float* in[]{signal[0].data() + f, signal[1].data() + f};
+            float* out[]{result[0].data() + f, result[1].data() + f};
+            adi::engine::NodeIo io;
+            io.channels = 2;
+            io.frames = n;
+            io.in = in;
+            io.out = out;
+            path.process(io);
+            f += n;
+        }
+        const int skip = path.adapterLatencySamples();
+        check(skip == (p == 0 ? 0 : 64), "native and editable paths stay distinct");
+        for (std::size_t ch = 0; ch < result.size(); ++ch)
+            for (int f = 0; f < count - skip; ++f)
+                check(result[ch][static_cast<std::size_t>(f + skip)] == expected[ch][static_cast<std::size_t>(f)],
+                      "native and editable Pd match the independent nonlinear chain at odd callback sizes");
+    }
+}
 } // namespace
 
 int main() try {
@@ -366,11 +433,23 @@ int main() try {
     set(*device, 536, 1);
     set(*device, 626, 1);
     set(*device, 715, 1);
-    const auto sourceState = device->saveState("state");
+    auto sourceState = adi::Payload::from_cbor(device->saveState("state"));
+    for (int id = 716; id <= count; ++id) sourceState.at("params").erase(std::to_string(id));
+    const auto legacySourceState = adi::Payload::to_cbor(sourceState);
     device = open();
-    check(device->loadState("state", sourceState) && device->getParam("464").real == 1
+    check(device->loadState("state", legacySourceState) && device->getParam("464").real == 1
           && device->getParam("536").real == 1 && device->getParam("626").real == 1 && device->getParam("715").real == 1,
           "three additional stage switches and the final high-band option recall");
+    for (int i = 0; i < 11; ++i)
+        set(*device, 716 + i, (108. - 10. * i) / 127.);
+    const auto reversed = device->saveState("state");
+    device = open();
+    check(device->loadState("state", reversed), "open project with stored reverse order");
+    for (int i = 0; i < 11; ++i)
+        check(device->getParam(std::to_string(716 + i)).real == 108 - 10 * i, "all eleven ranks retain exact integer values");
+    check(device->loadState("state", legacySourceState), "import legacy project into the already reordered rack");
+    for (int i = 0; i < 11; ++i)
+        check(device->getParam(std::to_string(716 + i)).real == 8 + 10 * i, "absent rank keys restore the legacy path");
     set(*device, 287, 0);
     device->process(io);
     check(device->latencySamples() == 0, "host removes Drive PDC when disabled");
@@ -384,6 +463,8 @@ int main() try {
     for (auto source : {Stage::Pitch, Stage::Noise, Stage::Reverb})
         modulationPd(false, false, false, false, source);
     timePd();
+    orderPd(false);
+    orderPd(true);
     std::puts("ADi-SHAPER built-in state, transport and editable modulation parity passed.");
     return 0;
 } catch (const std::exception& error) {

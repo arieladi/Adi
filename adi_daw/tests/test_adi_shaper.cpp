@@ -19,11 +19,12 @@ static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == S
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
 static_assert(Shaper::LiquidOn == 208 && Shaper::LiquidLowPolarity == 283 && Shaper::DriveOn == 286);
 static_assert(Shaper::CrushOn == 340 && Shaper::TimeOn == 415 && Shaper::PitchOn == 463);
-static_assert(Shaper::NoiseOn == 535 && Shaper::ReverbOn == 625 && Shaper::Count == 715);
+static_assert(Shaper::NoiseOn == 535 && Shaper::ReverbOn == 625 && Shaper::VolumeOrder == 715 && Shaper::Count == 726);
 static_assert(Shaper::timeParam(Band::High, Shaper::Time8) + 1 == Shaper::PitchOn);
 static_assert(Shaper::modParam(Stage::Pitch, Band::High, Shaper::Secondary8) + 1 == Shaper::NoiseOn);
 static_assert(Shaper::noiseParam(Band::High, Shaper::NoiseLowPass) + 1 == Shaper::ReverbOn);
-static_assert(Shaper::reverbParam(Band::High, Shaper::RoomClearTails) + 1 == Shaper::Count);
+static_assert(Shaper::reverbParam(Band::High, Shaper::RoomClearTails) + 1 == Shaper::VolumeOrder);
+static_assert(Shaper::orderParam(Stage::Reverb) + 1 == Shaper::Count);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::TimeOn);
 int failures = 0;
@@ -785,6 +786,99 @@ void pitchAndNoise() {
     check(actualL == left && actualR == right && std::signbit(actualL[1]),
           "Pitch, Noise and Reverb preserve the exact zero-wet signal");
 }
+
+void stagePermutations() {
+    Shaper::StageOrder original{};
+    for (std::size_t i = 0; i < original.size(); ++i) original[i] = static_cast<Stage>(i);
+    Shaper::StageRanks ranks{};
+    for (const std::uint8_t rank : {std::uint8_t{0}, std::uint8_t{127}}) {
+        ranks.fill(rank);
+        check(Shaper::orderFor(ranks) == original, "ties at either extreme restore the complete legacy stage order");
+    }
+    ranks[static_cast<std::size_t>(Stage::Pitch)] = ranks[static_cast<std::size_t>(Stage::Time)] = 0;
+    auto tied = original;
+    std::rotate(tied.begin(), tied.begin() + 7, tied.begin() + 9);
+    check(Shaper::orderFor(ranks) == tied, "equal-rank groups keep each stage exactly once in stable identity order");
+
+    std::uint32_t state = 9371;
+    auto expected = original;
+    std::reverse(expected.begin(), expected.end());
+    bool matches = true;
+    for (int trial = 0; trial < 4096; ++trial) {
+        for (std::size_t i = 0; i < expected.size(); ++i)
+            ranks[static_cast<std::size_t>(expected[i])] = static_cast<std::uint8_t>(8 + 10 * i);
+        matches &= Shaper::orderFor(ranks) == expected;
+        for (std::size_t i = expected.size(); i > 1; --i) {
+            state = 1664525U * state + 1013904223U;
+            std::swap(expected[i - 1], expected[state % i]);
+        }
+    }
+    check(matches, "reverse order and 4095 sampled eleven-stage permutations decode without omissions or duplicates");
+}
+
+void nonlinearOrder() {
+    constexpr std::size_t frames = 1024;
+    std::array<float, frames> left{}, right{}, actualL{}, actualR{};
+    Shaper rack;
+    flat(rack, Stage::Volume, Band::Mid, 25);
+    rack.set(Shaper::DriveOn, 1);
+    rack.set(Shaper::driveParam(Band::Mid, Shaper::DriveStyle), 1);
+    for (int i = 0; i < 8; ++i)
+        rack.set(Shaper::driveParam(Band::Mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + i)), 50);
+    for (std::size_t i = 0; i < frames; ++i) {
+        left[i] = static_cast<float>(.42 * std::sin(static_cast<double>(i) * (2. * std::numbers::pi * 400. / 48000.)));
+        right[i] = static_cast<float>(.28 * std::sin(static_cast<double>(i) * (2. * std::numbers::pi * 733. / 48000.) + .23));
+    }
+    float peakDifference = 0;
+    std::array<float, frames> original{};
+    for (int pass = 0; pass < 3; ++pass) {
+        rack.prepare(48000);
+        if (pass == 1) {
+            rack.set(Shaper::orderParam(Stage::Volume), 1000);
+            rack.set(Shaper::orderParam(Stage::Drive), -1);
+        } else if (pass == 2) {
+            rack.set(Shaper::orderParam(Stage::Drive), 62.6f);
+            rack.set(Shaper::orderParam(Stage::Volume), 63);
+        }
+        adi::dsp::AdiShaperDrive independent;
+        independent.prepare(48000);
+        independent.setMode(adi::dsp::AdiShaperDrive::Mode::HardClip);
+        bool matches = true;
+        for (std::size_t at = 0; at < frames;) {
+            const auto n = std::min<std::size_t>(73, frames - at);
+            rack.process(left.data() + at, right.data() + at, actualL.data() + at, actualR.data() + at, n);
+            at += n;
+        }
+        for (std::size_t i = 0; i < frames; ++i) {
+            float l = left[i], r = right[i];
+            if (pass != 1) { l *= .25f; r *= .25f; }
+            independent.process(l, r, .5f);
+            if (pass == 1) { l *= .25f; r *= .25f; }
+            matches &= actualL[i] == l && actualR[i] == r;
+            if (pass == 0) original[i] = l;
+            if (pass == 1) peakDifference = std::max(peakDifference, std::abs(l - original[i]));
+        }
+        check(matches && rack.latency() == 16, "mixed orders match the separate nonlinear path and retain 16-frame Drive PDC");
+    }
+    check(peakDifference > .1f, "changing Volume and Drive order produces an audible difference");
+}
+
+void historyThroughReorder() {
+    Shaper rack;
+    rack.prepare(48000);
+    flat(rack, Stage::Volume, Band::Mid, 50);
+    rack.set(Shaper::TimeOn, 1);
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), 5);
+    timeHeight(rack, Band::Mid, 0);
+    std::array<float, 320> left{}, right{};
+    left[0] = 1.f;
+    right[0] = -.5f;
+    rack.process(left.data(), right.data(), left.data(), right.data(), 128);
+    rack.set(Shaper::orderParam(Stage::Time), 0);
+    rack.process(left.data() + 128, right.data() + 128, left.data() + 128, right.data() + 128, left.size() - 128);
+    check(left[239] == .25f && right[239] == -.125f,
+          "moving Time retains the marker recorded under the old upstream gain and sends it through the new downstream gain");
+}
 } // namespace
 
 int main() {
@@ -805,6 +899,9 @@ int main() {
     timeBandHistory();
     reverbReturnMix();
     pitchAndNoise();
+    stagePermutations();
+    nonlinearOrder();
+    historyThroughReorder();
     if (failures == 0) std::puts("ADi-SHAPER DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

@@ -29,6 +29,8 @@ class AdiShaper {
     static constexpr int pitchBandParameterCount = modBandParameterCount - 1;
     static constexpr int noiseBandParameterCount = modBandParameterCount + 5;
     static constexpr int reverbBandParameterCount = pitchBandParameterCount + 6;
+    enum class Stage { Volume, Width, Pan, Filter, Liquid, Drive, Crush, Time, Pitch, Noise, Reverb };
+    static constexpr std::size_t stageCount = static_cast<std::size_t>(Stage::Reverb) + 1;
     enum Param { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -40,8 +42,15 @@ class AdiShaper {
                  PitchOn = TimeOn + modHeaderSize + 3 * timeBandParameterCount,
                  NoiseOn = PitchOn + modHeaderSize + 3 * pitchBandParameterCount,
                  ReverbOn = NoiseOn + modHeaderSize + 3 * noiseBandParameterCount,
-                 Count = ReverbOn + modHeaderSize + 3 * reverbBandParameterCount };
-    enum class Stage { Volume, Width, Pan, Filter, Liquid, Drive, Crush, Time, Pitch, Noise, Reverb };
+                 VolumeOrder = ReverbOn + modHeaderSize + 3 * reverbBandParameterCount,
+                 Count = VolumeOrder + static_cast<int>(stageCount) };
+    using StageRanks = std::array<std::uint8_t, stageCount>;
+    using StageOrder = std::array<Stage, stageCount>;
+    static constexpr Param orderParam(Stage stage) noexcept {
+        return static_cast<Param>(VolumeOrder + static_cast<int>(stage));
+    }
+    // Lower rank runs first. Equal ranks retain the original ADI stage order.
+    [[nodiscard]] static StageOrder orderFor(const StageRanks& ranks) noexcept;
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
@@ -168,7 +177,9 @@ class AdiShaper {
     void resetKernels(Stage kind) noexcept;
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
-    std::array<StageData, 11> stages_;
+    std::array<StageData, stageCount> stages_;
+    StageRanks ranks_{};
+    StageOrder order_{};
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperLiquid, 3> liquids_;
     std::array<AdiShaperDrive, 3> drives_;
@@ -188,6 +199,7 @@ class AdiShaper {
     std::uint64_t expectedSample_ = 0, transportRevision_ = 0;
     float masterMix_ = 1.0f;
     bool playing_ = true, historyStampSet_ = false, sampleStampSet_ = false;
+    bool orderDirty_ = false, defaultOrder_ = true;
 };
 
 } // namespace adi::dsp
