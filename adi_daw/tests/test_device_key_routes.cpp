@@ -102,6 +102,121 @@ struct ContinuousTone final : Node {
             std::fill_n(io.out[c]+io.blockOffset,io.frames,.25f);
     }
 };
+
+struct RefusingKeyInstance final : device::DeviceInstance {
+    const device::DeviceIdentity id{"internal", "owned-refusing-key", "Refusing key", "ADI", "1"};
+    bool requested = false, preparedKey = false, refuseNext = true;
+    unsigned keyPrepares = 0, processes = 0;
+    float lastKey = 0;
+
+    const device::DeviceIdentity& identity() const noexcept override { return id; }
+    bool loaded() const noexcept override { return true; }
+    std::int32_t sidechainInputChannels() const noexcept override { return 2; }
+    bool configureSidechain(bool active) override { requested = active; return true; }
+    std::uint64_t preparationShapeEpoch() const noexcept override {
+        return (requested ? 1U : 0U) | (preparedKey ? 2U : 0U);
+    }
+    void prepare(double, std::int32_t) override {
+        if (requested) {
+            ++keyPrepares;
+            if (refuseNext) {
+                refuseNext = false;
+                throw std::runtime_error("Owned fixture refused key preparation");
+            }
+        }
+        preparedKey = requested;
+    }
+    void process(const NodeIo& io) noexcept override {
+        ++processes;
+        lastKey = preparedKey && io.sidechain && io.sidechain[0] ? io.sidechain[0][io.blockOffset] : 0.f;
+        for (int channel = 0; channel < io.channels; ++channel) {
+            const auto* input = io.in ? io.in[channel] : nullptr;
+            for (int sample = io.blockOffset; sample < io.blockOffset + io.frames; ++sample)
+                io.out[channel][sample] = input ? .5f * input[sample] : 0.f;
+        }
+    }
+};
+
+void resumeRefusedKeyPreparation() {
+    Fixture fixture;
+    fixture.store->db().exec("INSERT INTO plugin_refs(id,format,uid,name) "
+                             "VALUES(77,'internal','owned-refusing-key','Refusing key');"
+                             "UPDATE devices SET plugin_ref_id=77 WHERE id=30");
+    fixture.store.reset();
+
+    ContinuousTone key, programme;
+    std::string error;
+    auto document = ui::ProjectDocument::open(fixture.temp.path() / "keys.adi", false,
+        [](const DeviceRequest&, std::string&) { return std::make_unique<RefusingKeyInstance>(); }, error);
+    check(document != nullptr, "open the owned key prepare refusal fixture");
+    if (!document) return;
+    auto& session = document->session();
+    session.setSourcesFor([&](std::int64_t track) {
+        if (track == 2) return std::vector<Node*>{&key};
+        if (track == 3) return std::vector<Node*>{&programme};
+        return std::vector<Node*>{};
+    });
+    constexpr int frames = 256;
+    document->prepare(48000, frames);
+    session.graph().setFadeFrames(0);
+    session.transport().play();
+    document->tick(0);
+    const auto publication = document->parameterFeed().current();
+    auto* instance = dynamic_cast<RefusingKeyInstance*>(session.instanceFor(30));
+    check(instance && publication && publication->size() == 1, "prepare the real document route and recipient");
+    if (!instance || !publication || publication->size() != 1) return;
+
+    using Audio = std::array<std::array<float, frames>, 2>;
+    const auto render = [&] {
+        Audio audio{};
+        std::array<float*, 2> output{audio[0].data(), audio[1].data()};
+        AudioIo io;
+        io.out = output.data();
+        io.numOut = 2;
+        io.frames = frames;
+        document->process(io);
+        return audio;
+    };
+    const auto baseline = render();
+    const auto before = OpJournal(document->store()).headSeq();
+    const auto oldSequence = session.realisedAppliedSequence();
+    const auto* oldGraph = session.graph().currentGraph();
+    check(instance->processes > 0 && baseline[0].front() > 0.f && !instance->preparedKey && instance->lastKey == 0.f,
+          "the running unkeyed baseline invokes the recipient DSP");
+
+    const bool accepted = document->setDeviceKey(publication->front(), 2, "post_fx");
+    const auto authored = OpJournal(document->store()).headSeq();
+    const auto authoredSequence = appliedSource(document->store()).sequence();
+    const auto step = History(document->store()).nextUndo();
+    const auto storedRoutes = rows::readModel(document->store()).routing;
+    check(session.instanceFor(30) == instance, "the refused key keeps the same recipient instance");
+    if (session.instanceFor(30) != instance) return;
+    check(!accepted && !document->error().empty() && instance->keyPrepares == 1,
+          "one real key preparation refusal is reported by the document");
+    check(authored != before && authoredSequence > oldSequence && step && step->opCount == 1 &&
+              storedRoutes.size() == 1 && storedRoutes.front().srcId == 2 && storedRoutes.front().dstId == 30 &&
+              storedRoutes.front().keyTap == "post_fx",
+          "the refused presentation has one already committed route and Undo step");
+    check(session.graph().currentGraph() == oldGraph && session.realisedAppliedSequence() == oldSequence &&
+              session.model().routing.empty(), "the refused candidate leaves the prior route and receipt running");
+    auto processed = instance->processes;
+    const auto afterRefusal = render();
+    check(afterRefusal == baseline && instance->processes > processed && !instance->preparedKey && instance->lastKey == 0.f,
+          "the first callback after refusal still runs the old unkeyed DSP");
+
+    const bool resumed = document->synchronise();
+    check(session.instanceFor(30) == instance, "the retried key keeps the same recipient instance");
+    if (session.instanceFor(30) != instance) return;
+    processed = instance->processes;
+    const auto afterRetry = render();
+    check(resumed && instance->keyPrepares == 2 && instance->preparedKey && instance->processes > processed &&
+              afterRetry == baseline && instance->lastKey == .25f && session.realisedAppliedSequence() == authoredSequence,
+          "retrying the same receipt admits the intended key on the next callback");
+    const auto afterStep = History(document->store()).nextUndo();
+    check(OpJournal(document->store()).headSeq() == authored && afterStep && step && afterStep->txnId == step->txnId,
+          "successful retry does not add another history entry");
+}
+
 void preparedAndDocument(){
     Fixture f;auto& store=*f.store;
     auto prepared=prepareDeviceKey(store,30,2,"post_fx");
@@ -493,6 +608,7 @@ int main() {
     try {
         persistence();
         preparedAndDocument();
+        resumeRefusedKeyPreparation();
         nativeSerialEqThroughDeviceCallback();
         for (const auto p : {Precision::Float32, Precision::Float64})
             for (int c : {1, 2})
