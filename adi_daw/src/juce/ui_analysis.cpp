@@ -661,16 +661,24 @@ void SharedSpectrumView::frame() noexcept {
 }
 void SharedSpectrumView::updateRaster() {
     if (mode_ != Mode::Spectrogram || !shown_) return;
-    const auto skipped = shown_->sourceEpoch == clearedEpoch_ ? static_cast<std::size_t>(std::count_if(
-        shown_->columns.begin(), shown_->columns.end(), [this](const auto &entry) { return entry.serial <= clearedColumn_; })) : 0;
-    const auto count = shown_->columns.size() - skipped;
-    const auto topHz = std::min(20000., shown_->sampleRate * .5);
-    if ((!count && !shown_->historySerial) || topHz <= 20) return;
-    if (!raster_) {
-        raster_ = std::make_unique<Raster>(); raster_->setPalette(paletteIndex_, paletteReversed_);
-    }
-    auto &raster = *raster_;
-    if (raster.image.isNull() || raster.revision != shown_->revision || raster.epoch != shown_->sourceEpoch) {
+    const bool needsColumns = !raster_ || raster_->image.isNull() ||
+        raster_->revision != shown_->revision || raster_->epoch != shown_->sourceEpoch;
+    if (needsColumns) {
+        const auto &columns = shown_->columns;
+        // Published history is ordered by serial, including across gaps.
+        const auto firstVisible = shown_->sourceEpoch == clearedEpoch_
+            ? std::upper_bound(columns.begin(), columns.end(), clearedColumn_,
+                               [](auto serial, const auto &entry) { return serial < entry.serial; })
+            : columns.begin();
+        const auto skipped = static_cast<std::size_t>(firstVisible - columns.begin());
+        const auto count = columns.size() - skipped;
+        const auto topHz = std::min(20000., shown_->sampleRate * .5);
+        if ((!count && !shown_->historySerial) || topHz <= 20) return;
+        if (!raster_) {
+            raster_ = std::make_unique<Raster>();
+            raster_->setPalette(paletteIndex_, paletteReversed_);
+        }
+        auto &raster = *raster_;
         auto firstColumn = skipped;
         const bool newSweep = raster.image.isNull() || raster.epoch != shown_->sourceEpoch ||
             shown_->historySerial < raster.column;
@@ -678,7 +686,7 @@ void SharedSpectrumView::updateRaster() {
             if (clearedEpoch_ == shown_->sourceEpoch && clearedColumn_ < shown_->historySerial)
                 raster.sweepOrigin = clearedColumn_ + 1;
             else
-                raster.sweepOrigin = count ? shown_->columns[skipped].serial : shown_->historySerial;
+                raster.sweepOrigin = count ? columns[skipped].serial : shown_->historySerial;
         }
         if (newSweep || shown_->historySerial - raster.column >= Raster::width) {
             // History scrolls and changes individual pixels on the message thread.
@@ -688,15 +696,15 @@ void SharedSpectrumView::updateRaster() {
                                            juce::SoftwareImageType{});
             raster.intensity.fill(Raster::gap); raster.image.clear(raster.image.getBounds(), look::display);
         } else {
-            while (firstColumn < shown_->columns.size() && shown_->columns[firstColumn].serial <= raster.column) ++firstColumn;
+            while (firstColumn < columns.size() && columns[firstColumn].serial <= raster.column) ++firstColumn;
             const auto added = static_cast<int>(shown_->historySerial - raster.column);
             if (added > 0) raster.shift(added);
-            if (firstColumn && shown_->columns[firstColumn - 1].serial == raster.column) --firstColumn;
+            if (firstColumn && columns[firstColumn - 1].serial == raster.column) --firstColumn;
         }
         if (shown_->droppedHistoryColumns) {
             std::array<bool, Raster::width> retained{};
-            for (auto column = skipped; column < shown_->columns.size(); ++column) {
-                const auto serial = shown_->columns[column].serial;
+            for (auto column = skipped; column < columns.size(); ++column) {
+                const auto serial = columns[column].serial;
                 if (serial <= shown_->historySerial && shown_->historySerial - serial < Raster::width)
                     retained[127 - static_cast<std::size_t>(shown_->historySerial - serial)] = true;
             }
@@ -712,8 +720,8 @@ void SharedSpectrumView::updateRaster() {
                 static_cast<std::size_t>(high * shown_->request.fftSize / shown_->sampleRate) + 1);
         }
         juce::Image::BitmapData pixels(raster.image, juce::Image::BitmapData::writeOnly);
-        for (auto column = firstColumn; column < shown_->columns.size(); ++column) for (int row = 0; row < Raster::height; ++row) {
-            const auto &entry = shown_->columns[column];
+        for (auto column = firstColumn; column < columns.size(); ++column) for (int row = 0; row < Raster::height; ++row) {
+            const auto &entry = columns[column];
             if (!entry.binsDbfs || entry.serial > shown_->historySerial || shown_->historySerial - entry.serial >= Raster::width) continue;
             const auto &bins = *entry.binsDbfs;
             float peak = floorDb;
@@ -727,7 +735,7 @@ void SharedSpectrumView::updateRaster() {
         }
         raster.revision = shown_->revision; raster.epoch = shown_->sourceEpoch; raster.column = shown_->historySerial;
     }
-    if (raster.paletteDirty) raster.recolor();
+    if (raster_->paletteDirty) raster_->recolor();
 }
 void SharedSpectrumView::updateMainMeter() noexcept {
     std::optional<MainMeterSnapshot> next;
