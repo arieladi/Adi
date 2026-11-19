@@ -11,6 +11,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <variant>
 
 namespace adi::ui {
 namespace {
@@ -525,6 +526,107 @@ struct SharedAnalysis::Domain {
         return true;
     }
 };
+struct SharedAnalysis::CaptureDomain {
+    explicit CaptureDomain(CaptureRequest r) : request(r) {}
+    CaptureRequest request;
+    dsp::TriggeredScope scope;
+    std::shared_ptr<const engine::ScopeTap> tap;
+    engine::ScopeTap::Cursor cursor;
+    std::atomic<std::int64_t> consumed{0};
+    std::atomic<bool> active{true}, available{false};
+    std::atomic<std::shared_ptr<const CaptureResult>> result;
+    std::mutex mutex;
+    std::size_t consumers = 0;
+    std::uint64_t epoch = 0, revision = 0, gaps = 0, overruns = 0;
+
+    void bind(std::shared_ptr<const engine::ScopeTap> next, std::int64_t first) noexcept {
+        tap = std::move(next);
+        cursor = tap ? tap->cursorAtEnd() : engine::ScopeTap::Cursor{};
+        if (tap) cursor.next = std::clamp(first, tap->oldest(), tap->written());
+        consumed.store(cursor.next);
+        result.store({});
+        ++epoch;
+        bool ready = false;
+        if (tap) {
+            auto settings = request.settings;
+            settings.sampleRate = tap->sampleRate();
+            if (scope.settings() && *scope.settings() == settings) {
+                scope.reset();
+                ready = true;
+            } else {
+                ready = scope.prepare(settings);
+            }
+        }
+        available.store(ready);
+    }
+    bool needsWork() const noexcept {
+        return active.load() && available.load() && tap && tap->written() != consumed.load();
+    }
+    bool process(std::span<float> left, std::span<float> right, std::size_t &reads, std::size_t &samples) {
+        std::lock_guard lock(mutex);
+        if (!needsWork()) return false;
+        const auto end = tap->written();
+        while (active.load(std::memory_order_relaxed) && cursor.next < end &&
+               reads < kMaxReadsPerFrame && samples < kMaxSamplesPerFrame) {
+            const auto length = std::min({left.size(), kMaxSamplesPerFrame - samples,
+                                          static_cast<std::size_t>(end - cursor.next)});
+            ++reads;
+            const auto read = tap->read(cursor, left.first(length), right.first(length));
+            using Status = engine::ScopeTap::ReadStatus;
+            if (read.status == Status::Overrun || read.status == Status::GenerationChanged ||
+                read.status == Status::Discontinuity) {
+                ++gaps;
+                if (read.status == Status::Overrun) ++overruns;
+                scope.reset();
+                ++epoch;
+                result.store({});
+                if (read.status != Status::Discontinuity) continue;
+            }
+            if (!read.frames) break;
+            auto lane = (request.channel == Channel::Left ? left : right).first(static_cast<std::size_t>(read.frames));
+            for (float &sample : lane) if (!std::isfinite(sample)) sample = 0;
+            samples += lane.size();
+            if (!scope.processTrustedFinite(lane, read.firstSequence)) {
+                available.store(false);
+                result.store({});
+                return false;
+            }
+        }
+        consumed.store(cursor.next);
+        if (!active.load(std::memory_order_acquire)) return false;
+        const auto current = scope.current();
+        const auto previous = scope.previous();
+        const auto old = result.load();
+        const auto pending = std::max<std::int64_t>(0, tap->written() - cursor.next);
+        if (old && old->currentSerial == current.serial && old->current.size() == current.columns.size() &&
+            old->pendingFrames == pending) return false;
+        if (current.columns.empty() && previous.columns.empty()) return false;
+        // Only the last two valid sweeps at the common consumed-sample boundary
+        // are visible. Never publish storage still owned by the trigger machine.
+        try {
+            auto next = std::make_shared<CaptureResult>();
+            next->current.assign(current.columns.begin(), current.columns.end());
+            next->previous.assign(previous.columns.begin(), previous.columns.end());
+            next->currentSerial = current.serial;
+            next->previousSerial = previous.serial;
+            next->currentTriggerSequence = current.triggerSequence;
+            next->previousTriggerSequence = previous.triggerSequence;
+            next->generation = tap->generation();
+            next->sourceEpoch = epoch;
+            next->transportRevision = cursor.expectedRevision;
+            next->sampleRate = tap->sampleRate();
+            next->gapCount = gaps;
+            next->overrunCount = overruns;
+            next->pendingFrames = pending;
+            if (!active.load(std::memory_order_acquire)) return false;
+            next->revision = ++revision;
+            result.store(std::move(next));
+            return true;
+        } catch (const std::bad_alloc &) {
+            return false; // keep the last good picture until later input
+        }
+    }
+};
 struct SharedAnalysis::State {
     struct Tap {
         std::shared_ptr<const engine::ScopeTap> value;
@@ -539,6 +641,25 @@ struct SharedAnalysis::State {
     static double historySeconds(std::int32_t size, const std::shared_ptr<const engine::ScopeTap> &tap) {
         return tap && std::isfinite(tap->sampleRate()) && tap->sampleRate() > 0 ?
             std::max(.25, 4. * size / tap->sampleRate()) : .25;
+    }
+    void bindSource(engine::ScopeSource key, const Tap &tap) {
+        for (auto &[request, domain] : domains) if (request.source() == key) {
+            std::lock_guard domainLock(domain->mutex);
+            domain->bind(tap.value, true);
+            domain->startAt(tap.freshSequence);
+            ++domain->sourceEpoch;
+        }
+        for (const auto &capture : captures) if (capture->request.source == key) {
+            std::lock_guard domainLock(capture->mutex);
+            capture->bind(tap.value, tap.freshSequence);
+        }
+    }
+    std::int32_t maximumFft(engine::ScopeSource key, std::int32_t size = 0) const {
+        for (const auto &[request, domain] : domains) {
+            (void)domain;
+            if (request.source() == key) size = std::max(size, request.fftSize);
+        }
+        return size;
     }
     void resolveTap(engine::ScopeSource key, Tap &tap, std::int32_t size, bool refresh) {
         if (!acquire) return;
@@ -557,11 +678,17 @@ struct SharedAnalysis::State {
         tap.value = std::move(next);
         if (replaced) {
             tap.freshSequence = tap.value == discovered ? firstSequence : (tap.value ? tap.value->written() : 0);
-            for (auto &[request, domain] : domains) if (request.source() == key) {
-                std::lock_guard domainLock(domain->mutex);
-                domain->bind(tap.value, true); domain->startAt(tap.freshSequence); ++domain->sourceEpoch;
-            }
+            bindSource(key, tap);
         }
+    }
+    // A failed first attach may already hold an external lease. Drop our
+    // bookkeeping before calling the owner, which may query the broker.
+    void abandonFirstAttach(engine::ScopeSource key, std::unique_lock<std::mutex> &lock) noexcept {
+        const auto at = taps.find(key);
+        const bool detach = at->second.attached;
+        taps.erase(at);
+        lock.unlock();
+        if (detach && release) { try { release(key); } catch (...) {} }
     }
     void drop(const std::shared_ptr<Domain> &domain, std::uint32_t outputs) noexcept {
         ownerOnly();
@@ -586,50 +713,62 @@ struct SharedAnalysis::State {
                 // History is the maximum of current consumers, not the maximum ever opened.
                 // Renegotiate only on a real decrease; an external longer lease can retain
                 // the same ring, in which case no publication/epoch needs invalidation.
-                const double rate = at->second.value ? at->second.value->sampleRate() : 44100.;
-                double seconds = .25;
-                for (const auto &[request, remaining] : domains) {
-                    (void)remaining;
-                    if (request.source() == key) seconds = std::max(seconds, 4. * request.fftSize / rate);
-                }
-                if (seconds < at->second.seconds) {
-                    try {
-                        auto next = acquire(key, seconds);
-                        at->second.seconds = seconds;
-                        if (next != at->second.value) {
-                            at->second.value = std::move(next);
-                            at->second.attached = at->second.attached || at->second.value != nullptr;
-                            at->second.freshSequence = at->second.value ? at->second.value->written() : 0;
-                            for (auto &[request, remaining] : domains) if (request.source() == key) {
-                                std::lock_guard domainLock(remaining->mutex);
-                                remaining->bind(at->second.value, true); remaining->startAt(at->second.freshSequence); ++remaining->sourceEpoch;
-                            }
-                        }
-                    } catch (...) { /* retain the earlier, safely larger history on failure */ }
+                const auto size = maximumFft(key);
+                if (historySeconds(size, at->second.value) < at->second.seconds) {
+                    try { resolveTap(key, at->second, size, false); }
+                    catch (...) { /* retain the earlier history */ }
                 }
             }
         }
         if (detach && release) { try { release(key); } catch (...) {} }
     }
+    void dropCapture(const std::shared_ptr<CaptureDomain> &domain) noexcept {
+        ownerOnly();
+        const auto key = domain->request.source;
+        bool detach = false;
+        {
+            std::lock_guard lock(mutex);
+            if (closed || !domain->consumers) return;
+            --consumers;
+            if (--domain->consumers) return;
+            domain->active.store(false);
+            {
+                std::lock_guard domainLock(domain->mutex);
+                domain->result.store({});
+            }
+            std::erase(captures, domain);
+            const auto at = taps.find(key);
+            if (at != taps.end() && --at->second.domains == 0) { detach = at->second.attached; taps.erase(at); }
+        }
+        if (detach && release) { try { release(key); } catch (...) {} }
+    }
     bool workPending() const {
-        return std::any_of(domains.begin(), domains.end(), [this](const auto &entry) { return entry.second->needsWork(*historyBudget); });
+        return std::any_of(domains.begin(), domains.end(), [this](const auto &entry) { return entry.second->needsWork(*historyBudget); }) ||
+               std::any_of(captures.begin(), captures.end(), [](const auto &capture) { return capture->needsWork(); });
     }
     std::size_t pump() {
         // Never audio-reachable. Shutdown waits before releasing owner callbacks.
         std::lock_guard run(runMutex);
-        std::array<std::shared_ptr<Domain>, kMaxDomains> jobs;
+        std::unique_lock stateLock(mutex);
+        if (closed || !workPending()) return 0;
+        using Job = std::variant<std::shared_ptr<Domain>, std::shared_ptr<CaptureDomain>>;
+        std::array<Job, kMaxDomains> jobs;
         std::size_t count = 0, done = 0, windows = 0, samples = 0, reads = 0;
-        {
-            std::lock_guard lock(mutex);
-            if (closed || !workPending()) return 0;
-            for (const auto &[key, domain] : domains) { (void)key; jobs[count++] = domain; }
-        }
+        for (const auto &[key, domain] : domains) { (void)key; jobs[count++] = domain; }
+        for (const auto &capture : captures) jobs[count++] = capture;
+        stateLock.unlock();
         // One bounded read scratch pair per pass, independent of domain/output type.
         std::array<float, 4096> readLeft, readRight;
         workerPasses.fetch_add(1, std::memory_order_relaxed);
         const auto start = count ? nextJob++ % count : 0;
         for (std::size_t j = 0; j < count && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame; ++j) {
-            auto &d = *jobs[(start + j) % count];
+            const auto &job = jobs[(start + j) % count];
+            if (const auto *scopeJob = std::get_if<std::shared_ptr<CaptureDomain>>(&job)) {
+                if ((*scopeJob)->process(readLeft, readRight, reads, samples))
+                    publications.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            auto &d = *std::get<std::shared_ptr<Domain>>(job);
             std::lock_guard lock(d.mutex);
             if (!d.needsWork(*historyBudget)) continue;
             const bool changed = d.dirty.exchange(false, std::memory_order_acq_rel);
@@ -725,6 +864,7 @@ struct SharedAnalysis::State {
     mutable std::mutex mutex;
     std::mutex runMutex;
     std::map<Request, std::shared_ptr<Domain>> domains;
+    std::vector<std::shared_ptr<CaptureDomain>> captures;
     std::map<engine::ScopeSource, Tap> taps;
     std::size_t consumers = 0, nextJob = 0;
     bool closed = false;
@@ -811,6 +951,40 @@ SharedAnalysis::Lease::SourcePosition SharedAnalysis::Lease::sourcePosition() co
         !usable(domain_->tap, domain_->request.fftSize)) return {};
     return {domain_->tap->generation(), domain_->tap->written()};
 }
+SharedAnalysis::CaptureLease::CaptureLease(std::weak_ptr<State> state, std::shared_ptr<CaptureDomain> domain)
+    : state_(std::move(state)), domain_(std::move(domain)) {}
+SharedAnalysis::CaptureLease::~CaptureLease() { reset(); }
+SharedAnalysis::CaptureLease::CaptureLease(CaptureLease &&) noexcept = default;
+SharedAnalysis::CaptureLease &SharedAnalysis::CaptureLease::operator=(CaptureLease &&other) noexcept {
+    if (this != &other) {
+        reset();
+        state_ = std::move(other.state_);
+        domain_ = std::move(other.domain_);
+    }
+    return *this;
+}
+void SharedAnalysis::CaptureLease::reset() noexcept {
+    if (domain_) if (const auto state = state_.lock()) state->dropCapture(domain_);
+    domain_.reset();
+    state_.reset();
+}
+SharedAnalysis::CaptureLease::operator bool() const noexcept {
+    return domain_ && !state_.expired() && domain_->active.load(std::memory_order_acquire);
+}
+bool SharedAnalysis::CaptureLease::available() const noexcept {
+    return static_cast<bool>(*this) && domain_->available.load(std::memory_order_acquire);
+}
+std::shared_ptr<const SharedAnalysis::CaptureResult> SharedAnalysis::CaptureLease::read() const noexcept {
+    return available() ? domain_->result.load() : nullptr;
+}
+SharedAnalysis::Lease::SourcePosition SharedAnalysis::CaptureLease::sourcePosition() const noexcept {
+    const auto state = state_.lock();
+    if (!state || !available()) return {};
+    state->ownerOnly();
+    // Physical source binding changes exclusively on the owner. Do not wait for
+    // worker-side capture or immutable publication to take the freshness fence.
+    return {domain_->tap->generation(), domain_->tap->written()};
+}
 SharedAnalysis::SharedAnalysis(AcquireSourceTap a, ReleaseSourceTap r, Mode mode, std::size_t historyByteLimit)
     : state_(std::make_shared<State>(std::move(a), std::move(r), historyByteLimit)), mode_(mode) {}
 SharedAnalysis::SharedAnalysis(AcquireTap a, ReleaseTap r, Mode mode, std::size_t historyByteLimit)
@@ -834,6 +1008,11 @@ void SharedAnalysis::shutdown() noexcept {
             (void)key; domain->active.store(false, std::memory_order_release);
             domain->releaseUnused(0); domain->publishResult({});
         }
+        for (const auto &capture : state_->captures) {
+            capture->active.store(false);
+            capture->result.store({});
+        }
+        state_->captures.clear();
         state_->domains.clear(); taps.swap(state_->taps); state_->consumers = 0;
     }
     for (const auto &[key, tap] : taps) if (tap.attached && state_->release) { try { state_->release(key); } catch (...) {} }
@@ -854,25 +1033,16 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
         ++found->second->consumers; ++state_->consumers;
         return Lease(state_, found->second, request.outputs);
     }
-    if (state_->domains.size() >= kMaxDomains) return {};
+    if (state_->domains.size() + state_->captures.size() >= kMaxDomains) return {};
     auto domain = std::make_shared<Domain>(key);
     if (!domain->ensureSpectrum(request.outputs)) return {};
     auto [tap, inserted] = state_->taps.try_emplace(key.source());
     auto &t = tap->second;
     const auto previousTap = t.value;
-    auto maximumSize = key.fftSize;
-    for (const auto &[other, ignored] : state_->domains) {
-        (void)ignored;
-        if (other.source() == key.source()) maximumSize = std::max(maximumSize, other.fftSize);
-    }
+    const auto maximumSize = state_->maximumFft(key.source(), key.fftSize);
     try { state_->resolveTap(key.source(), t, maximumSize, false); }
     catch (...) {
-        if (inserted) {
-            const bool detach = t.attached;
-            state_->taps.erase(tap);
-            lock.unlock();
-            if (detach && state_->release) { try { state_->release(key.source()); } catch (...) {} }
-        }
+        if (inserted) state_->abandonFirstAttach(key.source(), lock);
         throw;
     }
     ++t.domains; domain->bind(t.value, true);
@@ -891,24 +1061,55 @@ SharedAnalysis::Lease SharedAnalysis::acquireStereoMeter(std::int64_t track, Ste
     request.stereoMeter = profile;
     return acquire(request);
 }
+SharedAnalysis::CaptureLease SharedAnalysis::acquireCapture(const CaptureRequest &request) {
+    state_->ownerOnly();
+    CaptureRequest key = request;
+    key.settings.sampleRate = 48000.; // identity is independent of tap discovery
+    const auto point = key.source.point;
+    const bool device = point == engine::ScopePoint::DeviceInput || point == engine::ScopePoint::DeviceOutput;
+    if (key.source.track <= 0 || point < engine::ScopePoint::PostFader || point > engine::ScopePoint::DeviceOutput ||
+        (device ? key.source.device <= 0 : key.source.device != 0) ||
+        (key.channel != Channel::Left && key.channel != Channel::Right) ||
+        !dsp::TriggeredScope::validSettings(key.settings)) return {};
+    std::unique_lock lock(state_->mutex);
+    if (state_->closed) return {};
+    for (const auto &domain : state_->captures) if (domain->request == key) {
+        ++domain->consumers;
+        ++state_->consumers;
+        return CaptureLease(state_, domain);
+    }
+    if (state_->captures.size() + state_->domains.size() >= kMaxDomains) return {};
+    auto domain = std::make_shared<CaptureDomain>(key);
+    // Reserve before the source callback. Once acquired, installing the
+    // reader is non-throwing and existing readers retain their own cursors.
+    if (state_->captures.size() == state_->captures.capacity())
+        state_->captures.reserve(std::min(kMaxDomains, 2 * state_->captures.size() + 1));
+    auto [at, inserted] = state_->taps.try_emplace(key.source);
+    auto &tap = at->second;
+    const auto previousTap = tap.value;
+    try { state_->resolveTap(key.source, tap, state_->maximumFft(key.source), false); }
+    catch (...) {
+        if (inserted) state_->abandonFirstAttach(key.source, lock);
+        throw;
+    }
+    const auto first = inserted || previousTap != tap.value ? tap.freshSequence : (tap.value ? tap.value->written() : 0);
+    domain->bind(tap.value, first);
+    domain->consumers = 1;
+    state_->captures.push_back(domain);
+    ++tap.domains;
+    ++state_->consumers;
+    return CaptureLease(state_, std::move(domain));
+}
 void SharedAnalysis::refreshSources(bool forceEpoch) {
     state_->ownerOnly();
     std::lock_guard lock(state_->mutex);
     if (state_->closed) return;
     for (auto &[key, tap] : state_->taps) {
         const auto previous = tap.value;
-        std::int32_t maximumSize = 32;
-        for (const auto &[request, ignored] : state_->domains) {
-            (void)ignored;
-            if (request.source() == key) maximumSize = std::max(maximumSize, request.fftSize);
-        }
-        state_->resolveTap(key, tap, maximumSize, true);
+        state_->resolveTap(key, tap, state_->maximumFft(key), true);
         if (!forceEpoch || previous != tap.value) continue;
         tap.freshSequence = tap.value ? tap.value->written() : 0;
-        for (auto &[request, domain] : state_->domains) if (request.source() == key) {
-            std::lock_guard domainLock(domain->mutex);
-            domain->bind(tap.value, true); domain->startAt(tap.freshSequence); ++domain->sourceEpoch;
-        }
+        state_->bindSource(key, tap);
     }
 }
 void SharedAnalysis::requestFrame() noexcept {
@@ -931,7 +1132,7 @@ void SharedAnalysis::requestFrame() noexcept {
 std::size_t SharedAnalysis::pump() { return state_->pump(); }
 SharedAnalysis::Stats SharedAnalysis::stats() const {
     std::lock_guard lock(state_->mutex);
-    Stats result{state_->consumers, state_->domains.size(), state_->taps.size(),
+    Stats result{state_->consumers, state_->domains.size() + state_->captures.size(), state_->taps.size(),
         state_->transforms.load(std::memory_order_relaxed), state_->publications.load(std::memory_order_relaxed),
         state_->frameRequests.load(std::memory_order_relaxed), state_->workerPasses.load(std::memory_order_relaxed),
         state_->cursorReads.load(std::memory_order_relaxed), state_->analysisWindows.load(std::memory_order_relaxed)};

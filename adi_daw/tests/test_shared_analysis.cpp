@@ -1267,6 +1267,205 @@ void lateRateAndFailedNegotiation() {
           "failed second-stage history negotiation releases its pending lease without leaking hidden demand");
 }
 
+void continuousCapture() {
+    using Scope = adi::dsp::TriggeredScope;
+    for (auto trigger : {Scope::Trigger::Free, Scope::Trigger::Rising, Scope::Trigger::Falling, Scope::Trigger::Internal}) {
+        Fixture f;
+        SharedAnalysis::CaptureRequest req;
+        req.source = {1, ScopePoint::PostFader};
+        req.settings.trigger = trigger;
+        req.settings.columns = 29;
+        req.settings.columnsPerSample = .19;
+        req.settings.internalCyclesPerSample = .009;
+        req.settings.removeDc = true;
+        req.settings.holdoffSamples = 17;
+        auto main = f.broker.acquireCapture(req);
+        req.settings.sampleRate = 96000.;
+        auto mini = f.broker.acquireCapture(req);
+        req.channel = SharedAnalysis::Channel::Right;
+        auto other = f.broker.acquireCapture(req);
+        check(f.broker.stats().taps == 1 && f.broker.stats().domains == 2 && f.broker.stats().consumers == 3,
+              "capture readers share physical source and identical normalized profile");
+        Scope oracleL, oracleR;
+        req.settings.sampleRate = 48000.;
+        check(oracleL.prepare(req.settings) && oracleR.prepare(req.settings), "capture oracle prepared");
+        std::int64_t sequence = 0;
+        for (int n : {1, 17, 127, 128, 129, 256, 511, 4307}) {
+            std::vector<float> l(static_cast<std::size_t>(n)), r(l.size());
+            for (int j = 0; j < n; ++j) {
+                const auto i = static_cast<std::size_t>(j);
+                l[i] = float((sequence + j) % 193 - 96) / 100.f;
+                r[i] = .5f - float((sequence + j) % 43) / 42.f;
+            }
+            r.front() = std::numeric_limits<float>::quiet_NaN();
+            f.tap->write(l.data(), r.data(), n, 0, false);
+            r.front() = 0;
+            const bool inputOk = oracleL.processChecked(l, sequence) && oracleR.processChecked(r, sequence);
+            sequence += n;
+            const auto fft = f.broker.pump();
+            auto matches = [&](const std::shared_ptr<const SharedAnalysis::CaptureResult> &snap, const Scope &oracle) {
+                const auto a = oracle.current(), b = oracle.previous();
+                return snap && snap->sampleRate == 48000. && snap->currentSerial == a.serial &&
+                       snap->previousSerial == b.serial && snap->currentTriggerSequence == a.triggerSequence &&
+                       snap->previousTriggerSequence == b.triggerSequence &&
+                       std::ranges::equal(snap->current, a.columns) && std::ranges::equal(snap->previous, b.columns);
+            };
+            check(inputOk && fft == 0 && matches(main.read(), oracleL) && matches(other.read(), oracleR) &&
+                  mini.read() == main.read(), "continuous parked input matches both direct capture streams across reads");
+        }
+        const auto retained = main.read();
+        if (!retained) {
+            check(false, "continuous capture produced a publication");
+            continue;
+        }
+        const auto copied = retained->current;
+        const auto idle = f.broker.stats();
+        f.broker.pump();
+        check(f.broker.stats().cursorReads == idle.cursorReads && idle.spectralPlans == 0 && idle.transforms == 0,
+              "idle capture has no cursor reads and scope-only has no FFT plan");
+        f.broker.refreshSources(true);
+        check(!main.read() && main.sourcePosition().written == sequence, "seek invalidates both retained sweeps");
+        std::array<float, 3> pulse{.3f, -.6f, .7f};
+        f.tap->write(pulse.data(), nullptr, 3, 0, false, 2);
+        f.broker.pump();
+        const auto after = main.read();
+        check(after && !after->current.empty() && after->sourceEpoch != retained->sourceEpoch &&
+              after->transportRevision == 2 && after->current.front().firstSequence >= sequence &&
+              retained->current == copied, "fresh result never joins old timeline and borrowed GUI pictures remain immutable");
+        mini.reset(); other.reset(); main.reset();
+        check(f.broker.stats().consumers == 0 && f.releaseCalls == 1, "last capture detaches exactly once");
+    }
+}
+void captureBoundaries() {
+    using Channel = SharedAnalysis::Channel;
+    std::shared_ptr<ScopeTap> tap;
+    int release = 0;
+    bool refuse = true;
+    SharedAnalysis *owner = nullptr;
+    SharedAnalysis broker([&](adi::engine::ScopeSource, double) -> std::shared_ptr<const ScopeTap> {
+        if (refuse) throw std::bad_alloc();
+        return tap;
+    }, [&](adi::engine::ScopeSource) {
+        ++release;
+        if (refuse) check(owner->stats().taps == 0, "failed attach is gone before a reentrant release callback");
+    }, SharedAnalysis::Mode::Manual);
+    owner = &broker;
+    SharedAnalysis::CaptureRequest req;
+    req.source = {22, ScopePoint::DeviceInput, 31}; req.settings.columns = 87; req.settings.columnsPerSample = .75;
+    bool refused = false;
+    try { (void)broker.acquireCapture(req); } catch (const std::bad_alloc &) { refused = true; }
+    check(refused && release == 1 && broker.stats().consumers == 0 && broker.stats().taps == 0 &&
+          broker.stats().domains == 0, "failed capture attach leaves no pending demand");
+    refuse = false;
+    auto capture = broker.acquireCapture(req);
+    check(capture && !capture.available() && !capture.read(), "missing device source is pending");
+    tap = std::make_shared<ScopeTap>(44100., .04);
+    tone(*tap, 64); broker.refreshSources();
+    check(capture.available() && capture.sourcePosition().written == 64 && !capture.read(), "late source fences old samples");
+    tone(*tap, 240, .25f, 1.f, 64);
+    broker.pump();
+    const auto first = capture.read();
+    check(first && !first->previous.empty() && first->sampleRate == 44100. && first->previous.front().firstSequence >= 64,
+          "scope uses negotiated physical rate and fresh history");
+    tone(*tap, 4096, .1f, 1.f, 304);
+    broker.pump();
+    const auto over = capture.read();
+    check(first && over && !over->previous.empty() && over->overrunCount == 1 && over->sourceEpoch != first->sourceEpoch &&
+          over->previous.front().firstSequence >= tap->oldest(), "overrun starts new trigger epoch at first retained data");
+    tone(*tap, 5, .2f, 1.f, 90000);
+    broker.pump();
+    const auto gap = capture.read();
+    check(over && gap && !gap->current.empty() && gap->gapCount > over->gapCount &&
+          gap->previous.empty() && gap->current.front().firstSequence == 4400,
+          "valid first payload of discontinuity is captured");
+    tap = std::make_shared<ScopeTap>(96000., .25);
+    broker.refreshSources();
+    check(!capture.read(), "new physical source revokes old publication");
+    auto raw = broker.acquire({22, ScopePoint::DeviceInput, 1024, Channel::Mid, adi::dsp::Window::Hann, 31});
+    tone(*tap, 1024);
+    const auto transforms = broker.pump();
+    check(transforms == 1 && raw.read() && capture.read() && capture.read()->sampleRate == 96000. &&
+          broker.stats().taps == 1 && broker.stats().spectralPlans == 1,
+          "scope and spectrum keep independent numerics on one tap");
+    raw.reset();
+    check(capture.available() && broker.stats().spectralPlans == 0, "closing spectrum does not stop scope capture");
+    tone(*tap, 7, .3f, 1.f, 1024);
+    const auto good = capture.read();
+    failAllocationAfter = 0;
+    broker.pump();
+    failAllocationAfter = -1;
+    check(capture.read() == good, "publication allocation refusal retains last good picture");
+    tone(*tap, 16, .2f, 1.f, 1031);
+    broker.pump();
+    check(good && capture.read() && capture.read()->revision > good->revision, "new data retries after publication failure");
+    auto invalid = req;
+    invalid.settings.gain = std::numeric_limits<float>::quiet_NaN();
+    check(!broker.acquireCapture(invalid), "nonfinite acquisition settings refused before source attach");
+    invalid = req; invalid.channel = Channel::Mid;
+    check(!broker.acquireCapture(invalid), "unsupported lanes are refused explicitly");
+    capture = broker.acquireCapture(req);
+    check(broker.stats().consumers == 1, "capture move assignment releases previous reader");
+    broker.shutdown();
+    check(!capture && !capture.read() && release == 2, "shutdown revokes pending releases while retained result survives");
+}
+
+void captureSharesLiveTap() {
+    Fixture f;
+    SharedAnalysis::CaptureRequest request;
+    request.source = {1, ScopePoint::PostFader};
+    request.settings.columns = 16;
+    request.settings.columnsPerSample = .5;
+    auto capture = f.broker.acquireCapture(request);
+    auto peaks = f.broker.acquireStereoMeter(1, {});
+    auto spectrum = f.broker.acquire({1});
+    check(f.acquireCalls == 1 && f.broker.stats().taps == 1 && f.broker.stats().domains == 3,
+          "capture, FFT and stereo meter share just one source lease");
+    std::array<float, 1024> left{}, right{};
+    left.fill(.5f); right.fill(-.25f);
+    f.tap->write(left.data(), right.data(), 1024, 100, false, 5);
+    f.broker.pump();
+    const auto frozen = capture.read();
+    const auto level = peaks.readStereoMeter();
+    const auto bins = spectrum.read();
+    check(frozen && !frozen->previous.empty() && level && bins &&
+              frozen->generation == level->generation && level->generation == bins->generation &&
+              frozen->transportRevision == 5 && bins->transportRevision == 5,
+          "three analysis types publish for the same physical generation and transport");
+    const auto previous = frozen ? frozen->previous : std::vector<adi::dsp::TriggeredScope::Column>{};
+    f.tap->write(left.data(), right.data(), 3, 100, false, 6);
+    f.broker.pump();
+    const auto afterSeek = capture.read();
+    check(frozen && afterSeek && afterSeek->transportRevision == 6 &&
+              afterSeek->generation == frozen->generation && afterSeek->sourceEpoch > frozen->sourceEpoch &&
+              afterSeek->previous.empty() && !afterSeek->current.empty() &&
+              afterSeek->current.front().firstSequence == 1024 && frozen->previous == previous,
+          "same-position seek starts an independent sweep without mutating a frozen publication");
+    capture.reset();
+    spectrum.reset();
+    check(f.releaseCalls == 0 && f.broker.stats().domains == 1 && f.broker.stats().spectralPlans == 0,
+          "hiding capture and spectrum leaves the shared stereo meter active");
+    f.tap->write(left.data(), right.data(), 1024, 100, false, 6);
+    f.broker.pump();
+    const auto start = f.tap->written();
+    capture = f.broker.acquireCapture(request);
+    check(capture.available() && !capture.read() && capture.sourcePosition().written == start,
+          "a new capture on the same live tap fences all samples written while it was hidden");
+    f.tap->write(left.data(), right.data(), 3, 100, false, 6);
+    f.broker.pump();
+    const auto resumed = capture.read();
+    check(resumed && !resumed->current.empty() && resumed->current.front().firstSequence == start &&
+              resumed->previous.empty() && f.acquireCalls == 1,
+          "resuming starts at the new acquisition boundary without replacing the physical tap");
+    peaks.reset();
+    capture.reset();
+    const auto idle = f.broker.stats();
+    f.tap->write(left.data(), right.data(), 1024, 100, false, 6);
+    f.broker.pump();
+    check(f.releaseCalls == 1 && idle.consumers == 0 && idle.taps == 0 &&
+              idle.workerPasses == f.broker.stats().workerPasses && idle.cursorReads == f.broker.stats().cursorReads,
+          "last hidden analyser releases the physical tap and leaves no capture or analysis work");
+}
+
 } // namespace
 void *operator new(std::size_t bytes) {
     if(observeAllocationSizes && allocationSizeCount<allocationSizes.size()) allocationSizes[allocationSizeCount++]=bytes;
@@ -1284,7 +1483,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { focusScopeWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

@@ -54,6 +54,8 @@ Jong, modernized by Matthijs Hollemans, pinned at
 See `third_party_notices/smexoscope/NOTICE.md` and `LICENSE.txt` for attribution
 and license. No proprietary reference observation belongs in these sources.
 
-Generated tests and original-source numerical comparison do not establish live
-interaction, complete analyzer equivalence or a CPU percentage. Continuous shared
-tap acquisition and immutable full/Info publication require a later integration.
+The shared analysis broker can prepare a continuous capture on a demand lease.
+Identical profiles on one source share their two immutable sweeps, using the
+same physical tap as the spectrum or meters. A discontinuity or source change
+clears both sweeps. The broker's frame budget also bounds capture work.
+The publication is available for future full and Info views.

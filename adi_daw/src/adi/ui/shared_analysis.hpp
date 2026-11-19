@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/dsp/spectrum.hpp"
 #include "adi/dsp/stereo_envelope_meter.hpp"
+#include "adi/dsp/triggered_scope.hpp"
 #include "adi/engine/scope.hpp"
 #include <array>
 #include <compare>
@@ -19,6 +20,7 @@ namespace adi::ui {
 class SharedAnalysis final {
     struct State;
     struct Domain;
+    struct CaptureDomain;
     struct Scheduler;
   public:
     static constexpr double kTapSeconds = 10.0; // legacy adapter's history contract
@@ -136,6 +138,41 @@ class SharedAnalysis final {
         std::uint32_t outputs_ = 0;
         friend class SharedAnalysis;
     };
+    // A continuous acquisition has its own sequence cursor. The physical tap
+    // supplies sampleRate. Equal profiles on one lane share both sweeps.
+    struct CaptureRequest {
+        engine::ScopeSource source;
+        Channel channel = Channel::Left;
+        dsp::TriggeredScope::Settings settings;
+        bool operator==(const CaptureRequest &) const = default;
+    };
+    struct CaptureResult {
+        std::vector<dsp::TriggeredScope::Column> current, previous;
+        double sampleRate = 0;
+        std::uint64_t revision = 0, sourceEpoch = 0, generation = 0, transportRevision = 0;
+        std::uint64_t currentSerial = 0, previousSerial = 0, gapCount = 0, overrunCount = 0;
+        std::int64_t currentTriggerSequence = -1, previousTriggerSequence = -1;
+        std::int64_t pendingFrames = 0;
+    };
+    class CaptureLease {
+      public:
+        CaptureLease() = default;
+        ~CaptureLease();
+        CaptureLease(CaptureLease &&) noexcept;
+        CaptureLease &operator=(CaptureLease &&) noexcept;
+        CaptureLease(const CaptureLease &) = delete;
+        CaptureLease &operator=(const CaptureLease &) = delete;
+        void reset() noexcept;
+        explicit operator bool() const noexcept;
+        bool available() const noexcept;
+        std::shared_ptr<const CaptureResult> read() const noexcept;
+        Lease::SourcePosition sourcePosition() const noexcept;
+      private:
+        CaptureLease(std::weak_ptr<State>, std::shared_ptr<CaptureDomain>);
+        std::weak_ptr<State> state_;
+        std::shared_ptr<CaptureDomain> domain_;
+        friend class SharedAnalysis;
+    };
     using AcquireSourceTap = std::function<std::shared_ptr<const engine::ScopeTap>(engine::ScopeSource, double)>;
     // Acquire can establish a pending lease whose tap is currently null. Last demand calls
     // Release once whenever Acquire was invoked, so unavailable sources cannot leak demand.
@@ -151,6 +188,7 @@ class SharedAnalysis final {
     SharedAnalysis &operator=(const SharedAnalysis &) = delete;
     Lease acquire(const Request &);
     Lease acquireStereoMeter(std::int64_t track, StereoMeterProfile);
+    CaptureLease acquireCapture(const CaptureRequest &);
     void shutdown() noexcept;
     // Owner-only lifecycle query, including consumers which released all leases
     // to hold local pictures. False after explicit shutdown.
