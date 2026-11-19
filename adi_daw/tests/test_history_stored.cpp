@@ -492,6 +492,11 @@ void legacyCheckpoint() {
     p.name("3");
     p.name("4");
     auto state = history_detail::checkpointAt(*p.store, 2);
+    const auto laterTables = tablesAddedAfter(20);
+    std::erase_if(state.at("tables").get_ref<Payload::array_t&>(), [&](const auto& table) {
+        const auto name = table.at("name").template get<std::string>();
+        return std::find(laterTables.begin(), laterTables.end(), name) != laterTables.end();
+    });
     state["schema_minor"] = 20;
     const auto bytes = encodePayload(state);
     {
@@ -513,13 +518,14 @@ void legacyCheckpoint() {
     p.store.reset();
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE);
-        db.exec("DROP TABLE history_origin_root; DROP TABLE history_roots; PRAGMA "
-                "user_version=1020; UPDATE adi_meta SET value='20' WHERE key='schema_minor'");
+        for (auto table = laterTables.rbegin(); table != laterTables.rend(); ++table)
+            db.exec("DROP TABLE \"" + *table + "\"");
+        db.exec("PRAGMA user_version=1020; UPDATE adi_meta SET value='20' WHERE key='schema_minor'");
     }
     StoreError error{};
     p.store = Store::open(path, error);
     require(p.store != nullptr, toString(error));
-    check(p.store->schemaMinor() == 21 && rows(*p.store, "history_roots") == 0,
+    check(p.store->schemaMinor() == kSchemaMinor && rows(*p.store, "history_roots") == 0,
           "real legacy checkpoint file upgrades additively without inventing archived states");
     for (int i = 5; i <= 9; ++i)
         p.name(std::to_string(i));
@@ -532,8 +538,8 @@ void legacyCheckpoint() {
     const auto hash = h.listSnapshots().front().storedStateHash;
     require(hash.has_value(), "legacy point converted");
     const auto normalized = history_detail::readCheckpointContent(p.store->db(), *hash);
-    check(normalized.at("schema_minor") == 21 && checkProject(*p.store).clean(),
-          "restored legacy image is normalized and versioned for schema21 semantics");
+    check(normalized.at("schema_minor") == kSchemaMinor && checkProject(*p.store).clean(),
+          "restored legacy image is normalized and versioned for the current schema");
 }
 
 void corruptionRollback() {

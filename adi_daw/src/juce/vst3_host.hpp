@@ -128,6 +128,7 @@ public:
     /// change what it supports.
     [[nodiscard]] bool processesDouble() const noexcept override { return canDouble_; }
     [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return true; }
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     /// The graph's width for the next `prepare`. A VST3 fixes its sample
     /// size in `setupProcessing`, at activation, so it is set up at 64 only
     /// when it will be handed double, and at 32 in a graph at 32 whatever it
@@ -329,6 +330,8 @@ private:
     juce::AudioBuffer<float> scratch_;
     /// The same at 64, when the plug-in is set up at `kSample64`.
     juce::AudioBuffer<double> scratch64_;
+    juce::AudioBuffer<float> view_;
+    juce::AudioBuffer<double> view64_;
     juce::MidiBuffer midi_;
 
     /// The raw interface, when we could reach it. Null means JUCE's
@@ -359,6 +362,11 @@ private:
     std::size_t injectedUsed_ = 0;
     std::vector<float*> rawIn_, rawOut_;
     std::vector<double*> rawIn64_, rawOut64_;
+    std::vector<float*> rawKey_;
+    std::vector<double*> rawKey64_;
+    int keyChannels_ = 0;
+    int keyOffset_ = 0;
+    int wrapperChannels_ = 0;
     bool canDouble_ = false;   ///< `canProcessSampleSize(kSample64)`, asked at construction
     bool handed64_ = false;    ///< the next `prepare` is for a graph handing double
     bool double_ = false;      ///< set up at `kSample64`

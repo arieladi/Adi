@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 namespace adi::device {
 
@@ -35,6 +36,19 @@ bool Vst3Device::hostMutationOnCurrentThread() const noexcept {
 }
 
 namespace {
+
+template<class Sample>
+void copyKeyInput(const engine::NodeIo& io, int channel, int frames, Sample* destination) noexcept {
+    if (channel < io.channels && io.sidechain64 && io.sidechain64[channel]) {
+        const auto* input = io.sidechain64[channel] + io.blockOffset;
+        std::transform(input, input + frames, destination, [](double x) { return static_cast<Sample>(x); });
+    } else if (channel < io.channels && io.sidechain && io.sidechain[channel]) {
+        const auto* input = io.sidechain[channel] + io.blockOffset;
+        std::copy_n(input, frames, destination);
+    } else {
+        std::fill_n(destination, frames, Sample{});
+    }
+}
 
 /// VST3 identifies a parameter by a 32-bit `ParamID`, and `plugin_params`
 /// stores TEXT. The conversion is fixed-width hex so it sorts stably and can
@@ -458,8 +472,8 @@ std::string Vst3Device::paramText(const std::string& paramId,
 void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     if (inst_ == nullptr) return;
 
-    const std::int32_t chans = std::max(inst_->getTotalNumInputChannels(),
-                                        inst_->getTotalNumOutputChannels());
+    const std::int32_t chans = std::max(inst_->getMainBusNumInputChannels(),
+                                        inst_->getMainBusNumOutputChannels());
 
     // ALREADY RUNNING AND NOTHING CHANGED: DO NOTHING. The same rule as
     // `ClapDevice::prepare`, for the same reason and with the same evidence
@@ -489,8 +503,6 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
 
     maxFrames_ = maxFrames;
     sampleRate_ = sampleRate;
-    channels_ = chans;
-    if (channels_ < 1) channels_ = 2;
 
     // ADR-0049: the GRANTED size. Everything allocated here is sized from what
     // the driver returned, never from what was requested, and the plugin is
@@ -516,6 +528,15 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // the old sample size. Releasing an instance that is not active does
     // nothing.
     inst_->releaseResources();
+    // The graph has one key bus. Enable the plug-in's first auxiliary input
+    // on the owner thread before setup, then use its negotiated channel count.
+    if (auto* bus = inst_->getBus(true, 1); bus != nullptr && !bus->isEnabled())
+        bus->enable();
+    channels_ = std::max(inst_->getMainBusNumInputChannels(), inst_->getMainBusNumOutputChannels());
+    if (channels_ < 1) channels_ = 2;
+    keyChannels_ = inst_->getChannelCountOfBus(true, 1);
+    keyOffset_ = keyChannels_ > 0 ? inst_->getChannelIndexInProcessBlockBuffer(true, 1, 0) : 0;
+    wrapperChannels_ = std::max(inst_->getTotalNumInputChannels(), inst_->getTotalNumOutputChannels());
     inst_->setNonRealtime(requestedOffline_);
     inst_->setPlayHead(&playHead_);
     // The width, before `prepareToPlay`: it hands `setupProcessing`
@@ -570,11 +591,20 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     rawOut_.resize(static_cast<std::size_t>(channels_));
     rawIn64_.resize(static_cast<std::size_t>(channels_));
     rawOut64_.resize(static_cast<std::size_t>(channels_));
+    rawKey_.resize(static_cast<std::size_t>(keyChannels_));
+    rawKey64_.resize(static_cast<std::size_t>(keyChannels_));
 
     // Allocated at prepare, never in process (ADR-0010). One width in use.
-    scratch_.setSize(channels_, maxFrames, false, true, true);
-    if (double_) scratch64_.setSize(channels_, maxFrames, false, true, true);
-    else         scratch64_.setSize(0, 0);
+    const int scratchChannels = std::max(channels_ + keyChannels_, wrapperChannels_);
+    scratch_.setSize(scratchChannels, maxFrames, false, true, true);
+    if (double_) scratch64_.setSize(scratchChannels, maxFrames, false, true, true);
+    else scratch64_.setSize(0, 0);
+    if (processor_ == nullptr && wrapperChannels_ > 0) {
+        if (double_)
+            view64_.setDataToReferTo(scratch64_.getArrayOfWritePointers(), wrapperChannels_, maxFrames);
+        else
+            view_.setDataToReferTo(scratch_.getArrayOfWritePointers(), wrapperChannels_, maxFrames);
+    }
     midi_.ensureSize(4096);
 
     // HERE, and it was not. Since ADR-0073 this line sat after the `return`
@@ -709,7 +739,8 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         // ADR-0207 d2: the width the plug-in was set up at. `channelBuffers32`
         // and `channelBuffers64` share their storage, and `symbolicSampleSize`
         // says which one is meant; it must match `setupProcessing`.
-        Steinberg::Vst::AudioBusBuffers inBus{};
+        std::array<Steinberg::Vst::AudioBusBuffers, 2> inputs{};
+        auto& inBus = inputs[0];
         inBus.numChannels = ch;
         inBus.silenceFlags = 0;
         Steinberg::Vst::AudioBusBuffers outBus = inBus;
@@ -729,13 +760,32 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
             outBus.channelBuffers32 = rawOut_.data();
         }
 
+        if (keyChannels_ > 0) {
+            auto& key = inputs[1];
+            key.numChannels = keyChannels_;
+            for (int c = 0; c < keyChannels_; ++c) {
+                const auto index = static_cast<std::size_t>(c);
+                if (double_) {
+                    auto* dst = scratch64_.getWritePointer(channels_ + c);
+                    rawKey64_[index] = dst;
+                    copyKeyInput(io, c, n, dst);
+                } else {
+                    auto* dst = scratch_.getWritePointer(channels_ + c);
+                    rawKey_[index] = dst;
+                    copyKeyInput(io, c, n, dst);
+                }
+            }
+            if (double_) key.channelBuffers64 = rawKey64_.data();
+            else key.channelBuffers32 = rawKey_.data();
+        }
+
         Steinberg::Vst::ProcessData pd{};
         pd.processMode = inst_->isNonRealtime() ? Steinberg::Vst::kOffline : Steinberg::Vst::kRealtime;
         pd.symbolicSampleSize = double_ ? Steinberg::Vst::kSample64 : Steinberg::Vst::kSample32;
         pd.numSamples = n;
-        pd.numInputs = 1;
+        pd.numInputs = keyChannels_ > 0 ? 2 : 1;
         pd.numOutputs = 1;
-        pd.inputs = &inBus;
+        pd.inputs = inputs.data();
         pd.outputs = &outBus;
         pd.inputEvents = &events_;
         pd.outputEvents = nullptr;
@@ -791,12 +841,22 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     // right, which is not. ADR-0057 has the route.
 
     playHead_.clock = io.deviceTransport;
+    // The wrapper uses a single buffer with each enabled bus at its declared
+    // channel offset. The view's channel storage was prepared on the owner.
+    auto prepareView = [&](auto& scratch, auto& view) {
+        using Sample = typename std::remove_reference_t<decltype(scratch)>::SampleType;
+        for (int c = ch; c < wrapperChannels_; ++c)
+            std::fill_n(scratch.getWritePointer(c), n, Sample{});
+        for (int c = 0; c < keyChannels_; ++c)
+            copyKeyInput(io, c, n, scratch.getWritePointer(keyOffset_ + c));
+        view.setDataToReferTo(scratch.getArrayOfWritePointers(), wrapperChannels_, n);
+    };
     if (double_) {
-        juce::AudioBuffer<double> view(scratch64_.getArrayOfWritePointers(), ch, n);
-        inst_->processBlock(view, midi_);
+        prepareView(scratch64_, view64_);
+        inst_->processBlock(view64_, midi_);
     } else {
-        juce::AudioBuffer<float> view(scratch_.getArrayOfWritePointers(), ch, n);
-        inst_->processBlock(view, midi_);
+        prepareView(scratch_, view_);
+        inst_->processBlock(view_, midi_);
     }
     playHead_.clock = nullptr;
     copyOut(io, n, ch);

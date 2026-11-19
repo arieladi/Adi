@@ -720,10 +720,38 @@ bool sigRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string&
 
 bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        if (p.at("kind") == "send" && p.at("srcKind") == "track" && p.at("dstKind") == "track" &&
+            !allowedSendToGroupedReturn(c.db, p.at("src").get<std::int64_t>(), p.at("dst").get<std::int64_t>())) {
+            err = "the source must be inside the group that owns this return";
+            return false;
+        }
+        if (p.at("kind") == "main" && p.at("srcKind") == "track") {
+            SQLite::Statement group(c.db,
+                "SELECT g.id FROM tracks r JOIN tracks g ON g.id=r.parent_id "
+                "WHERE r.id=? AND r.kind='return' AND g.kind='group'");
+            group.bind(1, p.at("src").get<std::int64_t>());
+            if (group.executeStep() &&
+                (p.at("dstKind") != "track" || group.getColumn(0).getInt64() != p.at("dst").get<std::int64_t>())) {
+                err = "a grouped return's main output goes to its group";
+                return false;
+            }
+        }
         if(p.contains("row")) {
             const auto& row=p.at("row");
-            if(detail::signedInteger(row.at("id"))!=detail::signedInteger(p.at("id")))throw std::runtime_error("captured routing id differs");
-            detail::restoreRow(c.db,"routing",row);return true;
+            const auto id = detail::signedInteger(p.at("id"));
+            if (detail::signedInteger(row.at("id")) != id || row.at("src_kind") != p.at("srcKind") ||
+                detail::signedInteger(row.at("src_id")) != detail::signedInteger(p.at("src")) ||
+                row.at("dst_kind") != p.at("dstKind") ||
+                detail::signedInteger(row.at("dst_id")) != detail::signedInteger(p.at("dst")) ||
+                row.at("kind") != p.at("kind"))
+                throw std::runtime_error("captured routing row differs from the declared route");
+            if (p.contains("sendTapRow") && (row.at("kind") != "send" ||
+                detail::signedInteger(p.at("sendTapRow").at("routing_id")) != id))
+                throw std::runtime_error("captured send tap belongs to another route");
+            detail::restoreRow(c.db,"routing",row);
+            if (p.contains("sendTapRow"))
+                detail::restoreRow(c.db, "routing_send_taps", p.at("sendTapRow"));
+            return true;
         }
         bool pre=false;
         if(p.at("kind")=="send" && p.at("dstKind")=="track")
@@ -771,6 +799,9 @@ bool routingDisconnectInverse(OpContext& c, const Payload& p, Payload& inv, std:
         inv["dst"] = st.getColumn(3).getInt64();
         inv["kind"] = st.getColumn(4).getString();
         inv["row"] = *detail::captureRow(c.db,"routing","id",p.at("id").get<std::int64_t>());
+        const auto id = detail::signedInteger(p.at("id"));
+        if (readIndividualSendTaps(c.db).contains(id))
+            inv["sendTapRow"] = *detail::captureRow(c.db, "routing_send_taps", "routing_id", id);
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1022,7 +1053,8 @@ constexpr Field kFRouting[] = {
     {"dst", FieldType::Int, true, "the destination's id"},
     {"kind", FieldType::Text, true,
      "main: the output; send: to a return; sidechain: a key; vca; cue", kRoutingKinds},
-    {"row", FieldType::Object, false, "a captured row, as undo restores it"}};
+    {"row", FieldType::Object, false, "a captured row, as undo restores it"},
+    {"sendTapRow", FieldType::Object, false, "a captured individual send tap restored by undo"}};
 constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"track", FieldType::Int, false},
                                    {"device", FieldType::Int, false},
@@ -1080,7 +1112,9 @@ constexpr Field kFDeviceRoute[] = {{"dev", FieldType::Int, true},
 constexpr Field kFDevicePreset[] = {{"dev", FieldType::Int, true},
                                     {"preset", FieldType::Text, true}};
 constexpr Field kFSetParent[] = {{"id", FieldType::Int, true},
-                                 {"parent", FieldType::Int, false}};
+                                 {"parent", FieldType::Int, false},
+                                 {"groupedSends", FieldType::Array, false,
+                                  "captured grouped sends restored by Undo"}};
 constexpr Field kFRemarkAdd[] = {{"id", FieldType::Int, true},
                                  {"kind", FieldType::Text, true},
                                  {"target", FieldType::Int, true},
@@ -1185,6 +1219,24 @@ MainRoute findMainRoute(OpContext& c, std::int64_t trackId) {
     return r;
 }
 
+std::vector<std::int64_t> disconnectedGroupSends(OpContext& c, std::int64_t moving,
+                                                 std::optional<std::int64_t> parent) {
+    SQLite::Statement sends(c.db,
+        "SELECT r.id,r.src_id,r.dst_id FROM routing r JOIN tracks dst ON dst.id=r.dst_id "
+        "WHERE r.kind='send' AND r.src_kind='track' AND r.dst_kind='track' "
+        "AND dst.kind='return' AND (dst.parent_id IS NOT NULL OR dst.id=?) ORDER BY r.id");
+    sends.bind(1, moving);
+    std::vector<std::int64_t> result;
+    while (sends.executeStep()) {
+        const auto src = sends.getColumn(1).getInt64();
+        const auto dst = sends.getColumn(2).getInt64();
+        if (allowedSendToGroupedReturn(c.db, src, dst) &&
+            !allowedSendToGroupedReturn(c.db, src, dst, moving, parent))
+            result.push_back(sends.getColumn(0).getInt64());
+    }
+    return result;
+}
+
 }  // namespace
 
 bool trackSetParentApply(OpContext& c, const Payload& p, std::string& err) {
@@ -1211,6 +1263,7 @@ bool trackSetParentApply(OpContext& c, const Payload& p, std::string& err) {
             }
         }
 
+        const auto lostSends = disconnectedGroupSends(c, id, parent);
         {
             SQLite::Statement st(c.db, "UPDATE tracks SET parent_id = ? WHERE id = ?");
             if (parent) st.bind(1, *parent); else st.bind(1);
@@ -1236,6 +1289,28 @@ bool trackSetParentApply(OpContext& c, const Payload& p, std::string& err) {
                 st.exec();
             }
         }
+        SQLite::Statement removeSend(c.db, "DELETE FROM routing WHERE id=?");
+        for (const auto routeId : lostSends) {
+            removeSend.reset();
+            removeSend.bind(1, routeId);
+            removeSend.exec();
+        }
+        if (const auto captured = p.find("groupedSends"); captured != p.end()) {
+            for (const auto& send : *captured) {
+                const auto& row = send.at("route");
+                if (row.at("kind") != "send" || row.at("src_kind") != "track" ||
+                    row.at("dst_kind") != "track" ||
+                    !allowedSendToGroupedReturn(c.db, detail::signedInteger(row.at("src_id")),
+                                                detail::signedInteger(row.at("dst_id"))))
+                    throw std::runtime_error("captured send is outside its return's group");
+                detail::restoreRow(c.db, "routing", row);
+                if (send.contains("tap")) {
+                    if (detail::signedInteger(send.at("tap").at("routing_id")) != detail::signedInteger(row.at("id")))
+                        throw std::runtime_error("captured send tap belongs to another route");
+                    detail::restoreRow(c.db, "routing_send_taps", send.at("tap"));
+                }
+            }
+        }
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1252,6 +1327,21 @@ bool trackSetParentInverse(OpContext& c, const Payload& p, Payload& inv, std::st
         inv["id"] = id;
         if (st.getColumn(0).isNull()) inv["parent"] = nullptr;
         else inv["parent"] = st.getColumn(0).getInt64();
+
+        std::optional<std::int64_t> nextParent;
+        if (p.contains("parent") && !p.at("parent").is_null())
+            nextParent = detail::signedInteger(p.at("parent"));
+        const auto losing = disconnectedGroupSends(c, id, nextParent);
+        if (!losing.empty()) {
+            const auto taps = readIndividualSendTaps(c.db);
+            inv["groupedSends"] = Payload::array();
+            for (const auto routeId : losing) {
+                Payload send = {{"route", *detail::captureRow(c.db, "routing", "id", routeId)}};
+                if (taps.contains(routeId))
+                    send["tap"] = *detail::captureRow(c.db, "routing_send_taps", "routing_id", routeId);
+                inv["groupedSends"].push_back(std::move(send));
+            }
+        }
 
         // The routing row is NOT captured, and that is the point of ADR-0065.
         // Re-applying setParent with the old parent recomputes the same

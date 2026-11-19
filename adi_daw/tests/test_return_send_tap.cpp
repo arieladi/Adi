@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
+#include "adi/check.hpp"
 #include "adi/digest.hpp"
+#include "adi/engine/plan.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
@@ -105,9 +107,191 @@ void disconnectAndProjection() {
     db.exec("DELETE FROM return_send_taps");
     check(textproj::projectStore(store).text.find("sendTap")==std::string::npos,"absent default/legacy preference is distinct from stored Post in projection");
 }
+
+void groupedReturns() {
+    Project project;
+    auto& store = *project.store;
+    store.db().exec(
+        "DELETE FROM routing;"
+        "INSERT INTO tracks(id,kind,name,parent_id) VALUES"
+        "(30,'group','Outer',NULL),(31,'group','Inner',30),(32,'audio','Outside',NULL),"
+        "(33,'return','Inner FX',31),(34,'return','Outer FX 2',30);"
+        "UPDATE tracks SET parent_id=30 WHERE id IN(1,10);"
+        "UPDATE tracks SET parent_id=31 WHERE id=2;"
+        "INSERT OR IGNORE INTO mixer_strip(track_id) SELECT id FROM tracks");
+    const auto send = [](std::int64_t id, std::int64_t source, std::int64_t destination) {
+        return op("routing.connect", {{"id", id}, {"srcKind", "track"}, {"src", source},
+                                       {"dstKind", "track"}, {"dst", destination}, {"kind", "send"}});
+    };
+    auto journal = OpJournal(store);
+    check(journal.commit(send(41, 1, 10)).ok && journal.commit(send(42, 2, 10)).ok,
+          "both the direct and nested child can send to the outer return");
+    check(!journal.commit(send(43, 32, 10)).ok && !journal.commit(send(43, 30, 10)).ok &&
+          !prepareSendToReturn(store, 43, 32, 10).ok,
+          "an outside track and the group itself cannot create a send to its grouped return");
+    check(journal.commit(send(44, 10, 34)).ok && journal.commit(send(45, 33, 10)).ok &&
+          journal.commit(send(46, 33, 11)).ok,
+          "grouped returns can send to their siblings, an outer return, and a top-level return");
+    check(journal.commit(tap(10, true)).ok &&
+          journal.commit(op("routing.setSendTap", {{"id", 41}, {"tap", "pre_fx"}})).ok &&
+          journal.commit(op("routing.setSendTap", {{"id", 42}, {"tap", "post_mixer"}})).ok,
+          "an individual send can override the return's Post FX default");
+    const auto snapshot = SnapshotBuilder::fromStore(store);
+    check(snapshot->findTrack(10)->returnSendTap->legacyMixed,
+          "the snapshot exposes a return with unequal effective taps as mixed");
+    const auto plan = planGraph(rows::readModel(store));
+    const auto edgeTap = [&](std::int64_t id) -> std::optional<Tap> {
+        const auto edge = std::find_if(plan.edges.begin(), plan.edges.end(),
+            [id](const PlannedEdge& candidate) { return candidate.routingId == id; });
+        return edge == plan.edges.end() ? std::nullopt : std::optional(edge->tap);
+    };
+    check(edgeTap(41) == Tap::PreFx && edgeTap(42) == Tap::PostFader && edgeTap(45) == Tap::PostFx,
+          "the audio plan selects each of the three physical taps");
+    check(textproj::projectStore(store).text.find("sendTap pre_fx") != std::string::npos,
+          "text projection stores the individual tap");
+    const auto before = digestProject(store).text;
+    check(journal.commit(op("track.setParent", {{"id", 31}})).ok &&
+          project.scalar("SELECT count(*) FROM routing WHERE id IN(42,45)") == 0 &&
+          project.scalar("SELECT count(*) FROM routing WHERE id=46") == 1,
+          "moving a nested group removes scoped sends and keeps its top-level send");
+    check(History(store).undo().ok && digestProject(store).text == before &&
+          project.scalar("SELECT count(*) FROM routing_send_taps WHERE routing_id=42 AND tap='post_mixer'") == 1,
+          "Undo restores the exact routes and their individual taps");
+    check(journal.commit(op("track.delete", {{"id", 30}})).ok &&
+          project.scalar("SELECT count(*) FROM routing") == 0,
+          "deleting the group removes every attached send");
+    check(History(store).undo().ok && digestProject(store).text == before,
+          "Undo restores the group and its sends in one step");
+    auto duplicate = std::vector<OpRequest>{
+        op("track.create", {{"id", 60}, {"kind", "group"}}),
+        op("track.create", {{"id", 61}, {"kind", "audio"}, {"parent", 60}}),
+        op("track.create", {{"id", 62}, {"kind", "return"}, {"parent", 60}}),
+    };
+    const auto copies = copyGroupSendRequests(store, {{30, 60}, {1, 61}, {10, 62}}, {{41, 71}});
+    duplicate.insert(duplicate.end(), copies.begin(), copies.end());
+    check(journal.commit(duplicate).ok &&
+          project.scalar("SELECT count(*) FROM routing WHERE id=71 AND src_id=61 AND dst_id=62") == 1 &&
+          project.scalar("SELECT count(*) FROM routing_send_taps WHERE routing_id=71 AND tap='pre_fx'") == 1,
+          "a copied send points to the copied return and retains its tap");
+    check(History(store).undo().ok && digestProject(store).text == before,
+          "the copied send and its tracks undo as one group");
+    store.db().exec("INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind)"
+                    " VALUES(55,'track',32,'track',10,'send')");
+    const auto report = checkProject(store);
+    check(std::any_of(report.findings.begin(), report.findings.end(),
+        [](const auto& finding) { return finding.code == "route.groupReturnScope"; }),
+        "integrity checking identifies a grouped send inserted from outside the group");
+}
 class Tone final:public Node {
 public:void process(const NodeIo& io)noexcept override {for(std::int32_t channel=0;channel<io.channels;++channel)if(io.out[channel])std::fill_n(io.out[channel]+io.blockOffset,io.frames,0.25f);}
 };
+void compensatedGroupNull() {
+    class Pattern final : public Node {
+    public:
+        bool quiet = false;
+        void process(const NodeIo& io) noexcept override {
+            for (int i = 0; i < io.frames; ++i) {
+                const float signal = quiet ? 0.0f
+                    : (static_cast<float>((sample_++) % 257) - 128.0f) / 256.0f;
+                for (int c = 0; c < io.channels; ++c) io.out[c][io.blockOffset + i] = signal;
+            }
+        }
+    private:
+        int sample_ = 0;
+    } source;
+    class FixtureDevice final : public device::DeviceInstance {
+    public:
+        explicit FixtureDevice(int delay, bool inverse) : delay_(delay), inverse_(inverse) {}
+        const device::DeviceIdentity& identity() const noexcept override { return identity_; }
+        bool loaded() const noexcept override { return true; }
+        std::int32_t latencySamples() const noexcept override { return delay_; }
+        std::int64_t tailSamples() const noexcept override { return delay_; }
+        void process(const NodeIo& io) noexcept override {
+            for (int i = 0; i < io.frames; ++i) {
+                const auto offset = io.blockOffset + i;
+                for (int c = 0; c < io.channels; ++c) {
+                    const float input = io.in ? io.in[c][offset] : 0.0f;
+                    if (delay_ == 0) {
+                        peak = std::max(peak, std::abs(input));
+                        io.out[c][offset] = std::clamp(input, -0.0625f, 0.0625f);
+                    } else {
+                        auto& retained = memory_[static_cast<std::size_t>(c)][static_cast<std::size_t>(head_)];
+                        io.out[c][offset] = inverse_ ? -retained : retained;
+                        retained = input;
+                    }
+                }
+                if (delay_ != 0) head_ = (head_ + 1) % delay_;
+            }
+        }
+        float peak = 0;
+    private:
+        device::DeviceIdentity identity_;
+        std::array<std::array<float, 1024>, 2> memory_{};
+        int delay_;
+        bool inverse_;
+        int head_ = 0;
+    };
+    Project project;
+    auto& store = *project.store;
+    store.db().exec(
+        "DELETE FROM routing;"
+        "INSERT INTO tracks(id,kind,name) VALUES(30,'group','Group');"
+        "UPDATE tracks SET parent_id=30 WHERE id IN(1,10);"
+        "INSERT INTO mixer_strip(track_id) VALUES(30);"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'clap','test.group','Fixture','effect');"
+        "INSERT INTO device_chains(id,track_id) VALUES(1,1),(2,10),(3,30);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,always_process) VALUES"
+        "(1,1,0,1,'Dry delay',1),(2,2,0,1,'Inverted return',1),(3,3,0,1,'Group clipper',1)");
+    check(OpJournal(store).commit(connect(1)).ok &&
+          OpJournal(store).commit(op("routing.setSendTap", {{"id", 1}, {"tap", "post_fx"}})).ok,
+          "group null fixture connects the wet path at Post FX");
+    FixtureDevice* clipper = nullptr;
+    Session session;
+    session.graph().setFadeFrames(0);
+    session.setSourcesFor([&](std::int64_t id) {
+        return id == 1 ? std::vector<Node*>{&source} : std::vector<Node*>{};
+    });
+    SessionSpec spec;
+    spec.maxFrames = 64;
+    const bool loaded = session.load(store, [&](const DeviceRequest& request, std::string&) {
+        const auto id = request.device->id;
+        auto device = std::make_unique<FixtureDevice>(id == 1 ? 1024 : id == 2 ? 512 : 0, id == 2);
+        if (id == 3) clipper = device.get();
+        return device;
+    }, spec);
+    check(loaded && clipper, "load the actual group, return and delay graph");
+    if (!loaded || !clipper) return;
+    session.transport().play();
+    std::array<float,64> left{}, right{};
+    float* channels[]{left.data(), right.data()};
+    int streamFrame = 0;
+    const auto renderPeak = [&](int blocks) {
+        float peak = 0;
+        for (int block = 0; block < blocks; ++block) {
+            AudioIo io;
+            io.out = channels;
+            io.numOut = 2;
+            io.frames = 64;
+            io.streamTimeSamples = streamFrame;
+            session.process(io);
+            streamFrame += io.frames;
+            for (const float value : left) peak = std::max(peak, std::abs(value));
+        }
+        return peak;
+    };
+    const float peak = renderPeak(64);
+    check(clipper->peak < 1e-6f && peak < 1e-6f,
+          "a 1024-sample dry delay and 512-sample inverted return cancel before the group device");
+    const auto attenuated = OpJournal(store).commit(op("mixer.setVolume", {{"id", 1}, {"db", -120.0}}));
+    check(attenuated.ok && session.refresh(store), "attenuate the dry fader while leaving Post FX wet");
+    renderPeak(64);
+    clipper->peak = 0;
+    source.quiet = true;
+    const float tail = renderPeak(16);
+    check(clipper->peak > 0.2f && tail == 0.0625f,
+          "the group clipper limits the remaining return tail after the source goes silent");
+}
+
 void audible() {
     for(const auto precision:{Precision::Float32,Precision::Float64})for(bool pre:{false,true}) {
         Project project;auto& store=*project.store;store.db().exec("DELETE FROM routing;UPDATE mixer_strip SET volume_db=-6.020599913279624 WHERE track_id=1");
@@ -139,4 +323,4 @@ void legacyMigration() {
     check(OpJournal(*upgraded).commit(tap(10,true)).ok && History(*upgraded).undo().ok && readReturnSendTaps(*upgraded).at(10).legacyMixed,"first migrated choice undoes to original legacy mixed state");
 }
 }
-int main(){try{choiceAndHistory();emptyAndProducer();metadataAndGuards();disconnectAndProjection();audible();replay();legacyMigration();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{choiceAndHistory();emptyAndProducer();metadataAndGuards();disconnectAndProjection();groupedReturns();compensatedGroupNull();audible();replay();legacyMigration();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
