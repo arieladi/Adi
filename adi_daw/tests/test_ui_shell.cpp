@@ -11503,6 +11503,12 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     mix.frame(actual.reader());
                     detached->frame(broker, main, main);
                     const auto next = spectrum.snapshot();
+                    const auto other = detached->view.snapshot();
+                    if (transforms != 1 || !next || next == shared || next != other)
+                        std::printf("folded hop: transforms=%zu next=%lld initial=%lld detached=%lld consumers=%zu\n",
+                                    transforms, static_cast<long long>(next ? next->firstSequence : -1),
+                                    static_cast<long long>(shared ? shared->firstSequence : -1),
+                                    static_cast<long long>(other ? other->firstSequence : -1), broker->stats().consumers);
                     check(transforms == 1 && next && next != shared &&
                               next == detached->view.snapshot(),
                           "the next hop still yields one transform and the same immutable spectrum for both views");
