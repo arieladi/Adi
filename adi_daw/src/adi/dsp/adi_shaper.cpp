@@ -41,8 +41,9 @@ AdiShaper::AdiShaper() noexcept {
         const auto kind = static_cast<Stage>(i);
         stages_[i].enabled = kind < Stage::Filter;
         for (auto& band : stages_[i].bands) {
-            band.primary.points.fill(kind == Stage::Pan ? 0.0f : kind == Stage::Liquid ? 0.5f : 1.0f);
-            band.secondary.points.fill(kind == Stage::Liquid ? 0.5f : 0.0f);
+            const bool startsAtZero = kind == Stage::Pan || kind == Stage::Drive;
+            band.primary.points.fill(startsAtZero ? 0.0f : kind == Stage::Liquid ? 0.5f : 1.0f);
+            band.secondary.points.fill(kind == Stage::Crush ? 1.0f : kind == Stage::Liquid ? 0.5f : 0.0f);
             if (kind == Stage::Liquid) band.type = static_cast<int>(AdiShaperLiquid::Mode::Flange);
         }
         updateStage(kind);
@@ -58,6 +59,10 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     playing_ = true;
     for (auto& filter : filters_) filter.prepare(sampleRate);
     for (auto& liquid : liquids_) (void)liquid.prepare(sampleRate);
+    for (auto& drive : drives_) drive.prepare(sampleRate);
+    for (auto& crusher : crush_) (void)crusher.prepare(sampleRate);
+    driveDry_ = {};
+    driveSource_ = {};
     for (auto& stage : stages_) {
         stage.low.reset();
         stage.high.reset();
@@ -200,7 +205,7 @@ void AdiShaper::updateBand(Stage kind, CurveBand& band) const noexcept {
     band.blend = masterMix_ * band.mix;
     if (kind >= Stage::Filter) {
         band.secondary.update();
-        band.active = kind == Stage::Filter || band.type != static_cast<int>(AdiShaperLiquid::Mode::Off);
+        band.active = kind != Stage::Liquid || band.type != static_cast<int>(AdiShaperLiquid::Mode::Off);
         return;
     }
     const auto neutral = kind == Stage::Pan ? 0.0f : 1.0f;
@@ -254,17 +259,29 @@ void AdiShaper::restart(Stage kind) noexcept {
         band.phase = band.hertz ? 0 : cyclePhase(quarterNotes_ / band.beats);
         updateStep(band);
     }
+    resetKernels(kind);
+}
+
+void AdiShaper::resetKernels(Stage kind) noexcept {
     if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
     if (kind == Stage::Liquid) for (auto& liquid : liquids_) liquid.reset();
+    if (kind == Stage::Crush) for (auto& crusher : crush_) crusher.reset();
+    if (kind == Stage::Drive) {
+        for (auto& drive : drives_) drive.reset();
+        driveDry_ = {};
+        driveSource_ = {};
+    }
 }
 
 void AdiShaper::setMod(Param id, float value) noexcept {
-    if (id >= LiquidLowPolarity) {
+    if (id >= LiquidLowPolarity && id < DriveOn) {
         liquids_[static_cast<std::size_t>(id - LiquidLowPolarity)].setPolarity(value >= 0.5f);
         return;
     }
-    const auto kind = id < LiquidOn ? Stage::Filter : Stage::Liquid;
-    const int local = id - (kind == Stage::Filter ? FilterOn : LiquidOn);
+    const auto start = id >= CrushOn ? CrushOn : id >= DriveOn ? DriveOn : id >= LiquidOn ? LiquidOn : FilterOn;
+    const auto kind = start == CrushOn ? Stage::Crush : start == DriveOn ? Stage::Drive
+                    : start == LiquidOn ? Stage::Liquid : Stage::Filter;
+    const int local = id - start;
     auto& stage = stages_[static_cast<std::size_t>(kind)];
     if (local < modHeaderSize) {
         switch (local) {
@@ -278,8 +295,7 @@ void AdiShaper::setMod(Param id, float value) noexcept {
             const auto selected = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
             if (selected != stage.layout) {
                 layout(stage, selected);
-                if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
-                if (kind == Stage::Liquid) for (auto& liquid : liquids_) liquid.reset();
+                resetKernels(kind);
             }
             break;
         }
@@ -290,14 +306,32 @@ void AdiShaper::setMod(Param id, float value) noexcept {
         }
         return;
     }
-    const auto index = static_cast<std::size_t>((local - modHeaderSize) / modBandParameterCount);
+    const int stride = kind == Stage::Drive ? driveBandParameterCount : modBandParameterCount;
+    const auto index = static_cast<std::size_t>((local - modHeaderSize) / stride);
     auto& band = stage.bands[index];
-    const int control = (local - modHeaderSize) % modBandParameterCount;
+    int control = (local - modHeaderSize) % stride;
+    if (kind == Stage::Drive) {
+        if (control == InputTrim || control == OutputTrim) {
+            auto& trims = driveTrims_[index];
+            trims[control == InputTrim ? 0 : 1] = std::clamp(value, 0.0f, 100.0f) * 0.01f;
+            drives_[index].setTrims(trims[0], trims[1]);
+            return;
+        }
+        // Drive has one contour. Its point 1 follows the primary curve selector.
+        if (control >= Drive1) control += Primary1 - static_cast<int>(Drive1);
+    }
     switch (control) {
     case Type:
-        band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, kind == Stage::Filter ? 4.0f : 5.0f)));
-        if (kind == Stage::Filter) filters_[index].setMode(static_cast<AdiShaperFilter::Mode>(band.type));
-        else liquids_[index].setMode(static_cast<AdiShaperLiquid::Mode>(band.type));
+        if (kind == Stage::Filter) {
+            band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 4.0f)));
+            filters_[index].setMode(static_cast<AdiShaperFilter::Mode>(band.type));
+        } else if (kind == Stage::Liquid) {
+            band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 5.0f)));
+            liquids_[index].setMode(static_cast<AdiShaperLiquid::Mode>(band.type));
+        } else if (kind == Stage::Drive) {
+            band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 2.0f)));
+            drives_[index].setMode(static_cast<AdiShaperDrive::Mode>(band.type));
+        } else crush_[index].setDither(value >= 0.5f);
         break;
     case ModMix: band.mix = std::clamp(value, 0.0f, 100.0f) * 0.01f; break;
     case ModClock: clock(band, Clock, value); return;
@@ -379,6 +413,12 @@ float AdiShaper::Contour::at(std::uint64_t position) const noexcept {
     return points[index] + fraction * differences[index];
 }
 
+void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
+    std::swap(l, samples[index][0]);
+    std::swap(r, samples[index][1]);
+    index = (index + 1) % samples.size();
+}
+
 template <AdiShaper::Stage kind>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames) noexcept {
@@ -394,14 +434,21 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             r *= g.right;
         }
     };
-    auto applyBand = [&](std::size_t index, std::size_t i, float& l, float& r) {
+    auto applyBand = [&](std::size_t index, std::size_t i, float& l, float& r, float& dryL, float& dryR) {
         const auto& band = stage.bands[index];
         const auto p = band.phase + band.step * static_cast<std::uint64_t>(i);
-        if constexpr (kind == Stage::Filter || kind == Stage::Liquid) {
-            const float dryL = l, dryR = r;
-            const float primary = band.primary.at(p), secondary = band.secondary.at(p);
-            if constexpr (kind == Stage::Filter) filters_[index].process(l, r, primary, secondary);
-            else liquids_[index].processStereo(l, r, primary, secondary);
+        if constexpr (kind >= Stage::Filter) {
+            const float primary = band.primary.at(p);
+            if constexpr (kind == Stage::Drive) {
+                driveDry_[index].advance(dryL, dryR);
+                drives_[index].process(l, r, primary);
+            } else if constexpr (kind == Stage::Filter) {
+                filters_[index].process(l, r, primary, band.secondary.at(p));
+            } else if constexpr (kind == Stage::Liquid) {
+                liquids_[index].processStereo(l, r, primary, band.secondary.at(p));
+            } else {
+                crush_[index].processStereo(l, r, primary, band.secondary.at(p));
+            }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }
             else if (band.blend != 1.0f) {
                 l = dryL + band.blend * (l - dryL);
@@ -429,7 +476,8 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         }
         for (std::size_t i = 0; i < frames; ++i) {
             float l = inL[i], r = inR[i];
-            applyBand(1, i, l, r);
+            float dryL = l, dryR = r;
+            applyBand(1, i, l, r, dryL, dryR);
             outL[i] = l;
             outR[i] = r;
         }
@@ -439,12 +487,15 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     const bool hasHigh = (stage.layout & 2) != 0;
     const bool flatPhase = (!hasLow || stage.low.slope == 0) && (!hasHigh || stage.high.slope == 0);
     for (std::size_t i = 0; i < frames; ++i) {
-        const float dryL = inL[i], dryR = inR[i];
+        float dryL = inL[i], dryR = inR[i];
         float midL = dryL, midR = dryR;
+        // First-order splits reconstruct the source exactly. Its aligned dry
+        // copy keeps a zero-wet drive bit transparent, even at a crossover.
+        if constexpr (kind == Stage::Drive) driveSource_.advance(dryL, dryR);
         float sumL = 0.0f, sumR = 0.0f;
         auto accumulate = [&](std::size_t index, float l, float r) {
             float wetL = l, wetR = r;
-            if (stage.bands[index].active) applyBand(index, i, wetL, wetR);
+            if (stage.bands[index].active) applyBand(index, i, wetL, wetR, l, r);
             if (flatPhase) {
                 sumL += wetL - l;
                 sumR += wetR - r;
@@ -501,6 +552,8 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
     run.template operator()<Stage::Pan>();
     run.template operator()<Stage::Filter>();
     run.template operator()<Stage::Liquid>();
+    run.template operator()<Stage::Drive>();
+    run.template operator()<Stage::Crush>();
     copyStereo(inL, inR, outL, outR, frames);
     for (auto& stage : stages_) {
         if (!stage.enabled) continue;

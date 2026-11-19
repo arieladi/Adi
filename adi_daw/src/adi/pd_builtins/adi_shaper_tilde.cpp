@@ -17,6 +17,7 @@ struct Object {
     t_object object;
     t_float signal;
     Core* core;
+    t_outlet* latency;
 };
 
 void* create() {
@@ -29,9 +30,11 @@ void* create() {
     inlet_new(&x->object, &x->object.ob_pd, &s_signal, &s_signal);
     outlet_new(&x->object, &s_signal);
     outlet_new(&x->object, &s_signal);
+    x->latency = outlet_new(&x->object, &s_float);
     return x;
 }
 void destroy(Object* x) { delete x->core; }
+void reportLatency(Object* x) { outlet_float(x->latency, static_cast<t_float>(x->core->latency())); }
 
 template <typename Sample>
 void render(Core& core, const Sample* left, const Sample* right, Sample* outLeft,
@@ -63,6 +66,7 @@ t_int* perform(t_int* args) {
 }
 void dsp(Object* x, t_signal** signals) {
     x->core->prepare(signals[0]->s_sr);
+    reportLatency(x);
     t_int args[]{reinterpret_cast<t_int>(x), reinterpret_cast<t_int>(signals[0]->s_vec),
                  reinterpret_cast<t_int>(signals[1]->s_vec), reinterpret_cast<t_int>(signals[2]->s_vec),
                  reinterpret_cast<t_int>(signals[3]->s_vec), static_cast<t_int>(signals[0]->s_n)};
@@ -72,8 +76,10 @@ void parameter(Object* x, t_symbol*, int n, t_atom* atoms) {
     if (n != 2 || atoms[0].a_type != A_FLOAT || atoms[1].a_type != A_FLOAT) return;
     const auto id = atom_getfloat(atoms);
     if (!std::isfinite(id) || id < 0 || id >= static_cast<t_float>(Core::Count) || std::trunc(id) != id) return;
+    const int previousLatency = x->core->latency();
     x->core->set(static_cast<Core::Param>(static_cast<int>(id)),
                  static_cast<float>(atom_getfloat(atoms + 1)));
+    if (previousLatency != x->core->latency()) reportLatency(x);
 }
 void transport(Object* x, t_symbol*, int n, t_atom* atoms) {
     if (n != 7) return;
@@ -89,6 +95,7 @@ extern "C" void adi_shaper_tilde_setup() {
     shaperClass = class_new(gensym("adi.shaper~"), reinterpret_cast<t_newmethod>(create),
                             reinterpret_cast<t_method>(destroy), sizeof(Object), CLASS_DEFAULT, A_NULL);
     CLASS_MAINSIGNALIN(shaperClass, Object, signal);
+    class_addmethod(shaperClass, reinterpret_cast<t_method>(reportLatency), gensym("latency"), A_NULL);
     class_addmethod(shaperClass, reinterpret_cast<t_method>(dsp), gensym("dsp"), A_CANT, A_NULL);
     class_addmethod(shaperClass, reinterpret_cast<t_method>(parameter), gensym("p"), A_GIMME, A_NULL);
     class_addmethod(shaperClass, reinterpret_cast<t_method>(transport), gensym("transport"), A_GIMME, A_NULL);

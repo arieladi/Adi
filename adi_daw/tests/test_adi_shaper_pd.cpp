@@ -33,7 +33,7 @@ void set(DeviceInstance& device, int id, double value) {
     check(device.setParam(std::to_string(id), ParamValue::fromNormalized(value)), "parameter write");
 }
 
-void modulationPd(const bool filterOn, const bool liquidOn) {
+void modulationPd(bool filterOn, bool liquidOn, bool driveOn = false, bool crushOn = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
@@ -57,9 +57,16 @@ void modulationPd(const bool filterOn, const bool liquidOn) {
         };
         send(Shaper::FilterOn, filterOn ? 1.0f : 0.0f);
         send(Shaper::LiquidOn, liquidOn ? 1.0f : 0.0f);
+        send(Shaper::DriveOn, driveOn ? 1.0f : 0.0f);
+        send(Shaper::CrushOn, crushOn ? 1.0f : 0.0f);
+        // Compare the unsolicited latency report to an explicit query.
+        const int latencySamples = driveOn ? 16 : 0;
+        check(latency[i].latencySamples() == latencySamples, "both paths publish Drive enable latency");
+        path.requestLatencyReport();
+        check(latency[i].latencySamples() == latencySamples, "editable query reports the current core latency");
         send(Shaper::LiquidMidPolarity, 1.0f);
-        for (auto stage : {Stage::Filter, Stage::Liquid}) {
-            send(Shaper::modParam(stage, mid, Shaper::Type), 1);
+        for (auto stage : {Stage::Filter, Stage::Liquid, Stage::Crush}) {
+            send(Shaper::modParam(stage, mid, Shaper::Type), stage == Stage::Crush ? 0.0f : 1.0f);
             send(Shaper::modParam(stage, mid, Shaper::ModClock), 1);
             send(Shaper::modParam(stage, mid, Shaper::ModRate), 79);
             send(Shaper::modParam(stage, mid, Shaper::PrimaryCurve), 1);
@@ -71,6 +78,14 @@ void modulationPd(const bool filterOn, const bool liquidOn) {
                      70.f - 7.f * static_cast<float>(j));
             }
         }
+        send(Shaper::driveParam(mid, Shaper::DriveMix), 67);
+        send(Shaper::driveParam(mid, Shaper::DriveStyle), 2);
+        send(Shaper::driveParam(mid, Shaper::DriveClock), 1);
+        send(Shaper::driveParam(mid, Shaper::DriveRate), 61);
+        send(Shaper::driveParam(mid, Shaper::DriveCurve), 1);
+        for (int j = 0; j < 8; ++j)
+            send(Shaper::driveParam(mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + j)),
+                 80.f - 7.f * static_cast<float>(j));
     }
     check(native.isNative() && !pd.isNative() && native.adapterLatencySamples() == 0
           && pd.adapterLatencySamples() == 64, "separate native and buffered editable paths");
@@ -99,26 +114,32 @@ void modulationPd(const bool filterOn, const bool liquidOn) {
     for (std::size_t ch = 0; ch < 2; ++ch) {
         for (std::size_t i = 64; i < frames; ++i) {
             errorPeak = std::max(errorPeak, static_cast<double>(std::abs(editable[ch][i] - direct[ch][i - 64])));
-            effectPeak = std::max(effectPeak, static_cast<double>(std::abs(input[ch][i - 64] - direct[ch][i - 64])));
+            const auto index = i - 64;
+            const float alignedDry = !driveOn ? input[ch][index] : index >= 16 ? input[ch][index - 16] : 0.0f;
+            effectPeak = std::max(effectPeak, static_cast<double>(std::abs(alignedDry - direct[ch][index])));
             check(std::isfinite(editable[ch][i]) && std::isfinite(direct[ch][i - 64]), "finite modulation output");
         }
     }
     check(effectPeak > 0.02 && errorPeak < 1.0e-6, "curved stereo modulation agrees across irregular native and Pd blocks");
+    if (driveOn) for (std::size_t i = 0; i < paths.size(); ++i) {
+        check(paths[i]->sendParameter(static_cast<int>(Shaper::DriveOn) + 1, 0), "disable active Drive");
+        check(latency[i].latencySamples() == 0, "disabling Drive publishes zero latency");
+    }
 }
 } // namespace
 
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADi-SHAPER" && device->paramCount() == 286, "device registration");
-    for (int id = 1; id <= 286; ++id)
+    check(info && info->name == "ADi-SHAPER" && device->paramCount() == 415, "device registration");
+    for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
     // Restore an actual earlier-format parameter map, with no Filter or Liquid keys.
     auto state = adi::Payload::from_cbor(device->saveState("state"));
-    for (int id = 134; id <= 286; ++id) state.at("params").erase(std::to_string(id));
+    for (int id = 134; id <= 415; ++id) state.at("params").erase(std::to_string(id));
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(state)), "restore earlier curve and width");
     check(device->getParam("134").real == 0 && device->getParam("209").real == 0,
@@ -186,15 +207,34 @@ int main() try {
     set(*device, 170, 0.37);
     set(*device, 253, 0.72);
     set(*device, 285, 1);
-    const auto modState = device->saveState("state");
+    auto modState = adi::Payload::from_cbor(device->saveState("state"));
+    for (int id = 287; id <= 415; ++id) modState.at("params").erase(std::to_string(id));
     device = open();
-    check(device->loadState("state", modState) && device->getParam("134").real == 1
+    check(device->loadState("state", adi::Payload::to_cbor(modState)) && device->getParam("134").real == 1
           && device->getParam("209").real == 1 && std::abs(device->getParam("170").real - 37) < 1e-4
           && std::abs(device->getParam("253").real - 72) < 1e-4 && device->getParam("285").real == 1,
-          "both stages and shapes restore from project state");
+          "both stages and shapes restore from earlier project state");
+    check(device->getParam("287").real == 0 && device->getParam("341").real == 0 && device->latencySamples() == 0,
+          "earlier five-stage projects restore without drive latency or degradation");
+    const auto firstEpoch = device->latencyEpoch();
+    set(*device, 287, 1);
+    set(*device, 341, 1);
+    device->process(io);
+    check(device->latencySamples() == 16 && device->latencyEpoch() != firstEpoch, "catalogued host republishes Drive latency");
+    const auto sevenStageState = device->saveState("state");
+    device = open();
+    check(device->loadState("state", sevenStageState), "restore seven-stage project state");
+    device->process(io);
+    check(device->latencySamples() == 16 && device->getParam("341").real == 1, "active Drive latency restores with Crush");
+    set(*device, 287, 0);
+    device->process(io);
+    check(device->latencySamples() == 0, "host removes Drive PDC when disabled");
     modulationPd(true, false);
     modulationPd(false, true);
     modulationPd(true, true);
+    modulationPd(false, false, true, false);
+    modulationPd(false, false, false, true);
+    modulationPd(false, false, true, true);
     std::puts("ADi-SHAPER built-in state, transport and editable modulation parity passed.");
     return 0;
 } catch (const std::exception& error) {

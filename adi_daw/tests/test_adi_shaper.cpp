@@ -17,7 +17,10 @@ using Band = Shaper::Band;
 using Stage = Shaper::Stage;
 static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == Shaper::VolumeLowSlope);
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
-static_assert(Shaper::LiquidOn == 208 && Shaper::LiquidLowPolarity == 283 && Shaper::Count == 286);
+static_assert(Shaper::LiquidOn == 208 && Shaper::LiquidLowPolarity == 283 && Shaper::DriveOn == 286);
+static_assert(Shaper::CrushOn == 340 && Shaper::Count == 415);
+static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
+static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::Count);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -427,11 +430,12 @@ void modulationStack() {
 }
 
 void modulationBands() {
-    for (const auto stage : {Stage::Filter, Stage::Liquid}) {
+    for (const auto stage : {Stage::Filter, Stage::Liquid, Stage::Drive, Stage::Crush}) {
         // First three copies process one wet band each. The fourth runs all
         // three. At 6 dB/octave the shared dry transfer is exactly unity.
         std::array<Shaper, 4> racks;
-        const auto on = stage == Stage::Filter ? Shaper::FilterOn : Shaper::LiquidOn;
+        const auto on = stage == Stage::Filter ? Shaper::FilterOn : stage == Stage::Liquid ? Shaper::LiquidOn
+                      : stage == Stage::Drive ? Shaper::DriveOn : Shaper::CrushOn;
         for (std::size_t slot = 0; slot < racks.size(); ++slot) {
             auto& rack = racks[slot];
             rack.prepare(48000);
@@ -439,9 +443,18 @@ void modulationBands() {
             rack.set(static_cast<Shaper::Param>(on + 1), 3);
             for (int b = 0; b < 3; ++b) {
                 const auto band = static_cast<Band>(b);
-                const auto type = stage == Stage::Filter ? std::array{0, 3, 4} : std::array{1, 2, 5};
-                rack.set(Shaper::modParam(stage, band, Shaper::Type), static_cast<float>(type[static_cast<std::size_t>(b)]));
                 const float blend = slot == 3 || slot == static_cast<std::size_t>(b) ? 100.0f : 0.0f;
+                if (stage == Stage::Drive) {
+                    rack.set(Shaper::driveParam(band, Shaper::DriveStyle), static_cast<float>(b));
+                    rack.set(Shaper::driveParam(band, Shaper::DriveMix), blend);
+                    for (int p = 0; p < 8; ++p)
+                        rack.set(Shaper::driveParam(band, static_cast<Shaper::DriveControl>(Shaper::Drive1 + p)),
+                                 static_cast<float>(25 + 35 * b));
+                    continue;
+                }
+                const auto type = stage == Stage::Filter ? std::array{0, 3, 4}
+                                : stage == Stage::Liquid ? std::array{1, 2, 5} : std::array{0, 0, 0};
+                rack.set(Shaper::modParam(stage, band, Shaper::Type), static_cast<float>(type[static_cast<std::size_t>(b)]));
                 rack.set(Shaper::modParam(stage, band, Shaper::ModMix), blend);
                 for (int p = 0; p < 8; ++p) {
                     const auto a = static_cast<Shaper::ModControl>(Shaper::Primary1 + p);
@@ -453,17 +466,22 @@ void modulationBands() {
         }
         double maxError = 0.0;
         std::array<double, 3> bandEffect{};
+        std::array<float, 16> delayed{};
         bool finite = true;
         for (int i = 0; i < 8192; ++i) {
             const float l = static_cast<float>(.25 * std::sin(i * .0065) + .28 * std::sin(i * .095) + .37 * std::sin(i * .94));
             const float r = -.83f * l;
-            std::array<float, 2> total{l, r};
+            const auto pos = static_cast<std::size_t>(i) % delayed.size();
+            const float dryL = stage == Stage::Drive ? delayed[pos] : l;
+            const float dryR = -.83f * dryL;
+            delayed[pos] = l;
+            std::array<float, 2> total{dryL, dryR};
             for (std::size_t b = 0; b < 3; ++b) {
                 const auto solo = one(racks[b], l, r);
                 finite &= std::isfinite(solo[0]) && std::isfinite(solo[1]);
-                total[0] += solo[0] - l;
-                total[1] += solo[1] - r;
-                bandEffect[b] = std::max(bandEffect[b], static_cast<double>(std::abs(solo[0] - l)));
+                total[0] += solo[0] - dryL;
+                total[1] += solo[1] - dryR;
+                bandEffect[b] = std::max(bandEffect[b], static_cast<double>(std::abs(solo[0] - dryL)));
             }
             const auto wet = one(racks[3], l, r);
             finite &= std::isfinite(wet[0]) && std::isfinite(wet[1]);
@@ -473,6 +491,110 @@ void modulationBands() {
         check(finite && maxError < 2.0e-6 && *std::min_element(bandEffect.begin(), bandEffect.end()) > 0.01,
               "three modulation bands retain independent stereo histories, modes, curves and wet amounts at extrema");
     }
+}
+
+void driveDryAndLatency() {
+    constexpr std::size_t frames = 1021;
+    std::array<float, frames> inL{}, inR{}, l{}, r{};
+    for (std::size_t i = 0; i < frames; ++i) {
+        inL[i] = static_cast<float>(std::sin(.33 * static_cast<double>(i)));
+        inR[i] = static_cast<float>(.7 * std::cos(.17 * static_cast<double>(i)));
+    }
+    inL[3] = -0.0f;
+    auto render = [&](Shaper& rack) {
+        for (std::size_t offset = 0; offset < frames;) {
+            const auto count = std::min<std::size_t>(19, frames - offset);
+            rack.process(inL.data() + offset, inR.data() + offset, l.data() + offset,
+                         r.data() + offset, count);
+            offset += count;
+        }
+    };
+    for (int layout = 0; layout < 4; ++layout) {
+        for (const bool masterBypass : {false, true}) {
+            Shaper rack;
+            rack.set(Shaper::DriveOn, 1);
+            rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 1), static_cast<float>(layout));
+            if (masterBypass) rack.set(Shaper::MasterMix, 0);
+            else for (auto band : {Band::Low, Band::Mid, Band::High}) rack.set(Shaper::driveParam(band, Shaper::DriveMix), 0);
+            check(rack.latency() == 16, "dry and wet bands share the reported drive latency");
+            render(rack);
+            bool exact = true;
+            for (std::size_t i = 0; i < frames; ++i) {
+                const float dryL = i < 16 ? 0.0f : inL[i - 16];
+                const float dryR = i < 16 ? 0.0f : inR[i - 16];
+                exact &= std::bit_cast<std::uint32_t>(l[i]) == std::bit_cast<std::uint32_t>(dryL)
+                         && std::bit_cast<std::uint32_t>(r[i]) == std::bit_cast<std::uint32_t>(dryR);
+            }
+            check(exact, "zero blend delays the original bits on all four first-order layouts");
+            rack.set(Shaper::DriveOn, 0);
+            check(rack.latency() == 0 && one(rack)[0] == .375f, "disabled Drive removes its physical and reported delay");
+        }
+    }
+    // The dry transfer at steeper slopes is the crossover's allpass. Compare
+    // to the existing unity-gain stage followed by a sixteen-frame delay.
+    Shaper rack, expected;
+    rack.set(Shaper::DriveOn, 1);
+    rack.set(Shaper::MasterMix, 0);
+    rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 1), 3);
+    rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 4), 1);
+    rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 5), 2);
+    expected.set(Shaper::VolumeBands, 3);
+    expected.set(Shaper::VolumeLowSlope, 1);
+    expected.set(Shaper::VolumeHighSlope, 2);
+    render(rack);
+    std::array<float, frames> refL{}, refR{};
+    expected.process(inL.data(), inR.data(), refL.data(), refR.data(), frames);
+    bool aligned = true;
+    for (std::size_t i = 16; i < frames; ++i) aligned &= l[i] == refL[i - 16] && r[i] == refR[i - 16];
+    check(aligned, "all three dry Drive bands preserve the 12/24 crossover phase and sixteen-sample delay");
+}
+
+void driveAndCrush() {
+    Shaper rack;
+    rack.set(Shaper::DriveOn, 1);
+    rack.set(Shaper::CrushOn, 1);
+    rack.set(Shaper::driveParam(Band::Mid, Shaper::DriveStyle), 1);
+    rack.set(Shaper::driveParam(Band::Mid, Shaper::DriveMix), 50);
+    rack.set(Shaper::driveParam(Band::Mid, Shaper::InputTrim), 75);
+    rack.set(Shaper::driveParam(Band::Mid, Shaper::OutputTrim), 25);
+    rack.set(Shaper::modParam(Stage::Crush, Band::Mid, Shaper::ModMix), 50);
+    for (int i = 0; i < 8; ++i) {
+        rack.set(Shaper::driveParam(Band::Mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + i)), 75);
+        rack.set(Shaper::modParam(Stage::Crush, Band::Mid, static_cast<Shaper::ModControl>(Shaper::Primary1 + i)), 25);
+        rack.set(Shaper::modParam(Stage::Crush, Band::Mid, static_cast<Shaper::ModControl>(Shaper::Secondary1 + i)), 50);
+    }
+    adi::dsp::AdiShaperDrive drive;
+    adi::dsp::AdiShaperCrush crush;
+    drive.prepare(48000);
+    drive.setMode(adi::dsp::AdiShaperDrive::Mode::HardClip);
+    drive.setTrims(.75f, .25f);
+    (void)crush.prepare(48000);
+    std::array<float, 2048> l{}, r{};
+    double worst = 0.0, plant = 0.0;
+    for (std::size_t i = 0; i < l.size(); ++i) {
+        l[i] = static_cast<float>(.85 * std::sin(.37 * static_cast<double>(i)));
+        r[i] = static_cast<float>(.45 * std::cos(.19 * static_cast<double>(i)));
+        const auto actual = one(rack, l[i], r[i]);
+        float wetL = l[i], wetR = r[i];
+        drive.process(wetL, wetR, .75f);
+        const float dryL = i < 16 ? 0.f : l[i - 16], dryR = i < 16 ? 0.f : r[i - 16];
+        const float alignedL = dryL + .5f * (wetL - dryL), alignedR = dryR + .5f * (wetR - dryR);
+        wetL = alignedL;
+        wetR = alignedR;
+        crush.processStereo(wetL, wetR, .25f, .5f);
+        const float expectedL = alignedL + .5f * (wetL - alignedL);
+        const float expectedR = alignedR + .5f * (wetR - alignedR);
+        worst = std::max({worst, static_cast<double>(std::abs(actual[0] - expectedL)),
+                          static_cast<double>(std::abs(actual[1] - expectedR))});
+        plant = std::max(plant, static_cast<double>(std::abs(actual[0] - dryL)));
+    }
+    check(worst < 1.0e-6 && plant > .05, "Drive then Crush matches separately aligned, half-wet stereo kernels");
+    rack.set(Shaper::DriveOn, 0);
+    rack.set(Shaper::MasterMix, 0);
+    const float negativeZero = -0.0f;
+    const auto result = one(rack, negativeZero, .1875f);
+    check(rack.latency() == 0 && std::bit_cast<std::uint32_t>(result[0]) == std::bit_cast<std::uint32_t>(negativeZero)
+          && result[1] == .1875f, "Crush at zero mix is undelayed and bit exact");
 }
 } // namespace
 
@@ -488,6 +610,8 @@ int main() {
     clockLimitsAndAliases();
     modulationStack();
     modulationBands();
+    driveDryAndLatency();
+    driveAndCrush();
     if (failures == 0) std::puts("ADi-SHAPER DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }
