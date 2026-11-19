@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### DF-M60(b): route activation and reopen scope for Engine review
+
+The dormant auxiliary fixture now sends distinct Pre FX and Post FX samples through the real SDK callback and retains a complete programme comparison. It also checks that receipt drain does not activate the bus twice. The new fixture is staged for the first cumulative run. Request the one owner-side `Session::load` synchronization before its first rebuild for stored enabled keys. The active edit stays in the existing `refreshDeviceKeys` loan. Retaps can preserve preparation. The VST3 adapter currently changes its preparation epoch for a requested-bit change even if the physical auxiliary bus was already open. Engine owns that adapter distinction. It is needed to prove the unchanged-shape case for default-active VST3s.
+
+For DF-M60(a), an older capture reader held across a same-ID incompatible legacy replacement can also delay registration of the new binding. Treat safe retirement of that in-flight producer as a ParamOps owner follow-up. The existing current-capture regression is independent and still uses the narrow Document detach-loop request above.
+
 ### DF-M60(a): precise Window loan request for retiring capture
 
 The existing paste loan covers the new row identity. Legacy incompatible replacement at the same device ID also exposes a separate capture-lifetime problem: `ProjectDocument::synchronise` detaches retained retirees by number on each later publication, including the current device's capture at that number. Request a narrow loan for that detach loop only. `ParamOps::attachSession` already compares the current generation when it updates the binding. The extra gate will hold a replacement's gesture through an unrelated track rename, reject all three commands from the previous generation and check that the replacement still commits with one Undo. Production work remains queued after #651 lands.
