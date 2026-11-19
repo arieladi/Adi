@@ -32,6 +32,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — DF-E54(a) project check after Cut and Undo
+
+**PR requested** — branch `engine/df-e54-journal-targets`, head `56510cf7bbceaf2f7c4f9a20b748663f5c119045`, main base `8416ed0f`. Title **DF-E54(a): Validate journal targets as historical metadata**. Land before Collect and Export reaches its Window command.
+
+The checker treats operation targets as historical metadata. It still checks the journal itself and live references. A real Cut and an undone clip creation now both pass project checking and publish their ZIP through the existing Collect and Export entry point.
+
+**Gate** — The identical fixture first produced four named failures with main's checker. GCC 14 and Clang 19 warnings as errors then passed project check (50), Collect and Export (149), history (95) and project files (53). Existing malformed live references still fail. CI, ops, Pd, schema and binary layout passed. DF-E54(b)'s validation additions follow independently.
+
 ## 2026-11-19 — DF-E45 capture origin and tempo inverse
 
 **PR requested** — branch `engine/df-e45-midi-capture-clock`, head `5a416811205d7ae74a05c567c3d471704b15d4fe`, current main `8416ed0f` and DF-E1's `55fd8bbd`. Title **DF-E45: Preserve MIDI Capture samples across musical origins**. Includes the existing E1 tempo inverse, so land the stack once. CT-03 can use the result before wiring `prepareMidi`.
