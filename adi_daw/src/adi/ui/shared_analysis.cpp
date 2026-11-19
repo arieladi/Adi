@@ -212,7 +212,8 @@ struct SharedAnalysis::Domain {
             publishMeter({});
             const auto profile = *request.stereoMeter;
             meterPrepared = usable(tap, request.fftSize) &&
-                meter->prepare({tap->sampleRate(), .6, .5, .5, 1.e-6, profile.midSide, profile.weighting});
+                meter->prepare({tap->sampleRate(), .6, .5, .5, 1.e-6,
+                                profile.midSide, profile.weighting, profile.linkedDynamic});
         }
         updateAvailability();
         resetWindow(false);

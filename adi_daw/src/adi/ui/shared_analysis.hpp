@@ -42,6 +42,7 @@ class SharedAnalysis final {
     struct StereoMeterProfile {
         bool midSide = false;
         dsp::StereoEnvelopeMeter::Weighting weighting = dsp::StereoEnvelopeMeter::Weighting::Standard;
+        bool linkedDynamic = false;
         auto operator<=>(const StereoMeterProfile &) const = default;
     };
     struct Request {

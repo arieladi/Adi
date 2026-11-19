@@ -88,12 +88,15 @@ MixOutputMeter::MixOutputMeter() {
             if (engine::isFilterListen(listening_)) chooseAudition(filterAudition(next));
         }
     };
-    channelBox.setTitle("Meter channels");
-    channelBox.addItemList({"Stereo", "M/S"}, 1);
+    channelBox.setTitle("Meter mode");
+    channelBox.addItemList({"Stereo", "M/S", "Link"}, 1);
     channelBox.setSelectedId(1, juce::dontSendNotification);
     channelBox.onChange = [this] {
-        if (const bool next = channelBox.getSelectedId() == 2; next != profile_.midSide) {
-            profile_.midSide = next;
+        auto next = profile_;
+        next.midSide = channelBox.getSelectedId() == 2;
+        next.linkedDynamic = channelBox.getSelectedId() == 3;
+        if (next != profile_) {
+            profile_ = next;
             resetProfile();
         }
     };
@@ -280,15 +283,17 @@ void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area)
         text(g, line, r ? number(b) : "-", look::text, juce::Justification::centredRight);
     };
     const auto offset = offsetDb();
-    if (r) {
-        values("Peak", db(r->maximumPeak[0]) + offset, db(r->maximumPeak[1]) + offset);
-        values("Dynamic", r->dynamicDb[0], r->dynamicDb[1]);
-        values("RMS", db(r->sineReferencedRms[0]) + offset, db(r->sineReferencedRms[1]) + offset);
+    values("Peak", r ? db(r->maximumPeak[0]) + offset : 0., r ? db(r->maximumPeak[1]) + offset : 0.);
+    const bool linked = profile_.linkedDynamic;
+    if (linked) {
+        auto line = area.removeFromTop(look::mixMeterReadingHeight);
+        text(g, line, "Dynamic", look::textDim);
+        text(g, line, r && r->linkedDynamicDb ? number(*r->linkedDynamicDb) : "-", look::text,
+             juce::Justification::centredRight);
     } else {
-        values("Peak", 0, 0);
-        values("Dynamic", 0, 0);
-        values("RMS", 0, 0);
+        values("Dynamic", r ? r->dynamicDb[0] : 0., r ? r->dynamicDb[1] : 0.);
     }
+    values("RMS", r ? db(r->sineReferencedRms[0]) + offset : 0., r ? db(r->sineReferencedRms[1]) + offset : 0.);
     if (area.getHeight() < look::mixMeterMinimumBarHeight)
         return;
     if (main_ && area.getHeight() >= look::mixMeterLoudnessMinimumHeight) {
@@ -297,7 +302,7 @@ void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area)
              look::textDim);
     }
     auto names = area.removeFromBottom(look::mixMeterChannelLabelHeight);
-    const bool ms = channelBox.getSelectedId() == 2;
+    const bool ms = profile_.midSide;
     text(g, names, ms ? "MID" : "LEFT", look::textDim, juce::Justification::centredLeft);
     text(g, names, ms ? "SIDE" : "RIGHT", look::textDim, juce::Justification::centredRight);
     const int hairline = juce::roundToInt(look::hairline);
@@ -319,12 +324,29 @@ void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area)
              juce::Justification::centredLeft);
     }
     const int amber = yDb(-9.), red = yDb(-3.);
+    if (linked) {
+        const auto x = area.getCentreX() - barWidth / 2;
+        g.setColour(look::chooser);
+        g.fillRect(x, top, barWidth, height);
+        if (r && r->linkedDynamicDb) {
+            const auto peak = std::max(r->floatingPeak[0], r->floatingPeak[1]);
+            const auto anchor = floatButton.getToggleState() ? db(peak) : 0.;
+            const auto begin = yDb(anchor), end = yDb(anchor - *r->linkedDynamicDb);
+            g.setColour(look::value);
+            for (auto y = top; y < end; y += look::mixMeterSegmentHeight + hairline) {
+                if (y >= begin) {
+                    const int segment = std::min(look::mixMeterSegmentHeight, top + height - y);
+                    g.fillRect(x, y, barWidth, segment);
+                }
+            }
+        }
+    }
     for (std::size_t ch = 0; ch < 2; ++ch) {
         const auto x = ch ? right - barWidth : left;
         const auto dynX = ch ? x - gap - barWidth : x + barWidth + gap;
         g.setColour(look::chooser);
         g.fillRect(x, top, barWidth, height);
-        g.fillRect(dynX, top, barWidth, height);
+        if (!linked) g.fillRect(dynX, top, barWidth, height);
         if (!r)
             continue;
         const auto peakY = yDb(db(r->peak[ch])), rmsY = yDb(db(r->sineReferencedRms[ch]));
@@ -337,7 +359,7 @@ void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area)
                 g.setColour(y >= rmsY ? colour : colour.darker());
                 g.fillRect(x, y, barWidth, segment);
             }
-            if (y >= dynTop && y < dynBottom) {
+            if (!linked && y >= dynTop && y < dynBottom) {
                 g.setColour(look::value);
                 g.fillRect(dynX, y, barWidth, segment);
             }
