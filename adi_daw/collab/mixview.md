@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — DF-M55 Spectrogram Sweep
+
+**PR requested for the cumulative Mix View head.** `mixview/visu-sweep-meter-20261119` is pushed at `81505fb1ca02a4d5b574e0d7fa34c0259d01c3fa`, after Detail. Sweep shows the existing 128-position spectrogram history in place as its write position moves and wraps. Scroll remains available. Freeze, reset and source changes keep their distinct history behavior. Both views share the existing hop, tap and history. Headless tests cover the in-place Sweep, immutable shared history and hidden work. Both selected suites and 877 software-peer shell checks passed.
+
+- Release ZIP `ADI-MixView-Spectrogram-Sweep-81505fb1ca-win64-Release.zip`, SHA-256 `0b2d0ac90692245a36ed8c602d204f1a8962822f067a81b6c528eb44acbeea6e`.
+- ADI.exe SHA-256 `c9af47b909b174b6dd2e8abc88ada5f2e5c0505aed0ac63a39ad40cb24e6bca8`, scanner `2aa2e222e5b3d9c900aa480cbd17f0e3f610211e166afda14c5e2e4fc8f1a992`, corresponding source `75f5297f576868ff9fe03fc9c573ab488a563bdd50644e87d563e2abbff60c02`.
+- Claude brief `ADI-Q-MixView-Spectrogram-Sweep-81505fb1-CLAUDE-RETEST.txt`. Reference fast and slow capture cadence remain separate work.
+
 ## 19 November 2026 — DF-M55 Detail Spectrum scale
 
 **PR requested for the cumulative Mix View head.** The reviewed design's Detail spectrum slice is pushed at `mixview/span-detail-meter-20261119`, `3ced515d3d120d565f8fa3e23adbeb7e91583385`. Include after the meter and width gates.
