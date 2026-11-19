@@ -1,7 +1,7 @@
 # win's landing tools
 
 Scripts win uses to land the lanes' PRs on `arieladi/Adi`. They need `gh` signed in and a POSIX shell
-(Git Bash on ORC-VST). They find each other through their own folder, so run them from here or by full
+(Git Bash on Windows). They find each other through their own folder, so run them from here or by full
 path.
 
 | Script | Use |
