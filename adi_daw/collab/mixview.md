@@ -8,6 +8,16 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M24 Compare, Average and triggered Scope Release
+
+**PR requested.** Land `mixview/continuous-scope-broker-20261119` at `bf22f99d`, then `mixview/compare-average-20261119` at `44ba613f`, then `mixview/triggered-scope-surface-20261119` at `95a67a31`. All three are pushed. Compare chooses A and B explicitly, fences live transport disagreements and can retain B while releasing its live demand. The one-second exponential Average shares the raw spectrum's transform. Dedicated and detached Scope use the licensed s(M)exoscope face and controls and the continuous broker capture. All keeps its compact latest-window Scope. The same source shares a physical tap, and hiding or freezing releases the view's live lease.
+
+Release passed 857 software-peer checks and the four CTests for shared spectrum presentation, analysis, comparison and triggered scope. Initial fixtures exposed the test stack reserve, reading pixels before the graphics scope finished, and an insufficiently primed exponential average. The rerun uses heap-owned root fixtures, reads completed software rasters, and primes the average before testing its slow response to a level drop. The product commit's audio path was unchanged by those fixture fixes. The live brief includes source timing, stop and hide transitions, and reference comparisons.
+
+- ZIP `outputs/ADI-MixView-Compare-Average-Scope-95a67a3158-win64-Release.zip`, SHA-256 `8e756cae4565c02423cbf5b8bad0a5fc4c015643f1071c66193872761d6a9e85`.
+- ADI.exe SHA-256 `28346c75d034833f9f31b2778777a95ae83cca5d24949f068776a28e244ee18a`, scanner SHA-256 `2a369abb2af66c7b3c08ff36fb5c3ced882c9fef7d993b51fd682553b4c9a38f`, corresponding source SHA-256 `d448247596584e514e566cd16f7a1ece609bb0fcc822edd1d420ef2a8c9e93a1`.
+- Claude brief `outputs/ADI-Q-MixView-Compare-Average-Scope-95a67a31-CLAUDE-RETEST.txt`. Raw build and gate evidence stays in `NowWeReverse/ADI-View/mixview-seat/dfm24-built-20261119`.
+
 ## 19 November 2026 — DF-M19 spectrum slope and adjacent rows
 
 **PR requested.** `mixview/slope-fanout-dfm19-20261119` is pushed at `7b5daa0c` after `c425fc49`. Overview, the attached dock and the detail spectrum consume the same stored slope. The detached pane remains independent after opening. A fake-peer fixture proved that one slope change adds zero taps, reads, worker passes, transforms and publications. The next hop does one transform and all three projections still share the immutable window. The first fixture exceeded the Windows test executable's stack reserve; heap-owning the fixture pane fixed that without changing the product or its linker stack. Release passed 857 software-peer checks and three selected CTests.
