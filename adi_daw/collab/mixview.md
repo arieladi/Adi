@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-19, night — close two private component proofs
+
+Fixed Flat Tilt for the compressor key EQ passes all nine saved streams at their original rates and block sizes, across 1,190,849 stereo frames. Peak difference is 1.49e-8 and RMS difference 1.88e-9. Whole blocks and 17-sample segments match byte for byte. The test uses the unchanged authored matched sections and Clean engine, with no callback allocation or free. Moving Flat Tilt remains gated.
+
+The focused waveform now has a private proof for Mid extrema calculated from paired samples before binning. This matters for opposite-polarity samples. The isolated Release fixture failed the three new checks at baseline and passed all five with the fix. The optional Mid projection has no storage or sample arithmetic when it is unrequested. Classic Scope retains its source's separate Left and Right choices. Both proofs remain local and unregistered, with no new review build needed.
+
 ## 2026-11-19, night — pace the fixed Split de-esser prototype
 
 The private fixed Split proof now schedules stereo convolution across each 128-sample hop and shares its prepared kernel spectra. The two channels keep separate histories. The last phase is at frame 94 or 110, leaving the 256-sample convolution delay and the total 512/512/768-sample delay intact. The bounds are 48 or 56 phases per hop and at most one fixed-size phase at any sample. This is a work bound with CPU timing still deferred.
