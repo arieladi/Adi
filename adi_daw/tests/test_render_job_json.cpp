@@ -142,6 +142,8 @@ void invalidJson() {
     nested.insert(at + std::string("\"encoding\":{").size(), "\"dither\":\"none\",");
     refuses([&] { (void)jobFromJson(nested); }, "duplicate field dither");
     refuses([&] { (void)jobFromJson(good + " {}"); }, "invalid JSON");
+    refuses([&] { (void)jobFromJson(good + '\0' + " {}"); }, "NUL");
+    refuses([&] { (void)jobFromJson(good + '\0'); }, "NUL");
     refuses([&] { (void)jobFromJson(std::string(17, '[') + "0" + std::string(17, ']')); }, "nesting");
     refuses([&] { (void)jobFromJson(std::string(kMaximumJobJsonBytes + 1, ' ')); }, "1 MiB");
     refuses([&] { (void)jobFromJson("{\"x\":1e9999}"); }, "invalid JSON");

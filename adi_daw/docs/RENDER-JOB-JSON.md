@@ -10,7 +10,7 @@ The document is a complete job, not a patch. Its root contains
 `"format":"adi-render-job"` and integer `"version":1`. Every field below is
 required. Every object is closed: an unknown field is reported and refused,
 including within a source or an NI stem. Duplicate keys, including escaped
-spellings of the same key, are refused before building a DOM. The reader bounds
+spellings of the same key, and literal NUL bytes are refused before building a DOM. The reader bounds
 input to 1 MiB and 16 nested containers. The writer also refuses output above
 1 MiB. Input and output are UTF-8; paths retain their native spelling, including
 relative paths and Windows verbatim/UNC prefixes. There is no path resolution,

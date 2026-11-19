@@ -170,6 +170,7 @@ std::string jobToJson(const Job& job) {
 
 Job jobFromJson(std::string_view bytes) {
     require(bytes.size() <= kMaximumJobJsonBytes, "$", "JSON exceeds 1 MiB");
+    require(bytes.find('\0') == std::string_view::npos, "$", "literal NUL in JSON document");
     Guard guard;
     const bool parsed = Json::sax_parse(bytes, &guard);
     require(parsed, "$", guard.error.empty() ? "invalid JSON" : guard.error);
