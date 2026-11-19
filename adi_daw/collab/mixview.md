@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M55 Device spectrum
+
+Device adds a 10 Hz to 24 kHz spectrum with a 120 dB range, a top frequency ruler and a left dBFS ruler. It uses the existing calibrated analysis and draws through the actual Nyquist limit. Freeze, averaging and hidden analysis demand use the existing paths.
+
+Author branch `mixview/live-device-spectrum-meter-20261119` at `ef9881e861e32c33af54aa3e1dfb8be30a54af6f`. Exact Windows x64 Release passed 877 Mix View component checks and both targeted CTests. The review ZIP SHA-256 is `447726faff25aca34f9e7aca7141db5ce8a0c41ae6821491209b5c56e1669c2c`; ADI.exe is `2bff6c776873c57d225046d8fba113bcba53a29b01222c18ee204055b7ee1504`. The retest brief covers scale, calibration, Freeze and hidden demand. Desktop comparison and live CPU are pending.
+
+**PR requested.** Include this commit in the cumulative review after #651.
+
 ## 19 November 2026 — DF-M55 Extended Spectrum scale
 
 **PR requested for the cumulative Mix View head.** `mixview/bluprint-extended-meter-20261119` is pushed at `863c0199ea998496954d7eca18094e63cba59f01`. Extended adds a filled log-frequency display from 10 Hz to 30 kHz and 0 to −100 dBFS, in 10 dB divisions. The trace stops at the source's Nyquist frequency. Calibrated bins, FFT, time and tap are shared with the earlier scales. Freeze and a detached panel use the existing demand and capture rules. The two selected Release suites and 877 software-peer checks passed.
