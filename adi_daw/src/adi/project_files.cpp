@@ -211,7 +211,12 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFi
             // copy's folder). On unix SQLite resolves symlinks (macOS: /var is
             // /private/var) and ".." climbs physical parents, so a path made
             // relative to fs::absolute()'s spelling climbs the wrong distance.
-            if(major_==kSchemaMajor)rebaseHistory(destination,media::projectFolder(*this),media::projectFolder(destination).parent_path());
+            if(major_==kSchemaMajor) {
+                rebaseHistory(destination,media::projectFolder(*this),media::projectFolder(destination).parent_path());
+                // The backup belongs to a different file. The active writer's
+                // advisory session belongs to the source that still owns it.
+                destination.exec("DELETE FROM session_lock");
+            }
             destination.exec("PRAGMA wal_checkpoint(TRUNCATE)");
             destination.exec("PRAGMA journal_mode=DELETE");
         }

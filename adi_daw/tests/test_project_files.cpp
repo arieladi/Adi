@@ -50,17 +50,22 @@ bool resolves(Store& s) {
 }
 void copiesAndSwitches() {
     Fixture f;const auto before=digestProject(*f.store).text,history=historyBytes(*f.store);
+    f.store->db().exec("INSERT INTO session_lock VALUES(1,'active-writer',123,'test',1,2)");
     const auto target=f.target("elsewhere");
     check(fs::exists(media::pathFromUtf8(media::pathUtf8(f.source)+"-wal")),"the source has committed WAL data");
     const auto copied=f.store->saveCopy(target);check(copied.ok,"Save a Copy succeeds from a live source");
     if(!copied.ok){std::printf("%s\n",copied.error.c_str());return;}
     check(f.store->path()==f.source && digestProject(*f.store).text==before && historyBytes(*f.store)==history,
           "Copy preserves the active source, rows and recorded history bytes");
+    check(f.store->db().execAndGet("SELECT host FROM session_lock").getString()=="active-writer",
+          "the source still owns its active writer record");
     check(!fs::exists(media::pathFromUtf8(media::pathUtf8(target)+"-wal")),"the published copy is a single file before opening");
     StoreError error{};auto copy=Store::open(target,error);
     check(copy && copy->db().execAndGet("SELECT count(*) FROM audio_clips").getInt()==1 && resolves(*copy),
           "the copy includes committed WAL rows and resolves media from its new folder");
     if(!copy)return;
+    check(copy->db().execAndGet("SELECT count(*) FROM session_lock").getInt()==0,
+          "the published project copy has no inherited session lock");
     check(copy->db().execAndGet("SELECT count(*) FROM ops").getInt()==3,"copy retains the undo transaction without a save op");
     History copiedHistory(*copy);
     check(copiedHistory.undo().ok && copy->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0,
@@ -84,6 +89,8 @@ void copiesAndSwitches() {
     const auto saved=f.store->saveAs(newPath);check(saved.ok,"Save As switches to a Unicode filename");
     if(!saved.ok){std::printf("%s\n",saved.error.c_str());return;}
     check(f.store->path()==newPath && f.store->clientId()==client && !f.store->readOnly(),"Save As retains the same writer identity in the new file");
+    check(f.store->db().execAndGet("SELECT count(*) FROM session_lock").getInt()==0,
+          "Save As starts with a clean session lock in the new file");
     OpRequest rename;rename.opType="project.setName";rename.payload={{"name","After Save As"}};
     check(journal.commit(rename).ok && activeHistory.canUndo(),"pre-existing journal/history objects continue editing the new file");
     auto original=Store::open(f.source,error,true);
@@ -195,7 +202,12 @@ void unknownMajorAndReaders() {
         reader.exec("ROLLBACK");
     }
     const auto future=f.target("future-source");
-    {StoreError error{};auto s=Store::create(future,error);s->db().exec("PRAGMA user_version=2000");}
+    {
+        StoreError error{};
+        auto s=Store::create(future,error);
+        s->db().exec("INSERT INTO session_lock VALUES(1,'future-writer',456,'future',1,2)");
+        s->db().exec("PRAGMA user_version=2000");
+    }
     StoreError error{};auto newer=Store::open(future,error);
     check(newer && error==StoreError::SchemaTooNew && newer->readOnly(),"unknown major fixture opens read-only");
     const auto target=f.target("future-copy");
@@ -203,6 +215,8 @@ void unknownMajorAndReaders() {
     check(copied.ok && !copied.warning.empty(),"unknown major supports a verbatim copy without interpreting its history");
     auto reopened=Store::open(target,error);
     check(reopened && reopened->schemaMajor()==2 && reopened->readOnly(),"the future copy keeps its version and read-only policy");
+    check(reopened && reopened->db().execAndGet("SELECT host FROM session_lock").getString()=="future-writer",
+          "the future copy retains its advisory records verbatim");
     const auto refused=f.target("future-save-as");
     check(!newer->saveAs(refused).ok && !fs::exists(refused),"Save As cannot turn an unsupported major into an editable project");
 }
