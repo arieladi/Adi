@@ -406,13 +406,10 @@ bool BrowserPanel::load(int row) {
                 return false;
             }
             const bool midi = t->kind == "midi" || t->kind == "instrument";
+            // Copied first: the load can refill the list this row points into (a scan held and adopted).
             const auto ref = pluginReference(*p, midi);
-            if (!root_.loadPlugin(ref, track, root_.devices.insertPoint()))
-                return false;
-            if (p->kind == PluginEntry::Kind::Unknown)
-                root_.say(p->name + " went in as " + (midi ? "an instrument" : "an audio effect") +
-                          ": ADI does not know a VST3's kind until its plug-in catalogue lists it (N58).");
-            return true;
+            const bool guessed = p->kind == PluginEntry::Kind::Unknown;
+            return root_.loadPlugin(ref, track, root_.devices.insertPoint(), guessed);
         }
     if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].device == nullptr)
         return false;

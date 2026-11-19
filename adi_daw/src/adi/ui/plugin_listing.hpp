@@ -6,7 +6,9 @@
 // the scan's worker (`plugin_scan.hpp`, DF-W34), tests fill it by hand, and the Browser lays it out.
 #pragma once
 #include "adi/plugin_scanner.hpp"
+#include "adi/store.hpp"
 #include "adi/store_rows.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -165,6 +167,16 @@ inline rows::PluginRef pluginReference(const PluginEntry &p, bool unknownAsInstr
                   : p.kind == K::Effect     ? "effect"
                                             : (unknownAsInstrument ? "instrument" : "effect");
     return ref;
+}
+// The kind the project already holds for a plug-in: its reference is one row per format and identity, so a
+// second load takes that row's subtype, whatever a guess would say. None when the project has no reference.
+inline std::optional<std::string> storedSubtype(Store &store, const std::string &format, const std::string &uid) {
+    SQLite::Statement q(store.db(), "SELECT subtype FROM plugin_refs WHERE format = ? AND uid = ? AND shell_id IS NULL");
+    q.bind(1, format);
+    q.bind(2, uid);
+    if (!q.executeStep())
+        return std::nullopt;
+    return q.getColumn(0).getString();
 }
 // A format's folder name, as Live writes its own.
 inline std::string formatFolder(const std::string &format) {
