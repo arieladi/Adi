@@ -11,14 +11,14 @@
 // the meaning of 0 dBFS are defined HERE, once, and the Pd side is generated
 // from these same constants (tools/gen_pd_patches.py).
 //
-// WHAT 0 dBFS MEANS, exactly: a full-scale sine -- amplitude 1.0, centred on
-// a bin, at any FFT size and with any window in this file -- reads 0.00.
+// WHAT 0 dBFS MEANS, exactly: a full-scale sine -- amplitude 1.0, centred on a
+// bin, at any FFT size and with any window in this file -- reads 0.00 in that
+// bin. Between bins its peak bin reads less, by the window's scalloping loss
+// (half a bin off, -1.42 dB at 1,024 points with the Hann window; DF-E20 (d)).
 // Not a full-scale square, not a DC offset of 1.0. That choice is the one the
 // Max for Live build settled on and it is the one every analyser a producer
 // has used agrees with (ADR-0183 d7). It is asserted, at several sizes,
-// because it is the number everything else is read against. Between bins the
-// nearest bin reads lower by the window's scalloping loss, the most half a bin
-// off: -1.42 dB for Hann, -3.92 dB with no window (DF-E20 (d); asserted too).
+// because it is the number everything else is read against.
 //
 // WHY THE CORRECTION IS COHERENT GAIN AND NOT ENERGY. A window scales a
 // sinusoid's peak bin by sum(w)/N -- its coherent gain -- and scales broadband
