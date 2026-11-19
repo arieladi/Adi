@@ -63,7 +63,7 @@ private:
 };
 struct PublishResult {
     PublishStatus status = PublishStatus::failed;
-    bool usedFallback = false; // Selected the copy path; status still decides success.
+    bool usedFallback = false; // A publication fallback was selected.
     std::string error;
     std::string warning{}; // Published, but post-publication durability failed.
     std::optional<FileIdentity> identity{};
@@ -102,7 +102,10 @@ struct ReplaceHooks {
     // fails under the exclusive lease. Expected-absent callers instead use
     // publishFile(AtomicOnly). This is not an OS compare-and-swap rename.
     std::optional<FileIdentity> expectedTarget{};
+    // Optional settings revision check immediately before a portable rename.
+    std::function<std::error_code(const std::filesystem::path&)> validateFallback;
 };
+enum class ReplacePolicy { LeaseOnly, PortableSettings, PortableBundle };
 // The replacing rename replaceFile uses (test hooks reuse it). On Windows it
 // replaces a destination held open only by handles that share delete -- the
 // replacement's own exclusive lease -- which std::filesystem::rename cannot.
@@ -114,5 +117,6 @@ struct ReplaceHooks {
 // before rename leaves the destination unchanged; post-rename sync failure is
 // published with a warning. A live Store lease refuses replacement.
 [[nodiscard]] PublishResult replaceFile(const std::filesystem::path& source,
-    const std::filesystem::path& target, ReplaceHooks hooks = {}) noexcept;
+    const std::filesystem::path& target, ReplaceHooks hooks = {},
+    ReplacePolicy policy = ReplacePolicy::LeaseOnly) noexcept;
 }
