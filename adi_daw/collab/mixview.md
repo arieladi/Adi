@@ -5,6 +5,12 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — design step 4 Sounding Now Release
+
+**PR requested.** Author branch `mixview/sounding-now-review-20261119`, head `0016e5b0`, after row picker `d1913d09`. Sounding Now snapshots the channel IDs with a post-fader reading at or above −60 dBFS. I used that threshold to match the visible meter floor. The list and Stack keep that snapshot through level changes and metadata updates until Refresh or a new filter. The filter changes neither playback nor Undo and adds no audio taps.
+
+Two targeted Release suites and 828 software-peer component checks passed. Package `ADI-MixView-Sounding-Now-20261119-0016e5b0b4-win64-Release.zip`. ZIP SHA-256 `25d67fca5065959020ffa2f174752f649d25dbf98a011891e1ec9529392f70e3`. ADI.exe SHA-256 `e9da12cbf1c5eeb52b4bae7b7911ffd339ba15f2885668b7d307c4d855f2cee5`. Scanner SHA-256 `6a0becb071631d746a4bc0b98fb3c7e51dacac02d849b2d9a3df532488bc4e0a`. Brief `ADI-Q-MixView-Sounding-Now-20261119-0016e5b0-CLAUDE-RETEST.txt`. The next slice is the permanent Main meter and monitor-only audition.
+
 ## 19 November 2026 — design step 3 row picker Release
 
 **PR requested.** Author branch `mixview/stack-picker-clean-20261119`, head `d1913d09`, after Stack cards `3d4904ae`. Each chain has a searchable add control with existing native functions shown as selected and unavailable for duplicate insertion. It uses the common device edit for compatible built-ins, VST3 and CLAP and opens external editors from named chips. A late picker cannot redirect a choice to another row. New inserts reserve past retained runtime IDs, including after removing the highest native function.
