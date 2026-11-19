@@ -1,5 +1,62 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER source and cyclic pitch file reservation
+
+The next device branch is `clones/adi-shaper-sources`. The clones seat takes the new `src/adi/dsp/adi_shaper_pitch.*`, `adi_shaper_noise.*`, `adi_shaper_reverb.*` and their own test files. It also retains the shaper-specific integration files and canvas from prior increments. Work starts with independent measured modes. The performance, timing and resource behavior of each stage will be checked after integration. The stock Shifter, Noise-generating devices, Reverb, shared Pd engine and Mix View files remain with their owners.
+
+### ADi-SHAPER Pitch reference
+
+Four modes were rendered independently with one full-range stereo band, full wet, fixed pitch, linked formants, reserve latency off and no modulation smoothing. A pitch contour from bottom to top commands −24 to +24 semitones. Its midpoint is unison. The target read-speed ratio is `2^(semitones/12)`. The mixed-material mode has three grain choices. The cyclic mode has a continuous grain control. Voice and drum processing support independent formant contours. [Pitch controls](https://www.cableguys.com/pitchshaper) · [Reference manual](https://downloads.cableguys.com/Cableguys-ShaperBox-3-Manual.pdf)
+
+#### Timing and stereo
+
+| Sample rate | Mixed material | Voice | Drums | Cyclic |
+|---|---:|---:|---:|---:|
+| 44.1 kHz | 1,551 | 2,187 | 2,628 | 0 |
+| 48 kHz | 1,687 | 2,381 | 2,861 | 0 |
+| 96 kHz | 3,367 | 4,754 | 5,714 | 0 |
+
+Figures are reported latency in frames for 256-frame callbacks. At unison, separate impulses on the two channels arrived at precisely the reported delay in the first three modes. At 48 kHz, independent pseudorandom inputs between −0.25 and +0.25 also matched sample-for-sample after compensating that delay. The cyclic mode reported zero at every grain setting tested. At the middle grain setting its unison peak arrived 575, 625 and 1,243 frames late at the three rates above.
+
+A 0.5-peak click at frame 18,000 of a 48 kHz stream gave the following result. The span includes samples above 0.00001 in absolute amplitude. The opposite channel carried an equal, inverted click. The channels cancelled exactly, and repeating the test with a silent right input gave an exactly silent right output. These checks cover the two octave settings and this transient.
+
+| Mode | −12 peak offset and amplitude | +12 peak offset and amplitude | +12 first to last sample above threshold |
+|---|---:|---:|---:|
+| Mixed material | 1,687 / 0.4500 | 1,687 / 0.2250 | 1,684–1,690 |
+| Voice | 2,382 / 0.5000 | 1,729 / 0.2013 | 1,442–2,383 |
+| Drums | 2,861 / 0.5000 | 2,861 / 0.2250 | 2,858–2,864 |
+| Cyclic, middle grain | 710 / 0.4268 | 582 / 0.1551 | 270–1,202 |
+
+All three mixed-material grain settings gave the same isolated-click result. Their effective window durations on dense input remain undetermined.
+
+#### Sustained pitch
+
+Each channel carried a different sine, 443 Hz at 0.25 peak on the left and 877 Hz at 0.20 peak on the right. The following readings are the strongest spectral lines in hertz on the left/right channels after settling for one second at 48 kHz. A one-second Hann window and interpolation between frequency bins were used. The right input began at a 0.33-radian phase offset.
+
+| Semitones | Nominal ratio | Mixed material | Voice | Drums | Cyclic, middle grain |
+|---:|---:|---:|---:|---:|---:|
+| −24 | 0.2500 | 113.5 / 218.0 | 110.7 / 212.5 | 110.7 / 212.5 | 93.5 / 236.2 |
+| −12 | 0.5000 | 223.2 / 437.3 | 221.5 / 434.0 | 221.5 / 434.0 | 210.0 / 449.8 |
+| −7 | 0.6674 | 296.6 / 584.3 | 295.6 / 582.3 | 295.6 / 582.3 | 288.0 / 592.9 |
+| 0 | 1.0000 | 443.0 / 877.0 | 443.0 / 877.0 | 443.0 / 877.0 | 443.0 / 877.0 |
+| +7 | 1.4983 | 662.8 / 1,316.7 | 663.7 / 1,318.5 | 663.7 / 1,318.5 | 675.2 / 1,302.7 |
+| +12 | 2.0000 | 883.4 / 1,757.7 | 886.0 / 1,763.0 | 886.0 / 1,763.0 | 909.0 / 1,731.4 |
+| +24 | 4.0000 | 1,764.1 / 3,519.2 | 1,772.0 / 3,535.1 | 1,772.1 / 3,535.1 | 1,841.1 / 3,440.1 |
+
+#### Cyclic grain model
+
+For normalized grain position `g`, the fitted window length is `W = sampleRate × (0.001 + 0.099 × g²)` frames. It spans 1–100 ms. Unison concentrates the impulse around `7 + W/2`. At 48 kHz, ninth-point measurements from g = 0 to 1 in steps of 1/8 peaked at 31, 68, 179, 365, 625, 959, 1,367, 1,850 and 2,407 frames. At g = 0.5, an input of 0.5 produced a peak of 0.44998 with 14 taps above 0.00001. The signed impulse sum divided by input amplitude was 1.00005. Broadband unison had a 0.09772 maximum residual after integer-delay compensation on the ±0.25 fixture.
+
+An independent low-cost model uses two moving fractional-delay reads, half a window apart. Advance phase by `(1 − pitchRatio)/W` per input sample. Read with offsets `7 + W × phase` and `7 + W × ((phase + 0.5) modulo 1)`. Crossfade with `sin²(π × phase)` and its complement and share the phase between left and right. This predicts sidebands spaced by `2 × abs(1 − pitchRatio) × sampleRate/W` hertz. At +12 the measured left peaks were 909 and 831 Hz, at amplitudes 0.1972 and 0.0494. At −12 they were 210 and 249 Hz, at amplitudes 0.1973 and 0.0524. A pair of analytic sine reads with the above crossfade reproduced the stereo steady-state waveforms to within 0.0046 root-sum-square channel RMS at −24, −12, −7, 0, +7 and +12. At +24 the residual reached 0.0235. At that setting the reference attenuated the 443/877 Hz test components to about 88%/87% of the analytic model.
+
+An initial cyclic implementation can allocate its stereo history once, using about 38 KiB per band at 48 kHz for the 100 ms maximum plus interpolation support. Two short interpolation kernels per channel and prepared weights bound the sample cost independently of grain length. Proposed acceptance gates are zero reported latency, unison crest timing within one frame at all nine grain positions, middle-grain unison impulse peak within 0.005, dominant lines within 1 Hz and the two octave sideband amplitudes above within 0.005. Test the two channels independently and at opposite polarity. Evaluate automated pitch transitions, fractional-delay response above 1 kHz and callback sizes 64/256/1,024 before claiming wider parity or a CPU advantage. Reference CPU cost was outside this measurement.
+
+#### Existing ADI processing
+
+The pitch mode in ADI's existing Shifter is a windowed FFT phase vocoder. ADI's Warp renderer studies a clip, reads it again and renders the result with Rubber Band. The devices lane has also proposed a live dual-read-head Shifter. Its 10–350 ms window and linear interpolation would require the cyclic calibration above. These are potential points for sharing DSP with the owner.
+
+An independent stereo test of Rubber Band 4.0's short-window live API found a fixed 512-frame processing block. At 48 kHz it reported 6,784, 3,648, 2,112, 2,880 and 4,031 frames of delay at ratios 0.25, 0.5, 1, 2 and 4. Its unison click peaked at 2,112 samples with amplitude 0.4828 for a 0.5 input. Its ratio-dependent timing and coloration need an explicit adaptation design. ADI lists Bungee for future integration. Its realtime capabilities merit a separate audition. The present evidence supports implementing the cyclic mode independently. Polyphonic transient matching, phase continuity, vocal envelope shifting and automatic grain selection still need dedicated fixtures before defining equivalent mixed-material, voice or drum modes. [Rubber Band live API](https://breakfastquay.com/rubberband/code-doc/classRubberBand_1_1RubberBandLiveShifter.html) · [Bungee](https://github.com/bungee-audio-stretch/bungee)
+
 ## 2026-11-19 — Time reference and next device files
 
 The Time increment is on `clones/adi-shaper-time`. The clones seat takes the ADi-SHAPER core, external adapter as needed, canvas, device CMake file and shaper tests from the previous increment. It also takes the large-canvas embedding hunk in `cmake/devices/pd_native.cmake` and the new `adi_shaper_time.*` core and test. Existing parameter indices stay stable. The devices seat retains all other devices and the Pd engine. Mix View owns its Focus surface, sum and alignment-preview integration. Its published Focus review at `2102d4e9` already rejects ambiguous loop windows in its own path. Our separate legacy scope-helper reproductions and rendering measurements remain test evidence for the owner.
