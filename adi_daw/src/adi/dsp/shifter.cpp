@@ -46,19 +46,22 @@ double wrap(double x){return x-std::floor(x);}
 // few samples once the sweep phase was free; Live's phase reference is not
 // known, so the shape away from unison is not claimed (DEV-22).
 struct Pitch {
+    /// DF-E37 (b): how long the taps take to come back to rest at unison.
+    static constexpr double kRestSeconds=0.020;
     std::vector<float> line;
     std::size_t write=0;
-    double phase=0.5;
+    double phase=0.5,rest=0;   ///< rest: 0..1 through the return to the clean read
     void prepare(double maximumWindow){
         line.assign(static_cast<std::size_t>(std::ceil(maximumWindow))+4,0);
-        write=0;phase=0.5;
+        write=0;phase=0.5;rest=0;
     }
-    float sample(float in,double ratio,double window) noexcept {
+    /// The two sin^2-weighted taps at `ph`. At ph 0 or 0.5 it is one clean
+    /// copy, half the Window late.
+    double taps(double ph,double window) const noexcept {
         const auto size=line.size();
-        line[write]=in;
         double out=0;
         for(const double offset:{0.0,0.5}){
-            const double at=wrap(phase+offset);
+            const double at=wrap(ph+offset);
             const double gain=std::sin(pi*at);
             double position=static_cast<double>(write)-at*window;
             if(position<0)position+=static_cast<double>(size);
@@ -68,7 +71,26 @@ struct Pitch {
             const auto second=(first+1)%size;
             out+=gain*gain*(line[first]*(1-fraction)+line[second]*fraction);
         }
-        write=(write+1)%size;
+        return out;
+    }
+    /// `restStep` is 1 / (kRestSeconds * rate).
+    float sample(float in,double ratio,double window,double restStep) noexcept {
+        line[write]=in;
+        double out;
+        // At unison the phase does not move, so a phase a pitch move left
+        // between the rests (0 and 0.5) would comb for good. Crossfade from
+        // the two taps where they are to the clean read, then rest there: no
+        // pitch glide, no jump. Any move away from unison cancels the return.
+        const bool away=std::abs(phase-0.5*std::round(2*phase))>1e-12;
+        if(ratio==1.0 && (away || rest>0)){
+            rest=std::min(1.0,rest+restStep);
+            out=(1-rest)*taps(phase,window)+rest*taps(0.5,window);
+            if(rest>=1){phase=0.5;rest=0;}
+        }else{
+            rest=0;
+            out=taps(phase,window);
+        }
+        write=(write+1)%line.size();
         phase=wrap(phase+(1-ratio)/window);
         return static_cast<float>(out);
     }
@@ -161,7 +183,7 @@ void Shifter::process(const float* inL,const float* inR,float* outL,float* outR,
             l.tone+=(delayed-l.tone)*(1-std::exp(-2*pi*std::min(p[Tone],s.rate*0.45)/s.rate));
             const double feed=input+(p[Delay]>=0.5?l.tone*p[Feedback]/100:0);
             double wet=0;
-            if(mode==0)wet=l.pitch.sample(static_cast<float>(feed),std::exp2(std::clamp(shift,-48.,48.)/12),s.window());
+            if(mode==0)wet=l.pitch.sample(static_cast<float>(feed),std::exp2(std::clamp(shift,-48.,48.)/12),s.window(),1/(Pitch::kRestSeconds*s.rate));
             else {
                 l.oscillator=wrap(l.oscillator+std::clamp(shift,-s.rate*0.45,s.rate*0.45)/s.rate);
                 if(mode==1){const auto [re,im]=l.hilbert.stepPair(static_cast<float>(feed));wet=re*std::cos(2*pi*l.oscillator)+im*std::sin(2*pi*l.oscillator);}

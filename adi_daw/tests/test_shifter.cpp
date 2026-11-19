@@ -65,4 +65,31 @@ void liveUnison(){
   std::printf("METRIC Shifter +7 st Window %.0f ms: onset +%zu, peak +%zu (%.3f), centre +%.1f\n",ms,onset,peak-48000,static_cast<double>(out[peak]),moment/energy);}
 }
 }
-int main(){measured();invariants();liveUnison();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
+// DF-E37 (b): after any pitch move, unison must come back clean. The taps'
+// phase moved only while the ratio was not 1 and was reset only in prepare(),
+// so +7 st for 1,926 samples and back left two half-gain copies (about 0.25 at
+// 960 and 2880 for an impulse of 0.5) and nulls every 25 Hz above 12.5 Hz, for
+// good. At unison the taps now crossfade to the clean Window/2 read over 20 ms
+// (Pitch::kRestSeconds); after that the impulse comes out once, at 1920.
+void unisonAfterAMove(){
+ S s;s.prepare(48000);s.set(S::Window,80);
+ std::vector<float> silence(1926,0.f),l(1926),r(1926);
+ s.set(S::Coarse,7);s.process(silence.data(),silence.data(),l.data(),r.data(),silence.size());
+ s.set(S::Coarse,0);
+ std::vector<float> in(48000,0.f);in[2000]=0.5f;   // 2000 samples: past the 20 ms return
+ const auto out=render(s,in);
+ std::size_t peaks=0,at=0;for(std::size_t i=0;i<out.size();++i)if(std::abs(out[i])>1e-6f){++peaks;at=i;}
+ std::printf("METRIC Shifter back at unison: %zu nonzero samples, last at +%zu, value %.6f\n",peaks,at>=2000?at-2000:0,at<out.size()?static_cast<double>(out[at]):0.);
+ check(peaks==1 && at==2000+1920 && out[at]==0.5f,"back at unison after +7 st: the impulse once, 1920 late, at 0.5 (no lasting comb)");
+ // And the return itself does not click: a 100 Hz tone through +7 st and
+ // back, its sample-to-sample step never above the tone's own steepest.
+ S t;t.prepare(48000);t.set(S::Window,80);
+ auto x=tone(100,48000);std::vector<float> a(48000),b(48000);
+ t.set(S::Coarse,7);t.process(x.data(),x.data(),a.data(),b.data(),24000);
+ t.set(S::Coarse,0);t.process(x.data()+24000,x.data()+24000,a.data()+24000,b.data()+24000,24000);
+ double step=0;for(std::size_t i=24001;i<48000;++i)step=std::max(step,static_cast<double>(std::abs(a[i]-a[i-1])));
+ const double steepest=0.3*2*std::numbers::pi*100/48000;
+ std::printf("METRIC Shifter return to unison: largest step %.5f (tone's own %.5f)\n",step,steepest);
+ check(step<=steepest*1.5,"the return to unison does not click");
+}
+int main(){measured();invariants();liveUnison();unisonAfterAMove();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
