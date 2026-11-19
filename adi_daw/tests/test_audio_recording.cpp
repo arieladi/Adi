@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <limits>
 #include <new>
 #include <thread>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
@@ -160,19 +161,128 @@ void actualSessionBothWidths() {
     }
 }
 void boundedOverflow() {
+    for(const bool looping:{false,true}) {
     test::TempDirectory directory{"audio_recording","overflow"};AudioInputRecorder recorder;std::string error;auto request=spec(directory.path());request.maxFrames=8;request.ringFrames=8;request.targets={{21,{0}}};
+    if(looping)request.loop=AudioRecordingLoop{0,5,8};
     const auto blocked=std::make_shared<Blocked>();
     struct ReleaseOnExit {
         std::shared_ptr<Blocked> state;
         ~ReleaseOnExit(){std::lock_guard lock(state->mutex);state->release=true;state->condition.notify_all();}
     } release{blocked};
     check(recorder.start(request,error,[blocked](const auto&,auto,auto,auto){return std::make_unique<BlockingSink>(blocked);}),"start with an off-thread blocked writer");
-    Transport transport;transport.play();std::array<float,8> values{};const float* channels[]={values.data()};AudioIo io;io.in=channels;io.numIn=1;io.frames=8;input(recorder,transport,io);
+    Transport transport;if(looping)transport.loop(0,5);transport.play();std::array<float,8> values{};const float* channels[]={values.data()};AudioIo io;io.in=channels;io.numIn=1;io.frames=8;input(recorder,transport,io);
     {std::unique_lock lock(blocked->mutex);if(!blocked->condition.wait_for(lock,std::chrono::seconds(5),[&]{return blocked->entered;}))throw std::runtime_error("writer did not enter");}
     io.streamTimeSamples=8;input(recorder,transport,io);io.streamTimeSamples=16;input(recorder,transport,io);
     recorder.stop();io.streamTimeSamples=24;input(recorder,transport,io);
     {std::lock_guard lock(blocked->mutex);blocked->release=true;}blocked->condition.notify_all();
-    auto result=finish(recorder);check(result.failure==RecordingFailure::Overflow && result.frames==16,"full bounded queue reports overflow and retains only accepted frames");result.discard();
+    auto result=finish(recorder);check(result.failure==RecordingFailure::Overflow && result.frames==16,"full bounded queue reports overflow and retains only accepted frames");
+    if(looping)check(result.passes().size()==4 && result.passes().back().sourceStartFrame==15 && result.passes().back().frames==1 && result.passes().back().timelineEndSample==1,"ring overflow does not append or extend pass metadata for rejected input");
+    result.discard();
+    }
+}
+bool passEquals(const RecordedPass& actual,std::uint64_t source,std::uint64_t frames,std::int64_t first,std::int64_t end) {
+    return actual.sourceStartFrame==source && actual.frames==frames && actual.timelineStartSample==first && actual.timelineEndSample==end;
+}
+void sessionLoopPasses() {
+    for(const auto width:{Precision::Float32,Precision::Float64})for(const bool partialFirst:{false,true}) {
+        test::TempDirectory directory{"audio_recording","session_loop"};StoreError storeError{};auto store=Store::createEmpty(directory.path()/"song.adi",storeError);
+        if(!store)throw std::runtime_error(toString(storeError));
+        store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(21,'audio','Armed',1),(9,'master','Main',0)");
+        Session session;SessionSpec format{2,48000,128};format.precision=width;
+        check(session.load(*store,{},format),"load real Session for loop capture");
+        auto request=spec(directory.path());request.sampleRate=48000;request.targets={{21,{1}}};request.loop=AudioRecordingLoop{100,132,4};std::string error;
+        check(session.startRecording(request,error),"explicit loop capture starts on real armed Session");
+        session.transport().loop(100,132);session.transport().locate(partialFirst?108:100);
+        if(partialFirst)session.transport().countIn(7);else session.transport().play();
+        std::array<float,128> source{},other{},left{},right{};std::array<double,128> left64{},right64{};
+        const float* in[]={other.data(),source.data()};float* out[]={left.data(),right.data()};double* out64[]={left64.data(),right64.data()};
+        std::vector<float> expected;std::int64_t physical=0;
+        const std::array counts{19,partialFirst?37:30,3,60}; // 112 accepted frames, 3.5 loop lengths
+        for(const auto frames:counts) {
+            for(int frame=0;frame<frames;++frame) {
+                source[static_cast<std::size_t>(frame)]=static_cast<float>(physical+frame)/512-0.125f;
+                if(physical+frame>=(partialFirst?7:0))expected.push_back(source[static_cast<std::size_t>(frame)]);
+            }
+            AudioIo io;io.frames=frames;io.in=in;io.numIn=2;io.out=out;io.numOut=2;io.streamTimeSamples=1000+physical;if(width==Precision::Float64)io.out64=out64;
+            session.process(io);physical+=frames;
+        }
+        check(session.recording().acceptedFrames()==112,"only actual playing input after count-in enters the continuous source");
+        session.recording().stop();check(!session.recording().poll(),"loop result also waits for callback quiescence");
+        AudioIo idle;idle.frames=1;idle.out=out;idle.numOut=2;if(width==Precision::Float64)idle.out64=out64;session.process(idle);
+        auto result=finish(session.recording());const auto passes=result.passes();
+        check(result.failure==RecordingFailure::None && result.frames==112 && result.tracks.size()==1 && passes.size()==4,"3.5 loop lengths produce four nonempty passes in one owned source");
+        check(result.loopSpec() && result.loopSpec()->beginSample==100 && result.loopSpec()->endSample==132 && result.startSample==(partialFirst?108:100),"completed result retains frozen loop contract and actual first placement");
+        const auto first=partialFirst?24u:32u,last=partialFirst?24u:16u;
+        check(passes.size()==4 && passEquals(passes[0],0,first,partialFirst?108:100,132) &&
+              passEquals(passes[1],first,32,100,132) && passEquals(passes[2],first+32,32,100,132) &&
+              passEquals(passes[3],first+64,last,100,100+last),"pass offsets and half-open timeline intervals retain exact partial first and last passes");
+        std::vector<float> heard(expected.size());
+        {audio::WavReader reader(result.tracks[0].file);check(reader.frames()==112 && reader.channels()==1 && reader.read(heard.data(),112)==112,"loop source is one finalized real WAV");}
+        check(heard==expected,"continuous source preserves every selected input bit through multiple wraps and count-in slicing");
+        std::size_t files=0;for(const auto& file:std::filesystem::directory_iterator(result.directory()))if(file.is_regular_file())++files;
+        check(files==1,"passes create no per-pass source files");result.discard();
+    }
+}
+void loopBoundsAndCapacity() {
+    test::TempDirectory directory{"audio_recording","loop_bounds"};AudioInputRecorder recorder;auto request=spec(directory.path());request.targets={{21,{0}}};request.loop=AudioRecordingLoop{100,104,2};std::string error;
+    for(const auto invalidLoop:{AudioRecordingLoop{-1,4,2},AudioRecordingLoop{4,4,2},AudioRecordingLoop{4,3,2},AudioRecordingLoop{0,4,0},AudioRecordingLoop{0,4,65537}}) {
+        auto invalid=request;invalid.loop=invalidLoop;check(!recorder.start(invalid,error) && !recorder.pending(),"invalid loop bounds or excessive pass allocation refuses before publication");
+    }
+    std::array<float,128> values{};for(std::size_t index=0;index<values.size();++index)values[index]=static_cast<float>(index)/256;
+    const float* channels[]={values.data()};AudioIo io;io.in=channels;io.numIn=1;
+    for(const bool exactBoundary:{false,true}) {
+        Transport transport;transport.loop(100,104);transport.locate(100);transport.play();check(recorder.start(request,error),"start bounded pass capture");
+        io.frames=exactBoundary?8:3;io.streamTimeSamples=0;input(recorder,transport,io);
+        const auto retained=static_cast<std::uint64_t>(io.frames);
+        io.frames=0;io.streamTimeSamples=static_cast<std::int64_t>(retained);input(recorder,transport,io);
+        io.frames=exactBoundary?1:6;input(recorder,transport,io);recorder.stop();input(recorder,transport,io);auto result=finish(recorder);
+        check(result.failure==RecordingFailure::PassLimit && result.frames==retained,"pass capacity exhaustion rejects the whole callback without accepting its initial fitting portion");
+        check(exactBoundary?(result.passes().size()==2 && passEquals(result.passes()[1],4,4,100,104)):
+              (result.passes().size()==1 && passEquals(result.passes()[0],0,3,100,103)),"pass limit leaves prior exact-end/partial pass metadata unchanged and never appends an empty pass");
+        {audio::WavReader reader(result.tracks[0].file);check(reader.frames()==retained,"failed capture keeps file and pass log on the same accepted prefix");}result.discard();
+    }
+    // All 128 one-sample passes occur inside one physical callback.
+    request.loop=AudioRecordingLoop{100,101,128};Transport many;many.loop(100,101);many.locate(100);many.play();check(recorder.start(request,error),"start one-sample loop stress");
+    io.frames=128;io.streamTimeSamples=0;input(recorder,many,io);recorder.stop();input(recorder,many,io);auto tiny=finish(recorder);
+    bool exact=tiny.failure==RecordingFailure::None && tiny.passes().size()==128;
+    for(std::size_t index=0;index<tiny.passes().size();++index)exact=exact && passEquals(tiny.passes()[index],index,1,100,101);
+    check(exact,"every wrap inside one variable callback has an independently correct source interval");tiny.discard();
+    // Pre-loop audio is kept as an exact interval; later publication decides its lane policy.
+    request.loop=AudioRecordingLoop{100,104,4};Transport pre;pre.loop(100,104);pre.locate(98);pre.play();check(recorder.start(request,error),"start before loop begin");
+    io.frames=9;io.streamTimeSamples=0;input(recorder,pre,io);recorder.stop();input(recorder,pre,io);auto preroll=finish(recorder);
+    check(preroll.failure==RecordingFailure::None && preroll.passes().size()==2 && passEquals(preroll.passes()[0],0,6,98,104) && passEquals(preroll.passes()[1],6,3,100,103),"pre-loop input retains actual placement and a negative derived loop offset");preroll.discard();
+    const auto ceiling=std::numeric_limits<std::int64_t>::max();request.loop=AudioRecordingLoop{ceiling-5,ceiling,4};Transport high;high.loop(ceiling-5,ceiling);high.locate(ceiling-2);high.play();check(recorder.start(request,error),"start loop near sample-clock ceiling");
+    io.frames=8;io.streamTimeSamples=0;input(recorder,high,io);recorder.stop();input(recorder,high,io);auto bounded=finish(recorder);
+    check(bounded.failure==RecordingFailure::None && bounded.passes().size()==3 && passEquals(bounded.passes()[0],0,2,ceiling-2,ceiling) && passEquals(bounded.passes()[1],2,5,ceiling-5,ceiling) && passEquals(bounded.passes()[2],7,1,ceiling-5,ceiling-4),"loop arithmetic does not overflow when the linear position-plus-block would overflow");bounded.discard();
+}
+void loopDiscontinuities() {
+    test::TempDirectory directory{"audio_recording","loop_discontinuities"};std::array<float,8> values{};const float* channels[]={values.data()};
+    for(unsigned change=0;change<7;++change) {
+        AudioInputRecorder recorder;auto request=spec(directory.path());request.targets={{21,{0}}};request.loop=AudioRecordingLoop{100,132,8};std::string error;
+        Transport transport;transport.loop(100,132);transport.locate(100);transport.play();check(recorder.start(request,error),"start discontinuity control");
+        AudioIo io;io.in=channels;io.numIn=1;io.frames=8;io.streamTimeSamples=0;input(recorder,transport,io);io.streamTimeSamples=8;
+        switch(change) {
+            case 0:transport.locate(109);break;
+            case 1:transport.locate(108);break; // same position, different revision
+            case 2:++io.streamTimeSamples;break;
+            case 3:transport.loop(100,132);break; // same bounds, explicit reconfigure
+            case 4:transport.retimeLoop(100,133);break; // no revision change
+            case 5:transport.loop(100,132,false);break;
+            default:transport.play(false);transport.play();break;
+        }
+        input(recorder,transport,io);recorder.stop();input(recorder,transport,io);auto result=finish(recorder);
+        check(result.failure==RecordingFailure::Discontinuity && result.frames==8 && result.passes().size()==1 && passEquals(result.passes()[0],0,8,100,108),"seek, same-position locate, stream gap, loop mutation and stop/restart refuse without relabelling accepted samples");result.discard();
+    }
+    for(unsigned mode=0;mode<3;++mode) {
+        AudioInputRecorder recorder;auto request=spec(directory.path());request.targets={{21,{0}}};request.loop=AudioRecordingLoop{100,132,8};std::string error;
+        Transport transport;transport.loop(100,mode==1?133:132,mode!=0);transport.locate(100);transport.play();
+        check(recorder.start(request,error),"prepare loop mode before first driver block");AudioIo io;io.in=channels;io.numIn=1;io.frames=8;input(recorder,transport,io);
+        if(mode==2){transport.play(false);io.streamTimeSamples=8;input(recorder,transport,io);}
+        recorder.stop();input(recorder,transport,io);auto result=finish(recorder);
+        if(mode<2)check(result.failure==RecordingFailure::Discontinuity && result.frames==0 && result.passes().empty(),"first callback must match the explicitly requested enabled loop bounds");
+        else check(result.failure==RecordingFailure::None && result.frames==8 && result.passes().size()==1 && passEquals(result.passes()[0],0,8,100,108),"ordinary transport stop keeps a valid incomplete last pass");
+        result.discard();
+    }
 }
 }
-int main(){try{actualFilesAndAcknowledgment();formatAndInputFailures();boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual recording callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actualFilesAndAcknowledgment();formatAndInputFailures();boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();sessionLoopPasses();loopBoundsAndCapacity();loopDiscontinuities();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual recording callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
