@@ -1283,6 +1283,10 @@ if(ADI_BUILD_BENCHMARKS)
     target_link_libraries(adi_block_benchmark PRIVATE adi_core adi_warnings)
     add_executable(adi_edit_placement_measure tools/measure_edit_placement.cpp)
     target_link_libraries(adi_edit_placement_measure PRIVATE adi_core adi_warnings Threads::Threads)
+    add_executable(adi_project_wal_benchmark tools/benchmark_project_wal.cpp)
+    target_include_directories(adi_project_wal_benchmark PRIVATE tests)
+    target_link_libraries(adi_project_wal_benchmark PRIVATE adi_core adi_warnings)
+    add_test(NAME adi_project_wal_benchmark_self_test COMMAND adi_project_wal_benchmark --self-test)
 endif()
 
 # ---------------------------------------------------------------------------

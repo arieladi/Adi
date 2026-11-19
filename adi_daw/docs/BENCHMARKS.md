@@ -647,3 +647,46 @@ All other cells have zero misses. All rows have zero event drops and rejected ev
 | clang | mpe-storm | 1024 | 136.657 | 141.244 | +3.36 | 189.991 | 240.706 | 0 |
 | clang | mpe-storm | 2048 | 400.613 | 411.562 | +2.73 | 525.304 | 2509.395 | 0 |
 | clang | mpe-storm | 4096 | 1349.275 | 1411.788 | +4.63 | 2236.814 | 3983.118 | 0 |
+
+## Project WAL commit latency (PD-12, 2026-11-19)
+
+`adi_project_wal_benchmark` times `OpJournal::commit` on its owning thread with
+real SQLite projects. The Release `/O2 /W4 /WX` run used Windows x64, SQLite
+3.49.2, and a fixed local NTFS SSD. ADI core was at `796fe498`. Twelve paired
+repeats alternated mode order and used a fresh project per mode. Each
+transaction renamed one track. The timer includes the SQLite commit and any
+threshold checkpoint. It excludes request construction, project setup and
+summary output. An observation hook uses the bundled SQLite threshold and
+PASSIVE operation and confirms the frames checkpointed.
+
+Times are elapsed milliseconds. The steady sample starts after twelve warmup
+edits. Near-full begins at 900 of 1,000 WAL frames. Every threshold commit took
+the WAL from 993 to 1,002 frames and checkpointed all 1,002. Only twelve
+crossings per mode were measured, so the table gives their median and maximum.
+
+| Cohort | Samples per mode | NORMAL p50 | NORMAL p99 | NORMAL max | FULL p50 | FULL p99 | FULL max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Steady | 576 | 0.357 | 0.636 | 0.844 | 2.121 | 6.898 | 23.235 |
+| Near-full before threshold | 108 | 0.383 | 0.598 | 0.608 | 2.168 | 2.953 | 23.223 |
+| Threshold checkpoint | 12 | 14.020 | — | 14.475 | 4.356 | — | 4.646 |
+
+FULL added 1.769 ms to the steady per-repeat median on average (paired 95% t
+interval 1.742 to 1.796 ms), and 1.776 ms in the near-full cohort (1.738 to
+1.813 ms). The paired threshold difference was −9.209 ms (−9.675 to −8.744 ms).
+Three FULL edits exceeded a nominal 16.67 ms frame in this sample. No NORMAL
+edits exceeded that reference. A separate read-only connection pinned a
+snapshot, so PASSIVE returned `SQLITE_OK` with 29 of 38 frames checkpointed.
+After the reader ended the transaction a second PASSIVE completed all 38.
+
+The benchmark shows a trade-off between ordinary edits and threshold
+checkpoints on this storage. The workload excludes the UI, playback, large
+edit batches, and other volume types. It does not simulate a power cut. Keep
+the local default pending a representative owner-thread frame-budget check.
+This benchmark changes no Store pragmas outside its disposable projects.
+
+Build an MSVC Release tree with `ADI_BUILD_BENCHMARKS=ON` and `ADI_WERROR=ON`.
+Build target `adi_project_wal_benchmark`, run it with `--self-test`, then pass a
+new projects directory and the pair count (for example `wal-projects 12`).
+It emits the measurements to stdout and the pinned-reader receipt to stderr.
+The tool keeps its projects for inspection. The raw receipt from this run is
+kept privately with the director's research.
