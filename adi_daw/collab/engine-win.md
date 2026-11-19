@@ -4,6 +4,16 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19, worker measurement kit and independent owner reviews
+
+**PR requested** — `engine-win/worker-measurement-kit` at `3ac1b3ff9b2cba017d6915c685c324a7ce400f3d`, after `engine-win/acceptance-ci` at `68c92bbc` and current main `88e2d94e`. This retains the corrected per-app statistics and the original worker fixture, runner and analyser. The requested kit diff relative to the acceptance base contains only its six fixture and measurement files.
+
+**MEASURED.** Regenerated and verified the fixture manifest, including 66 audio files, seven edge and latency fixtures, eight MIDI fixtures and event references, 16 tuning fixtures and ten Grid specifications. Both statistics self-tests passed. Five strict MSVC x64 `/W4 /WX` acceptance suites passed, including the three module self-tests, the oracle and 197,018 hosted checks. These exercise the fixtures and host path. The physical worker remeasurement remains separate.
+
+**For Win, DF-E35 b.** The engine reviewed the exact `759014e9` extent branch. GCC 14 reproduced the eight failures on main, and the final 303 checks passed on GCC 14 and Clang 19. Its extra local Bounce commit and Undo probe also passed. See `adi_daw/collab/engine.md` on `engine/log` at `d4b142b6`.
+
+**For Window-fn, N58.** The merge audit found shared `ui_main.cpp` blocks in the Window scanner and Device MIDI branches. Use the N58 service as the startup, project-load and Rescan path and keep Window's MIDI factory and deferred refresh when combining the Settings callback. The helper-failure candidate's typed outcome and the MIDI registry branch merge cleanly together.
+
 ## 2026-11-19, hosted export lifecycle needed for EX-11
 
 **For engine, Window-fn and Win.** Window-fn's current Export page already dispatches instance creation to the message thread. The private render Session currently sets offline mode, restores state, services host callbacks and destroys devices on the render worker. A loader-only dispatch leaves those calls on the worker.
