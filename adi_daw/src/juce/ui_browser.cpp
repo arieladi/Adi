@@ -314,13 +314,13 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     }
     if (r.plugin != nullptr) {
         // A plug-in, under its vendor: its kind's icon (a VST3's is not known yet: the plug-in icon), its
-        // name dimmed until it can load (N57).
+        // name dimmed where nothing can load it (outside the application).
         const int in = 12 * r.depth;
         using K = PluginEntry::Kind;
         const auto kind = r.plugin->kind;
         icon(g, kind == K::Instrument ? Instruments : kind == K::Effect ? AudioFx : kind == K::MidiEffect ? MidiFx : PlugIns,
              juce::Rectangle<float>(6.f + static_cast<float>(in), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
-        g.setColour(look::textDim);
+        g.setColour(root_.loadPlugin ? look::text : look::textDim);
         g.setFont(look::font(look::fontHeading));
         g.drawText(juce::String::fromUTF8(r.plugin->name.c_str()), 24 + in, 0, width - 28 - in, height,
                    juce::Justification::centredLeft, true);
@@ -341,7 +341,7 @@ juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &row
     for (int i = 0; i < rows.size(); ++i)
         if (const int r = rows[i]; r >= 0 && r < static_cast<int>(rows_.size())) {
             const auto &row = rows_[static_cast<std::size_t>(r)];
-            // A plug-in cannot load yet (N57): it drags nothing.
+            // A plug-in loads by a double-click or Enter; a drag of one is not built yet: it drags nothing.
             if (row.plugin != nullptr)
                 return {};
             // A device drags alone, the first one chosen; one this build cannot load drags nothing.
@@ -370,7 +370,7 @@ std::string BrowserPanel::droppedDevice(const juce::var &description) {
     return findBuiltin(uid) != nullptr ? uid : std::string();
 }
 std::string BrowserPanel::pluginWaits(const PluginEntry &p) {
-    return "Loading " + p.name + " waits for the engine's insert of a plug-in (N57).";
+    return "Loading " + p.name + " needs the application's plug-in host.";
 }
 bool BrowserPanel::pluginsShown() const {
     return selected_ >= 0 && selected_ < static_cast<int>(sidebar_.size()) &&
@@ -392,8 +392,27 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
 bool BrowserPanel::load(int row) {
     if (row >= 0 && row < static_cast<int>(rows_.size()))
         if (const auto *p = rows_[static_cast<std::size_t>(row)].plugin) {
-            root_.say(pluginWaits(*p));
-            return false;
+            if (!root_.loadPlugin) {
+                root_.say(pluginWaits(*p));
+                return false;
+            }
+            // Onto the selected track, in front of the device chosen in the strip, else where Live places
+            // its kind. A VST3 whose kind is not known yet (N58) goes onto a MIDI track as its instrument
+            // and onto an audio track as an effect, and the Status Bar says so.
+            const auto track = root_.arrangement.geometry.selection.track;
+            const auto *t = root_.reader().findTrack(track);
+            if (t == nullptr) {
+                root_.say("Select a track to load " + p->name + " onto.");
+                return false;
+            }
+            const bool midi = t->kind == "midi" || t->kind == "instrument";
+            const auto ref = pluginReference(*p, midi);
+            if (!root_.loadPlugin(ref, track, root_.devices.insertPoint()))
+                return false;
+            if (p->kind == PluginEntry::Kind::Unknown)
+                root_.say(p->name + " went in as " + (midi ? "an instrument" : "an audio effect") +
+                          ": ADI does not know a VST3's kind until its plug-in catalogue lists it (N58).");
+            return true;
         }
     if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].device == nullptr)
         return false;

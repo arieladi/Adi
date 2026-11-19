@@ -6,6 +6,7 @@
 // the scan's worker (`plugin_scan.hpp`, DF-W34), tests fill it by hand, and the Browser lays it out.
 #pragma once
 #include "adi/plugin_scanner.hpp"
+#include "adi/store_rows.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -145,6 +146,25 @@ inline std::vector<PluginGroup> pluginGroups(const PluginListing &listing, const
         out.back().entries.push_back(p);
     }
     return out;
+}
+// The plug-in reference a load inserts (DF-W9's load on N57, `ProjectDocument::insertPlugin`): its format,
+// identity, name, vendor, version, file, and its kind as the reference's subtype, which places it in the
+// chain (a MIDI effect before the instrument, an audio effect after it). A VST3's kind is not known until
+// engine-win's catalogue (N58): `unknownAsInstrument` says what the window takes it for meanwhile.
+inline rows::PluginRef pluginReference(const PluginEntry &p, bool unknownAsInstrument) {
+    rows::PluginRef ref;
+    ref.format = p.format;
+    ref.uid = p.uid;
+    ref.name = p.name;
+    ref.vendor = p.vendor;
+    ref.version = p.version;
+    ref.pathHint = p.path;
+    using K = PluginEntry::Kind;
+    ref.subtype = p.kind == K::Instrument    ? "instrument"
+                  : p.kind == K::MidiEffect ? "midi_effect"
+                  : p.kind == K::Effect     ? "effect"
+                                            : (unknownAsInstrument ? "instrument" : "effect");
+    return ref;
 }
 // A format's folder name, as Live writes its own.
 inline std::string formatFolder(const std::string &format) {

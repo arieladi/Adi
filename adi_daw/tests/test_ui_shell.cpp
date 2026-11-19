@@ -2630,9 +2630,40 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
             return -1;
         };
         const int glass = rowNamed("Glass Piano");
-        check(glass >= 0 && !browser.load(glass) && root.error().find("waits for the engine's insert") != std::string::npos &&
-                  root.error().find("N57") != std::string::npos,
-              "a double-click on a plug-in says its load waits for the engine's insert (N57)");
+        check(glass >= 0 && !browser.load(glass) && root.error().find("application's plug-in host") != std::string::npos,
+              "outside the application a double-click on a plug-in says it needs the application's host");
+        // DF-W9's load on N57: the reference handed over, its kind the subtype that places it.
+        std::vector<std::pair<rows::PluginRef, std::int64_t>> loaded;
+        root.loadPlugin = [&loaded](const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t>) {
+            loaded.emplace_back(ref, track);
+            return true;
+        };
+        std::int64_t audioTrack = 0, midiTrack = 0;
+        for (const auto &t : root.reader().tracks())
+            if (t && t->kind == "audio" && audioTrack == 0)
+                audioTrack = t->id;
+            else if (t && t->kind == "midi" && midiTrack == 0)
+                midiTrack = t->id;
+        root.arrangement.geometry.selection.track = midiTrack;
+        check(midiTrack != 0 && browser.load(glass) && loaded.size() == 1 && loaded[0].second == midiTrack &&
+                  loaded[0].first.format == "clap" && loaded[0].first.uid == "org.adi.glass" &&
+                  loaded[0].first.subtype == "instrument" && loaded[0].first.pathHint == "/x/glass.clap" &&
+                  loaded[0].first.vendor == "Northwind Audio",
+              "a CLAP instrument loads onto the selected track as an instrument, with its identity and file");
+        const int echoRow = rowNamed("Echo");
+        root.arrangement.geometry.selection.track = audioTrack;
+        check(audioTrack != 0 && browser.load(echoRow) && loaded.size() == 2 && loaded[1].first.format == "vst3" &&
+                  loaded[1].first.subtype == "effect" && root.error().find("an audio effect") != std::string::npos &&
+                  root.error().find("N58") != std::string::npos,
+              "a VST3 of unknown kind onto an audio track goes in as an effect, and says why it guessed");
+        root.arrangement.geometry.selection.track = midiTrack;
+        check(browser.load(echoRow) && loaded.size() == 3 && loaded[2].first.subtype == "instrument" &&
+                  root.error().find("an instrument") != std::string::npos,
+              "onto a MIDI track, as its instrument");
+        root.arrangement.geometry.selection.track = 0;
+        check(!browser.load(echoRow) && loaded.size() == 3 && root.error().rfind("Select a track", 0) == 0,
+              "with no track selected it says to select one");
+        root.loadPlugin = nullptr;
         browser.search.setText("zeta", false);
         browser.search.onTextChange();
         layout.clear();

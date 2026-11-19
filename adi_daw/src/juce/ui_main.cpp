@@ -500,6 +500,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // A VST3 or CLAP plug-in from the browser (DF-W9 on N57): one undo step; the session makes it
+        // through the gated loader, so a scan running meanwhile is waited for.
+        root->loadPlugin = [this](const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before) {
+            const bool ok = document_->insertPlugin(ref, track, before);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
         // The control bar's Re-Enable Automation and Automation Arm (manual 25.4, 25.1; N26): the
         // session's state, through the document.
         root->reenableAutomation = [this] {

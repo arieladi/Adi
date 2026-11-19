@@ -32,7 +32,7 @@ class BrowserList final : public juce::ListBox {
 // of the device chosen in the strip; a drag drops it onto a lane's track or into the chain. An entry
 // this build cannot load is dimmed and says why. Plug-Ins lists the VST3 and CLAP plug-ins the app's
 // loader found, in folders by format and vendor (DF-W9), from the app's scan off the message thread
-// (DF-W34); loading one waits for the engine's insert of a plug-in (N57), so each is dimmed and says so. The other categories say what they wait for.
+// (DF-W34); double-click or Enter loads one onto the selected track through the engine's insert (N57). The other categories say what they wait for.
 class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient, private juce::ListBoxModel {
   public:
     explicit BrowserPanel(AdiRootComponent &);
@@ -99,7 +99,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void setPluginScan(const PluginScan &);
     const PluginListing &plugins() const noexcept { return pluginScan_.listing; }
     const PluginScan &pluginScan() const noexcept { return pluginScan_; }
-    // What a load of a plug-in says until the engine inserts one (N57).
+    // What a load of a plug-in says where nothing can load it (outside the application).
     static std::string pluginWaits(const PluginEntry &);
     // Why a catalogue entry cannot load in this build; empty when it can.
     static std::string unavailable(const BuiltinInfo &);
