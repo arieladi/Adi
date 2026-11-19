@@ -148,6 +148,7 @@ void run() {
     std::printf("METRIC EQEight Pd peak %.9f far %.12f\n", peak, floor);
     wav(audio);
     engine.sendParameter(87, 1);
+    block(); // DEV-09: a parameter reaches Pd in the next locked tick, before its block
     engine.requestLatencyReport();
     check(latency.latencySamples() == 16, "2x latency reaches host");
     for (int id = 1; id <= 87; ++id)

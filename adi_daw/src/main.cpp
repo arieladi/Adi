@@ -8,6 +8,7 @@
 #include "adi/blob.hpp"
 #include "adi/changeset.hpp"
 #include "adi/check.hpp"
+#include "adi/salvage.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/digest.hpp"
 #include "adi/ops.hpp"
@@ -43,6 +44,7 @@ int usage() {
         "                           each op's closed JSON Schema, as the control\n"
         "                           boundary enforces it (CTL-02)\n"
         "  adi_tool check <file>    verify structure and external media hashes\n"
+        "  adi_tool salvage <in> <out>  recover a closed .adi into a new file\n"
         "  adi_tool collect-export <in.adi> <out.zip>  portable ZIP64 copy\n"
         "  adi_tool extract-media <file.adi>  extract legacy embedded media\n"
         "  adi_tool export <file>   the canonical text projection (ADR-0007)\n"
@@ -260,6 +262,25 @@ int cmdCheck(const char* path) {
     return rep.errors ? 1 : 0;
 }
 
+int cmdSalvage(const char* input, const char* output) {
+    const auto result = adi::salvageProject(input, output);
+    for (const auto& finding : result.report.findings)
+        std::printf("  %-8s %-24s %-34s %s\n", adi::toString(finding.severity),
+            finding.code.c_str(), finding.where.c_str(), finding.detail.c_str());
+    if (!result.published) {
+        std::fprintf(stderr, "salvage failed; nothing published: %s\n", result.error.c_str());
+        return result.exitCode();
+    }
+    std::printf("published salvaged copy: %s\n%d checks, %d error(s), %d warning(s)\n",
+        output, result.report.checksRun, result.report.errors, result.report.warnings);
+    std::printf("lost-and-found table %s: %lld row(s)\n",
+        result.lostAndFoundTable.c_str(), static_cast<long long>(result.lostAndFoundRows));
+    std::printf("Recovery can lose or alter rows without detecting them. No history links were repaired.\n"
+                "External media paths are unchanged and media files were not verified or copied.\n");
+    if (!result.warning.empty()) std::fprintf(stderr, "warning: %s\n", result.warning.c_str());
+    return result.exitCode();
+}
+
 /// ADR-0145 d9, ADR-0148. Exit codes: 0 previewed (or applied), 1 refused or
 /// failed, 3 stale -- the file moved on and the changeset must be rebuilt.
 /// AGT-01: the per-request cap is the user's agent.maxOpsPerRequest, the same
@@ -424,6 +445,10 @@ int main(int argc, char** argv) {
     if (cmd == "check") {
         if (argc < 3) return usage();
         return cmdCheck(argv[2]);
+    }
+    if (cmd == "salvage") {
+        if (argc != 4) return usage();
+        return cmdSalvage(argv[2], argv[3]);
     }
 
     std::printf("unknown command: %s\n\n", cmd.c_str());

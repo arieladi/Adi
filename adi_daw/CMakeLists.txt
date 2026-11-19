@@ -120,6 +120,12 @@ set(JSON_Install               OFF CACHE BOOL "" FORCE)
 add_subdirectory("${ADI_THIRD_PARTY}/SQLiteCpp" "${CMAKE_BINARY_DIR}/third_party/SQLiteCpp" EXCLUDE_FROM_ALL SYSTEM)
 add_subdirectory("${ADI_THIRD_PARTY}/json" "${CMAKE_BINARY_DIR}/third_party/json" EXCLUDE_FROM_ALL SYSTEM)
 
+# PD-13: one SQLite runtime. Raw-page reads support the CLI recovery extension;
+# default defensive connections keep ordinary SQL from writing those pages.
+# The recovery extension itself is linked only into adi_tool and its tests.
+target_compile_definitions(sqlite3 PRIVATE SQLITE_ENABLE_DBPAGE_VTAB SQLITE_DEFAULT_DEFENSIVE)
+include(cmake/sqlite_recover.cmake)
+
 # ADR-0127: pinned C dependencies. BLAKE3's SIMD paths: see below.
 foreach(source BLAKE3/c/blake3.c miniz/miniz.c pffft/pffft.c)
     if(NOT EXISTS "${ADI_THIRD_PARTY}/${source}")
@@ -710,7 +716,9 @@ add_library(adi_changeset STATIC src/adi/changeset.cpp)
 target_link_libraries(adi_changeset PUBLIC adi_core PRIVATE adi_warnings)
 
 add_executable(adi_tool src/main.cpp)
-target_link_libraries(adi_tool PRIVATE adi_settings adi_core adi_changeset adi_warnings)
+add_library(adi_salvage STATIC src/adi/salvage.cpp)
+target_link_libraries(adi_salvage PUBLIC adi_core PRIVATE adi_sqlite_recover adi_warnings)
+target_link_libraries(adi_tool PRIVATE adi_settings adi_core adi_changeset adi_salvage adi_warnings)
 
 # ---------------------------------------------------------------------------
 # Tests. No framework yet on purpose — a dependency we would have to justify,
@@ -726,6 +734,11 @@ add_test(NAME adi_tests COMMAND adi_tests)
 add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
+add_executable(adi_salvage_tests tests/test_salvage.cpp)
+target_link_libraries(adi_salvage_tests PRIVATE adi_salvage adi_warnings)
+add_dependencies(adi_salvage_tests adi_tool)
+target_compile_definitions(adi_salvage_tests PRIVATE ADI_TOOL_PATH="$<TARGET_FILE:adi_tool>")
+add_test(NAME adi_salvage_tests COMMAND adi_salvage_tests)
 add_executable(adi_project_files_tests tests/test_project_files.cpp)
 target_link_libraries(adi_project_files_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_project_files_tests COMMAND adi_project_files_tests)

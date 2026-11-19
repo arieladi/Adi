@@ -73,6 +73,8 @@ THIRD_PARTY=(
   "richgel999/miniz            miniz       MIT       3.1.2     77d0dce8627735138c51770d1799a1ef48f2117d build"
   # SQLite 3.53.4 in this release contains the upstream WAL-reset fix.
   "SRombauts/SQLiteCpp          SQLiteCpp   MIT       3.4.0     df0a28ca9733f687ab7ce77f070c0df84368a45e  build"
+  # Only the three recovery API files, matched to SQLiteCpp's amalgamation.
+  "sqlite/sqlite sqlite-recover Public-Domain version-3.53.4 b09c88c14082339b66c7b7158d609a771e64ca69 build recovery"
   "nlohmann/json                json        MIT       v3.12.0   55f93686c01528224f448c19128836e7df245f72  build"
   "breakfastquay/rubberband     rubberband  GPL-2.0-or-later v4.0.0 1d95888bec3ae0a17c0c4af791810d5a63f6bc35 build"
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
@@ -207,7 +209,7 @@ fetch_pinned() {
         fi
     else
         printf '  %-18s cloning...    ' "$dir"
-        if [ "$sub" = headers ]; then
+        if [ "$sub" = headers ] || [ "$sub" = recovery ]; then
             git clone --filter=blob:none --sparse --depth 1 --branch "$tag" \
                 -c advice.detachedHead=false -q "$(repo_url "$repo")" "$path" 2>/dev/null || true
         else
@@ -218,6 +220,9 @@ fetch_pinned() {
 
     if [ "$sub" = headers ] && [ -d "$path/.git" ]; then
         git -C "$path" sparse-checkout set --no-cone '/libavcodec/*.h' '/libavutil/*.h' /COPYING.LGPLv2.1 /LICENSE.md
+    fi
+    if [ "$sub" = recovery ] && [ -d "$path/.git" ]; then
+        git -C "$path" sparse-checkout set --no-cone /ext/recover/sqlite3recover.c /ext/recover/sqlite3recover.h /ext/recover/dbdata.c /manifest.uuid
     fi
 
     # A submodule is fetched only where the table asks. Shallow, like the parent:
