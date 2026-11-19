@@ -4,6 +4,24 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19 · Scanner refusal cache, known VST3 loading and default take playback
+
+**PR requested** — `engine-win/scanner-failure-cache` at `cab873e2bef86e9660b5abe0cf405521bf4c8389`, stacked on `engine-win/scanner-success-cache` at `f8fa0efaa8dd154e143e393d66342cb7382bc875`. Title **Remember stamped scanner refusals and retry aliased modules**.
+
+DEV-25. An unchanged rejection, including a zero-class CLAP module, keeps a failed result with zero strikes and no quarantine entry. The second crash or timeout blocks an unchanged module. A reliably changed stamp retires the automatic failure while preserving manual and legacy blocks. Explicit retry resolves slash, case and directory-junction aliases. The Windows junction was created and exercised without privilege changes. Strict x64 MSVC passed 224 checks across five suites. Symbolic-link cases requiring unavailable privilege were skipped.
+
+**PR requested** — `engine-win/catalogue-first` at `262a26066ee54e1bed23712213c6d7d6828844ec`, stacked on `engine-win/scanner-success-cache` at `f8fa0efaa8dd154e143e393d66342cb7382bc875`. Title **Reuse the VST3 catalogue before probing a saved path**.
+
+DF-E20(c), known VST3 lookups. The Windows test instantiated a known fixture repeatedly even after removing its private scanner helper, including a request with no hint. An unknown class at a known module returned missing. The hosted render and VST3 scanner suites passed. The VST3 callback test measures the empty-result overhead of MSVC's Debug containers separately and still requires zero additional scanner allocations and zero callback I/O. Unknown modules retain their legacy discovery path until startup catalogue hydration and service land.
+
+**PR requested** — `engine-win/export-publication-report` at `71ef466a93afcfd979598371a4c7a1f556c853d2`, stacked on `engine-win/export-final-names` at `96ac4186d6cfeff80664ec8a761e40bcd3d05b23`. Title **Keep export publication results and serialize run outcomes**.
+
+DF-E19(a). WAV and NI use one AtomicOnly commit helper and preserve the publisher's warning, fallback and durability fields independently of Completed. The caller can serialize the frozen run membership and outcomes as JSON, including removed and unstarted jobs, without a sidecar write. Strict x64 MSVC passed 469 checks across four suites. Native AAC integration remains unavailable. The report retains requested inputs and actual output and normalization. EX-01 revision and media identity and EX-07 batch collision handling still need their own steps. When combining with `publication-owned-copy`, keep the sync hook at both publication result sites in the shared file publisher.
+
+**PR requested** — `engine-win/timeline-main-lane` at `8c088dcbfce9a2264290d58022dfee171843fbbb`, base `main` at `ae09f6386eea47adb78809558177e3188582b7d0`. Title **Select the arrangement main lane for default playback**.
+
+First CT-01 engine step. Audio, MIDI, controllers, clip envelopes, gain staging and freeze playback readers use the shared main-lane selection. Stored take clips remain available to editors. Tests check exact main audio with an overlapping take, silence after removing the main clip, only the main MIDI note and expression, and release after refresh. Strict x64 MSVC passed 1,138 checks across six suites. Lane journal operations, audition, edit scopes and loop recording are subsequent steps.
+
 ## 2026-11-19 · Publication policy and the take-lane readings
 
 **PR requested** — `engine-win/publication-policy` at `d661f704cc423434dc80770e6a14f81598e3f857`, stacked on `engine-win/publication-owned-copy` at `629a9f3de471b6d38857c25342f8962221178380`. Title **Set publication policies at their callers**.
