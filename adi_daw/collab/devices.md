@@ -14,6 +14,41 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-16, step 1: the `.amxd` translator — reader, pre-flight, the exact subset
+
+**`devices/amxd-translator` (`70c63694`), stacked on `devices/pd-object-walk`.** P2, taken now
+because every M-row left in this lane waits on a reading, an ADR or another seat. It needs DEV-10
+to become a device; the translation itself needs nobody.
+
+- `translateAmxd(bytes)` (`src/juce/pd_amxd.*`, no libpd): reads the `ampf`/`meta`/`ptch`
+  container; Live's encrypted (`ciph`) devices and frozen (`mx@c`) devices are not read. Audio
+  effects only in this step.
+- **The pre-flight is the translation table**: a Max box translates only where Pd behaves the
+  same — signal arithmetic (scalar or signal right inlet chosen from what feeds it), `cycle~`
+  (not its phase inlet: an offset in Max, a reset in Pd), `phasor~`, `sig~`, `plugin~`/`plugout~`
+  → `adc~`/`dac~`, `loadbang`, `live.thisdevice`'s load bang, `metro` in ms, `trigger` b/f/l/s,
+  float arithmetic only (Max's `[+ 1]` is integer), `send`/`receive` (`---x` → `$0-x`), `print`,
+  messages (escaped), flonums, comments. `live.dial`/`live.numbox`/`live.slider` → `[adi.param]`
+  with range, default, unit and curve. Everything else is refused, box by box, with its reason;
+  the result must then pass PD4's walk.
+- **Max's right-to-left order made explicit**: each control fan-out goes through `[t a ...]`, its
+  right outlet to the rightmost box. Equal x: lower box first — an assumption; Max's tie rule is a
+  reading to take (Max, not Live; not run here).
+- Tests (every device written by the test): container cases; a gain device and a `live.dial`
+  device translate, walk clean against the running build, open in libpd and play input × 0.5 and
+  × 0.25 **exactly** at the reported 64 samples; a fan-out prints right before left in Pd. Plant:
+  no trigger → 3 failures, one heard at run time (Pd alone fires left first). 25 checks; CTest
+  **247/247**.
+
+**PR requested** — title "The .amxd translator, step 1: reader, pre-flight and the exact subset
+(DEV-16)"; head `devices/amxd-translator` at `70c63694`; base `devices/pd-object-walk` until it
+lands, then `main`. Body: the commit message.
+
+**Still to do in DEV-16:** step 2 (integer arithmetic made explicit with `[i]`, `pack`/`unpack`,
+subpatchers as `pd` canvases with `inlet~`/`inlet` chosen by what crosses them, `line~` as
+segments); MIDI devices after DEV-14/DEV-18; the AI path for the rest (Propose tier, engine);
+Suite's LFO/Envelope Follower/Shaper after DEV-07. The parity test against Live needs readings.
+
 ## 2026-11-19 — PD4: the allowed-object walk, with the vocabulary read from the running build
 
 **`devices/pd-object-walk` (`2d949a65`), from `main`.** PD4 serves DEV-09, DEV-10, DEV-11 and
