@@ -87,7 +87,7 @@ struct Fixture {
     }
     bool noStage() const {
         for (const auto& p : fs::directory_iterator(dir.path()/"out"))
-            if (p.path().filename().string().starts_with(".adi-render-")) return false;
+            if (media::pathUtf8(p.path().filename()).starts_with(".adi-render-")) return false;
         return true;
     }
 };
@@ -706,12 +706,8 @@ void finalNamesAndCaseCollisions() {
     auto caseJob=f.job("caseonly");
     caseJob.beginSample=200; // A mistaken replacement would change the first file's length.
     const auto second=renderWav(caseJob,{});
-    if (aliases)
-        check(second.state==JobState::Failed && second.error=="export destination already exists",
-              "case-insensitive filesystem refuses a case-only destination collision");
-    else
-        check(second.state==JobState::Completed && !fs::equivalent(first.output,second.output),
-              "case-sensitive filesystem retains distinct names until EX-07 preflight policy is implemented");
+    check(second.state==JobState::Failed && second.error=="export destination already exists",
+          "portable preflight refuses a case-only collision independently of native lookup");
     audio::WavReader retained(first.output);
     check(retained.frames()==866 && f.noStage(),"case-only publication leaves the first file intact and no stage");
 }
@@ -785,19 +781,17 @@ void collisionModes() {
           "increment overflow refuses without truncating or replacing a valid shorter original");
     const auto cased=renderWav(f.job("NativeCase"),{});
     auto lower=f.job("nativecase");lower.collision=Collision::Increment;
-    const bool aliases=fs::exists(lower.directory/"nativecase.wav");
     const auto next=renderWav(lower,{});
-    check(next.state==JobState::Completed && next.output.filename()==(aliases?"nativecase (2).wav":"nativecase.wav") &&
+    check(next.state==JobState::Completed && next.output.filename()=="nativecase (2).wav" &&
           !fs::equivalent(cased.output,next.output),
-          "Increment respects case-only aliases according to the actual destination directory");
+          "Increment reserves portable case-folded spellings independently of native lookup");
     const auto unicodeUpper=renderWav(f.job("\xC3\x89tude"),{});
     auto unicodeLower=f.job("\xC3\xA9tude");unicodeLower.collision=Collision::Increment;
-    const bool unicodeAliases=fs::exists(unicodeLower.directory/media::pathFromUtf8("\xC3\xA9tude.wav"));
     const auto unicodeNext=renderWav(unicodeLower,{});
     check(unicodeNext.state==JobState::Completed &&
-          unicodeNext.output.filename()==media::pathFromUtf8(unicodeAliases?"\xC3\xA9tude (2).wav":"\xC3\xA9tude.wav") &&
+          unicodeNext.output.filename()==media::pathFromUtf8("\xC3\xA9tude (2).wav") &&
           !fs::equivalent(unicodeUpper.output,unicodeNext.output),
-          "non-ASCII case-only aliases use native filesystem lookup rather than ASCII folding");
+          "Increment folds non-ASCII case with the pinned Unicode policy");
     auto reserved=f.job("CON.song");reserved.collision=Collision::Increment;
     check(renderWav(reserved,{}).state==JobState::Completed,"reserved stem is escaped before collision resolution");
     check(renderWav(reserved,{}).output.filename()=="_CON.song (2).wav",
@@ -810,6 +804,79 @@ void collisionModes() {
     check(renderWav(invalid,{}).state==JobState::Failed &&
           !fs::exists(invalid.directory/"invalid-policy.wav") && f.noStage(),
           "unknown collision policies are refused before publication");
+}
+std::error_code nativeExclusiveRename(const fs::path& source,const fs::path& target) {
+#if defined(_WIN32)
+    if(MoveFileExW(source.c_str(),target.c_str(),MOVEFILE_WRITE_THROUGH))return {};
+    const auto error=GetLastError();
+    if(error==ERROR_ALREADY_EXISTS || error==ERROR_FILE_EXISTS)return std::make_error_code(std::errc::file_exists);
+    return {static_cast<int>(error),std::system_category()};
+#else
+    std::error_code error;fs::create_hard_link(source,target,error);
+    if(!error)fs::remove(source,error);
+    return error;
+#endif
+}
+bool nativeAliasAfterFoldCheck=false;
+void foldedCollisionNames() {
+    Fixture f;
+    const auto write=[](const fs::path& path,const char* bytes){std::ofstream out(path,std::ios::binary);out<<bytes;out.close();if(!out)throw std::runtime_error("folded collision fixture write");};
+    const auto text=[](const fs::path& path){std::ifstream in(path,std::ios::binary);return std::string{std::istreambuf_iterator<char>(in),{}};};
+    const auto original=renderWav(f.job("Stra\xC3\x9F" "e"),{});
+    check(original.state==JobState::Completed,"Unicode expansion source is a real rendered file");
+    const auto digest=media::blake3File(original.output).hex;
+    const auto upper=f.job("STRASSE");
+    const bool nativeAliases=fs::exists(upper.directory/"STRASSE.wav");
+    std::printf("Export names: native Strasse expansion alias %s\n",nativeAliases?"yes":"no");
+#if defined(_WIN32)
+    check(!nativeAliases,"Windows fixture distinguishes Strasse fold expansion from native case lookup");
+#endif
+    const auto fail=renderWav(upper,{});
+    check(fail.state==JobState::Failed && fail.framesWritten==0 && !fail.publication &&
+          media::blake3File(original.output).hex==digest,"Fail rejects full Unicode fold expansion before rendering and preserves the original");
+    write(upper.directory/media::pathFromUtf8("Stra\xC3\x9F" "e (2).WAV"),"number two");
+    write(upper.directory/media::pathFromUtf8("unrelated-\xF0\x9F\x8E\xB5.txt"),"unrelated Unicode");
+    auto increment=upper;increment.collision=Collision::Increment;
+    const auto third=renderWav(increment,{});
+    check(third.state==JobState::Completed && third.output.filename()=="STRASSE (3).wav" &&
+          media::blake3File(original.output).hex==digest && matches(read(third,866),137),
+          "Increment uses folded complete filenames for every candidate and renders the chosen audio");
+    const auto composed=renderWav(f.job("Caf\xC3\xA9"),{});
+    const auto decomposed=renderWav(f.job("CAFE\xCC\x81"),{});
+    check(composed.state==JobState::Completed && decomposed.state==JobState::Failed && !decomposed.publication,
+          "canonical composition and Unicode folding reject a decomposed equivalent name");
+    for(const auto mode:{Collision::Fail,Collision::Increment}) {
+        const std::string ending=mode==Collision::Fail?"-fail":"-increment";
+        auto job=f.job("Stra\xC3\x9F" "e-late"+ending);job.collision=mode;
+        if(mode==Collision::Increment)write(job.directory/media::pathFromUtf8(job.nameTemplate+".wav"),"existing original");
+        const auto number=mode==Collision::Increment?" (2)":"";
+        const auto arrival=job.directory/media::pathFromUtf8("STRASSE-LATE"+ending+number+".WAV");
+        bool introduced=false;Control control;
+        control.progress=[&](JobId,std::uint64_t done,std::uint64_t){if(done && !introduced){write(arrival,"later folded arrival");introduced=true;}};
+        const auto result=renderWav(job,{},control);
+        check(introduced && result.state==JobState::Failed && result.framesWritten>0 && !result.publication &&
+              text(arrival)=="later folded arrival" && result.output.filename()==media::pathFromUtf8(job.nameTemplate+number+".wav") &&
+              !fs::exists(job.directory/media::pathFromUtf8(job.nameTemplate+" (3).wav")) && f.noStage(),
+              "publication recheck rejects a late folded collision without renumbering or removing the arriving file");
+    }
+    Control exactRace;
+    exactRace.publicationHooks.rename=[](const fs::path& source,const fs::path& target) {
+        {std::ofstream out(target,std::ios::binary);out<<"native last-instant arrival";}
+        return nativeExclusiveRename(source,target);
+    };
+    const auto exact=renderWav(f.job("native-last-instant"),{},exactRace);
+    check(exact.state==JobState::Failed && !exact.publication && text(exact.output)=="native last-instant arrival" && f.noStage(),
+          "native exclusive publication still refuses an exact collision introduced after the folded recheck");
+    Control foldRace;
+    foldRace.publicationHooks.rename=[](const fs::path& source,const fs::path& target) {
+        {std::ofstream out(target.parent_path()/"AFTER-CHECK-SS.wav",std::ios::binary);out<<"fold-only late arrival";}
+        nativeAliasAfterFoldCheck=fs::exists(target);
+        return nativeExclusiveRename(source,target);
+    };
+    const auto after=renderWav(f.job("after-check-\xC3\x9F"),{},foldRace);
+    check(text(after.output.parent_path()/"AFTER-CHECK-SS.wav")=="fold-only late arrival" &&
+          (nativeAliasAfterFoldCheck?after.state==JobState::Failed:after.state==JobState::Completed) && f.noStage(),
+          "after the folded recheck native no-clobber protects native aliases only, with no cross-process folded reservation");
 }
 std::error_code failDirectorySync(const fs::path&) { return std::make_error_code(std::errc::io_error); }
 std::error_code confirmDirectorySync(const fs::path&) { return {}; }
@@ -1147,7 +1214,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); collisionModes(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); collisionModes(); foldedCollisionNames(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

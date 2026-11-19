@@ -185,9 +185,13 @@ void publishVerifiedOutput(const std::filesystem::path& stage, Result&, const Co
                            const char* collisionMessage);
 // Select once before rendering/encoding the final delivery. Increment inserts
 // " (2)", " (3)", ... before the complete suffix. Never renumbers at publication.
+// Compare complete filenames with pinned Unicode composition/case folding,
+// plus native lookup for aliases. One directory inventory per preflight.
 // The caller sets result.output to its original complete filename first.
 void prepareOutput(Result&, Collision, const char* suffix, const char* collisionMessage);
 // Shared WAV/NI commit point. Allocate warning storage before publication;
+// recheck folded collisions first; a later race is covered only by native
+// no-clobber semantics, not a cross-process folded-name reservation.
 // nothing after successful publication can throw and turn it into Failed.
 void publishOutput(const std::filesystem::path& stage, Result&, media::PublishHooks,
                    const char* collisionMessage);

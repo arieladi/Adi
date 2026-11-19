@@ -27,7 +27,15 @@ even if a private staging directory needs attention.
 WAV or NI delivery. The original complete filename is tried first. If occupied,
 Increment selects `name (2).wav`, `name (3).wav`, and so on, or
 `name (2).stem.mp4` for NI. Files, directories and dangling symlinks all occupy
-a name. After the original, the search tries at most the observed directory-entry
+a name. Complete filenames are compared with the same pinned utf8proc policy as
+the library: `STABLE | COMPOSE | CASEFOLD`. Canonically equivalent spellings and
+full Unicode expansions such as `Straße`/`STRASSE` therefore collide even when
+the destination filesystem distinguishes them. Comparison does not rewrite the
+chosen filename. Native lookup additionally catches aliases such as Windows
+short names. Invalid UTF-8 directory names cause a safe preflight/check failure.
+One directory inventory supplies the folded set for all preflight candidates;
+there is no repeated directory walk for each increment. After the original,
+the search tries at most the observed directory-entry
 count plus one numbered candidate, and fails if concurrent changes prevent
 finding a free name within that bound. This places no arbitrary small limit on
 existing numbered exports. Filesystem enumeration/lookup is synchronous; a stop
@@ -37,15 +45,23 @@ The 200-byte UTF-8 limit includes the reserved-name prefix, increment text and
 the complete format suffix; names are never truncated to fit.
 
 Selection occurs once at delivery preflight. The selected path is then fixed:
-an arrival at that path before atomic publication fails the attempt and preserves
-the arriving file, rather than silently incrementing again. NI's internal WAVs
+the shared WAV/NI commit helper makes one fresh streaming comparison of the
+directory immediately before calling the native publisher. A folded collision
+observed then fails the attempt and preserves the arriving file, rather than
+silently incrementing again. NI's internal WAVs
 always use Fail; delivery numbering does not alter the private Main/stem names.
-Case-only collisions follow the actual destination directory's native lookup
-semantics, including Unicode names. A case-sensitive directory may retain two
-case-only names; this slice does not implement EX-07's broader case-folded
-delivery-set policy. There is no multi-format/group renumbering, save-dialog
+
+The folded recheck is not an atomic cross-process name reservation. An arrival
+after it is covered by the OS's native no-clobber semantics: an exact/native
+alias cannot be overwritten, but a fold-only equivalent that the OS regards as
+distinct may coexist. Tests inject both kinds at the native rename boundary and
+make this limit explicit. A stronger cross-process folded reservation remains
+separate work. There is no multi-format/group renumbering, save-dialog
 confirmation or batch policy selection. Replace remains unavailable pending a
 separate explicit opt-in and destination-identity contract inside `replaceFile`.
+
+The comparison dependency is the existing utf8proc v2.11.3, pinned at
+`e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78` (MIT) in `tools/fetch_external.sh`.
 
 `Queue::lastRun()` describes the pending membership frozen at the beginning of
 the latest `run()`. Callback-added jobs belong to a later run. Removed pending

@@ -208,6 +208,19 @@ void collisionPublication() {
             "NI increment refuses a 201-byte final compound filename");
     check(fs::file_size(validOriginal)==8 && !fs::exists(overflow.output),
           "NI increment overflow leaves the shorter existing delivery untouched");
+    const auto foldedOriginal=dir.path()/media::pathFromUtf8("Stra\xC3\x9F" "e.STEM.MP4");
+    write(foldedOriginal,"folded original");write(stage,"folded NI candidate");
+    render::Result folded;folded.output=dir.path()/"STRASSE.stem.mp4";
+    refuses([&] {render::detail::prepareOutput(folded,render::Collision::Fail,".stem.mp4","NI destination exists");},
+            "NI Fail compares Unicode-expanded names and the entire compound suffix");
+    render::detail::prepareOutput(folded,render::Collision::Increment,".stem.mp4","NI destination exists");
+    check(folded.output.filename()=="STRASSE (2).stem.mp4","NI folded Increment preserves selected spelling and compound suffix");
+    const auto arrival=dir.path()/media::pathFromUtf8("Stra\xC3\x9F" "e (2).STEM.MP4");write(arrival,"late folded NI");
+    const auto retained=media::blake3File(arrival).hex;
+    refuses([&] {render::detail::publishOutput(stage,folded,{},"NI destination exists");},
+            "NI shared commit rechecks fold-only late arrivals");
+    check(!folded.publication && fs::exists(stage) && media::blake3File(arrival).hex==retained &&
+          !fs::exists(dir.path()/"STRASSE (3).stem.mp4"),"NI late folded collision leaves private bytes, arrival and numbering unchanged");
 }
 void deliveryMediaVerification() {
     test::TempDirectory dir{"ni_stems", "delivery-media"};

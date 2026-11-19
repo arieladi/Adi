@@ -8,12 +8,16 @@
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <nlohmann/json.hpp>
+#include <utf8proc.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <map>
+#include <memory>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -24,6 +28,33 @@ namespace fs = std::filesystem;
 static_assert(std::is_nothrow_move_assignable_v<Result>);
 static_assert(std::is_nothrow_move_assignable_v<std::string>);
 namespace {
+// Match the library's pinned STABLE + COMPOSE + CASEFOLD policy. The key is
+// only for comparison: neither normalization nor fold expansion renames files.
+std::string foldedFilename(const fs::path& path) {
+    const auto name=media::pathUtf8(path.filename());
+    if(name.size()>static_cast<std::size_t>(std::numeric_limits<utf8proc_ssize_t>::max()))
+        throw std::runtime_error("export filename is too long to compare");
+    utf8proc_uint8_t* data=nullptr;
+    const auto flags=static_cast<utf8proc_option_t>(UTF8PROC_STABLE|UTF8PROC_COMPOSE|UTF8PROC_CASEFOLD);
+    const auto size=utf8proc_map(reinterpret_cast<const utf8proc_uint8_t*>(name.data()),
+        static_cast<utf8proc_ssize_t>(name.size()),&data,flags);
+    std::unique_ptr<utf8proc_uint8_t,decltype(&std::free)> owned(data,&std::free);
+    if(size<0)throw std::runtime_error("invalid UTF-8 export directory entry");
+    return {reinterpret_cast<const char*>(data),static_cast<std::size_t>(size)};
+}
+bool occupiedNative(const fs::path& path) {
+    std::error_code error;const auto status=fs::symlink_status(path,error);
+    if(error==std::errc::no_such_file_or_directory)return false;
+    if(error)throw fs::filesystem_error("inspect export destination",path,error);
+    return status.type()!=fs::file_type::not_found;
+}
+bool occupiedBeforePublication(const fs::path& path) {
+    if(occupiedNative(path))return true;
+    const auto key=foldedFilename(path);
+    for(const auto& entry:fs::directory_iterator(path.parent_path()))
+        if(foldedFilename(entry.path())==key)return true;
+    return false;
+}
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
     if (j.collision != Collision::Fail && j.collision != Collision::Increment)
@@ -227,14 +258,17 @@ void detail::prepareOutput(Result& result,Collision collision,const char* suffix
     validateOutputName(result.output);
     const auto directory=result.output.parent_path();
     if(!fs::is_directory(directory))throw std::runtime_error("export directory does not exist");
-    const auto occupied=[](const fs::path& path) {
-        std::error_code error;
-        const auto status=fs::symlink_status(path,error);
-        if(error==std::errc::no_such_file_or_directory)return false;
-        if(error)throw fs::filesystem_error("inspect export destination",path,error);
-        // A dangling symlink or directory is occupied too. Native lookup keeps
-        // the actual directory's case semantics; never use ASCII-only folding.
-        return status.type()!=fs::file_type::not_found;
+    std::set<std::string> names;
+    std::uint64_t entries=0;
+    for(const auto& entry:fs::directory_iterator(directory)) {
+        if(entries==std::numeric_limits<std::uint64_t>::max()-2)
+            throw std::runtime_error("export directory has too many entries");
+        ++entries;names.insert(foldedFilename(entry.path()));
+    }
+    // One directory inventory for all candidates. Native lookup additionally
+    // catches aliases (including Windows short names) absent from that inventory.
+    const auto occupied=[&](const fs::path& path) {
+        return names.contains(foldedFilename(path)) || occupiedNative(path);
     };
     if(!occupied(result.output))return;
     if(collision==Collision::Fail)throw std::runtime_error(collisionMessage);
@@ -242,17 +276,8 @@ void detail::prepareOutput(Result& result,Collision collision,const char* suffix
     const std::string_view extension(suffix);
     if(extension.empty() || !filename.ends_with(extension))throw std::invalid_argument("invalid export suffix");
     const auto stem=filename.substr(0,filename.size()-extension.size());
-    // With N directory entries, one of N+1 numbered names must be free unless
-    // the directory changes while being inspected. Do not count the original:
-    // it might be a native short-name alias of one numbered long filename.
-    // Bound by the snapshot instead of an arbitrary maximum delivery number.
-    std::uint64_t entries=0;
-    for(const auto& entry:fs::directory_iterator(directory)) {
-        (void)entry;
-        if(entries==std::numeric_limits<std::uint64_t>::max()-2)
-            throw std::runtime_error("export directory has too many entries");
-        ++entries;
-    }
+    // N entries bound N+1 numbered candidates, in addition to the original
+    // (which might be a native short-name alias of a numbered long name).
     for(std::uint64_t offset=0;offset<=entries;++offset) {
         const auto ordinal=offset+2;
         result.output=directory/media::pathFromUtf8(stem+" ("+std::to_string(ordinal)+")"+std::string(extension));
@@ -306,6 +331,9 @@ void detail::publishVerifiedOutput(const fs::path& stage, Result& result, const 
 
 void detail::publishOutput(const fs::path& stage, Result& result, media::PublishHooks hooks,
                           const char* collisionMessage) {
+    // The chosen spelling is frozen. This is a fresh folded check, not an
+    // atomic cross-process folded reservation; native no-clobber still follows.
+    if(occupiedBeforePublication(result.output))throw std::runtime_error(collisionMessage);
     // Reserve the fallback message before the irreversible commit point.
     result.publication.emplace(PublicationReport{false, false,
         "file published; durability could not be confirmed"});
