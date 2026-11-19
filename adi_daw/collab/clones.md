@@ -1,5 +1,9 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER next device increment
+
+On `clones/adi-shaper-modulation` the clones seat takes the shaper's filter and short-delay modulation DSP, `src/adi/dsp/adi_shaper_filter.*`, `src/adi/dsp/adi_shaper_liquid.*`, their dedicated tests and the same ADi-SHAPER device files already reserved. The measured targets are the six low-pass amplitudes at 400 Hz/8 kHz, the modulated flanger delay and the four all-pass stage counts. These additions use the shared per-band curves and crossover path. The first Volume/Width/Pan branch remains independently reviewable.
+
 ## 2026-11-19 — Editable Pd timing cases for the devices seat
 
 At 48 kHz and 120 BPM, set a four-quarter-note held Volume curve with point 1 muted and point 3 open. In 2/2, QN 0 and QN 1 both produce `(1,120,2,2,1,1,0)` on the seven-field Pd transport. A patch reconstructing the integer quarter from these values replays point 1 at QN 1. After a full 4/4 bar followed by 3/4, the start of bar 2 is QN 4. Reconstruction from the current meter gives QN 3.
