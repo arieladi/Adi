@@ -994,22 +994,32 @@ void classicScopeSurface() {
     picture->sampleRate = 48000;
     picture->previous = {{.25f, .25f, 1, 1}, {.25f, .25f, 2, 2}};
     picture->current = {{.5f, .5f, 7, 7}};
-    const auto pixel = [&](int x, int y) {
-        juce::Image image(juce::Image::RGB, 825, 300, true);
-        juce::Graphics g(image);
-        face.paintEntireComponent(g, true);
+    const auto raster = [&] {
+        juce::Image image(juce::Image::RGB, 825, 300, true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            face.paintEntireComponent(g, true);
+        }
+        return image;
+    };
+    const auto pixel = [](const juce::Image &image, int x, int y) {
         return image.getPixelAt(38 + x, 16 + y);
     };
     auto controls = factory;
     const auto ink = juce::Colour(118, 118, 118);
     face.present(controls, false, picture, 0);
-    check(pixel(0, 67) == ink && pixel(1, 100) == ink, "progressive redraw keeps the preceding sweep tail");
+    const auto progressive = raster();
+    check(pixel(progressive, 0, 67) == ink && pixel(progressive, 1, 100) == ink,
+          "progressive redraw keeps the preceding sweep tail");
     controls.sync = true;
     face.present(controls, false, picture, 0);
-    check(pixel(0, 100) == ink && pixel(0, 67) != ink, "Sync redraw uses only the previous sweep");
+    const auto sync = raster();
+    check(pixel(sync, 0, 100) == ink && pixel(sync, 0, 67) != ink, "Sync redraw uses only the previous sweep");
     controls.sync = false;
     face.present(controls, false, picture, 7);
-    check(pixel(0, 67) == ink && pixel(1, 100) != ink, "the local freshness fence omits pre-resume columns");
+    const auto fresh = raster();
+    check(pixel(fresh, 0, 67) == ink && pixel(fresh, 1, 100) != ink,
+          "the local freshness fence omits pre-resume columns");
 
     bool heldFace = false;
     face.onChange = [&](const ClassicScopeControls &next) { controls = next; face.present(controls, heldFace, picture, 7); };
@@ -1040,17 +1050,17 @@ void classicScopeSurface() {
     if (timeKnob) timeKnob->setValue(.6, juce::sendNotificationSync);
     check(timeKnob && std::abs(controls.time - .6f) < 1.e-6f, "the original Time knob changes the capture profile");
     auto *wave = face.getComponentAt(158, 206);
-    const auto before = pixel(120, 190);
+    const auto before = pixel(raster(), 120, 190);
     if (wave) {
         const auto left = mouse(*wave, {120.f, 102.f}, juce::ModifierKeys::leftButtonModifier);
         wave->mouseDown(left);
         wave->mouseUp(left);
     }
-    check(wave && wave->getTitle() == "Waveform ruler" && pixel(120, 190) == juce::Colour(10, 10, 10) &&
-              pixel(120, 190) != before,
+    const auto ruler = pixel(raster(), 120, 190);
+    check(wave && wave->getTitle() == "Waveform ruler" && ruler == juce::Colour(10, 10, 10) && ruler != before,
           "a left press places the sticky ruler independently of the waveform");
     if (wave) wave->mouseUp(mouse(*wave, {120.f, 102.f}, juce::ModifierKeys::rightButtonModifier));
-    check(pixel(120, 190) == before, "a right press clears the ruler");
+    check(pixel(raster(), 120, 190) == before, "a right press clears the ruler");
 
     Fixture f;
     Root root;
