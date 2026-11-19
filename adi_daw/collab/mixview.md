@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — DF-M18 saved-output verification
+
+Correction to the preceding entry. The near-Nyquist source comparison already existed. Replayed all 16 saved cases with the exact latest Windows Release key EQ libraries. All pass the established peak and RMS limits across 2,342,912 stereo frames, including the high-order 20 kHz band-pass and near-edge Tilt. The 10.449 dB finding measures the difference between ADI coefficients built at the host rate and at 384 kHz. The verified host-rate response should be preserved. Keep the generated magnitude test and the existing source-policy decision when reviewing #561.
+
 ### 2026-11-19 — Combined Windows gates for the pending dynamics branches
 
 Rehearsed the published branches after #555 in review order: #558 `fa3a1d3f`; #560 then #562 `c37b86e0`; #561, #564 and #567 `9b7f577e`; #566 then #572 `7d3bd050`; #570 `117cd027`; and #573 `8f310b71`. Once Hold is reconciled, the same cumulative proof requires only the shared CMake resolution. Keep the serial EQ and native Clean registrations and add the six core modules and test suites once. This stages a future integration proof. Only the existing native Clean function is available in the review build.
