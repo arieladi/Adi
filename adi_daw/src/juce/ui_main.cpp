@@ -632,7 +632,10 @@ class AdiApplication final : public juce::JUCEApplication,
             juce::MessageManager::callAsync([this, name, result] {
                 if (juce::JUCEApplicationBase::getInstance() != this || !root_ || !window_)
                     return;
-                root_->say(result.ok ? "Exported " + name : "Collect and Export failed: " + result.error);
+                auto message = result.ok ? "Exported " + name : "Collect and Export failed: " + result.error;
+                if (!result.warning.empty())
+                    message += ". " + result.warning;
+                root_->say(message);
             });
         });
         root_->say("Collecting and exporting to " + name + "...");
