@@ -10,6 +10,12 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, SQLiteCpp pin ready for ABI validation (ADR-0248 d7)
+
+**PR requested for validation** — `engine-win/sqlitecpp-pin` at `e9af6572e607e62a224c33ecfe5711ea5c4ce041`, on main `12aab48a`. This branch changes only the dependency pin in `fetch_external.sh`. Win can carry the workflow hunk from `8a8f9a00` before running ADR-0024's full ABI matrix. The matrix is still required for landing.
+
+The pinned source is SQLiteCpp 3.4.0 at `df0a28ca9733f687ab7ce77f070c0df84368a45e`. The rebuilt Windows executable reports SQLite 3.53.4. Bash syntax and strict MSVC x64 `/W4 /WX` passed, with 824 checks across eight storage and registry suites. Optional symlink cases lacked privilege. No workflow change on the requested branch.
+
 ## 2026-11-19, single-WAV export and full Windows file identity (EX-07, DF-E19, DF-E32 d)
 
 **PR requested** — `engine-win/single-wav-export` at `77438d2e552fcf42eb46060641cc8835d368cde4`. Replaces the #666 export head after the publication reliability family at `c36e200d`. The branch carries win's `eee05d0e`, retains its folded collision and media verification, and preserves the closed-stage publication retries.
