@@ -42,6 +42,22 @@ struct MixFocusTestAccess {
                std::all_of(focus.members_.begin(), focus.members_.end(),
                            [](const auto &member) { return !member.path.isEmpty(); });
     }
+    static bool scopeInterval(const MixFocus &focus, std::int64_t first, std::size_t frames, double rate) {
+        return focus.scopeRange_ && focus.scopeRange_->first == first && focus.scopeRange_->frames == frames &&
+               focus.scopeRange_->sampleRate == rate && focus.sum_;
+    }
+    static bool sumPulseAt(const MixFocus &focus, float position, float value) {
+        const auto plot = focus.plot_;
+        if (plot.isEmpty()) return false;
+        juce::Path::Iterator vertices(focus.scopeSumPaths_[0]);
+        while (vertices.next()) {
+            if (vertices.elementType != juce::Path::Iterator::lineTo) continue;
+            const auto relative = (vertices.x1 - plot.getX()) / plot.getWidth();
+            const auto amplitude = 2.f * (plot.getCentreY() - vertices.y1) / plot.getHeight();
+            if (std::abs(relative - position) <= .013f && std::abs(amplitude - value) <= .015f) return true;
+        }
+        return false;
+    }
     static bool flatScopePaths(const MixFocus &focus) {
         const auto oneSegment = [](const juce::Path &path) {
             juce::Path::Iterator vertices(path);
@@ -1434,6 +1450,99 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     rootOwner.reset();
 }
 
+void focusOneBarScope(AppCommands &commands, const std::filesystem::path &directory) {
+    constexpr int rate = 48000, chunk = 1024;
+    constexpr std::int64_t bar = 96000, early = 12000, late = 84000, pulseLength = 600;
+    constexpr std::int64_t first = 181, second = 182;
+    std::string error;
+    auto doc = ProjectDocument::open(directory / "focus-one-bar.adi", true, device::withBuiltinDevices(), error);
+    check(doc != nullptr, "one-bar Focus opens its own project fixture");
+    if (!doc) return;
+    doc->prepare(rate, chunk);
+    auto root = std::make_unique<AdiRootComponent>(doc->view(), doc->ops(), doc->mailbox(), commands,
+                                                   doc->views(), doc->sessionState(), "focus-one-bar");
+    root->afterEdit = [&] { doc->synchronise(); };
+    const auto addTrack = [&](std::int64_t id) {
+        return root->submitEdit("track.create", {{"id", id}, {"kind", "audio"}, {"name", "One-bar pulse"}},
+                                "Create Scope channel");
+    };
+    const bool created = addTrack(first) && addTrack(second);
+    check(created, "one-bar Scope selects two authored audio tracks");
+    if (!created) return;
+
+    std::array<int, 2> opens{};
+    auto a = std::make_shared<engine::ScopeTap>(rate, .25);
+    auto b = std::make_shared<engine::ScopeTap>(rate, .25);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](engine::ScopeSource source, double) -> std::shared_ptr<const engine::ScopeTap> {
+            if (source.point != engine::ScopePoint::PostFader || source.device != 0) return {};
+            if (source.track == first) { ++opens[0]; return a; }
+            if (source.track == second) { ++opens[1]; return b; }
+            return {};
+        }, [](engine::ScopeSource) {}, SharedAnalysis::Mode::Manual);
+    root->sharedAnalysis = broker;
+
+    // Only the actual Focus component is shown. The root supplies the project
+    // and transport without creating Info, Together or dock demand.
+    UiPeerRoot peer;
+    MixFocus focus(*root);
+    peer.setSize(940, 460); peer.setVisible(true); peer.addToDesktop(0);
+    peer.addAndMakeVisible(focus); focus.setBounds(peer.getLocalBounds());
+    focus.setMembers({first, second});
+    focus.scope.setToggleState(true, juce::dontSendNotification);
+    engine::Transport driver;
+    driver.play(true);
+    const auto frame = [&] {
+        doc->mailbox().publish(driver);
+        root->frame();
+        focus.frame(SnapshotReader(root->current()));
+    };
+    frame();
+    const SnapshotReader initial(root->current());
+    const auto &meters = initial.meters();
+    check(root->playing() && root->bpm() == 120. && initial.sampleRate() == rate &&
+              (meters.empty() || (meters[0].numerator == 4 && meters[0].denominator == 4)) &&
+              a->capacity() == 12000 && b->capacity() == 12000 && broker->stats().taps == 2,
+          "one-bar Scope runs at 48 kHz, 120 BPM and 4/4 on two quarter-second rings");
+
+    const auto writeUntil = [&](std::int64_t target) {
+        std::array<float, chunk> pcmA{}, pcmB{};
+        while (driver.position() < target) {
+            const auto from = driver.position();
+            const auto count = static_cast<std::int32_t>(std::min<std::int64_t>(chunk, target - from));
+            for (std::int32_t i = 0; i < count; ++i) {
+                const auto sample = from + i;
+                pcmA[static_cast<std::size_t>(i)] = sample >= early && sample < early + pulseLength ? .75f : 0.f;
+                pcmB[static_cast<std::size_t>(i)] = sample >= late && sample < late + pulseLength ? -.625f : 0.f;
+            }
+            a->write(pcmA.data(), pcmA.data(), count, from, true, driver.revision());
+            b->write(pcmB.data(), pcmB.data(), count, from, true, driver.revision());
+            driver.advance(count);
+            broker->pump(); frame();
+        }
+    };
+    writeUntil(late);
+    check(!MixFocusTestAccess::sumPulseAt(focus, .875f, -.625f),
+          "no late pulse is drawn before that audio arrives");
+    writeUntil(bar - 1);
+    check(!MixFocusTestAccess::scopeInterval(focus, 0, static_cast<std::size_t>(bar), rate),
+          "Scope has no complete bar before its final heard sample");
+    writeUntil(bar);
+    check(a->oldest() > early + pulseLength && b->oldest() > early + pulseLength,
+          "the early pulse has already fallen out of both physical rings");
+    check(MixFocusTestAccess::scopeInterval(focus, 0, static_cast<std::size_t>(bar), rate),
+          "Focus presents the complete two-second musical bar from its original heard position");
+    check(MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+              MixFocusTestAccess::sumPulseAt(focus, .875f, -.625f),
+          "the visible summed path keeps its early and late pulses at their positions in the same bar");
+    const auto active = broker->stats();
+    check(opens == std::array{1, 1} && active.taps == 2 && active.transforms == 0 && active.spectralPlans == 0,
+          "one-bar Scope keeps the same two physical taps without a spectrum transform or plan");
+    peer.setVisible(false);
+    check(broker->stats().taps == 0 && broker->stats().consumers == 0,
+          "hiding the one-bar Scope releases its sources immediately");
+    peer.removeChildComponent(&focus); peer.removeFromDesktop();
+}
 void cleanCompressor(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;
     auto doc =
@@ -1686,6 +1795,7 @@ int main() {
     stackEqSpectrum(commands, temporary.path());
     stackLimiterReduction(commands, temporary.path());
     focusWorkspace(commands, temporary.path());
+    focusOneBarScope(commands, temporary.path());
     cleanCompressor(commands, temporary.path());
     keyMenus(commands, temporary.path());
     std::printf("%d checks, %d failures (software-peer components)\n", checks, failures);
