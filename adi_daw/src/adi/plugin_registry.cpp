@@ -302,7 +302,9 @@ std::optional<ScanAdmission> PluginRegistry::beginStampedScan(const std::string&
     error.clear();
     try {
         require(key(format,path) && cacheStamp(stamp) && nowUtc>=0,"invalid stamped scan admission");
-        SQLite::Transaction transaction(*db_);
+        // Reserve the short write transaction before reading so another owner
+        // cannot make this WAL snapshot stale before it becomes a writer.
+        SQLite::Transaction transaction(*db_, SQLite::TransactionBehavior::IMMEDIATE);
         const auto previous=readFailure(*db_,format,path);
         if(previous) {
             bool owned=previous->blockId==0;
@@ -347,7 +349,8 @@ std::optional<unsigned> PluginRegistry::finishFailedScan(const ScanTicket& ticke
     try {
         require(ticket.owner_.lock()==scanOwner_ && ticket.id_>0 && cacheStamp(stamp) &&
             text(reason,4096) && nowUtc>=0,"invalid typed scan failure");
-        const auto name=failureName(kind);SQLite::Transaction transaction(*db_);
+        const auto name=failureName(kind);
+        SQLite::Transaction transaction(*db_, SQLite::TransactionBehavior::IMMEDIATE);
         const auto previous=readFailure(*db_,ticket.format_,ticket.path_);
         unsigned strikes=kind==ScanFailureKind::Rejected?0U:1U;
         if(strikes && previous && previous->stamp==stamp && previous->failure.strikes>0)strikes=2;

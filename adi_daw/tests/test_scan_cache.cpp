@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <thread>
 #include <cstdlib>
@@ -443,9 +444,47 @@ void failureTransactions(const fs::path& self) {
         db.execAndGet("SELECT count(*) FROM sqlite_master WHERE name='plugin_scan_failures'").getInt()==1,
         "early success-only v3 registry gains the additive failure table transactionally without version bump");
 }
+void waitsForRegistryWriter(const fs::path& self) {
+    using namespace std::chrono_literals;
+    Fixture f(self);
+    auto registry = f.registry();
+    const auto path = utf8(fs::canonical(f.candidate()));
+    const std::string stamp(64, 'a');
+    SQLite::Database competing(utf8(f.config.registry), SQLite::OPEN_READWRITE);
+    competing.exec("CREATE TABLE test_writer_receipts (sequence INTEGER)");
+    const auto withWriter = [&](auto work) {
+        SQLite::Transaction write(competing, SQLite::TransactionBehavior::IMMEDIATE);
+        competing.exec("INSERT INTO test_writer_receipts VALUES (1)");
+        std::promise<void> ready;
+        auto started = ready.get_future();
+        auto result = std::async(std::launch::async, [&] {
+            ready.set_value();
+            return work();
+        });
+        started.wait();
+        const bool waited = result.wait_for(100ms) == std::future_status::timeout;
+        write.commit();
+        return std::pair(waited, result.get());
+    };
+    const auto [waitedForAdmission, admitted] = withWriter([&] {
+        return registry->beginStampedScan("clap", path, stamp, 1, f.error);
+    });
+    check(waitedForAdmission && admitted && admitted->ticket,
+          "stamped admission waits for another registry writer and receives a valid ticket");
+    const auto ticket = admitted && admitted->ticket ? admitted->ticket
+                                                     : registry->beginScan("clap", path, 1, f.error);
+    if (!ticket) throw std::runtime_error(f.error);
+    const auto [waitedForCompletion, completed] = withWriter([&] {
+        return registry->finishFailedScan(*ticket, stamp, ScanFailureKind::Rejected, "fixture rejection", 2, f.error);
+    });
+    const auto blocks = registry->scanBlocks(f.error);
+    check(waitedForCompletion && completed == 0 && blocks && blocks->empty(),
+          "typed failure completion waits for the writer and releases its pending ticket");
+}
+
 int entry(const std::vector<std::string>& args) {
     if(args.size()==4 && args[1]=="--scan")return helper(args);
-    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);retryAliases(self);failureTransactions(self);}
+    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);}
     catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }
