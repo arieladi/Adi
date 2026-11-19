@@ -108,6 +108,13 @@ void focusScopeWindows() {
     const auto parked = c.read();
     check(parked && !parked->advancing && !adi::ui::focusScopeRange(std::array{ra.get(), rb.get(), parked.get()}),
           "a parked timestamp cannot align separate live monitor callbacks");
+
+    tapC->write(left.data(), right.data(), 32, 400, true, 7);
+    broker.pump();
+    const auto disjoint = c.read();
+    check(disjoint && disjoint->firstStamp == 400 && disjoint->transportRevision == 7 &&
+          !adi::ui::focusScopeRange(std::array{ra.get(), rb.get(), disjoint.get()}),
+          "same-revision buffers with no audible intersection produce a gap");
 }
 void parkedSilence() {
     Fixture f;
