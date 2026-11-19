@@ -133,6 +133,44 @@ void publication() {
     check(std::distance(fs::directory_iterator(temp.path()), fs::directory_iterator{}) == 2,
           "private copy staging is removed on success, collision and failure");
 }
+void collectionCancellation() {
+    using media::ArchivePhase;
+    Fixture f;
+    f.add("one.wav", "first sample", 1);
+    f.add("two.wav", "second sample", 2);
+    const auto before = digestProject(*f.store).text;
+    const auto output = f.temp.path() / "portable.zip";
+    for (const auto phase : {ArchivePhase::Snapshot, ArchivePhase::CollectMedia,
+                             ArchivePhase::WriteArchive, ArchivePhase::Publish}) {
+        std::stop_source stop;
+        bool sawBoundary = false;
+        const auto result = media::collectExport(f.store->path(), output, {stop.get_token(),
+            [&](media::ArchiveProgress progress) {
+                if (progress.phase != phase ||
+                    (phase == ArchivePhase::WriteArchive && progress.entriesWritten == 0)) return;
+                sawBoundary = true;
+                stop.request_stop();
+            }});
+        check(sawBoundary && result.cancelled && !result.ok && !fs::exists(output),
+              "cancellation at a worker boundary publishes no archive");
+        bool stageRemains = false;
+        for (const auto& entry : fs::directory_iterator(f.temp.path()))
+            stageRemains = stageRemains || entry.path().filename().string().starts_with(".adi-media-");
+        check(!stageRemains && digestProject(*f.store).text == before,
+              "cancel discards private files and leaves the open source intact");
+    }
+
+    bool beforePublish = false;
+    const auto late = media::collectExport(f.store->path(), output, {{},
+        [&](media::ArchiveProgress progress) {
+            if (progress.phase != ArchivePhase::Publish) return;
+            beforePublish = progress.entriesWritten == 3;
+            write(output, "another writer's ZIP");
+        }});
+    check(beforePublish && !late.ok && !late.cancelled && read(output) == "another writer's ZIP",
+          "a late arrival after ZIP finalization survives exclusive publication");
+}
+
 void collection() {
     Fixture f;
     f.add("one/clip.wav", std::string(140000,'A') + "first", 1);
@@ -392,7 +430,7 @@ void rollbackAndCli() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); collection(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); }
+    try { publication(); collection(); collectionCancellation(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

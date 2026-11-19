@@ -18,6 +18,15 @@
 namespace adi::media {
 namespace fs = std::filesystem;
 namespace {
+struct ArchiveCancelled {};
+
+void advanceArchive(const ArchiveControl& control, ArchiveProgress progress) {
+    if (control.stop.stop_requested()) throw ArchiveCancelled{};
+    if (control.progress) control.progress(progress);
+    // A caller may request cancellation from its own progress handler.
+    if (control.stop.stop_requested()) throw ArchiveCancelled{};
+}
+
 struct Stage {
     fs::path path;
     explicit Stage(const fs::path& parent) {
@@ -127,10 +136,12 @@ FileResult extractMedia(Store& store) {
         transaction.commit(); published.committed = true; return {true, {}};
     } catch (const std::exception& e) { return {false, e.what()}; }
 }
-FileResult collectExport(const fs::path& input, const fs::path& output) {
+FileResult collectExport(const fs::path& input, const fs::path& output,
+                         const ArchiveControl& control) {
     try {
         const auto target = fs::absolute(output);
         if (fs::exists(target) || fs::is_symlink(fs::symlink_status(target))) return {false, "output already exists: " + pathUtf8(target)};
+        advanceArchive(control, {ArchivePhase::Snapshot});
         StoreError error;
         auto source = Store::open(fs::absolute(input), error, true);
         if (!source || error != StoreError::Ok) return {false, "cannot open source: " + pathUtf8(input) + ": " + toString(error)};
@@ -141,6 +152,7 @@ FileResult collectExport(const fs::path& input, const fs::path& output) {
         const auto saved=source->saveCopy(copyPath);
         if(!saved.ok)throw std::runtime_error(saved.error);
         source.reset();
+        advanceArchive(control, {ArchivePhase::CollectMedia});
         auto copy = Store::open(copyPath, error);
         if (!copy || copy->readOnly()) throw std::runtime_error("cannot open snapshot for relocation");
         const auto extraction = extractMedia(*copy);
@@ -154,15 +166,22 @@ FileResult collectExport(const fs::path& input, const fs::path& output) {
         copy.reset();
         if (fs::exists(pathFromUtf8(pathUtf8(copyPath) + "-wal"))) throw std::runtime_error("copied WAL survived close");
         const auto zipPath = stage.path / "archive.zip";
+        advanceArchive(control, {ArchivePhase::WriteArchive});
         ZipWriter zip(zipPath);
         if (!zip.addFile(copyPath, filename)) throw std::runtime_error("cannot archive copied database");
+        std::size_t entries = 1;
+        advanceArchive(control, {ArchivePhase::WriteArchive, entries});
         for (const auto& entry : fs::directory_iterator(project / "audio")) {
             if (!zip.addFile(entry.path(), "audio/" + pathUtf8(entry.path().filename()))) throw std::runtime_error("cannot archive " + pathUtf8(entry.path()));
+            advanceArchive(control, {ArchivePhase::WriteArchive, ++entries});
         }
         if (!zip.finish()) throw std::runtime_error("ZIP finalization failed");
-        const auto publication = publishFile(zipPath, target, {}, PublishPolicy::AtomicOnly);
+        advanceArchive(control, {ArchivePhase::Publish, entries});
+        auto publication = publishFile(zipPath, target, {}, PublishPolicy::AtomicOnly);
         if (publication.status != PublishStatus::published) throw std::runtime_error("publish archive: " + publication.error);
-        return {true, {}};
+        return {true, {}, std::move(publication.warning)};
+    } catch (const ArchiveCancelled&) {
+        return {false, "collection export cancelled", {}, true};
     } catch (const std::exception& e) { return {false, e.what()}; }
 }
 } // namespace adi::media

@@ -343,6 +343,6 @@ StoreFileResult Store::collectAndExport(const std::filesystem::path& output) con
     if(closed_ || !db_)return {false,"project is closed",{}};
     if(!sqlite3_get_autocommit(db_->getHandle()))return {false,"finish the current transaction before exporting",{}};
     const auto result=media::collectExport(media::projectFolder(*this)/path_.filename(),output);
-    return {result.ok,result.error,{}};
+    return {result.ok,result.error,result.warning};
 }
 }

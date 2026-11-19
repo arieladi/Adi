@@ -216,7 +216,7 @@ bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, 
 StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
     try {
         const auto result = media::collectExport(job.project, job.zip);
-        return {result.ok, result.error, {}};
+        return {result.ok, result.error, result.warning};
     } catch (const std::exception &e) {
         return {false, e.what(), {}};
     }
