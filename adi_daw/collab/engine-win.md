@@ -16,6 +16,14 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-13 closed-project salvage
+
+**PR requested** `engine-win/project-salvage` at `267d716a6b3a32cfa86748f7e976240de7a84d8b`. The tested code is `6d216aa1` and the follow-up changes the command documentation only. This stacks on SQLiteCpp 3.4.0 and its SQLite 3.53.4 runtime. Win can review the dependency fix independently first.
+
+`adi_tool salvage <in.adi> <out.adi>` reads a closed ADI file with a readable schema, recovers to a private stage, verifies the result and publishes an exclusive copy. Exit 1 carries findings on a published readable copy. The command refuses WAL-format input, sidecars on either path, unreadable schemas and pre-existing outputs. Media references keep their stored paths.
+
+The Windows regression found the upstream recovery writer sending `ops` rows to the implicit sequence table when its private connection inherited the defensive default. The hash-guarded adapter changes that connection only. The ordinary runtime retains defensive mode. Strict native x64 MSVC Debug passed 851 checks across eight suites. In the damaged-leaf fixture, 15 of 128 rows belonged to the damaged page, and all 113 intact rows survived with exact storage types and values. Two optional symlink fixtures skipped. [SQLite recovery](https://sqlite.org/recovery.html)
+
 ## 2026-11-19 — Shared media cache and FFprobe together
 
 **PR requested** `engine-win/media-cache-probe-integration` at `415631ea6b94ffafc0a296a1de5c976bc6c33715`. This combines the reconciled media cache `6ad07db6` and FFprobe stream selection `16e4159e` with both decode regression groups preserved. Use this tip if reviewing both media branches together.
