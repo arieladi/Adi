@@ -373,8 +373,8 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
         if (search && list) {
             search->setText("fixture vst", false);
             search->onTextChange();
-            check(list->getModel()->getNumRows() == 2 && list->getSelectedRow() == 1 &&
-                      list->getModel()->getNameForRow(1) == "Fixture VST (VST3)",
+            check(list->getListBoxModel()->getNumRows() == 2 && list->getSelectedRow() == 1 &&
+                      list->getListBoxModel()->getNameForRow(1) == "Fixture VST (VST3)",
                   "case-insensitive search focuses the matching device and exposes its accessible name");
             search->onReturnKey();
         }
@@ -965,11 +965,11 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
     // Drive the actual folded-dot handler using generated component events,
     // not desktop input. Its coordinates come from the presented model geometry.
     strip.submit = [&](const std::string &op, Payload p) { return doc->deviceAction(op, std::move(p)); };
-    stack.setSize(320, 650);
+    if (!strip.folded(found->id)) strip.fold(found->id);
     stack.model().setAutoZoom(false, 10);
     const auto refresh = [&] {
         doc->tick(10); root.mark(DirtySet::All); root.frame();
-        stack.setSize(320, 650); stack.frameAt(root.reader(), 10000);
+        stack.frameAt(root.reader(), 10000);
     };
     const auto clickDot = [&](std::int64_t id) {
         std::optional<stack::ItemGeo> target;
@@ -981,7 +981,8 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
         if (!target) return false;
         const auto at = stack.listArea().getPosition().toFloat() +
             juce::Point<float>{static_cast<float>(target->x + target->width / 2),
-                               static_cast<float>(target->top + 8)};
+                               static_cast<float>(target->top + look::border) +
+                                   look::radiusSmall + static_cast<float>(look::gap) * .5f};
         const auto now = juce::Time::getCurrentTime();
         const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
             juce::ModifierKeys::leftButtonModifier, 1.f, 0.f, 0.f, 0.f, 0.f,
