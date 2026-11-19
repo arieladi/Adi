@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · One-step verified media relink
+
+**PR requested** — `engine-win/relink-contract` at `a8c9ce4a2db228c5b81b85e4b8064c94dfed1c86`, based on `a0a31168`. Title **Relink verified media batches in one undoable transaction**.
+
+TM-MD-03. Every selected replacement must match the saved BLAKE3 before the relink batch commits. An unreadable, mismatched or duplicate target refuses all changes. Existing single relink uses the same path. A forced second application failure rolled back the first. Two actual WAVs produced exact Session PCM through relink and reopen, with one Undo and Redo for the pair. Three strict x64 MSVC suites passed 218 checks, with optional symlink cases skipped. Automatic discovery, ordinary playback verification and different-content Replace are separate.
+
 ## 2026-11-19 · Settings bundle publication
 
 **PR requested** — `engine-win/settings-bundle-safe` at `675f79a4559911cd68423dd9bebbb653f287c5f6`, based on `a0a31168`. Title **Publish settings bundles from private closed archives**.
