@@ -718,7 +718,25 @@ void keyMenus(AppCommands& commands,const std::filesystem::path& directory){
     auto& strip=root.devices;strip.setVisible(true);strip.publication=[&]{return publication;};
     strip.targetCurrent=[&](std::int64_t id,const engine::DeviceRuntimeToken&,std::uint64_t stamp){return id==44 && publication->front().instance==stamp;};
     bool invalidStoredRoute=false;
-    strip.keyChoices=[&](const DevicePanelData& d){if(d.sidechainChannels<=0)return invalidStoredRoute?std::vector<DeviceKeyChoice>{{{},"post_mixer","None",false}}:std::vector<DeviceKeyChoice>{};return std::vector<DeviceKeyChoice>{{{},"post_mixer","None",false},{2,"pre_fx","Kick",true},{2,"post_fx","Kick",false},{2,"post_mixer","Kick",false}};};
+    // One named vector, filled by push_back and returned by plain if/return. The
+    // same lists written as braced temporaries on the two arms of a conditional
+    // expression are correct C++, but GCC's -Wdangling-pointer reports the
+    // initializer_list array of the untaken arm (an error under -Werror).
+    const auto keyChoice=[](std::optional<std::int64_t> from,const char* choiceTap,const char* name,bool current){
+        DeviceKeyChoice choice;choice.source=from;choice.tap=choiceTap;choice.name=name;choice.current=current;return choice;
+    };
+    strip.keyChoices=[&](const DevicePanelData& d){
+        std::vector<DeviceKeyChoice> choices;
+        if(d.sidechainChannels<=0) {
+            if(invalidStoredRoute)choices.push_back(keyChoice(std::nullopt,"post_mixer","None",false));
+            return choices;
+        }
+        choices.push_back(keyChoice(std::nullopt,"post_mixer","None",false));
+        choices.push_back(keyChoice(2,"pre_fx","Kick",true));
+        choices.push_back(keyChoice(2,"post_fx","Kick",false));
+        choices.push_back(keyChoice(2,"post_mixer","Kick",false));
+        return choices;
+    };
     int actions=0;std::optional<std::int64_t> source;std::string tap;
     strip.setKey=[&](const DevicePanelData& expected,const DeviceKeyChoice& choice){++actions;source=choice.source;tap=choice.tap;return expected.id==44 && expected.instance==publication->front().instance;};
     strip.frame(2);
