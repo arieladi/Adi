@@ -209,7 +209,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Delete Fades/Crossfades", "Invert Selection", "Quantize", "Quantize Settings...",
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
-                                  "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range"};
+                                  "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
+                                  "Export Audio/Video..."};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -651,6 +652,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case FitToTimeRange: // manual 10.5.5: the editor's, in the Edit menu too
         info.addDefaultKeypress('j', cmd | alt);
         info.setActive(false);
+        break;
+    case ExportAudio: // manual 5.2.1 and §41.3: Ctrl/Cmd+Shift+R
+        info.addDefaultKeypress('r', cmd | shift);
         break;
     case ExpandClipView: // manual 10.2; Live 12's View menu: Expand Clip View, Ctrl/Cmd+Alt+E
         info.addDefaultKeypress('e', cmd | alt);
@@ -2658,6 +2662,26 @@ bool AdiRootComponent::soloTrack(std::int64_t id, bool add) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+ExportChoices AdiRootComponent::exportDefaults() const {
+    // Live renders the time selection, else the loop brace (manual 5.2.1); with neither, ADI renders the
+    // whole song, from its start to the end of its last clip.
+    ExportChoices c;
+    const auto &sel = arrangement.geometry.selection;
+    const auto current = view_.current();
+    if (sel.end > sel.start) {
+        c.startTicks = sel.start;
+        c.lengthTicks = sel.end - sel.start;
+    } else if (current && current->transport.loopEnabled && current->transport.loopEndTicks > current->transport.loopStartTicks) {
+        c.startTicks = current->transport.loopStartTicks;
+        c.lengthTicks = current->transport.loopEndTicks - current->transport.loopStartTicks;
+    } else {
+        c.startTicks = 0;
+        c.lengthTicks = arrangementEnd();
+    }
+    if (current && current->sampleRate > 0)
+        c.sampleRate = static_cast<int>(current->sampleRate);
+    return c;
+}
 bool AdiRootComponent::setSoloInPlace(bool on) {
     // Live's Solo in Place (manual 18.6): one project field for the Solo button's menu and the
     // Options menu's entry (#412, N23), from the CURRENT cell (ADR-0201). The op is outside undo, as
@@ -3268,6 +3292,11 @@ bool AdiRootComponent::command(int id) {
         mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
         break;
     }
+    case AppCommands::ExportAudio:
+        if (!exportAudio)
+            return fail("Export runs in the application.");
+        exportAudio(exportDefaults());
+        break;
     case AppCommands::Undo:
     case AppCommands::Redo: {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();

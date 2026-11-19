@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/app_audio_page.hpp"
+#include "../src/juce/ui_export.hpp"
 #include "../src/juce/ui_controls.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
@@ -9716,6 +9717,116 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
           "and Automation Arm says so, showing Live's default, on");
     document->release();
 }
+// EX-11, the Export page (Live 12 manual 5.2.1): the choices in Live's order, what the renderer cannot do
+// yet refused with its reason, the range from the selection, the loop or the song, and the job the choices
+// make, rendered to a WAV by the engine's renderer.
+void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "export.adi", true, {}, error);
+    check(document != nullptr, "a project to export");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "export");
+    root.setSize(1440, 900);
+    root.frame();
+    // The command: on Ctrl/Cmd+Shift+R, named as Live's; outside the application it says where it runs.
+    juce::ApplicationCommandInfo info(AppCommands::ExportAudio);
+    commands.getCommandInfo(AppCommands::ExportAudio, info);
+    check(info.shortName == "Export Audio/Video..." &&
+              info.defaultKeypresses.contains(juce::KeyPress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+          "Export Audio/Video, on Ctrl/Cmd+Shift+R");
+    check(!root.command(AppCommands::ExportAudio) && root.error() == "Export runs in the application.",
+          "outside the application it says where it runs");
+    std::optional<ExportChoices> asked;
+    root.exportAudio = [&](const ExportChoices &c) { asked = c; };
+    // With nothing selected and the loop off: the whole song, at the project's rate.
+    check(root.command(AppCommands::ExportAudio) && asked && asked->startTicks == 0 &&
+              asked->lengthTicks == root.arrangementEnd() && asked->track == 0 &&
+              asked->sampleRate == root.reader().sampleRate(),
+          "the whole song from its start, Main, at the project's rate");
+    auto &sel = root.arrangement.geometry.selection;
+    sel.start = 3840;
+    sel.end = 3840 * 5;
+    check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
+          "a time selection is the range, as Live's");
+    sel.start = sel.end = 0;
+    // The page: Live's rows in Live's order, Main and the tracks to render.
+    ExportChoices c = *asked;
+    c.lengthTicks = textproj::kWhole * 2; // two 4/4 bars
+    ExportPage page(c, {{4, "3 Audio"}, {6, "A Reverb"}}, root.reader().meters());
+    std::vector<juce::String> titles;
+    for (auto *control : std::initializer_list<juce::Component *>{&page.renderedTrack, &page.start, &page.length,
+                                                                   &page.includeReturnAndMain, &page.renderAsLoop,
+                                                                   &page.convertToMono, &page.normalize,
+                                                                   &page.createAnalysisFile, &page.sampleRate,
+                                                                   &page.encodePcm, &page.fileType, &page.bitDepth,
+                                                                   &page.dither, &page.encodeMp3, &page.video})
+        titles.push_back(control->getTitle());
+    check(titles == std::vector<juce::String>{"Rendered Track", "Render Start", "Render Length",
+                                              "Include Return and Main Effects", "Render as Loop", "Convert to Mono",
+                                              "Normalize", "Create Analysis File", "Sample Rate", "Encode PCM",
+                                              "File Type", "Bit Depth", "Dither Options", "Encode MP3", "Export Video"},
+          "Live's choices in Live's order");
+    check(page.renderedTrack.getNumItems() == 3 && page.renderedTrack.getText() == "Main" &&
+              page.start.getText() == "1.1.1" && page.length.getText() == "2.0.0" && page.refusals().empty() &&
+              page.exportButton.isEnabled(),
+          "Main, from 1.1.1 for 2.0.0: Export is offered");
+    page.encodeMp3.setToggleState(true, juce::dontSendNotification);
+    page.encodeMp3.onClick();
+    check(!page.exportButton.isEnabled() && page.refusals().size() == 1 &&
+              page.refusals()[0].find("MP3 waits") != std::string::npos,
+          "MP3 on: Export waits, saying why");
+    page.encodeMp3.setToggleState(false, juce::dontSendNotification);
+    page.encodeMp3.onClick();
+    page.renderedTrack.setSelectedId(2, juce::sendNotificationSync);
+    check(page.choices().track == 4 && !page.exportButton.isEnabled() &&
+              page.refusals()[0].find("Include Return and Main Effects off") != std::string::npos,
+          "a track through the returns and Main waits; the reason says what renders now");
+    page.includeReturnAndMain.setToggleState(false, juce::dontSendNotification);
+    page.includeReturnAndMain.onClick();
+    check(page.exportButton.isEnabled(), "with the effects off, the track's own signal renders");
+    page.length.setText("one bar", true);
+    check(!page.exportButton.isEnabled() && page.refusals()[0].find("Render Length is not a length") != std::string::npos,
+          "a length that is not one is refused");
+    page.length.setText("1.2.0", true);
+    check(page.exportButton.isEnabled() && page.choices().lengthTicks == textproj::kWhole + textproj::kWhole / 2,
+          "1.2.0 is a bar and two beats");
+    std::optional<ExportChoices> exported;
+    page.onExport = [&](const ExportChoices &e) { exported = e; };
+    page.exportButton.onClick();
+    check(exported && exported->track == 4 && !exported->includeReturnAndMain, "Export hands over the choices");
+    // The job, and a real render of the project: Main for one bar, 16-bit, at 44.1 kHz.
+    ExportChoices one;
+    one.lengthTicks = textproj::kWhole;
+    one.sampleRate = 44100;
+    one.bitDepth = 16;
+    one.dither = "No Dither";
+    one.normalize = true;
+    const auto now = document->view().current();
+    const auto tempo = now ? now->tempo : nullptr;
+    check(tempo != nullptr, "the project's tempo map");
+    if (!tempo) {
+        document->release();
+        return;
+    }
+    auto job = exportJob(one, document->store().path(), dir / "Song {mix}.wav", *tempo);
+    const auto expected = exportSample(*tempo, textproj::kWhole, 44100);
+    check(job.directory == dir && job.nameTemplate == "Song {{mix}}" && job.beginSample == 0 && job.endSample == expected &&
+              job.session.sampleRate == 44100 && job.encoding.format == audio::WavFormat::Pcm16 &&
+              job.encoding.dither == audio::WavDither::None && job.normalization.mode == render::NormalizeMode::Peak &&
+              job.source.trackId == 0,
+          "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize");
+    one.normalize = false; // a silent song has no peak to normalize
+    job = exportJob(one, document->store().path(), dir / "Song {mix}.wav", *tempo);
+    const auto result = render::renderWav(job, {});
+    if (result.state != render::JobState::Completed)
+        std::printf("render: %s\n", result.error.c_str());
+    check(result.state == render::JobState::Completed && result.output == dir / "Song {mix}.wav" &&
+              std::filesystem::exists(result.output) && result.framesWritten == static_cast<std::uint64_t>(expected),
+          "the renderer writes the chosen file, the whole range");
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
@@ -14280,6 +14391,7 @@ int main(int argc, char **argv) {
     deviceClipboard(commands, temp.path());
     pluginWindows(commands, temp.path());
     automationArm(commands, temp.path());
+    exportPage(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     importPrompt(commands, settings, temp.path());
