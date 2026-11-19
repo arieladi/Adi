@@ -10325,11 +10325,17 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     }
     check(root.chooseMixViewTab(0), "a legacy Overview page can still be recalled");
     root.frame();
-    check(root.state().mixViewTab == 0 && panel.tab() == MixViewPanel::Tab::Overview && !panel.stack.isVisible() &&
+    check(root.state().mixViewTab == 0 && panel.tab() == MixViewPanel::Tab::Analysis && !panel.stack.isVisible() &&
+              panel.analysis.isVisible() && panel.analysis.page() == MixAnalysers::Page::Spectrum &&
               panel.tabs[5]->getToggleState() && !panel.tabs[1]->getToggleState(),
-          "legacy Overview stays functional under the Analysers page");
+          "legacy Overview opens the Spectrum subpage of Analysers");
     check(persistence.load("mix", {}).mixViewTab == 0 && persistence.load("mix", {}).mixView,
           "the tab and the view are kept with the window's view (ui_view)");
+    panel.analysis.setPage(MixAnalysers::Page::Phase);
+    root.state().mixViewTab = persistence.load("mix").mixViewTab;
+    panel.adoptViewState(); root.frame();
+    check(panel.analysis.page() == MixAnalysers::Page::Spectrum && root.state().mixViewTab == 0,
+          "adopting saved Overview state also restores the Spectrum subpage");
     check(root.command(AppCommands::SearchBrowser) && panel.tab() == MixViewPanel::Tab::Stack && !root.browser.isVisible(),
           "search reaches STACK in the docked Mix View without revealing the Arrangement Browser");
     root.frame();
@@ -11445,11 +11451,25 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 dock.freezeButton.setToggleState(false, juce::dontSendNotification); dock.freezeButton.onClick();
                 {
                     mix.adoptViewState();
-                    actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Overview));
+                    check(actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis)),
+                          "the fake peer opens Analysers on its current subpage");
+                    mix.analysis.setPage(MixAnalysers::Page::Phase);
+                    mix.frame(actual.reader());
+                    check(mix.analysis.isShowing() && mix.analysis.page() == MixAnalysers::Page::Phase,
+                          "the normal Analysers entry shows Phase before recalling Overview");
+                    check(actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Overview)),
+                          "recall old Overview while Analysers is already open");
                     mix.setSize(900, 650);
                     mix.frame(actual.reader());
+                    const auto visibleConsumers = 1u + (mix.channels.preview.subscribed() ? 1u : 0u) +
+                        (mix.mainMeter.subscribed() ? 1u : 0u);
+                    check(mix.tab() == MixViewPanel::Tab::Analysis && mix.analysis.isShowing() &&
+                              mix.analysis.page() == MixAnalysers::Page::Spectrum && actual.state().mixViewTab == 0 &&
+                              actual.state().mixAnalyzerDock && !dock.isShowing() && broker->stats().consumers == visibleConsumers,
+                          "Overview folds into Spectrum once and only the visible consumers retain demand");
                     auto detached = std::make_unique<AnalysisPane>();
-                    detached->setSpectrumSlope(mix.analysis.detail.view.spectrumSlope());
+                    auto &spectrum = mix.analysis.detail.view;
+                    detached->setSpectrumSlope(spectrum.spectrumSlope());
                     fake.addAndMakeVisible(*detached);
                     detached->setBounds(0, 0, 500, 420);
                     const auto main = actual.analysisTrack(actual.reader());
@@ -11458,22 +11478,21 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     broker->pump();
                     mix.frame(actual.reader());
                     detached->frame(broker, main, main);
-                    const auto shared = mix.spectrum.snapshot();
-                    check(mix.spectrum.isShowing() && dock.spectrum.isShowing() && shared &&
-                              shared == dock.spectrum.snapshot() && shared == detached->view.snapshot() &&
-                              mix.spectrum.spectrumSlope() == SpectrumSlope::Tilt45 &&
-                              dock.spectrum.spectrumSlope() == SpectrumSlope::Tilt45,
-                          "Overview and the visible dock restore slope and share their spectrum with a detached pane");
+                    const auto shared = spectrum.snapshot();
+                    check(spectrum.isShowing() && shared && shared == detached->view.snapshot() &&
+                              spectrum.spectrumSlope() == SpectrumSlope::Tilt45 &&
+                              dock.spectrum.spectrumSlope() == SpectrumSlope::Tilt45 && !dock.spectrum.subscribed(),
+                          "folded Spectrum shares its measurement with the detached pane while the dock stays parked");
                     const auto prior = broker->stats();
                     const auto acquisitions = acquired, releases = released;
                     mix.analysis.detail.slopeBox.setSelectedId(1, juce::sendNotificationSync);
                     const auto work = broker->pump();
                     const auto later = broker->stats();
                     check(actual.state().analysisSpectrumSlope == "flat" &&
-                              mix.spectrum.spectrumSlope() == SpectrumSlope::Flat &&
+                              spectrum.spectrumSlope() == SpectrumSlope::Flat &&
                               dock.spectrum.spectrumSlope() == SpectrumSlope::Flat &&
                               detached->view.spectrumSlope() == SpectrumSlope::Tilt45 &&
-                              shared == mix.spectrum.snapshot() && shared == dock.spectrum.snapshot() &&
+                              shared == spectrum.snapshot() && !dock.spectrum.subscribed() &&
                               shared == detached->view.snapshot() && acquired == acquisitions && released == releases &&
                               prior.domains == later.domains && prior.consumers == later.consumers &&
                               prior.publications == later.publications && prior.workerPasses == later.workerPasses &&
@@ -11483,13 +11502,21 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     const auto transforms = broker->pump();
                     mix.frame(actual.reader());
                     detached->frame(broker, main, main);
-                    const auto next = mix.spectrum.snapshot();
+                    const auto next = spectrum.snapshot();
                     check(transforms == 1 && next && next != shared &&
-                              next == dock.spectrum.snapshot() && next == detached->view.snapshot(),
-                          "the next hop still yields one transform and the same immutable spectrum for all three views");
+                              next == detached->view.snapshot(),
+                          "the next hop still yields one transform and the same immutable spectrum for both views");
                     mix.analysis.detail.slopeBox.setSelectedId(2, juce::sendNotificationSync);
+                    mix.analysis.pageBox.setSelectedId(static_cast<int>(MixAnalysers::Page::Loudness) + 1,
+                                                       juce::sendNotificationSync);
+                    mix.frame(actual.reader()); mix.frame(actual.reader());
+                    check(mix.analysis.page() == MixAnalysers::Page::Loudness && actual.state().mixViewTab == 0 &&
+                              value(document->store(), "SELECT count(*) FROM ops") == oldOps && actual.undoTitle(false) == oldUndo,
+                          "user subpage choices persist across frames without remapping tab 0 or editing the project");
                 }
                 actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)); mix.frame(actual.reader());
+                check(mix.analyzerDockShown() && dock.spectrum.spectrumSlope() == SpectrumSlope::Tilt45,
+                      "the requested dock returns beside Stack with the shared slope retained");
                 actual.sharedAnalysis = savedBroker; mix.setAnalyzerDock(false); mix.frame(actual.reader());
                 mix.setBounds(mixBounds); mix.frame(actual.reader()); surface.grabKeyboardFocus();
             }
