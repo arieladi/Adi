@@ -1,6 +1,10 @@
 # Mix View seat
 
 
+## 19 November 2026 — Focus entry and unsolo confirmed
+
+`4e5c6dfd` opens Focus on two or more soloed channels from Arrangement, and opens Stack with zero or one. An explicit Focus unsolo removes the member. When Main leaves, the first remaining soloed member becomes Main. Leaving Focus preserves existing solos. Windows Release rebuilt and passed 795 software-peer checks. Claude's existing package remains `a15680be`.
+
 ## 18 November 2026 evening — DF-M56–59 and approved appearance in Release review
 
 Windows x64 Release review commit `a15680bee316d8fd046fd42f276949e6d9a43bf1` includes the idle repairs and Part A fixes plus the fail-first regressions for aliased limiter keys and reset, non-finite dynamics inputs, overdue Focus FIR work and reverted latency plans, full-budget spectrogram history, and limiter loudness maxima. It uses the shared appearance tables for the Mix View, with Dark and Compact as defaults. No routing cables were added. Grouped returns will use ordinary rows when the engine publishes them.
