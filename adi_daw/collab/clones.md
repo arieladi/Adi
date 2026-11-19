@@ -1,5 +1,27 @@
 # Clones lane log
 
+## 2026-11-19 — Drive and Crush acoustic acceptance
+
+The Crush measurement used 27 static bit heights, held stereo levels, steps and rate changes across three sample rates. With dither and bias disabled and resampling bypassed, measured plateau spacing and amplitude follow these laws for bit height `u < 1`: level density `L = 1 + 14u + 32753u^32`, output gain `G = 1 - 0.25(1-u)^3`, thresholds `(k+0.5)/L` and step size `G/L`. At the top the quantizer passes full resolution. The decay on a held output at 48 kHz is 0.99869187 per sample, consistent with a 10 Hz DC blocker after quantization. Sampling before this decay is essential to measuring the steps.
+
+The measured sample-hold rate at the midpoint is 3 kHz. Across the control it follows `8.82 + (44100-8.82)(R^(2r)-1)/(R²-1)` Hz, where `R=(44100-3000)/(3000-8.82)`. At its exact maximum the rate reducer bypasses, including at 96 kHz. At master or band blend zero the reference returned the original input bits. Dither at its measured settings preserved complete silence and produced matching channels for identical stereo input.
+
+### ADi-SHAPER Drive reference
+
+Reference 3.6, stereo 32-bit floating-point processing, 256-frame callbacks. One full-range drive stage, neutral trims, no tone tilt or modulation smoothing, full wet unless stated. Let d run from zero to one, x denote the input and z denote the input after pre-gain. All transfer values below refer to the level before DC removal.
+
+| Property | Measured behavior |
+|---|---|
+| Symmetric hard clipping | For positive drive, the pre-gain follows `(1+d)^8`. Limit z to [−1,1] and apply the drive-dependent output compensation. At d = 0.25, 0.50, 0.75, 1 the small-signal gains were approximately 1.69, 5.49, 16.59 and 44.2. The positive output plateaus were approximately 0.283, 0.214, 0.189 and 0.173. Negative plateaus have equal magnitude. |
+| First saturator | Uses the same measured pre-gain. The positive arm closely follows `z / (1 + 2z/3)` before output compensation. At full drive, input 0.001, 0.01, 0.1 and 0.35 produced approximately 0.0377, 0.163, 0.245 and 0.255. The negative knee differs. At −0.001, −0.004, −0.01 and −0.35 the respective levels were approximately −0.044, −0.146, −0.172 and −0.173. |
+| Hard rectification | Pre-gain follows `(1+d)^4`. The measured fold is consistent with `clamp(abs(z+1)−1, −1, 1)`, with its own output compensation. At full drive an input of −0.04 produced approximately −0.146. Inputs −0.35 and +0.35 both produced approximately +0.228. The fold passes through zero when z reaches −2. |
+| Band blend | At a 400 Hz, 0.2-peak input and d = 0.5, the quarter, half and three-quarter blend waveforms matched the weighted sum of independent dry and full-wet renders to within 1e-6 across all three styles. |
+| DC rejection | Stepped DC inputs decay toward zero even with the drive contour at minimum. Following a 0.1 input step, the zero-drive response after 255 and 1,024 samples at 48 kHz was about 0.0716 and 0.0262. Their ratio gives a corner near 10 Hz. Signed step heights during the first millisecond, calibrated against the minimum-drive response and checked against later decay, reveal the transfer curve. |
+| Latency and impulse | The host reported 16 samples at 44.1, 48 and 96 kHz for all three styles. On a 0.125 impulse at 48 kHz, the compensated peak at full drive occurred at the input frame. The first saturator, hard clip and hard rectifier gave peak levels 0.33629, 0.25322 and 0.26107. Their last samples above 1e−6 absolute fell 4,392, 4,243 and 4,603 frames after the input. At minimum drive, the 48 kHz impulse had a central coefficient of 0.81545. Magnitudes at 12, 16.8, 19.2, 21.6 and 24 kHz were 1.0000, 0.8910, 0.5662, 0.1878 and 0.0454. At 96 kHz the Nyquist magnitude was 0.2758. |
+| Alias readings | Full drive, 9,973 Hz sine at 0.35 peak, 48 kHz. For the first saturator, hard clip and hard rectifier respectively, fundamental amplitudes were 0.27065, 0.21883 and 0.01953. The 19,946 Hz harmonic was 0.004678, approximately 1e−6 and 0.06286. The folded third harmonic at 18,081 Hz was about 1.0e−5, 7e−6 and 5e−6. Absolute spectral amplitude uses a one-second settled render and coherent FFT bins. |
+
+The manual attributes the Drive delay to oversampling and gives nominal input/output trim spans of −12 to +36 dB and −36 to +12 dB. A compensated delay of 16 samples can arise from different filter lengths and rate factors. Empirical passband, alias rejection, impulse alignment and transition behavior form independent audio targets. [Reference manual](https://downloads.cableguys.com/Cableguys-ShaperBox-3-Manual.pdf#page=61)
+
 ## 2026-11-19 — ADi-SHAPER Filter, flanger and phaser
 
 **PR requested** — `clones/adi-shaper-modulation` at `d18b7d11`. Title **Add measured multiband Filter and flanger/phaser stages to ADi-SHAPER**. Review after `clones/adi-shaper` (`295056b6`). Win opens and lands the PR.
