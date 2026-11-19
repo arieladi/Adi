@@ -106,8 +106,8 @@ struct Theme {
 // The four, in the order a chooser offers them.
 inline constexpr std::array<ThemeId, 4> kThemes{ThemeId::Dark, ThemeId::MidGrey, ThemeId::Light, ThemeId::MixView};
 const Theme &themeFor(ThemeId);
-// The settings' word for each ("dark", "midgrey", "light", "mixview"), and back. Today's registry
-// offers "os", "dark" and "light" for `lookfeel.theme`: "os" and anything unknown read as Dark.
+// The settings' word for each ("dark", "midgrey", "light", "mixview"), and back.
+// The legacy "os" setting and unknown words read as Dark.
 std::string_view themeName(ThemeId);
 ThemeId themeFromSetting(std::string_view);
 } // namespace adi::ui

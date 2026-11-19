@@ -11319,15 +11319,21 @@ int main(int argc, char **argv) {
                 }
             }
         check(!look::apply(ThemeId::MixView, DensityId::Open), "setting the same pair again changes nothing");
-        // The settings choose them: the registry's word for the theme, the density's key once it is there.
+        // Settings supply the same identifiers the appearance tables use.
         std::string why;
-        settings.set("lookfeel.theme", std::string("light"), {}, why);
-        commands.reload();
-        check(look::themeId() == ThemeId::Light && look::densityId() == DensityId::Compact,
-              "lookfeel.theme \"light\" chooses Light; no density key reads as Compact");
+        for (const auto id : kThemes) {
+            check(settings.set("lookfeel.theme", std::string(themeName(id)), {}, why) &&
+                      settings.set("lookfeel.density", std::string("open"), {}, why),
+                  "theme and density accept the shared table identifiers");
+            commands.reload();
+            check(look::themeId() == id && look::densityId() == DensityId::Open,
+                  "stored settings resolve the selected theme and Open density");
+        }
         settings.set("lookfeel.theme", std::string("os"), {}, why);
+        settings.set("lookfeel.density", std::string("compact"), {}, why);
         commands.reload();
-        check(look::themeId() == ThemeId::Dark, "and \"os\", the registry's default, reads as Dark");
+        check(look::themeId() == ThemeId::Dark && look::densityId() == DensityId::Compact,
+              "legacy os resolves to Dark and explicit Compact selects its density table");
         look::apply(ThemeId::Dark, DensityId::Compact);
     }
     check(submitter.submit(track(1)).ok, "commit between window frames");
@@ -13759,6 +13765,36 @@ int main(int argc, char **argv) {
                   onTab("sync.ptpEnabled") == "Link" && onTab("project.sampleRate") == "Audio" &&
                   onTab("audio.keepMonitoringLatency") == "Record, Warp & Launch",
               "a setting Live has sits on the tab where Live has it: Look & Feel split, Link's own");
+        {
+            panel.showPage("Theme & Colors");
+            juce::ComboBox *theme = nullptr, *density = nullptr;
+            for (const auto &row : panel.rows()) {
+                if (row->setting.key == "lookfeel.theme") theme = dynamic_cast<juce::ComboBox *>(row->control.get());
+                if (row->setting.key == "lookfeel.density") density = dynamic_cast<juce::ComboBox *>(row->control.get());
+            }
+            check(theme && theme->getNumItems() == 4 && theme->getItemText(0) == "Dark" &&
+                      theme->getItemText(1) == "Mid Grey" && theme->getItemText(2) == "Light" &&
+                      theme->getItemText(3) == "Mix View" && density && density->getNumItems() == 2 &&
+                      density->getItemText(0) == "Compact" && density->getItemText(1) == "Open",
+                  "Theme & Colors presents the four approved names and the two approved density choices");
+            if (theme && density) {
+                const auto oldTheme = settings.get("lookfeel.theme");
+                const auto oldDensity = settings.get("lookfeel.density");
+                theme->setSelectedItemIndex(3, juce::sendNotificationSync);
+                density->setSelectedItemIndex(1, juce::sendNotificationSync);
+                check(settings.get("lookfeel.theme") == "mixview" && settings.get("lookfeel.density") == "open",
+                      "appearance names write their stable settings values");
+                std::string why;
+                settings.set("lookfeel.theme", "os", {}, why);
+                for (const auto &row : panel.rows())
+                    if (row->setting.key == "lookfeel.theme") row->refresh();
+                check(theme->getText() == "Dark" && settings.get("lookfeel.theme") == "os",
+                      "a legacy profile displays the Dark choice without rewriting its value");
+                settings.set("lookfeel.theme", oldTheme, {}, why);
+                settings.set("lookfeel.density", oldDensity, {}, why);
+                settings.save(why);
+            }
+        }
         const auto *linkTab = settingsTab("Link");
         check(linkTab != nullptr && linkTab->groups.size() == 3 && linkTab->groups[0].heading == "Link" &&
                   linkTab->groups[0].settings.size() == 2 && linkTab->groups[1].heading == "PTP" &&

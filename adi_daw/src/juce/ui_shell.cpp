@@ -66,9 +66,7 @@ void AppCommands::reload() {
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
     linkLoop_ = flag(settings_, "editing.linkLoopToSelection", false);
     splitAll_ = flag(settings_, "editing.splitAllWithNoSelection", true);
-    // The theme and the density (DF-W24): `lookfeel.theme` ("os" and anything unknown read as Dark,
-    // the default) and `lookfeel.density` (Compact until the registry has the key). A change
-    // repaints every window at once.
+    // Appearance is shared by the windows. Existing "os" profiles resolve to Dark.
     const auto word = [this](const char *key) {
         const auto v = settings_.get(key);
         return v.is_string() ? v.get<std::string>() : std::string{};
