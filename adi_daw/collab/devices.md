@@ -25,6 +25,26 @@ device PRs do not conflict on one shared log file.
    private folder, only the measured statements reach this log. Otherwise, each reading is
    written as a one-paragraph recipe here for you to take.
 
+## 2026-11-19 — DEV-22: Phaser-Flanger notches when all wet, and starts at Live 12.4's default
+
+**`devices/phaser-flanger-defaults` (`837700a1`), from `main`.**
+
+- **Reading:** Live's default is 100 % wet (its preset), and its render notches (997 Hz −8.5 dB,
+  averaged over the LFO). ADI's phaser wet was the bare all-pass chain — unit magnitude, so at
+  100 % it would only shift phase; ADI's notches came from its 50 % mix. **A real defect, found by
+  the default:** moving ADI to Live's 100 % without this would have silenced the effect.
+- **ADI now:** the wet is the classic sum, (input + chain)/2; defaults from Live's preset (2 notches
+  at 400 Hz, Spread 35 %, Flanger 2.5 ms, LFO 0.149 Hz triangle at 75 %, duty 10 %, LFO 2 at 0.5 Hz,
+  envelope on 1 ms / 120 ms, Safe Bass 80 Hz, 100 % wet) and ranges where they mean the same.
+  Live's 42 notches are not claimed (ADI's core has 8 stages).
+- Tests: comparable defaults equal Live's; LFO held, the default dips 40.8 dB between 200–800 Hz;
+  the single-notch oracles restated for the classic sum. The 8.5 dB is not compared (LFO phase at
+  capture unknown). Plant: bare all-pass wet → 3 failures. Phaser 30, Pd 41; CTest **245/245**.
+
+**PR requested** — title "Phaser-Flanger notches when all wet, and starts at Live 12.4's default
+(DEV-22)"; head `devices/phaser-flanger-defaults` at `837700a1`; base `main`. Body: the commit
+message.
+
 ## 2026-11-19 — DEV-22: Live's Dry/Wet is sin/cos, confirmed at a second point; both reverbs follow
 
 **`devices/reverb-equal-power` (`69c75a50`), from `main`.**
