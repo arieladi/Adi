@@ -7,23 +7,74 @@ device PRs do not conflict on one shared log file.
 
 ## FOR THE DIRECTOR
 
-1. **Shifter's delay, compensated or not?** (DEV-22; blocks nothing.) Live 12.4 reports no
-   latency for Shifter and leaves its Pitch mode half a Window late, uncompensated (80 ms
-   Window: 40 ms late). ADI now does exactly that (`devices/shifter-latency`). The other
-   way would be an addition: report the half Window so the graph compensates it, with
-   Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
-   decide the addition only if you miss it in use.
+**The Live readings — the one list (ADR-0248 d8, d14).** For the director's own Claude session on
+the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
+is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
+(its default), nothing else on the track unless said. Bring back the statement (value, conditions,
+method); Live's files and renders stay in the director's research.
 
-2. **Readings from Live on this machine: may this seat drive Live, or will you take them?**
-   (Blocks most of the lane's remaining parity work.) Control of Live was declined when this
-   seat asked (Arpeggiate's style order, MIDI only). What waits on readings: the 18 arpeggio
-   orders (DEV-19, the XC-25 ordering function), Simpler's voices/velocity/envelope slopes
-   (DEV-21), Redux's defaults and Saturator's HQ curve (DEV-22), Envelope Follower and Shaper
-   (DEV-07's modulators), Beats/Texture (TM-WT-03). **Recommendation:** allow this seat to
-   drive Live for one-device-one-question readings, MIDI-only first, never while engine-win runs
-   an ASIO measurement (its log is checked first; Live here uses ASIO4ALL); readings stay in the
-   private folder, only the measured statements reach this log. Otherwise, each reading is
-   written as a one-paragraph recipe here for you to take.
+1. **Saturator, High Quality at Dry/Wet 50 % (DF-E37 a; blocks #659).** Default Saturator (HQ on),
+   Dry/Wet 50 %: render an impulse of 0.5, 100 ms. The first 64 samples' values, and the level of a
+   10, 15 and 18 kHz sine through it.
+2. **Shifter after a pitch move (DF-E37 b; blocks #660).** Pitch mode, Window 80 ms, Dry/Wet 100 %:
+   automate Coarse to +7 st for 40 ms then back to 0, then an impulse of 0.5 one second later.
+   Where the impulse comes out and at what level (one peak at 1,920, or two of half?).
+3. **Simpler's loop through the release (DF-E37 d).** Classic, Loop on, a 2 s sample with Loop
+   Length 5 % (100 ms), Release 1000 ms: a note held 1 s then released. Does the output keep
+   looping and fade over the second, or stop at the loop's end?
+4. **Arpeggiator style order (DEV-19).** A MIDI clip holding C3 E3 G3 B3 for one bar; Clip View,
+   Transform, Arpeggiate, Rate 1/16, Steps 0, Gate 50 %: for each of the 18 styles the 16 pitches
+   in order. Then C3 E3 G3 B3 D4 for Converge, Diverge, Con & Diverge, the Pinky and Thumb styles;
+   and Up with Steps 1, Distance +12.
+5. **Simpler's voices, velocity, envelope and filter (DEV-21).** The Voices chooser's list. Classic,
+   a 1 kHz sine sample, Vel > Vol 35 %: peak level at velocities 1, 32, 64, 100, 127. Attack 100 ms
+   at slope 0, +1, −1: level at 25, 50, 75 ms. Filter on, Clean, LP 12, 1 kHz, Resonance 0 % and
+   100 %: noise through it, the level at 500 Hz, 1 kHz, 2 kHz.
+6. **Default values not in Live's preset library (DEV-22).** A fresh Redux, Echo, Resonators,
+   Multiband Dynamics and Vocoder: every control's value as shown. (Echo's dry impulse is 0.300 and
+   Resonators' 0.500 at their defaults, which no Dry/Wet law explains without these values.)
+7. **Saturator's Width, Curve and Period (DEV-22).** Waveshaper mode, Drive 20 dB, a 100 Hz sine at
+   −6 dBFS: Width 0 / 0.3 / 1, then Curve 0 / 0.05 / 1, then Period 0 / 0.5 / 1, the others at
+   default; for each render the first five harmonics' levels.
+8. **Shifter's dry path and sweep phase (DEV-22).** Pitch +7 st, Dry/Wet 50 %, an impulse: is the dry
+   impulse at 0 or delayed with the wet? Then the first 2,000 samples of the sweep render at +7 st.
+9. **Delay with Feedback 0 (DEV-22).** The default Delay with Feedback 0: the six-tone multitone
+   (71, 223, 997, 3001, 7001, 11003 Hz) render, to settle its filter's exact shape.
+10. **Chorus-Ensemble's Delay Time list (DEV-22).** The chooser's six entries in order.
+11. **Envelope Follower and Shaper (DEV-07).** Envelope Follower mapped to a Utility Gain, Rise and
+    Fall 0 then default, a 1 kHz burst of 100 ms: the gain over time. Shaper at its default shape,
+    1 Hz, mapped the same way: one cycle.
+12. **AU05, automation moved or deleted with its material (DF-E38 a; the engine's).** The value
+    left inside a source interval a Move or Delete vacates (the held value, the lane default, or a
+    new join); how a paste onto another track maps device and send lanes with no counterpart; a
+    move across tempo steps between ticks and samples.
+13. **Crop (DF-E38 b; the engine's).** Whether the selection is read in source or arrangement
+    coordinates; whether Crop keeps the clip's span and moves the source window, or trims the span;
+    what becomes of a note crossing the edge (its length and expression).
+14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
+    value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
+
+(The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
+
+## 2026-11-19, evening — ADR-0248 read: this lane's order from here
+
+The steering (win's entry of this evening) is this lane's queue now, in its order: (1) DF-E37, each
+item a failing test then the fix — (a) Saturator HQ's notch at partial Dry/Wet before #659, (b)
+Shifter's lasting comb before #660, (c) saved values under new ranges on win's loan of
+`builtin_host.cpp`'s value mapping, (d) the looped release, (e) the Sampler's fades and velocity,
+(f) OneShot's idempotent prepare; (2) OneShot and the Sampler as loadable instruments on win's loan
+of `builtin_catalog.cpp` and `makeBuiltinDevice`; (3) DF-E36; (4) DEV-22 where it stands (Auto
+Filter, Chorus-Ensemble, Delay, the reverbs and Phaser-Flanger branches above are its last
+pieces). The Live readings are now one list under FOR THE DIRECTOR, with the engine's DF-E38.
+
+**Already done, on branches:** DF-E20 (d) — both header comments — is on `devices/true-peak`
+(`b5ee5aa6`): `true_peak.hpp` now gives the Annex's rule (6x at 32 kHz, so 192 kHz; never below
+176.4 kHz from 22.05 kHz up) and `spectrum.hpp` says a sine half a bin off reads −1.42 dB at 1,024
+points. When `devices/true-peak` and the engine's f28eacd0 meet, the double path keeps the
+non-finite guard. **DEV-16:** steps 3 and 4 (`[line~]`; the director's device's most-used boxes)
+were pushed before the steering arrived (`10fb3b4d`, `607d3d5a` on `devices/amxd-translator`);
+DEV-16 stops there until DEV-10 exists. Win may take the PR at step 2 (`fe9fa8af`) and leave the
+two later commits on the branch, or take all four.
 
 ## 2026-11-19 — DEV-22: Phaser-Flanger notches when all wet, and starts at Live 12.4's default
 
@@ -932,7 +983,7 @@ MF4) is on `devices/pd-unbind`, building.
 
 ## 2026-11-19 — The lane is taken up again (ADR-0208; ADR-0246 d5, in #641)
 
-A Claude work seat on the director's research machine (Windows, MSVC 19.44,
+A Claude work seat in the director's research (Windows, MSVC 19.44,
 Live 12.4 installed) now holds this lane. Its own clone and worktrees are apart
 from the research folders and from the engine-win seat. Branches `devices/<name>`
 from `origin/main`; this log stays on `devices/log`, newest first.
