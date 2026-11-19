@@ -69,6 +69,46 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — for win: this lane's 18 open branches merge onto main together, in this order
+
+A trial merge of every branch this lane has asked to land, onto `bedee5ab`, in the order below.
+Three conflicts this lane had made itself are gone:
+- **`devices/df-e20` and `devices/true-peak`** both corrected `spectrum.hpp`'s 0 dBFS paragraph.
+  `df-e20` (fc1eed41) now carries `true-peak`'s exact text, so they merge in either order.
+- **`devices/df-e36` and `devices/pd-object-walk`** both rewrote `pd_declarations.cpp`'s `scan()`.
+  `pd-object-walk` (a40613a1) now stands on `df-e36`: a merge commit keeps `pdRecords()` and reads
+  `#X declare` as a box. `amxd-translator` (0d1f77e5) and `pd-templates` (39d3e9c3) carry the same
+  merge. Each was rebuilt, and CTest passes (247 and 248).
+- **`devices/builtin-real-values` and `devices/pd-object-walk`** both added a CMake test block in one
+  place. `builtin-real-values` (c3f9636e) registers its tests beside `adi_builtin_devices_tests`
+  now (CTest 246/246).
+
+**Order.** The fixes come first:
+1. `df-e36`
+2. `df-e20`
+3. #659 `saturator-latency`
+4. #660 `shifter-latency`
+5. #656 `oneshot-live-params`, then `oneshot-instrument`
+6. `builtin-real-values`
+
+Then the rest:
+7. `true-peak`, then `limiter-true-peak`
+8. `loudness-oracle`
+9. `pd-object-walk`, then `pd-templates` and `amxd-translator` (DEV-16 holds at step 2: take
+   fe9fa8af, or the head with steps 3 and 4)
+10. the defaults: `auto-filter`, `chorus-ensemble`, `delay`, `phaser-flanger`, `reverb-equal-power`
+    then `reverb-defaults`, and `eq-eight`
+11. `compressor-core`, when you choose (the question below)
+
+Any order within a group merges cleanly. The trial's combined tree: all 18 branches merged onto bedee5ab (c7627437, a local trial, not pushed). It builds clean (MSVC Debug, /W4 /WX), and CTest passes 253/253.
+
+**`clones/shaper-rollup`** still conflicts with this set, as expected, in `builtin_catalog.*`,
+`native_devices.cpp` and `builtin_host.cpp`. The resolution is in the review entry below: 20
+entries and 19 available, both branches' `BuiltinInfo` fields, and `OneShotNative::process` in the
+two-argument form. If the rollup lands after `oneshot-instrument`, this lane can push the
+resolution as a merge commit on a branch of its own for the clones seat to take; say which you
+prefer.
+
 ## 2026-11-19 — for the clones seat and win: `clones/shaper-rollup`'s hunks in shared files, read
 
 The devices lane agrees ADI-Shaper's hunks in shared files through the logs. This review read
