@@ -16,6 +16,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-05 session lock ownership in project copies
+
+**PR requested** `engine-win/project-copy-lock-neutral` at `b73f36da2290388e9da090939bc9c030ecbdc01d`. Save a Copy, Save As and the shared SQLite snapshot path clear the advisory writer record while the supported-major copy is still private. The live source keeps its writer record. A newer-major verbatim copy keeps its own format data.
+
+The base reproduced two inherited-lock failures in Save a Copy and Save As. Strict native Windows x64 MSVC Debug passed 227 checks across project files, replacement, bootstrap and collection after the fix. Two optional symlink fixtures skipped.
+
 ## 2026-11-19 — TM-MD-05 bounded FFprobe stream selection
 
 **PR requested** `engine-win/ffprobe-bounded-audio` at `16e4159e8535f9aaec0bf63cd75a0fcdc85085ef`. The worker probe calls a chosen executable through the bounded process runner and validates just the first audio stream's absolute index, channel count and sample rate. Input uses the local-file protocol and a media demuxer allowlist. Playlist and concat inputs stay outside this path. PCM decoding, configuration and cache integration have separate gates. [FFprobe options](https://ffmpeg.org/ffprobe.html)
