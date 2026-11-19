@@ -12,6 +12,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E14 stored history origins gated and pushed
+
+**PR requested** — branch `engine/df-e14-history-origin`, head `9aa23bec6a692a117bc1567eca90fb0b96be69fc`, base `origin/main` at `4e11edd9` merged with DF-E18 at `f28eacd0`. Title **Preserve stored history origins and refuse missing legacy origins**. Land DF-E18 first. The remote head matches the gated commit.
+
+A childless stored root held by a named snapshot already survives compaction. Leaving it adds no branch. If it would otherwise lose its last branch or named snapshot, History preserves it on a system branch. The fixture removes the snapshot from a current root, moves away, compacts again and restores that root through the same branch. Legacy checkpoint files refuse an unavailable pre-edit origin before executing any replay writes. The checkpoint and its retained edits remain navigable.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58417 checks across 244 suites, all four validators and the layout check. All three focused history suites passed. Clang 19 compiled both changed C++ units with warnings as errors and passed 54 checks in the navigation suite. Compiled faults restored the duplicate named-root branch and late legacy-origin refusal and each failed its intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E15 next.
+
 ## 2026-11-19 — DF-E13 automation splice boundaries gated and pushed
 
 **PR requested** — branch `engine/df-e13-automation-splice`, head `f3656b3aacd15a5267032d1e8d52de02dbba6b61`, base `origin/main` at `7c96b9d4`. Title **Preserve exact automation splice boundaries**. The remote head matches the gated commit.
