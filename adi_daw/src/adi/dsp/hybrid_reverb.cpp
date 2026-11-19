@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <new>
+#include <numbers>
 #include <stdexcept>
 namespace adi::dsp {
 HybridImpulse prepareHybridImpulse(std::span<const float> samples, int channels, double rate,
@@ -168,8 +169,11 @@ void HybridReverb::process(const float *left, const float *right, float *outL, f
                      : route == 3 ? convolution[c]
                                   : (1 - blend_) * convolution[c] + blend_ * algoOut[c];
         const double mid = (wet[0] + wet[1]) * .5, side = (wet[0] - wet[1]) * .5 * p_[Width] / 100;
-        outL[i] = static_cast<float>(dry[0] * (1 - mix_) + (mid + side) * mix_);
-        outR[i] = static_cast<float>(dry[1] * (1 - mix_) + (mid - side) * mix_);
+        // DEV-22: sin/cos, as Live 12.4 measures (dry 0.7071 at its 50 % default).
+        const double dryGain = mix_ <= 0 ? 1 : mix_ >= 1 ? 0 : std::cos(mix_ * std::numbers::pi / 2);
+        const double wetGain = mix_ <= 0 ? 0 : mix_ >= 1 ? 1 : std::sin(mix_ * std::numbers::pi / 2);
+        outL[i] = static_cast<float>(dry[0] * dryGain + (mid + side) * wetGain);
+        outR[i] = static_cast<float>(dry[1] * dryGain + (mid - side) * wetGain);
         delayAt_ = (delayAt_ + 1) % predelay_[0].size();
         if (++cursor_ == 256) {
             partition(ir);

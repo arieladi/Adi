@@ -201,7 +201,19 @@ void partition() {
     check(allocations == 0, "reverb process allocates nothing");
 }
 } // namespace
+// DEV-22: Live 12.4's Reverb at its browser default (Dry/Wet 55 %) puts the
+// dry impulse out at 0.64945 of the input -- cos(0.55 pi/2); the square-root
+// law would give 0.6708. Pre-delay keeps the wet out of that first sample.
+void liveDefault() {
+    R r;
+    r.prepare(48000);
+    std::vector<float> in(256, 0.f), l(256), rr(256);
+    in[0] = 1.f;
+    r.process(in.data(), in.data(), l.data(), rr.data(), in.size());
+    check(std::abs(l[0] - 0.6494480371) < 2e-6, "Live default: the dry impulse is 0.64945 (sin/cos at 55 %)");
+}
 int main() {
+    liveDefault();
     decay();
     controls();
     freezeAndFilters();

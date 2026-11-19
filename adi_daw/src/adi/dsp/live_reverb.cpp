@@ -175,9 +175,14 @@ void LiveReverb::process(const float *inL, const float *inR, float *outL, float 
         const double mid = (l + r) * 0.5, side = (l - r) * 0.5 * p[Stereo] / 120;
         l = mid + side;
         r = mid - side;
+        // DEV-22: Live 12.4's Dry/Wet is sin/cos. Its Reverb's dry impulse at the
+        // default 55 % is 0.64945 = cos(0.55 pi/2) (measured; the square-root
+        // law would give 0.6708). Exact at both ends.
         const double mix = p[Mix] / 100;
-        outL[frame] = static_cast<float>(inputL * (1 - mix) + l * mix);
-        outR[frame] = static_cast<float>(inputR * (1 - mix) + r * mix);
+        const double dry = mix <= 0 ? 1 : mix >= 1 ? 0 : std::cos(mix * std::numbers::pi / 2);
+        const double wet = mix <= 0 ? 0 : mix >= 1 ? 1 : std::sin(mix * std::numbers::pi / 2);
+        outL[frame] = static_cast<float>(inputL * dry + l * wet);
+        outR[frame] = static_cast<float>(inputR * dry + r * wet);
         write_ = (write_ + 1) % predelay_.size();
     }
 }
