@@ -14,6 +14,13 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — taking Live 12.4: Arpeggiate's style order (DEV-19 / XC-25), MIDI only
+
+One device, one question: the step order each of the 18 Arpeggiator/Arpeggiate styles gives for a
+held 4-note chord (and 5 notes where the middle is ambiguous), with Steps/Distance for transposed
+repeats. engine-win's log checked first: its current work is the scanner and export, no ASIO run.
+No audio is rendered; the reading stays in the director's research, the measured orders come here.
+
 ## 2026-11-19 — DEV-28, step 3: the meter agrees with libebur128 to 0.0000 LU; Main's CPU cost
 
 **`devices/loudness-oracle` (`94cfc664`), stacked on `devices/true-peak`.**
