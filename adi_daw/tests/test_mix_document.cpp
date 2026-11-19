@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/project_document.hpp"
+#include "adi/builtin_catalog.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
+#include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -223,10 +225,79 @@ void replaceHighestFunction() {
     check(redoRemove && redoAdd && doc->session().instanceFor(limiter->id) == newInstance && find(limiter->uid).has_value(),
           "Redo restores the same independently authored limiter runtime");
 }
+void replaceRetainedDeviceFromPicker() {
+    test::TempDirectory temp("mix_document", "external-after-remove");
+    std::string error, loadedPath;
+    int externalLoads = 0;
+    const auto fake = test::knobsLoader("cutoff", "vst3");
+    auto loader = device::withBuiltinDevices([&](const engine::DeviceRequest& request, std::string& why) {
+        ++externalLoads;
+        if (request.ref) loadedPath = request.ref->pathHint;
+        return fake(request, why);
+    });
+    auto doc = ui::ProjectDocument::open(temp.path() / "project.adi", true, loader, error);
+    check(doc && doc->addMixFunction(mix::Function::Limiter, 2), "the picker fixture has a live native limiter");
+    if (!doc) return;
+    const auto find = [&](std::string_view uid) -> std::optional<ui::DevicePanelData> {
+        const auto publication = doc->parameterFeed().current();
+        for (const auto& row : *publication)
+            if (row.uid == uid) return row;
+        return {};
+    };
+    const auto previous = find("org.adidaw.mix.limiter");
+    check(previous && previous->available, "the old limiter is realised before removal");
+    if (!previous || !previous->available) return;
+    auto* formerInstance = doc->session().instanceFor(previous->id);
+    check(formerInstance && doc->deviceAction("device.remove", {{"id", previous->id}}),
+          "remove the highest limiter while its runtime is retained for Undo");
+
+    rows::PluginRef reference;
+    reference.format = "vst3";
+    reference.uid = test::kKnobsUid;
+    reference.name = "External fixture";
+    reference.pathHint = "fixture/fake external.vst3";
+    reference.subtype = "effect";
+    check(doc->insertPlugin(reference, 3), "the picker transaction can insert a fake VST3 after removal");
+    const auto inserted = find(reference.uid);
+    check(inserted && inserted->id > previous->id && inserted->track == 3 && inserted->plugin && inserted->available &&
+              externalLoads == 1 && loadedPath == reference.pathHint,
+          "the picker allocates above retained IDs and calls the external loader with the documented path");
+    if (!inserted) return;
+    auto* replacement = doc->session().instanceFor(inserted->id);
+    doc->setParameterDemand(doc.get(), {inserted->id});
+    const auto readback = find(reference.uid);
+    check(replacement && replacement != formerInstance && dynamic_cast<test::Knobs*>(replacement) &&
+              doc->session().resolveDevice(inserted->runtime) == replacement && readback &&
+              readback->runtime.sameInstance(inserted->runtime) &&
+              std::any_of(readback->parameters().begin(), readback->parameters().end(),
+                          [](const auto& record) { return record.id == "cutoff" && !record.missing; }) &&
+              !doc->deviceTargetCurrent(previous->id, previous->runtime, previous->instance),
+          "the inserted row reads back the fake VST3 controls while an old limiter target remains revoked");
+    check(doc->ops().undo().ok && doc->synchronise(), "one Undo removes the picker insertion");
+    doc->tick(1);
+    check(!find(reference.uid) && !find(previous->uid), "undoing the insertion leaves the earlier limiter removal in effect");
+    check(doc->ops().redo().ok && doc->synchronise(), "one Redo restores the picker insertion");
+    doc->tick(2);
+    const auto redone = find(reference.uid);
+    check(redone && redone->id == inserted->id && redone->available &&
+              doc->session().resolveDevice(redone->runtime) == replacement && externalLoads == 1,
+          "Redo restores the same external row and retained runtime");
+
+    constexpr std::string_view utility = "org.adidaw.builtin.utility";
+    if (const auto* info = findBuiltin(utility); info && info->available) {
+        check(doc->deviceAction("device.remove", {{"id", inserted->id}}) && doc->insertBuiltin(std::string(utility), 3),
+              "the built-in picker can insert a utility after removing the external device");
+        const auto builtIn = find(utility);
+        check(builtIn && builtIn->id > inserted->id && builtIn->available && !builtIn->plugin &&
+                  doc->session().resolveDevice(builtIn->runtime) != replacement,
+              "the built-in insertion uses the same runtime ID reservation");
+    }
+}
 }
 int main() {
     replaceHighestFunction();
     observeLimiterReduction();
+    replaceRetainedDeviceFromPicker();
     test::TempDirectory temp("mix_document","native-functions");std::string error;
     auto doc=ui::ProjectDocument::open(temp.path()/"project.adi",true,device::withBuiltinDevices(),error);
     check(doc!=nullptr,"native function document opens");if(!doc)return 2;

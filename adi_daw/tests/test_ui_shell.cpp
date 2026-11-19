@@ -9064,6 +9064,7 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
     root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack));
     root.setMixView(true, false);
     auto &stack = root.mixViewPanel.stack;
+    stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
     refresh();
     stack.frame(root.reader());
     const auto row = stack.model().shownIndex(2);
@@ -9081,8 +9082,8 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
         stack.mouseUp(pressAt(stack, point));
         check(opened == 1 && host.contains(AdiRootComponent::pluginWindowKey(3)) && root.state().mixView &&
                   root.undoTitle(false) == before, "one chip click opens the software editor over Stack with no edit");
-        stack.keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
-        check(opened == 1 && host.contains(AdiRootComponent::pluginWindowKey(3)) && root.state().mixView,
+        const bool entered = stack.keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+        check(entered && opened == 1 && host.contains(AdiRootComponent::pluginWindowKey(3)) && root.state().mixView,
               "Enter on the focused chip reuses its software editor");
         host.close(AdiRootComponent::pluginWindowKey(3));
         check(root.state().mixView, "closing the software editor retains Mix View");

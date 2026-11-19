@@ -195,6 +195,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    std::int64_t retainedDeviceId() const noexcept;
     bool finishInsert(PreparedBuiltinInsert);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain

@@ -450,11 +450,18 @@ bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
     error_.clear();
     return true;
 }
+std::int64_t ProjectDocument::retainedDeviceId() const noexcept {
+    // Removed instances stay alive for Undo, even after their store rows leave.
+    std::int64_t id = 0;
+    for (std::size_t i = 0; i < session_.entryCount(); ++i)
+        id = std::max(id, session_.entryAt(i).deviceId);
+    return id;
+}
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before));
+    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
 }
 bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track) {
-    return finishInsert(preparePluginInsert(*store_, ref, track));
+    return finishInsert(preparePluginInsert(*store_, ref, track, {}, retainedDeviceId()));
 }
 bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     if (!prepared.ok) {
@@ -520,12 +527,7 @@ bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<s
 bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
     const auto available = device::mixFunctionAvailability(kind);
     if (!available.ready) { error_ = available.reason; return false; }
-    // Removed instances stay alive for Undo. A fresh authored row must not
-    // claim an ID that the current session still uses for one of those instances.
-    std::int64_t retainedDeviceId = 0;
-    for (std::size_t i = 0; i < session_.entryCount(); ++i)
-        retainedDeviceId = std::max(retainedDeviceId, session_.entryAt(i).deviceId);
-    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready, retainedDeviceId);
+    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready, retainedDeviceId());
     if (!prepared.ok) { error_ = prepared.error; return false; }
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
         return mix::commitFunctionEdit(s, p, a);
