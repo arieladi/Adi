@@ -486,6 +486,65 @@ void makeupAutomation() {
     }
 }
 
+void measuredGainEnvelope() {
+    constexpr double rate = 48000;
+    constexpr double attackSeconds = .25;
+    constexpr double releaseSeconds = .0025;
+    constexpr double targetDb = 15;
+    constexpr float quiet = .001f;
+    c::Settings settings;
+    settings.thresholdDb = -20;
+    settings.ratio = 4;
+    settings.attack = 1;
+    settings.release = 0;
+
+    c::Core core;
+    const auto readGainDb = [&](float level, int frames) {
+        std::array<float, 256> samples{};
+        while (frames > 0) {
+            const int n = std::min(frames, static_cast<int>(samples.size()));
+            std::fill_n(samples.begin(), n, level);
+            float *main[]{samples.data()};
+            {
+                AudioCall guard;
+                const auto context = core.beginBlock(n);
+                if (core.process(context, 0, n, main, nullptr, 0, settings) != c::Status::Ok)
+                    return std::numeric_limits<double>::quiet_NaN();
+            }
+            if (frames == n)
+                return 20 * std::log10(static_cast<double>(samples[static_cast<std::size_t>(n - 1)]) / level);
+            frames -= n;
+        }
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+
+    check(core.prepare({rate, 256, 1}, settings) == c::Status::Ok, "analytic envelope fixture prepares");
+    const double halfway = targetDb * (1 - std::sqrt(.1));
+    check(std::abs(readGainDb(1, 6000) + halfway) < .002 &&
+              std::abs(readGainDb(1, 6000) + 13.5) < .002,
+          "hard knee Clean attack reaches half-time and 90 percent at 250 ms");
+
+    // The slower detector has been driven for exactly one attack period. Its
+    // remaining exponential is a geometric sum during the fast release.
+    const double slowAtRelease = targetDb * (1 - std::pow(.1, attackSeconds / (100 * attackSeconds + 2)));
+    const double fast = std::pow(.1, 1 / (rate * releaseSeconds));
+    const double slow = std::pow(.1, 1 / (rate * (releaseSeconds + .2)));
+    const double slowAfter120 = std::pow(slow, 120);
+    const double remaining = 1.35 + (1 - fast) * slowAtRelease * slow * (.1 - slowAfter120) / (fast - slow);
+    check(std::abs(readGainDb(quiet, 120) + remaining) < .002,
+          "Clean release reaches its analytic reduction after 2.5 ms");
+
+    check(std::abs(readGainDb(quiet, 96000)) < .0001 &&
+              std::abs(readGainDb(1, 6000) + halfway) < .002,
+          "the core settles to unity on quiet input and attacks again on a new signal");
+
+    settings.attack = 0;
+    settings.autoGain = true;
+    check(core.prepare({rate, 256, 1}, settings) == c::Status::Ok, "static make-up fixture prepares");
+    check(std::abs(readGainDb(quiet, 256) - targetDb / std::exp(1.0)) < .002,
+          "Clean Auto Gain applies the independently calculated make-up below threshold");
+}
+
 template <class Sample>
 void nonFiniteInput() {
     for (const bool external : {false, true}) {
@@ -532,6 +591,7 @@ int main() {
     keyAndLink();
     precisionAndStaticLaws();
     makeupAutomation();
+    measuredGainEnvelope();
     nonFiniteInput<float>();
     nonFiniteInput<double>();
     check(allocations == 0 && deallocations == 0, "audio callbacks allocate and deallocate nothing");
