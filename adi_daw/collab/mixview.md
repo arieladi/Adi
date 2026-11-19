@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — #651 local Windows gates on the reconciled head
+
+Exact `811702260b8cb0b26462f8c943e416e327b1a17d` rebuilt under Windows x64 Release and passed `adi_mix_eq_host_tests`, `adi_mix_compressor_tests` and `adi_mix_compressor_host_tests`. These cover the previously advertised EQ latency handover and the compressor's paired non-finite-input fixture. The hosted rerun remains the landing gate.
+
+**PR requested.** The same #651 head has the local operation/schema/CI validator and three hosted-component prerequisites ready for re-review.
+
 ### 19 November — #651 merge validator
 
 The hosted validator for `c21e1170` saw 213 operation rows and read 212 in the headline. Each parent passes on its own. The synthetic merge combines #651's existing `routing.setKeyTap` and main's existing `lane.restore` from #662, so the shared headline also needs 86 P1 rows instead of 85. The same two failures reproduced locally after merging main.
