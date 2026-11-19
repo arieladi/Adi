@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19, decode-cache findings on current main (DF-E28 and DF-E34)
+
+**PR requested** — `engine-win/decode-space-admission` at `296c87b136a7f7aa86bb5db49f8693a952562d6f`, based on main `88e2d94e`. This review tip reconciles the previously requested decode admission and accounting work with the saved-source and analysis-trim fixes. It includes the #664 source stack and the pending `60fa903d` change. Use this tip for the combined review.
+
+Strict MSVC x64 `/W4 /WX` passed 857 checks in eight suites on the exact stack. The tests cover saved-source mismatch, warm-source reuse, trim refusal and continuation, space admission and real playback. Existing native AAC and symlink cases lacked codec support and privilege. The earlier same-shape saved-source limitation remains in the DF-E34 handoff.
+
 ## 2026-11-19, automatic audio take-lane reuse (CT-02)
 
 **PR requested** — `engine-win/audio-loop-lane-reuse` at `d3e53de4b8407ba6c8e69f09cca8e6ad9fc12a69`, on main `88e2d94e` and after audio loop materialization at `b4907bcc`.
