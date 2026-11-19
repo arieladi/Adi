@@ -25,6 +25,31 @@ device PRs do not conflict on one shared log file.
    private folder, only the measured statements reach this log. Otherwise, each reading is
    written as a one-paragraph recipe here for you to take.
 
+## 2026-11-19 — DEV-22: Delay's loop filter is 12 dB/oct, and its default is Live 12.4's
+
+**`devices/delay-defaults` (`92511657`), from `main`.** Third of the corpus devices.
+
+- **Reading (DV-09 default renders, 48 kHz, 120 BPM):** first output sample 0.7071 of an impulse
+  (dry, equal-power at 50 %). Six tones (dB/°): 71 −8.53/−27.7, 223 −11.16/+26.9, 997 +2.58/+44.1,
+  3001 −9.60/−37.9, 7001 −11.39/−24.5, 11003 −3.23/−52.3.
+- **Method:** with Live's default (3/16 = 18 000 samples, Feedback 0.5, Dry/Wet 0.5), each tone
+  was solved for the loop filter F under three topologies (filter in the loop, in the feedback
+  only, after the loop) and two mix laws. Only in-loop + equal-power gives a clean filter: ~0 dB in
+  band, +79° and −2.1 dB at 71 Hz — a second-order high-pass at 1 kHz/2⁴ = 62.5 Hz to 0.05 dB and
+  0.5° (a one-pole gives +41°), and a second-order low-pass near 16 kHz. The remaining ±0.1 dB is
+  the capture not being settled (feedback 0.5 per 0.375 s leaves a few percent at 2 s).
+- **ADI now:** Butterworth TPT high-pass and low-pass in the loop at f·2^(∓W/2) (was one-poles);
+  defaults from Live's preset — synced 3/16 (right stores 4 behind Link), 375 ms free, Feedback
+  50 %, Filter on, 1 kHz (50..18000 Hz), Width 8 oct, LFO 0.5 Hz triangle, Dry/Wet equal-power.
+- Test: first sample 0.70711; six tones within **0.39 dB / 1.9°** of the capture (bound 0.5 dB /
+  2.5° for its transient). Oracles that assumed the old defaults state their mechanics. Plant: no
+  high-pass → 2.7 dB / 71° off. Delay 93, Pd 44; CTest **245/245**.
+
+**PR requested** — title "Delay's loop filter is 12 dB/oct and its default is Live 12.4's
+(DEV-22)"; head `devices/delay-defaults` at `92511657`; base `main`. Body: the commit message.
+
+**Reading that would settle the decimals:** the same six tones with Feedback 0 (no transient).
+
 ## 2026-11-19 — DEV-22: Chorus-Ensemble mixes equal-power, as Live 12.4 measures
 
 **`devices/chorus-ensemble-defaults` (`b285030e`), from `main`.** Second of the corpus devices.
