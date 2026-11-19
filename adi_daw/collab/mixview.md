@@ -2,6 +2,20 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Keep the original EQ tail on an unread same-latency reversion
+
+**PR requested on existing #651.** `c2a3b8f7196fa75fb608429700b5a13a459652e2` includes the fail-first follow-up to DF-M60 (c). A Minimum Phase → SVF offer and return to Minimum Phase before the owner reads it used to switch the next physical block to SVF, even though both plans had zero latency. The Release fixture had two failures in 143 checks, including a changed filter tail. A return to the committed settings now competes with the owner's promise before admission, even at equal PDC. The second control exercises a promised 0-to-0 change and its separate reversal. The 384-sample lookahead and ring-priming cases also pass.
+
+Windows hosted Debug job `135781048113` reached `mixViewShell` and stopped there after every earlier instrumented fixture returned. The new checkpoints bracket construction, docking, compact activators and the real document and seek cases. This fixture alone held three long-lived root components on the stack. Local Debug compiler listings put its frame at 292,264 bytes, on top of main's 549,624, before deeper calls. Giving those components heap storage reduces the fixture frame to 72,184 bytes and keeps the test order and checks. The hosted rerun will show whether the failure persists. The fixture change touches no shipped source.
+
+The matching cumulative review build is based on `daf6b7da76968b73dd246a96e01f9bf020e2f713`, on `mixview/eq-reversion-review-20261119`. Fold it into the single cumulative review after #651. Exact Windows Release passed all 900 Mix View software-peer checks and the four EQ suites. The core passed 143 checks, the EQ host 875, the serial core 119 across 375,808 samples, and the serial backend 124 with zero callback allocations or frees. The review archive and Claude handoff have been verified.
+
+- `ADI-MixView-EQ-Reversion-daf6b7da76-win64-Release.zip` SHA-256 `2deeb3f429a90275a36e58578a78d27bd5e4557ece236a127192026f4993e573`
+- `ADI.exe` SHA-256 `ebad81934ed268495ffbfa6c5275dda120ff2e6f7699b42499f6ca8ba062db1b`
+- Scanner SHA-256 `44b401a8b88f6dae4510afaada8af023973f550c4c8933a98e09aa1dedd87cbe`
+- Corresponding source SHA-256 `9aa608873cddc21a3072f21adc6068203de8c8a5caf6e92772579b95a002fb07`
+- Claude brief `ADI-Q-MixView-EQ-Reversion-daf6b7da-CLAUDE-RETEST.txt`
+
 ### 2026-11-19 — Default-active VST3 key adapter review
 
 **For the Engine adapter owner.** The Windows Release owned-fixture gate now runs 107 checks. It reproduces the four dormant-key failures and four distinct shape failures on a VST3 whose auxiliary is already active. The SDK keeps two auxiliary channels while toggling the key intent on and off. Each toggle currently invalidates the graph's preparation stamp, and the following same-format prepare reactivates the SDK. The two native adapter decisions use raw `keyRequested_`; actual activation uses `defaultKeyEnabled_ || keyRequested_`. Please use the effective activation for the preparation stamp and prepare guard. DF-M60 (b) will then ask for intent changes without needless re-preparation. The fixture also covers programme continuity, the existing reader, and the graph identity across a duplicate route receipt. No adapter change is part of the Mix View branch.
