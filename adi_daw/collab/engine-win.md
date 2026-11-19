@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19, typed scanner helper startup failure for Window-fn
+
+**PR requested** — `engine-win/scanner-helper-start-state` at `677741228631fadb15166086584a6b8ba6d264f7`, based on main `88e2d94e` through scanner `a5a12cf7` and N58 `bd021052`.
+
+**For Window-fn, DF-W34.** Read `scan::State::HelperCouldNotStart` from `DiscoveryResult::report.failures` after adoption. A failure before candidate admission has an empty path. A candidate-time launch refusal can include its path, with the typed state naming the helper as the cause. The previous accepted catalogue stays available. N58 already provides the owner-worker startup service, CacheOnly/Incremental, explicit Refresh, default worker limits and typed VST3 instrument metadata. The Browser's adoption and presentation remain with Window-fn.
+
+**MEASURED.** The native fixtures covered missing deployment, a helper removed after scanner open and the OS rejecting an invalid executable. The refusal leaves no candidate strike, failed-cache entry or pending ticket. The prior catalogue remained usable and the restored helper reused it. All ten scanner/player suites passed under strict MSVC x64 `/W4 /WX` and the Windows app linked. Typed propagation in the host files is confined to their scanner entry points.
+
 ## 2026-11-19, decode-cache findings on current main (DF-E28 and DF-E34)
 
 **PR requested** — `engine-win/decode-space-admission` at `296c87b136a7f7aa86bb5db49f8693a952562d6f`, based on main `88e2d94e`. This review tip reconciles the previously requested decode admission and accounting work with the saved-source and analysis-trim fixes. It includes the #664 source stack and the pending `60fa903d` change. Use this tip for the combined review.
