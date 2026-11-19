@@ -101,6 +101,30 @@ void placement() {
     f.load(4096);f.session.transport().locate(2300);const auto out=f.render(4096);
     check(out[99]==0 && out[100]==f.media[0] && out[101]==f.media[2],"tick placement integrates tempo map");
 }
+void takeLanePlayback() {
+    Fixture f;
+    f.add(1, 0, 500, 11, 1000);
+    f.add(2, 0, 500, 51, 1000);
+    f.store->db().exec("INSERT INTO lanes(id,track_id,name) VALUES(7,1,'Lane');"
+                       "UPDATE clips SET lane_id=7 WHERE id=2");
+    f.load(512);
+    const auto out = f.render(512);
+    bool exact = f.session.model().clips.size() == 2;
+    for (std::size_t channel = 0; channel < 2; ++channel) {
+        for (std::size_t frame = 0; frame < 512; ++frame) {
+            const auto expected = frame < 500 ? f.media[(frame + 11) * 2 + channel] : 0.0f;
+            exact = exact && out[channel * 512 + frame] == expected;
+        }
+    }
+    check(exact, "main comp plays sample-exactly while a stored take overlaps it");
+    f.store->db().exec("DELETE FROM clips WHERE id=1");
+    if (!f.session.refresh(*f.store)) throw std::runtime_error(f.session.error());
+    f.session.transport().locate(0);
+    const auto takeOnly = f.render(512);
+    check(f.session.model().clips.size() == 1 &&
+          std::ranges::all_of(takeOnly, [](float sample) { return sample == 0; }),
+          "refresh with only a stored take delivers silence");
+}
 void properties() {
     Fixture f;f.add(1,0,500,10,1000);f.add(2,0,500,10,1000);f.add(3,0,500,10,1000);
     f.store->db().exec("UPDATE clips SET gain_db=-6.020599913279624 WHERE id=1; UPDATE clips SET muted=1 WHERE id=3; UPDATE audio_clips SET channel_mode=2 WHERE clip_id=2");
@@ -649,6 +673,22 @@ void setHome(const fs::path& p) {
     setenv("ADI_HOME", p.string().c_str(), 1);
 #endif
 }
+void externalSourceSnapshots() {
+    Fixture f;f.add(1,0,12000);f.add(2,0,12000);
+    f.store->db().exec("UPDATE clips SET muted=1 WHERE id=2");
+    f.load(64);
+    const auto sources=f.session.clips()->externalSources();
+    check(sources.size()==1 && sources[0].clipId==1 && sources[0].mediaId==1 &&
+          sources[0].storedBlake3=="test" && fs::equivalent(sources[0].path,f.dir.path()/"audio.wav"),
+          "off-callback source snapshot names only opened production clip inputs");
+    f.store->db().exec("UPDATE media_files SET rel_path='not-the-open-file.wav' WHERE id=1");
+    const auto unchanged=f.session.clips()->externalSources();
+    check(unchanged.size()==1 && unchanged[0].path==sources[0].path,
+          "source snapshot belongs to the loaded generation, not mutable Store rows");
+    bool refused=false;
+    {audio::CallbackScope callback;refused=f.session.clips()->externalSources().empty();}
+    check(refused,"source descriptor copy refuses callback use without allocation or I/O");
+}
 void decodedPins() {
     // ADR-0156: a decoded clip pins its cache copy while a generation reads
     // it, and the pin goes back with the generation. Every edit rebuilds, and
@@ -661,6 +701,10 @@ void decodedPins() {
                            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,100000000);"
                            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,2,0,4800)");
         f.load(512);
+        const auto external=f.session.clips()->externalSources();
+        check(external.size()==1 && external[0].mediaId==2 &&
+              fs::equivalent(external[0].path,f.dir.path()/"tone.flac"),
+              "compressed source descriptor retains actual external input, not a growing decoded prefix");
         // Loading no longer waits for complete compressed conversion. The
         // private prefix has no LRU entry; assert this pin after publication.
         auto decoded=audio::defaultProgressiveDecoder().open(f.dir.path()/"tone.flac");
@@ -860,6 +904,7 @@ int main(int argc,char** argv) {
     test::TempDirectory home{"clip_playback","home"};setHome(home.path());
     try {
         if(only=="all" || only=="placement")placement();
+        if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();
         if(only=="all" || only=="fades")editedFades();
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
@@ -874,6 +919,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="endpoint")fractionalEndpoint();
         if(only=="all" || only=="highRates")highRates();
         if(only=="all" || only=="pins")decodedPins();
+        if(only=="all" || only=="inputs")externalSourceSnapshots();
     }
     catch(const std::exception& e){check(false,e.what());}
     check(callbackAllocations.load()==0,"callback allocates nothing");
