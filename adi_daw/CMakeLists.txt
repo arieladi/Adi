@@ -1629,6 +1629,19 @@ if(ADI_WITH_JUCE)
         target_include_directories(adi_vst3_scanner_tests SYSTEM PRIVATE ${_adi_scan_incs})
         add_dependencies(adi_vst3_scanner_tests adi_plugin_scanner adi_test_vst3)
         add_test(NAME adi_vst3_scanner_tests COMMAND adi_vst3_scanner_tests)
+        if(WIN32)
+            # DEV-25's Windows path aliases and actual PE size/time replacement.
+            # No installed plug-ins or audio driver; every candidate is owned.
+            add_executable(adi_scanner_case_sequence_tests tests/test_scanner_case_sequence.cpp)
+            target_link_libraries(adi_scanner_case_sequence_tests PRIVATE adi_core juce::juce_audio_processors_headless)
+            get_target_property(_adi_scanner_case_defs adi_vst3_scanner_tests COMPILE_DEFINITIONS)
+            target_compile_definitions(adi_scanner_case_sequence_tests PRIVATE ${_adi_scanner_case_defs}
+                ADI_SCAN_MODULE="$<TARGET_FILE:adi_test_vst3>")
+            target_include_directories(adi_scanner_case_sequence_tests SYSTEM PRIVATE ${_adi_scan_incs})
+            add_dependencies(adi_scanner_case_sequence_tests adi_plugin_scanner adi_test_vst3)
+            add_test(NAME adi_scanner_case_sequence_tests COMMAND adi_scanner_case_sequence_tests)
+            set_tests_properties(adi_scanner_case_sequence_tests PROPERTIES TIMEOUT 45)
+        endif()
     endif()
 
     # adi_core carries device_core.cpp and, through its PUBLIC include dir, the
@@ -1724,7 +1737,7 @@ if(ADI_WITH_JUCE)
     # our strict warning policy on our sources, as the scanner already does,
     # rather than applying it to those third-party module implementations.
     set(_adi_juce_owned_sources)
-    foreach(_adi_juce_target IN ITEMS adi_vst3_probe adi_vst3_scanner_tests
+    foreach(_adi_juce_target IN ITEMS adi_vst3_probe adi_vst3_scanner_tests adi_scanner_case_sequence_tests
                                     adi_play adi_play_render_tests adi_audio_probe)
         if(TARGET ${_adi_juce_target})
             get_target_property(_adi_juce_sources ${_adi_juce_target} SOURCES)

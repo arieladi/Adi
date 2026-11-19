@@ -342,3 +342,50 @@ can run it without X11/ALSA development packages; that is not a whole JUCE/UI,
 MSVC/macOS/hardware or Live parity claim. Native adapters must rebuild for the
 changed C++ scan signatures; external plug-in ABIs and project formats are
 unchanged. See the two foundation documents for process and registry contracts.
+
+## DEV-25's original 16 cases
+
+The acceptance input is `plugins/scanner/cases.json` from the research-assets
+intake (`a60371a84436bcbb4c5cb50bdacc8e62abd94343`). Its original `ScanProbe`
+only returns factory metadata and deliberately cannot create an `IComponent`.
+JUCE's real discovery path initializes a component before publishing a
+description, so that diagnostic alone cannot prove successful ADI discovery.
+
+`adi_scanner_case_sequence_tests` instead applies the same opt-in controls to
+ADI's owned working VST3 fixture. With `ADI_SCAN_LOG` absent its normal three
+classes and version stay unchanged. The acceptance process sets that variable
+and the class/version/failure controls only in its own environment, copies the
+native module into its private directory and calls the actual scanner helper.
+Factory receipts identify every child and count `GetPluginFactory`, class
+queries and `createInstance`. No failed fixture runs in the parent host. The
+Windows-only gate deliberately tests real PE size changes, case aliases and a
+native directory junction; its results do not imply native macOS/Linux coverage.
+
+| Original case | Executable evidence |
+| --- | --- |
+| 1. Cold discovery of both classes | Two real components are described; factory/create-instance counters and child PID are recorded. |
+| 2. Warm unchanged scan | Two cache hits, including scanner reopen, add no factory calls. |
+| 3. Add one module | New module is probed; original persisted row remains byte-identical and warm. |
+| 4. Timestamp-only change | One module is reprobed; the sibling record stays unchanged. |
+| 5. Changed class count | Two classes become one; the complete persisted module loses the removed class. |
+| 6. Changed version, stable identity | Version changes from 1.0.0 to 2.0.0; exact surviving saved UID remains stable. |
+| 7. Changed size, restored timestamp | An owned PE receives one trailing byte, remains loadable, and is reprobed despite restored mtime. |
+| 8. Null factory | Failed, zero-strike negative, no quarantine; unrelated row survives. |
+| 9. Warm negative | Same failed fingerprint returns cached failure with unchanged factory counters. |
+| 10. New fingerprint after automatic block | Two actual timeouts block a third child; changed mtime allows a successful replacement. |
+| 11. Abnormal child exit | Explicit exit 73 is recorded and unrelated cache survives; this is not mislabeled a native crash. |
+| 12. Caller timeout | Timed-out scanner PID has ended; an independently owned sentinel child completes; sibling cache survives. |
+| 13. Slash-alias retry | Explicit retry clears the canonical manual block and launches exactly one fresh probe. |
+| 14. Case-alias retry | Same assertion through Windows case-equivalent spelling. |
+| 15. Directory-link retry | Same assertion through an actual owned junction; cleanup removes only the link. |
+| 16. Readiness stages | Hosted real CLAP fixture: metadata collection/discovery, instantiation, state restoration and first exact processed PCM are checked separately. |
+
+Set `ADI_SCANNER_CASE_EVIDENCE` to an owned output directory to retain cases
+1–15 JSON, raw factory receipts and logical final registry rows outside the
+test's automatically removed private directory. These are actual VST3 factory
+tests. The existing `adi_scan_cache_tests` additionally tests protocol/race and
+cache policy with a controlled helper; those packets are not claimed as native
+VST3 factory execution. Catalogue `State::Ready` still means validated metadata,
+not an instantiated/restored/processing audio device. No production readiness
+enum, graph ownership change, automatic startup service or hardware test is
+introduced by this acceptance gate.

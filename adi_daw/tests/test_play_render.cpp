@@ -11,6 +11,7 @@
 #include <fstream>
 
 #if defined(ADI_CATALOGUE_FIXTURE)
+#include "scanner_readiness.hpp"
 namespace {
 bool catalogueContracts() {
     namespace fs = std::filesystem;
@@ -232,6 +233,7 @@ int main() {
     std::printf("PASS -- persistent catalogue hydrates real VST3/CLAP without helper and fails closed on corrupt/blocked metadata\n");
     if(!legacyCatalogueContracts())return 1;
     std::printf("PASS -- genuine legacy registries defer migration to discovery; invalid stores remain closed\n");
+    if(!adi::test::scannerReadinessContracts())return 1;
 #endif
     adi::test::TempDirectory scratch("play_render", "channels");
     adi::StoreError error{};

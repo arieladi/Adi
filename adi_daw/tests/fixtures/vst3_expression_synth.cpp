@@ -83,6 +83,7 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include "scanner_case_controls.hpp"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -656,6 +657,7 @@ public:
     uint32 PLUGIN_API release() override { return 1; }
 
     tresult PLUGIN_API getFactoryInfo(PFactoryInfo* info) override {
+        scanner_case::receipt("getFactoryInfo");
         if (info == nullptr) return kInvalidArgument;
         *info = PFactoryInfo{};
         std::snprintf(info->vendor, sizeof info->vendor, "adi_daw tests");
@@ -663,8 +665,12 @@ public:
         info->flags = PFactoryInfo::kNoFlags;
         return kResultOk;
     }
-    int32 PLUGIN_API countClasses() override { return 3; }
+    int32 PLUGIN_API countClasses() override {
+        scanner_case::receipt("countClasses");
+        return scanner_case::enabled()?(scanner_case::option("ADI_SCAN_ONE_CLASS")?1:2):3;
+    }
     tresult PLUGIN_API getClassInfo(int32 index, PClassInfo* info) override {
+        scanner_case::receipt("getClassInfo");
         PClassInfo2 i2{};
         if (getClassInfo2(index, &i2) != kResultOk || info == nullptr) return kInvalidArgument;
         *info = PClassInfo{};
@@ -675,6 +681,7 @@ public:
         return kResultOk;
     }
     tresult PLUGIN_API getClassInfo2(int32 index, PClassInfo2* info) override {
+        scanner_case::receipt("getClassInfo2");
         if (info == nullptr || index < 0 || index > 2) return kInvalidArgument;
         *info = PClassInfo2{};
         const TUID* cids[3] = {&kMpeCid, &kNoteExprCid, &kPlainCid};
@@ -685,11 +692,13 @@ public:
         std::snprintf(info->name, sizeof info->name, "%s", names[index]);
         std::snprintf(info->subCategories, sizeof info->subCategories, "Instrument|Synth");
         std::snprintf(info->vendor, sizeof info->vendor, "adi_daw tests");
-        std::snprintf(info->version, sizeof info->version, "1.0.0");
+        std::snprintf(info->version, sizeof info->version, "%s",
+            scanner_case::enabled() && scanner_case::option("ADI_SCAN_VERSION_TWO")?"2.0.0":"1.0.0");
         std::snprintf(info->sdkVersion, sizeof info->sdkVersion, "%s", kVstVersionString);
         return kResultOk;
     }
     tresult PLUGIN_API createInstance(FIDString cid, FIDString wanted, void** obj) override {
+        scanner_case::receipt("createInstance");
         if (obj == nullptr) return kInvalidArgument;
         *obj = nullptr;
         TUID want;
@@ -710,6 +719,13 @@ public:
 }  // namespace
 
 extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
+    scanner_case::receipt("GetPluginFactory");
+    if(scanner_case::enabled()) {
+        const auto failure=scanner_case::option("ADI_SCAN_FAIL");
+        if(failure==1)return nullptr;
+        if(failure==2)std::this_thread::sleep_for(std::chrono::seconds(15));
+        if(failure==3)std::_Exit(73);
+    }
     static Factory factory;
     return &factory;
 }
