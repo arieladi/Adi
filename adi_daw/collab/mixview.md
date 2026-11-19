@@ -5,6 +5,14 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — design step 5 Main meter Release
+
+**PR requested.** Author branch `mixview/main-meter-review-20261119`, head `3603a1c5`, after Sounding Now `0016e5b0`. The right-hand Main meter reads the shared post-fader feed with balance, correlation, Peak, Dynamic and RMS, holds, weighting, scale, Float and Reset. L/R/M/S and Flat/A/C/K Filter Listen are temporary physical Main monitor modes. The headless audio tests verify that the Main tap, export and Cue stay independent. Closing or hiding the owner restores Stereo.
+
+Five Release suites and 833 software-peer checks passed. The new idle regression failed on the unparked baseline and now records no extra worker passes, cursor reads or publications for an empty meter across 1,100 silent blocks. It verifies live monitoring wakes on the first audible block, peak decay still works and a same-position seek takes a fresh epoch.
+
+Package `ADI-MixView-Main-Meter-20261119-3603a1c5df-win64-Release.zip`. ZIP SHA-256 `d9fc1b730cb81a6825fb3dbc0e1a4e71d479501d6d7e6b94cf54f6cb55686a20`. ADI.exe SHA-256 `8adf332e9b598ab3e33aa92b0e27aaae079d54985101fbe00a1c4297404d82cc`. Scanner SHA-256 `53f00cde88f4a3e69a3bb1c324df87b927d3642d69ff4599aa51052fe583dc62`. Brief `ADI-Q-MixView-Main-Meter-20261119-3603a1c5-CLAUDE-RETEST.txt`. Exact reference readouts, hardware routing and live CPU await Claude.
+
 ## 19 November 2026 — design step 4 Sounding Now Release
 
 **PR requested.** Author branch `mixview/sounding-now-review-20261119`, head `0016e5b0`, after row picker `d1913d09`. Sounding Now snapshots the channel IDs with a post-fader reading at or above −60 dBFS. I used that threshold to match the visible meter floor. The list and Stack keep that snapshot through level changes and metadata updates until Refresh or a new filter. The filter changes neither playback nor Undo and adds no audio taps.
