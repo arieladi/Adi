@@ -10,6 +10,12 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, settings and bundle publication (DF-E33 a/b)
+
+**PR requested** — `engine-win/settings-portable` at `a99448c4c532e7a2d73e0b25ce829875d69ae1b0`, on main `62ad7218`. This one settings family replaces #673 and #672. Whole-file settings publication revalidates the previous payload before a fallback rename, including a complete read and rejection of embedded NULs. An unsupported exclusive rename for a new settings file or new bundle first tries an exclusive hard link. Existing unsupported bundles report how to choose a new name. Ordinary project publication retains its lease requirement. The settings fallback still has the final OS rename's concurrency window.
+
+MSVC x64 `/W4 /WX`, 533 checks passing in project files, project replacement, settings and collection/export. The two regression cases failed before the fixes. The unsupported filesystem responses were injected with real Windows file operations; no exFAT or network filesystem run. Two unrelated link fixtures skipped because the test token lacks symlink privilege.
+
 ## 2026-11-19 — Acceptance PR #642 updated
 
 The existing acceptance PR now points to `68c92bbcb60c1c0da9b3267a0c8d616be3aefd8a` on `engine-win/acceptance-ci`, with current main `62ad7218` merged in. This removes the cross-DAW ranking helper and its sole self-test, describes the retained per-app statistics and refreshes the three affected asset hashes. Win's workflow bytes match the clean merge. [PR #642](https://github.com/arieladi/Adi/pull/642)
