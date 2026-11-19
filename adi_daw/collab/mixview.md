@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M55 retain Hold B through an invalid A selection
+
+A captured B stays held if A is unavailable or temporarily points to B. Compare releases both analysis subscriptions while there is no valid pair, then subscribes only to A and waits for fresh input when a valid A returns. B's bins and reference metadata stay identical. Replacing, removing or clearing B still drops the hold.
+
+Fixture-only `f1910297` failed four checks for the hold lifetime, inactive demand and fresh A pairing. Exact Windows x64 Release `3774e736a04249384982bc599e8764e3be125da8` passed those checks, 893 Mix View shell checks and three targeted CTests. ZIP SHA-256 `a141eae0d3bead48dca011290a16a02564e72de45f4e666cb7ccd827db685ba3`; ADI.exe SHA-256 `c10c5d289f32f17fd7c86eacb0d0656282676227ba38cca2e1611aa8920050a3`. The retest brief covers equal-source, clear, replace and remove.
+
+**PR requested.** Include `mixview/held-reference-invalid-primary-20261119` after the exact Scope paths in the cumulative review.
+
 ### 19 November — DF-M54 exact flat Scope path reduction
 
 The stroke builder now preserves the exact flat trace with one line instead of one vertex per column. It preserves visible endpoints, vertical extrema and every nonflat move, including very small changes. Cancellation stays on the same centerline. This uses fixed-size temporary state inside the existing projection, with no new analysis work, hidden state or audio processing.
