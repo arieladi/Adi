@@ -451,7 +451,11 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
             for (auto &v : voices_)
                 if (v.active) {
                     const bool classic = p[Mode] == 0;
-                    const bool looping = classic && p[LoopOn] > 0 && v.held;
+                    // DF-E37 (d): a Classic voice with Loop on keeps looping
+                    // through its release (Live's manual for Sampler; reading 3
+                    // in the devices log for Simpler) and ends when the release
+                    // reaches zero, not at the loop's end with a click.
+                    const bool looping = classic && p[LoopOn] > 0 && (v.held || v.stage == 3);
                     if (v.position >= v.end) {
                         if (looping) {
                             const double overlap = (v.end - v.loop) * p[Fade] / 200.;

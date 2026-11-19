@@ -210,6 +210,28 @@ int main(int argc, char **argv) {
     set(d, "vel_to_vol", 100);
     d.publishZones(std::span(&z, 1));
     (void)render(d, 64, std::span(&attack, 1));   // saved after a render, as before
+    {
+        // DF-E37 (d): a looping zone keeps looping through a release longer
+        // than its loop (the Sampler inherits OneShot's voice).
+        device::Sampler looped;
+        set(looped, "volume", 0);
+        set(looped, "attack", .1);
+        set(looped, "release", 1000);
+        set(looped, "filter_on", 0);
+        set(looped, "vel_to_vol", 100);
+        auto lz = z;
+        lz.key = lz.velocity = lz.select = {0, 127, 0, 0};
+        lz.select.fadeLow = lz.select.fadeHigh = 0;
+        lz.loop = true;
+        lz.loopStart = 0.5;   // the last half: 512 samples, 8 periods
+        check(looped.publishZones(std::span(&lz, 1)), "publish a looping zone");
+        std::array<engine::Event, 2> pressAndRelease{on(), {4096, engine::EventType::NoteOff, 0, 60, 1, 0, 0}};
+        const auto out = render(looped, 256, pressAndRelease, 4096 + 24000);
+        double rms = 0;
+        for (int i = 4096 + 9600; i < 4096 + 14400; ++i) rms += out[static_cast<std::size_t>(i)] * out[static_cast<std::size_t>(i)];
+        rms = std::sqrt(rms / 4800);
+        check(rms > .4 / std::sqrt(2.) * (1 - .3) * .9, "a looping zone sounds through a release longer than its loop");
+    }
     auto state = d.saveState("component");
     device::Sampler copy;
     check(copy.loadState("component", state), "multisample state restores");

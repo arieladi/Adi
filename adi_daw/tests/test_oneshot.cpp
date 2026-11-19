@@ -525,6 +525,31 @@ int main() {
         set(loop,OneShot::Start,1);set(loop,OneShot::Snap,1);
         check(std::abs(render(loop,64)[0])<1e-6,"Snap places region start at left-channel zero crossing");
     }
+    {
+        // DF-E37 (d): a Classic voice with Loop on keeps looping through its
+        // release. Before, it looped only while held: a 100 ms loop with a
+        // 1000 ms Release stopped dead at the loop's end, with a click.
+        OneShot loop;configure(loop);
+        std::vector<float> sine(96000);   // 2 s of 100 Hz: 480 samples a period
+        for(std::size_t i=0;i<sine.size();++i)sine[i]=static_cast<float>(.4*std::sin(2*3.141592653589793*100*static_cast<double>(i)/48000));
+        loop.publishSample(sine,1,48000);
+        set(loop,OneShot::LoopOn,1);set(loop,OneShot::LoopLength,5);   // the last 4800 samples, 10 periods
+        set(loop,OneShot::Release,1000);
+        constexpr int off=120000;                                        // 2.5 s: well inside the loop
+        const auto audio=render(loop,512,off+72000,60,off);
+        double rms=0;for(int i=off+9600;i<off+14400;++i)rms+=audio[static_cast<std::size_t>(i)]*audio[static_cast<std::size_t>(i)];
+        rms=std::sqrt(rms/4800);
+        const double expected=.4/std::sqrt(2.)*(1-.2-.05);   // the release's level 200..300 ms after note-off, on average
+        std::printf("METRIC looped release 200..300 ms after note-off: rms %.4f (a release through the loop: about %.4f)\n",rms,expected);
+        check(rms>expected*.9,"a looped Classic voice keeps sounding through its release");
+        double last=0;for(int i=off+48000+480;i<off+72000;++i)last=std::max(last,static_cast<double>(std::abs(audio[static_cast<std::size_t>(i)])));
+        check(last==0,"and ends when the release reaches zero");
+        double step=0;for(int i=off-480;i<off+48000;++i)step=std::max(step,static_cast<double>(std::abs(audio[static_cast<std::size_t>(i)+1]-audio[static_cast<std::size_t>(i)])));
+        check(step<=.4*2*3.141592653589793*100/48000*1.2,"without a click through the release");
+        set(loop,OneShot::LoopOn,0);
+        const auto plain=render(loop,512,off+72000,60,off);
+        check(std::all_of(plain.begin()+96000,plain.end(),[](float v){return v==0;}),"Loop off still ends at the sample's end");
+    }
     // One reader renders while the message thread publishes and collects old buffers.
     std::atomic<bool> running{true}, bad{false};
     std::thread worker([&] {
