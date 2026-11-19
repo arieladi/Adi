@@ -1,7 +1,7 @@
 # DF-E21 hosted transport acceptance
 
 This is an opt-in acceptance subset for ADR-0245 d8, using ADI's real `Session`,
-VST3 adapter, scanner child and export runner. It does not implement the cloud
+VST3 and CLAP adapters, scanner child and export runner. It does not implement the cloud
 engine work. No reference DAW, installed third-party plug-in, audio device or
 personal plug-in registry is used. All project files, media, scanner state and
 trace mappings belong to the test and are removed on exit.
@@ -62,10 +62,21 @@ constant audio so silence suspension cannot hide the hosted calls. Its dense
 sample arrays are not interpreted as a sparse marker measurement. The offline
 case uses an original temporary WAV with unique sparse markers.
 
+## CLAP observer behind a VST3 reporting delay
+
+The owned CLAP observer also runs behind each real VST3 reporting delay.
+For both 1024 and 4800 samples the real Session checks negative start, seek,
+compensation off and the observer's own short-loop boundary. Its seconds field
+is checked against independent sample arithmetic. The test requires CLAP
+seconds, beats, tempo and playing flags, and checks actual block lengths and
+real-time mode. The offline case also checks the offline mode, input seconds
+and exact stereo PCM at both delays. This probe records the presence of beat
+and tempo fields.
+
 ## Remaining contract coverage
 
-This subset does **not** close DF-E21 by itself. CLAP's full transport/readout and
-reporting-delay variants are still required, as are independent automation and
+CLAP beat and tempo values and CLAP-format reporting-delay variants are still
+open, as are independent automation and
 note-event clock assertions, latency changes during playback, meter changes,
 and the freeze/bounce paths. Those omissions must remain visible in the engine
 seat's completion report. The gate does not authorize an ahead-of-time engine
