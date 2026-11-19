@@ -42,6 +42,41 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-19, window-fn — MX-23 and SRF-02: faders, pans and sends heard while dragging (PR requested)
+
+**What it does** (`src/adi/ui/project_document.*`, `src/juce/ui_mixer.*`, `ui_shell.hpp`, `ui_main.cpp`):
+- A mouse drag of a track's fader, its pan, or a send knob that has its routing row is the document's
+  live gesture: the engine's `gesture::Coordinator` over an `EnginePresentation` of the document's view
+  and session, with `gesture::relativeScalarProducer` (on main). Each move is heard at once and nothing
+  is written; the release commits one transaction of the final values, one undo step named for the
+  control ("Change Track Volume", "Change Track Panning", "Change Send Level"); a drag that ends where it
+  began, or a click that does not move, writes nothing; Esc during the drag puts every value back.
+- With the dragged track among several selected tracks, all of them move by the same amount in the same
+  step (Live 12 manual 18.1); a send moves alone.
+- The fader drags from where it is, not to where it was clicked; the Mixer View fader's foot is the floor
+  (silence), as the track controls' is.
+- Typed values, a double-click's reset, a send with no row yet: as before, the clicked control alone,
+  committed at once or at the release.
+
+**Review:** three dimensions (the gesture API and its lifetimes, the strip's handlers, the tests), each
+finding checked by a skeptic: 11 confirmed, 3 refuted. All fixed in the branch's last commit (listed in
+its message). Planted faults fire (the release after Esc committing; the controls not re-read after Esc).
+
+**Run:** Linux, GCC 13, Debug, JUCE on, Pd off, warnings as errors: `adi_app` and all 27 of `ui.yml`'s
+suites on main merged; `adi_ui_document_tests` 252 checks (a tone measured while the fader is dragged:
+heard at -12 and -24 dB with nothing written, one undo step at the release, Undo and Esc back to 0 dB),
+`adi_ui_shell_tests` 2757 checks, 0 failures.
+
+**PR requested.** Branch `window-fn/mixer-gestures` at `1eaa239d`. Title: **adi_daw: window-fn: MX-23
+and SRF-02, faders, pans and sends heard while dragging, one undo step per gesture**. Depends on nothing
+unlanded.
+
+**Not in this branch:** the Track Delay drag and the group's summing drive (MX-23 names them; the engine's
+producer has the drive, `GroupSummingDrive`, and no Delay preview); automation recording while armed
+(SRF-02's last clause) waits for AU-03.
+
+---
+
 ## 2026-11-19, window-fn — EX-11: the Export page, a WAV of the song (PR requested)
 
 **What it does** (`src/adi/ui/export_choices.hpp`, `src/juce/ui_export.*`, `ui_main.cpp`, `ui_shell.*`):
