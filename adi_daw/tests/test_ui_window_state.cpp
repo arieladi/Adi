@@ -6,7 +6,9 @@
 #include "adi/ui/window_state.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <thread>
 using namespace adi;
 using namespace adi::ui;
@@ -18,6 +20,59 @@ void check(bool ok, const char *what) {
         ++failures;
         std::printf("FAIL %s\n", what);
     }
+}
+template <class Mailbox>
+std::optional<std::uint64_t> settledLocateRevision(const Mailbox &mailbox) noexcept {
+    if constexpr (requires { mailbox.settledLocateRevision(); })
+        return mailbox.settledLocateRevision();
+    // The previous mailbox has no Locate witness and treats every read as settled.
+    return std::uint64_t{0};
+}
+
+void locateFence() {
+    using Command = TransportMailbox::Command;
+    TransportMailbox mailbox;
+    engine::Transport transport;
+    check(settledLocateRevision(mailbox) == 0, "a new mailbox has a settled, neutral Locate revision");
+    check(mailbox.post(Command::Play), "queue playback for the Locate fixture");
+    mailbox.drain(transport);
+    constexpr std::int64_t position = 1024;
+    transport.advance(static_cast<std::int32_t>(position));
+    mailbox.publish(transport);
+    const auto before = transport.revision();
+
+    check(mailbox.post(Command::Locate, position) && mailbox.position() == position && mailbox.playing(),
+          "queue a Locate at the already published position while playing");
+    check(!settledLocateRevision(mailbox), "a same-position Locate is unsettled before the driver drains it");
+    mailbox.publish(transport);
+    check(!settledLocateRevision(mailbox), "ordinary position publication cannot acknowledge a queued Locate");
+    mailbox.drain(transport);
+    check(mailbox.position() == position && transport.revision() == before + 1 &&
+              settledLocateRevision(mailbox) == transport.revision(),
+          "the acknowledged same-position Locate exposes its applied revision");
+
+    const auto locateInMixedDrain = transport.revision() + 1;
+    check(mailbox.post(Command::Locate, position) && mailbox.post(Command::Stop) && mailbox.post(Command::Play),
+          "queue Locate followed by Stop and Play in one drain");
+    mailbox.drain(transport);
+    check(mailbox.playing() && mailbox.position() == position && transport.revision() == locateInMixedDrain + 2 &&
+              settledLocateRevision(mailbox) == locateInMixedDrain,
+          "the mixed drain exposes the Locate revision before its Stop and Play changes");
+
+    transport.locate(position); // Another driver action, with no mailbox command.
+    for (int i = 0; i < 4; ++i)
+        mailbox.drain(transport);
+    check(transport.revision() > locateInMixedDrain && settledLocateRevision(mailbox) == locateInMixedDrain,
+          "repeated empty drains leave the applied Locate witness alone");
+    transport.advance(64);
+    mailbox.publish(transport);
+    check(mailbox.position() == position + 64 && settledLocateRevision(mailbox) == locateInMixedDrain,
+          "ordinary position feedback after an empty drain leaves the Locate witness alone");
+
+    check(mailbox.post(Command::Stop) && mailbox.post(Command::Play), "queue playback commands without a Locate");
+    mailbox.drain(transport);
+    check(mailbox.playing() && settledLocateRevision(mailbox) == locateInMixedDrain,
+          "a Stop and Play drain leaves the applied Locate witness alone");
 }
 // The theme and density tables (DF-W24): the window's every colour and size, by role.
 void themeAndDensityTables() {
@@ -85,6 +140,7 @@ void themeAndDensityTables() {
 } // namespace
 int main() {
     themeAndDensityTables();
+    locateFence();
     test::TempDirectory temp("ui_state", "roundtrip");
     StoreError err{};
     auto store = Store::createEmpty(temp.path() / "p.adi", err);
