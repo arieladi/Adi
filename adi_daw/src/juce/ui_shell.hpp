@@ -341,7 +341,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // on the control's drag start with its kind and its track or send, and the selected tracks go with
     // it when the dragged one is among them; each value goes to `mixerDrag`; the release commits one undo
     // step and Esc cancels. Unset outside the application: the strip commits on release, as before.
-    std::function<bool(const gesture::RelativeScalarSelection &, double, const std::string &)> beginMixerDrag;
+    std::function<bool(const gesture::RelativeScalarSelection &, std::optional<double>, const std::string &)> beginMixerDrag;
     std::function<bool(double)> mixerDrag;
     std::function<bool()> endMixerDrag;
     std::function<void()> cancelMixerDrag;

@@ -9727,14 +9727,23 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "drag");
     root.afterEdit = [&] { document->synchronise(); };
-    root.beginMixerDrag = [&](const gesture::RelativeScalarSelection &selection, double value, const std::string &label) {
+    root.beginMixerDrag = [&](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
+                              const std::string &label) {
         return document->beginMixerDrag(selection, value, label);
     };
     root.mixerDrag = [&](double value) { return document->mixerDrag(value); };
     root.endMixerDrag = [&] { return document->endMixerDrag(); };
     root.cancelMixerDrag = [&] { document->cancelMixerDrag(); };
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
     root.setSize(1440, 900);
     root.frame();
+    // A drag is the mouse held down: the strip goes live only then (a typed value or a double-click does not).
+    const auto press = [] { juce::ModifierKeys::currentModifiers = juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier); };
+    const auto letGo = [] { juce::ModifierKeys::currentModifiers = juce::ModifierKeys(); };
     MixerStrip *three = nullptr, *midi = nullptr;
     for (const auto &strip : root.mixer.strips()) {
         if (strip->track() == 4)
@@ -9755,6 +9764,7 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
     const auto before = opCount();
     // A drag: start, three moves, release.
+    press();
     three->volume.onDragStart();
     for (const double db : {-3.0, -6.0, -9.0}) {
         three->volume.setValue(db, juce::dontSendNotification);
@@ -9762,6 +9772,7 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     }
     check(document->mixerDragging() && opCount() == before && volumeOf(4) == 0,
           "while the fader moves nothing is written; the document's gesture holds it");
+    letGo();
     three->volume.onDragEnd();
     root.frame();
     check(!document->mixerDragging() && opCount() == before + 1 && std::abs(volumeOf(4) + 9) < 1e-6 &&
@@ -9772,9 +9783,11 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     sel.track = 3;
     sel.toTrack = 4;
     root.frame();
+    press();
     midi->volume.onDragStart();
     midi->volume.setValue(-6.0, juce::dontSendNotification);
     midi->volume.onValueChange();
+    letGo();
     midi->volume.onDragEnd();
     root.frame();
     check(std::abs(volumeOf(3) + 6) < 1e-6 && std::abs(volumeOf(4) + 15) < 1e-6 && document->ops().nextUndo() &&
@@ -9786,28 +9799,68 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     // Esc while dragging puts the value back, and the release commits nothing.
     const auto stepBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+    press();
     three->volume.onDragStart();
     three->volume.setValue(-30.0, juce::dontSendNotification);
     three->volume.onValueChange();
-    check(three->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !document->mixerDragging(), "Esc cancels the drag");
+    auto *focused = juce::Component::getCurrentlyFocusedComponent();
+    check(focused == three && focused->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !document->mixerDragging(),
+          "the dragged strip has the keys, and Esc cancels the drag");
+    root.frame();
+    letGo();
     three->volume.onDragEnd();
     root.frame();
+    check(std::abs(three->volume.getValue() + 9) < 1e-6, "the fader shows the value it was put back to");
     check((document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == stepBefore && std::abs(volumeOf(4) + 9) < 1e-6,
           "and the release after it writes nothing");
     // Pan, the same way.
+    press();
     three->pan.onDragStart();
     three->pan.setValue(-.5, juce::dontSendNotification);
     three->pan.onValueChange();
+    letGo();
     three->pan.onDragEnd();
     root.frame();
     check(root.undoTitle(false) == "Undo Change Track Panning" &&
               std::abs(document->store().db().execAndGet("SELECT pan FROM mixer_strip WHERE track_id = 4").getDouble() + .5) < 1e-9,
           "a pan drag is one step too");
+    // A click with no move on an off-grid value, two tracks selected: nothing is written.
+    {
+        OpRequest odd;
+        odd.opType = "mixer.setVolume";
+        odd.payload = {{"id", 4}, {"db", -4.7321}};
+        check(document->ops().submit(odd).ok && document->synchronise(), "3 Audio at -4.7321 dB");
+        root.frame();
+        sel.track = 3;
+        sel.toTrack = 4;
+        root.frame();
+        const auto step = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+        const auto two = volumeOf(3);
+        press();
+        three->volume.onDragStart();
+        letGo();
+        three->volume.onDragEnd();
+        root.frame();
+        check((document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == step && volumeOf(3) == two &&
+                  std::abs(volumeOf(4) + 4.7321) < 1e-9,
+              "a click on the fader that does not move writes nothing, on either selected track");
+        sel.track = sel.toTrack = 0;
+        root.frame();
+    }
+    // A typed value or a double-click is not a drag: it sets the clicked control alone, at once.
+    three->volume.onDragStart();
+    three->volume.setValue(-3.0, juce::dontSendNotification);
+    three->volume.onValueChange();
+    three->volume.onDragEnd();
+    root.frame();
+    check(!document->mixerDragging() && std::abs(volumeOf(4) + 3) < 1e-6, "without the mouse held, the value commits at the end");
     // Without the live gesture, the release commits as before.
     root.beginMixerDrag = nullptr;
+    press();
     three->volume.onDragStart();
     three->volume.setValue(-12.0, juce::dontSendNotification);
     three->volume.onValueChange();
+    letGo();
     three->volume.onDragEnd();
     root.frame();
     check(std::abs(volumeOf(4) + 12) < 1e-6, "without the live gesture the release commits the value");

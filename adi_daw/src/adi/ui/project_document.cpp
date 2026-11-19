@@ -724,19 +724,18 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
     analysis_->refreshSources(true);
 }
 void ProjectDocument::release() { session_.release(); }
-bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, double coordinate,
+bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {
     if (mixerDrag_)
         endMixerDrag();
-    if (!coordinator_) {
-        // The live values are the session's and the view's: one presentation for the store's gestures.
-        auto attached = gesture::Coordinator::attach(*store_, std::make_shared<gesture::EnginePresentation>(view_, session_));
-        if (!attached.status.ok() || !attached.value) {
-            error_ = "The mixer cannot be dragged live: " + attached.status.message;
-            return false;
-        }
-        coordinator_ = std::move(attached.value);
+    // The live values are the session's and the view's. Attached on every drag: Save As replaces the
+    // store's gesture domain, and a coordinator kept from before would refuse.
+    auto attached = gesture::Coordinator::attach(*store_, std::make_shared<gesture::EnginePresentation>(view_, session_));
+    if (!attached.status.ok() || !attached.value) {
+        error_ = "The mixer cannot be dragged live: " + attached.status.message;
+        return false;
     }
+    coordinator_ = std::move(attached.value);
     gesture::Spec spec;
     spec.strategy = gesture::Strategy::LiveValues;
     spec.label = label;
@@ -746,7 +745,17 @@ bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &sel
         return false;
     }
     mixerDrag_ = std::move(begun.session);
-    return mixerDrag(coordinate);
+    if (!coordinate) {
+        error_.clear();
+        return true;
+    }
+    if (mixerDrag(*coordinate))
+        return true;
+    // The first value was refused: the gesture goes, so Undo and Save As are not held by it.
+    const auto reason = error_;
+    cancelMixerDrag();
+    error_ = reason;
+    return false;
 }
 bool ProjectDocument::mixerDrag(double coordinate) {
     if (!mixerDrag_)

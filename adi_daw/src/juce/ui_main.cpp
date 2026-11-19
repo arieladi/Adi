@@ -384,7 +384,7 @@ class AdiApplication final : public juce::JUCEApplication,
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.
-        root->beginMixerDrag = [this](const gesture::RelativeScalarSelection &selection, double value,
+        root->beginMixerDrag = [this](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
                                       const std::string &label) {
             const bool ok = document_->beginMixerDrag(selection, value, label);
             if (!ok)

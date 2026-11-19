@@ -210,7 +210,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     bool dragging_ = false, selected_ = false;
     // A drag heard while it moves (MX-23): begun on the control's drag start, ended on its release.
     bool live_ = false, cancelled_ = false; // cancelled: Esc came before the release, which commits nothing
-    void beginLive(gesture::ScalarKind, std::int64_t id, gesture::ScalarControlDomain, double value, const std::string &label);
+    void beginLive(gesture::ScalarKind, std::int64_t id, gesture::ScalarControlDomain, const std::string &label);
     bool endLive();
     int resizeFrom_ = -1; // the track's height when its split line was pressed; -1 while not resizing
     bool onSplitLine(const juce::MouseEvent &) const noexcept;

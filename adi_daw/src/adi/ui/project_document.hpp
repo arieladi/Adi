@@ -128,7 +128,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     // nothing changed; Cancel (Esc) puts every value back. The engine's gesture session does the work
     // (`gesture::relativeScalarProducer`); `coordinate` is the control's own value (a fader's dB, a
     // pan's -1..1). False with `error()` saying why; a drag already running is ended first.
-    bool beginMixerDrag(const gesture::RelativeScalarSelection &, double coordinate, const std::string &label);
+    // With no `coordinate` the drag begins where the rows stand and is heard from its first move, so a
+    // click that does not move writes nothing.
+    bool beginMixerDrag(const gesture::RelativeScalarSelection &, std::optional<double> coordinate,
+                        const std::string &label);
     bool mixerDrag(double coordinate);
     bool endMixerDrag();
     void cancelMixerDrag();

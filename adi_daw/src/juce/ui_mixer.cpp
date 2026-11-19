@@ -102,6 +102,9 @@ void PeakHold::paintButton(juce::Graphics &g, bool over, bool down) {
                      held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1));
 }
 MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
+    // The strip takes the keys only during a live drag, for Esc (MX-23); a click does not focus it.
+    setWantsKeyboardFocus(true);
+    setMouseClickGrabsKeyboardFocus(false);
     if (panel.vertical()) {
         // Live's Mixer View: the fader is the ◁ beside the meter, on the meter's scale.
         volume.setSliderStyle(juce::Slider::LinearVertical);
@@ -123,10 +126,13 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         }
     }
     pan.getProperties().set("live.bipolar", true);
+    // A fader drag moves from where it is, not to where it was clicked: a click alone changes nothing.
+    volume.setSliderSnapsToMousePosition(false);
     if (panel.vertical())
         volume.setNormalisableRange(juce::NormalisableRange<double>(
             kFloorDb, kTopDb,
-            [](double, double, double proportion) { return meterLevel(1 - proportion); },
+            // The foot is the floor itself, so the fader reaches silence and -70 maps back to the foot.
+            [](double, double, double proportion) { return proportion <= 0 ? kFloorDb : meterLevel(1 - proportion); },
             [](double, double, double db) { return 1 - meterDepth(db); }));
     else {
         volume.setRange(kFloorDb, kTopDb, .01);
@@ -164,12 +170,11 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     // commits on release, as before.
     volume.onDragStart = [this] {
         dragging_ = true;
-        beginLive(gesture::ScalarKind::TrackVolume, track_, {kFloorDb, kTopDb, kSilenceDb}, volume.getValue(),
-                  "Change Track Volume");
+        beginLive(gesture::ScalarKind::TrackVolume, track_, {kFloorDb, kTopDb, kSilenceDb}, "Change Track Volume");
     };
     pan.onDragStart = [this] {
         dragging_ = true;
-        beginLive(gesture::ScalarKind::TrackPan, track_, {-1, 1, std::nullopt}, pan.getValue(), "Change Track Panning");
+        beginLive(gesture::ScalarKind::TrackPan, track_, {-1, 1, std::nullopt}, "Change Track Panning");
     };
     volume.onDragEnd = [this] {
         dragging_ = false;
@@ -943,7 +948,7 @@ std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
         if (current && index < returns_.size())
             if (const auto *send = findSend(current->sends, track_, returns_[index]))
                 beginLive(gesture::ScalarKind::RoutingGain, send->id, {kSendFloorDb, kSendTopDb, kSendSilenceDb},
-                          sends_[index]->getValue(), "Change Send Level");
+                          "Change Send Level");
     };
     knob->onDragEnd = [this, index] {
         dragging_ = false;
@@ -960,11 +965,15 @@ std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
     addAndMakeVisible(*knob);
     return knob;
 }
-void MixerStrip::beginLive(gesture::ScalarKind kind, std::int64_t id, gesture::ScalarControlDomain domain, double value,
+void MixerStrip::beginLive(gesture::ScalarKind kind, std::int64_t id, gesture::ScalarControlDomain domain,
                            const std::string &label) {
     live_ = false;
     cancelled_ = false;
     if (!panel_.root.beginMixerDrag)
+        return;
+    // Only a mouse drag: a typed value, a double-click's reset or an accessibility set changes the clicked
+    // control alone, committed as before.
+    if (!juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
         return;
     // The selected tracks go together when the dragged one is among them (a send by its track's place).
     std::vector<std::int64_t> selected;
@@ -972,14 +981,18 @@ void MixerStrip::beginLive(gesture::ScalarKind kind, std::int64_t id, gesture::S
     const bool together = std::find(picked.begin(), picked.end(), track_) != picked.end() && picked.size() > 1;
     if (together && kind != gesture::ScalarKind::RoutingGain)
         selected = picked;
-    live_ = panel_.root.beginMixerDrag({kind, id, selected, domain}, value, label);
-    if (!live_)
+    // Begun where the rows stand: heard from the first move, and a click that does not move writes nothing.
+    live_ = panel_.root.beginMixerDrag({kind, id, selected, domain}, std::nullopt, label);
+    if (live_)
+        grabKeyboardFocus(); // Esc during the drag reaches keyPressed
+    else
         panel_.root.say(panel_.root.error().empty() ? "This control cannot be dragged live." : panel_.root.error());
 }
 bool MixerStrip::endLive() {
     if (cancelled_) {
-        // Esc put the values back; the release commits nothing, and the next frame shows the rows.
+        // Esc put the values back; the release commits nothing, and the controls show the rows again.
         cancelled_ = false;
+        frame(true);
         return true;
     }
     if (!live_)
