@@ -361,7 +361,7 @@ void LibPdEngine::close() noexcept {
     native_.reset();
     nativeLatency_ = nullptr;
     nativePrepared_ = false;
-    adapterLatency_ = 0;
+    adapterLatency_.store(0, std::memory_order_release);
     paramSymbols_.clear();
     // A t_symbol* comes from the instance's own table (dogensym takes the
     // instance) and pdinstance_free frees that table: never kept past close.
@@ -404,7 +404,7 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
         sampleRate_ = static_cast<double>(rate);
         native_->prepare(sampleRate_, maxFrames);
         nativePrepared_ = true;
-        adapterLatency_ = 0;
+        adapterLatency_.store(0, std::memory_order_release);
         midiRouter_.configure(midiRoute_, engine::ExpressionCaps{}, 15);
         midiRouter_.reset();
         midiScratch_.assign(static_cast<std::size_t>(std::max<std::int32_t>(maxFrames, 64)) * 4 + 64,
@@ -459,8 +459,17 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
     // The price is one Pd block of latency, reported through
     // adapterLatencySamples() so the graph compensates it.
     inFill_ = 0;
-    outFill_ = blockMode_ == BlockMode::Buffered ? block_ : 0;
-    adapterLatency_ = outFill_;
+    // Automatic (DEV-13): whole ticks with no added delay when the buffer is a
+    // multiple of 64; otherwise the one reported block from the start.
+    wholeTicks_ = blockMode_ == BlockMode::WholeBlocks ||
+                  (blockMode_ == BlockMode::Automatic && maxFrames > 0 && maxFrames % block_ == 0);
+    outFill_ = wholeTicks_ ? 0 : block_;
+    adapterLatency_.store(outFill_, std::memory_order_release);
+}
+
+std::int32_t LibPdEngine::segmentQuantum() const noexcept {
+    if (native_ != nullptr || patch_ == nullptr) return 1;
+    return blockMode_ == BlockMode::Buffered ? 1 : block_;
 }
 
 void LibPdEngine::requestLatencyReport() {
@@ -499,6 +508,18 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
                 if (io.out[c] != nullptr)
                     std::fill_n(io.out[c] + io.blockOffset, n, 0.f);
         return;
+    }
+    if (native_ == nullptr && blockMode_ == BlockMode::Automatic && wholeTicks_ &&
+        n % block_ != 0) {
+        // DEV-13: a segment inside a Pd tick. From here on, one block: a block
+        // of silence goes ahead of the queue (the one gap, at the switch), the
+        // latency is reported and its epoch moves so the graph re-compensates.
+        wholeTicks_ = false;
+        std::fill_n(out_.begin(), static_cast<std::size_t>(block_) * static_cast<std::size_t>(outCh_), 0.f);
+        outFill_ = block_;
+        adapterLatency_.store(block_, std::memory_order_release);
+        adapterEpoch_.fetch_add(1, std::memory_order_acq_rel);
+        blockFallbacks_.fetch_add(1, std::memory_order_relaxed);
     }
 
     selectInstance();
@@ -583,8 +604,7 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     // them at capacity, silently discarding input. WholeBlocks tiles stay on
     // Pd boundaries even if prepare's maximum was not itself a multiple.
     const auto capacity = static_cast<std::int32_t>(in_.size()) / inCh_ - block_;
-    const auto chunk = blockMode_ == BlockMode::WholeBlocks
-                         ? (capacity / block_) * block_ : capacity;
+    const auto chunk = wholeTicks_ ? (capacity / block_) * block_ : capacity;
     for (std::int32_t offset = 0; offset < n;) {
         auto part = io;
         part.frames = std::min(chunk, n - offset);
@@ -993,7 +1013,8 @@ LibPdEngine::Counters LibPdEngine::counters() const noexcept {
             rejectedSegments_.load(std::memory_order_relaxed),
             skippedTicks_.load(std::memory_order_relaxed),
             consoleDropped_.load(std::memory_order_relaxed),
-            sendsDropped_.load(std::memory_order_relaxed)};
+            sendsDropped_.load(std::memory_order_relaxed),
+            blockFallbacks_.load(std::memory_order_relaxed)};
 }
 
 

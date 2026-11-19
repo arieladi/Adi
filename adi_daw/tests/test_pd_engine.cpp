@@ -1704,6 +1704,98 @@ void testAShrunkPublishedTableDoesNotDeadlock() {
 // DEV-09 AR17: the Pd tier's precision is the build's. ADI_PD_FLOATSIZE_64
 // builds it with PD_FLOATSIZE=64 for the 64-bit Processing Precision mode
 // (ADR-0207 d2); every suite runs in both configurations.
+// DEV-13 (the director's Q-K2 answer): a user patch adds no delay when the
+// host buffer is a multiple of 64 and the host keeps the block split on the
+// 64-sample grid (each event at the start of the tick that holds it: the
+// research's segment contract, buffers 64/128/256, event offsets 1, 63, 64,
+// 65, 127); a buffer that is not a multiple runs one reported block; a split
+// inside a tick, arriving later, falls back to that block once, counted, never
+// silenced. The patch here is a plain pass-through (adi-proof.pd at gain 1),
+// so "no added delay" is an exact null.
+void testUserPatchDelayOnTheTickGrid() {
+    section("DEV-13 -- no added delay on the 64-sample grid; one reported block otherwise");
+    std::vector<float> sig(64 * 400);
+    for (std::size_t i = 0; i < sig.size(); ++i)
+        sig[i] = static_cast<float>(0.4 * std::sin(0.0173 * static_cast<double>(i)) +
+                                    0.1 * std::sin(0.31 * static_cast<double>(i)));
+    auto delayedBy = [&](const std::vector<float>& out, std::size_t delay, std::size_t from) {
+        for (std::size_t i = from; i < out.size(); ++i)
+            if (out[i] != (i >= delay ? sig[i - delay] : 0.f)) return false;
+        return true;
+    };
+    bool contract = true;
+    for (const int buffer : {64, 128, 256}) {
+        for (const int offset : {1, 63, 64, 65, 127}) {
+            if (offset >= buffer) continue;
+            const int split = (offset / 64) * 64;   // the host keeps the grid
+            const std::vector<int> segments = split == 0 ? std::vector<int>{buffer}
+                                                         : std::vector<int>{split, buffer - split};
+            LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                            LibPdEngine::BlockMode::Automatic);
+            PdLatencyReceiver latency;
+            std::string err;
+            if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+            eng.prepare(48000.0, buffer);
+            const auto out = runSegmented(eng, sig, 0.f, segments);
+            contract &= eng.segmentQuantum() == 64 && eng.adapterLatencySamples() == 0 &&
+                        eng.counters().blockFallbacks == 0 && delayedBy(out, 0, 0);
+        }
+    }
+    check(contract, "buffers 64, 128, 256 with events at 1, 63, 64, 65, 127 on the grid: no added "
+                    "delay, an exact null against the input");
+    {
+        LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver latency;
+        std::string err;
+        if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+        eng.prepare(48000.0, 511);
+        const auto out = runSegmented(eng, sig, 0.f, {511});
+        check(eng.adapterLatencySamples() == 64 && delayedBy(out, 64, 0),
+              "a 511 buffer runs one reported block from the start: the input, 64 samples late");
+    }
+    {
+        // AR5: a 256 block split at an event on frame 1. Kept on the grid by the
+        // host it is one 256 segment and nulls; split inside the tick, the
+        // engine falls back once, then runs continuous at the reported 64.
+        LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver latency;
+        std::string err;
+        if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+        eng.prepare(48000.0, 256);
+        const auto grid = runSegmented(eng, sig, 0.f, {256});
+        check(delayedBy(grid, 0, 0), "AR5 on the grid (1 + 255 kept as 256): an exact null, no delay");
+        LibPdEngine off(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                        LibPdEngine::BlockMode::Automatic);
+        PdLatencyReceiver offLatency;
+        if (!off.open(offLatency, err)) { check(false, "open: " + err); return; }
+        off.prepare(48000.0, 256);
+        const auto epoch = off.adapterEpoch();
+        const auto out = runSegmented(off, sig, 0.f, {256, 256, 1, 255, 256});
+        const auto counters = off.counters();
+        check(counters.blockFallbacks == 1 && off.adapterLatencySamples() == 64 &&
+                  off.adapterEpoch() != epoch && counters.rejectedSegments == 0,
+              "AR5 split inside a tick: one counted fallback to the reported block, its epoch moved");
+        check(delayedBy(out, 0, 0) == false && delayedBy(std::vector<float>(out.begin(), out.begin() + 512), 0, 0) &&
+                  [&] {
+                      for (std::size_t i = 512 + 64; i < out.size(); ++i)
+                          if (out[i] != sig[i - 64]) return false;
+                      return true;
+                  }(),
+              "exact before the split, the input 64 samples late after it; never silenced beyond the one block");
+    }
+    LibPdEngine buffered(patchDir(), "adi-proof.pd", 2, 2, LibPdEngine::Execution::PureData,
+                         LibPdEngine::BlockMode::Buffered);
+    PdLatencyReceiver bl;
+    std::string err;
+    if (buffered.open(bl, err)) {
+        buffered.prepare(48000.0, 256);
+        check(buffered.segmentQuantum() == 1 && buffered.adapterLatencySamples() == 64,
+              "Buffered asks for no grid and reports its block, as before");
+    }
+}
+
 void testThePdTierHasTheBuildsPrecision() {
     section("DEV-09 AR17 -- t_float and t_sample have the width PD_FLOATSIZE names");
     eqi(static_cast<long long>(sizeof(t_float) * 8), PD_FLOATSIZE, "t_float");
@@ -1810,6 +1902,7 @@ int main() {
     testAShrunkPublishedTableDoesNotDeadlock();
     testAnAbstractionFreedLeavesNoDanglingHashA();
     testThePdTierHasTheBuildsPrecision();
+    testUserPatchDelayOnTheTickGrid();
     testASearchPathHoldingLoadableCodeIsRefusedToo();
     testADeclareThatAsksForALibraryIsRefused();
     testAbstractionsStillResolveThroughTheSamePath();

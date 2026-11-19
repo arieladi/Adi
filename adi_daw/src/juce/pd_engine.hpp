@@ -136,7 +136,18 @@ public:
     /// WholeBlocks is a caller guarantee about EVERY process segment, not just
     /// prepare's maximum. Event-split callers must use Buffered for user patches.
     /// A violation is counted and silenced; latency never changes mid-stream.
-    enum class BlockMode { Buffered, WholeBlocks };
+    ///
+    /// Automatic is DEV-13's contract (the director's Q-K2 answer of 5
+    /// November): no added delay while the host buffer and every segment are
+    /// whole multiples of 64 -- whole Pd ticks, each event at the start of the
+    /// tick that holds it, as Pd schedules control messages anyway. A buffer
+    /// that is not a multiple at prepare runs one reported, compensated
+    /// 64-sample block from the start. A segment that is not a multiple
+    /// arriving later (a host that splits a block at an event inside a tick)
+    /// switches the engine to that one block for the rest of the preparation:
+    /// counted, the latency epoch moves, the graph re-compensates, and the
+    /// audio is never silenced. The patch's own reported delay always adds.
+    enum class BlockMode { Buffered, WholeBlocks, Automatic };
     /// `patchDir` and `patchFile` are passed to `libpd_openfile` unchanged.
     ///
     /// `inChannels` is how many `inlet~` the patch has and `outChannels` how
@@ -183,10 +194,20 @@ public:
 
     [[nodiscard]] bool isNative() const noexcept { return native_ != nullptr; }
 
-    /// Zero for native DSP and WholeBlocks; one block for prepared Buffered Pd.
+    /// Zero for native DSP and WholeBlocks; one block for prepared Buffered Pd;
+    /// for Automatic, zero until it has had to take that block.
     [[nodiscard]] std::int32_t adapterLatencySamples() const noexcept override {
-        return adapterLatency_;
+        return adapterLatency_.load(std::memory_order_acquire);
     }
+    /// Moves whenever adapterLatencySamples() changes after prepare.
+    [[nodiscard]] std::uint64_t adapterEpoch() const noexcept override {
+        return adapterEpoch_.load(std::memory_order_acquire);
+    }
+    /// DEV-13: the split a host should keep a Pd device's block on to get no
+    /// added delay -- 64 for a Pd patch in WholeBlocks or Automatic, 1 for a
+    /// native core or Buffered. Split a block only at multiples of it and hand
+    /// each segment the events that fall inside it.
+    [[nodiscard]] std::int32_t segmentQuantum() const noexcept override;
 
     /// The patch's `$0`. Zero until opened.
     [[nodiscard]] int dollarZero() const noexcept { return dollarZero_; }
@@ -341,6 +362,8 @@ public:
         std::int64_t consoleDropped = 0;
         /// DEV-09: message-thread sends lost because their ring was full.
         std::int64_t sendsDropped = 0;
+        /// DEV-13: times Automatic had to take its one reported block.
+        std::int64_t blockFallbacks = 0;
     };
     [[nodiscard]] Counters counters() const noexcept;
 
@@ -394,7 +417,11 @@ private:
     void* patch_ = nullptr;           ///< libpd_openfile handle
     int dollarZero_ = 0;
     std::int32_t block_ = 64;
-    std::int32_t adapterLatency_ = 0;
+    std::atomic<std::int32_t> adapterLatency_{0};
+    std::atomic<std::uint64_t> adapterEpoch_{0};
+    /// Automatic: running whole ticks with no added delay (false: one block).
+    bool wholeTicks_ = false;
+    std::atomic<std::int64_t> blockFallbacks_{0};
     double sampleRate_ = 44100.0;
     bool dspOn_ = false;
     Execution execution_;
