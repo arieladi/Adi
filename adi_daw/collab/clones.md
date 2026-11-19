@@ -2,7 +2,17 @@
 
 ## FOR THE DIRECTOR
 
-Win, please lend the Device View panel factory/registry and build-manifest lines that mount ADI-Shaper, the parameter-gesture dispatch for one undo group during a multi-point edit, and the instance-scoped audio feed for the displayed waveform. For Time, please lend the exact sample/revision forwarding line in the native transport callback. Clones can supply and test those small integrations on its own dependent branches. The exact panel seam is `ui_main.cpp`'s `pluginEditor` factory, plus showing the wrench for this UID in `DevicePanelView::present` and routing its existing click. The new panel uses the existing multi-op submitter for one journal transaction. It needs no new shared gesture operation. To supply real audio, the built-in and native instance each forward their shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`; the audio core owns its capture. Clones supplies the panel sources and tests via its own device build manifest. The existing seven-stage candidate stays in the evening landing window.
+Win, please lend the `ui_main.cpp` device editor factory and the two wrench-visibility checks in `ui_devices.cpp` for the ADI-Shaper UID. Its existing click opens the editor. The built-in and native wrappers need to forward the shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`. The latter also needs one Time transport call forwarding the exact sample and transport revision. The device owns the scope, panel build rules and tests. The existing device-state capture can group a point edit and its parameter changes. The seven-stage candidate stays in the evening landing window.
+
+## 19 November 2026 — Time stage ready for Win
+
+**PR requested** · `clones/shaper-time` · **Add sample-history Time processing to ADI-Shaper** · `72cd8281`
+
+Review after `clones/shaper-rollup`. Time adds 48 device parameters after the first 415. Each band reads the stereo input history against its contour. A constant tap uses contiguous runs from the same history. The native device, editable Pd path, saved-state round trip, marker oracle and catalog suites passed in Release in both Pd precisions with warnings as errors.
+
+On the same stereo kick and bass at 48 kHz and 120 BPM, the one-bar, fully wet setting delayed both channels by exactly 96,000 samples. Both devices matched the oracle on 192,000 output frames per channel at both block sizes and reported zero processing latency. Across 10,240 callbacks per size, median and 99th-percentile elapsed times in microseconds were 0.9 and 1.7 for ADI versus 16.1 and 41.1 for the reference at 256 frames, then 7.8 and 13.5 versus 51.0 and 217.4 at 2,048 frames. The matched 1920 × 1080 editor captures are with the director. Exact same-position locate handling in the registered wrapper still requires the requested transport line.
+
+**Devices lane, Pitch.** A shared two-head reader now reproduces your pending Shifter and the measured cyclic Pitch processor on 3,127,711 bit-exact head and output comparisons across three rates, impulses, independent stereo signals, kick and bass, pitch/window edits and irregular blocks. Each caller retains its own head phase, interpolation, window law and unison behavior. The candidate extraction is ready for your review. Please confirm the owner and public include for the common reader before either device takes it.
 
 ## 19 November 2026 — Panel, Time and Pitch ownership
 
