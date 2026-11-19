@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include <optional>
-#include "adi/engine/param_edits.hpp"
+#include "adi/engine/param_ops.hpp"
 #include "adi/mix_functions.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "ui_arrangement.hpp"
@@ -174,6 +174,7 @@ class DevicePanelView final : public juce::Component {
     // Optional owner hooks for retained views (Mix View); the ordinary device strip uses its
     // existing authority. Hooks must never substitute a second parameter/undo implementation.
     std::function<bool(const std::string &, engine::ParamEventKind, double)> parameterGesture;
+    std::function<bool(const engine::ParameterPair &, engine::ParameterPairEvent)> parameterPairGesture;
     enum class Interaction { Text, Menu };
     std::function<bool(Interaction)> interactionBegin;
     std::function<void(Interaction)> interactionEnd;
@@ -188,6 +189,7 @@ class DevicePanelView final : public juce::Component {
     void endRename(bool commit);
     bool editFunctionParameter(const std::string &, engine::ParamEventKind, double);
     void endFunctionParameter();
+    void finishEqEdit(bool cancel);
     bool validTarget() const { return !targetValid || targetValid(); }
     const bool mixCard_;
     struct EqPreview;
@@ -239,6 +241,8 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     bool folded(std::int64_t) const;
     bool edit(std::int64_t, const std::string &, engine::ParamEventKind, double);
     bool editExpected(const DevicePanelData &, const std::string &, engine::ParamEventKind, double);
+    bool editPairExpected(const DevicePanelData &, const engine::ParameterPair &, engine::ParameterPairEvent,
+                          std::shared_ptr<const gesture::OwnerToken> &);
     bool validExpected(const DevicePanelData &) const;
     bool action(const std::string &, Payload);
     juce::PopupMenu functionMenu();
@@ -280,6 +284,9 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double,
                        const engine::DeviceRuntimeToken &, std::uint64_t)> guardedGesture;
+    std::function<bool(std::int64_t, const engine::ParameterPair &, engine::ParameterPairEvent,
+                       const engine::DeviceRuntimeToken &, std::uint64_t,
+                       std::shared_ptr<const gesture::OwnerToken> &)> guardedPairGesture;
     std::function<bool(std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t)> targetCurrent;
     std::function<bool(const std::string &, Payload)> submit;
     std::function<mix::Availability(mix::Function)> functionAvailability;

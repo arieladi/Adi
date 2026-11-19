@@ -144,6 +144,32 @@ void plottedGestures(AppCommands &commands, const std::filesystem::path &directo
     card.releaseEqHandle(); valid = true;
     card.setSize(480, 52);
     check(!card.pressEqGraph({x, 30.f}), "summary thumbnail never acquires a node gesture");
+
+    card.setSize(480, 246);
+    std::shared_ptr<const gesture::OwnerToken> pairOwner;
+    card.parameterPairGesture = [&](const engine::ParameterPair &values, engine::ParameterPairEvent event) {
+        return doc->parameterPairGestureExpected(id, values, event, found->runtime, found->instance, pairOwner);
+    };
+    check(card.pressEqGraph(point) && pairOwner &&
+              card.dragEqHandle(point.translated(20.f, -12.f)),
+          "dragging the band itself previews Frequency and Gain under one owner");
+    check(std::abs(real("38") - 1000. * std::pow(3000., 20./470.)) < .01 &&
+              std::abs(real("39") - 12.f*36.f/86.f) < .001 && std::abs(real("14")) < .001,
+          "a diagonal drag edits both coordinates of the selected band only");
+    card.releaseEqHandle();
+    const bool committed = !pairOwner && doc->synchronise();
+    const auto undo = doc->ops().undo();
+    check(committed && undo.ok && doc->synchronise() &&
+              std::abs(real("38") - 1000.) < .01 && std::abs(real("39")) < .001,
+          "one Undo restores both coordinates of the diagonal gesture");
+
+    check(card.pressEqGraph(point) && card.dragEqHandle(point.translated(6.f, 6.f)),
+          "the next direct drag acquires a fresh paired owner");
+    valid = false;
+    check(!card.dragEqHandle(point.translated(10.f, 9.f)) && !pairOwner &&
+              doc->synchronise() && std::abs(real("38") - 1000.) < .01 && std::abs(real("39")) < .001,
+          "invalidating a held card cancels the paired preview and restores both values");
+    valid = true;
 }
 void exercise(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;

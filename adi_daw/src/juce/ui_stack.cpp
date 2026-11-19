@@ -86,6 +86,12 @@ struct StackTab::State : juce::ScrollBar::Listener {
     const DevicePanelData *editData = nullptr;
     std::string parameter;
     double lastValue = 0;
+    struct PairEdit {
+        engine::ParameterPair values;
+        std::shared_ptr<const gesture::OwnerToken> owner;
+        bool waitingForCancel = false;
+    };
+    std::optional<PairEdit> pairEdit;
 };
 struct StackRow::State {
     stack::RowGeo geo;
@@ -176,6 +182,10 @@ void StackRow::present(const stack::RowGeo &input) {
             tile.view->parameterGesture = [owner, target](const std::string &p, engine::ParamEventKind k, double v) {
                 return owner && !owner->state_->destroying && owner->stack_.editParameter(target, p, k, v);
             };
+            if (stack_.root.devices.guardedPairGesture)
+                tile.view->parameterPairGesture = [owner, target](const engine::ParameterPair &values, engine::ParameterPairEvent event) {
+                    return owner && !owner->state_->destroying && owner->stack_.editParameterPair(target, values, event);
+                };
             tile.view->interactionBegin = [owner, target](DevicePanelView::Interaction k) {
                 return owner && !owner->state_->destroying && owner->stack_.beginInteraction(target, k == DevicePanelView::Interaction::Text
                                                          ? stack::CaptureKind::Text : stack::CaptureKind::Menu);
@@ -207,8 +217,14 @@ void StackRow::present(const stack::RowGeo &input) {
         if (const auto cap = stack_.model().capture(); cap && cap->target == item.ref &&
             cap->kind == stack::CaptureKind::Drag) {
             const bool sameControls = found->view->controlsMatch(*data);
-            const bool parameterLive = data->available && std::any_of(data->parameters().begin(), data->parameters().end(),
-                [&](const auto &record) { return record.id == stack_.state_->parameter && !record.missing; });
+            const auto isLive = [&](const std::string &parameter) {
+                return std::any_of(data->parameters().begin(), data->parameters().end(),
+                    [&](const auto &record) { return record.id == parameter && !record.missing; });
+            };
+            const auto &pairEdit = stack_.state_->pairEdit;
+            const bool parameterLive = data->available && (pairEdit
+                ? std::all_of(pairEdit->values.begin(), pairEdit->values.end(), [&](const auto &entry) { return isLive(entry.first); })
+                : isLive(stack_.state_->parameter));
             if (!sameControls || !parameterLive) stack_.endInteraction();
             if (!alive || state_->presentation != presentation) return;
             found = std::find_if(state_->tiles.begin(), state_->tiles.end(),
@@ -481,11 +497,15 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
 }
 void StackTab::frame(const SnapshotReader &reader) { frameAt(reader, clockNow()); }
 void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
+    const juce::Component::SafePointer<StackTab> alive(this);
+    if (state_->pairEdit && state_->pairEdit->waitingForCancel) {
+        endInteraction();
+        if (!alive) return;
+    }
     if (root.devices.parameterDemand && (state_->parametersSuspended || !isShowing())) {
         updateParameterDemand({});
         return;
     }
-    const juce::Component::SafePointer<StackTab> alive(this);
     const auto frame = ++state_->frame, layout = state_->layout;
     const auto current = [&] { return alive && state_->frame == frame && state_->layout == layout; };
     // Keep the prior record storage alive until every component has adopted the new feed.
@@ -1012,7 +1032,8 @@ bool StackTab::validTarget(const stack::ItemRef &target) const {
 }
 bool StackTab::beginInteraction(const stack::ItemRef &target, stack::CaptureKind kind) {
     const juce::Component::SafePointer<StackTab> alive(this);
-    if (state_->ending || state_->destroying) return false;
+    if (state_->ending || state_->destroying || (state_->pairEdit && state_->pairEdit->waitingForCancel))
+        return false;
     if (!validTarget(target)) return false;
     if (state_->interaction) return state_->interaction->target == target && state_->interaction->kind == kind;
     // Child controls receive their own mouseDown before the canvas listener. Select their
@@ -1031,13 +1052,27 @@ bool StackTab::beginInteraction(const stack::ItemRef &target, stack::CaptureKind
     state_->interaction = capture.ref;
     return true;
 }
-void StackTab::endInteraction() {
-    if (state_->ending) return;
+bool StackTab::endInteraction(engine::ParameterPairEvent pairEnd) {
+    if (state_->ending) return false;
     state_->ending = true;
     const juce::Component::SafePointer<StackTab> alive(this);
-    if (state_->began && state_->editData && !state_->parameter.empty())
+    bool accepted = true;
+    if (state_->pairEdit && state_->pairEdit->owner && state_->editData) {
+        const auto publication = state_->editPublication;
+        (void)publication; // retains the exact identity through the terminating callback
+        auto edit = std::move(*state_->pairEdit);
+        accepted = root.devices.editPairExpected(*state_->editData, edit.values, pairEnd, edit.owner);
+        if (alive && edit.owner) {
+            edit.waitingForCancel = true;
+            state_->pairEdit = std::move(edit);
+            state_->ending = false;
+            return false;
+        }
+    } else if (state_->began && state_->editData && !state_->parameter.empty()) {
         root.devices.editExpected(*state_->editData, state_->parameter, engine::ParamEventKind::End, state_->lastValue);
-    if (!alive) return;
+    }
+    if (!alive) return accepted;
+    state_->pairEdit.reset();
     state_->began = false;
     state_->editData = nullptr;
     state_->editPublication.reset();
@@ -1047,7 +1082,50 @@ void StackTab::endInteraction() {
         state_->interaction.reset();
         effects(model().endCapture(capture, clockNow()), false);
     }
-    state_->ending = false;
+    if (alive) state_->ending = false;
+    return accepted;
+}
+bool StackTab::editParameterPair(const stack::ItemRef &target, const engine::ParameterPair &values,
+                                 engine::ParameterPairEvent event) {
+    using Event = engine::ParameterPairEvent;
+    const juce::Component::SafePointer<StackTab> alive(this);
+    if (state_->ending) return false;
+    if (event == Event::Begin) {
+        if (state_->editData) endInteraction();
+        if (!alive || state_->editData || !beginInteraction(target, stack::CaptureKind::Drag) || !alive) return false;
+        state_->editPublication = state_->publication;
+        state_->editData = device(target.device);
+        if (!state_->editData) {
+            endInteraction();
+            return false;
+        }
+        state_->pairEdit.emplace(State::PairEdit{values, {}});
+    }
+    if (!state_->interaction || state_->interaction->target != target || !state_->pairEdit || !state_->editData ||
+        state_->pairEdit->values[0].first != values[0].first || state_->pairEdit->values[1].first != values[1].first)
+        return false;
+    if (event == Event::End || event == Event::Cancel)
+        return endInteraction(event);
+    if (!validTarget(target) || model().captureStatus(*state_->interaction) != stack::CaptureStatus::Live) {
+        endInteraction();
+        return false;
+    }
+    const auto capture = state_->interaction;
+    const auto publication = state_->editPublication;
+    (void)publication; // retains the original identity through callbacks
+    const auto *expected = state_->editData;
+    const juce::Component::SafePointer<AdiRootComponent> rootAlive(&root);
+    auto owner = state_->pairEdit->owner;
+    const bool accepted = root.devices.editPairExpected(*expected, values, event, owner);
+    if (!alive || state_->interaction != capture || !state_->pairEdit) {
+        if (owner && rootAlive && event == Event::Begin)
+            rootAlive->devices.editPairExpected(*expected, values, Event::Cancel, owner);
+        return false;
+    }
+    state_->pairEdit->owner = std::move(owner);
+    if (accepted) state_->pairEdit->values = values;
+    else endInteraction();
+    return accepted;
 }
 bool StackTab::editParameter(const stack::ItemRef &target, const std::string &parameter,
                              engine::ParamEventKind kind, double value) {
@@ -1057,7 +1135,7 @@ bool StackTab::editParameter(const stack::ItemRef &target, const std::string &pa
         // A reset/new control gesture during a held drag is a new gesture, not a new
         // owner installed over an unclosed old one. End the exact original target first.
         if (state_->editData) endInteraction();
-        if (!alive) return false;
+        if (!alive || state_->editData) return false;
         if (!beginInteraction(target, stack::CaptureKind::Drag)) return false;
         state_->editPublication = state_->publication;
         state_->editData = device(target.device);

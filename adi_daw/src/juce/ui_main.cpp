@@ -315,6 +315,14 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!ok && root_) root_->say(document_->error());
             return ok;
         };
+        root->devices.guardedPairGesture = [this](std::int64_t id, const engine::ParameterPair &values,
+            engine::ParameterPairEvent event, const engine::DeviceRuntimeToken &expected, std::uint64_t instance,
+            std::shared_ptr<const gesture::OwnerToken> &owner) {
+            const bool ok = document_->parameterPairGestureExpected(id, values, event, expected, instance, owner);
+            if (root_ && (!ok || event == engine::ParameterPairEvent::Begin))
+                root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
         root->devices.targetCurrent = [this](std::int64_t id, const engine::DeviceRuntimeToken &expected,
                                             std::uint64_t instance) {
             return document_->deviceTargetCurrent(id, expected, instance);

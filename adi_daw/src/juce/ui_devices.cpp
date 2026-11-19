@@ -315,14 +315,15 @@ struct DevicePanelView::EqPreview {
         NodeAxis axis;
         juce::Point<float> start;
         juce::Rectangle<float> graph;
-        float origin, current;
+        juce::Point<float> origin, current; // Hz and dB, respectively
+        std::optional<engine::ParameterPair> pair;
     };
     std::optional<Edit> edit;
     mix::eq::BandSettings displayedBand(std::size_t i) const {
         auto band = settings->bands[i];
         if (edit && edit->band == i) {
-            if (edit->axis == NodeAxis::Frequency) band.frequencyHz = edit->current;
-            else band.gainDb = edit->current;
+            if (edit->pair || edit->axis == NodeAxis::Frequency) band.frequencyHz = edit->current.x;
+            if (edit->pair || edit->axis == NodeAxis::Gain) band.gainDb = edit->current.y;
         }
         return band;
     }
@@ -557,60 +558,98 @@ bool DevicePanelView::pressEqGraph(juce::Point<float> point) {
     const auto graph = eqPreviewBounds();
     if (getHeight() < 144 || graph.isEmpty() || !graph.expanded(4.f).contains(point) ||
         strip.folded(id) || !validTarget()) return false;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    const auto beginSingle = [&](std::size_t band, NodeAxis axis, juce::Point<float> origin) {
+        const auto mapped = device::mixEqNodeValue(band, axis, axis == NodeAxis::Frequency ? origin.x : origin.y);
+        if (!mapped || !editFunctionParameter(mapped->id, engine::ParamEventKind::Begin, mapped->value.normalized) ||
+            !safe || !editingBegan_) return false;
+        eqPreview_->edit.emplace(EqPreview::Edit{band, presentedInstance(), axis, point, graph, origin, origin, {}});
+        repaint(graph.toNearestInt());
+        return true;
+    };
     if (selectedBand_ >= 0 && static_cast<std::size_t>(selectedBand_) < mix::eq::bandCount) {
         const auto bandIndex = static_cast<std::size_t>(selectedBand_);
         const auto band = eqPreview_->settings->bands[bandIndex];
         const auto node = nodePosition(band, graph);
-        for (const auto axis : {NodeAxis::Frequency, NodeAxis::Gain}) {
-            if (band.status == mix::eq::Status::Off ||
-                (axis == NodeAxis::Gain && !nodeHasGain(band.shape)) ||
-                (axis == NodeAxis::Frequency && band.shape == mix::eq::Shape::FlatGain) ||
-                !nodeHandle(node, graph, axis).contains(point)) continue;
-            const auto origin = axis == NodeAxis::Frequency ? band.frequencyHz : band.gainDb;
-            const auto mapped = device::mixEqNodeValue(bandIndex, axis, origin);
-            const auto safe = SafePointer<DevicePanelView>(this);
-            if (!mapped || !editFunctionParameter(mapped->id, engine::ParamEventKind::Begin, mapped->value.normalized) ||
-                !safe || !editingBegan_) return false;
-            eqPreview_->edit.emplace(EqPreview::Edit{bandIndex, presentedInstance(), axis, point, graph, origin, origin});
-            repaint(graph.toNearestInt());
-            return true;
+        if (band.status != mix::eq::Status::Off) {
+            if (band.shape != mix::eq::Shape::FlatGain && nodeHandle(node, graph, NodeAxis::Frequency).contains(point))
+                return beginSingle(bandIndex, NodeAxis::Frequency, {band.frequencyHz, band.gainDb});
+            if (nodeHasGain(band.shape) && nodeHandle(node, graph, NodeAxis::Gain).contains(point))
+                return beginSingle(bandIndex, NodeAxis::Gain, {band.frequencyHz, band.gainDb});
         }
     }
+
     const auto hit = eqBandAt(point);
-    const auto safe = SafePointer<DevicePanelView>(this);
     if (hit < 0 || !chooseFunctionBand(hit) || !safe) return false;
     eqPreview_->hovered = hit;
     repaint(graph.toNearestInt());
+    if (!parameterPairGesture) return true;
+
+    const auto bandIndex = static_cast<std::size_t>(hit);
+    const auto band = eqPreview_->settings->bands[bandIndex];
+    const juce::Point<float> origin{band.frequencyHz, band.gainDb};
+    if (band.shape == mix::eq::Shape::FlatGain) return beginSingle(bandIndex, NodeAxis::Gain, origin);
+    if (!nodeHasGain(band.shape)) return beginSingle(bandIndex, NodeAxis::Frequency, origin);
+    const auto frequency = device::mixEqNodeValue(bandIndex, NodeAxis::Frequency, origin.x);
+    const auto gain = device::mixEqNodeValue(bandIndex, NodeAxis::Gain, origin.y);
+    if (!frequency || !gain) return false;
+    engine::ParameterPair pair{{{frequency->id, frequency->value.normalized}, {gain->id, gain->value.normalized}}};
+    const auto instance = presentedInstance();
+    if (!parameterPairGesture(pair, engine::ParameterPairEvent::Begin) || !safe) return false;
+    eqPreview_->edit.emplace(EqPreview::Edit{bandIndex, instance, NodeAxis::Frequency, point, graph, origin, origin, std::move(pair)});
     return true;
 }
 bool DevicePanelView::dragEqHandle(juce::Point<float> point) {
     if (!eqPreview_ || !eqPreview_->edit) return false;
     const auto e = *eqPreview_->edit;
-    if (presentedInstance() != e.instance || getHeight() < 144 || eqPreviewBounds().isEmpty() ||
+    if (presentedInstance() != e.instance || !validTarget() || getHeight() < 144 || eqPreviewBounds().isEmpty() ||
         strip.folded(id) || eqPreview_->settings->bands[e.band].status == mix::eq::Status::Off) {
-        releaseEqHandle();
+        finishEqEdit(true);
         return false;
     }
     const float dx = (point.x - e.start.x) / e.graph.getWidth();
     const float dy = (point.y - e.start.y) / e.graph.getHeight();
-    const auto value = e.axis == NodeAxis::Frequency ? std::clamp(e.origin * std::pow(3000.f, dx), 10.f, std::max(30000.f, e.origin))
-                                                     : std::clamp(e.origin - dy * eqDbSpan, -30.f, 30.f);
-    const auto mapped = device::mixEqNodeValue(e.band, e.axis, value);
+    const auto frequency = std::clamp(e.origin.x * std::pow(3000.f, dx), 10.f, std::max(30000.f, e.origin.x));
+    const auto gain = std::clamp(e.origin.y - dy * eqDbSpan, -30.f, 30.f);
     const auto safe = SafePointer<DevicePanelView>(this);
-    if (!mapped || !editFunctionParameter(mapped->id, engine::ParamEventKind::Value, mapped->value.normalized)) {
-        if (safe) releaseEqHandle();
-        return false;
+    bool accepted = false;
+    auto pair = e.pair;
+    if (pair) {
+        const auto horizontal = device::mixEqNodeValue(e.band, NodeAxis::Frequency, frequency);
+        const auto vertical = device::mixEqNodeValue(e.band, NodeAxis::Gain, gain);
+        if (horizontal && vertical && parameterPairGesture) {
+            (*pair)[0].second = horizontal->value.normalized;
+            (*pair)[1].second = vertical->value.normalized;
+            accepted = parameterPairGesture(*pair, engine::ParameterPairEvent::Value);
+        }
+    } else {
+        const auto mapped = device::mixEqNodeValue(e.band, e.axis, e.axis == NodeAxis::Frequency ? frequency : gain);
+        accepted = mapped && editFunctionParameter(mapped->id, engine::ParamEventKind::Value, mapped->value.normalized);
     }
     if (!safe || !eqPreview_->edit) return false;
-    eqPreview_->edit->current = value;
+    if (!accepted) {
+        finishEqEdit(true);
+        return false;
+    }
+    eqPreview_->edit->current = {frequency, gain};
+    eqPreview_->edit->pair = std::move(pair);
     repaint(e.graph.toNearestInt());
     return true;
 }
 void DevicePanelView::releaseEqHandle() {
+    finishEqEdit(false);
+}
+void DevicePanelView::finishEqEdit(bool cancel) {
     if (!eqPreview_ || !eqPreview_->edit) return;
+    auto pair = std::move(eqPreview_->edit->pair);
     eqPreview_->edit.reset();
     repaint(eqPreviewBounds().toNearestInt());
-    endFunctionParameter();
+    if (pair) {
+        if (parameterPairGesture)
+            parameterPairGesture(*pair, cancel ? engine::ParameterPairEvent::Cancel : engine::ParameterPairEvent::End);
+    } else {
+        endFunctionParameter();
+    }
 }
 
 DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, bool mixCard)
@@ -675,6 +714,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
     present(d);
 }
 DevicePanelView::~DevicePanelView() {
+    finishEqEdit(true);
     endFunctionParameter();
     endInteraction(Interaction::Text);
     endInteraction(Interaction::Menu);
@@ -704,8 +744,10 @@ void DevicePanelView::cancelInteractions() {
     // and completion must neither mutate this target nor end a newly acquired capture.
     ++menuEpoch_;
     dragTarget_.reset();
-    if (eqPreview_) { eqPreview_->edit.reset(); eqPreview_->hovered = -1; }
+    if (eqPreview_) eqPreview_->hovered = -1;
     const auto safe = SafePointer<DevicePanelView>(this);
+    finishEqEdit(true);
+    if (!safe) return;
     endFunctionParameter();
     if (!safe) return;
     endRename(false);
@@ -1861,6 +1903,12 @@ bool DeviceChainStrip::folded(std::int64_t id) const {
 bool DeviceChainStrip::edit(std::int64_t id, const std::string &p, engine::ParamEventKind k,
                             double v) {
     return gesture && gesture(id, p, k, v);
+}
+bool DeviceChainStrip::editPairExpected(const DevicePanelData &expected, const engine::ParameterPair &pair,
+                                        engine::ParameterPairEvent event, std::shared_ptr<const gesture::OwnerToken> &owner) {
+    using Event = engine::ParameterPairEvent;
+    if ((event == Event::Begin || event == Event::Value) && !validExpected(expected)) return false;
+    return guardedPairGesture && guardedPairGesture(expected.id, pair, event, expected.runtime, expected.instance, owner);
 }
 bool DeviceChainStrip::editExpected(const DevicePanelData &expected, const std::string &parameter,
                                    engine::ParamEventKind kind, double value) {

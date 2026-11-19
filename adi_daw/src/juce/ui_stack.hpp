@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/engine/param_ops.hpp"
 #include "adi/ui/mix_view_provider.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/stack_model.hpp"
@@ -105,7 +106,8 @@ class StackTab final : public juce::Component {
     void beginRename(stack::RowRef);
     void endRename(bool commit);
     bool beginInteraction(const stack::ItemRef &, stack::CaptureKind);
-    void endInteraction();
+    bool endInteraction(engine::ParameterPairEvent = engine::ParameterPairEvent::Cancel);
+    bool editParameterPair(const stack::ItemRef &, const engine::ParameterPair &, engine::ParameterPairEvent);
     bool editParameter(const stack::ItemRef &, const std::string &, engine::ParamEventKind, double);
     bool validTarget(const stack::ItemRef &) const;
     const DevicePanelData *device(std::int64_t) const noexcept;
