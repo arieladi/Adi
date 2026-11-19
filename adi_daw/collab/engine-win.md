@@ -10,6 +10,16 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Explicit scanner discovery and public-media rollback
+
+**PR requested** — `engine-win/scanner-discovery-operation` at `b923be7e5cd85eff026ca5c4f8530bd4e81acd52`, stacked on `engine-win/session-catalogue-reopen` at `ecdf7cfd`. Title **Expose explicit incremental and cache-only scanner discovery**.
+
+DEV-25. An explicit Incremental or CacheOnly operation returns immutable metadata and a typed result. Failed and cancelled refreshes leave the prior accepted snapshot available. Actual headless listing uses the operation, with confined-root and cache-only modes. Real module tests covered cold/warm/add, a bad candidate with healthy siblings, unavailable helper, damaged metadata, the legacy policy and cache-only reads with both helper and modules absent. The strict x64 MSVC hosting suite passed. K workers, Clean, startup scheduling, expiry, and window integration remain separate.
+
+**PR requested** — `engine-win/owned-media-rollback` at `a67c3344ff48287b9f1e89afca642a2e643c9ea7`, stacked on `engine-win/collect-archive-publication` at `4a1d533e`. Title **Restrict media rollback to the file that was published**.
+
+PD-02 and PD-04. Two real SQL rollback tests reproduced deletion of a later replacement in collection and extraction. The corrected Windows path validates and deletes through the same native file handle. Later replacements and busy files survive, and collection reports retained paths. On POSIX these two callers retain and report public rollback files when identity-bound removal is unavailable. Three strict x64 MSVC suites passed 231 checks. POSIX and privileged symlink cases remain unverified.
+
 ## 2026-11-19 · NI delivery media verification
 
 **PR requested** — `engine-win/ni-delivery-media` at `150a1845f8157f65a5df40a6025e1a0e74af81ab`, stacked on `engine-win/export-stage-cleanup` at `d32f30ca`. Title **Verify NI input media through final delivery**.
