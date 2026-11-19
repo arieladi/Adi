@@ -67,7 +67,7 @@ struct Clip {
     std::int64_t clipId = 0, mediaId = 0;
     std::string storedBlake3;
     std::int64_t track = 0, start = 0, end = 0, offset = 0, length = 0;
-    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0, playEnd = 0;
+    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0;
     std::int64_t inCurve = 1, outCurve = 1;
     std::optional<double> inTension,outTension;
     std::array<std::optional<std::int64_t>,4> fadeClock;
@@ -108,7 +108,7 @@ struct Clip {
         if (time < start || time >= end) return -1;
         auto n = time-start+offset;
         if (loopLength > 0 && n >= loopBegin) n = loopBegin+(n-loopBegin)%loopLength;
-        return n < length && n < playEnd ? n : -1;
+        return n < length ? n : -1;
     }
     template<typename V> V shaped(std::int64_t time,V gainValue)const noexcept {
         const auto local=time-start+offset;
@@ -141,11 +141,9 @@ struct Clip {
         if (!t.playing()) return out;
         std::size_t used = 0;
         auto sourceRange = [&](std::int64_t from, std::int64_t count) {
-            // sourceAt never reads at or past End, so no page there is wanted.
-            // A looped clip has playEnd==length.
-            const auto audible=std::min(length,playEnd);
-            if(from<0 || from>=audible || count<=0) return;
-            const auto last=std::min(audible,from+count)-1;
+            // sourceAt never reads at or past the effective source End.
+            if(from<0 || from>=length || count<=0) return;
+            const auto last=std::min(length,from+count)-1;
             for(auto p=from/pageFrames;p<=last/pageFrames && used<slots;++p)
                 if(std::find(out.begin(),out.end(),p)==out.end()) out[used++]=p;
         };
@@ -584,8 +582,18 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             };
             clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
             if(!row.loopEnabled) {
-                if(!a->warpEnabled && row.sourceEndNs)clip->length=std::min(clip->length,fixedTime(*row.sourceEndNs));
-                else if(row.endMarkerTicks)clip->length=std::min(clip->length,sourceDuration(*row.endMarkerTicks));
+                // A physical pin survives placement and tempo edits. Warp and
+                // unpinned clips derive End from the same clock as their offset.
+                if (!a->warpEnabled && row.sourceEndNs) {
+                    clip->length = std::min(clip->length, fixedTime(*row.sourceEndNs));
+                } else if (row.endMarkerTicks) {
+                    const auto end = sourceDuration(*row.endMarkerTicks);
+                    const bool reversed = !a->warpEnabled && row.contentOffsetNs
+                        ? end <= clip->offset
+                        : *row.endMarkerTicks <= row.contentOffsetTicks;
+                    if (reversed) throw std::runtime_error("invalid audio clip End marker");
+                    clip->length = std::min(clip->length, end);
+                }
             }
             const auto& fadeClock=a->warpEnabled?row.fadeClockTicks:row.fadeClockNs;
             for(std::size_t i=0;i<4;i+=2) {
@@ -596,14 +604,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     if(last<=first)throw std::runtime_error("fade clock has no sample extent");
                     clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
                 }
-            }
-            clip->playEnd = clip->length; // after the warp length and the source-end pin (chain)
-            // Independent physical clocks were already applied above. Tick
-            // ordering is meaningful only for Warp or wholly legacy audio.
-            if (!row.loopEnabled && row.endMarkerTicks &&
-                (a->warpEnabled || (!row.contentOffsetNs && !row.sourceEndNs))) {
-                if (*row.endMarkerTicks <= row.contentOffsetTicks)
-                    throw std::runtime_error("invalid audio clip End marker; silent");
             }
             clip->fadeIn=duration(row.fadeInTicks);
             if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");

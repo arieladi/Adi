@@ -96,11 +96,30 @@ void loopsAndMarkers() {
     // defaults contain intrinsic ranges, not the old arrangement rectangle.
     target.store->db().exec("UPDATE clips SET length_ns=750000000 WHERE id=7");
     for(const auto width:{Precision::Float32,Precision::Float64})check(render(*source.store,48000,width,38000)==render(*target.store,48000,width,38000),"extending the recalled loop repeats exact source PCM and retained source fades at both widths");
-    Project markerSource,markerTarget;original(markerSource);OpRequest end;end.opType="clip.setEndMarker";end.payload={{"id",7},{"ticks",8072064}};check(OpJournal(*markerSource.store).commit(end).ok,"native End edit clears its prior physical pin before a legacy marker capture");const auto marker=clip_edit::captureSampleDefaults(*markerSource.store,7,48000);
+    Project markerSource,markerTarget;original(markerSource);markerSource.store->db().exec("UPDATE clip_properties SET end_marker_ticks=8072064 WHERE clip_id=7; UPDATE clip_playback_details SET source_end_ns=NULL WHERE clip_id=7");const auto marker=clip_edit::captureSampleDefaults(*markerSource.store,7,48000);
     check(marker.ok && marker.settings->sourceEndNs==700000000 && !marker.settings->endMarkerTicks,"legacy musical End is frozen into its actual fixed source time for an unwarped sample");if(!marker.ok)return;
     check(index->saveSampleSettings(marker.hash,*marker.settings,error)==library::SampleSettingsProblem::None,"canonical source End persists as authored sample data");markerTarget.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,60,0)");auto recalled=clip_edit::prepareImportAudio(*markerTarget.store,markerTarget.options(markerSource.source()),48000,index.get());check(recalled.edit.ok && clip_edit::commitMaterial(*markerTarget.store,recalled).ok,"fixed source End recalls without double-applying the old project tempo");if(!recalled.edit.ok)return;
     check(markerTarget.store->db().execAndGet("SELECT length_ns FROM clips WHERE id=7").getInt64()==650000000,"recalled initial source End subtracts the saved content offset exactly");
     check(render(*markerSource.store,48000,Precision::Float64,38000)==render(*markerTarget.store,48000,Precision::Float64,38000),"actual native playback preserves the old End marker's audible boundary across tempo");
+
+    markerSource.store->db().exec("UPDATE clip_playback_details SET source_end_ns=800000000 WHERE clip_id=7");
+    const auto pinned = clip_edit::captureSampleDefaults(*markerSource.store, 7, 48000);
+    check(pinned.ok && pinned.settings->sourceEndNs == 800000000 && !pinned.settings->endMarkerTicks,
+          "sample defaults keep the physical pin when a legacy tick marker disagrees");
+    if (!pinned.ok) return;
+    check(index->saveSampleSettings(pinned.hash, *pinned.settings, error) == library::SampleSettingsProblem::None,
+          "save the effective physical source End as authored sample data");
+    Project pinTarget;
+    pinTarget.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,240,0)");
+    auto imported = clip_edit::prepareImportAudio(*pinTarget.store, pinTarget.options(markerSource.source()),
+                                                  48000, index.get());
+    check(imported.edit.ok && clip_edit::commitMaterial(*pinTarget.store, imported).ok,
+          "recall the source pin at double tempo");
+    if (!imported.edit.ok) return;
+    check(pinTarget.store->db().execAndGet("SELECT length_ns FROM clips WHERE id=7").getInt64() == 750000000 &&
+          render(*markerSource.store,48000,Precision::Float64,38000) ==
+              render(*pinTarget.store,48000,Precision::Float64,38000),
+          "the physical End and nonzero source offset round trip with identical PCM");
 }
 void pinnedEndAndSignedTrim() {
     Project source,target;original(source);

@@ -88,12 +88,9 @@ SampleDefaultsCapture captureSampleDefaults(Store& store,std::int64_t clipId,dou
             known(*properties,{"clip_id","end_marker_ticks","signature_numerator","signature_denominator","scale_root","scale_id","scale_mask"});
             settings.endMarkerTicks=optionalInteger(*properties,"end_marker_ticks");settings.signatureNumerator=optionalInteger(*properties,"signature_numerator");settings.signatureDenominator=optionalInteger(*properties,"signature_denominator");
         }
-        if(!settings.warpEnabled && settings.endMarkerTicks) {
-            // copyClip already freezes an absent legacy End clock. A present
-            // pin is independent of the current placement tempo (SPEC 9.2).
-            if(!settings.sourceEndNs)throw std::runtime_error("captured unwarped End has no source clock");
-            settings.endMarkerTicks.reset();
-        }
+        // copyClip freezes a legacy unwarped End when it has no physical pin.
+        // Save the same effective source clock that playback uses.
+        if (!settings.warpEnabled && settings.sourceEndNs) settings.endMarkerTicks.reset();
         if(settings.contentOffsetTicks<0 && !settings.warpEnabled && settings.contentOffsetNs) {
             // Native left trim can derive signed display ticks after a tempo
             // relocation. Portable defaults use a nonnegative legacy fallback;
