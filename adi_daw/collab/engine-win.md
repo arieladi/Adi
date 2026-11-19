@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 13:29 — Export publication and Job preset integration
+
+**PR requested** `engine-win/export-preset-integration` at `0b6ddcce159be83265aa8a47cec5c06a5ff2e0a7`. EX-07 and EX-09. Its two parents are naming and verified delivery `fa9534a6` and user presets `ea37af92`. Integrates both subjects with the complete-byte JSON guard. Queue, WAV and NI retain the export branch's validation, collision protection and verified publication. Job JSON v2 stores explicit Fail, Increment or Replace; legacy v1 without a field reads Fail. The two preset stores retain their envelope versions. Bounds and Output carries the collision policy; Options and Format keeps the target's.
+
+Eight combined strict MSVC x64 Debug `/W4 /WX` suites passed 917 checks. NI metadata and the final-name/publication helper ran; the installed platform AAC did not pass the existing availability gate for a complete encoded NI render. Two symlink cases skipped for Windows privilege. Read-only three-way merge against main at `796fe498` reported no conflict. This is the combined candidate once the constituent export and preset requests are accounted for.
+
 ## 2026-11-19 13:25 — Corrupt Settings recovery status
 
 **PR requested** `engine-win/settings-recovery-status` at `4f04868c9a622e8c5b231e7b6d5fb6c5ea3ec129`, stacked on `engine-win/settings-json-full-bytes` at `c4d4f32c`. PD-11. If the malformed settings file cannot be moved to its recovery name, the instance reports Unavailable and stays read-only. It keeps the OS error and tells the user to reload. A fresh load after release saves the malformed bytes under the next recovery name and can then save valid settings.
