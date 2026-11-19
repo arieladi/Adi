@@ -1,5 +1,25 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER measurement contract and file reservation
+
+For the devices seat, the clones lane takes the ADi-SHAPER core under `src/adi/dsp/adi_shaper.*`, the compiled-in external `src/adi/pd_builtins/adi_shaper_tilde.cpp`, the canvas `pd/devices/ADi-SHAPER.pd`, device module `cmake/devices/adi_shaper.cmake` and dedicated shaper tests on `clones/adi-shaper`. Shared edits are the single device's embedding in `cmake/devices/pd_native.cmake`, native factory in `src/adi/pd_builtins/native_devices.cpp`, catalog in `src/adi/builtin_catalog.cpp`, and registration/fixtures in `tests/test_builtin_devices.cpp` and `tests/test_pd_native_devices.cpp`. The first implementation target is the measured gain, stereo width and pan behavior, a clocked editable curve and independent band settings. Additional module measurements follow.
+
+For the Mix View seat, Focus implementation remains yours, including waveform rendering, the sum and the alignment preview. The clones lane is measuring two-track kick and bass and preparing a written handoff here. Preview and Apply are independent. The Apply and audition decisions are already with the director in `mixview/log`.
+
+### ADi-SHAPER first acceptance cases
+
+Reference version 3.6, stereo float at 48 kHz, 120 BPM, 4/4. Use a full-band stage at full mix, zero output trim and no trigger smoothing.
+
+| Setting and input | Measured output |
+|---|---|
+| One-bar Volume gate, first half at minimum, second at maximum, input L = 0.375 and R = 0.25 | Alternates between silence and the original stereo input. Period 96,000 samples. The observed hard edge was approximately 16 samples after the nominal boundary. Reported latency was zero. |
+| Width at minimum on the same input | L = R = 0.3125. This constant render was identical at 64, 256 and 1024 frames per callback. Reported latency was zero. |
+| Pan at the hard left and right positions on the same input, reference balance setting | Extremes preserve the corresponding input channel with a gain of √2 and silence the opposite channel. Observed surviving values were 0.5303301 and 0.3535534. Reported latency was zero. |
+
+The documented Volume axis spans silence to unity with half amplitude at its midpoint. Width spans 0–200% with unity side gain at 100%. Pan includes multiple balance laws, combined stereo panning and a separate interchannel delay. The three endpoint cases above are sufficient to test those specific settings. The soft-curve interpolation, interior pan law and crossover response require additional fixtures.
+
+The rack mixes and clocks each band independently. Each stage can add a low and a high band around its starting full-range middle band. Crossover slope choices are 6, 12 and 24 dB/octave. Band blend is scaled by the master blend. A 50% master and 40% band setting yield 20% effective band blend. Phase-locked beat mode follows project position. Sync cycle lengths span 1/128 to 32 bars, including straight, triplet and dotted divisions. Frequency mode spans 0.02 Hz to 5.24 kHz. A MIDI- or audio-triggered one-shot holds its final point. [Reference manual, pp. 25–28 and 41–46](https://downloads.cableguys.com/Cableguys-ShaperBox-3-Manual.pdf)
+
 ## 2026-11-04 — REAPER/Reason depth and Pd fit, milestone 11
 
 Research commit 6f09739fffefef35f6e943381669797882963b2a adds 165 entries: 58 REAPER editing, 47 export, 40 Reason rack/Combinator and 20 ADI source-audit findings. REAPER is v0.5 and Reason 14 v0.2. Each entry has evidence, an ADI implication, status and a paired unexecuted case. Six original JSON diagnostic specifications sharpen editing scope, render signal paths, queue revision/publication, macro composition, rack relationships and Pd segment timing. Instruments excluded; FEATURES, decisions and Live parity retained; no new priorities, ADRs or product code.
