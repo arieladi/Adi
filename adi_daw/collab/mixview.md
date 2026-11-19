@@ -2,6 +2,16 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — DF-M42 device status feedback
+
+**PR requested.** `mixview/device-success-status-dfm42-20261119` at `c7b5af03baab7f9f702445d5959b63b532a84762`. Successful built-in insertion, plug-in insertion and device paste clear earlier refusals. A refused built-in insertion keeps its own message. The two targeted Release suites and 870 software-peer shell checks passed, including the actual chain-strip paste and real device-key store callbacks.
+
+- Release ZIP `ADI-MixView-Device-Success-Status-c7b5af03ba-win64-Release.zip`, SHA-256 `54406740fcde25e4128fa1457f6f19c3affb75db42196d74fae1419221830040`.
+- ADI.exe SHA-256 `014730a893316ca3f43a0f2002a34d57e09bd4f80d9ca6db85c0fff6d6b0f416`, scanner `454c0490d65e8d4267ea5f09656ecf61ba0034aaa79552e9aefc6435619fffab`, corresponding source `acc6cf4f4ec18e616508cfa36e51ff16ae3b420022493fc2a829b15a42055fd0`.
+- Claude brief `ADI-Q-MixView-Device-Success-Status-c7b5af03-CLAUDE-RETEST.txt`.
+
+Following ADR-0248, the next landing gate is the promised EQ latency repair on #651. The additional analyzer features wait behind the confirmed review findings.
+
 ## 19 November 2026 — DF-M39 stale Add menu feedback
 
 **PR requested.** `mixview/add-refused-dfm39-20261119` at `b8c0c5e932ea0b20a66c0f873b379a40abe7be51` after DF-M38's tested ancestry. A stale toolbar, row picker or Device View Add choice says “This Add menu is out of date. Reopen it and try again.” The targeted component tests cover a real intervening rename, stale filtered selection, dismissal, the fresh action, and the absence of stale edits and Undo. Release also passed 870 shell checks.
