@@ -43,6 +43,11 @@ or ordinary eviction. Cancellation does not delete a published target or undo
 another caller's pin. On-disk index persistence is still optional; scanning real
 files recovers it after restart.
 
+If the completed file goes missing before size accounting, the caller receives a
+cache write error. The failed read adds no use stamp, byte total or pin. A later
+decode can rebuild the missing file. The warm-hit path checks its size before
+updating its entry too.
+
 `DecodeCacheHooks::afterPublish` is an empty-by-default test seam immediately
 after successful publication/adoption and before bookkeeping. It runs outside
 the mutex and must not throw or reenter the cache. The regression requests stop

@@ -580,8 +580,10 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
                 if(!probe.frames() || !probe.channels() || probe.channels()>kMaxDecodeChannels || !probe.sampleRate() || probe.sampleRate()>kMaxDecodeRate)
                     throw std::runtime_error("unsupported cached audio dimensions");
             } catch(const std::exception& error) {throw DecodeError(DecodeProblem::CacheWrite,display(target)+": incomplete/invalid cache target: "+error.what());}
+            const auto bytes = fs::file_size(target, ec);
+            if (ec) throw DecodeError(DecodeProblem::CacheWrite, display(target) + ": cached audio disappeared or became unreadable");
             auto& item = items_[hash.hex];
-            item.bytes = static_cast<std::uint64_t>(fs::file_size(target, ec));
+            item.bytes = static_cast<std::uint64_t>(bytes);
             item.lastUse = stamp();
             ++item.pins;
             ++stats_.hits;
@@ -626,8 +628,10 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
     }
 
     std::lock_guard lock(mutex_);
+    const auto bytes = fs::file_size(target, ec);
+    if (ec) throw DecodeError(DecodeProblem::CacheWrite, display(target) + ": decoded audio disappeared or became unreadable");
     auto& item = items_[hash.hex];
-    item.bytes = static_cast<std::uint64_t>(fs::file_size(target, ec));
+    item.bytes = static_cast<std::uint64_t>(bytes);
     item.lastUse = stamp();
     ++stats_.decodes;
     evict(0, hash.hex);

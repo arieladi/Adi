@@ -108,7 +108,33 @@ void publishedCancellation(bool concurrent){
     cache.release(retry);cache.setLimits({0,0});cache.trim();
     check(cache.entries().empty()&&!fs::exists(target),"cancelled decode does not leak a pin or evade later trim");
 }
+
+void missingPublishedFile() {
+    adi::test::TempDirectory temp("decode_consistency", "removed-publication");
+    const auto source = fixture("tone16.flac");
+    const auto folder = temp.path() / "cache";
+    const auto target = folder / (hash(source) + ".wav");
+    auto controlled = hooks();
+    bool first = true, removed = false;
+    controlled.afterPublish = [&] {
+        if (!first) return;
+        first = false;
+        std::error_code error;
+        removed = fs::remove(target, error) && !error;
+    };
+    DecodeCache cache(folder, {1ULL << 30, 0}, controlled);
+    check(problem([&] { (void)cache.playable(source); }) == DecodeProblem::CacheWrite && removed,
+          "an absent published target produces an explicit cache write error");
+    check(cache.entries().empty() && cache.totalBytes() == 0 && cache.stats().decodes == 0 && noPartial(folder),
+          "an absent file creates no byte total, pin or completed decode");
+    const auto retry = cache.playable(source);
+    const auto entries = cache.entries();
+    check(retry == target && entries.size() == 1 && entries[0].bytes == fs::file_size(target) &&
+              entries[0].pins == 1 && cache.stats().decodes == 1,
+          "the next decode recovers with one real file and one returned pin");
+    cache.release(retry);
 }
-int main(){try{oversized(false);oversized(true);malformedHints();extremeStamp();publishedCancellation(false);publishedCancellation(true);}
+}
+int main(){try{oversized(false);oversized(true);malformedHints();extremeStamp();publishedCancellation(false);publishedCancellation(true);missingPublishedFile();}
     catch(const std::exception& e){check(false,std::string("unexpected: ")+e.what());}
     std::printf("%s -- %d checks, %d failures\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
