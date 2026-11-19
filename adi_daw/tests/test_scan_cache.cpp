@@ -234,9 +234,13 @@ void stampsAndTransaction(const fs::path& self) {
     check(clap && vst && otherBuild && *clap!=*vst && *clap!=*otherBuild,"format and actual helper build digest are distinct fingerprint inputs");
     const auto mac=f.temp.path()/"Relocated.vst3";fs::create_directories(mac/"Contents"/"MacOS");
     const auto macBinary=mac/"Contents"/"MacOS"/"Relocated";write(macBinary,"extensionless code");
-    const auto macStamp=candidateStamp("vst3",mac,hash,error);const auto macTime=fs::last_write_time(macBinary);
+    // candidateStamp's input is canonical (Scanner::probe resolves it first). The
+    // temp folder need not be: a Windows runner's is an 8.3 alias (RUNNER~1), and
+    // the walk refuses a bundle whose resolved root lies outside the path given.
+    const auto macCanonical=fs::canonical(mac);
+    const auto macStamp=candidateStamp("vst3",macCanonical,hash,error);const auto macTime=fs::last_write_time(macBinary);
     write(macBinary,"extensionless code changed");fs::last_write_time(macBinary,macTime);
-    const auto macChanged=candidateStamp("vst3",mac,hash,error);
+    const auto macChanged=candidateStamp("vst3",macCanonical,hash,error);
     check(macStamp && macChanged && *macStamp!=*macChanged,"relocated macOS-style bundle stamps its extensionless Contents/MacOS binary");
     const auto path=utf8(fs::canonical(binary(bundle)));auto registry=f.registry();
     auto ticket=registry->beginScan("clap",path,1,error);if(!ticket)throw std::runtime_error(error);
