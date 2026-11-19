@@ -29,6 +29,7 @@ public:
     void cancel() noexcept;
 private:
     struct State;
+    struct Queue;
     explicit ProgressiveFile(std::shared_ptr<State>);
     std::shared_ptr<State> state_;
     friend class ProgressiveDecoder;
