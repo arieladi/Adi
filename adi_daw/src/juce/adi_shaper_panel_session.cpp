@@ -17,7 +17,7 @@ int numericId(std::string_view text) {
     return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() ? id : 0;
 }
 int word(double normalized) { return static_cast<int>(std::lround(normalized * Bank::wordMax)); }
-bool valid(AdiShaperPanel::Key k) {
+bool validKey(AdiShaperPanel::Key k) {
     return k.stage >= 0 && k.stage < 11 && k.band >= 0 && k.band < 3 && k.lane >= 0 && k.lane < 2;
 }
 std::map<int, double> storedParameters(ProjectDocument& doc, std::int64_t device) {
@@ -32,6 +32,8 @@ std::map<int, double> storedParameters(ProjectDocument& doc, std::int64_t device
 }
 AdiShaperPanelSession::AdiShaperPanelSession(ProjectDocument& doc, std::int64_t id)
     : document_(doc), id_(id), token_(doc.session().deviceRuntimeToken(id)) {
+    const auto publication = doc.parameterFeed().current();
+    for (const auto& device : *publication) if (device.id == id) { stamp_ = device.instance; break; }
     if (auto* live = instance()) {
         for (int i = 0; i < live->paramCount(); ++i) {
             const auto* d = live->paramAt(i);
@@ -42,8 +44,13 @@ AdiShaperPanelSession::AdiShaperPanelSession(ProjectDocument& doc, std::int64_t 
 }
 AdiShaperPanelSession::~AdiShaperPanelSession() { cancel(); }
 device::DeviceInstance* AdiShaperPanelSession::instance() const {
+    if (retired_) return nullptr;
     auto* live = document_.session().resolveDevice(token_);
-    return live && live->identity().uid == uid ? live : nullptr;
+    const auto publication = document_.parameterFeed().current();
+    const bool same = stamp_ == 0 || std::any_of(publication->begin(), publication->end(),
+        [&](const auto& device) { return device.id == id_ && device.instance == stamp_; });
+    if (!live || live->identity().uid != uid || !same) { retired_ = true; return nullptr; }
+    return live;
 }
 void AdiShaperPanelSession::refresh() {
     if (editing_) return;
@@ -128,7 +135,7 @@ bool AdiShaperPanelSession::parameters(Phase phase, std::span<const Change> chan
 }
 std::vector<AdiShaperPanelSession::Point> AdiShaperPanelSession::wave(Key k) const {
     std::vector<Point> result;
-    if (!valid(k) || !values_.contains(Bank::lastId)) return result;
+    if (!validKey(k) || !values_.contains(Bank::lastId)) return result;
     const int curve = Bank::key(k.stage, k.band, k.lane);
     for (int i = Bank::firstId; i <= Bank::lastId; i += 2) {
         const int a = word(values_.at(i));
@@ -141,7 +148,7 @@ std::vector<AdiShaperPanelSession::Point> AdiShaperPanelSession::wave(Key k) con
 }
 bool AdiShaperPanelSession::editWave(Key k, Phase phase, std::span<const Point> points) {
     if (phase == Phase::Begin || phase == Phase::Cancel) return parameters(phase, {});
-    if (!editing_ || !valid(k) || !values_.contains(Bank::lastId)) return false;
+    if (!editing_ || !validKey(k) || !values_.contains(Bank::lastId)) return false;
     const int target = Bank::key(k.stage, k.band, k.lane);
     std::vector<int> used, empty;
     for (int id = Bank::firstId; id <= Bank::lastId; id += 2) {

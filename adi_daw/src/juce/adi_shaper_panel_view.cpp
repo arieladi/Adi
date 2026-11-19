@@ -24,7 +24,7 @@ void AdiShaperPanelView::suspend() {
         if (auto *scope = source->shaperScope())
             scope->suspend();
 }
-bool AdiShaperPanelView::valid() const { return doc_.session().resolveDevice(token_) != nullptr; }
+bool AdiShaperPanelView::valid() const { return model_.valid(); }
 void AdiShaperPanelView::frame() {
     if (auto* peer=getPeer(); peer && (!isShowing() || peer->isMinimised())) {
         suspend();

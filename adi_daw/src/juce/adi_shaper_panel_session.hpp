@@ -20,6 +20,7 @@ public:
     AdiShaperPanel::Binding binding();
     bool applyPreset(std::span<const std::uint8_t>);
     void refresh();
+    bool valid() const { return instance() != nullptr; }
     bool editing() const noexcept { return editing_; }
     const std::string& error() const noexcept { return error_; }
 private:
@@ -39,6 +40,8 @@ private:
     std::map<int, double> defaults_, values_, storedAtBegin_;
     std::map<int, Touched> touched_;
     std::string error_;
+    std::uint64_t stamp_ = 0;
+    mutable bool retired_ = false;
     bool editing_ = false;
 };
 } // namespace adi::ui
