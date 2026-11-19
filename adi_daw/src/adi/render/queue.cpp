@@ -109,7 +109,8 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export dither");
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
-    (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
+    (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region",
+        j.niStems ? "ni_stems_mp4" : "wav",static_cast<std::uint32_t>(j.session.sampleRate),1});
 }
 struct Stage {
     fs::path path;
@@ -261,6 +262,9 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
         else if (token == "bpm") name += context.bpm;
         else if (token == "region") name += context.region;
         else if (token == "counter") name += std::to_string(context.counter);
+        else if (token == "format") name += context.format;
+        else if (token == "rate") name += std::to_string(context.rate);
+        else if (token == "index") name += std::to_string(context.index);
         else throw std::invalid_argument("unknown export name token: " + token);
         at = end + 1;
     }
@@ -441,6 +445,9 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         session.graph().setFadeFrames(0);
         NameContext names;
         names.counter = counter;
+        names.format = "wav";
+        names.rate = static_cast<std::uint32_t>(job.session.sampleRate);
+        names.index = counter;
         {
             // Metadata, device states and playback rows describe one database
             // revision, sampled when this job starts, never when it is queued.
@@ -671,7 +678,9 @@ std::string serializeRunManifest(const RunReport& run) {
             {"region_id", snapshot.regionId ? Json(*snapshot.regionId) : Json(nullptr)},
             {"names", {{"project", snapshot.names.project}, {"track", snapshot.names.track},
                 {"group", snapshot.names.group}, {"bpm", snapshot.names.bpm},
-                {"counter", snapshot.names.counter}, {"region", snapshot.names.region}}}};
+                {"counter", snapshot.names.counter}, {"region", snapshot.names.region},
+                {"format", snapshot.names.format}, {"rate", snapshot.names.rate},
+                {"index", snapshot.names.index}}}};
     };
     Json manifest{{"version", 1}, {"planned_count", run.plannedCount},
                   {"capture_complete", run.captureComplete}, {"members", Json::array()}};
