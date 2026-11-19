@@ -1,5 +1,37 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER stage-order evidence and file reservation
+
+The clones seat takes the shaper routing loop, its stage-order parameter declarations and the associated shaper tests on `clones/adi-shaper-order`. The branch adds an append-only order control per shaper; it also preserves every prior control ID. Sorting runs at a segment boundary only after a changed order control. It does not require a Mix View or Window change.
+
+# Programmable stage order
+
+The reference presents loaded stages in signal-flow order. Dragging a stage changes its position. A new initialized instance has all stages off. The initialized scalar parameters for a stage remain independent of its position. The complete saved device state includes an ordered vector of sixteen slot identifiers, including unselected slots. The manual describes chain editing and whole-device preset recall. [Reference manual, pp. 29–30](https://downloads.cableguys.com/Cableguys-ShaperBox-3-Manual.pdf#page=29)
+
+## Acoustic test
+
+Two full-range stages were enabled, with the master and band mixes at unity. Volume applied a constant gain of 0.25. Drive used symmetric hard clipping at a constant drive height of 0.5 and neutral input/output trims. The left input was a 400 Hz sine with 0.42 peak and the right a phase-offset 733 Hz sine with 0.28 peak. Each render used 48 kHz stereo and 256-frame callbacks. The first 4,096 frames were excluded from steady-state comparisons.
+
+Two independent controls identified the order. One drove the isolated nonlinear stage with a quarter-amplitude source. The other attenuated the isolated nonlinear stage's output by 0.25. The predictions differ because attenuating before clipping changes which samples reach the clipping threshold.
+
+| Saved order | Left / right output RMS | Left / right peak | Maximum error against matching control | Maximum error against opposite order | Reported latency |
+| --- | --- | --- | ---: | ---: | ---: |
+| Volume then Drive | 0.196160 / 0.186027 | 0.221243 / 0.217897 | 0 | 0.166183 | 16 frames |
+| Drive then Volume | 0.052437 / 0.051897 | 0.055996 / 0.055913 | 0 | 0.166183 | 16 frames |
+
+Enabling these two stages without changing the initialized slot vector produced Volume then Drive. Reversing the vector produced Drive then Volume. Moving each of the sixteen slot identifiers individually to the head and then the tail gave 32 further tests. Moving identifier 9 to the head or identifier 5 to the tail exchanged the measured order. Every other individual move retained it. This independently identifies Volume as slot 5 and Drive as slot 9 in the tested state format.
+
+On saving, the reference placed the two loaded slots at the front of its returned order vector. The leading identifiers were 5, 9 for Volume then Drive and 9, 5 for Drive then Volume. In both saves the remaining fourteen inactive identifiers followed in ascending order. Each returned state was loaded into a fresh instance. Both reproduced the entire original stereo render sample-for-sample, including startup. This establishes recall for both active orders. The default order above is the initialized slot vector with these two stages enabled together. Adding the same stages one by one through the editor was outside this measurement.
+
+## Proposed ADI storage and processing
+
+- Append eleven integer parameters, one per existing stage, after current ID 715. Suggested range 0–127, with defaults 8, 18, 28, 38, 48, 58, 68, 78, 88, 98 and 108 for Volume, Width, Pan, Filter, Liquid, Drive, Crush, Time, Pitch, Noise and Reverb. Label each control with the stage and “Order”. Lower values run earlier. Gaps allow most moves by changing a single control. A future drag editor can assign these same values to the desired sequence in one undoable gesture.
+- Decode ranks into a permutation of the eleven stage identities. Sort by ascending rank, settling ties by the stage's permanent identity in the legacy ADI chain. A collision always produces a complete deterministic order. A change to one stage's rank never deactivates or duplicates another stage. Any of the 39,916,800 permutations is representable. Existing projects that lack all eleven keys take the old signal path. Partially populated keys can be restored in any sequence.
+- Existing `adi.param` integer declarations already expose stable numeric identifiers, quantization, editable generic strip controls, project recall and automation in both the native and editable Pd paths. Each control can use an ordinary integer range. `adi.array` is for display reads. A convenient drag list would need a dedicated UI hook owned by the corresponding seat. A single full-permutation rank exceeds the exact consecutive-integer range of a 32-bit Pd float.
+- Cache the route in a fixed eleven-entry array. Mark it dirty only when a quantized rank changes and rebuild once at the next segment boundary, after pending parameter deliveries. An in-place insertion sort needs at most 55 comparisons and 55 shifts. Run each active stage's existing block renderer once in the resulting order. Dispatch belongs outside the sample loops. Preserve a specialized fast path for the old order if the CPU benchmark justifies it. The current 16-sample Drive host compensation is independent of position. Other stage latencies follow their existing contracts.
+- Retain each stage's clock, settings and DSP state with its identity across an order change. This avoids clearing delay histories, interrupting free-running contours or allocating a second rack for a crossfade. Live-tail handling on reference drag and click suppression remain unmeasured. The proposed recall guarantee applies to the order and controls. Audio already in a previous route can affect subsequent tails after a live move.
+- Acceptance tests should cover direct nonlinear reference predictions in both orders, all eleven modules exactly once under tied and extreme ranks, exact legacy order on old-state restore, forward and reverse order of parameter delivery, a reorder that moves Drive while PDC stays 16, and native/editable Pd output through odd host segments. Benchmark unchanged default routing and a noncanonical active chain separately.
+
 ## 2026-11-19 — Eleven-stage ADi-SHAPER ready for review
 
 **PR requested** — `clones/adi-shaper-sources` at `380335a2`. Title **Add cyclic Pitch, generated Noise and an original convolution room to ADi-SHAPER**. Review after `clones/adi-shaper-time`. All 12 affected Release suites passed under MSVC strict warnings. The three modules extend the parameter map from 463 to 715 and have zero additional host latency. The editable Pd patch and compiled processing path agree on the irregular-block stereo tests. Earlier projects retain their stored indices.
