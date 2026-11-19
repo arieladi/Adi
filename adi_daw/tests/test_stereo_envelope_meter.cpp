@@ -109,6 +109,99 @@ void holdsBalanceAndDynamics() {
     const double smoothed=.5+-std::expm1(-1./400.)*(std::min(.5,power/.25)-.5);
     check(close(dynamics.reading().dynamicDb[0],-10.*std::log10(2.*smoothed)), "dynamics integrates the linear ratio before logarithmic display");
 }
+void linkedDynamics() {
+    constexpr std::size_t length = 4096;
+    std::array<float, length> left{}, right{};
+    for (const auto weighting : {Meter::Weighting::Standard, Meter::Weighting::A}) {
+        const double rate = weighting == Meter::Weighting::Standard ? 1000. : 48000.;
+        for (std::size_t frame = 0; frame < length; ++frame) {
+            const double time = static_cast<double>(frame) / rate;
+            left[frame] = static_cast<float>((frame < 512 ? .5 : .125) *
+                                           std::sin(6.283185307179586 * 125. * time));
+            right[frame] = static_cast<float>((frame < 512 ? .0625 : .75) *
+                                            std::sin(6.283185307179586 * 375. * time));
+            if (weighting == Meter::Weighting::Standard && frame >= 1024) {
+                left[frame] = .5f;
+                right[frame] = -.5f;
+            }
+        }
+        Meter unlinked, whole, split;
+        Meter::Settings settings{rate, .6, .5, .5, 1.e-6, false, weighting};
+        check(unlinked.prepare(settings), "prepare ordinary stereo oracle");
+        settings.linkedDynamic = true;
+        check(whole.prepare(settings) && split.prepare(settings) &&
+                  whole.reading() == Meter::Reading{} && whole.process(left, right),
+              "prepare Link with an empty reading and process the whole signal");
+
+        // Project the independently established peak and weighted RMS lanes, sample by sample.
+        const double step = -std::expm1(-1. / (rate * .4));
+        double combined = 0.;
+        bool accepted = true, matched = true;
+        for (std::size_t position = 0; position < length;) {
+            const auto count = std::min(length - position, 1 + position % 97);
+            accepted &= split.process(std::span(left).subspan(position, count), std::span(right).subspan(position, count));
+            for (std::size_t frame = position; frame < position + count; ++frame) {
+                accepted &= unlinked.process(std::span(left).subspan(frame, 1), std::span(right).subspan(frame, 1));
+                const auto lanes = unlinked.reading();
+                const auto peak = std::max(lanes.peak[0], lanes.peak[1]);
+                const auto l = lanes.sineReferencedRms[0], r = lanes.sineReferencedRms[1];
+                const auto sumPower = .5 * (l * l + r * r);
+                combined = sumPower <= 1.e-6 ? 0. : std::lerp(combined, 2. * peak * peak / sumPower, step);
+            }
+            position += count;
+            const auto actual = split.reading().linkedDynamicDb;
+            matched &= combined > 0. ? (actual && close(*actual, 10. * std::log10(.5 * combined))) : !actual;
+        }
+        const auto linked = whole.reading();
+        check(accepted && matched && linked.linkedDynamicDb.has_value(),
+              "Link smooths the ratio of the louder decaying peak to summed weighted lane power");
+        check(linked == split.reading(), "Link keeps its measurement across arbitrary block partitions");
+        if (weighting == Meter::Weighting::Standard)
+            check(linked.linkedDynamicDb && *linked.linkedDynamicDb < -2.,
+                  "Link preserves negative dB values when the ratio settles below its reference");
+        auto raw = linked;
+        raw.linkedDynamicDb.reset();
+        check(raw == unlinked.reading() && !unlinked.reading().linkedDynamicDb,
+              "Link leaves every individual reading and floating anchor identical to ordinary stereo");
+
+        const std::array<float, 2> invalid{1.f, std::numeric_limits<float>::quiet_NaN()};
+        check(!whole.process(invalid, invalid) && whole.reading() == linked,
+              "a rejected block leaves the linked measurement unchanged");
+        whole.reset();
+        check(whole.reading() == Meter::Reading{} && whole.process({}, {}) && !whole.reading().linkedDynamicDb,
+              "reset and empty input leave no linked measurement");
+    }
+}
+
+void linkedPowerFloor() {
+    constexpr double rate = 1000.;
+    Meter meter;
+    Meter::Settings settings{rate, .6, .5, .5, 1.e-6};
+    settings.linkedDynamic = true;
+    const std::array<float, 1> left{.5f}, right{-.25f}, zero{};
+    const std::array<float, 4000> silence{};
+    const double firstPower = (.25 + .0625) * -std::expm1(-1. / (rate * .5));
+    const auto untilFloor = static_cast<std::size_t>(std::ceil(rate * .5 * std::log(firstPower / 1.e-6)));
+    check(untilFloor > 0 && untilFloor <= silence.size(), "Link floor fixture crosses inside its fixed silence block");
+    if (untilFloor == 0 || untilFloor > silence.size()) return;
+
+    const auto tail = std::span(silence).first(untilFloor - 1);
+    check(meter.prepare(settings) && meter.process(left, right) && meter.process(tail, tail) &&
+              meter.reading().linkedDynamicDb.has_value(),
+          "Link remains valid until the summed power crosses its floor");
+    check(meter.process(zero, zero) && !meter.reading().linkedDynamicDb &&
+              meter.reading().maximumPeak == std::array{.5, .25},
+          "crossing the Link power floor clears only the linked interval");
+    check(meter.process(left, right), "resume linked input after clearing");
+    const auto resumed = meter.reading();
+    const auto l = resumed.sineReferencedRms[0], r = resumed.sineReferencedRms[1];
+    const double sumPower = .5 * (l * l + r * r);
+    const double step = -std::expm1(-1. / (rate * .4));
+    const double expected = 10. * std::log10(step * .25 / sumPower);
+    check(resumed.linkedDynamicDb && close(*resumed.linkedDynamicDb, expected),
+          "Link resumes its smoother from zero when valid power returns");
+}
+
 void weightingCurves() {
     using Weighting = Meter::Weighting;
     constexpr std::array rates{44100., 48000., 96000.};
@@ -197,6 +290,8 @@ int main() {
     floorAndRecall();
     partitionAndSine();
     holdsBalanceAndDynamics();
+    linkedDynamics();
+    linkedPowerFloor();
     weightingCurves();
     return failures == 0 ? 0 : 1;
 }

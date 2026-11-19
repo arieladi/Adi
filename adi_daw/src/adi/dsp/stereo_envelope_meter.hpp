@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <span>
 #include <cstdint>
 
@@ -49,6 +50,7 @@ class StereoEnvelopeMeter {
         double coincidenceFloor;       // linear magnitude, applied to both channels
         bool midSide = false;
         Weighting weighting = Weighting::Standard;
+        bool linkedDynamic = false;
     };
 
     struct Reading {
@@ -57,6 +59,7 @@ class StereoEnvelopeMeter {
         double signCoincidence = 0, balance = 0;
         std::array<double, 2> maximumPeak{}, peakHold{}, rmsHold{}, floatingPeak{};
         std::array<double, 2> dynamicDb{};
+        std::optional<double> linkedDynamicDb;
         bool operator==(const Reading &) const = default;
     };
 
