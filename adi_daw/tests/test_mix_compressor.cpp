@@ -439,14 +439,16 @@ void nonFiniteInput() {
         const auto run = [&](c::Core &core, Audio<Sample> &audio, const Audio<Sample> &keySignal) {
             return external ? render(core, audio, &keySignal, 2, s) : render(core, audio, s);
         };
-        const bool accepted = run(subject, a, key) & run(zeros, b, cleanKey);
-        check(accepted && equal(a, b), external ?
+        const bool accepted = run(subject, a, key);
+        const bool referenceAccepted = run(zeros, b, cleanKey);
+        check(accepted && referenceAccepted && equal(a, b), external ?
               "external compressor key and programme replace each NaN or infinity with zero" :
               "internal compressor key and programme replace each NaN or infinity with zero");
         a = b = signal<Sample>(true, count);
         key = cleanKey = signal<Sample>(true, count + 100);
-        const bool resumed = run(subject, a, key) & run(zeros, b, cleanKey);
-        check(resumed && equal(a, b),
+        const bool resumed = run(subject, a, key);
+        const bool referenceResumed = run(zeros, b, cleanKey);
+        check(resumed && referenceResumed && equal(a, b),
               "later compressor blocks keep the same detector and gain history without resetting");
     }
 }
