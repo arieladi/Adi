@@ -141,6 +141,7 @@ AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::st
     if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
     if(folder_.empty() || !folder_.is_absolute()){error="analysis folder must be absolute";result.problem=AnalysisCacheProblem::Io;return result;}
     struct Candidate {fs::path path;std::uint64_t bytes;fs::file_time_type stamp;};
+    std::string firstError;
     try {
         std::lock_guard lock(ioMutex);
         if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
@@ -151,23 +152,40 @@ AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::st
         if(ec)throw std::system_error(ec);
         if(!fs::is_directory(root))throw std::runtime_error("analysis folder is not a real directory");
         std::vector<Candidate> candidates;
+        bool unvalidatedSkipped=false;
+        const auto named=[](const fs::path& path,const std::string& why) {
+            const auto text=path.u8string();return std::string(text.begin(),text.end())+": "+why;
+        };
+        const auto skip=[&](const fs::path& path,const std::string& why,bool unvalidated) {
+            ++result.skippedEntries;result.problem=AnalysisCacheProblem::Io;
+            unvalidatedSkipped=unvalidatedSkipped || unvalidated;
+            if(firstError.empty()){firstError=named(path,why);error=firstError;}
+        };
         audio::fileIoPoint();
         // Inventory and validate everything before deleting anything. Unknown,
         // damaged and future-envelope files remain for explicit repair, not GC.
         for(const auto& entry:fs::directory_iterator(folder_)) {
             if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
-            const auto status=entry.symlink_status();
             const auto& path=entry.path();
-            if(!fs::is_regular_file(status) || path.extension()!=".adia") {++result.ignoredEntries;continue;}
             // Reject foreign native names before a Windows narrow conversion:
             // an unrelated Unicode .adia filename must not abort maintenance.
-            if(!hashValid(path.stem().native())){++result.ignoredEntries;continue;}
+            if(path.extension()!=".adia" || !hashValid(path.stem().native())){++result.ignoredEntries;continue;}
+            const auto status=entry.symlink_status(ec);
+            if(ec){skip(path,ec.message(),true);continue;}
+            if(!fs::is_regular_file(status)){++result.ignoredEntries;continue;}
             const auto hash=path.stem().string(); // proven lowercase ASCII
-            const auto size=fs::file_size(path);const auto stamp=fs::last_write_time(path);
+            const auto size=fs::file_size(path,ec);if(ec){skip(path,ec.message(),true);continue;}
+            const auto stamp=fs::last_write_time(path,ec);if(ec){skip(path,ec.message(),true);continue;}
             auto data=readFile(path,nullptr,stop);
+            if(data.problem==AnalysisCacheProblem::Cancelled || stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
             if(data.problem==AnalysisCacheProblem::Invalid || (data && data.data->identity.hash!=hash)) {++result.ignoredEntries;continue;}
+            if(data.problem==AnalysisCacheProblem::Io || data.problem==AnalysisCacheProblem::Missing) {
+                skip(path,data.error.empty()?"analysis disappeared during inventory":data.error,true);continue;
+            }
             if(!data){result.problem=data.problem;error=std::move(data.error);return result;}
-            if(fs::file_size(path)!=size || fs::last_write_time(path)!=stamp)throw std::runtime_error("analysis changed during inventory");
+            const auto checkedSize=fs::file_size(path,ec);if(ec){skip(path,ec.message(),true);continue;}
+            const auto checkedStamp=fs::last_write_time(path,ec);if(ec){skip(path,ec.message(),true);continue;}
+            if(checkedSize!=size || checkedStamp!=stamp)throw std::runtime_error(named(path,"analysis changed during inventory"));
             if(size>std::numeric_limits<std::uint64_t>::max()-result.bytesBefore)throw std::overflow_error("analysis inventory size overflow");
             candidates.push_back({path,static_cast<std::uint64_t>(size),stamp});
             result.bytesBefore+=static_cast<std::uint64_t>(size);result.bytesAfter=result.bytesBefore;
@@ -181,15 +199,25 @@ AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::st
             if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
             // This detects ordinary external changes; it is not a cross-process
             // compare-and-unlink. Ownership and the in-process mutex are needed.
-            if(!fs::is_regular_file(fs::symlink_status(candidate.path)) ||
-               fs::file_size(candidate.path)!=candidate.bytes || fs::last_write_time(candidate.path)!=candidate.stamp)
-                throw std::runtime_error("analysis changed before eviction");
-            if(!fs::remove(candidate.path))throw std::runtime_error("analysis disappeared before eviction");
+            const auto status=fs::symlink_status(candidate.path,ec);
+            if(ec==std::errc::no_such_file_or_directory || status.type()==fs::file_type::not_found)
+                throw std::runtime_error(named(candidate.path,"analysis disappeared before eviction"));
+            if(ec){skip(candidate.path,ec.message(),false);continue;}
+            if(!fs::is_regular_file(status))throw std::runtime_error(named(candidate.path,"analysis changed before eviction"));
+            const auto size=fs::file_size(candidate.path,ec);if(ec){skip(candidate.path,ec.message(),false);continue;}
+            const auto stamp=fs::last_write_time(candidate.path,ec);if(ec){skip(candidate.path,ec.message(),false);continue;}
+            if(size!=candidate.bytes || stamp!=candidate.stamp)
+                throw std::runtime_error(named(candidate.path,"analysis changed before eviction"));
+            const auto removed=fs::remove(candidate.path,ec);
+            if(ec){skip(candidate.path,ec.message(),false);continue;}
+            if(!removed)throw std::runtime_error(named(candidate.path,"analysis disappeared before eviction"));
             result.bytesAfter-=candidate.bytes;++result.filesRemoved;
         }
-        result.budgetMet=result.bytesAfter<=maximumBytes;error.clear();return result;
+        if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
+        result.budgetMet=!unvalidatedSkipped && result.bytesAfter<=maximumBytes;
+        if(firstError.empty())error.clear();return result;
     }catch(const std::bad_alloc&){result.problem=AnalysisCacheProblem::Resource;return result;}
-    catch(const std::exception& e){result.problem=AnalysisCacheProblem::Io;error=e.what();return result;}
+    catch(const std::exception& e){result.problem=AnalysisCacheProblem::Io;error=firstError.empty()?e.what():firstError+"; trim aborted: "+e.what();return result;}
 }
 AnalysisCache& defaultAnalysisCache(){static AnalysisCache cache([]{const auto paths=appdata::pathsFor(appdata::App::Daw);return paths.cache.empty()?fs::path{}:paths.cache/"analysed";}());return cache;}
 } // namespace adi::media

@@ -1746,6 +1746,9 @@ target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collec
 add_executable(adi_analysis_cache_tests tests/test_analysis_cache.cpp)
 target_link_libraries(adi_analysis_cache_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_analysis_cache_tests COMMAND adi_analysis_cache_tests)
+add_executable(adi_analysis_cache_trim_tests tests/test_analysis_cache_trim.cpp)
+target_link_libraries(adi_analysis_cache_trim_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_analysis_cache_trim_tests COMMAND adi_analysis_cache_trim_tests)
 
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
@@ -1926,6 +1929,7 @@ add_test(NAME adi_pcm_stream_tests COMMAND adi_pcm_stream_tests)
 add_executable(adi_progressive_decode_tests tests/test_progressive_decode.cpp)
 target_link_libraries(adi_progressive_decode_tests PRIVATE adi_core adi_warnings)
 target_compile_definitions(adi_progressive_decode_tests PRIVATE
+    ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode"
     ADI_PCM_EXTRA_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pcm_stream")
 add_test(NAME adi_progressive_decode_tests COMMAND adi_progressive_decode_tests)
 
