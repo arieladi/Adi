@@ -70,6 +70,11 @@ void ChorusEnsemble::process(const float *il, const float *ir, float *ol, float 
     const double warmth = p_[Warmth] / 100;
     const double lp = 1 - std::exp(-2 * std::numbers::pi * (18000 - 15000 * warmth) / rate_);
     const double gain = std::pow(10., p_[Output] / 20), mix = mode == 2 ? 1 : p_[Mix] / 100;
+    // DEV-22: Live 12.4's Dry/Wet is an equal-power crossfade -- at its default
+    // 50 % the dry impulse comes out at 0.7071 (measured), not 0.5. The ends
+    // are exact: all dry at 0, all wet at 100.
+    const double dryGain = mix <= 0 ? 1 : mix >= 1 ? 0 : std::cos(mix * std::numbers::pi / 2);
+    const double wetGain = mix <= 0 ? 0 : mix >= 1 ? 1 : std::sin(mix * std::numbers::pi / 2);
     for (std::size_t i = 0; i < n; ++i) {
         const std::array<double, 2> in{il[i], ir[i]};
         std::array<double, 2> wet{}, bass{};
@@ -97,8 +102,8 @@ void ChorusEnsemble::process(const float *il, const float *ir, float *ol, float 
         }
         const double mid = (wet[0] + wet[1]) * .5,
                      side = (wet[0] - wet[1]) * .5 * (mode == 2 ? 1 : p_[Width] / 100);
-        ol[i] = static_cast<float>(gain * (in[0] * (1 - mix) + (mid + side + bass[0]) * mix));
-        orr[i] = static_cast<float>(gain * (in[1] * (1 - mix) + (mid - side + bass[1]) * mix));
+        ol[i] = static_cast<float>(gain * (in[0] * dryGain + (mid + side + bass[0]) * wetGain));
+        orr[i] = static_cast<float>(gain * (in[1] * dryGain + (mid - side + bass[1]) * wetGain));
         write_ = (write_ + 1) % ring_[0].size();
         phase_ += p_[Rate] / rate_;
         phase_ -= std::floor(phase_);
