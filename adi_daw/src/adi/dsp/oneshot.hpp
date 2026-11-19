@@ -4,6 +4,7 @@
 #pragma once
 #include "adi/engine/publisher.hpp"
 #include "juce/device_model.hpp"
+#include <algorithm>
 #include <filesystem>
 #include <span>
 namespace adi::device {
@@ -97,6 +98,9 @@ class OneShot final : public DeviceInstance {
     [[nodiscard]] static std::shared_ptr<const PreparedSample> prepareSample(
         std::span<const float> interleaved, int channels, double rate,
         std::span<const std::size_t> manualSlices = {});
+    // Sampler (DEV-21): set only before this voice engine is published by
+    // Sampler. Classic mode pitches each key against it; Slice ignores it.
+    void setRootKey(int key) noexcept { rootKey_ = std::clamp(key, 0, 127); }
     bool loadSample(const std::filesystem::path &, std::string &error);
 
   private:
@@ -130,6 +134,7 @@ class OneShot final : public DeviceInstance {
     engine::SnapshotPublisher<Publication> publisher_;
     std::shared_ptr<const Sample> sample_; // message thread only, including saveState
     std::uint64_t sampleSeq_ = 0, age_ = 0;
+    int rootKey_ = 60;
     bool borrowed_ = false;
     double rate_ = 48000;
     DeviceIdentity identity_{"internal", "adi.oneshot", "OneShot", "ADI", "1"};
