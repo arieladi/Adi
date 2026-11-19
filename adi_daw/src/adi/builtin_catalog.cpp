@@ -11,7 +11,8 @@ constexpr bool ready=true;
 #else
 constexpr bool ready=false;
 #endif
-constexpr std::array<BuiltinInfo,18> entries={{
+constexpr std::array<BuiltinInfo,19> entries={{
+ {"org.adidaw.builtin.adi-shaper","ADi-SHAPER","ADI","Audio Effects",2,ready,false},
  {"org.adidaw.builtin.auto-filter","Auto Filter","Audio Effects","EQ & Filters",4,ready,false},
  {"org.adidaw.builtin.chord-comb","Chord Comb","ADI","Audio Effects",2,ready,false},
  {"org.adidaw.builtin.chorus-ensemble","Chorus-Ensemble","Audio Effects","Pitch & Modulation",2,ready,false},
@@ -40,7 +41,7 @@ const BuiltinInfo* findBuiltin(std::string_view uid) noexcept {
 std::string_view builtinCanvas(std::string_view uid) noexcept {
 #if ADI_WITH_PD
     using namespace device::canonical;
-    constexpr std::array<std::string_view,18> canvases={autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
+    constexpr std::array<std::string_view,19> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
         std::string_view{},multibandDynamics,overdrive,phaserFlanger,redux,resonators,reverb,saturator,shifter,utility,vocoder};
     for(std::size_t i=0;i<entries.size();++i)if(entries[i].uid==uid)return canvases[i];
 #else

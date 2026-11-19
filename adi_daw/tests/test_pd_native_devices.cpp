@@ -57,7 +57,8 @@ struct Fixture {
     int inputs;
     std::array<Change, 4> changes;
 };
-constexpr std::array<Fixture, 17> fixtures{{
+constexpr std::array<Fixture, 18> fixtures{{
+    {"ADi-SHAPER.pd", 2, {{{2, 3}, {128, 1}, {131, 2}, {23, 24}}}},
     {"AutoFilter.pd", 4, {{{3, 2500}, {11, 38}, {33, 1}, {34, 65}}}},
     {"Chord Comb.pd", 2, {{{1, 3}, {3, 0.2f}, {4, 0.4f}, {5, 0.7f}}}},
     {"Chorus-Ensemble.pd", 2, {{{3, 160}, {10, 2.3f}, {11, 70}, {16, 75}}}},
