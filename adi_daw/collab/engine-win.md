@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-11 settings schema steps
+
+**PR requested** — `engine-win/settings-step-migrations`, `e9aa9fa2c31f0a45c6d0d082f249dba8f55ae998`, stacked on `engine-win/settings-last-good`. The pure runner validates the complete ordered route before executing any step, keeps unknown fields, and returns no partial migration. Startup reads through the same runner as the save reread. The original disk bytes stay in the previous-good backup when a later save publishes a migrated document. A newer or foreign file stays protected. Schema 1 has no registered steps. A file without a schema still reads as schema 1. A well-formed older numbered schema without a route remains in place and gives a read-only migration diagnostic. Strict x64 MSVC passed 423 checks across the settings, migration and transport settings suites. Window still owns presentation of the load status.
+
 ## 2026-11-19 — DF-E23 native Windows hardware gate at 256 and 2,048 samples
 
 **PR requested** — `engine-win/dfe23-hardware-diagnostics`, `685fcf8fbf64ff9f91275b9abec7d6928ab3bee7`, based on cloud worker implementation `d96c97d7731fac88ea93350897b65fcac29fe2e4`. Opt-in device CLI diagnostics verify the actual driver grant, worker allocation and callback timing. The callback writes preallocated rows and the CLI saves them after the device closes. Strict native optimized x64 MSVC build and `adi_play_render_tests` passed. The diagnostics and scanner discovery branches overlap in the default-roots constructor and playback CLI; retain one scoped root option.
