@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DEV-25 bounded parallel discovery
+
+**PR requested** — `engine-win/scanner-parallel-probes`, `95a5288b25b49590b62ab5e1acd256deaf58d5eb`, stacked on `engine-win/scanner-registry-write-admission`. Explicit discovery can request one through four workers, each with an independent SQLite connection and the same identified helper. The owner consumes results in input order and publishes only a complete catalogue. A fatal result stops new submissions. Active probes keep their bounded timeout and observe the caller's cancellation flag. The serial default stays in place.
+
+**MEASURED** — Strict Windows x64 MSVC passed six suites. Four controlled helper processes had to be alive together before any could reply, and their second pass reused all four cache rows with no child launches. Dedicated real module runs with K=1 and K=4 produced identical ordered catalogues from four CLAP and four VST3 fixtures. Warm scans kept the catalogue and the owner loaded no CLAP library. The worker-count default, Clean policy and startup/UI integration still need their own work.
+
 ## 2026-11-19 — DEV-25 registry admission with two writers
 
 **PR requested** — `engine-win/scanner-registry-write-admission`, `0f7289b2d5bfe7375bb618bf2ee19e3ff9bb672d`, stacked on `engine-win/vst3-discovery-aliases`. Two native SQLite connections reproduced failures in stamped admission and typed completion while a competing writer held a short transaction. Beginning these read/write transactions with the existing busy timeout and an immediate lease fixes the snapshot upgrade race. Child processes still start after admission commits. Strict Windows x64 MSVC passed the 74 cache checks, the scanner suite and all 15 native VST3 sequence cases. This supplies the separate-connection prerequisite for parallel scan probes.
