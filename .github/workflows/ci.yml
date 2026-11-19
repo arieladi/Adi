@@ -708,11 +708,8 @@ jobs:
             fi
           done
 
-          # The sqlite3 that ends up inside our binary is the amalgamation
-          # vendored in SQLiteCpp, not the host's. Pinning SQLiteCpp to its 3.3.3
-          # tag moved this from 3.53.4 to 3.49.2, because its master branch was
-          # ahead of its own release. That is the pin working as intended, and it
-          # is the kind of thing that should be legible in a build log.
+          # Print the SQLite amalgamation version from the pinned dependency.
+          # This is the version linked into the built binary.
           ver=$(grep -m1 '#define SQLITE_VERSION  *"' \
                 adi_daw/third_party/SQLiteCpp/sqlite3/sqlite3.c | sed 's/.*"\(.*\)".*/\1/')
           echo
