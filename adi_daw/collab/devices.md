@@ -82,6 +82,25 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DF-E46: OneShot's Slice mode; a key with no slice steals nothing, slices stop at End
+
+**PR requested:** head `devices/oneshot-slices` (6625eb37), stacked on `devices/oneshot-instrument`
+(base that branch until it lands, then `main`). The row asks for it right after OneShot lands as an
+instrument. It is ready now, so it can follow at once.
+- **(a)** A note on a key with no slice used to choose and clear a voice before it checked the key.
+  The note's region is now decided first (`OneShot::slice`), and a key with no slice returns before
+  any voice is touched. It still takes the per-note gain the Sampler queued for it, so the next note
+  keeps its own.
+- **(b)** Every Slice By mode now refuses a slice that begins at or past End, and cuts one that runs
+  past it unless Slice Playback is Thru. Region and Beat already did this; Transient and Manual now
+  do too.
+- **Tests, written first (5 failures before):**
+  - Mono and Poly with a key that has no slice;
+  - a Manual slice cut at End, one beginning past End refused, and a Transient one past End
+    refused;
+  - a refused key's queued gain.
+  - `adi_oneshot_tests` 359; CTest 245/245 (MSVC Debug, /W4 /WX).
+
 ## 2026-11-19 — DF-E50: automation on a built-in device is heard, at its frame
 
 **PR requested:** head `devices/df-e50` (854050e3, two commits on 8416ed0f), base `main`, the engine
