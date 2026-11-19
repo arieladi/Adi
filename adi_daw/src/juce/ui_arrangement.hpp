@@ -39,6 +39,7 @@ class ArrangementOverview final : public juce::Component, public juce::SettableT
 class RenameEditor final : public juce::TextEditor {
   public:
     bool keyPressed(const juce::KeyPress &) override;
+
     std::function<void()> onCommit, onCancel;
     std::function<void(bool forward)> onTab;
 };
@@ -221,6 +222,19 @@ class ArrangementCanvas final : public juce::Component,
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     bool keyPressed(const juce::KeyPress &) override;
+    // Automation Mode (AU-01): each track's lane body, where its envelope is drawn and edited; the
+    // breakpoint under a point, if any; the one chosen for Delete.
+    struct LaneBody {
+        const engine::TrackNode *track = nullptr;
+        float top = 0, bottom = 0;
+    };
+    std::vector<LaneBody> laneBodies() const;
+    struct AutomationPick {
+        std::int64_t track = 0;
+        std::uint64_t point = 0;
+    };
+    std::optional<AutomationPick> automationPointAt(juce::Point<float>) const;
+    std::optional<AutomationPick> chosenAutomationPoint() const noexcept { return chosenPoint_; }
     void mouseMagnify(const juce::MouseEvent &, float) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
     // A sample dragged from the browser (D1) lands as a file dropped from the desktop does.
@@ -290,6 +304,12 @@ class ArrangementCanvas final : public juce::Component,
     void paintFades(juce::Graphics &, const engine::ClipNode &, float left, float right, float top,
                     float bottom) const;
     std::optional<FadeHandle> fadeDrag_, selectedFade_;
+    // Automation Mode: the breakpoint being dragged, where it is shown now, and the chosen one.
+    void paintAutomation(juce::Graphics &) const;
+    bool automationDown(const juce::MouseEvent &);
+    std::optional<AutomationPick> pointDrag_, chosenPoint_;
+    std::int64_t pointTick_ = 0;
+    double pointValue_ = 0;
     std::int64_t fadeTicks_ = 0, hoverClip_ = 0;
     double fadeTension_ = 0, fadeTensionFrom_ = 0;
     int fadeFromY_ = 0;

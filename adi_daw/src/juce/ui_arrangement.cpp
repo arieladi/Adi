@@ -2355,6 +2355,136 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             top += geo.heightFor(id);
         }
     }
+    if (view.root.automationMode())
+        paintAutomation(g);
+}
+std::vector<ArrangementCanvas::LaneBody> ArrangementCanvas::laneBodies() const {
+    // The clip body's band of every track drawn, as clipBodies walks them; Main's and the returns' too.
+    std::vector<LaneBody> out;
+    const auto &geo = view.geometry;
+    const auto rows = geo.rows(view.reader());
+    const auto foot = geo.footStart(rows);
+    const int footY = geo.footTop(view.reader());
+    int top = -geo.scrollY;
+    for (const auto row : rows) {
+        if (row.position == foot)
+            top = footY;
+        const int h = geo.heightFor(row.track->id);
+        const float bottom = static_cast<float>(row.position < foot && foot < rows.size() ? std::min(top + h - 3, footY) : top + h - 3);
+        const float bodyTop = static_cast<float>(top + 1 + kClipBarHeight);
+        if (h > 0 && bottom > bodyTop + 4 && row.track->kind != "group")
+            out.push_back({row.track, bodyTop, bottom});
+        top += h;
+    }
+    return out;
+}
+namespace {
+// A value's height in a lane body, and back: the range's top at the body's top.
+float automationY(double value, const AutomationRange &r, float top, float bottom) {
+    const double t = (std::clamp(value, r.minimum, r.maximum) - r.minimum) / (r.maximum - r.minimum);
+    return bottom - static_cast<float>(t) * (bottom - top);
+}
+double automationValue(float y, const AutomationRange &r, float top, float bottom) {
+    const double t = std::clamp(static_cast<double>((bottom - y) / std::max(1.f, bottom - top)), 0.0, 1.0);
+    return r.minimum + t * (r.maximum - r.minimum);
+}
+constexpr float kPointHit = 5.f;
+} // namespace
+std::optional<ArrangementCanvas::AutomationPick> ArrangementCanvas::automationPointAt(juce::Point<float> at) const {
+    const auto current = view.root.current();
+    if (!current)
+        return std::nullopt;
+    const auto range = automationRange("volume");
+    for (const auto &body : laneBodies()) {
+        if (at.y < body.top - kPointHit || at.y > body.bottom + kPointHit)
+            continue;
+        const auto env = trackEnvelope(*current, body.track->id);
+        if (env.data == nullptr)
+            continue;
+        for (const auto &p : env.data->points)
+            if (std::abs(static_cast<float>(view.geometry.x(p.time)) - at.x) <= kPointHit &&
+                std::abs(automationY(p.value, range, body.top, body.bottom) - at.y) <= kPointHit)
+                return AutomationPick{body.track->id, p.id};
+    }
+    return std::nullopt;
+}
+void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
+    // Each track's Volume envelope across its lane: the line, and a square on each breakpoint; with no
+    // breakpoint, the fader's level as a line. The dragged point where the mouse has it.
+    const auto current = view.root.current();
+    if (!current)
+        return;
+    const auto range = automationRange("volume");
+    const auto &geo = view.geometry;
+    for (const auto &body : laneBodies()) {
+        const auto env = trackEnvelope(*current, body.track->id);
+        std::vector<juce::Point<float>> points;
+        if (env.data != nullptr)
+            for (const auto &p : env.data->points) {
+                const bool dragged = pointDrag_ && pointDrag_->track == body.track->id && pointDrag_->point == p.id;
+                points.push_back({static_cast<float>(geo.x(dragged ? pointTick_ : p.time)),
+                                  automationY(dragged ? pointValue_ : p.value, range, body.top, body.bottom)});
+            }
+        std::sort(points.begin(), points.end(), [](auto a, auto b) { return a.x < b.x; });
+        g.setColour(look::record.withAlpha(.9f));
+        const float right = static_cast<float>(getWidth());
+        if (points.empty()) {
+            const float y = automationY(body.track->volumeDb, range, body.top, body.bottom);
+            g.drawLine(0, y, right, y, 1.f);
+            continue;
+        }
+        juce::Path line;
+        line.startNewSubPath(0, points.front().y);
+        for (const auto &p : points)
+            line.lineTo(p);
+        line.lineTo(right, points.back().y);
+        g.strokePath(line, juce::PathStrokeType(1.f));
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            const auto &p = points[i];
+            const auto box = juce::Rectangle<float>(7, 7).withCentre(p);
+            const bool chosen = chosenPoint_ && chosenPoint_->track == body.track->id && env.data != nullptr &&
+                                std::any_of(env.data->points.begin(), env.data->points.end(), [&](const auto &q) {
+                                    return q.id == chosenPoint_->point &&
+                                           std::abs(static_cast<float>(geo.x(q.time)) - p.x) < .5f;
+                                });
+            g.setColour(chosen ? look::handleChosen : look::panel);
+            g.fillRect(box);
+            g.setColour(look::record);
+            g.drawRect(box, 1.f);
+        }
+    }
+}
+bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
+    // In Automation Mode a click on a lane is the envelope's: on a breakpoint it chooses it and a drag
+    // moves it; elsewhere it adds one there, on the grid unless Alt is held (Live 12 manual 25.3).
+    if (!view.root.automationMode() || e.mods.isPopupMenu())
+        return false;
+    const auto at = e.position;
+    if (const auto hit = automationPointAt(at)) {
+        chosenPoint_ = hit;
+        pointDrag_ = hit;
+        pointTick_ = 0;
+        if (const auto current = view.root.current())
+            if (const auto env = trackEnvelope(*current, hit->track); env.data != nullptr)
+                for (const auto &p : env.data->points)
+                    if (p.id == hit->point) {
+                        pointTick_ = p.time;
+                        pointValue_ = p.value;
+                    }
+        repaint();
+        return true;
+    }
+    for (const auto &body : laneBodies())
+        if (at.y >= body.top && at.y <= body.bottom) {
+            const auto raw = std::max<std::int64_t>(0, view.geometry.tick(at.x));
+            const auto tick = e.mods.isAltDown() ? raw : view.geometry.snap(raw, false);
+            view.root.addAutomationPoint(body.track->id, tick,
+                                         automationValue(at.y, automationRange("volume"), body.top, body.bottom));
+            chosenPoint_.reset();
+            repaint();
+            return true;
+        }
+    return false;
 }
 std::vector<ArrangementCanvas::ClipBody> ArrangementCanvas::clipBodies() const {
     // Every clip drawn, where it is drawn: the same walk as the paint, the foot over the tracks
@@ -2694,6 +2824,9 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
     focusLost(focusChangedDirectly);
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
+    pointDrag_.reset();
+    if (!panning && automationDown(e))
+        return;
     if (e.mods.isPopupMenu()) {
         view.select(e.x, e.y, view.snaps(e.mods));
         view.contextMenu(e.getScreenPosition(), false);
@@ -2845,6 +2978,18 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
         return;
+    if (pointDrag_) {
+        // A breakpoint follows the mouse: in time on the grid unless Alt is held, in value up and down,
+        // inside its lane; nothing is written until the mouse lets go.
+        for (const auto &body : laneBodies())
+            if (body.track->id == pointDrag_->track) {
+                const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
+                pointTick_ = e.mods.isAltDown() ? raw : view.geometry.snap(raw, false);
+                pointValue_ = automationValue(e.position.y, automationRange("volume"), body.top, body.bottom);
+            }
+        repaint();
+        return;
+    }
     if (fadeDrag_) {
         // A peak's square follows the mouse along the clip; a curve's diamond, up and down.
         if (fadeDrag_->curve) {
@@ -2944,7 +3089,16 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     }
     view.frame(true);
 }
-void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
+void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
+    if (pointDrag_) {
+        // One drag, one undo step; a click that did not move writes nothing.
+        const auto drag = *pointDrag_;
+        pointDrag_.reset();
+        if (e.mouseWasDraggedSinceMouseDown())
+            view.root.moveAutomationPoint(drag.track, drag.point, pointTick_, pointValue_);
+        repaint();
+        return;
+    }
     if (fadeDrag_) {
         // One drag, one undo step: the dragged clip, and every other selected audio clip with it.
         const auto h = *fadeDrag_;
@@ -3135,6 +3289,15 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
     // Live: a double-click on a clip opens it in the Clip View (manual 8).
     if (e.mods.isPopupMenu())
         return;
+    // In Automation Mode a double-click on a breakpoint deletes it (manual 25.3).
+    if (view.root.automationMode())
+        if (const auto hit = automationPointAt(e.position)) {
+            pointDrag_.reset();
+            chosenPoint_.reset();
+            view.root.deleteAutomationPoint(hit->track, hit->point);
+            repaint();
+            return;
+        }
     const auto *t = view.geometry.trackAt(view.reader(), e.y);
     const auto *c = t != nullptr ? view.geometry.hit(*t, view.geometry.tick(e.x)) : nullptr;
     if (c == nullptr) {
@@ -3168,6 +3331,15 @@ void ArrangementCanvas::mouseMagnify(const juce::MouseEvent &e, float factor) {
 bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
+    // Delete or Backspace takes the chosen breakpoint away (Automation Mode).
+    if (chosenPoint_ && view.root.automationMode() &&
+        (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) && !mods.isAnyModifierKeyDown()) {
+        const auto chosen = *chosenPoint_;
+        chosenPoint_.reset();
+        view.root.deleteAutomationPoint(chosen.track, chosen.point);
+        repaint();
+        return true;
+    }
     auto &sel = view.geometry.selection;
     // F held shows every audio clip's fade handles (manual 6.8).
     if ((code == 'f' || code == 'F') && !mods.isAnyModifierKeyDown()) {
