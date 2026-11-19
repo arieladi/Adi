@@ -34,7 +34,59 @@ until then a need is named by its item.
 | Reserve: one N row. A distinct `scan::State` (or a shared constant) for "the scanner helper could not start", apart from the file it was asked to read | engine-win (`src/adi/plugin_scanner.*`) | DF-W34 (b): the Status Bar names the scanner, not the plug-in, when the helper is missing or blocked | the window matches `Scanner::probe`'s words ("scanner helper unavailable or scan cancelled") on an `Unavailable` failure |
 | Reserve: one N row. The snapshot's track fields for recording: `TrackNode::recordArmed`, `monitorMode` and `inputRef`, from `tracks.record_armed`, `monitor_mode` and `input_ref` | engine (`src/adi/engine/snapshot.*`) | MX-09: the strips' Arm and the monitoring switch read the frame's snapshot as every other control does (ADR-0201) | the application hands the window the session's rows (`Session::model()`) once a frame, and an action reads them fresh |
 | Reserve: one N row. The input-monitor node of MX-09: a live input per monitored track, from its input (channels 1/2 until `input_ref` has its grammar, MX-25), heard per `monitor_mode` (In always; Auto while armed and no clip plays; Off never) | engine (ADR-0248 d6, item 4) | MX-09: the director hears what he records | Arm and the switch store their choice; nothing is heard of the input; Record records |
+| Reserve: one N row. A failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today: `recording::prepareCommit` takes only a clean result) | engine (`src/adi/recording_commands.*`) | MX-09: a take is not lost to one click on the timeline | the take is dropped and the Status Bar says why, at once |
 | Reserve: one N row. Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | win (AWAITING 20) and the engine | MX-09: a new audio track should monitor as Live's does once the input-monitor node exists | the switch shows Off on New's tracks, as stored |
+
+---
+
+## 2026-11-19, window-fn — MX-09: Arm, the monitoring switch, Arrangement Record and Overdub (PR requested)
+
+**What it does** (`src/adi/ui/arm_edits.hpp`, `project_document.*`, `window_state.hpp`, `src/juce/ui_shell.*`,
+`ui_mixer.*`, `ui_controlbar.cpp`, `ui_main.cpp`):
+- **Arm** on a track's strip (the Mixer and the track controls) writes `track.setArm`: Exclusive Arm
+  (`record.exclusiveArm`, on as Live's) unless Ctrl/Cmd is held; the selected tracks together when the
+  clicked one is among them; Main, returns and groups have none. One batch, one undo step.
+- **The monitoring switch** In, Auto, Off: a click writes `track.setMonitorMode` (the selected tracks
+  together); the switch lights the track's own choice, where it always lit Auto before. The snapshot
+  carries neither arm nor monitoring (need below), so the application hands the window the session's rows
+  once a frame (only when they change) and an action reads them fresh.
+- **Arrangement Record** (F9, the Control Bar's Record; manual 21.1): every armed audio track records from
+  the device's inputs 1/2 (1 on a one-input device; `input_ref` has no grammar yet, MX-25). The recorder is
+  prepared on the message thread, then the transport mailbox's new Record command starts the driver
+  through `RenderBlock::startPlayback(insert marker, recording)`, which applies the saved song start and
+  Count-In. Pressed while playing, it records from the playhead. Record again stops the recording and the
+  transport plays on; Stop or Space ends both. On the timer the take lands through
+  `recording::prepareCommit`/`commit`: one undo step for every armed track, each clip named after its
+  track, the first selected, "Recorded 2 takes." in the Status Bar. A capture that ends on its own (a
+  locate, an overflow, a device change) ends the recording at once and says why; its private files go
+  with it. A take still recording or landing when a project is replaced or the app quits is settled into
+  its project first. A Count-In reads as playing, so Space cancels it.
+- **Refused, with the reason in the Status Bar:** nothing armed; only MIDI armed (the engine's live MIDI
+  input, ADR-0248 d6 item 4); a device with no inputs; the loop on (a linear capture fails at the loop's
+  end and loop passes are not published as takes yet, CT-02).
+- **MIDI Arrangement Overdub** is the Control Bar's own switch (the window's state, off in a new Set); it
+  decides what a MIDI recording does once MIDI records (SRF-05).
+
+**Not heard yet:** the input. The engine's input-monitor node (need below) is what makes In and Auto
+audible; this branch stores the choice and records.
+
+**Review:** three dimensions (the callback and threads, behaviour against Live and MX-09, the tests),
+each finding checked by a skeptic: 10 confirmed, 5 refuted. All ten fixed in `d815201d` (listed in its
+message). Planted faults fire: Exclusive Arm off; the Record command not starting the transport; polling
+only while landing; the Count-In not read as playing.
+
+**Run:** Linux, GCC 13, Debug, JUCE on, Pd off, warnings as errors: `adi_app` and all 27 of `ui.yml`'s
+suites; `adi_ui_shell_tests` 2782 checks, 0 failures; `adi_ui_document_tests` 255 checks, 0 failures (a real
+recording through `ProjectDocument::process`, one undo step, a locate mid-take, a device stopped while
+landing).
+
+**PR requested.** Branch `window-fn/arm-record` at `81fe15df`, main merged. Title: **adi_daw: window-fn:
+MX-09, Arm and the monitoring switch, Arrangement Record (F9) and MIDI Arrangement Overdub; a take lands as
+one undo step**. Depends on nothing unlanded. `AppCommands` gains `ArrangementRecord` after
+`FitToTimeRange`: whichever of this and a window-lane branch adding commands lands second merges the list.
+
+**For the window lane:** the monitoring switch now lights the stored choice (Off on New's tracks) where
+it always lit Auto; no golden changed (outside the application the window shows Live's default, Auto).
 
 ---
 
