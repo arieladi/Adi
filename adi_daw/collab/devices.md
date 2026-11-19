@@ -82,6 +82,43 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DF-E50: automation on a built-in device is heard, at its frame
+
+**PR requested:** head `devices/df-e50` (854050e3, two commits on 8416ed0f), base `main`, the engine
+seat reviewing (the row asks for it). It is the 3 December session's "one automated parameter"
+whenever that parameter belongs to a built-in. The work is on win's loan of `builtin_host.cpp`
+(ADR-0248 d3).
+- **The defect, reproduced as the probe found it.** Utility has a stored +6 dB and a lane at 0 dB,
+  and it played 0.4988 (+6 dB), live and in an offline export. `BuiltinDevice::process` applied
+  only `setParam`'s targets; the MIDI router skipped the lane's `ParamValue`.
+- **The fix.** Each `ParamValue` or `ParamMod` addressed to a declared parameter (its id is the
+  lane's `param_ref`, parsed) is applied at its frame. The native process is split there, and the
+  block's routed notes reach the core before the piece they fall in. `ParamValue` sets the value in
+  force; `ParamMod` sets an offset on it, through the declaration's curve. The stored value is
+  untouched, and a knob change is heard again until the lane's next event. A block that no lane
+  moves runs exactly as before, with no allocation on the audio thread.
+- **One choice for the reviewer.** The row says "ParamMod as an offset for the block". Here the
+  offset holds until the next `ParamMod`, as CLAP holds a modulation and as `clap_host` passes it
+  on. A modulator that sends only on change then keeps working. If the engine's modulators will
+  send every block, the two are the same.
+- **Tests, written first (5 failures before):**
+  - events on Utility directly: a `ParamValue` at frame 32 leaves frame 31 untouched and starts
+    the ramp at 32; an unknown id does nothing; `ParamMod` on and off; the knob after automation;
+    no allocation;
+  - through the product: a lane on Gain at 0 dB over a stored +6 dB plays **0.250000** in a live
+    Session and in a render;
+  - plant (applied at the segment's start): 1 failure.
+  - `adi_builtin_devices_tests` 119; CTest 246/246 (MSVC Debug, /W4 /WX). Merged with
+    `oneshot-instrument` and `builtin-real-values`, it passes 130 and 16 checks.
+- **Merges.** It merges cleanly with this lane's branches; the test calls sit where
+  `oneshot-instrument` does not touch them. With `clones/shaper-rollup` the conflict in `process`
+  is two lines: keep the rollup's `!info_.usesTransportPosition` on the tempo line, and keep the
+  `MpeOutList` declared outside the `if(info_.midi)`.
+- **DF-E57** (a partial state leaves stale values) is the rollup's `resetMissingParameters`, made
+  for every built-in instead of ADI-Shaper alone. This lane proposes to do it in one place once the
+  rollup lands: drop the flag, and reset the omitted parameters to their defaults for all. Until
+  then no state on main omits a parameter, as the row says.
+
 ## 2026-11-19 — main's PD_FLOATSIZE=64 leg is red: two fixes, OneShot's outputs and parameters rounded through float
 
 **For win: main's `Pd tier at PD_FLOATSIZE=64` job has failed since `bedee5ab`.** The job's comment
