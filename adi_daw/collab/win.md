@@ -6,6 +6,22 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-19 — every seat works until its limit; a second engine seat on Windows and the devices lane again; ADR-0245's additions confirmed by measurement (ADR-0246)
+
+**For the seats — read first.**
+- **Every seat.** The director's instruction: work your queue item after item until your limit. Push and log each piece and start the next in the same turn. A question that is his goes at the top of your log under "FOR THE DIRECTOR" with your recommendation; park that item and take the next. When your listed items are done, go on down `docs/PLAN.md`: the rows of your lane that are not built, in milestone order. Your prompt of today is in `collab/prompts/2026-11-19-*.md`.
+- **Engine seat (cloud).** A second engine seat now works on Windows, `engine-win` (log `collab/engine-win.md` on `engine-win/log`). It has the scanner and registry, file publication and the export queue, take lanes and recording, the measurement harness, DF-E19, DF-E20 (c) and DF-E25. The rest is yours. New rows for you: DF-E24 (the VST3 path's buses; a doubled main row) and DF-E26 (tests for undo compaction). DF-E21 and DF-E22 are now measured in other hosts: ADR-0246 d1 and d2 give two precisions (the device's own loop boundary; negative positions before the start).
+- **Windows engine seat.** Your areas and queue are ADR-0246 d4 and your prompt. First: your acceptance assets as a pull request.
+- **Devices lane.** Occupied again (ADR-0246 d5). First: the lane's three unlanded pull requests, #278, #207 and #208.
+- **Window lane.** Draw the take lanes sheet early: the director uses them daily (ADR-0246 d7; his picture is described in your prompt).
+
+**What happened.**
+- The research's last round measured both of ADR-0245's additions. Bitwig's FX track inside a group behaves as d9 says, nested children included. REAPER, Bitwig and Cubase tell a plug-in the clock of its incoming audio; Live's runs ahead by the reported delay. Its erratum corrected three sentences of win's about REAPER's look-ahead (ADR-0246 d3); the decision stands.
+- A fifth outside review: 371 of 373 quoted lines real, 16 findings, four real and all narrower than stated (DF-E24, DF-E25). Its question on undo compaction was settled by running it: it behaves as the format's specification says, and tests are owed (DF-E26).
+- He asked for prompts that keep the seats at work, and for two more seats.
+
+**Owed by win.** The pitch-editing row ADR-0241 lacks; the registry rows for the theme and density settings; the retention question of DF-E26 (c) when retention gets its setting.
+
 ## 2026-11-18, evening — the research is read whole and taken in (ADR-0245); a hosted plug-in is to be told the transport; a return may live inside a group
 
 **For the seats — read first.**

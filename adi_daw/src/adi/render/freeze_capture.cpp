@@ -215,7 +215,10 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
             }
         engine::Session session;
         session.graph().setFadeFrames(0);
-        if (!session.load(*snapshot, std::move(loader), spec.session))
+        auto offlineSpec = spec.session;
+        offlineSpec.offline = true;
+        offlineSpec.performanceState = false;
+        if (!session.load(*snapshot, std::move(loader), offlineSpec))
             throw std::runtime_error(session.error());
         if (session.stats().placeholders || session.stats().skipped || !session.problems().empty()) {
             std::string why = "freeze requires a fully resolved project";
