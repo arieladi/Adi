@@ -9763,6 +9763,7 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
           "a click on the lane adds a breakpoint on the grid at the value there, the Volume lane with it, one step");
     check(env.lane->paramRef == "volume" && env.lane->valueDomain == "real" && env.lane->ownerKind == "track",
           "the lane is the track's Volume in dB, as the engine plays it");
+    check(env.data->points[0].curve == 1, "a new breakpoint is linear to the next, as the lane draws it");
     // Drag it a bar later and up.
     const auto pointAt = juce::Point<float>(barX, (audio->top + audio->bottom) / 2);
     const auto hit = canvas.automationPointAt(pointAt);
@@ -9788,8 +9789,8 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     if (moved) {
         canvas.mouseDoubleClick(pressAt(canvas, {twoBars, audio->bottom - static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)}));
         root.frame();
-        check(laneOf().data->points.empty() && root.undoTitle(false) == "Undo Delete Automation Point",
-              "a double-click on a breakpoint deletes it: one step");
+        check(laneOf().lane == nullptr && root.undoTitle(false) == "Undo Delete Automation Point",
+              "a double-click on the last breakpoint deletes it and its lane, so the fader plays again: one step");
     }
     // Chosen, Delete takes it away.
     canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
@@ -9798,8 +9799,14 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     canvas.mouseDown(pressAt(canvas, {barX, midY}));
     canvas.mouseUp(pressAt(canvas, {barX, midY}));
     check(canvas.chosenAutomationPoint().has_value(), "a click on a breakpoint chooses it");
-    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && laneOf().data->points.empty(),
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && laneOf().lane == nullptr,
           "Delete takes the chosen breakpoint away");
+    // The lane's foot is silence, as the fader's.
+    canvas.mouseDown(pressAt(canvas, {barX + 1, audio->scaleBottom}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, audio->scaleBottom}));
+    root.frame();
+    check(laneOf().data != nullptr && laneOf().data->points.size() == 1 && laneOf().data->points[0].value == -150,
+          "a breakpoint at the lane's foot is silence (-150 dB, as the fader writes it)");
     root.namesBar.automation.onClick();
     check(!root.automationMode(), "and the switch turns Automation Mode off");
     document->release();

@@ -2373,7 +2373,7 @@ std::vector<ArrangementCanvas::LaneBody> ArrangementCanvas::laneBodies() const {
         const float bottom = static_cast<float>(row.position < foot && foot < rows.size() ? std::min(top + h - 3, footY) : top + h - 3);
         const float bodyTop = static_cast<float>(top + 1 + kClipBarHeight);
         if (h > 0 && bottom > bodyTop + 4 && row.track->kind != "group")
-            out.push_back({row.track, bodyTop, bottom});
+            out.push_back({row.track, bodyTop, bottom, static_cast<float>(top + h - 3)});
         top += h;
     }
     return out;
@@ -2403,7 +2403,7 @@ std::optional<ArrangementCanvas::AutomationPick> ArrangementCanvas::automationPo
             continue;
         for (const auto &p : env.data->points)
             if (std::abs(static_cast<float>(view.geometry.x(p.time)) - at.x) <= kPointHit &&
-                std::abs(automationY(p.value, range, body.top, body.bottom) - at.y) <= kPointHit)
+                std::abs(automationY(p.value, range, body.top, body.scaleBottom) - at.y) <= kPointHit)
                 return AutomationPick{body.track->id, p.id};
     }
     return std::nullopt;
@@ -2418,18 +2418,21 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
     const auto &geo = view.geometry;
     for (const auto &body : laneBodies()) {
         const auto env = trackEnvelope(*current, body.track->id);
+        // Drawn inside the lane's visible strip only: a lane under the foot is not drawn over it.
+        juce::Graphics::ScopedSaveState keep(g);
+        g.reduceClipRegion(0, static_cast<int>(body.top) - 4, getWidth(), static_cast<int>(body.bottom - body.top) + 8);
         std::vector<juce::Point<float>> points;
         if (env.data != nullptr)
             for (const auto &p : env.data->points) {
                 const bool dragged = pointDrag_ && pointDrag_->track == body.track->id && pointDrag_->point == p.id;
                 points.push_back({static_cast<float>(geo.x(dragged ? pointTick_ : p.time)),
-                                  automationY(dragged ? pointValue_ : p.value, range, body.top, body.bottom)});
+                                  automationY(dragged ? pointValue_ : p.value, range, body.top, body.scaleBottom)});
             }
         std::sort(points.begin(), points.end(), [](auto a, auto b) { return a.x < b.x; });
         g.setColour(look::record.withAlpha(.9f));
         const float right = static_cast<float>(getWidth());
         if (points.empty()) {
-            const float y = automationY(body.track->volumeDb, range, body.top, body.bottom);
+            const float y = automationY(body.track->volumeDb, range, body.top, body.scaleBottom);
             g.drawLine(0, y, right, y, 1.f);
             continue;
         }
@@ -2456,7 +2459,7 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
 }
 bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
     // In Automation Mode a click on a lane is the envelope's: on a breakpoint it chooses it and a drag
-    // moves it; elsewhere it adds one there, on the grid unless Alt is held (Live 12 manual 25.3).
+    // moves it; elsewhere it adds one there, on the grid as the view snaps (Live 12 manual 25.3).
     if (!view.root.automationMode() || e.mods.isPopupMenu())
         return false;
     const auto at = e.position;
@@ -2474,13 +2477,19 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
         repaint();
         return true;
     }
+    // Shift extends and Ctrl/Cmd picks, as without the mode.
+    if (e.mods.isShiftDown() || e.mods.isCommandDown())
+        return false;
     for (const auto &body : laneBodies())
         if (at.y >= body.top && at.y <= body.bottom) {
+            // A double-click's second press adds nothing more.
+            if (e.getNumberOfClicks() > 1)
+                return true;
             const auto raw = std::max<std::int64_t>(0, view.geometry.tick(at.x));
-            const auto tick = e.mods.isAltDown() ? raw : view.geometry.snap(raw, false);
+            const auto tick = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
             view.root.addAutomationPoint(body.track->id, tick,
-                                         automationValue(at.y, automationRange("volume"), body.top, body.bottom));
-            chosenPoint_.reset();
+                                         automationValue(at.y, automationRange("volume"), body.top, body.scaleBottom));
+            pointAdded_ = true;
             repaint();
             return true;
         }
@@ -2514,7 +2523,7 @@ std::vector<ArrangementCanvas::ClipBody> ArrangementCanvas::clipBodies() const {
     return out;
 }
 bool ArrangementCanvas::fadeHandlesShown(const engine::ClipNode &c) const {
-    return c.audio && (showFades || c.id == hoverClip_ || view.geometry.clipSelected(c.id) ||
+    return c.audio && !view.root.automationMode() && (showFades || c.id == hoverClip_ || view.geometry.clipSelected(c.id) ||
                        (fadeDrag_ && fadeDrag_->clip == c.id));
 }
 void ArrangementCanvas::fadesOf(const engine::ClipNode &c, std::int64_t &in, std::int64_t &out,
@@ -2825,6 +2834,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     focusLost(focusChangedDirectly);
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     pointDrag_.reset();
+    chosenPoint_.reset(); // chosen again below when the press is on a breakpoint
+    pointAdded_ = false;
     if (!panning && automationDown(e))
         return;
     if (e.mods.isPopupMenu()) {
@@ -2979,17 +2990,19 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
         return;
     if (pointDrag_) {
-        // A breakpoint follows the mouse: in time on the grid unless Alt is held, in value up and down,
+        // A breakpoint follows the mouse: in time on the grid as the view snaps, in value up and down,
         // inside its lane; nothing is written until the mouse lets go.
         for (const auto &body : laneBodies())
             if (body.track->id == pointDrag_->track) {
                 const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
-                pointTick_ = e.mods.isAltDown() ? raw : view.geometry.snap(raw, false);
-                pointValue_ = automationValue(e.position.y, automationRange("volume"), body.top, body.bottom);
+                pointTick_ = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
+                pointValue_ = automationValue(e.position.y, automationRange("volume"), body.top, body.scaleBottom);
             }
         repaint();
         return;
     }
+    if (pointAdded_)
+        return; // the press added a breakpoint; its drag edits nothing else
     if (fadeDrag_) {
         // A peak's square follows the mouse along the clip; a curve's diamond, up and down.
         if (fadeDrag_->curve) {
@@ -3290,7 +3303,7 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
         return;
     // In Automation Mode a double-click on a breakpoint deletes it (manual 25.3).
-    if (view.root.automationMode())
+    if (view.root.automationMode()) {
         if (const auto hit = automationPointAt(e.position)) {
             pointDrag_.reset();
             chosenPoint_.reset();
@@ -3298,6 +3311,11 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
             repaint();
             return;
         }
+        // Elsewhere on a lane a double-click is the envelope's too: it neither makes a clip nor opens one.
+        for (const auto &body : laneBodies())
+            if (e.position.y >= body.top && e.position.y <= body.bottom && !e.mods.isShiftDown() && !e.mods.isCommandDown())
+                return;
+    }
     const auto *t = view.geometry.trackAt(view.reader(), e.y);
     const auto *c = t != nullptr ? view.geometry.hit(*t, view.geometry.tick(e.x)) : nullptr;
     if (c == nullptr) {
@@ -3332,8 +3350,9 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
     // Delete or Backspace takes the chosen breakpoint away (Automation Mode).
-    if (chosenPoint_ && view.root.automationMode() &&
-        (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) && !mods.isAnyModifierKeyDown()) {
+    if (chosenPoint_ && view.root.automationMode() && !view.loopSelected && view.selectedLocator == 0 &&
+        view.selectedMeter < 0 && (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) &&
+        !mods.isAnyModifierKeyDown()) {
         const auto chosen = *chosenPoint_;
         chosenPoint_.reset();
         view.root.deleteAutomationPoint(chosen.track, chosen.point);

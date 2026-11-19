@@ -226,7 +226,8 @@ class ArrangementCanvas final : public juce::Component,
     // breakpoint under a point, if any; the one chosen for Delete.
     struct LaneBody {
         const engine::TrackNode *track = nullptr;
-        float top = 0, bottom = 0;
+        float top = 0, bottom = 0; // the part drawn, cut at the foot
+        float scaleBottom = 0;     // the lane's own foot, which the values scale to
     };
     std::vector<LaneBody> laneBodies() const;
     struct AutomationPick {
@@ -309,6 +310,7 @@ class ArrangementCanvas final : public juce::Component,
     bool automationDown(const juce::MouseEvent &);
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
     std::int64_t pointTick_ = 0;
+    bool pointAdded_ = false; // the press added a breakpoint: its drag moves nothing
     double pointValue_ = 0;
     std::int64_t fadeTicks_ = 0, hoverClip_ = 0;
     double fadeTension_ = 0, fadeTensionFrom_ = 0;

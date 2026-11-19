@@ -13,6 +13,7 @@
 #include "adi/automation_lanes.hpp"
 #include "adi/engine/snapshot.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -25,6 +26,14 @@ struct AutomationRange {
 inline AutomationRange automationRange(const std::string &param) {
     return param == "pan" ? AutomationRange{-1, 1} : AutomationRange{-70, 6};
 }
+// The fader's convention: its foot is silence, stored as -150 dB.
+inline constexpr double kAutomationSilenceDb = -150;
+// A value as written: inside the travel, and the Volume's foot as silence.
+inline double writtenAutomationValue(const std::string &param, double v) {
+    const auto r = automationRange(param);
+    v = std::clamp(std::isfinite(v) ? v : r.minimum, r.minimum, r.maximum);
+    return param != "pan" && v <= r.minimum ? kAutomationSilenceDb : v;
+}
 // The envelope Automation Mode shows on a track: its lane for `param` and the arrangement's data of it
 // (not a clip's). Either can be absent: no lane yet, or a lane with no arrangement data.
 struct TrackEnvelope {
@@ -34,9 +43,9 @@ struct TrackEnvelope {
 inline TrackEnvelope trackEnvelope(const engine::Snapshot &snapshot, std::int64_t track,
                                    const std::string &param = "volume") {
     TrackEnvelope out;
+    // The first lane of the parameter in id order: the one the mixer plays.
     for (const auto &lane : snapshot.automationLanes)
-        if (lane && lane->ownerKind == "track" && lane->ownerId == track && lane->paramRef == param &&
-            lane->timeBase == 0) {
+        if (lane && lane->ownerKind == "track" && lane->ownerId == track && lane->paramRef == param) {
             out.lane = lane.get();
             for (const auto &data : lane->envelopes)
                 if (data && !data->clipId)
@@ -44,6 +53,11 @@ inline TrackEnvelope trackEnvelope(const engine::Snapshot &snapshot, std::int64_
             break;
         }
     return out;
+}
+// Whether the window edits this envelope: a lane in ticks and real units (one in nanoseconds or another
+// domain is shown as it is and left alone).
+inline bool editableEnvelope(const TrackEnvelope &env) {
+    return env.lane == nullptr || (env.lane->timeBase == 0 && env.lane->valueDomain == "real");
 }
 // The ids an edit needs that the project does not hold yet: the next free lane, data and point ids.
 struct AutomationIds {
@@ -57,6 +71,8 @@ inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, std::
                                                  const AutomationIds &ids) {
     const auto range = automationRange(param);
     std::vector<OpRequest> ops;
+    if (!editableEnvelope(env))
+        return ops;
     std::int64_t lane = 0, data = 0;
     if (env.lane == nullptr) {
         automation::LaneSpec spec;
@@ -67,8 +83,8 @@ inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, std::
         spec.paramName = param == "pan" ? "Pan" : "Volume";
         spec.valueDomain = "real";
         spec.unit = param == "pan" ? "" : "dB";
-        spec.defaultValue = currentValue;
-        spec.minValue = range.minimum;
+        spec.defaultValue = writtenAutomationValue(param, currentValue);
+        spec.minValue = param == "pan" ? range.minimum : kAutomationSilenceDb;
         spec.maxValue = range.maximum;
         ops.push_back(automation::createLane(spec));
         lane = ids.lane;
@@ -83,8 +99,8 @@ inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, std::
         data, lane, nullptr,
         Payload::array({Payload{{"id", point},
                                 {"time", std::max<std::int64_t>(0, tick)},
-                                {"value", std::clamp(value, range.minimum, range.maximum)},
-                                {"curve", 0},
+                                {"value", writtenAutomationValue(param, value)},
+                                {"curve", 1}, // linear, as the lane draws it
                                 {"tension", 0.0}}})));
     for (auto &op : ops)
         op.label = "Add Automation Point";
@@ -94,21 +110,25 @@ inline std::vector<OpRequest> addAutomationPoint(const TrackEnvelope &env, std::
 inline std::vector<OpRequest> moveAutomationPoint(const TrackEnvelope &env, const std::string &param, std::uint64_t point,
                                                   std::int64_t tick, double value) {
     std::vector<OpRequest> ops;
-    if (env.lane == nullptr || env.data == nullptr)
+    if (env.lane == nullptr || env.data == nullptr || !editableEnvelope(env))
         return ops;
-    const auto range = automationRange(param);
     ops.push_back(automation::movePoints(env.data->id, env.lane->id, nullptr,
                                          Payload::array({Payload{{"id", point},
                                                                  {"time", std::max<std::int64_t>(0, tick)},
-                                                                 {"value", std::clamp(value, range.minimum, range.maximum)}}})));
+                                                                 {"value", writtenAutomationValue(param, value)}}})));
     ops.back().label = "Move Automation Point";
     return ops;
 }
 inline std::vector<OpRequest> deleteAutomationPoint(const TrackEnvelope &env, std::uint64_t point) {
     std::vector<OpRequest> ops;
-    if (env.lane == nullptr || env.data == nullptr)
+    if (env.lane == nullptr || env.data == nullptr || !editableEnvelope(env))
         return ops;
-    ops.push_back(automation::deletePoints(env.data->id, env.lane->id, nullptr, Payload::array({point})));
+    // The last breakpoint takes its lane with it, so the track plays its fader again, as before the lane.
+    const bool last = env.data->points.size() == 1 && env.data->points.front().id == point &&
+                      std::none_of(env.lane->envelopes.begin(), env.lane->envelopes.end(),
+                                   [&](const auto &d) { return d && d.get() != env.data; });
+    ops.push_back(last ? automation::deleteLane(env.lane->id)
+                       : automation::deletePoints(env.data->id, env.lane->id, nullptr, Payload::array({point})));
     ops.back().label = "Delete Automation Point";
     return ops;
 }
