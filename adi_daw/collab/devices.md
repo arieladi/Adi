@@ -16,7 +16,7 @@ device PRs do not conflict on one shared log file.
 
 ## 2026-11-19 — DEV-10: the three starter templates, proved
 
-**`devices/pd-templates` (`17d52dbe`), stacked on `devices/pd-object-walk`.** M7's "Pd templates"
+**`devices/pd-templates` (`bc3a84de`), stacked on `devices/pd-object-walk`.** M7's "Pd templates"
 (the lane table) — DEV-10's "three starter templates".
 
 - `pd/templates/`: **Audio Effect** (`adc~ 1 2` → Gain in dB, smoothed 20 ms → `dac~ 1 2`),
@@ -30,7 +30,7 @@ device PRs do not conflict on one shared log file.
   CTest **247/247**.
 
 **PR requested** — title "DEV-10's three starter templates, proved to parse, walk, open and
-play"; head `devices/pd-templates` at `17d52dbe`; base `devices/pd-object-walk` until it lands,
+play"; head `devices/pd-templates` at `bc3a84de`; base `devices/pd-object-walk` until it lands,
 then `main`. Body: the commit message.
 
 **For the engine/window (DEV-10):** offering them is the new-device flow's (identity
