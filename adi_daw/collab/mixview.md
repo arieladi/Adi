@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, early — complete the shared spectrogram history proof
+
+The private exact Windows x64 Release broker passed 486 checks twice. The previous broker had 16 expected failures in 477 checks. The first grouped candidate then exposed competition between ordinary and grouped history at a full byte budget. The next revision exposed starvation when both frozen readers released together and an unneeded publication to the ordinary Scope and Spectrum. The final tests preserve both readers' first recovered columns, release staged bins in order, and leave the ordinary picture untouched on a grouped-only update. Cleanup and a revision change discard incomplete groups without extra transforms. The two views continue to share one tap and FFT plan.
+
+The saved reference comparison separates input hop, group size and horizontal display speed. Two settings share the same static input hop and group size but have different measured screen speeds. The remaining reference check measures those clocks separately. Grouped history and the reference follow-up stay private while the review order and native cadence are outstanding.
+
 ## 2026-11-20, early — validate the Focus preflight matrix and isolate Adaptive cold history
 
 The exact baseline, forward reuse and shared inverse builds completed all four untimed Focus profiles. They produced identical programme, key and output fingerprints per profile, with 39 completed jobs and zero deadline misses. The external-key work counts match across all three. Internal work counts differ as expected. Matched callback timing remains deferred.
