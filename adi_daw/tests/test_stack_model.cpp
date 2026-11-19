@@ -3216,6 +3216,33 @@ void channelShortcutScope() {
           "the same ordinary row can request All channels once its retained edit ends");
 }
 
+void channelSubsetSnapshot() {
+    section("Channel subset snapshots and retained edits");
+    Fixture f;
+    f.kinds.clear();
+    f.add(2, "Previous");
+    f.add(4, "Refreshed");
+    f.add(6, "Excluded");
+    f.item(2, 21, ItemClass::Plugin, "Hold this edit");
+    auto m = model(f, 1600, 900);
+    TimeMs now = 0;
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    const auto accepted = m.setChannelSubset(std::vector<TrackId>{2, 2, 999}, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2} && !accepted.windowViewChanged,
+          "snapshot membership is exact, ignores duplicate or unknown ids and is transient view state");
+    const auto capture = m.beginCapture(CaptureKind::Menu, m.chainRef(2, 21), ++now);
+    m.setChannelSubset(std::vector<TrackId>{4}, ++now);
+    check(capture.refusal == CaptureRefusal::None && m.captureStatus(capture.ref) == CaptureStatus::Live &&
+              shownIds(m) == std::vector<TrackId>{2, 4},
+          "substituting the snapshot retains a still-live captured row");
+    m.endCapture(capture.ref, ++now);
+    check(shownIds(m) == std::vector<TrackId>{4}, "release applies the new snapshot without the previously captured row");
+    m.setChannelSubset(std::vector<TrackId>{}, ++now);
+    check(m.shownCount() == 0, "an empty snapshot remains an explicit filter");
+    m.setChannelSubset(std::nullopt, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2, 4, 6}, "clearing the snapshot restores unfiltered rows");
+}
+
 void channelScopeJumpPins() {
     section("Jump matches follow pin-filter membership");
     Fixture f;
@@ -4278,6 +4305,7 @@ int main() {
     actualChainAdapter();
     channelMembership();
     channelShortcutScope();
+    channelSubsetSnapshot();
     channelScopeJumpPins();
     jumpCapturePublicationChanges();
     determinism();

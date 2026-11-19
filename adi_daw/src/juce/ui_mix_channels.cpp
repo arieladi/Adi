@@ -11,7 +11,7 @@
 
 namespace adi::ui {
 namespace {
-constexpr int kAllChannels = 1;
+constexpr int kAllChannels = 1, kSoundingNow = 2;
 constexpr int kSpectrogram = 1, kSpectrum = 2;
 constexpr float kFloor = .001f; // -60 dBFS
 }
@@ -21,10 +21,17 @@ MixChannelBrowser::MixChannelBrowser(AdiRootComponent &root) : root_(root) {
     search.setTitle("Find channel");
     search.setTextToShowWhenEmpty("Find channel", look::textDim);
     search.onTextChange = [this] { rebuildList(); };
-    show.setTitle("Show channel group");
+    show.setTitle("Show channels");
     show.addItem("All channels", kAllChannels);
+    show.addItem("Sounding now", kSoundingNow);
     show.setSelectedId(kAllChannels, juce::dontSendNotification);
-    show.onChange = [this] { chooseGroup(); };
+    show.onChange = [this] { chooseFilter(); };
+    refreshSounding.setTitle("Refresh sounding channels");
+    refreshSounding.setTooltip("Take a fresh snapshot of channels at or above -60 dBFS.");
+    refreshSounding.onClick = [this] {
+        if (sounding_ && current() && !root_.mixViewPanel.stack.model().capture()) captureSounding();
+    };
+    addChildComponent(refreshSounding);
     list.setTitle("Channels");
     list.setColour(juce::ListBox::backgroundColourId, look::panel);
     list.setModel(this);
@@ -116,7 +123,8 @@ bool MixChannelBrowser::rebuildGroups(const SnapshotReader &reader, std::int64_t
     std::vector<Group> updatedGroups;
     show.clear(juce::dontSendNotification);
     show.addItem("All channels", kAllChannels);
-    int selectedItem = kAllChannels;
+    show.addItem("Sounding now", kSoundingNow);
+    int selectedItem = sounding_ ? kSoundingNow : kAllChannels;
     for (const auto &place : order_.places()) {
         if (place.id == reference_) continue;
         if (place.main) main_ = place.id;
@@ -137,20 +145,32 @@ bool MixChannelBrowser::rebuildGroups(const SnapshotReader &reader, std::int64_t
     return true;
 }
 
-void MixChannelBrowser::chooseGroup() {
+int MixChannelBrowser::filterItem() const noexcept {
+    if (sounding_) return kSoundingNow;
+    const auto group = std::find_if(groups_.begin(), groups_.end(), [this](const Group &g) { return g.track == group_; });
+    return group != groups_.end() ? group->item : kAllChannels;
+}
+
+void MixChannelBrowser::chooseFilter() {
     const int item = show.getSelectedId();
     const auto selected = std::find_if(groups_.begin(), groups_.end(), [item](const Group &g) { return g.item == item; });
     if (!current() || root_.mixViewPanel.stack.model().capture() ||
-        (item != kAllChannels && selected == groups_.end())) {
-        const auto old = std::find_if(groups_.begin(), groups_.end(), [this](const Group &g) { return g.track == group_; });
-        show.setSelectedId(old != groups_.end() ? old->item : kAllChannels, juce::dontSendNotification);
+        (item != kAllChannels && item != kSoundingNow && selected == groups_.end())) {
+        show.setSelectedId(filterItem(), juce::dontSendNotification);
         return;
     }
+    if (item == filterItem()) return; // a repeated or late selection is not a Refresh
     group_ = selected != groups_.end() ? selected->track : 0;
-    updateMembership();
+    sounding_ = item == kSoundingNow;
+    if (refreshSounding.isVisible() != sounding_) {
+        refreshSounding.setVisible(sounding_);
+        resized();
+    }
+    if (sounding_) captureSounding();
+    else updateGroupMembership();
 }
 
-void MixChannelBrowser::updateMembership() {
+void MixChannelBrowser::updateGroupMembership() {
     std::optional<std::vector<std::int64_t>> updated;
     if (group_ != 0) {
         auto parent = std::find_if(entries_.begin(), entries_.end(), [this](const Entry &e) { return e.id == group_; });
@@ -163,6 +183,18 @@ void MixChannelBrowser::updateMembership() {
             std::sort(updated->begin(), updated->end());
         }
     }
+    setMembership(std::move(updated));
+}
+
+void MixChannelBrowser::captureSounding() {
+    std::vector<std::int64_t> ids;
+    for (const auto &entry : entries_)
+        if (peak(entry.id) >= kFloor) ids.push_back(entry.id);
+    std::sort(ids.begin(), ids.end());
+    setMembership(std::move(ids));
+}
+
+void MixChannelBrowser::setMembership(std::optional<std::vector<std::int64_t>> updated) {
     const bool changed = updated != membership_;
     membership_ = std::move(updated);
     rebuildList();
@@ -172,12 +204,16 @@ void MixChannelBrowser::updateMembership() {
     }
 }
 
-int MixChannelBrowser::level(std::int64_t track) const {
+float MixChannelBrowser::peak(std::int64_t track) const {
     const auto *meter = root_.mixer.meter ? root_.mixer.meter(track) : nullptr;
-    if (!meter) return 0;
-    const auto peak = meter->peak.load(std::memory_order_relaxed);
-    if (!(peak > kFloor)) return 0;
-    return juce::roundToInt(std::clamp(1.f + std::log10(peak) / 3.f, 0.f, 1.f) *
+    const float amplitude = meter ? meter->peak.load(std::memory_order_relaxed) : 0.f;
+    return std::isfinite(amplitude) ? amplitude : 0.f;
+}
+
+int MixChannelBrowser::level(std::int64_t track) const {
+    const auto amplitude = peak(track);
+    if (!(amplitude > kFloor)) return 0;
+    return juce::roundToInt(std::clamp(1.f + std::log10(amplitude) / 3.f, 0.f, 1.f) *
                           static_cast<float>(look::mixChannelLevelWidth));
 }
 
@@ -192,7 +228,8 @@ void MixChannelBrowser::frame(const SnapshotReader &reader) {
         generation_ = root_.generation();
         snapshot_ = reader.get();
         if (rebuildGroups(reader, reference)) {
-            updateMembership();
+            if (sounding_) rebuildList(); // metadata updates do not resample the signal
+            else updateGroupMembership();
             if (!alive) return;
         }
     }
@@ -221,6 +258,14 @@ void MixChannelBrowser::frame(const SnapshotReader &reader) {
 }
 
 void MixChannelBrowser::paint(juce::Graphics &g) { g.fillAll(look::panel); }
+
+void MixChannelBrowser::paintOverChildren(juce::Graphics &g) {
+    if (!sounding_ || !membership_ || !membership_->empty()) return;
+    g.setColour(look::textDim);
+    g.setFont(look::font(look::fontBody));
+    g.drawFittedText("No channels were sounding.", list.getBounds().reduced(look::gap),
+                     juce::Justification::centred, 2);
+}
 
 void MixChannelBrowser::paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected) {
     if (!trackAt(row)) return;
@@ -257,6 +302,10 @@ void MixChannelBrowser::resized() {
     info.removeFromTop(look::border);
     preview.setBounds(info);
     area.removeFromBottom(look::gap);
+    if (refreshSounding.isVisible()) {
+        refreshSounding.setBounds(area.removeFromBottom(look::mixChannelRowHeight));
+        area.removeFromBottom(look::border);
+    }
     show.setBounds(area.removeFromBottom(look::mixChannelRowHeight));
     area.removeFromBottom(look::border);
     list.setBounds(area);

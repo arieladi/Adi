@@ -407,7 +407,7 @@ void MixViewPanel::resized() {
         "Show or hide Meters, Phase and Spectrum beside Stack.");
     const int navWidth = std::clamp(getWidth() / 6, look::mixChannelMinWidth, look::mixChannelMaxWidth);
     const bool showChannels = content.getWidth() >= kStackMinimumWidth + navWidth + look::gap &&
-                              content.getHeight() >= look::mixInfoHeight + 5 * look::mixChannelRowHeight;
+                              content.getHeight() >= look::mixInfoHeight + 6 * look::mixChannelRowHeight;
     channels.setVisible(showChannels);
     if (!alive) return;
     if (showChannels) {

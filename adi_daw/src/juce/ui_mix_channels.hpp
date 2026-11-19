@@ -13,6 +13,7 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     ~MixChannelBrowser() override;
     void frame(const SnapshotReader &);
     void paint(juce::Graphics &) override;
+    void paintOverChildren(juce::Graphics &) override;
     void resized() override;
     void visibilityChanged() override { infoPressed_ = false; }
     void mouseDown(const juce::MouseEvent &) override;
@@ -22,6 +23,7 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     juce::TextEditor search;
     juce::ComboBox show, infoMode;
     juce::ListBox list;
+    juce::TextButton refreshSounding{"Refresh"};
     juce::TextButton openInfo{"Info"};
     SharedSpectrumView preview;
     std::function<void(std::int64_t)> onChoose;
@@ -48,16 +50,21 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     void syncSelection();
     void rebuildList();
     bool rebuildGroups(const SnapshotReader &, std::int64_t reference);
-    void chooseGroup();
-    void updateMembership();
+    void chooseFilter();
+    void updateGroupMembership();
+    void captureSounding();
+    void setMembership(std::optional<std::vector<std::int64_t>>);
+    int filterItem() const noexcept;
     bool current() const noexcept;
+    float peak(std::int64_t) const;
     int level(std::int64_t) const;
 
     AdiRootComponent &root_;
     const void *snapshot_ = nullptr;
     std::uint64_t generation_ = 0;
     std::int64_t selected_ = 0, group_ = 0, reference_ = 0, main_ = 0;
-    int nextGroupItem_ = 2;
+    int nextGroupItem_ = 3;
+    bool sounding_ = false;
     bool syncing_ = false, filterApplied_ = false, infoPressed_ = false;
     std::vector<TrackRow> tree_, nextTree_;
     TrackOrder order_;

@@ -11,6 +11,7 @@
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/engine/clip_fade.hpp"
+#include "adi/engine/mixer.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_listing.hpp"
@@ -9498,7 +9499,7 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
           "choosing Bass selects its real channel, focuses its Stack row and changes the Info source");
     nav.search.setText({}, false);
     nav.search.onTextChange();
-    const auto rhythm = nav.show.getItemId(1);
+    const auto rhythm = nav.show.getItemId(2);
     nav.show.setSelectedId(rhythm, juce::sendNotificationSync);
     check(nav.trackAt(0) == 10 && nav.trackAt(3) == 13 && nav.trackAt(4) == 1 && nav.trackAt(5) == 0 &&
               mix.stack.model().shownIndex(13) && !mix.stack.model().shownIndex(14),
@@ -9542,8 +9543,68 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
           "channel navigation and analyser choices create no edits or Undo entries");
     check(add(15, "group", "Earlier group", 0, 5), "insert another group ahead of the selected group");
     root.frame();
-    check(nav.show.getSelectedId() == rhythm && nav.show.getItemId(2) == rhythm && nav.trackAt(0) == 10,
+    check(nav.show.getSelectedId() == rhythm && nav.show.getItemId(3) == rhythm && nav.trackAt(0) == 10,
           "group selection keeps its identity across changed menu positions");
+    {
+        std::array<engine::StripMeter, 5> published;
+        constexpr std::array<std::int64_t, 5> channels{1, 11, 13, 14, 16};
+        root.mixer.meter = [&](std::int64_t id) -> const engine::StripMeter * {
+            const auto found = std::find(channels.begin(), channels.end(), id);
+            return found != channels.end() ? &published[static_cast<std::size_t>(found - channels.begin())] : nullptr;
+        };
+        check(root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)), "show Stack for the live meter filter");
+        root.frame();
+        published[0].peak.store(.0009f);
+        published[1].peak.store(.5f);
+        published[2].peak.store(.001f);
+        published[3].peak.store(.0009f);
+        const int sounding = nav.show.getItemId(1);
+        nav.show.setSelectedId(sounding, juce::sendNotificationSync);
+        check(nav.refreshSounding.isShowing() && nav.trackAt(0) == 11 && nav.trackAt(1) == 13 && nav.trackAt(2) == 0 &&
+                  mix.stack.model().shownIndex(11) && mix.stack.model().shownIndex(13) && !mix.stack.model().shownIndex(1),
+              "Sounding now samples current post-fader peaks, including the threshold and leaving silent Main out");
+        published[1].peak.store(0.f);
+        published[2].peak.store(0.f);
+        published[3].peak.store(.25f);
+        published[4].peak.store(.75f);
+        check(add(16, "audio", "New playing track", 0, 21), "add a new channel with signal after capture");
+        root.frame();
+        check(nav.show.getSelectedId() == sounding && nav.trackAt(0) == 11 && nav.trackAt(1) == 13 && nav.trackAt(2) == 0 &&
+                  !mix.stack.model().shownIndex(14) && !mix.stack.model().shownIndex(16),
+              "levels and a newer track publication leave the existing activity snapshot in force");
+        const auto countBefore = value(*store, "SELECT count(*) FROM ops");
+        const auto undoBefore = root.undoTitle(false);
+        const auto mixBounds = mix.getBounds();
+        mix.setSize(400, mixBounds.getHeight());
+        mix.frame(root.reader());
+        mix.setBounds(mixBounds);
+        mix.frame(root.reader());
+        check(nav.show.getSelectedId() == sounding && mix.stack.model().shownIndex(11) && !mix.stack.model().shownIndex(14),
+              "temporary layout suppression does not resample the selected sounding channels");
+        nav.refreshSounding.grabKeyboardFocus();
+        check(mix.hasChannelControlFocus() && !root.command(AppCommands::DeleteTrack),
+              "Refresh cannot edit the previously selected track via the main command routing");
+        nav.refreshSounding.onClick();
+        check(nav.trackAt(0) == 14 && nav.trackAt(1) == 16 && nav.trackAt(2) == 0 &&
+                  mix.stack.model().shownIndex(14) && mix.stack.model().shownIndex(16) && !mix.stack.model().shownIndex(11),
+              "Refresh replaces the frozen membership with the new audible channels");
+        published[3].peak.store(0.f);
+        published[4].peak.store(0.f);
+        nav.refreshSounding.onClick();
+        check(nav.trackAt(0) == 0 && mix.stack.model().shownCount() == 0 && nav.refreshSounding.isShowing(),
+              "a silent refresh produces a recoverable empty snapshot");
+        nav.show.setSelectedId(rhythm, juce::sendNotificationSync);
+        nav.refreshSounding.onClick();
+        check(!nav.refreshSounding.isVisible() && mix.stack.model().shownIndex(13) && !mix.stack.model().shownIndex(14),
+              "changing to a group leaves Sounding now, and a late refresh cannot reinstate it");
+        published[2].peak.store(.25f);
+        nav.show.setSelectedId(sounding, juce::sendNotificationSync);
+        check(nav.trackAt(0) == 13 && nav.trackAt(1) == 0 && mix.stack.model().shownCount() == 1,
+              "choosing Sounding now again records a new snapshot");
+        check(value(*store, "SELECT count(*) FROM ops") == countBefore && root.undoTitle(false) == undoBefore,
+              "choosing, refreshing and leaving Sounding now create no edit or Undo entry");
+        root.mixer.meter = {};
+    }
     check(root.setMixView(false, false) && !nav.preview.subscribed(), "closing the Mix View releases Info demand");
     nav.openInfo.onClick();
     check(!root.state().mixView, "a late Info callback cannot reopen the closed Mix View");
