@@ -98,6 +98,58 @@ def legacy_run(n_ok=21, run=300):
     return out[:n_ok]
 
 
+STACK = "window/stack-below"   # a stack top's base: the branch of the pull request below
+HEAD = "5" * 40                # the pull request's head commit
+
+
+def ui_job(name, conclusion="success", run=900):
+    """One job of a dispatched Step 7 UI run, as `gh run view --json jobs`
+    prints it: lower case, and a job still running has an empty conclusion."""
+    _job[0] += 1
+    return {"name": name, "status": "completed" if conclusion else "in_progress",
+            "conclusion": conclusion or "", "startedAt": "2026-11-19T12:00:00Z",
+            "completedAt": "2026-11-19T12:20:00Z" if conclusion else "0001-01-01T00:00:00Z",
+            "url": f"https://github.com/arieladi/Adi/actions/runs/{run}/job/{_job[0]}"}
+
+
+def dispatched(jobs, status="completed", conclusion="success", run=900, sha=HEAD):
+    """The newest workflow_dispatch run of ui.yml on the head commit, as
+    land_top.sh passes it after the pull request's JSON."""
+    return {"databaseId": run, "headSha": sha, "status": status, "conclusion": conclusion,
+            "url": f"https://github.com/arieladi/Adi/actions/runs/{run}", "jobs": jobs}
+
+
+def stack_cases():
+    """Review of 19 November: a stack top that changes only what ui.yml does
+    not watch starts no Step 7 UI run, the runs below it are cancelled, and
+    "never ran" landed the stack with its GUI code unbuilt."""
+    top = {"base": STACK, "head_sha": HEAD}
+    yield "into main, Step 7 UI never ran", full_run(ui=False), "LAND", {"base": "main"}
+    yield "stack top, Step 7 UI never ran: dispatch it", full_run(ui=False), "UI", top
+    legacy = [check(n, "SUCCESS", ADI, 300) for n in LEGS + ["extra leg 1", "extra leg 2", "extra leg 3"]]
+    yield "stack top, old run without a gate, Step 7 UI never ran", legacy, "UI", top
+    yield "stack top, its own Step 7 UI run green", full_run(), "LAND", top
+    yield "stack top, the gate still running: no dispatch yet", full_run(gate=None, ui=False), "WAIT", top
+
+    every = [ui_job(UI_PLAN)] + [ui_job(n) for n in GUI]
+    yield "stack top, dispatched, no job created yet", full_run(ui=False), "WAIT", \
+        dict(top, ui_run=dispatched([], status="queued", conclusion=""))
+    yield "stack top, dispatched, planned, no shell created yet", full_run(ui=False), "WAIT", \
+        dict(top, ui_run=dispatched([ui_job(UI_PLAN)], status="in_progress", conclusion=""))
+    yield "stack top, dispatched run green", full_run(ui=False), "LAND", \
+        dict(top, ui_run=dispatched(every))
+    yield "stack top, a dispatched shell still running", full_run(ui=False), "WAIT", \
+        dict(top, ui_run=dispatched(every[:3] + [ui_job(GUI[2], None)], "in_progress", ""))
+    yield "stack top, a dispatched shell failed", full_run(ui=False), "FAILED", \
+        dict(top, ui_run=dispatched(every[:2] + [ui_job(GUI[1], "failure"), every[3]], conclusion="failure"))
+    yield "stack top, a dispatched shell cancelled", full_run(ui=False), "CANCELLED", \
+        dict(top, ui_run=dispatched(every[:3] + [ui_job(GUI[2], "cancelled")], conclusion="cancelled"))
+    yield "stack top, dispatched run ended with no job", full_run(ui=False), "FAILED", \
+        dict(top, ui_run=dispatched([], conclusion="startup_failure"))
+    yield "stack top, the dispatched run is on another head", full_run(ui=False), "WAIT", \
+        dict(top, ui_run=dispatched(every, sha="6" * 40))
+
+
 def cases():
     yield "all green", full_run(), "LAND"
     yield "Markdown only: validators and the gate", markdown_only_run(), "LAND"
@@ -235,22 +287,34 @@ def main() -> int:
     for label, good in workflow_names():
         fails += not good
         print(f"  {'ok  ' if good else 'FAIL'}  {label}")
-    for label, rollup, want in cases():
-        got = land_checks.decide(rollup)[0]
+    for label, rollup, want, *kw in [*cases(), *stack_cases()]:
+        try:
+            got = land_checks.decide(rollup, **(kw[0] if kw else {}))[0]
+        except TypeError as e:  # a decide() that takes no base or dispatched run
+            got = f"error: {e}"
         mark = "ok  " if got == want else "FAIL"
         fails += got != want
         print(f"  {mark}  {label}: {got}" + ("" if got == want else f" (wanted {want})"))
 
-    # And through stdin, exactly as land_top.sh calls it.
-    out = subprocess.run([sys.executable, "-I", str(HERE / "land_checks.py")],
-                         input=json.dumps({"statusCheckRollup": full_run()}),
-                         capture_output=True, text=True, encoding="utf-8")
-    fields = out.stdout.rstrip("\n").split("\t")
-    if out.returncode != 0 or len(fields) != 7 or fields[0] != "LAND" or fields[5] != "SUCCESS":
-        print(f"  FAIL  stdin round trip: rc={out.returncode} {fields!r} {out.stderr.strip()}")
-        fails += 1
-    else:
-        print("  ok    stdin round trip: seven tab-separated fields, LAND first")
+    # And through stdin, exactly as land_top.sh calls it: the pull request's
+    # JSON, then (a stack top's) dispatched Step 7 UI run, if there is one.
+    pr_into_main = json.dumps({"statusCheckRollup": full_run()})
+    pr_stack_top = json.dumps({"statusCheckRollup": full_run(ui=False),
+                               "baseRefName": STACK, "headRefOid": HEAD}, indent=1)
+    run_green = json.dumps(dispatched([ui_job(UI_PLAN)] + [ui_job(n) for n in GUI]), indent=1)
+    for label, stdin, want in [
+            ("into main", pr_into_main, "LAND"),
+            ("stack top, Step 7 UI never ran", pr_stack_top, "UI"),
+            ("stack top, then its dispatched run", pr_stack_top + "\n" + run_green + "\n", "LAND")]:
+        out = subprocess.run([sys.executable, "-I", str(HERE / "land_checks.py")],
+                             input=stdin, capture_output=True, text=True, encoding="utf-8")
+        fields = out.stdout.rstrip("\n").split("\t")
+        if out.returncode != 0 or len(fields) != 7 or fields[0] != want or fields[5] != "SUCCESS":
+            print(f"  FAIL  stdin round trip, {label}: rc={out.returncode} {fields!r} "
+                  f"{out.stderr.strip()} (wanted {want})")
+            fails += 1
+        else:
+            print(f"  ok    stdin round trip, {label}: seven tab-separated fields, {want} first")
     bad = subprocess.run([sys.executable, "-I", str(HERE / "land_checks.py")],
                          input="", capture_output=True, text=True)
     if bad.returncode == 0:
