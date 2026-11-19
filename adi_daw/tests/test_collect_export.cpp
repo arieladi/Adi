@@ -716,10 +716,38 @@ void documentRollbackWarning() {
     check(sqlite3_create_function_v2(db.getHandle(),"replace_and_abort",1,SQLITE_UTF8,nullptr,nullptr,nullptr,nullptr,nullptr)==SQLITE_OK,
           "remove document SQL replacement fixture");
 }
+
+void partialCheckpointWarning() {
+    Fixture f;
+    f.add("external/checkpoint.bin", "checkpoint fixture bytes", 1);
+    const auto project = f.temp.path() / "song.adi";
+    SQLite::Database reader(media::pathUtf8(project), SQLite::OPEN_READONLY);
+    reader.exec("BEGIN");
+    const char* pathQuery = "SELECT rel_path FROM media_files WHERE id=1";
+    const auto original = reader.execAndGet(pathQuery).getString();
+
+    const auto collected = f.store->collectAllAndSave();
+    check(collected.ok && collected.warning.find("WAL checkpoint is pending") != std::string::npos,
+          "collection succeeds with a warning when a pinned reader prevents a complete PASSIVE checkpoint");
+    const auto local = f.store->db().execAndGet(pathQuery).getString();
+    check(local.starts_with("audio/") && read(f.temp.path() / media::pathFromUtf8(local)) == "checkpoint fixture bytes" &&
+              reader.execAndGet(pathQuery).getString() == original,
+          "the committed copy is usable while the pinned reader keeps its original location");
+
+    int frames = -1, checkpointed = -1;
+    const auto handle = f.store->db().getHandle();
+    check(sqlite3_wal_checkpoint_v2(handle, "main", SQLITE_CHECKPOINT_PASSIVE, &frames, &checkpointed) == SQLITE_OK &&
+              checkpointed >= 0 && checkpointed < frames,
+          "the held reader returns SQLite OK with a partial checkpoint");
+    reader.exec("COMMIT");
+    const auto completed = f.store->collectAllAndSave();
+    check(completed.ok && completed.warning.find("WAL checkpoint is pending") == std::string::npos,
+          "a new collection after reader release completes without a checkpoint warning");
+}
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); collection(); collectionCancellation(); cancellationInsideMediaCopy(); cancellationAfterCollectedFile(); terminalCopyCancellation(); emptyCopyCancellation(); cancellationInsideEntry(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); }
+    try { publication(); collection(); collectionCancellation(); cancellationInsideMediaCopy(); cancellationAfterCollectedFile(); terminalCopyCancellation(); emptyCopyCancellation(); cancellationInsideEntry(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); partialCheckpointWarning(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

@@ -387,8 +387,13 @@ media::FileResult collectFiles(Store& store, const media::ArchiveControl* contro
         },true);
         stopCollection(control);
         db.exec("COMMIT");transaction.committed=true;files.committed=true;
-        const auto status=sqlite3_wal_checkpoint_v2(db.getHandle(),nullptr,SQLITE_CHECKPOINT_PASSIVE,nullptr,nullptr);
-        return {true,{},status==SQLITE_OK?std::string{}:std::string("collection saved; WAL checkpoint is pending")};
+        int logFrames = 0, checkpointedFrames = 0;
+        const auto status = sqlite3_wal_checkpoint_v2(db.getHandle(), "main", SQLITE_CHECKPOINT_PASSIVE,
+                                                      &logFrames, &checkpointedFrames);
+        // PASSIVE can return SQLITE_OK after making partial progress when a
+        // reader is pinned. The path changes have already committed.
+        const bool pending = status != SQLITE_OK || checkpointedFrames < logFrames;
+        return {true, {}, pending ? std::string("collection saved; WAL checkpoint is pending") : std::string{}};
     }catch(const CollectionCancelled&){return {false,"media collection cancelled",files.rollback(),true};}
     catch(const std::exception& e){return {false,e.what(),files.rollback()};}
 }
