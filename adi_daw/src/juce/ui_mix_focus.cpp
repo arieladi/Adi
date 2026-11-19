@@ -503,15 +503,20 @@ void MixFocus::rebuildScope() {
     if (!scopePlaying_ || (!scopeShown && sumLabel_.isEmpty())) return;
 
     const auto plotColumns = static_cast<std::size_t>(std::max(0.f, plot_.getWidth()));
-    const auto appendColumn = [this](juce::Path &path, std::size_t column, std::size_t columns,
-                                     double low, double high) {
+    const auto pathPoint = [](juce::Path &path) {
+        return [&path](FocusScopePoint point, bool first) {
+            if (first) path.startNewSubPath(point.x, point.y);
+            else path.lineTo(point.x, point.y);
+        };
+    };
+    const auto appendColumn = [this](FocusScopePathReducer &trace, const auto &emit, std::size_t column,
+                                     std::size_t columns, double low, double high) {
         const auto x = plot_.getX() + static_cast<float>(column) * plot_.getWidth() / static_cast<float>(columns);
         const auto y = [this](double value) {
             return plot_.getCentreY() - static_cast<float>(std::clamp(value, -1., 1.)) * plot_.getHeight() * .5f;
         };
-        if (column == 0) path.startNewSubPath(x, y(low));
-        else path.lineTo(x, y(low));
-        if (high != low) path.lineTo(x, y(high));
+        trace.add({x, y(low)}, emit);
+        if (high != low) trace.add({x, y(high)}, emit);
     };
     const bool aligned = alignment_ == Alignment::Ready;
     if (aligned) {
@@ -519,11 +524,15 @@ void MixFocus::rebuildScope() {
         scopeRange_ = focusScopeRange(scopeSources_);
         if (scopeRange_ && scopeShown) {
             const auto columns = std::min(plotColumns, scopeRange_->frames);
+            std::array<FocusScopePathReducer, 2> traces;
             sum_ = focusProjectSum(scopeSources_, *scopeRange_, columns,
                 [&](std::size_t column, const FocusSumColumn &extrema) {
-                    for (std::size_t ch = 0; ch < scopeSumPaths_.size(); ++ch)
-                        appendColumn(scopeSumPaths_[ch], column, columns, extrema.low[ch], extrema.high[ch]);
+                    for (std::size_t ch = 0; ch < traces.size(); ++ch)
+                        appendColumn(traces[ch], pathPoint(scopeSumPaths_[ch]), column, columns,
+                                     extrema.low[ch], extrema.high[ch]);
                 });
+            for (std::size_t ch = 0; ch < traces.size(); ++ch)
+                traces[ch].finish(pathPoint(scopeSumPaths_[ch]));
         } else if (scopeRange_ && !sumLabel_.isEmpty()) {
             sum_ = focusReadSum(scopeSources_, *scopeRange_);
         }
@@ -542,14 +551,16 @@ void MixFocus::rebuildScope() {
         const auto steps = std::min(range.frames, plotColumns);
         const auto start = static_cast<std::size_t>(range.first - data.firstStamp);
         for (std::size_t ch = 0; ch < member.scopePaths.size(); ++ch) {
-            auto &path = member.scopePaths[ch];
+            FocusScopePathReducer trace;
+            const auto emit = pathPoint(member.scopePaths[ch]);
             const auto &samples = ch == 0 ? data.scopeLeft : data.scopeRight;
             for (std::size_t p = 0; p < steps; ++p) {
                 const auto from = start + (p * range.frames) / steps;
                 const auto to = start + ((p + 1) * range.frames) / steps;
                 const auto [low, high] = std::minmax_element(samples.data() + from, samples.data() + to);
-                appendColumn(path, p, steps, *low, *high);
+                appendColumn(trace, emit, p, steps, *low, *high);
             }
+            trace.finish(emit);
         }
     }
 }

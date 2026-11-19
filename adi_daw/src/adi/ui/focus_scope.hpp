@@ -20,6 +20,38 @@ struct FocusSumReading {
 struct FocusSumColumn {
     std::array<double, 2> low{}, high{};
 };
+struct FocusScopePoint {
+    float x = 0.f, y = 0.f;
+    bool operator==(const FocusScopePoint &) const = default;
+};
+
+// Scope columns arrive in increasing x order, with a possible vertical span at
+// each column. Omit only points on a straight horizontal run, at any scale.
+class FocusScopePathReducer {
+  public:
+    template <class Emit>
+    void add(FocusScopePoint point, const Emit &emit) {
+        if (!started_) {
+            started_ = true;
+            anchor_ = tail_ = point;
+            emit(point, true);
+        } else if (point != tail_) {
+            if (anchor_.y != tail_.y || tail_.y != point.y) finish(emit);
+            tail_ = point;
+        }
+    }
+
+    template <class Emit>
+    void finish(const Emit &emit) {
+        if (anchor_ == tail_) return;
+        anchor_ = tail_;
+        emit(anchor_, false);
+    }
+
+  private:
+    FocusScopePoint anchor_, tail_;
+    bool started_ = false;
+};
 
 inline std::optional<std::int64_t> focusWindowEnd(std::int64_t first, std::int64_t length) noexcept {
     if (length <= 0 || first > std::numeric_limits<std::int64_t>::max() - length) return {};

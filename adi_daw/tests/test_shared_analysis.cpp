@@ -165,6 +165,59 @@ void focusScopeSumProjection() {
     check(reading.peak == std::array{hot, 1.} && reading.peak == numeric.peak && reading.rms == numeric.rms,
           "the plotted stereo extrema and numeric peak/RMS agree on the same unclipped sample sum");
 }
+void focusScopeFlatPath() {
+    using adi::ui::FocusScopePathReducer;
+    using Point = adi::ui::FocusScopePoint;
+    const auto capture = [](std::span<const Point> points) {
+        FocusScopePathReducer reducer;
+        std::vector<Point> path;
+        int subpaths = 0;
+        const auto emit = [&](Point point, bool first) {
+            path.push_back(point);
+            if (first) ++subpaths;
+        };
+        for (const auto point : points) reducer.add(point, emit);
+        reducer.finish(emit);
+        return std::pair{path, subpaths};
+    };
+    const auto scalar = [](std::span<const Point> points) {
+        std::vector<Point> compact(points.begin(), points.end());
+        compact.erase(std::unique(compact.begin(), compact.end()), compact.end());
+        std::vector<Point> expected;
+        for (std::size_t first = 0; first < compact.size();) {
+            auto last = first + 1;
+            while (last < compact.size() && compact[last].y == compact[first].y) ++last;
+            expected.push_back(compact[first]);
+            if (last != first + 1) expected.push_back(compact[last - 1]);
+            first = last;
+        }
+        return expected;
+    };
+
+    const auto empty = capture({});
+    const std::array single{Point{3.25f, 6.f}};
+    const auto point = capture(single);
+    check(empty.first.empty() && empty.second == 0 && point.first == scalar(single) && point.second == 1,
+          "empty and one-point Focus paths preserve their subpath boundary");
+
+    std::array<Point, 1024> zeros{};
+    for (std::size_t i = 0; i < zeros.size(); ++i) zeros[i].x = static_cast<float>(i) * .25f;
+    const auto cancelled = capture(zeros);
+    check(cancelled.second == 1 && cancelled.first == scalar(zeros) && cancelled.first.size() == 2,
+          "an exactly flat cancellation trace keeps its two original caps");
+
+    const std::array spikes{Point{0.f, 1.f}, Point{1.f, 1.f}, Point{2.f, 1.f}, Point{2.f, -4.f},
+        Point{2.f, 8.f}, Point{3.f, 2.f}, Point{4.f, 2.f}, Point{4.f, 2.f}, Point{5.f, 2.f},
+        Point{6.f, 9.f}, Point{7.f, 2.f}, Point{8.f, 2.f}, Point{9.f, 2.f}};
+    const auto measured = capture(spikes);
+    check(measured.second == 1 && measured.first == scalar(spikes) && measured.first.size() < spikes.size(),
+          "the scalar oracle confirms same-x span order and an isolated peak among compressed runs");
+
+    const std::array sloped{Point{0.f, 0.f}, Point{1.f, .0001f}, Point{2.f, 0.f}, Point{3.f, .0002f}};
+    const auto quiet = capture(sloped);
+    check(quiet.second == 1 && quiet.first == scalar(sloped) && quiet.first.size() == sloped.size(),
+          "subpixel nonflat motion still emits every original vertex");
+}
 void parkedSilence() {
     Fixture f;
     auto request = SharedAnalysis::Request{1};
@@ -1583,7 +1636,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeWindows(); focusScopeSumProjection(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeWindows(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
