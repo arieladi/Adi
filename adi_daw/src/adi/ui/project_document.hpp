@@ -9,7 +9,9 @@
 #include "adi/mix_functions.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/material_commands.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/import_choices.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
@@ -28,6 +30,7 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // There is no Save: every op is committed as it happens (ADR-0003, ADR-0203 d13),
 // and the store is closed into one file when the document goes. Ctrl/Cmd+S takes
 // a named snapshot instead, a point in the history that copies nothing.
+struct WaveformSource; // project_document.cpp
 class ProjectDocument final : public engine::BlockProcessor {
   public:
     ~ProjectDocument() override;
@@ -157,6 +160,24 @@ class ProjectDocument final : public engine::BlockProcessor {
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
     bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    // An audio file imported with the prompt's choices (E5; Live 12 manual 9.2; ADR-0132 d6): Warp,
+    // Create Fades on Clip Edges, the file copied into the project. The engine's material import
+    // (`clip_edit::prepareImportAudio`, #393) reads, hashes and analyses the file and stages its copy
+    // without writing the project, so it runs off the message thread: `materialJob` captures what it
+    // needs here (the project's file, the ids, the rate), `prepareMaterial` runs anywhere on a
+    // connection of its own, and `commitMaterial` lands it here as one undo step, or refuses as
+    // stale when the project changed meanwhile, leaving nothing behind.
+    struct MaterialJob {
+        std::filesystem::path project, source;
+        std::int64_t track = 0, clipId = 0, mediaId = 0, atTicks = 0, importedUtc = 0;
+        ImportChoices choices;
+        double rate = 48000.0;
+    };
+    MaterialJob materialJob(const std::string &utf8Path, std::int64_t track, std::int64_t atTicks,
+                            const ImportChoices &, std::int64_t nowUtc) const;
+    static clip_edit::MaterialEdit prepareMaterial(const MaterialJob &, std::stop_token = {});
+    // The new clip's id when it landed; 0 with `error()` saying why when it did not.
+    std::int64_t commitMaterial(clip_edit::MaterialEdit &, const MaterialJob &);
     // The audio clips' waveforms (N40, #404): peaks built on a worker of their own, which reads the
     // project through its own read-only store (`Store::open(path, error, true)`), never this one.
     WaveformCache &waveforms() noexcept { return waveforms_; }
@@ -201,6 +222,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::uint64_t realisedGeneration_ = 0;
     std::string error_, warning_;
     // Last, so its worker stops before anything else goes; it touches nothing of the above.
+    // Where the document's file is now, for the waveform worker: Save As moves it.
+    std::shared_ptr<WaveformSource> waveformSource_;
     WaveformCache waveforms_;
 };
 } // namespace adi::ui

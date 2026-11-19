@@ -42,8 +42,8 @@ double meterLevel(double depth) noexcept;
 // One track's mixer controls in the track's own row, as Live's Arrangement Track
 // Controls (manual 18.1), laid out as Live 11 draws them (measured 2026-10-27): the
 // In/Out column, then the Track Activator, Solo and Arm; volume and pan; one send per
-// return on the rows under them (ADR-0203 d3); ADI's channel slots for ADI-Q and ADI-L
-// (ADR-0204 d1) on the row after the sends; the meter.
+// return on the rows under them (ADR-0203 d3); the meter. A channel has no button of its own for
+// any Mix View function: those are added in the Mix View like every other one (ADR-0243).
 class MixerStrip final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit MixerStrip(MixerPanel &);
@@ -75,7 +75,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     juce::Slider volume, pan;
     // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
-    // the row under ADI's slots in the track controls, and as the section under the mixer in the
+    // the row after the sends in the track controls, and as the section under the mixer in the
     // Mixer View.
     juce::Slider delay;
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
@@ -85,7 +85,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // The drag's travel: the box's 2000 ms over this many pixels, 0.1 ms a pixel (PROVISIONAL,
     // Live's step is M1-06).
     static constexpr int kDelayDragPixels = 20000;
-    juce::TextButton active, eq{"Q"}, limiter{"L"};
+    juce::TextButton active;
     SoloButton solo{"S"};
     ArmButton arm;
     // A return's Pre/Post switch, where a track has Arm (ADR-0203 d3: one switch on each return);
@@ -101,10 +101,10 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     juce::PopupMenu monitorMenu();
     // Whether the sends show, in the row and in the Mixer View: the View menu's Sends (§42.1).
     bool showsSends() const noexcept;
-    // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm,
-    // then ADI-Q and ADI-L. A click on one does not take the focus.
-    std::array<juce::Button *, 5> switches() noexcept {
-        return {&active, &solo, kind_ == "return" ? static_cast<juce::Button *>(&prePost) : &arm, &eq, &limiter};
+    // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm.
+    // A click on one does not take the focus.
+    std::array<juce::Button *, 3> switches() noexcept {
+        return {&active, &solo, kind_ == "return" ? static_cast<juce::Button *>(&prePost) : &arm};
     }
     // The track's kind, as the snapshot gives it: Live draws a return's row and Main's their own way.
     const std::string &kind() const noexcept { return kind_; }
@@ -128,7 +128,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Main's strip too, which has no knobs, so the mixers line up.
     std::size_t sendsShown() const noexcept { return shown_; }
     // Whether the Mixer View strip shows Live 12's In/Out section: when the Mixer Controls show it
-    // and the strip has room for it and the mixer. It stands under the slots, over the sends.
+    // and the strip has room for it and the mixer. It stands under the name, over the sends.
     bool showsMixerInOut() const noexcept { return io_ > 0; }
     static constexpr int kInOutHeight = 120;
     // Whether the Mixer View strip shows Live's Track Delay section under its mixer: when the Mixer
@@ -177,8 +177,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     juce::Rectangle<int> sendBounds(std::size_t index) const noexcept;
     MixerPanel &panel_;
     std::int64_t track_ = 0;
-    // Where a Mixer View strip's mixer begins, under the name, the slots and the sends.
-    static constexpr int kMixerTop = 40;
+    // Where a Mixer View strip's sections begin, under the name and its rule.
+    static constexpr int kMixerTop = 19;
     // What a Mixer View strip's mixer keeps under its sends: the peak level above pan, the
     // activator, Solo and Arm.
     static constexpr int kMixerRoom = 110;

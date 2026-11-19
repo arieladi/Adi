@@ -54,7 +54,7 @@ void AnalyserView::frame() noexcept {
     view_.present(model_->broker(), model_->track()); view_.frame();
 }
 void AnalyserView::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff101820));
+    g.fillAll(look::editorBack);
 }
 namespace {
 // An ADI view at its floating window's own interface zoom, as ZoomHost holds the main
@@ -88,7 +88,7 @@ struct FloatingHost::Entry {
     std::function<void(const SnapshotReader &)> onFrame;
     struct Window final : juce::DocumentWindow, juce::KeyListener {
         Window(FloatingHost &host, Entry &entry)
-            : DocumentWindow(entry.title.empty() ? entry.key : entry.title, juce::Colours::black,
+            : DocumentWindow(entry.title.empty() ? entry.key : entry.title, look::ink,
                              entry.scaled ? allButtons : (closeButton | minimiseButton), host.native_),
               h(host),
               e(entry), clock(this, [this](double) {

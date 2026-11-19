@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/engine/clip_details.hpp"
+#include "adi/engine/clip_fade.hpp"
+#include "adi/ui/fade_edits.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
@@ -93,8 +96,8 @@ void ArrangementOverview::paint(juce::Graphics &g) {
                        line);
         y += row;
     }
-    g.setColour(juce::Colours::black);
-    g.drawRect(outline(), 2.f);
+    g.setColour(look::overviewFrame);
+    g.drawRect(outline(), look::heavyLine);
 }
 void ArrangementOverview::mouseDown(const juce::MouseEvent &e) { last = e.position; }
 void ArrangementOverview::mouseDrag(const juce::MouseEvent &e) {
@@ -143,12 +146,12 @@ ScrubArea::ScrubArea(ArrangementView &v) : view(v) {
 juce::Rectangle<float> ScrubArea::markerBox(const textproj::Meter &m) const {
     const auto text = juce::String(m.numerator) + "/" + juce::String(m.denominator);
     const float x = static_cast<float>(view.geometry.x(m.start_ticks));
-    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
+    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(look::fontBody), text);
     return {x, kBraceHeight, w, 15.f}; // under the loop brace
 }
 juce::Rectangle<float> ScrubArea::locatorBox(const Locator &l) const {
     const float x = static_cast<float>(view.geometry.x(l.pos));
-    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), juce::String::fromUTF8(l.name.c_str()));
+    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(look::fontBody), juce::String::fromUTF8(l.name.c_str()));
     return {x, kBraceHeight, w, 15.f};
 }
 std::int64_t ScrubArea::locatorAt(float x) const {
@@ -224,12 +227,12 @@ void ScrubArea::paint(juce::Graphics &g) {
         if (x1 < 0 || x0 > static_cast<float>(getWidth()))
             return;
         const juce::Rectangle<float> band(x0, kBraceHeight, x1 - x0, 15.f);
-        g.setColour(juce::Colour(0xffb4b4b4));
+        g.setColour(look::loopBand);
         g.fillRect(band);
         {
             juce::Graphics::ScopedSaveState clip(g);
             g.reduceClipRegion(band.getSmallestIntegerContainer());
-            g.setColour(juce::Colour(0xff6e6e6e));
+            g.setColour(look::gridLine);
             for (float x = x0 - band.getHeight(); x < x1; x += 6.f)
                 g.drawLine(x, band.getBottom(), x + band.getHeight(), band.getY(), 1.5f);
         }
@@ -243,7 +246,7 @@ void ScrubArea::paint(juce::Graphics &g) {
         const auto &t = view.reader().transport();
         const auto range = braceMoving().value_or(loopOf(t));
         if (const auto box = braceBox(range); box.getRight() >= 0 && box.getX() <= static_cast<float>(getWidth())) {
-            g.setColour(t.loopEnabled ? juce::Colour(0xff3c3c3c) : juce::Colour(0xff9a9a9a));
+            g.setColour(t.loopEnabled ? look::loopOn : look::loopOff);
             g.fillRect(box);
             juce::Path ends;
             const float h = box.getHeight(), mid = box.getCentreY();
@@ -251,7 +254,7 @@ void ScrubArea::paint(juce::Graphics &g) {
                              box.getX() + h - 1.f, mid);
             ends.addTriangle(box.getRight() - 1.f, box.getY() + 1.f, box.getRight() - 1.f, box.getBottom() - 1.f,
                              box.getRight() - h + 1.f, mid);
-            g.setColour(juce::Colour(0xffe8e8e8));
+            g.setColour(look::markerText);
             g.fillPath(ends);
             if (view.loopSelected) {
                 g.setColour(look::selection);
@@ -259,7 +262,7 @@ void ScrubArea::paint(juce::Graphics &g) {
             }
         }
     }
-    g.setFont(look::font(11.5f));
+    g.setFont(look::font(look::fontBody));
     for (std::size_t i = 1; i < meters.size(); ++i) {
         auto m = meters[i];
         if (m.start_ticks == dragged_ && movingTo_ >= 0)
@@ -268,13 +271,13 @@ void ScrubArea::paint(juce::Graphics &g) {
         if (box.getRight() < 0 || box.getX() > static_cast<float>(getWidth()))
             continue;
         const float x = box.getX();
-        g.setColour(meters[i].start_ticks == view.selectedMeter ? look::selection : juce::Colour(0xffb4b4b4));
+        g.setColour(meters[i].start_ticks == view.selectedMeter ? look::selection : look::marker);
         g.fillRect(box);
         g.setColour(look::separator);
         g.drawRect(box, 1.5f);
         juce::Path notch;
         notch.addTriangle(x + 2.f, box.getBottom() - 3.f, x + 2.f, box.getY() + 2.f, x + 10.f, box.getY() + 2.f);
-        g.setColour(juce::Colour(0xffe8e8e8));
+        g.setColour(look::markerText);
         g.fillPath(notch);
         g.setColour(look::text);
         g.drawText(juce::String(meterText(m)), box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
@@ -290,14 +293,14 @@ void ScrubArea::paint(juce::Graphics &g) {
             if (box.getRight() < 0 || box.getX() > static_cast<float>(getWidth()))
                 continue;
             const bool lit = l.id == view.selectedLocator;
-            g.setColour(lit ? look::selection : juce::Colour(0xffb4b4b4));
+            g.setColour(lit ? look::selection : look::marker);
             g.fillRect(box);
             g.setColour(look::separator);
             g.drawRect(box, 1.5f);
             juce::Path mark;
             mark.addTriangle(box.getX() + 2.f, box.getY() + 2.f, box.getX() + 2.f, box.getBottom() - 2.f,
                              box.getX() + 10.f, box.getCentreY());
-            g.setColour(juce::Colour(0xffe8e8e8));
+            g.setColour(look::markerText);
             g.fillPath(mark);
             g.setColour(look::separator);
             g.strokePath(mark, juce::PathStrokeType(1.f));
@@ -732,13 +735,11 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
 namespace {
 // Bitwig's project view menu, as the director's screenshot shows it (28 October 2026): a dark
 // menu with a thin light edge, large rows, the view in use on a light grey row.
-constexpr juce::uint32 kMenuBack = 0xff2b2b2b, kMenuEdge = 0xff5a5a5a, kRowCurrent = 0xffc8c8c8,
-                       kTextCurrent = 0xff2b2b2b, kRowHover = 0xff484848, kText = 0xffe2e2e2;
 class ProjectViewMenuLook final : public juce::LookAndFeel_V4 {
   public:
     void drawPopupMenuBackground(juce::Graphics &g, int width, int height) override {
-        g.fillAll(juce::Colour(kMenuBack));
-        g.setColour(juce::Colour(kMenuEdge));
+        g.fillAll(look::menuBack);
+        g.setColour(look::menuEdge);
         g.drawRect(0, 0, width, height, 1);
     }
     int getPopupMenuBorderSize() override { return 3; }
@@ -761,7 +762,7 @@ class ColourChooser final : public juce::PopupMenu::CustomComponent {
             g.setColour(look::paletteColour(i));
             g.fillRect(r);
             if (i == current_ || i == hover_) {
-                g.setColour(i == current_ ? juce::Colours::white : juce::Colours::white.withAlpha(.6f));
+                g.setColour(i == current_ ? look::textBright : look::textBright.withAlpha(.6f));
                 g.drawRect(r.expanded(1.5f), 1.5f);
             }
         }
@@ -799,12 +800,12 @@ class ViewMenuItem final : public juce::PopupMenu::CustomComponent {
     ViewMenuItem(juce::String name, int depth, juce::Colour colour, bool current)
         : name_(std::move(name)), depth_(depth), colour_(colour), current_(current) {}
     void getIdealSize(int &width, int &height) override {
-        width = 56 + depth_ * kIndent + juce::roundToInt(juce::GlyphArrangement::getStringWidth(look::font(15.f), name_));
+        width = 56 + depth_ * kIndent + juce::roundToInt(juce::GlyphArrangement::getStringWidth(look::font(look::fontTitle), name_));
         height = kRow;
     }
     void paint(juce::Graphics &g) override {
         if (current_ || isItemHighlighted()) {
-            g.setColour(juce::Colour(current_ ? kRowCurrent : kRowHover));
+            g.setColour(current_ ? look::menuRowCurrent : look::menuRowHover);
             g.fillRect(getLocalBounds());
         }
         // A folder: its body and the tab on its top left.
@@ -814,8 +815,8 @@ class ViewMenuItem final : public juce::PopupMenu::CustomComponent {
         folder.addRoundedRectangle(x, 6.f, 7.f, 4.f, 1.f);
         g.setColour(colour_);
         g.fillPath(folder);
-        g.setColour(juce::Colour(current_ ? kTextCurrent : kText));
-        g.setFont(look::font(15.f));
+        g.setColour(current_ ? look::menuTextCurrent : look::menuText);
+        g.setFont(look::font(look::fontTitle));
         const int textX = juce::roundToInt(x) + 25;
         g.drawText(name_, textX, 0, std::max(0, getWidth() - textX - 8), getHeight(),
                    juce::Justification::centredLeft);
@@ -837,7 +838,7 @@ ProjectViewButton::ProjectViewButton() : juce::Button("Project View") {
 }
 void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
     // Bitwig's icon: a list with its lower lines indented, and the menu's arrow beside it.
-    g.setColour(getToggleState() ? look::accent : over || down ? juce::Colours::white : look::textOnBand);
+    g.setColour(getToggleState() ? look::accent : over || down ? look::textBright : look::textOnBand);
     const auto r = getLocalBounds().toFloat().reduced(2.f, 3.f);
     for (int line = 0; line < 3; ++line)
         g.fillRect(r.getX() + (line == 0 ? 0.f : 4.f), r.getY() + static_cast<float>(line) * 4.f,
@@ -973,7 +974,7 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
     };
     // Project's folder is grey, as Bitwig's; a group's is its track's colour as the window draws
     // it, unless the project gives one. The groups in the arrangement's order.
-    add(0, 0, "Project", juce::Colour(0xff8a8a8a));
+    add(0, 0, "Project", look::neutral);
     for (const auto row : geometry.rows(reader()))
         if (row.place.group) {
             // Its name as its title shows it (a # is its number).
@@ -1065,11 +1066,11 @@ void ArrangementView::paint(juce::Graphics &g) {
     // toggles, Automation Mode and Lock Envelopes.
     const auto set = topButton(TopButton::Set);
     g.setColour(look::button);
-    g.fillRoundedRectangle(set, 6.f);
+    g.fillRoundedRectangle(set, look::radiusPanel);
     g.setColour(look::outline);
-    g.drawRoundedRectangle(set.reduced(0.5f), 6.f, 1.f);
+    g.drawRoundedRectangle(set.reduced(0.5f), look::radiusPanel, look::hairline);
     g.setColour(look::text);
-    g.setFont(look::font(11.f));
+    g.setFont(look::font(look::fontLabel));
     g.drawText(selectedLocator != 0 ? "Del" : "Set", set, juce::Justification::centred);
     for (int i = 0; i < 2; ++i) {
         const auto c = topButton(i == 0 ? TopButton::Previous : TopButton::Next);
@@ -1093,7 +1094,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     g.fillEllipse(ax + 14.5f, ay + 1.5f, 3, 3);
     const auto lock = topButton(TopButton::Lock);
     const float lx = lock.getX(), ly = lock.getY();
-    look::box(g, lock, juce::Colour(0xfff0773a));
+    look::box(g, lock, look::lock);
     g.fillRect(lx + 7.f, ly + 5.5f, 8.f, 4.5f);
     g.drawRoundedRectangle(lx + 8.5f, ly + 2.5f, 5.f, 5.f, 2.f, 1.f);
     // Under the lanes: the time ruler, in minutes and seconds (manual 6.1).
@@ -1113,7 +1114,7 @@ void ArrangementView::paint(juce::Graphics &g) {
                 step = s;
                 break;
             }
-        g.setFont(look::font(11.5f));
+        g.setFont(look::font(look::fontBody));
         for (double t = std::ceil(from / step) * step; t <= to; t += step) {
             const int x = canvas.getX() + static_cast<int>(geometry.x(tempo->secondsToTicks(t)));
             g.setColour(look::textOnBand);
@@ -1128,7 +1129,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     g.setColour(look::band);
     g.fillRect(spacing);
     g.setColour(look::textOnBand);
-    g.setFont(look::font(11.5f));
+    g.setFont(look::font(look::fontBody));
     g.drawText(juce::String(gridLabel(geometry.gridQuarters(), geometry.grid.triplet)), spacing,
                juce::Justification::centredRight);
 }
@@ -1574,10 +1575,10 @@ void TimelineRuler::paint(juce::Graphics &g) {
     while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
         barStep *= 2;
     const int foot = getHeight();
-    g.setFont(look::font(12.f, true));
+    g.setFont(look::font(look::fontField, true));
     auto label = [&](std::int64_t tick, const juce::String &text) {
         const int x = static_cast<int>(geo.x(tick));
-        g.setColour(juce::Colour(0xff7d7d7d));
+        g.setColour(look::rulerLabel);
         g.fillRect(x, foot - 11, 1, 8);
         g.fillRect(x, foot - 11, 3, 1);
         g.setColour(look::textOnBand);
@@ -1587,7 +1588,7 @@ void TimelineRuler::paint(juce::Graphics &g) {
     // From a bar before the left edge, so a bar's later beats still show.
     forEachBar(from - first.barTicks(), to, meters, [&](std::int64_t tick, std::int64_t bar) {
         if (dots) {
-            g.setColour(juce::Colour(0xff7d7d7d));
+            g.setColour(look::rulerLabel);
             g.fillRect(static_cast<int>(geo.x(tick)), foot - 2, 1, 1);
         }
         if (!beats) {
@@ -1686,8 +1687,8 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         } else
             look::triangle(g, fold.reduced(3.5f), juce::MathConstants<float>::halfPi, ink);
         if (t->id != renaming_) {
-            g.setColour(look::text);
-            g.setFont(look::font(11.5f, true));
+            g.setColour(look::ink);
+            g.setFont(look::font(look::fontBody, true));
             g.drawText(juce::String::fromUTF8(displayName(t->name, row.position + 1).c_str()), x + 23, y + 2,
                        getWidth() - x - 25, 15, juce::Justification::centredLeft);
         }
@@ -1698,7 +1699,7 @@ void TrackHeaderList::paint(juce::Graphics &g) {
                 if (const auto box = quantizeBox(row.place.depth, y, h, record); !box.isEmpty()) {
                     look::box(g, box.toFloat(), look::chooser);
                     g.setColour(look::text);
-                    g.setFont(look::font(10.f));
+                    g.setFont(look::font(look::fontSmall));
                     const auto value = record ? recordQuantizeText(t->recording) : playQuantizeText(t->recording);
                     g.drawText(juce::String(record ? "Rec-Q " : "Play-Q ") + juce::String(value), box.reduced(3, 0),
                                juce::Justification::centredLeft, true);
@@ -1712,14 +1713,14 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         if (drop_.into != 0) {
             const juce::Rectangle<int> box(x, view.geometry.rowTop(view.reader(), drop_.into), getWidth() - x,
                                            view.geometry.heightFor(drop_.into) - 2);
-            g.setColour(look::text);
+            g.setColour(look::ink);
             g.drawRect(box, 4);
-            g.setColour(juce::Colours::white);
+            g.setColour(look::textBright);
             g.drawRect(box.reduced(1), 2);
         } else {
-            g.setColour(look::text);
+            g.setColour(look::ink);
             g.fillRect(x, drop_.y - 2, getWidth() - x, 4);
-            g.setColour(juce::Colours::white);
+            g.setColour(look::textBright);
             g.fillRect(x, drop_.y - 1, getWidth() - x, 2);
         }
     }
@@ -2070,7 +2071,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             return;
         lanes(top, bottom - top, false);
         g.setColour(look::text);
-        g.setFont(look::font(12.f));
+        g.setFont(look::font(look::fontField));
         g.drawText("Drop Files and Devices Here", 0, top, getWidth(), bottom - top, juce::Justification::centred);
     };
     for (std::size_t i = 0; i < rows.size(); ++i) {
@@ -2116,20 +2117,24 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const float left = static_cast<float>(std::max(-1., x)),
                         right = static_cast<float>(std::min(end, static_cast<double>(getWidth() + 1)));
             const bool picked = geo.clipSelected(c->id);
-            // A clip in its track's colour: a solid title strip, a lighter body. A
-            // deactivated clip is grey, as Live's.
-            const auto clipColour = c->muted ? juce::Colour(0xff9a9a9a) : colour;
-            g.setColour(picked ? clipColour.brighter(0.25f) : clipColour.withMultipliedAlpha(0.75f));
+            // A clip as Live 12 draws it (the director's reference pictures, 18 November): the whole
+            // clip in its colour, solid, title strip and body alike, and what it holds drawn dark on
+            // it. A deactivated clip is grey, as Live's.
+            const auto clipColour = c->muted ? look::mutedClip : colour;
+            g.setColour(picked ? clipColour.brighter(0.25f) : clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
             paintWaveform(g, *c, pos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
                           static_cast<float>(y + h - 3));
+            if (!c->audio)
+                paintNotes(g, *c, pos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
+                           static_cast<float>(y + h - 3));
             // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
             // arrangement).
             if (!c->name.empty() && right - left > 6.f) {
-                g.setColour(look::text);
-                g.setFont(look::font(10.f));
+                g.setColour(look::ink);
+                g.setFont(look::font(look::fontSmall));
                 g.drawText(juce::String::fromUTF8(c->name.c_str()),
                            juce::Rectangle<float>(left + 3.f, static_cast<float>(y + 1), right - left - 5.f,
                                                   static_cast<float>(kClipBarHeight)),
@@ -2149,6 +2154,11 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                                static_cast<float>(std::max(0, h - 4 - kClipBarHeight)));
                 }
             }
+            // Its fades, and their handles (manual 6.8), over the waveform and any selection tint;
+            // not while it moves.
+            if (c->audio && c->id != moving_ && !along && c->id != resizing_)
+                paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
+                           static_cast<float>(y + h - 3));
         };
         // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
         // each of several selected clips dragged across tracks.
@@ -2178,12 +2188,194 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 const int bottom = row.position < foot && foot < rows.size()
                                        ? std::min(top + geo.heightFor(id), footY) - 2
                                        : top + geo.heightFor(id) - 2;
-                g.setColour(juce::Colour(0xff5dc9e8));
+                g.setColour(look::handleChosen);
                 g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, std::max(0, bottom - top));
             }
             top += geo.heightFor(id);
         }
     }
+}
+std::vector<ArrangementCanvas::ClipBody> ArrangementCanvas::clipBodies() const {
+    // Every clip drawn, where it is drawn: the same walk as the paint, the foot over the tracks
+    // scrolled under it.
+    std::vector<ClipBody> out;
+    const auto &geo = view.geometry;
+    const auto rows = geo.rows(view.reader());
+    const auto foot = geo.footStart(rows);
+    const int footY = geo.footTop(view.reader());
+    int top = -geo.scrollY;
+    for (const auto row : rows) {
+        if (row.position == foot)
+            top = footY;
+        const auto *t = row.track;
+        const int h = geo.heightFor(t->id);
+        // A track scrolled under the returns' and Main's foot is cut at its top, as the paint covers
+        // it there: nothing under the foot is hit (barAt's rule).
+        const float bottom = static_cast<float>(row.position < foot && foot < rows.size() ? std::min(top + h - 3, footY) : top + h - 3);
+        const float bodyTop = static_cast<float>(top + 1 + kClipBarHeight);
+        if (h > 0 && bottom > bodyTop)
+            for (const auto &c : t->clips)
+                if (c)
+                    out.push_back({t, c.get(), static_cast<float>(geo.x(c->posTicks)),
+                                   static_cast<float>(geo.x(c->posTicks + c->lengthTicks)), bodyTop, bottom});
+        top += h;
+    }
+    return out;
+}
+bool ArrangementCanvas::fadeHandlesShown(const engine::ClipNode &c) const {
+    return c.audio && (showFades || c.id == hoverClip_ || view.geometry.clipSelected(c.id) ||
+                       (fadeDrag_ && fadeDrag_->clip == c.id));
+}
+void ArrangementCanvas::fadesOf(const engine::ClipNode &c, std::int64_t &in, std::int64_t &out,
+                                std::optional<double> &inTension, std::optional<double> &outTension) const {
+    in = c.fadeInTicks;
+    out = c.fadeOutTicks;
+    inTension = c.fadeInTension;
+    outTension = c.fadeOutTension;
+    if (!fadeDrag_)
+        return;
+    // The drag reaches the dragged clip and, when it is one of them, every other selected clip.
+    const bool dragged = fadeDrag_->clip == c.id ||
+                         (view.geometry.clipSelected(fadeDrag_->clip) && view.geometry.clipSelected(c.id));
+    if (!dragged)
+        return;
+    if (fadeDrag_->curve)
+        (fadeDrag_->in ? inTension : outTension) = fadeTension_;
+    else
+        (fadeDrag_->in ? in : out) = fadeLimit(c, fadeDrag_->in, fadeTicks_);
+}
+void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c, float left, float right, float top,
+                                   float bottom) const {
+    // Live's fades (the manual's Adjusted Fades figure): the part of the clip the fade takes away
+    // darkened above its curve, the curve drawn; with the handles shown, a square at each fade's
+    // peak and a diamond on each curve.
+    if (bottom - top < 8.f || right - left < 4.f)
+        return;
+    std::int64_t in = 0, out = 0;
+    std::optional<double> inTension, outTension;
+    fadesOf(c, in, out, inTension, outTension);
+    const auto &geo = view.geometry;
+    const float xIn = static_cast<float>(geo.x(c.posTicks + in)), xOut = static_cast<float>(geo.x(c.posTicks + c.lengthTicks - out));
+    const auto curveY = [&](double shape) { return bottom - static_cast<float>(shape) * (bottom - top); };
+    const auto draw = [&](float x0, float x1, bool fadeIn, std::int64_t curve, const std::optional<double> &tension) {
+        if (x1 - x0 < 1.f)
+            return;
+        juce::Path line, shade;
+        const int steps = std::max(2, static_cast<int>((x1 - x0) / 3.f));
+        for (int i = 0; i <= steps; ++i) {
+            const double u = static_cast<double>(i) / steps;
+            const float px = x0 + static_cast<float>(u) * (x1 - x0);
+            const float py = curveY(engine::clipFadeShape(fadeIn ? u : 1.0 - u, curve, tension));
+            if (i == 0)
+                line.startNewSubPath(px, py);
+            else
+                line.lineTo(px, py);
+        }
+        shade = line;
+        shade.lineTo(x1, top);
+        shade.lineTo(x0, top);
+        shade.closeSubPath();
+        g.setColour(look::ink.withAlpha(0.22f));
+        g.fillPath(shade);
+        g.setColour(look::ink.withAlpha(0.85f));
+        g.strokePath(line, juce::PathStrokeType(1.f));
+    };
+    const bool bendingIn = fadeDrag_ && fadeDrag_->curve && fadeDrag_->in && inTension != c.fadeInTension;
+    const bool bendingOut = fadeDrag_ && fadeDrag_->curve && !fadeDrag_->in && outTension != c.fadeOutTension;
+    const auto inCurve = bendingIn ? kBentFadeCurve : c.fadeInCurve, outCurve = bendingOut ? kBentFadeCurve : c.fadeOutCurve;
+    draw(left, xIn, true, inCurve, inTension);
+    draw(xOut, right, false, outCurve, outTension);
+    if (!fadeHandlesShown(c))
+        return;
+    const auto square = [&](float x, bool chosen) {
+        const auto box = juce::Rectangle<float>(x - 3.5f, top, 7.f, 7.f);
+        g.setColour(chosen ? look::handleChosen : look::handle);
+        g.fillRect(box);
+        g.setColour(look::ink);
+        g.drawRect(box, 1.f);
+    };
+    const auto diamond = [&](float x, float y, bool chosen) {
+        juce::Path d;
+        d.addQuadrilateral(x, y - 4.f, x + 4.f, y, x, y + 4.f, x - 4.f, y);
+        g.setColour(chosen ? look::handleChosen : look::handle);
+        g.fillPath(d);
+        g.setColour(look::ink);
+        g.strokePath(d, juce::PathStrokeType(1.f));
+    };
+    const auto chosen = [&](bool fadeIn, bool curve) {
+        const auto &h = fadeDrag_ ? fadeDrag_ : selectedFade_;
+        return h && h->clip == c.id && h->in == fadeIn && h->curve == curve;
+    };
+    square(std::max(left + 3.5f, xIn), chosen(true, false));
+    square(std::min(right - 3.5f, xOut), chosen(false, false));
+    if (in > 0)
+        diamond((left + xIn) / 2.f, curveY(engine::clipFadeShape(0.5, inCurve, inTension)), chosen(true, true));
+    if (out > 0)
+        diamond((xOut + right) / 2.f, curveY(engine::clipFadeShape(0.5, outCurve, outTension)), chosen(false, true));
+}
+std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeHandle &h) const {
+    for (const auto &b : clipBodies())
+        if (b.clip->id == h.clip)
+            return fadeHandlePoint(h, b);
+    return std::nullopt;
+}
+std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeHandle &h, const ClipBody &b) const {
+    {
+        if (b.clip->id != h.clip || !fadeHandlesShown(*b.clip) || b.bottom - b.top < 8.f)
+            return std::nullopt;
+        std::int64_t in = 0, out = 0;
+        std::optional<double> inTension, outTension;
+        fadesOf(*b.clip, in, out, inTension, outTension);
+        const auto &geo = view.geometry;
+        const float xIn = static_cast<float>(geo.x(b.clip->posTicks + in));
+        const float xOut = static_cast<float>(geo.x(b.clip->posTicks + b.clip->lengthTicks - out));
+        if (!h.curve)
+            return juce::Point<float>(h.in ? std::max(b.left + 3.5f, xIn) : std::min(b.right - 3.5f, xOut), b.top + 3.5f);
+        if ((h.in ? in : out) == 0)
+            return std::nullopt;
+        const bool bending = fadeDrag_ && fadeDrag_->curve && fadeDrag_->clip == h.clip && fadeDrag_->in == h.in;
+        const auto curve = bending ? kBentFadeCurve : h.in ? b.clip->fadeInCurve : b.clip->fadeOutCurve;
+        const auto shape = engine::clipFadeShape(0.5, curve, h.in ? inTension : outTension);
+        return juce::Point<float>(h.in ? (b.left + xIn) / 2.f : (xOut + b.right) / 2.f,
+                                  b.bottom - static_cast<float>(shape) * (b.bottom - b.top));
+    }
+}
+std::optional<ArrangementCanvas::FadeHandle> ArrangementCanvas::fadeHandleAt(int x, int y) const {
+    // The nearest shown handle within a few pixels; the curve's diamond before the squares, which
+    // sit at the clip's top.
+    const juce::Point<float> at(static_cast<float>(x), static_cast<float>(y));
+    for (const auto &b : clipBodies()) {
+        if (!fadeHandlesShown(*b.clip))
+            continue;
+        for (const bool curve : {true, false})
+            for (const bool in : {true, false}) {
+                const FadeHandle h{b.clip->id, b.track->id, in, curve};
+                if (const auto p = fadeHandlePoint(h, b); p && p->getDistanceFrom(at) <= 6.f)
+                    return h;
+            }
+    }
+    return std::nullopt;
+}
+void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
+    if (hoverClip_ != 0) {
+        hoverClip_ = 0;
+        repaint();
+    }
+}
+void ArrangementCanvas::focusLost(FocusChangeType) {
+    // F released where the canvas cannot hear it: the handles go back.
+    if (showFades && !juce::KeyPress::isKeyCurrentlyDown('f') && !juce::KeyPress::isKeyCurrentlyDown('F')) {
+        showFades = false;
+        repaint();
+    }
+}
+bool ArrangementCanvas::keyStateChanged(bool) {
+    // F up: the handles go back to the clip under the mouse and the selected ones.
+    if (showFades && !juce::KeyPress::isKeyCurrentlyDown('f') && !juce::KeyPress::isKeyCurrentlyDown('F')) {
+        showFades = false;
+        repaint();
+    }
+    return false;
 }
 void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
                                       float right, float top, float bottom) const {
@@ -2201,7 +2393,7 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
     const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
                                static_cast<double>(peaks->sampleRate));
     const float band = (bottom - top) / static_cast<float>(peaks->channels);
-    g.setColour(juce::Colours::black.withAlpha(clip.muted ? 0.35f : 0.6f));
+    g.setColour(look::ink.withAlpha(clip.muted ? 0.4f : 0.85f));
     const int from = std::max(0, static_cast<int>(std::floor(left))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
     for (int x = from; x < to; ++x) {
@@ -2220,13 +2412,83 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
         }
     }
 }
+void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
+                                   float right, float top, float bottom) const {
+    if (bottom - top < 4.f || right <= left)
+        return;
+    // Read once for each generation of the document: any edit moves it, and the next paint reads again.
+    const auto generation = view.root.generation();
+    if (clipNotes_.size() > 4096)
+        clipNotes_.clear();
+    auto &held = clipNotes_[clip.id];
+    if (held.readAt != generation + 1) {
+        held = {};
+        held.readAt = generation + 1;
+        if (auto read = engine::readClipDetails(view.root.editStore(), clip.id); read.clip && read.clip->kind == "midi") {
+            const auto &d = *read.clip;
+            held.midi = true;
+            held.startMarker = d.startMarkerTicks;
+            if (d.loopEnabled && d.loopLengthTicks && *d.loopLengthTicks > 0) {
+                held.loopStart = d.loopStartTicks;
+                held.loopLength = *d.loopLengthTicks;
+            }
+            held.bars.reserve(d.notes.size());
+            for (const auto &n : d.notes) {
+                held.bars.push_back({n.startTicks, n.durationTicks, static_cast<int>(n.key), n.active});
+                held.low = std::min(held.low, static_cast<int>(n.key));
+                held.high = std::max(held.high, static_cast<int>(n.key));
+            }
+        }
+    }
+    if (!held.midi || held.bars.empty())
+        return;
+    const auto &geo = view.geometry;
+    // The keys in use over the body's height, never fewer than an octave so one note is not a slab.
+    const int keys = std::max(12, held.high - held.low + 1);
+    const int lowest = held.low - (keys - (held.high - held.low + 1)) / 2;
+    const float inner = bottom - top - 2.f;
+    const float pitch = inner / static_cast<float>(keys);
+    const float thick = std::clamp(pitch - (pitch >= 3.f ? 1.f : 0.f), 1.f, 4.f);
+    const std::int64_t clipEnd = pos + clip.lengthTicks;
+    auto bar = [&](std::int64_t source, const ClipNotes::Bar &n) {
+        const auto start = pos + (source - held.startMarker);
+        const auto end = std::min(start + n.duration, clipEnd);
+        if (end <= pos || start >= clipEnd)
+            return;
+        const float x0 = std::max(left, static_cast<float>(geo.x(std::max(start, pos)))),
+                    x1 = std::min(right, static_cast<float>(geo.x(end)));
+        if (x1 <= left || x0 >= right)
+            return;
+        const float y = top + 1.f + inner - (static_cast<float>(n.key - lowest) + 1.f) * pitch + (pitch - thick) * .5f;
+        g.setColour(look::ink.withAlpha(clip.muted || !n.active ? 0.35f : 0.9f));
+        g.fillRect(x0, y, std::max(1.f, x1 - x0), thick);
+    };
+    for (const auto &n : held.bars) {
+        if (held.loopLength > 0) {
+            // A looped clip plays to the loop's end once, then the loop again and again: what lies
+            // after the loop is never heard, and what lies in it is drawn at each pass.
+            if (n.start >= held.loopStart + held.loopLength)
+                continue;
+            bar(n.start, n);
+            if (n.start >= held.loopStart)
+                for (std::int64_t pass = 1; pass < 4096; ++pass) {
+                    const auto source = n.start + pass * held.loopLength;
+                    if (pos + (source - held.startMarker) >= clipEnd)
+                        break;
+                    bar(source, n);
+                }
+        } else {
+            bar(n.start, n);
+        }
+    }
+}
 void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y, int h, juce::Colour colour) const {
     // Live's group track (manual 18.3, its figure of a folded group): a darker lane, and in it an
     // overview of the clips of every track the group holds, at any depth, a thin row each, in
     // the group's colour. Folded or not.
     const auto &geo = view.geometry;
     const auto rows = geo.rows(view.reader());
-    g.setColour(juce::Colours::black.withAlpha(0.16f));
+    g.setColour(look::ink.withAlpha(0.16f));
     g.fillRect(0, y, getWidth(), h - 2);
     const auto depth = rows[at].place.depth;
     std::size_t held = 0;
@@ -2268,6 +2530,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     last = e.position;
     moving_ = resizing_ = 0;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
+    selectedFade_.reset(); // a click chooses a fade handle again, or nothing
+    focusLost(focusChangedDirectly);
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     if (e.mods.isPopupMenu()) {
         view.select(e.x, e.y, view.snaps(e.mods));
@@ -2275,6 +2539,29 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     } else if (!panning) {
         // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
+        // A fade's handle (manual 6.8): its length or its curve, the clip chosen with it.
+        if (const auto h = fadeHandleAt(e.x, e.y)) {
+            for (const auto &b : clipBodies())
+                if (b.clip->id == h->clip) {
+                    auto &sel = view.geometry.selection;
+                    if (!view.geometry.clipSelected(h->clip)) {
+                        sel.track = h->track;
+                        sel.toTrack = 0;
+                        sel.picked.clear();
+                        sel.clip = h->clip;
+                        sel.pickedClips.clear();
+                        sel.start = b.clip->posTicks;
+                        sel.end = b.clip->posTicks + b.clip->lengthTicks;
+                    }
+                    fadeDrag_ = h;
+                    selectedFade_ = h;
+                    fadeTicks_ = h->in ? b.clip->fadeInTicks : b.clip->fadeOutTicks;
+                    fadeTensionFrom_ = fadeTension_ = (h->in ? b.clip->fadeInTension : b.clip->fadeOutTension).value_or(0.0);
+                    fadeFromY_ = e.y;
+                }
+            view.changed();
+            return;
+        }
         // Only a clip's bar moves it, not its body; its right edge changes its length (§6.7).
         std::int64_t track = 0;
         bool edge = false;
@@ -2373,6 +2660,21 @@ const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &tra
     return nullptr;
 }
 void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
+    focusLost(focusChangedDirectly);
+    // The audio clip under the mouse shows its fade handles (manual 6.8).
+    std::int64_t over = 0;
+    for (const auto &b : clipBodies())
+        if (const auto mx = static_cast<float>(e.x), my = static_cast<float>(e.y);
+            b.clip->audio && mx >= b.left && mx < b.right && my >= b.top - kClipBarHeight && my <= b.bottom)
+            over = b.clip->id;
+    if (over != hoverClip_) {
+        hoverClip_ = over;
+        repaint();
+    }
+    if (const auto h = fadeHandleAt(e.x, e.y)) {
+        setMouseCursor(h->curve ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::LeftRightResizeCursor);
+        return;
+    }
     std::int64_t track = 0;
     bool edge = false;
     const auto *c = barAt(e.x, e.y, track, edge);
@@ -2382,6 +2684,21 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
         return;
+    if (fadeDrag_) {
+        // A peak's square follows the mouse along the clip; a curve's diamond, up and down.
+        if (fadeDrag_->curve) {
+            fadeTension_ = std::clamp(fadeTensionFrom_ - (e.y - fadeFromY_) / 60.0, -1.0, 1.0);
+        } else {
+            for (const auto &b : clipBodies())
+                if (b.clip->id == fadeDrag_->clip) {
+                    const auto at = view.geometry.tick(e.x);
+                    fadeTicks_ = fadeDrag_->in ? at - b.clip->posTicks : b.clip->posTicks + b.clip->lengthTicks - at;
+                    fadeTicks_ = fadeLimit(*b.clip, fadeDrag_->in, fadeTicks_);
+                }
+        }
+        repaint();
+        return;
+    }
     if (resizing_ != 0) {
         // The clip's end follows the mouse, to the nearest grid line while snapping, never
         // shorter than one grid step; at the lanes' side the view scrolls along.
@@ -2467,6 +2784,33 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
+    if (fadeDrag_) {
+        // One drag, one undo step: the dragged clip, and every other selected audio clip with it.
+        const auto h = *fadeDrag_;
+        fadeDrag_.reset();
+        std::vector<std::int64_t> clips{h.clip};
+        if (view.geometry.clipSelected(h.clip))
+            for (const auto &b : clipBodies())
+                if (b.clip->id != h.clip && view.geometry.clipSelected(b.clip->id))
+                    clips.push_back(b.clip->id);
+        const engine::ClipNode *dragged = nullptr;
+        for (const auto &b : clipBodies())
+            if (b.clip->id == h.clip)
+                dragged = b.clip;
+        const bool changed = dragged != nullptr &&
+                             (h.curve ? (h.in ? dragged->fadeInTension : dragged->fadeOutTension).value_or(0.0) != fadeTension_
+                                      : (h.in ? dragged->fadeInTicks : dragged->fadeOutTicks) != fadeTicks_);
+        if (changed) {
+            if (const auto current = view.root.current()) {
+                auto edit = dragFades(current->tracks, clips, h.in, h.curve ? std::nullopt : std::optional<std::int64_t>(fadeTicks_),
+                                      h.curve ? std::optional<double>(fadeTension_) : std::nullopt);
+                if (!edit.ops.empty())
+                    view.root.submitEdits(std::move(edit.ops));
+            }
+        }
+        view.changed();
+        return;
+    }
     if (resizing_ != 0 && !keyResize_) {
         const auto clip = resizing_, length = resizeLength_;
         resizing_ = 0;
@@ -2626,6 +2970,26 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
         view.root.say(note);
     return true;
 }
+void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
+    // Live: a double-click on a clip opens it in the Clip View (manual 8).
+    if (e.mods.isPopupMenu())
+        return;
+    const auto *t = view.geometry.trackAt(view.reader(), e.y);
+    const auto *c = t != nullptr ? view.geometry.hit(*t, view.geometry.tick(e.x)) : nullptr;
+    if (c == nullptr) {
+        // On an empty part of a MIDI track's lane it makes a clip of the bar under the pointer and
+        // opens it (Live 12 makes a clip on a double-click there; its length is to be measured).
+        if (t == nullptr || !isMidiTrack(*t) || view.geometry.meters == nullptr)
+            return;
+        const auto bar = view.geometry.barHolding(view.geometry.tick(e.x));
+        if (view.root.insertMidiClips({t->id}, bar.start, bar.end))
+            view.root.showClipView();
+        return;
+    }
+    if (view.geometry.selection.clip != c->id)
+        view.selectClip(t->id, c->id);
+    view.root.showClipView();
+}
 void ArrangementCanvas::mouseWheelMove(const juce::MouseEvent &e,
                                        const juce::MouseWheelDetails &w) {
     view.wheel(e, w);
@@ -2644,6 +3008,39 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
     auto &sel = view.geometry.selection;
+    // F held shows every audio clip's fade handles (manual 6.8).
+    if ((code == 'f' || code == 'F') && !mods.isAnyModifierKeyDown()) {
+        if (!showFades) {
+            showFades = true;
+            repaint();
+        }
+        return true;
+    }
+    // Delete with a fade's handle chosen deletes that fade (manual 6.8; Create Fades on Clip
+    // Edges is off, ADR-0132 d6, so it goes to nothing, not to 4 ms).
+    if ((code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) && !mods.isAnyModifierKeyDown() &&
+        selectedFade_) {
+        // Only while that fade's clip is still what is chosen, nothing else is (a locator, a marker,
+        // the brace), and the fade has a length; else Delete is the selection's, as without one.
+        const auto h = *selectedFade_;
+        selectedFade_.reset();
+        const engine::ClipNode *clip = nullptr;
+        for (const auto &b : clipBodies())
+            if (b.clip->id == h.clip)
+                clip = b.clip;
+        const bool stillChosen = clip != nullptr && sel.clip == h.clip && !view.loopSelected && view.selectedLocator == 0 &&
+                                 view.selectedMeter < 0;
+        if (stillChosen && (h.in ? clip->fadeInTicks : clip->fadeOutTicks) > 0)
+            if (const auto current = view.root.current()) {
+                auto edit = dragFades(current->tracks, {h.clip}, h.in, std::int64_t{0}, std::nullopt);
+                for (auto &op : edit.ops)
+                    op.label = "Delete Fade";
+                if (!edit.ops.empty() && view.root.submitEdits(std::move(edit.ops))) {
+                    view.changed();
+                    return true;
+                }
+            }
+    }
     // A clip's length from the keyboard (online §41.4.1.3): the arrows move its end by the
     // grid, Enter keeps it as one undo step, Esc or any other key puts it back.
     if (keyResizing()) {

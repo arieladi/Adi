@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/store.hpp"
+#include "adi/ui/density.hpp"
 #include "adi/ui/session_state.hpp"
+#include "adi/ui/theme.hpp"
 #include "adi/ui/window_state.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -17,8 +19,70 @@ void check(bool ok, const char *what) {
         std::printf("FAIL %s\n", what);
     }
 }
+// The theme and density tables (DF-W24): the window's every colour and size, by role.
+void themeAndDensityTables() {
+    // Each theme by its settings word, and back; "os" and anything unknown read as Dark, the default.
+    for (const auto id : kThemes)
+        check(themeFromSetting(themeName(id)) == id, "a theme's word reads back as the theme");
+    check(themeFromSetting("os") == ThemeId::Dark && themeFromSetting("") == ThemeId::Dark &&
+              themeFromSetting("purple") == ThemeId::Dark,
+          "the registry's \"os\", and anything unknown, read as Dark");
+    // Dark is the sheets' (lib.js's C): the window, the panel, a control, the text, the accent, the value.
+    const auto &dark = themeFor(ThemeId::Dark);
+    check(dark.frame == 0xff1b1b1b && dark.panel == 0xff2b2b2b && dark.chooser == 0xff3d3d3d &&
+              dark.text == 0xffdcdcdc && dark.accent == 0xffffad3b && dark.value == 0xff4fc3ea &&
+              dark.ink == 0xff1a1a1a && dark.lane == 0xff323232 && dark.laneAlt == 0xff2e2e2e,
+          "Dark is the language sheet's colours");
+    // Mid grey is the window as built before the sheets.
+    const auto &grey = themeFor(ThemeId::MidGrey);
+    check(grey.frame == 0xff707070 && grey.panel == 0xff8f8f8f && grey.field == 0xffaaaaaa && grey.text == 0xff000000 &&
+              grey.accent == 0xfff4b43e && grey.value == 0xff7ddbf3 && grey.outline == 0xff444444,
+          "Mid grey is the window as built");
+    // Light and Mix View carry the sheet's six swatches.
+    const auto &light = themeFor(ThemeId::Light), &mix = themeFor(ThemeId::MixView);
+    check(light.frame == 0xffe9e9e9 && light.panel == 0xfff6f6f6 && light.chooser == 0xffffffff &&
+              light.text == 0xff1c1c1c && light.accent == 0xffff9d1c && light.value == 0xff1fa3d1,
+          "Light is the sheet's six swatches");
+    check(mix.frame == 0xff131316 && mix.panel == 0xff202027 && mix.chooser == 0xff30303a && mix.text == 0xffd9d9de &&
+              mix.accent == 0xffffb13b && mix.value == 0xff5ec8ff,
+          "Mix View is the sheet's six swatches");
+    // Every theme is opaque, and its text stands off its panel, its ink off its accent.
+    const auto level = [](std::uint32_t c) { return ((c >> 16 & 0xff) + (c >> 8 & 0xff) + (c & 0xff)) / 3; };
+    for (const auto id : kThemes) {
+        const auto &t = themeFor(id);
+        bool opaque = true;
+#define ADI_THEME_OPAQUE(name) opaque = opaque && (t.name >> 24) == 0xff;
+        ADI_THEME_ROLES(ADI_THEME_OPAQUE)
+#undef ADI_THEME_OPAQUE
+        check(opaque, "every colour of every theme is opaque");
+        const auto apart = [&](std::uint32_t a, std::uint32_t b) {
+            return (level(a) > level(b) ? level(a) - level(b) : level(b) - level(a)) >= 100;
+        };
+        check(apart(t.text, t.panel) && apart(t.text, t.lane) && apart(t.ink, t.accent),
+              "a theme's text stands off its panel and lanes, and its ink off its accent");
+        check(apart(t.knobNeedle, t.panel) && apart(t.knobNeedle, t.lane) && t.knobRing != t.panel,
+              "a theme's knob needle stands off its panel and lanes, and its ring is not the panel");
+    }
+    // The densities: Compact is Live's sizes as built, Open is roomier in every measure.
+    check(densityFromSetting(densityName(DensityId::Open)) == DensityId::Open &&
+              densityFromSetting("") == DensityId::Compact && densityFromSetting("compact") == DensityId::Compact,
+          "a density's word reads back; anything else is Compact");
+    const auto &compact = densityFor(DensityId::Compact), &open = densityFor(DensityId::Open);
+    check(compact.controlBarHeight == 35 && compact.statusBarHeight == 38 && compact.gap == 8 && compact.border == 4 &&
+              compact.fieldHeight == 17 && compact.detailHeight == 196 && compact.fontBody == 11.5f,
+          "Compact is the window's measures as built");
+    check(compact.knobSmall == 11.f && compact.knobMedium == 15.f && compact.knobLarge == 21.f &&
+              compact.radiusControl == 5.f && compact.radiusGroup == 8.f && open.fontTiny == 11.f && open.knobSmall == 16.f,
+          "the language sheet's knobs and corners; Open's compressor as the sheet draws it");
+    bool roomier = true;
+#define ADI_DENSITY_ROOMIER(name) roomier = roomier && open.name >= compact.name;
+    ADI_DENSITY_ROLES(ADI_DENSITY_ROOMIER, ADI_DENSITY_ROOMIER)
+#undef ADI_DENSITY_ROOMIER
+    check(roomier, "Open is at least Compact in every measure");
+}
 } // namespace
 int main() {
+    themeAndDensityTables();
     test::TempDirectory temp("ui_state", "roundtrip");
     StoreError err{};
     auto store = Store::createEmpty(temp.path() / "p.adi", err);
@@ -56,6 +120,21 @@ int main() {
     state.analysisPaletteReverse = true;
     state.analysisSpectrumSlope = "tilt45";
     state.showReference = true;
+    // The Note Editor's own settings.
+    state.noteGridSnap = false;
+    state.noteGridFixed = true;
+    state.noteGridTriplet = true;
+    state.noteGridNarrow = -1;
+    state.noteGridFixedQuarters = 2;
+    state.highlightScale = false;
+    state.noteColours = 3;
+    state.noteLaneHeight = 90;
+    state.clipPanelsArrangement = 2;
+    state.quantizeValue = 6;
+    state.quantizeAmount = 40;
+    state.quantizeSwing = 15;
+    state.quantizeStarts = false;
+    state.quantizeEnds = true;
     state.hideReturns = true;
     state.gridSnap = false;
     state.gridFixed = true;
@@ -92,6 +171,15 @@ int main() {
               !views.load("other").mixAnalyzerDock && views.load("other").mixAnalyzerWidth == 300 &&
               views.load("other").mixAnalyzerSource == 0,
           "optional analyzer dock source/tap/channel/width persist per window, off and Main by default");
+    check(!restored.noteGridSnap && restored.noteGridFixed && restored.noteGridTriplet && restored.noteGridNarrow == -1 &&
+              restored.noteGridFixedQuarters == 2 && !restored.highlightScale && restored.noteColours == 3 && restored.quantizeValue == 6 &&
+              restored.noteLaneHeight == 90 && views.load("other").noteLaneHeight == 56 &&
+              restored.clipPanelsArrangement == 2 && views.load("other").clipPanelsArrangement == 0 &&
+              restored.quantizeAmount == 40 && restored.quantizeSwing == 15 && !restored.quantizeStarts && restored.quantizeEnds &&
+              views.load("other").noteGridSnap && !views.load("other").noteGridFixed && views.load("other").highlightScale &&
+              views.load("other").noteColours == 0 && views.load("other").quantizeAmount == 100 && views.load("other").quantizeStarts &&
+              views.load("other").clipViewHeight == 286,
+          "the Note Editor's grid, Highlight Scale, note colours and Quantize settings persist per window, with Live's defaults");
     check(restored.analysisPalette == "viridis" && restored.analysisPaletteReverse &&
               views.load("other").analysisPalette == "adi" && !views.load("other").analysisPaletteReverse,
           "spectrogram palette/reverse persist per window with original ADI colors as the default");

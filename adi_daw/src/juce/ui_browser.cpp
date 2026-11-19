@@ -13,7 +13,7 @@ void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {
     juce::Path p;
     switch (kind) {
     case Favorite:
-        g.setColour(juce::Colour(0xffe5352b));
+        g.setColour(look::favourite);
         g.fillRect(r.reduced(3));
         break;
     case Sounds:
@@ -117,12 +117,12 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     setTooltip("Live's browser: your sounds, devices, plug-ins and files.");
     setWantsKeyboardFocus(true);
 #if JUCE_MAC
-    search.setTextToShowWhenEmpty("Search (Cmd + F)", juce::Colour(0xff5a5a5a));
+    search.setTextToShowWhenEmpty("Search (Cmd + F)", look::textFaint);
 #else
-    search.setTextToShowWhenEmpty("Search (Ctrl + F)", juce::Colour(0xff5a5a5a));
+    search.setTextToShowWhenEmpty("Search (Ctrl + F)", look::textFaint);
 #endif
     search.setTitle("Search");
-    search.setFont(look::font(12.5f));
+    search.setFont(look::font(look::fontHeading));
     search.setIndents(8, 4);
     search.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
     search.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
@@ -292,7 +292,7 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     if (r.heading.isNotEmpty()) {
         // A folder of Live's, as its heading.
         g.setColour(look::textDim);
-        g.setFont(look::font(12.f, true));
+        g.setFont(look::font(look::fontField, true));
         g.drawText(r.heading, 6, 0, width - 10, height, juce::Justification::centredLeft, true);
         return;
     }
@@ -302,7 +302,7 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
          juce::Rectangle<float>(6.f + static_cast<float>(indent), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
     // An entry this build cannot load is dimmed (its reason is said when it is chosen).
     g.setColour(device && !unavailable(*r.device).empty() ? look::textDim : look::text);
-    g.setFont(look::font(12.5f));
+    g.setFont(look::font(look::fontHeading));
     const auto name = device ? juce::String(std::string(r.device->name)) : juce::String::fromUTF8(r.file->name.c_str());
     g.drawText(name, 24 + indent, 0, width - 28 - indent, height, juce::Justification::centredLeft, true);
 }
@@ -367,10 +367,10 @@ void BrowserPanel::paint(juce::Graphics &g) {
     const float w = static_cast<float>(getWidth()), h = static_cast<float>(getHeight());
     const float strip = kStripWidth, bar = kBarHeight;
     // The dark edge: the search row, the panes, the preview row, as one block.
-    g.setColour(juce::Colour(0xff444444));
-    g.fillRoundedRectangle(strip, 0, w - strip, bar + 4, 5.f);
-    g.fillRoundedRectangle(0, bar - 4, w, h - 2 * bar + 8, 5.f);
-    g.fillRoundedRectangle(strip, h - bar - 4, w - strip, bar + 4, 5.f);
+    g.setColour(look::browserEdge);
+    g.fillRoundedRectangle(strip, 0, w - strip, bar + 4, look::radiusControl);
+    g.fillRoundedRectangle(0, bar - 4, w, h - 2 * bar + 8, look::radiusControl);
+    g.fillRoundedRectangle(strip, h - bar - 4, w - strip, bar + 4, look::radiusControl);
     // The round buttons: show/hide the browser at the top, the groove pool at the foot.
     for (const float y : {0.5f, h - 19.5f}) {
         g.setColour(look::band);
@@ -398,12 +398,12 @@ void BrowserPanel::paint(juce::Graphics &g) {
             }
             if (e.heading) {
                 g.setColour(look::textDim);
-                g.setFont(look::font(12.f));
+                g.setFont(look::font(look::fontField));
                 g.drawText(e.name, row.withTrimmedLeft(5), juce::Justification::centredLeft);
             } else {
                 icon(g, e.glyph, row.withTrimmedLeft(8).withWidth(13).toFloat().withSizeKeepingCentre(13, 13));
                 g.setColour(look::text);
-                g.setFont(look::font(12.5f));
+                g.setFont(look::font(look::fontHeading));
                 g.drawText(e.name, row.withTrimmedLeft(25), juce::Justification::centredLeft);
             }
             y += kRowHeight;
@@ -418,7 +418,7 @@ void BrowserPanel::paint(juce::Graphics &g) {
     g.setColour(look::columnHead);
     g.fillRect(header);
     g.setColour(look::text);
-    g.setFont(look::font(12.f, true));
+    g.setFont(look::font(look::fontField, true));
     g.drawText("Name", header.withTrimmedLeft(4), juce::Justification::centredLeft);
     look::triangle(g, {static_cast<float>(header.getRight()) - 13, static_cast<float>(header.getY()) + 6, 8, 7},
                    juce::MathConstants<float>::halfPi, look::textDim);
@@ -427,7 +427,7 @@ void BrowserPanel::paint(juce::Graphics &g) {
                                        getWidth() - kStripWidth - 2 * look::border, 21);
     g.setColour(look::panel);
     g.fillRect(preview);
-    g.setColour(juce::Colour(0xff2e6fd8));
+    g.setColour(look::focus);
     g.drawEllipse(juce::Rectangle<float>(11, 11).withCentre(
                       {static_cast<float>(preview.getX()) + 13, static_cast<float>(preview.getCentreY())}),
                   2.f);

@@ -5,30 +5,33 @@
 // 100 % zoom, 2026-10-27 (collab/window/look-live11.md has the captures); every
 // value here is a measured one unless its comment says otherwise.
 #pragma once
+#include "adi/ui/density.hpp"
+#include "adi/ui/theme.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 namespace adi::ui::look {
-// --- the palette ------------------------------------------------------------------------
-inline const juce::Colour frame{0xff707070};     // the window, the control bar, gaps
-inline const juce::Colour panel{0xff8f8f8f};     // browser, headers, Info View, devices
-inline const juce::Colour field{0xffaaaaaa};     // control bar fields, title bars
-inline const juce::Colour chooser{0xffdcdcdc};   // choosers and off switches
-inline const juce::Colour columnHead{0xff808080}; // the browser's "Name" header
-inline const juce::Colour band{0xff505050};      // the rulers, the right-hand strip
-inline const juce::Colour lane{0xff858585};      // an arrangement lane
-inline const juce::Colour laneAlt{0xff8f8f8f};   // every other bar group
-inline const juce::Colour laneSelected{0xff9f9f9f};
-inline const juce::Colour laneSelectedAlt{0xffaaaaaa};
-inline const juce::Colour gridLine{0xff6e6e6e};
-inline const juce::Colour separator{0xff505050}; // between tracks, 2 pt
-inline const juce::Colour button{0xffb7b7b7};    // a switch that is off (S, arm, In)
-inline const juce::Colour display{0xff191919};   // a device's display
-inline const juce::Colour text{0xff000000};
-inline const juce::Colour textDim{0xff4d4d4d};
-inline const juce::Colour textOnBand{0xffc8c8c8}; // ruler numbers
-inline const juce::Colour accent{0xfff4b43e};     // an on switch, the activator
-inline const juce::Colour value{0xff7ddbf3};      // a value box's fill
-inline const juce::Colour selection{0xffc7e8fd};  // a selected browser row
-inline const juce::Colour outline{0xff444444};   // every box's 1 pt edge
+using adi::ui::DensityId;
+using adi::ui::ThemeId;
+using adi::ui::densityFor;
+using adi::ui::themeFor;
+// --- the theme and the density (DF-W24) --------------------------------------------------
+// The window draws only with these. Each role of the current theme (adi/ui/theme.hpp) is a
+// look:: colour of the same name, and each measure of the current density (adi/ui/density.hpp) a
+// look:: number of the same name. `apply` sets them all, and the JUCE controls' colours, before a
+// window is drawn and whenever the settings change; until then they hold Dark and Compact.
+#define ADI_LOOK_COLOUR(name) inline juce::Colour name{themeFor(ThemeId::Dark).name};
+ADI_THEME_ROLES(ADI_LOOK_COLOUR)
+#undef ADI_LOOK_COLOUR
+#define ADI_LOOK_INT(name) inline int name = densityFor(DensityId::Compact).name;
+#define ADI_LOOK_FLOAT(name) inline float name = densityFor(DensityId::Compact).name;
+ADI_DENSITY_ROLES(ADI_LOOK_INT, ADI_LOOK_FLOAT)
+#undef ADI_LOOK_INT
+#undef ADI_LOOK_FLOAT
+// The current pair, and setting it. True when anything changed (every window then repaints).
+ThemeId themeId() noexcept;
+DensityId densityId() noexcept;
+bool apply(ThemeId, DensityId);
+// The text on a switch: the theme's text when it is off, the ink on its lit colour when it is on.
+inline juce::Colour textOn(bool lit) { return lit ? ink : text; }
 // Live's colours for new tracks, in the order its default set shows them, then its
 // palette's first row. Measured from the four default tracks; the rest from Live's
 // palette, to be read again off Live (AWAITING).
@@ -38,13 +41,8 @@ juce::Colour trackColour(std::size_t position);
 // fourteen above stand in, index % 14.
 juce::Colour paletteColour(std::int64_t index);
 inline const juce::Colour returnA{0xffc49b40}, returnB{0xfff2a948}, mainTrack{0xffe5742e};
-// --- the measures, in points at 100 % ---------------------------------------------------
-inline constexpr int controlBarHeight = 35, gap = 8, statusBarHeight = 38;
-inline constexpr int fieldHeight = 17;
-inline constexpr int detailHeight = 196; // Info View and Device View with their 4 pt edges
-inline constexpr int border = 4;         // a panel's dark edge
 // --- type ---------------------------------------------------------------------------------
-juce::Font font(float height = 11.5f, bool bold = false);
+juce::Font font(float height = fontBody, bool bold = false);
 // --- drawing helpers ------------------------------------------------------------------
 void box(juce::Graphics &, juce::Rectangle<float>, juce::Colour fill, bool outlined = true);
 void triangle(juce::Graphics &, juce::Rectangle<float>, float angle, juce::Colour);
@@ -52,6 +50,8 @@ void triangle(juce::Graphics &, juce::Rectangle<float>, float angle, juce::Colou
 class LiveLook final : public juce::LookAndFeel_V4 {
   public:
     LiveLook();
+    // The JUCE controls' colours, from the current theme (again after `apply`).
+    void setColours();
     void drawButtonBackground(juce::Graphics &, juce::Button &, const juce::Colour &,
                               bool highlighted, bool down) override;
     void drawButtonText(juce::Graphics &, juce::TextButton &, bool highlighted,

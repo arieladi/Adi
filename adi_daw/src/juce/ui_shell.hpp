@@ -3,6 +3,7 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/import_choices.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
@@ -18,6 +19,7 @@
 #include "ui_look.hpp"
 #include "adi/clip_commands.hpp"
 #include "ui_devices.hpp"
+#include "ui_clipview.hpp"
 #include "ui_analysis.hpp"
 #include "ui_mixer.hpp"
 #include "ui_mixview.hpp"
@@ -125,7 +127,33 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Duplicate,
         TogglePluginWindows,
         Split,
-        LastId = Split
+        ToggleClipView,
+        InsertMidiClip,
+        CutTime,
+        CopyTime,
+        PasteTime,
+        DuplicateTime,
+        DeleteTime,
+        InsertSilence,
+        CreateFade,
+        DeleteFades,
+        // The Note Editor's own (manual 10.5 and on): in the Edit, View and Options menus.
+        InvertSelection,
+        Quantize,
+        QuantizeSettings,
+        CropClip,
+        ExpandClipView,
+        FoldToNotes,
+        FoldToScale,
+        HighlightScales,
+        DrawMode,
+        // The Clip View's panels (manual 8.1.2): the View menu's three.
+        ArrangePanelsAutomatically,
+        ArrangePanelsHorizontally,
+        ArrangePanelsVertically,
+        FocusClipView, // Live's Navigate menu: Clip View, Alt/Option+3
+        FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
+        LastId = FitToTimeRange
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -172,21 +200,28 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool splitAllWithNoSelection() const noexcept { return splitAll_; }
     // The settings, read where an engine edit captures the editing policy (`edit_plan::capturePolicy`).
     const settings::AppSettings &settings() const noexcept { return settings_; }
+    // For what the window writes back: the import prompt's last choices (E5).
+    settings::AppSettings &writableSettings() noexcept { return settings_; }
     // The Arrangement's clipboard (Live 12 manual 6.9, 41.5; E2, N17): a clip's copy or a time
     // selection's, values the engine made (`copyClip`, `copyRange`), never ops. It is the app's, as
     // the device clipboard is, so it outlives a window; the engine refuses it in another project.
     struct ClipClipboard {
-        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy> held;
+        // A Time copy (E3: Cut and Copy Time) shares it: the selected time across the whole Set.
+        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy> held;
         bool empty() const noexcept { return std::holds_alternative<std::monostate>(held); }
+        // The project file a copy names; a Time copy names it by its material.
+        static std::string *fileOf(clip_edit::ClipCopy &c) { return &c.sourceFile; }
+        static std::string *fileOf(clip_edit::RangeCopy &c) { return &c.sourceFile; }
+        static std::string *fileOf(clip_edit::TimeCopy &c) { return &c.material.sourceFile; }
+        static std::string *fileOf(std::monostate &) { return nullptr; }
+        std::string sourceFile() {
+            auto *file = std::visit([](auto &copy) { return fileOf(copy); }, held);
+            return file != nullptr ? *file : std::string{};
+        }
         // After Save As, a copy held from the project names the new file, as the device copy does.
         void rebase(const std::string &from, const std::string &to) {
-            std::visit(
-                [&](auto &copy) {
-                    if constexpr (!std::is_same_v<std::decay_t<decltype(copy)>, std::monostate>)
-                        if (copy.sourceFile == from)
-                            copy.sourceFile = to;
-                },
-                held);
+            if (auto *file = std::visit([](auto &copy) { return fileOf(copy); }, held); file != nullptr && *file == from)
+                *file = to;
         }
     };
     ClipClipboard &clipClipboard() noexcept { return clipClipboard_; }
@@ -223,11 +258,24 @@ class StatusBar final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
+    // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
+    // or hides the Clip View (manual 8).
+    juce::TextButton clipToggle{""};
+    // A drag in the selector scrolls the Clip View's editor sideways, the whole field standing for
+    // the whole clip, and zooms it up and down (manual 8.7); a press let go where it began is the
+    // click that shows or hides the view. The part of the clip the editor shows is framed in it.
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void clipClicked();
+    juce::Rectangle<float> clipViewFrame() const;
+    juce::Rectangle<int> secondField() const noexcept { return {getWidth() - 376, 8, 206, 22}; }
     // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
     juce::TextButton mixerOptions{""};
 
   private:
     AdiRootComponent &root_;
+    juce::Point<int> selectorLast_;
+    bool selectorDragged_ = false;
 };
 // The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
 class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer {
@@ -269,6 +317,19 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
+    // ADI's import with choices (E5): the file prepared off the message thread with the prompt's
+    // Warp, edge fades and copy (the document's `prepareMaterial`), then committed here as one undo
+    // step; `done` comes on the message thread with the new clip's id, or 0 and why not. False when
+    // it could not start. Unset, the choices are not offered and the plain import runs.
+    using MaterialDone = std::function<void(std::int64_t clip, const std::string &why)>;
+    std::function<bool(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const ImportChoices &,
+                       MaterialDone done)>
+        importMaterial;
+    // ADI's import prompt (E5): open while a drop waits for its choices; none otherwise.
+    class ImportPrompt;
+    ImportPrompt *importPrompt() noexcept { return importPrompt_.get(); }
+    // Whether a drop with choices is still going: its files land one at a time.
+    bool importing() const noexcept { return importing_.has_value(); }
     // Live's Automation Arm and Re-Enable Automation (manual 25.1, 25.4; MR 6.1; N26): the
     // session's state, which the document owns, so the application sets these three. Re-Enable's
     // lit state is the snapshot's (`SnapshotReader::automationOverridden`); a click runs
@@ -285,6 +346,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Several files dropped at once, each a (path, clip name): one after another on that track, or
     // with `separate` (Ctrl/Cmd held) the first there and each other on a new audio track of its own
     // (`adi::ui::dropAudio`). Each file is read and captured first; one undo step for them all.
+    // The drop once the choices are known: the plain import when all are off, else the queue.
+    bool dropWithChoices(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                         std::int64_t pos, bool separate, const ImportChoices &);
     bool dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
                         std::int64_t pos, bool separate);
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
@@ -300,6 +364,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void hover(juce::Component *);
     // Laid-out rectangles, in the root's logical units, for tests and children.
     juce::Rectangle<int> deviceArea() const noexcept { return deviceArea_; }
+    juce::Rectangle<int> clipArea() const noexcept { return clipArea_; }
     juce::Rectangle<int> infoArea() const noexcept { return infoArea_; }
     juce::Rectangle<int> browserArea() const noexcept { return browserArea_; }
     juce::Rectangle<int> chatArea() const noexcept { return chatArea_; }
@@ -349,6 +414,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     DeviceChainStrip devices;
     DockResizer dockResizer;
+    // Live's Clip View, above the Device View in the detail row (STEP-7-PLAN 7.7).
+    ClipViewPanel clipView{*this};
+    ClipViewResizer clipResizer{*this};
+    static constexpr int kClipViewFloor = 150;
     MixerPanel mixer;
     MixerPanel mixerView{*this, true};
     // The Mix View (ADR-0209): docked in place of the arrangement and its track controls.
@@ -416,6 +485,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the insert marker; else the clips under the marker on the selected tracks, or on every track
     // when editing.splitAllWithNoSelection is on. Each clip is one undo step.
     bool splitAtMarker();
+    // Live's Create Fade In/Out and Create Crossfade (manual 6.8; Ctrl/Cmd+Alt+F, the Create menu):
+    // over the time selection's audio clip starts, ends and boundaries, one undo step. And Delete
+    // Fades/Crossfades (Ctrl/Cmd+Alt+Backspace) on the chosen clips, or the audio clips the time
+    // selection holds. E4.
+    bool createFades();
+    bool deleteFades();
+    // Whether the selection crosses two clips' boundary: Create Fade reads Create Crossfade.
+    bool selectionCrossfades() const;
     // Live's Cut, Copy, Paste and Duplicate in the Arrangement (manual 6.9, 41.5; E2): on the chosen
     // clip or the time selection; Paste at the insert marker, a range onto as many shown tracks as
     // it came from, in order, from the selected one. Each is one undo step; the engine's refusals go
@@ -429,6 +506,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool deviceClipboardFirst(DeviceChainStrip::Clip) const;
     // Where Paste starts: the top selected track the lanes show that can hold clips; 0 if none.
     std::int64_t pasteOrigin() const;
+    // Live's …Time commands and Insert Silence (manual 6.11, 41.5; E3): across every track, from the
+    // time selection (Paste Time at the insert marker). Locators, time signature markers, the loop
+    // and global automation move as the engine moves them. One undo step each. `canTimeCommand`
+    // says whether there is something to act on.
+    bool timeCommand(int commandId);
+    bool canTimeCommand(int commandId) const;
     // The rate an edit's seconds and ticks convert at: the device's, else the project's.
     double editRate() const noexcept;
     // The store an engine edit is prepared against, and the settings its policy is captured from.
@@ -523,12 +606,27 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live: "Double-clicking a track's title bar brings up the Device View" (Live 12 manual, Live
     // Concepts): shown if it is hidden, the selected track's devices in it.
     bool showDeviceView();
+    // Shows the Clip View if it is hidden: a double-click on a clip (manual 8).
+    bool showClipView();
+    // Live's Insert Empty MIDI Clip(s) (Ctrl/Cmd+Shift+M): an empty MIDI clip from `start` to `end`
+    // on each MIDI track of `tracks`, one undo step; the first is selected.
+    bool insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end);
     // Hands this window's selection to the session, which every window presents.
     void publishSelection();
     SessionState &session() noexcept { return session_; }
     // Drag the strip's top edge: never below the floor, never past the ceiling that
     // leaves the transport, the ruler and one track row (ADR-0184, ADR-0203 d7).
     void resizeDevices(int height);
+    void resizeClipView(int height);
+    // Ctrl/Cmd+Alt+E in the Clip View (manual 10.2): its full height, as far as the layout gives it,
+    // and back to the height it had.
+    void toggleClipViewFull();
+    // Whether the Clip View's Note Editor is the view in use, so that the Edit menu's commands are its own.
+    bool noteEditorHasContext() const;
+    // Whether the Clip View shows a MIDI clip's notes: the editor's own switches (the folds, Highlight
+    // Scales, Draw Mode) can then be thrown from the menus, with the keyboard anywhere.
+    bool noteEditorShown() const;
+    bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
     bool insertTrack(bool midi);
@@ -556,6 +654,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::string window_;
     WindowState state_;
     DirtySet dirty_;
+    int clipViewRestore_ = 0;
     std::optional<SnapshotReader> reader_;
     std::uint64_t generation_ = 0;
     bool pluginWindowsShown_ = true;
@@ -568,10 +667,31 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::optional<std::string> zoomDisplay_; // the display the zoom was last followed on
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
-    juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
+    juce::Rectangle<int> clipArea_, deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
         mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
+    // E5: the prompt while open, and a drop with choices landing one file at a time.
+    std::unique_ptr<ImportPrompt> importPrompt_;
+    struct PendingImport {
+        std::vector<std::pair<std::string, std::string>> files;
+        std::int64_t track = 0, pos = 0;
+        bool separate = false;
+        ImportChoices choices;
+        std::size_t next = 0;
+        std::int64_t firstClip = 0, firstTrack = 0;
+        // The track this queue made for the file being imported, and that step: a refusal undoes it,
+        // so a refused file leaves nothing.
+        std::int64_t madeTrack = 0, madeStep = 0;
+        std::size_t landed = 0;
+        // A choice that could not be saved, said when the import ends.
+        std::string warning;
+    };
+    std::optional<PendingImport> importing_;
+    bool dropPlain(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track, std::int64_t pos,
+                   bool separate);
+    void importNext();
+    void finishImport(const std::string &why);
     StubMixViewProvider mixStub_;
     const MixViewProvider *mixProvider_ = &mixStub_;
     ReferenceAudition reference_;
@@ -645,5 +765,28 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     int tipDelayMs_ = 0;
     std::unique_ptr<ShellMenu> menu_;
     juce::VBlankAttachment clock_;
+};
+// ADI's import prompt (E5; Live 12 manual 9.2.1, 9.2.2, 5.7; ADR-0132 d6): what dropped audio is
+// imported with. Its own choices, all off by default; Import keeps them as the last ones (the
+// settings), Cancel imports nothing. It is ADI's dialog: Live imports without asking.
+class AdiRootComponent::ImportPrompt final : public juce::Component {
+  public:
+    ImportPrompt(std::size_t files, const ImportChoices &, std::function<void(std::optional<ImportChoices>)> answer);
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    // What the toggles say now.
+    ImportChoices choices() const;
+    // Import or Cancel, as the buttons do.
+    void answer(bool import);
+    // Return imports and Escape cancels; Tab moves among its controls; every other key stays here,
+    // so the arrangement's keys do not act behind an open prompt.
+    bool keyPressed(const juce::KeyPress &) override;
+    juce::ToggleButton warp{"Warp"}, fades{"Create Fades on Clip Edges"}, copy{"Copy into the project's folder"};
+    juce::ComboBox mode;
+    juce::TextButton import{"Import"}, cancel{"Cancel"};
+
+  private:
+    juce::String title_;
+    std::function<void(std::optional<ImportChoices>)> answer_;
 };
 } // namespace adi::ui

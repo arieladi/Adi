@@ -23,7 +23,7 @@ ChannelConfigPanel::ChannelConfigPanel(bool inputs, settings::ChannelConfig conf
         line->toggle.setClickingTogglesState(true);
         line->toggle.setToggleState(on, juce::dontSendNotification);
         line->toggle.setColour(juce::TextButton::buttonColourId, look::button);
-        line->name.setFont(look::font(12.5f));
+        line->name.setFont(look::font(look::fontHeading));
         line->name.setJustification(juce::Justification::centredLeft);
         line->name.setIndents(4, 0);
         line->name.setColour(juce::TextEditor::backgroundColourId, look::chooser);
@@ -92,13 +92,13 @@ void ChannelConfigPanel::resized() {
 void ChannelConfigPanel::paint(juce::Graphics &g) {
     g.fillAll(look::panel);
     g.setColour(look::text);
-    g.setFont(look::font(12.5f));
+    g.setFont(look::font(look::fontHeading));
     const auto what = inputs_ ? juce::String("inputs") : juce::String("outputs");
     g.drawFittedText("Choose which of " + device_ + "'s " + what +
                          " the tracks may use, as mono channels and as stereo pairs, and name them. Channels "
                          "that are off are not opened and cost no CPU.",
                      kMargin, 8, getWidth() - 2 * kMargin, kIntro - 12, juce::Justification::topLeft, 3);
-    g.setFont(look::font(12.5f, true));
+    g.setFont(look::font(look::fontHeading, true));
     const int column = (getWidth() - 2 * kMargin) / 2;
     const auto side = inputs_ ? juce::String("Inputs") : juce::String("Outputs");
     g.drawText("Mono " + side, kMargin, kIntro, column, kHead, juce::Justification::centredLeft);

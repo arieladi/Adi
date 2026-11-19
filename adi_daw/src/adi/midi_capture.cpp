@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/midi_capture.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/store.hpp"
@@ -204,13 +205,11 @@ std::optional<PreparedMidi> prepareMidi(Store& store,const engine::MidiMemorySna
         if(!active.empty() && !spec.closeHeldNotes)throw std::runtime_error("MIDI Capture has held notes without an allowed closing boundary");
         for(const auto& [id,index]:active){(void)id;notes[index].end=length;++result.closedHeldNotes;}
         OpRequest create;create.opType="capture.createMidi";create.payload={{"clip",{{"id",spec.clip},{"track",source.trackId},{"kind","midi"},{"name",spec.name},{"pos",spec.positionTicks},{"length",length}}},{"controllers",Payload::array()}};
-        auto streamId=std::max<std::int64_t>(0,store.db().execAndGet("SELECT coalesce(max(id),0) FROM event_streams").getInt64());
+        RowIds ids(store.db());
         for(const auto& [address,points]:controls) {
-            if(streamId==std::numeric_limits<std::int64_t>::max())throw std::runtime_error("no MIDI Capture stream identity available");
             const auto bytes=writeStream<AutomationPoint>(FourCC::Controller,points,1,StreamFlags::SortedByTime);
-            create.payload["controllers"].push_back({{"id",++streamId},{"channel",address.first},{"controller",address.second},{"bytes",encoded(bytes)}});
+            create.payload["controllers"].push_back({{"id",ids.next("event_streams")},{"channel",address.first},{"controller",address.second},{"bytes",encoded(bytes)}});
         }
-        if(!notes.empty() && streamId==std::numeric_limits<std::int64_t>::max())throw std::runtime_error("no MIDI Capture notes-stream identity available");
         std::vector<NoteRecord> records;records.reserve(notes.size());
         for(const auto& note:notes) {
             if(note.end<=note.start)throw std::runtime_error("captured note has no representable duration");
@@ -221,7 +220,7 @@ std::optional<PreparedMidi> prepareMidi(Store& store,const engine::MidiMemorySna
         if(!records.empty()) {
             std::sort(records.begin(),records.end(),[](const auto& a,const auto& b){if(a.start_ticks!=b.start_ticks)return a.start_ticks<b.start_ticks;if(a.key!=b.key)return a.key<b.key;return a.note_id<b.note_id;});
             const auto bytes=writeStream<NoteRecord>(FourCC::Notes,records,1,StreamFlags::SortedByTime);
-            create.payload["notes"]={{"id",++streamId},{"bytes",encoded(bytes)}};
+            create.payload["notes"]={{"id",ids.next("event_streams")},{"bytes",encoded(bytes)}};
         }
         result.requests.push_back(std::move(create));
         result.notes=notes.size();result.controllerLanes=controls.size();

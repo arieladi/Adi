@@ -342,6 +342,134 @@ void mixSurfacePublication(const std::filesystem::path &file) {
     document->release();
 }
 } // namespace
+// E5: ADI's import with choices (Live 12 manual 9.2; ADR-0132 d6): prepared on a connection of its
+// own, as the app's worker does, and committed through the document as one undo step.
+void importWithChoices(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "import-choices.adi", true, {}, error);
+    check(doc != nullptr, "a project for the import with choices");
+    if (!doc)
+        return;
+    // A second of a tone, outside the project's folder.
+    const auto outside = dir / "outside";
+    std::filesystem::create_directories(outside);
+    const auto wav = outside / "Tone.wav";
+    {
+        std::vector<float> samples(48000);
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(0.5 * std::sin(static_cast<double>(i) * 2 * 3.14159265358979 * 220 / 48000.));
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    const auto audioTrack = [&] {
+        for (const auto &t : doc->view().current()->tracks)
+            if (t && t->kind == "audio")
+                return t->id;
+        return std::int64_t{0};
+    }();
+    const auto clipsOn = [&](std::int64_t track) {
+        std::size_t n = 0;
+        if (const auto *t = doc->view().current()->findTrack(track))
+            n = t->clips.size();
+        return n;
+    };
+    // Copy on: the file lands in the project's folder and plays from there, in one undo step.
+    ui::ImportChoices copy;
+    copy.copyIn = true;
+    const auto before = doc->ops().nextUndo();
+    auto job = doc->materialJob(wav.string(), audioTrack, 0, copy, 1'700'000'000'000'000);
+    auto prepared = ui::ProjectDocument::prepareMaterial(job);
+    check(prepared.edit.ok && clipsOn(audioTrack) == 0, "prepared on its own connection, nothing written yet");
+    const auto clip = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    check(clip != 0 && clipsOn(audioTrack) == 1, "committed: one clip on the track");
+    {
+        SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
+        const auto rel = db.execAndGet("SELECT rel_path FROM media_files ORDER BY id DESC LIMIT 1").getString();
+        const auto copied = doc->store().path().parent_path() / ui::pathFromUtf8(rel);
+        check(std::filesystem::exists(copied) && copied.parent_path().filename() == "audio" &&
+                  copied.parent_path().parent_path() == doc->store().path().parent_path(),
+              "the file was copied into the project's audio folder, and the pool points there");
+    }
+    const auto step = doc->ops().nextUndo();
+    check(step && (!before || step->txnId != before->txnId), "one undo step");
+    check(doc->ops().undo().ok && (doc->synchronise(), clipsOn(audioTrack) == 0), "one undo takes the clip and its pool row away");
+    // Create Fades on Clip Edges on: the clip has short fades at both ends.
+    ui::ImportChoices fades;
+    fades.edgeFades = true;
+    job = doc->materialJob(wav.string(), audioTrack, 0, fades, 1'700'000'000'000'001);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    const auto faded = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    bool edges = false;
+    if (const auto *t = doc->view().current()->findTrack(audioTrack))
+        for (const auto &c : t->clips)
+            if (c->id == faded)
+                edges = c->fadeInTicks > 0 && c->fadeOutTicks > 0;
+    check(faded != 0 && edges, "Create Fades on Clip Edges gives the clip fades at both ends");
+    doc->ops().undo();
+    doc->synchronise();
+    // Warp on, a second of a tone with no beat in it: a named refusal, nothing written.
+    ui::ImportChoices warp;
+    warp.warp = true;
+    job = doc->materialJob(wav.string(), audioTrack, 0, warp, 1'700'000'000'000'002);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    check(doc->commitMaterial(prepared, job) == 0 && doc->error().find("Tone.wav") != std::string::npos &&
+              clipsOn(audioTrack) == 0,
+          "Warp on with no beat to find is refused, named, and nothing lands");
+    // The project changed between preparing and committing: stale, and nothing is left.
+    job = doc->materialJob(wav.string(), audioTrack, 0, copy, 1'700'000'000'000'003);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", audioTrack}, {"name", "Renamed"}};
+    check(doc->ops().submit(std::move(rename)).ok, "an edit lands meanwhile");
+    doc->synchronise();
+    std::int64_t media = 0;
+    {
+        SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
+        media = db.execAndGet("SELECT count(*) FROM media_files").getInt64();
+    }
+    check(doc->commitMaterial(prepared, job) == 0 && doc->error().find("changed") != std::string::npos &&
+              clipsOn(audioTrack) == 0,
+          "the import prepared before it refuses as stale");
+    {
+        SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
+        check(db.execAndGet("SELECT count(*) FROM media_files").getInt64() == media, "and leaves no pool row");
+    }
+    doc->release();
+}
+// The extremes a waveform column draws (`peakSpan`): always those of real bins.
+void peakSpans() {
+    media::MediaPeaks p;
+    p.channels = 2;
+    p.framesPerBin = 256;
+    p.frames = 4 * 256;
+    // Channel 0: an ordinary bin, one wholly above full scale, one wholly below it, a quiet one.
+    // Channel 1 holds other values, so a wrong channel index shows.
+    p.bins = {{-.5f, .5f}, {9.f, 9.f}, {1.4f, 1.8f}, {9.f, 9.f}, {-1.8f, -1.4f}, {9.f, 9.f}, {-.1f, .2f}, {9.f, 9.f}};
+    const auto span = [&p](double from, double to) { return ui::peakSpan(p, from, to, 0); };
+    const auto is = [](const std::optional<media::PeakBin> &got, float low, float high) {
+        return got && got->minimum == low && got->maximum == high;
+    };
+    check(is(span(0., 256.), -.5f, .5f), "peak span: one whole bin is that bin");
+    check(is(span(256., 512.), 1.4f, 1.8f), "peak span: a bin wholly above full scale keeps its own lower edge");
+    check(is(span(512., 768.), -1.8f, -1.4f), "peak span: a bin wholly below full scale keeps its own upper edge");
+    check(is(span(0., 768.), -1.8f, 1.8f), "peak span: several bins give the lowest and the highest of them");
+    check(is(span(256.2, 256.7), 1.4f, 1.8f), "peak span: a span inside one frame answers with its bin");
+    check(is(span(768.5, 768.6), -.1f, .2f), "peak span: the same in the last bin");
+    check(is(span(800., 5000.), -.1f, .2f) && is(span(600., 5000.), -1.8f, .2f),
+          "peak span: a span running past the file stops at its last bin");
+    check(is(span(-100., 10.), -.5f, .5f), "peak span: a span that starts before the file begins at its first bin");
+    check(!span(-512., -256.) && !span(-10., 0.), "peak span: a span that ends at or before the first frame holds nothing");
+    check(!span(1024., 2000.) && !span(1e300, 2e300), "peak span: a span past the last bin holds nothing");
+    check(!span(10., 10.) && !span(20., 10.), "peak span: an empty or backwards span holds nothing");
+    const double nan = std::nan("");
+    check(!span(nan, 10.) && !span(0., nan) && !span(nan, nan), "peak span: a span that is not a number holds nothing");
+    check(!ui::peakSpan(p, 0., 256., 2), "peak span: a channel the file does not have holds nothing");
+    check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
+}
+
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -360,6 +488,7 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    peakSpans();
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
     Tone tone;
@@ -492,6 +621,48 @@ int main(int argc, char **argv) {
         // A dropped audio file (#308, N5): the document reads it and captures its pool row without
         // writing anything; the window's batch adds the clip; one commit, one undo step. New makes
         // Live's default Set (#307, with its two returns since N41), tracks 1 to 7, so the drop's audio track is an eighth.
+        {
+            // A file imported AFTER Save As has its pool row in the new file only: the waveform
+            // worker follows the document there (the outside review of 18 November; on main it kept
+            // reading the file the document was opened from, and the clip drew empty).
+            auto moved = ui::ProjectDocument::open(temp.path() / "wave-before.adi", true, {}, error);
+            check(moved != nullptr, "a project to save under another name");
+            if (moved) {
+                OpRequest audioTrack;
+                audioTrack.opType = "track.create";
+                audioTrack.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Drums"}};
+                check(moved->ops().submit(audioTrack).ok && moved->synchronise(), "an audio track before the save");
+                check(moved->saveAs(temp.path() / "wave-after.adi") && moved->error().empty(), "Save As to a new file");
+                const auto wav = temp.path() / "after-save.wav";
+                {
+                    std::array<float, 12000> samples{};
+                    for (std::size_t i = 0; i < samples.size(); ++i)
+                        samples[i] = static_cast<float>(std::sin(static_cast<double>(i) * .07) * .5);
+                    audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+                    writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+                }
+                ui::AudioImport import;
+                check(moved->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the file read after the save");
+                auto edit = ui::dropAudio(*moved->view().current(), 8, 0, "after", import);
+                check(edit.refusal.empty() && moved->ops().submit(std::move(edit.ops)).ok && moved->synchronise(),
+                      "its clip committed into the new file");
+                auto &waves = moved->waveforms();
+                const auto snapshot = moved->view().current();
+                const auto *track = snapshot->findTrack(8);
+                const bool there = track != nullptr && track->clips.size() == 1 && track->clips[0]->audio.has_value();
+                check(snapshot != nullptr, "a snapshot after the drop");
+                check(there, "the clip is on the track");
+                if (there) {
+                    const auto &clip = *track->clips[0];
+                    (void)waves.peaks(*clip.audio);
+                    for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    const auto built = waves.peaks(*clip.audio);
+                    check(built != nullptr && built->frames == 12000 && !built->bins.empty() && waves.problem().empty(),
+                          "a file imported after Save As gets its waveform");
+                }
+            }
+        }
         auto dropped = ui::ProjectDocument::open(temp.path() / "drop.adi", true, {}, error);
         check(dropped != nullptr, "a project for the drop");
         if (dropped) {
@@ -1185,6 +1356,7 @@ int main(int argc, char **argv) {
         }
     }
     refusedBeginOwnership(temp.path());
+    importWithChoices(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

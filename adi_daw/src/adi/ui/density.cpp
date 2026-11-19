@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/ui/density.hpp"
+namespace adi::ui {
+namespace {
+// Compact: the measures as built (look-live11.md, Live's at 100 %), the type sizes the window drew
+// with, the language sheet's knobs (11, 15, 21) and corners (a button 5, a box 4, a panel 6, a
+// group 8).
+constexpr Density kCompact{
+    .controlBarHeight = 35,
+    .statusBarHeight = 38,
+    .gap = 8,
+    .border = 4,
+    .fieldHeight = 17,
+    .detailHeight = 196,
+    .radiusSmall = 2.f,
+    .radiusThumb = 3.f,
+    .radiusBox = 4.f,
+    .radiusControl = 5.f,
+    .radiusPanel = 6.f,
+    .radiusGroup = 8.f,
+    .hairline = 1.f,
+    .line = 1.5f,
+    .heavyLine = 2.f,
+    .fontMini = 7.f,
+    .fontMicro = 9.f,
+    .fontTiny = 9.5f,
+    .fontSmall = 10.f,
+    .fontCaption = 10.5f,
+    .fontLabel = 11.f,
+    .fontBody = 11.5f,
+    .fontField = 12.f,
+    .fontHeading = 12.5f,
+    .fontTitle = 15.f,
+    .knobSmall = 11.f,
+    .knobMedium = 15.f,
+    .knobLarge = 21.f,
+};
+// Open: Compact with more room, by the sheet's step (about 1.2; a device's type 9.5 to 11, its knob
+// 11 to 16).
+constexpr Density kOpen{
+    .controlBarHeight = 42,
+    .statusBarHeight = 46,
+    .gap = 10,
+    .border = 5,
+    .fieldHeight = 20,
+    .detailHeight = 236,
+    .radiusSmall = 2.5f,
+    .radiusThumb = 3.5f,
+    .radiusBox = 5.f,
+    .radiusControl = 6.f,
+    .radiusPanel = 7.f,
+    .radiusGroup = 9.5f,
+    .hairline = 1.f,
+    .line = 1.5f,
+    .heavyLine = 2.5f,
+    .fontMini = 8.5f,
+    .fontMicro = 10.5f,
+    .fontTiny = 11.f,
+    .fontSmall = 12.f,
+    .fontCaption = 12.5f,
+    .fontLabel = 13.f,
+    .fontBody = 13.5f,
+    .fontField = 14.f,
+    .fontHeading = 15.f,
+    .fontTitle = 18.f,
+    .knobSmall = 16.f,
+    .knobMedium = 21.f,
+    .knobLarge = 28.f,
+};
+} // namespace
+const Density &densityFor(DensityId id) { return id == DensityId::Open ? kOpen : kCompact; }
+std::string_view densityName(DensityId id) { return id == DensityId::Open ? "open" : "compact"; }
+DensityId densityFromSetting(std::string_view word) {
+    return word == "open" ? DensityId::Open : DensityId::Compact;
+}
+} // namespace adi::ui
