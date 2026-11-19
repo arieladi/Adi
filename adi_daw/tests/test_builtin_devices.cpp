@@ -4,6 +4,7 @@
 #include "juce/builtin_host.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/blob.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -15,6 +16,7 @@
 #include <new>
 #include <set>
 #include <stdexcept>
+#include <vector>
 namespace {
 std::atomic<int> allocations{0};thread_local bool counting=false;
 }
@@ -160,4 +162,83 @@ void playingSession() {
 #endif
 }
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();playingSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+// DF-E50: automation on a built-in device is applied, at its frame. Utility's
+// Gain is "11", -120..35 dB on a linear curve, so 0 dB is 120/155 and +6 dB
+// 126/155; its core ramps a gain change over 5 ms.
+void automationEvents() {
+#if ADI_WITH_PD
+    auto instance=load("org.adidaw.builtin.utility");
+    check(instance->setParam("11",ParamValue::fromNormalized(120.0/155)),"stored gain 0 dB");
+    instance->prepare(48000,64);
+    std::array<std::array<float,64>,2> input{},output{};
+    for(auto& channel:input)channel.fill(0.25f);
+    float* in[]={input[0].data(),input[1].data()};float* out[]={output[0].data(),output[1].data()};
+    NodeIo io;io.in=in;io.out=out;io.channels=2;io.frames=64;
+    const auto run=[&](int blocks){for(int block=0;block<blocks;++block)instance->process(io);};
+    run(1);
+    const float before=output[0][63];
+    check(std::abs(before-0.25f)<1e-6f,"the stored 0 dB plays");
+    Event events[2]{};
+    events[0].frame=32;events[0].type=EventType::ParamValue;events[0].paramId=11;events[0].value=126.0/155;
+    events[1].frame=40;events[1].type=EventType::ParamValue;events[1].paramId=999;events[1].value=0;
+    io.events=EventSpan{events,2};
+    allocations.store(0,std::memory_order_relaxed);counting=true;
+    {audio::CallbackScope callback;instance->process(io);}
+    counting=false;
+    check(output[0][31]==before && output[0][32]>before+1e-6f,"a ParamValue applies at its frame: untouched before 32, rising from 32");
+    check(allocations.load(std::memory_order_relaxed)==0,"applying automation allocates nothing");
+    check(std::abs(instance->getParam("11").real)<1e-4,"automation leaves the stored value as it was");
+    io.events={};run(60);
+    const float up=0.25f*std::pow(10.0f,6.0f/20);
+    check(std::abs(output[0][63]-up)<2e-5f,"the automated +6 dB holds into later blocks (an unknown id did nothing)");
+    // ParamMod: an offset on the value in force, held until the next one.
+    events[0].frame=0;events[0].type=EventType::ParamMod;events[0].value=-6.0/155;
+    io.events=EventSpan{events,1};run(1);io.events={};run(60);
+    check(std::abs(output[0][63]-0.25f)<2e-5f,"a ParamMod of -6 dB on the automated +6 dB plays 0 dB, and holds");
+    events[0].value=0;io.events=EventSpan{events,1};run(1);io.events={};run(60);
+    check(std::abs(output[0][63]-up)<2e-5f,"a ParamMod of 0 takes the offset away");
+    // A setParam (the user's knob) is heard again: it overrides the lane until its next value.
+    check(instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"the knob moves to +3 dB");
+    run(60);
+    check(std::abs(output[0][63]-0.25f*std::pow(10.0f,3.0f/20))<2e-5f,"a knob change after automation is heard");
+#endif
+}
+#if ADI_WITH_PD
+std::vector<std::byte> constantLane(double normalized) {
+    AutomationPoint point{};point.time=0;point.value=normalized;point.curve=1;point.point_id=1;
+    return writeStream<AutomationPoint>(FourCC::Automation,std::vector<AutomationPoint>{point},1,
+                                        StreamFlags::SortedByTime|StreamFlags::TimeIsNanos);
+}
+#endif
+// DF-E50 through the product: a lane on Utility's Gain at 0 dB, over a stored
+// +6 dB, in an ordinary Session (live) and in an offline export (a render).
+void automatedSession() {
+#if ADI_WITH_PD
+    for(const bool render:{false,true}) {
+        Project project;auto& store=*project.store;auto& db=store.db();
+        const auto prepared=prepareBuiltinInsert(store,"org.adidaw.builtin.utility",1);check(commitBuiltinInsert(store,prepared).ok,"automation fixture inserts Utility");
+        std::vector<float> samples(8192,0.25f);audio::WavWriter writer(project.temporary.path()/"audio.wav",48000,2,audio::WavFormat::Float32);writer.write(samples.data(),4096);writer.close();
+        db.exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'test','audio.wav','wav')");
+        db.exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,1000000000)");
+        db.exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,4096)");
+        OpRequest gain;gain.opType="device.setParam";gain.payload={{"dev",prepared.deviceId},{"param","11"},{"norm",126.0/155}};
+        check(OpJournal(store).commit(gain).ok,"stored gain +6 dB");
+        {
+            SQLite::Statement lane(db,"INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,value_domain) VALUES(1,'device',?,'11',1,'normalized')");
+            lane.bind(1,prepared.deviceId);lane.exec();
+        }
+        check(store.putAutomationData(1,std::nullopt,constantLane(120.0/155)),"a lane on Gain at 0 dB");
+        SessionSpec spec{2,48000,render?512:64};spec.offline=render;spec.exporting=render;
+        Session session;session.graph().setFadeFrames(0);
+        check(session.load(store,withBuiltinDevices(),spec),render?"the render loads":"the live session loads");
+        if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
+        session.transport().play();
+        std::vector<float> left(static_cast<std::size_t>(spec.maxFrames)),right(left.size());float* out[]={left.data(),right.data()};
+        bool primed=true;
+        for(int block=0;block<(render?6:40);++block){primed=primed && session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=spec.maxFrames;session.process(io);}
+        std::printf("METRIC Utility automated to 0 dB over a stored +6 dB (%s): %.6f\n",render?"render":"live",left.back());
+        check(primed && std::abs(left.back()-0.25f)<2e-5f,render?"the render plays the lane's 0 dB, not the stored +6 dB":"live, the lane's 0 dB plays, not the stored +6 dB");
+    }
+#endif
+}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();playingSession();automationEvents();automatedSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
