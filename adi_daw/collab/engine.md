@@ -12,6 +12,18 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E27(a,b) clip fades and source End gated and pushed
+
+**PR requested** — branch `engine/df-e27-clip-fades-and-end`, head `b9773069a4a34cb5e57446f44320b3b937a36ce2`, base `origin/main` at `f256e386`. Title **Keep resized fades and source End sample-exact**. The remote head matches the gated commit.
+
+Playback confines the fallback fade-out to the clip's visible span. Split captures that same envelope for a shortened clip in either clock. Resize, Split and Undo tests compare the actual audio, and 380 existing split checks passed. The effective source End governs both rendering and page demand. An unwarped clip with a physical pin keeps that endpoint across the new placement tempo. A Warp End uses the same unrolled source clock as its prepared audio. Tests prove the full 500-frame physical End and a 150-frame Warp tail at a tempo boundary.
+
+`silentAfterEnd` now uses a pin and marker for the same 40,000-frame End, while still testing both processing precisions, page readiness, exact silence and zero underruns. The newer precedence test intentionally supplies conflicting projections and verifies the physical pin wins for unwarped playback. Sample defaults capture follows the same precedence. The legacy unpinned End and the conflicting-pin case each keep their audio across recall at a different tempo, including a nonzero source offset. Marker-write synchronization remains in the #530 and DF-E2 queue.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, four validators and the layout check. Five focused suites passed. Clang 19 compiled all six changed C++ units with warnings as errors and passed the fade, marker, Split, candidate-readiness and sample-default checks. Four compiled faults reproduced the oversize fade, early End in both source clocks, Split refusal, and shorter recall. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E27(c,d) next.
+
 ## 2026-11-19 — DF-E26 compaction at an undone head gated and pushed
 
 **PR requested** — branch `engine/df-e26-compaction-branches`, head `a548544d3c6254dace1f5c7a971537258dd37d6e`. Title **Preserve only severed redo tips during compaction**. Base `origin/main` `e8b67c77` with DF-E18 `f28eacd0`. The remote head matches the gated commit.
