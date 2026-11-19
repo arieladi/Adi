@@ -94,9 +94,9 @@ Neither contract implements outer graph completion or whole-device sleep.
 These are demanded-span processing contracts, not a whole-plugin equivalence
 or quiet-CPU claim. Controls remain fixed in both contracts.
 
-The accepted rate range is 44.1–96 kHz, with float-rounded internal rate.
-Validation covers generated signals at 44.1, 48 and 96 kHz; it does not establish
-all intermediate rates or all control combinations. Tests cover hold expiry,
+The accepted rate range is 44.1–768 kHz, with float-rounded internal rate.
+The 44.1, 48 and 96 kHz end-to-end cases are supplemented by generated
+admission and processing tests at 176.4, 192, 384 and 768 kHz. Tests cover hold expiry,
 hysteresis, stereo key choices, physical-block segmentation, state reset and
 continuation, failed preparation, alias refusal, both IO precisions and zero
 callback allocation/deallocation. No CPU or live-host performance claim is made.
