@@ -32,6 +32,16 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — MI-08 persisted expression playback
+
+**PR requested** — branch `engine/mi08-expression-playback`, head `cd8d8e6947ffdf15f9b4e8f87a2a8502a79ce166`. Title **MI-08: Schedule saved per-note curves through clip playback**. Stack parents `e5b350cd` (AEXP read) and `0c3d63ea` (host units), both on code from main `88e2d94e`. Latest main `8416ed0f` adds review rows and documentation only.
+
+The committed and preview Sessions capture the saved curves into their clip generations. Stable note IDs receive the authored values after Note On, with existing note tuning added once. The owner prepares changing values on the 500 Hz grid and also keeps explicit curve knots. Locate and clip repeats chase the held value. A full callback event buffer keeps the note-release reservation and retries the latest pending expression in the next block. A malformed curve or exhausted schedule budget leaves ordinary note playback available and reports the problem. The five standard dimensions are routed through the existing hosted event path.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors, MIDI clips (472), session (214), MIDI controllers (90), gesture playback (569), and clip playback (489). Four compiled faults failed named cases for off-grid knots, saturated expression delivery, duplicate tuning, and clipped loop phase. The real Session sent exact values into a recording instrument at both processing widths and two device block sizes, with no callback allocations or file I/O. CI, ops, Pd, schema and layout passed. The Live 12.4 and installed-synth readings, and the reserved journal writes, remain open.
+
+The review rows in #684 move DF-E51 ahead of further new feature work. DF-E45 takes the existing DF-E1 tempo inverse forward, and DF-E47 must retain N52's newly projected handle pairs.
+
 ## 2026-11-19 — MI-08 hosted note gain and pan units
 
 **PR requested** — branch `engine/mi08-expression-host-units`, head `0c3d63eaca5c29c8a44382e39c0345b3a790ddeb`, main base `88e2d94e`. Title **MI-08: Convert authored note gain and pan for hosted instruments**. Independent of the AEXP reader. Both feed the playback step.
