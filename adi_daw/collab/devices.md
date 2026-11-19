@@ -5,6 +5,29 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-11-19 — The lane is taken up again (ADR-0208; ADR-0246 d5, in #641)
+
+A Claude work seat on the director's research machine (Windows, MSVC 19.44,
+Live 12.4 installed) now holds this lane. Its own clone and worktrees are apart
+from the research folders and from the engine-win seat. Branches `devices/<name>`
+from `origin/main`; this log stays on `devices/log`, newest first.
+
+**The loan ends with this entry** (LANES §1, XC-46): `src/adi/dsp/loudness` and
+`src/adi/dsp/limiter` come back to this lane. Nothing was built under the loan
+(`origin/main` at `ae09f638` has no `src/adi/dsp/loudness`; `engine/main-loudness`
+is the engine's own Main meter wiring and is left to it).
+
+**Queue, in the order of the prompt of 19 November:** (1) the three unlanded
+PRs #278, #207, #208; (2) DEV-09; (3) DEV-21; (4) DEV-19; (5) DEV-22; (6) DEV-28
+with MX-27; (7) DEV-13, DEV-14, DEV-10, DEV-15; (8) the other rows of this lane
+in milestone order.
+
+**Half done, from 28 October:** #278 (draft, `devices/oneshot`); the Compressor's
+Live 11.2.7 probes (46 tracks, the director's Mac, private). Taking #278 now.
+
+**Live:** not taken today. When this seat takes Live it says so here first and
+checks `collab/engine-win.md` on `engine-win/log`.
+
 ## 2026-10-28 — OneShot device recovery open as draft #278
 
 **[PR #278](https://github.com/arieladi/Adi/pull/278)**, `devices/oneshot`,
