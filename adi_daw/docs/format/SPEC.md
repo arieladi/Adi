@@ -103,12 +103,20 @@ undo/redo, history branching and reverting to a snapshot taken before any edit.
 
 ```sql
 PRAGMA journal_mode = WAL;
-PRAGMA synchronous  = NORMAL;          -- FULL on removable/network volumes
+PRAGMA synchronous  = NORMAL;          -- FULL on Windows DRIVE_REMOVABLE writers
 PRAGMA busy_timeout = 5000;
 ```
 
 `WAL` is what makes autosave-during-playback cheap and lets the render/export
 path read a consistent snapshot while the user keeps editing.
+
+Windows resolves the project path to its actual volume mount point and uses
+`FULL` for a writable project when the OS reports `DRIVE_REMOVABLE`. Fixed or
+unclassified storage retains the local `NORMAL` default. PD-12's `FULL`
+requirement for network projects remains pending a journal-mode decision.
+SQLite WAL relies on shared
+memory between connections and does not support separate hosts opening a
+database over a network filesystem. [Windows volume lookup](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamew) · [Windows drive types](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdrivetypew) · [SQLite WAL](https://sqlite.org/wal.html#overview)
 
 Store connections enable `SQLITE_DBCONFIG_DEFENSIVE` when opened, including
 read-only connections and the read-only reopen of a newer major. SQLite can

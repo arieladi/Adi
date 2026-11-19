@@ -13,6 +13,14 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <array>
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <map>
@@ -36,6 +44,17 @@ std::unique_ptr<SQLite::Database> openStoreDatabase(const std::filesystem::path&
         throw SQLite::Exception("could not enable defensive project connection", status == SQLITE_OK ? SQLITE_ERROR : status);
     return database;
 }
+
+#if defined(_WIN32)
+bool removableVolume(const std::filesystem::path& absolutePath) noexcept {
+    if (!absolutePath.is_absolute()) return false;
+    // Resolve mounted folders and junctions to the volume holding the project.
+    std::array<wchar_t, 32768> mount;
+    if (!GetVolumePathNameW(absolutePath.c_str(), mount.data(), static_cast<DWORD>(mount.size())))
+        return false;
+    return GetDriveTypeW(mount.data()) == DRIVE_REMOVABLE;
+}
+#endif
 
 std::int64_t nowUtcMicros() {
     using namespace std::chrono;
@@ -270,7 +289,11 @@ bool Store::applySessionPragmas() {
     // render path read a consistent snapshot while the user keeps editing.
     try {
         if (!readOnly_) db_->exec("PRAGMA journal_mode = WAL");
-        db_->exec("PRAGMA synchronous = NORMAL");
+        bool fullSync = false;
+#if defined(_WIN32)
+        fullSync = !readOnly_ && fileLease_ && removableVolume(fileLease_->path());
+#endif
+        db_->exec(fullSync ? "PRAGMA synchronous = FULL" : "PRAGMA synchronous = NORMAL");
         db_->exec("PRAGMA foreign_keys = ON");
         db_->exec("PRAGMA busy_timeout = 5000");
         return true;

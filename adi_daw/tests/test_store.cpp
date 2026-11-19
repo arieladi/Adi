@@ -15,6 +15,14 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <array>
+#endif
+
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -75,6 +83,9 @@ void testCreateAndOpen() {
     const auto p = s / "song.adi";
 
     StoreError err = StoreError::Ok;
+#if defined(_WIN32)
+    int expectedSync = 1;
+#endif
     {
         auto st = Store::create(p, err);
         check(st != nullptr && isolated, "create() returns a store; overlapping scratch scopes stay isolated and clean up only themselves");
@@ -82,6 +93,14 @@ void testCreateAndOpen() {
         if (!st) return;
         check(!st->readOnly(), "a created store is writable");
         check(st->schemaMajor() == kSchemaMajor, "schema major is ours");
+#if defined(_WIN32)
+        std::array<wchar_t, 32768> testVolume;
+        if (GetVolumePathNameW(p.c_str(), testVolume.data(), static_cast<DWORD>(testVolume.size())) &&
+            GetDriveTypeW(testVolume.data()) == DRIVE_REMOVABLE)
+            expectedSync = 2;
+        check(st->db().execAndGet("PRAGMA synchronous").getInt() == expectedSync,
+              "a new project's synchronous mode follows its writable Windows volume");
+#endif
         check(st->close(), "close() succeeds");
     }
     check(fs::exists(p), "the file exists after close");
@@ -92,6 +111,10 @@ void testCreateAndOpen() {
         if (st) {
             check(st->schemaMajor() == kSchemaMajor, "major survives the round trip");
             check(st->schemaMinor() == kSchemaMinor, "minor survives the round trip");
+#if defined(_WIN32)
+            check(st->db().execAndGet("PRAGMA synchronous").getInt() == expectedSync,
+                  "a reopened writer's synchronous mode follows its Windows volume");
+#endif
         }
     }
 
@@ -289,13 +312,13 @@ void testBlobRoundTrip() {
     // Upsert: writing the same object twice replaces, never duplicates. This is
     // the ADR-0009 granularity bound in practice -- one blob per editable object.
     std::vector<NoteRecord> fewer(notes.begin(), notes.begin() + 10);
-    const auto small = writeStream<NoteRecord>(FourCC::Notes, fewer);
-    check(st->putEventStream(1, "notes", small), "re-put notes stream");
+    const auto shortened = writeStream<NoteRecord>(FourCC::Notes, fewer);
+    check(st->putEventStream(1, "notes", shortened), "re-put notes stream");
     const auto rows =
         st->db().execAndGet("SELECT COUNT(*) FROM event_streams WHERE clip_id=1").getInt();
     check(rows == 1, "re-putting replaces rather than duplicating");
     const auto back2 = st->getEventStream(1, "notes");
-    check(back2 && *back2 == small, "the replacement is what reads back");
+    check(back2 && *back2 == shortened, "the replacement is what reads back");
 
     // Per-note expression, one row per (clip, note, dimension) -- ADR-0009 again.
     std::vector<ExpressionPoint> exp(64);
