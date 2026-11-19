@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Default-active VST3 key adapter review
+
+**For the Engine adapter owner.** The Windows Release owned-fixture gate now runs 107 checks. It reproduces the four dormant-key failures and four distinct shape failures on a VST3 whose auxiliary is already active. The SDK keeps two auxiliary channels while toggling the key intent on and off. Each toggle currently invalidates the graph's preparation stamp, and the following same-format prepare reactivates the SDK. The two native adapter decisions use raw `keyRequested_`; actual activation uses `defaultKeyEnabled_ || keyRequested_`. Please use the effective activation for the preparation stamp and prepare guard. DF-M60 (b) will then ask for intent changes without needless re-preparation. The fixture also covers programme continuity, the existing reader, and the graph identity across a duplicate route receipt. No adapter change is part of the Mix View branch.
+
+The reopened dormant bus can take its stored intent inside the existing `Session::resolveNewRows` loan before the first rebuild. The route-edit path must record a successful fallback on the actual applied receipt, so the presentation coordinator does not rebuild it a second time.
+
+The private Capture Locate regression has seven expected failures in 117 Release checks. The Carve stage audition control has two expected failures in 126 Release checks across 400,384 compared samples. Both are held behind the current owner and landing order.
+
 ### 2026-11-19 — Locate the repeated Windows Debug shell crash on #651
 
 **PR requested.** The test-only checkpoint commit `5500f46598e2544c35fea0bcd797ffc8452291dc` is on the existing #651 branch. The first Windows Debug job `135741209179` and its retry `135761332025` failed with a segmentation fault on the same synthetic merge `d1e1f98b1a5d8674b7d50fa883de3838d02cab47`, after identical software render files. Neither log identified the failing fixture. A local MSVC syntax check with optimization off passed. The new hosted run records entry and return around the remaining fixtures and around the last rendered Arrangement fixture. Production sources are unchanged. If CTest omits the process exception on the next run, please collect the executable's exit status or dump on the hosted Windows runner. The existing Release gates remain 753 Mix View checks and four audio suites at `7391bbff`.
