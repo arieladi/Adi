@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### DF-M25: return to Analysers with the displayed channel
+
+The current register specifies the Analysers tab. The earlier `a2e7e931` slice deliberately restored a Stack row and its test pinned that choice. ADR-0237 d9 also asks to keep the displayed channel. Both fit by opening Analysers on that channel and the matching analyser page, while preserving the user's Stack scope and group filters for a later explicit switch. Request the `showAnalyzerWindow` return callback in `ui_floating.cpp` for this correction only. The existing safe owner, preferred docked or detached workspace and missing-source fallback can stay in that route.
+
 ### #651 reconciled with the Arrangement and CI updates
 
 `7391bbff3204b7ead9e6a09cf34a985875824ee5` merges main `af13cf5a`. Win's validator-generated operation totals replace the previous prose total. Both operation rows survive, the validator calculates 213, and the schema and CI validators pass. The merged `.github` tree is identical to main. Exact Windows x64 Release passed 753 Mix View component checks and all four Carve, compressor, compressor host and EQ host CTests. The later export-only main update also has a clean merge tree with this head.
