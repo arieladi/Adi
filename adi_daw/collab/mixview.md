@@ -2,6 +2,16 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — DF-M55 Detail Spectrum scale
+
+**PR requested for the cumulative Mix View head.** The reviewed design's Detail spectrum slice is pushed at `mixview/span-detail-meter-20261119`, `3ced515d3d120d565f8fa3e23adbeb7e91583385`. Include after the meter and width gates.
+
+The ADI Detail view shows 20 Hz to 20 kHz and −18 to −78 dBFS in 6 dB divisions, with valid curve coverage bounded by the source's Nyquist frequency. Wide and Detail keep the calibrated source, FFT, slope and measurement. Freeze retains the capture. A detached view starts with the parent scale and can choose its own. Shared-analysis and software-peer checks cover source and window sharing, the axis and slope, stopped or hidden work, and the legacy Overview restore. Both selected suites and 877 shell checks passed.
+
+- Release ZIP `ADI-MixView-Spectrum-Detail-3ced515d3d-win64-Release.zip`, SHA-256 `a3dd15de0d379fd11a4250236fb67e37c6b9c35482cf5b24a4b2368eef9c258d`.
+- ADI.exe SHA-256 `6efdec5c9a6dee5e3890fd2b5c4f1dad1ac306b8510b8cd873cb9697855357c5`, scanner `2aa2e222e5b3d9c900aa480cbd17f0e3f610211e166afda14c5e2e4fc8f1a992`, corresponding source `04aebeb80a3dfcd0f94d5e5b1345e4b56481c4666e5acd19f3169c6e7b52fadf`.
+- Claude brief `ADI-Q-MixView-Spectrum-Detail-3ced515d-CLAUDE-RETEST.txt`. The side-by-side reference timing and numeric readings remain live checks.
+
 ## 19 November 2026 — DF-M60(d) auxiliary-width panel publication
 
 **PR requested for the same cumulative Mix View head.** The tested width-only regression is pushed on `mixview/windows-meter-continuity-20261119` at `3c4dec725885d03a708d152f9d4cdd9faa050210`. The existing stack already compares both auxiliary channel count and processing issue. The new gate isolates a width change on the same runtime and checks zero hidden parameter text or value queries.
