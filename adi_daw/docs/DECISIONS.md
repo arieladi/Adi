@@ -19153,3 +19153,53 @@ every seat working until its limit, and added two seats. The relay is `docs/RESE
 | `docs/PLAN.md` CT-01, CT-04 | the key and the naming noted (d7) |
 | `docs/DEFERRED.md` | DF-E24 to DF-E26 added |
 | `collab/prompts/` | the four prompts of 19 November |
+
+## ADR-0247 — Two more sheets agreed: take lanes and comping, and a return inside a group; the questions the seats parked on them and on the Arrangement, answered — `DECIDED` (2026-11-19) — **DIRECTOR'S ANSWERS OF 19 NOVEMBER; CARRIES OUT ADR-0243 FOR TWO SURFACES; COMPLETES ADR-0245 d9, d10 AND ADR-0246 d7**
+
+**What this records.** The window lane drew two proposals on 19 November and parked its questions in its
+log, as ADR-0246 d6 has the seats do. Win showed him both at full size with the window as built after
+step 4, and listed the questions with the seat's recommendations. His words: "pictures looking good",
+and "i think ill take all your recommendations". On two he answered in his own words, quoted below.
+
+### Decisions
+
+1. **The take lanes sheet is agreed** (`collab/window/design/proposals/take-lanes-comping.png` and its
+   source; PLAN CT-04 with CT-01). The main lane on top, its pieces named after the takes they came
+   from; a lane per take under it with its name, its speaker to audition and its Lane area; the spans
+   the main lane took, highlighted in the track's colour on their lanes, the rest of each take dimmer.
+   - The switch that shows and hides a track's take lanes sits in the track's header beside the count
+     of its lanes. Live has no button for it, only the menu item and Ctrl+Alt+U; both stay.
+   - Insert Take Lane: a button under the last lane while the lanes show, and Live's menu item
+     (Shift+Alt+T). His word: "both".
+   - Crossfades at a comp's seams: off by default. His words: "as live".
+   - An unused part of a take is as drawn: the lane's grey, the waveform at half strength.
+2. **The return-inside-a-group sheet is agreed** (`collab/window/design/proposals/return-inside-group.png`
+   and its source; DF-W33; ADR-0245 d9, d10).
+   - With a track inside the group selected, the Create menu's Insert Return Track (Ctrl+Alt+T) puts
+     the return at the foot, as Live does. The way into the group is the group's own menu item,
+     Insert Return Track in Group, or dragging a return into it.
+   - A group's returns are lettered with the group's initial first (the Drums group's first is "DA"),
+     so A and B keep their letters everywhere.
+   - Every track the group holds, at any depth, carries the return's send knob. The return's own
+     sends to the top-level returns exist and start off, as Live's returns' do.
+   - A send whose tap differs from its return's switch carries no mark on its knob; its menu says it.
+   - A click on a mixed Pre/Post switch sets every send to Post first, and the next click to Pre.
+3. **The Arrangement where its sheet is silent** (step 4). Set and the locator arrows stay under the
+   bar over the names, where Live has them. The strip down the window's edge stays until the Control
+   Bar's Arrangement and Mix View switch replaces it. The names column and the track controls keep
+   Live's widths, not the sheet's wider ones.
+4. **The channel name tag** keeps its four fields (name, colour, Mute, Solo); the optional additions
+   under DF-W27 stay closed until he asks for one.
+
+**Still open with him.** Where the Mix View seat finds OScope 2 and PsyScope Pro to measure against
+(installers or licensed builds for this machine).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0243 | carried out for two more surfaces (d1, d2) |
+| ADR-0245 d9, d10 | the window's side settled (d2) |
+| ADR-0246 d7; `docs/PLAN.md` CT-04, CT-05 | the sheet agreed; seam crossfades off by default confirmed (d1) |
+| `docs/DEFERRED.md` DF-W33, DF-W27 | DF-W33 builds from the sheet; DF-W27's additions closed (d4) |
+| `collab/window/design/proposals/` | the two sheets, agreed |

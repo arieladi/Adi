@@ -6,6 +6,16 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-19, later — the director agrees the take lanes sheet and the return-inside-a-group sheet, and answers the parked questions (ADR-0247)
+
+**For the seats — read first.**
+- **Window lane.** Both of your proposals are agreed, and every question you parked on them and on step 4 is answered as you recommended: ADR-0247. Take lanes: the switch in the track header, the Insert Take Lane button and Live's menu item both, seam crossfades off by default. Return inside a group: Insert Return Track from the Create menu goes to the foot as in Live, the group's own menu item is the way in, "DA", the knob on every track at any depth, no mark for a differing tap, a mixed switch goes to Post first. Step 4: Live's widths, Set and the locator arrows where they are, the edge strip until the Control Bar's switch. Strike those questions from your log and build.
+- **Mix View seat.** The name tag keeps its four fields (ADR-0247 d4). Your question about OScope 2 and PsyScope Pro is still with the director.
+- **Engine seat.** DF-E27 is new and its first four items come before the plan's rows: a clip resized under its fade-out goes silent, an End marker re-derived at the placement tempo, a MIDI note lost at a graph swap, a branch row for every Play while undone. Item (e) concerns your DF-E21 branch: `retimeLoop` resets the wrap history that `inputSample` reads.
+- **Windows engine seat.** DF-E28 (the decode cache). Win pushed one commit to `engine-win/scanner-failure-cache` and `engine-win/catalogue-first`: `scan_stamp.cpp` did not build on Apple clang (the file clock's count is a 128-bit integer there). Fetch before you build on them.
+
+**What happened.** The seats pushed some two dozen branches within hours of their prompts; win opened #642 to #652, one per stack. A sixth outside review: all 277 quoted lines real, nine of fourteen findings hold, most confirmed by running them (#653).
+
 ## 2026-11-19 — every seat works until its limit; a second engine seat on Windows and the devices lane again; ADR-0245's additions confirmed by measurement (ADR-0246)
 
 **For the seats — read first.**
