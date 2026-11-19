@@ -18,6 +18,14 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DF-E1 exact tick and linear marker conversion
+
+**PR requested** — branch , head , main base . Title **DF-E1: Preserve exact ticks and linear marker endpoints**. This is the tempo and displayed marker step of DF-E1. The sample-domain End fence follows with the DF-E27(b) source-clock path.
+
+The tempo inverse admits rounding error of a few ulps of the absolute time and caps the tolerance below a fraction of a tick. Linear Clip View and native Start derive End from the stored integer absolute endpoint. The tests cross two tempo changes and a long prior segment, and check the floor between real tick boundaries. A native marker fixture verifies the same exact End in the Clip View and in the journal.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked against the frozen DEV-23 Debug core. Both passed 139 engine, 32 Clip Details, 610 edit-plan, 489 clip-playback, 131 transport-info and 206 splice-store checks. The 3,072 exact boundary round trips and the two linear marker checks exposed three failures on current main. The two compiled faults detected truncation of exact boundaries and rounding of genuinely fractional positions. Four validators and the layout check passed.
+
 ## 2026-11-19 — DF-E11 callback denormal handling
 
 **PR requested** — branch `engine/df-e11-callback-denormals`, head `830ad57c862860269556d8aad49cea0004339b21`, main base `bedee5ab`. Title **DF-E11: Scope denormal flushing to the device callback**. Implements ADR-0042 d6 in the shared device callback.
