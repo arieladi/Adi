@@ -1,5 +1,11 @@
 # Clones lane log
 
+## 2026-11-19 — Five-stage CPU and stereo music verification
+
+At `d18b7d11`, three-band Volume on the stereo kick-and-bass program used 81.3%, 61.9% and 51.1% fewer processing-thread cycles than ShaperBox 3.6 at blocks of 64, 256 and 1,024 frames. At 256 frames the median callback duration was 14.9 µs for ADi-SHAPER and 45.8 µs for the reference. Both processed the same 48 kHz source with 0.35/0.70/0.85 band gains, 659.255 Hz at 12 dB/octave and 3,729.310 Hz at 24 dB/octave. The maximum absolute stereo sample difference was 0.000000477 across 192,000 frames per channel at each block size; there was no time shift.
+
+There were 18 matched CPU cells in all: full-range Volume, Width, their combination, a clean low-pass, a flanger and the three-band music case, each at three block sizes. The five-stage device used 45.8–95.4% fewer cycles in these cells. The smallest advantage was the flanger at 1,024 frames. State loading and file I/O preceded timing, input replenishment was matched, and the individual callback wall intervals excluded input preparation. Nine trials of 8,192 callbacks ran per cell with both editors closed. The multiband music case provides the signal check for nonconstant stereo input. These results apply to the named selections.
+
 ## 2026-11-19 — Drive and Crush acoustic acceptance
 
 The Crush measurement used 27 static bit heights, held stereo levels, steps and rate changes across three sample rates. With dither and bias disabled and resampling bypassed, measured plateau spacing and amplitude follow these laws for bit height `u < 1`: level density `L = 1 + 14u + 32753u^32`, output gain `G = 1 - 0.25(1-u)^3`, thresholds `(k+0.5)/L` and step size `G/L`. At the top the quantizer passes full resolution. The decay on a held output at 48 kHz is 0.99869187 per sample, consistent with a 10 Hz DC blocker after quantization. Sampling before this decay is essential to measuring the steps.
