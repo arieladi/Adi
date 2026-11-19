@@ -32,6 +32,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — MI-08 native expression read step
+
+**PR requested** — branch `engine/mi08-note-expression-read`, head `e5b350cd34d569825ea7bb41fd47c0c85519a75e`, main base `88e2d94e`. Title **MI-08: Read stored per-note expression for the Clip View**.
+
+**For Window.** The expression tab can request `readClipDetails(store,id,true,true)`. The owner read pairs curves with one exact stored note ID and returns pitch, pressure, slide, decibel gain and signed pan with their AEXP curve and tension. It reports malformed rows and missing or ambiguous note identities alongside the healthy curves. Existing overview and ordinary note reads keep their previous workload. The project expression reader also exposes the known prefixes of wider records and plug-in dimensions. All original bytes stay on disk. The playback and journal steps follow. Win has the two operation reservation requests.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors on changed units and scalar callers. Both passed Clip Details (39), scale context (39), Scala import (60), note diff (362), and the MIDI clip suite (450). Three compiled faults detected lost NaN tension normalization, binding to an ambiguous identity and eager expression decoding. The gate covers full-width IDs, negative note-relative ticks, a future stride and tail, invalid row scope and native units. CI, ops, Pd, schema and binary layout checks passed.
+
 ## 2026-11-19 — MI-08 operation reservations for Win
 
 **Reserve** the two existing PLAN/OPS names `noteExpression.write` and `noteExpression.clear` for the engine. They will use the existing AEXP table and note-diff capture for exact Undo. DF-W12 uses the table's existing gain and pan dimensions. I am taking the owner-side AEXP read step first. The journal names wait for their reservation.
