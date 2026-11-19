@@ -4,9 +4,29 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
-## 2026-11-19 · Hosting probe portability and DF-E21 on the implementation
+## FOR THE DIRECTOR
 
-**FOR THE DIRECTOR** — DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across machines. Existing saved JUCE identifiers embed the installed path's hash and the cache retains only the existing 32-bit class hash. Recommend continuing to read existing identifiers and adding the exact VST3 class ID alongside them for new records. A single candidate can be checked against a legacy saved path hint under the existing identifier rule. Matching projects with no usable legacy hint or exact class ID needs a compatibility choice.
+DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across machines. Existing saved JUCE identifiers embed the installed path's hash and the cache retains only the existing 32-bit class hash. Recommend continuing to read existing identifiers and adding the exact VST3 class ID alongside them for new records. A single candidate can be checked against a legacy saved path hint under the existing identifier rule. Matching projects with no usable legacy hint or exact class ID needs a compatibility choice.
+
+## 2026-11-19 · Catalogue reads, scanner infrastructure and export revision evidence
+
+**PR requested** — `engine-win/scanner-catalogue-read` at `6b51e34f1a4d3c1ac437ce66279264b381f4b3f1`, stacked on `engine-win/scanner-failure-cache` at `cab873e2bef86e9660b5abe0cf405521bf4c8389`. Title **Read validated plug-in catalogue snapshots without a helper**.
+
+DEV-25. A read-only SQLite transaction captures bounded stored descriptors without opening the scanner, inserting pending rows or walking plug-in folders. Pending, failed and blocked entries are excluded. A broken or over-limit snapshot is refused as a whole. The core validates the common packet and leaves VST3 format validation for the host. Strict x64 MSVC passed 250 checks across six suites, including reads after removing the fixture helper. Host hydration is the next step.
+
+**PR requested** — `engine-win/scanner-infra-failures` at `79db43b6fc0d90a41e23b1806135873e223478e0`, stacked on `engine-win/scanner-failure-cache` at `cab873e2bef86e9660b5abe0cf405521bf4c8389`. Title **Keep scanner infrastructure failures out of candidate quarantine**.
+
+DF-E25(a). Parent I/O failure and the reserved helper exits for malformed requests, unavailable format support and metadata-channel setup or delivery abandon the attempt. Exit 74 identifies pre-load channel setup and exit 75 identifies delivery after enumeration. Real child-mode tests show each infrastructure result can be retried unchanged without strikes. Strict x64 MSVC passed five scanner tests. DF-E25(b) is included in `publication-owned-copy`, where verified copy reports identity, directory-sync durability and warnings.
+
+**PR requested** — `engine-win/export-revision-report` at `56799a95760d92b93094d149789844f6946a8087`, stacked on `engine-win/export-publication-report` at `71ef466a93afcfd979598371a4c7a1f556c853d2`. Title **Record the rendered project revision and resolved range**.
+
+EX-01. The actual journal head, resolved track, range, sample rate and name inputs come from the render session's SQLite snapshot. Tests cover external edits during loading, job-start revisions, changed regions and current head after Undo. Strict x64 MSVC passed 488 checks across four suites. The NI same-backup check was compiled and awaits native AAC runtime coverage. Media identity at start and before publication is a subsequent step.
+
+**PR requested** — `engine-win/retire-queued-decodes` at `e9c610254c96ee51bf11701d5c367c6afc380367`, base `main` at `a0a31168`. Title **Retire progressive decode jobs when their last queued lease is dropped**.
+
+DF-E3 and TM-MD-02. The queue holds weak references before work starts. Dropping the last public lease removes its private stage and the next admission can reclaim the slot and reserved bytes while both workers are busy. A remaining public lease keeps the work alive. Strict x64 MSVC passed the clip playback, decode and progressive decode suites. Native AAC progress remains skipped.
+
+## 2026-11-19 · Hosting probe portability and DF-E21 on the implementation
 
 **PR requested** — `engine-win/probe-portability` at `882bf20ac5cac00b817335e9eec3c70e37544b12`, stacked on `engine-win/acceptance-ci` at `4c25144068552da347f5bfe23dbeb3fa89d89e0a`. Title **Run the diagnostics on native hosting platforms**.
 
