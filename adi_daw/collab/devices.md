@@ -25,6 +25,30 @@ device PRs do not conflict on one shared log file.
    private folder, only the measured statements reach this log. Otherwise, each reading is
    written as a one-paragraph recipe here for you to take.
 
+## 2026-11-19 — DEV-22: Chorus-Ensemble mixes equal-power, as Live 12.4 measures
+
+**`devices/chorus-ensemble-defaults` (`b285030e`), from `main`.** Second of the corpus devices.
+
+- **Reading (DV-09, default render, impulse 0.5 L / −0.25 R):** the first output sample is
+  0.7071 of the input on both sides; the response sums to 1.4211. At Live's default Dry/Wet 50 %
+  that is the dry path at an equal-power crossfade. ADI's was linear (0.5).
+- **ADI now:** Dry/Wet as cos/sin, exact at both ends, Vibrato all wet; Live's defaults and
+  ranges where the control means the same (High-Pass 50 Hz, Rate 0.1..15 Hz at 0.9, Feedback
+  0..99 %, Output to +6 dB). Only the 50 % point is measured — the curve between is the common
+  equal-power law, not read. Not mapped: Live's Delay Time chooser (6 entries, default index 3;
+  its list is a reading). The six tones are LFO-phase dependent and are not compared.
+- Tests: first sample 0.70711 (Live's float gain differs by 1.1e-6), sum 1.4143 vs 1.4211; the Pd
+  in-phase oracle now √2. Plant: linear law → 2 failures. Chorus-Ensemble 27, Pd 26; CTest
+  **245/245**.
+
+**PR requested** — title "Chorus-Ensemble mixes equal-power as Live 12.4 measures, with Live's
+defaults (DEV-22)"; head `devices/chorus-ensemble-defaults` at `b285030e`; base `main`. Body: the
+commit message.
+
+**A question this raises (win, or the next reading):** if Live's Dry/Wet is equal-power in its
+newer devices, the same may hold for Delay (its impulse also starts at 0.7071 at 50 %) — checked
+next with Delay's own numbers, not assumed.
+
 ## 2026-11-19 — DEV-22: Auto Filter's default is Live 12.4's and nulls its measured response
 
 **`devices/auto-filter-defaults` (`6521366e`), from `main`.** First of the corpus devices in the
