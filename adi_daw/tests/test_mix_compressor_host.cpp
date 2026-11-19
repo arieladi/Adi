@@ -346,6 +346,52 @@ void stateAndDescriptors() {
               !b->setParam("style", device::ParamValue::fromNormalized(0)),
           "out-of-range and unavailable style edits refuse");
 }
+template <class T> void dryOutsidePreparedStream() {
+    auto device = make();
+    check(device != nullptr, "unprepared pass-through fixture loads");
+    if (!device) return;
+
+    const Audio<T> input{[] {
+        std::array<T, 64> channel{};
+        for (std::size_t i = 0; i < channel.size(); ++i)
+            channel[i] = static_cast<T>(i + 1) / static_cast<T>(64);
+        return channel;
+    }(), {}};
+    Audio<T> output{};
+    const T *in[]{input[0].data(), nullptr};
+    T *out[]{output[0].data(), output[1].data()};
+    engine::NodeIo io;
+    io.channels = 2;
+    io.blockOffset = 17;
+    io.frames = 47;
+    if constexpr (std::is_same_v<T, float>) {
+        io.in = in;
+        io.out = out;
+    } else {
+        io.in64 = in;
+        io.out64 = out;
+    }
+
+    const auto expectDry = [&](const char *label) {
+        for (auto &channel : output) channel.fill(static_cast<T>(-3));
+        audio = true;
+        device->process(io);
+        audio = false;
+        bool exact = true;
+        for (std::size_t i = 0; i < output[0].size(); ++i) {
+            const bool segment = i >= static_cast<std::size_t>(io.blockOffset);
+            exact &= output[0][i] == (segment ? input[0][i] : static_cast<T>(-3));
+            exact &= output[1][i] == (segment ? T{} : static_cast<T>(-3));
+        }
+        check(exact, label);
+    };
+
+    expectDry("first unprepared callback copies only its offset segment, including missing-input silence");
+    device->prepare(48000, 32);
+    device->release();
+    expectDry("released adapter passes the valid segment without applying the previous stream maximum");
+}
+
 void automationAndRefusal() {
     auto a = make(), b = make();
     a->prepare(48000, 64);
@@ -502,6 +548,8 @@ int main() {
         exactAudio<float>(rate);
         exactAudio<double>(rate);
     }
+    dryOutsidePreparedStream<float>();
+    dryOutsidePreparedStream<double>();
     automationAndRefusal();
     documentPipeline();
     check(allocations.load() == 0 && frees.load() == 0,
