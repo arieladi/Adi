@@ -305,6 +305,81 @@ void focusScopeWindows() {
               "overflowing stamps cannot form an independent trace or participate in a combined range");
     }
 }
+void focusBarScopeBroker() {
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    const std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    std::array<std::shared_ptr<ScopeTap>, 2> taps;
+    unsigned attached = 0, released = 0;
+    SharedAnalysis broker([&](Source source, double seconds) -> std::shared_ptr<const ScopeTap> {
+        const auto i = static_cast<std::size_t>(source.track - 1);
+        if (!taps[i]) { ++attached; taps[i] = std::make_shared<ScopeTap>(48000., seconds); }
+        return taps[i];
+    }, [&](Source) { ++released; }, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 64);
+    check(lease && lease.sampleRate() == 48000. && attached == 2 && taps[0]->capacity() == 12000 &&
+              taps[1]->capacity() == 12000 && lease.request({0, 96000, 48000.}, 9),
+          "a one-bar Focus request uses the two actual quarter-second source taps");
+    if (!lease) return;
+
+    std::array<std::int64_t, 2> heads{};
+    const auto feed = [&](std::size_t i, std::int64_t end) {
+        std::array<float, 256> left{}, right{};
+        const auto count = static_cast<std::size_t>(end - heads[i]);
+        for (std::size_t frame = 0; frame < count; ++frame) {
+            const auto stamp = heads[i] + static_cast<std::int64_t>(frame);
+            if (stamp == 0 || stamp == 95999) left[frame] = i == 0 ? .75f : -.75f;
+            if (stamp == 95999) right[frame] = .25f;
+        }
+        taps[i]->write(left.data(), right.data(), static_cast<std::int32_t>(count), heads[i], true, 9);
+        heads[i] = end;
+    };
+    feed(0, 256);
+    broker.pump();
+    const auto beforeWait = broker.stats();
+    broker.pump();
+    check(lease.status() == Status::Pending && !lease.read() && broker.stats().cursorReads == beforeWait.cursorReads,
+          "a stalled peer leaves the staged fast samples intact without repeated reads");
+    feed(1, 97);
+    broker.pump();
+    feed(1, 256);
+    broker.pump();
+    for (std::int64_t end = 512; end < 95999; end += 256) {
+        feed(0, end);
+        feed(1, end);
+        broker.pump();
+    }
+    feed(0, 96000);
+    feed(0, 96017);
+    feed(1, 95999);
+    broker.pump();
+    check(lease.status() == Status::Pending && !lease.read(), "a bar waits for the last sample of every member");
+    feed(1, 96017);
+    broker.pump();
+    const auto result = lease.read();
+    check(lease.status() == Status::Ready && result && result->firstStamp == 0 && result->frames == 96000 &&
+              result->sampleRate == 48000. && result->transportRevision == 9 && result->projection &&
+              result->projection->complete() && result->projection->memberColumns(0).front().high[0] == .75 &&
+              result->projection->memberColumns(1).back().low[0] == -.75 &&
+              result->projection->sumReading()->peak == std::array{0., .5} && broker.stats().transforms == 0,
+          "the complete bar retains its earliest peaks and cancels signed samples with no FFT");
+
+    check(lease.request({96000, 17, 48000.}, 9), "the same lease can request the adjacent range");
+    broker.pump();
+    const auto adjacent = lease.read();
+    check(adjacent && adjacent->firstStamp == 96000 && adjacent->frames == 17,
+          "adjacent capture uses the staged unequal suffix without waiting for new input");
+
+    auto companion = broker.acquire({1});
+    check(companion.available() && attached == 2, "a companion spectrum shares the unchanged physical tap");
+    lease.reset();
+    const auto beforeIdle = broker.stats();
+    broker.pump();
+    check(beforeIdle.domains == 1 && released == 1 && !lease && result && result->projection->complete(),
+          "hiding the group releases only unshared demand and preserves held immutable results");
+    companion.reset();
+    check(released == 2 && broker.stats().taps == 0, "the last subscriber releases each tap exactly once");
+}
 void focusScopeSumProjection() {
     using namespace adi::ui;
     SharedAnalysis::Result a, b;
@@ -1813,7 +1888,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusBarScopeBroker(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

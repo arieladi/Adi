@@ -10,9 +10,12 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace adi::ui {
+struct FocusScopeRange;
+class FocusScopeBarProjection;
 // Owner-thread demand, immutable worker publications. No audio processor, callback lock,
 // repaint timer or independent analysis clock: visible windows request a bounded pass on
 // their frame clock. All documents share one process worker. Compatible output modes use
@@ -21,6 +24,7 @@ class SharedAnalysis final {
     struct State;
     struct Domain;
     struct CaptureDomain;
+    struct BarScopeDomain;
     struct Scheduler;
   public:
     static constexpr double kTapSeconds = 10.0; // legacy adapter's history contract
@@ -173,6 +177,34 @@ class SharedAnalysis final {
         std::shared_ptr<CaptureDomain> domain_;
         friend class SharedAnalysis;
     };
+    enum class BarScopeStatus { Idle, Pending, Ready, Missed };
+    struct BarScopeResult {
+        std::int64_t firstStamp = 0;
+        std::size_t frames = 0;
+        double sampleRate = 0.;
+        std::uint64_t transportRevision = 0;
+        std::shared_ptr<const FocusScopeBarProjection> projection;
+    };
+    class BarScopeLease {
+      public:
+        BarScopeLease() = default;
+        ~BarScopeLease();
+        BarScopeLease(BarScopeLease &&) noexcept;
+        BarScopeLease &operator=(BarScopeLease &&) noexcept;
+        BarScopeLease(const BarScopeLease &) = delete;
+        BarScopeLease &operator=(const BarScopeLease &) = delete;
+        explicit operator bool() const noexcept;
+        bool request(const FocusScopeRange &, std::uint64_t expectedRevision = 0) noexcept;
+        double sampleRate() const noexcept;
+        BarScopeStatus status() const noexcept;
+        std::shared_ptr<const BarScopeResult> read() const noexcept;
+        void reset() noexcept;
+      private:
+        BarScopeLease(std::weak_ptr<State>, std::shared_ptr<BarScopeDomain>);
+        std::weak_ptr<State> state_;
+        std::shared_ptr<BarScopeDomain> domain_;
+        friend class SharedAnalysis;
+    };
     using AcquireSourceTap = std::function<std::shared_ptr<const engine::ScopeTap>(engine::ScopeSource, double)>;
     // Acquire can establish a pending lease whose tap is currently null. Last demand calls
     // Release once whenever Acquire was invoked, so unavailable sources cannot leak demand.
@@ -189,6 +221,7 @@ class SharedAnalysis final {
     Lease acquire(const Request &);
     Lease acquireStereoMeter(std::int64_t track, StereoMeterProfile);
     CaptureLease acquireCapture(const CaptureRequest &);
+    BarScopeLease acquireBarScope(std::span<const engine::ScopeSource>, std::size_t columns);
     void shutdown() noexcept;
     // Owner-only lifecycle query, including consumers which released all leases
     // to hold local pictures. False after explicit shutdown.

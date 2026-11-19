@@ -994,6 +994,17 @@ SharedAnalysis::Lease::SourcePosition SharedAnalysis::CaptureLease::sourcePositi
     // worker-side capture or immutable publication to take the freshness fence.
     return {domain_->tap->generation(), domain_->tap->written()};
 }
+SharedAnalysis::BarScopeLease::~BarScopeLease() = default;
+SharedAnalysis::BarScopeLease::BarScopeLease(BarScopeLease &&) noexcept = default;
+SharedAnalysis::BarScopeLease &SharedAnalysis::BarScopeLease::operator=(BarScopeLease &&) noexcept = default;
+SharedAnalysis::BarScopeLease::operator bool() const noexcept { return false; }
+bool SharedAnalysis::BarScopeLease::request(const FocusScopeRange &, std::uint64_t) noexcept { return false; }
+double SharedAnalysis::BarScopeLease::sampleRate() const noexcept { return 0.; }
+SharedAnalysis::BarScopeStatus SharedAnalysis::BarScopeLease::status() const noexcept { return BarScopeStatus::Idle; }
+std::shared_ptr<const SharedAnalysis::BarScopeResult> SharedAnalysis::BarScopeLease::read() const noexcept { return {}; }
+void SharedAnalysis::BarScopeLease::reset() noexcept {}
+SharedAnalysis::BarScopeLease SharedAnalysis::acquireBarScope(std::span<const engine::ScopeSource>, std::size_t) { return {}; }
+
 SharedAnalysis::SharedAnalysis(AcquireSourceTap a, ReleaseSourceTap r, Mode mode, std::size_t historyByteLimit)
     : state_(std::make_shared<State>(std::move(a), std::move(r), historyByteLimit)), mode_(mode) {}
 SharedAnalysis::SharedAnalysis(AcquireTap a, ReleaseTap r, Mode mode, std::size_t historyByteLimit)
