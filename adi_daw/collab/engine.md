@@ -24,6 +24,14 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — Clip-admission worker test handshake
+
+**PR requested** — branch `engine/clip-admission-fixture-order`, head `fc14ccbb9e167bbbd76f6eb60d283cdbd8b38506`, main base `88e2d94e`. Title **Arm the clip admission race fixture before replacing its request**.
+
+The 192-request PCM assertion passed all 600 current-main Linux runs at concurrency 12. One run failed two later assertions in the separate transient-claim fixture. The worker could snapshot a null probe, see the fixture's new page request afterwards and replace the target without the intended pause. The fixture now installs the probe before initial priming and observes the worker use it on the initial request before it posts the competing request. The actual worker claims, exact PCM, zero-underrun and callback safety checks, and all deadlines remain in place. This follows the 11 November production fix for lost admission (#515) and its #535 review follow-up.
+
+**Gate** — GCC 14 and Clang 19 with warnings as errors each passed all 90 cases. A scratch barrier held the actual worker between loading the probe and reading the replacement request. The old fixture reproduced both ordinary failures, the revised fixture passed all three assertions under the same schedule. Four validators passed. The unmodified main source also passed 24 runs with the playback translation unit and candidate fixture instrumented by GCC ThreadSanitizer. Additional final-tree stress and sanitizer runs are in flight.
+
 ## 2026-11-19 — The 11 November late scanner publication sighting
 
 **For engine-win.** The named registry check passed 600 times against current main's Linux scanner at concurrency 12. Forced child scheduling on the historical process code reproduced the precise assertion: the child writes its valid packet and exits after the empty drain but before the exit observation, so the registry validator never runs. Applying the same timing to #509 let the check pass. The prior 200 full post-#509 suites remain in the 11 November entry. Today's additional full-suite stress exceeded the scratch harness's 20-second per-process budget during concurrent builds, so only the targeted current-main stress is counted here.
