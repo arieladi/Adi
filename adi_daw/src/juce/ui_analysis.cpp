@@ -28,7 +28,10 @@ struct SpectrumAxis {
 const SpectrumAxis &spectrumAxis(SpectrumScale scale) {
     static const SpectrumAxis detail{20., 20000., std::log(1000.), -18, -78, 6, "20", "20k"};
     static const SpectrumAxis extended{10., 30000., std::log(3000.), 0, -100, 10, "10", "30k"};
-    return scale == SpectrumScale::Extended ? extended : detail;
+    static const SpectrumAxis device{10., 24000., std::log(2400.), 0, -120, 12, nullptr, nullptr};
+    if (scale == SpectrumScale::Extended) return extended;
+    if (scale == SpectrumScale::Device) return device;
+    return detail;
 }
 float db(float value) {
     return std::isfinite(value) && value > 0 ? std::max(floorDb, 20.f * std::log10(value)) : floorDb;
@@ -114,20 +117,23 @@ struct SharedSpectrumView::ScaledSpectrum {
         fill.clear();
         if (x.size() < 2) return;
         const auto &axis = spectrumAxis(scale);
+        const bool filled = scale != SpectrumScale::Device;
         for (std::size_t i = 0; i < x.size(); ++i) {
             const auto bin = firstBin + i;
             const auto y = axis.y(bins[bin] + (offsets.empty() ? 0.f : offsets[bin]));
             if (i == 0) {
                 line.startNewSubPath(x[i], y);
-                fill.startNewSubPath(x[i], y);
+                if (filled) fill.startNewSubPath(x[i], y);
             } else {
                 line.lineTo(x[i], y);
-                fill.lineTo(x[i], y);
+                if (filled) fill.lineTo(x[i], y);
             }
         }
-        fill.lineTo(x.back(), 1.f);
-        fill.lineTo(x.front(), 1.f);
-        fill.closeSubPath();
+        if (filled) {
+            fill.lineTo(x.back(), 1.f);
+            fill.lineTo(x.front(), 1.f);
+            fill.closeSubPath();
+        }
     }
 
     void paint(juce::Graphics &g, juce::Rectangle<float> plot) const {
@@ -136,8 +142,10 @@ struct SharedSpectrumView::ScaledSpectrum {
             .translated(plot.getX(), plot.getY());
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(plot.toNearestInt());
-        g.setColour(look::value.withAlpha(.28f));
-        g.fillPath(fill, transform);
+        if (!fill.isEmpty()) {
+            g.setColour(look::value.withAlpha(.28f));
+            g.fillPath(fill, transform);
+        }
         g.setColour(look::value);
         g.strokePath(line, juce::PathStrokeType(look::line), transform);
     }
@@ -791,7 +799,10 @@ juce::Rectangle<float> SharedSpectrumView::paintSpectrumGrid(juce::Graphics &g, 
     const auto scaleWidth = look::fontCaption * 3.f;
     const auto stepHeight = area.getHeight() / static_cast<float>((axis.topDb - axis.bottomDb) / axis.divisionDb);
     const bool labels = area.getWidth() >= scaleWidth * 4.f && stepHeight > look::fontCaption;
-    const auto plot = labels ? area.withTrimmedRight(scaleWidth).withTrimmedBottom(look::fontCaption) : area;
+    const bool topRuler = spectrumScale_ == SpectrumScale::Device;
+    const auto plot = labels ? (topRuler ? area.withTrimmedLeft(scaleWidth).withTrimmedTop(look::fontCaption)
+                                         : area.withTrimmedRight(scaleWidth).withTrimmedBottom(look::fontCaption))
+                             : area;
     if (plot.getWidth() <= 1.f || plot.getHeight() <= 1.f) return {};
     const auto xAt = [&](double hz) { return plot.getX() + (plot.getWidth() - 1.f) * axis.x(hz); };
     g.setFont(look::font(look::fontCaption));
@@ -801,8 +812,10 @@ juce::Rectangle<float> SharedSpectrumView::paintSpectrumGrid(juce::Graphics &g, 
         g.drawHorizontalLine(juce::roundToInt(y), plot.getX(), plot.getRight());
         if (labels) {
             g.setColour(look::textOnBand);
-            g.drawText(juce::String(levelDb), juce::Rectangle<float>(plot.getRight(), y - look::fontCaption * .5f,
-                       scaleWidth, look::fontCaption), juce::Justification::centredRight);
+            const auto x = topRuler ? area.getX() : plot.getRight();
+            g.drawText(juce::String(levelDb), juce::Rectangle<float>(x, y - look::fontCaption * .5f,
+                       scaleWidth, look::fontCaption),
+                       topRuler ? juce::Justification::centredLeft : juce::Justification::centredRight);
         }
     }
     const auto tick = [&](double hz, const char *label) {
@@ -812,14 +825,15 @@ juce::Rectangle<float> SharedSpectrumView::paintSpectrumGrid(juce::Graphics &g, 
         if (labels && label) {
             const auto left = std::clamp(x - scaleWidth * .5f, plot.getX(), plot.getRight() - scaleWidth);
             g.setColour(look::textOnBand);
-            g.drawText(label, juce::Rectangle<float>(left, plot.getBottom(), scaleWidth, look::fontCaption),
+            const auto rulerY = topRuler ? area.getY() : plot.getBottom();
+            g.drawText(label, juce::Rectangle<float>(left, rulerY, scaleWidth, look::fontCaption),
                        juce::Justification::centred);
         }
     };
     tick(axis.lowHz, axis.lowLabel);
     tick(100., "100");
     tick(1000., "1k");
-    tick(10000., xAt(axis.highHz) - xAt(10000.) >= scaleWidth ? "10k" : nullptr);
+    tick(10000., (topRuler || xAt(axis.highHz) - xAt(10000.) >= scaleWidth) ? "10k" : nullptr);
     tick(axis.highHz, axis.highLabel);
     return plot;
 }
@@ -943,7 +957,8 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     if (spectrumMode() && tilted) {
         g.setFont(look::font(9.f));
         g.drawText(projectionReady ? "Display +4.5 dB/oct @ 1 kHz" : "Spectrum display unavailable",
-                   plot.withHeight(12.f), juce::Justification::topRight, true);
+                   (spectrumScale_ == SpectrumScale::Device ? area : plot).withHeight(12.f),
+                   juce::Justification::topRight, true);
     }
     for (std::size_t channel = 0; channel < 2; ++channel) {
         const float x = plot.getRight() + 5.f + static_cast<float>(channel) * 6.f;
@@ -1010,10 +1025,11 @@ AnalysisPane::AnalysisPane() {
         else setSpectrumSlope(requestedSpectrumSlope());
     };
     restoreSlopeControls(SpectrumSlope::Flat); addAndMakeVisible(slopeBox);
-    scaleBox.addItemList({"Scale: Wide", "Scale: Detail", "Scale: Extended"}, 1);
+    scaleBox.addItemList({"Scale: Wide", "Scale: Detail", "Scale: Extended", "Scale: Device"}, 1);
     scaleBox.setTitle("Spectrum display scale");
     scaleBox.setTooltip("Detail uses 20 Hz to 20 kHz and -18 to -78 dBFS. "
-                        "Extended uses 10 Hz to 30 kHz and 0 to -100 dBFS.");
+                        "Extended uses 10 Hz to 30 kHz and 0 to -100 dBFS. "
+                        "Device uses 10 Hz to 24 kHz and 0 to -120 dBFS.");
     scaleBox.onChange = [this] {
         const auto id = scaleBox.getSelectedId();
         if (id > 0) setSpectrumScale(static_cast<SpectrumScale>(id - 1));

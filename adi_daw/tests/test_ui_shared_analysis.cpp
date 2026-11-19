@@ -1258,6 +1258,59 @@ void spectrumExtendedScale() {
           "hidden Extended keeps only its view-local preference");
 }
 
+void spectrumDeviceScale() {
+    using namespace adi::ui;
+    using Scale = SharedSpectrumView::SpectrumScale;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 660, 380); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane; pane.setBounds(0, 0, 640, 360);
+    root.addAndMakeVisible(pane);
+    pane.frame(f.broker, 1, 1);
+    f.write(); f.broker->pump(); pane.frame(f.broker, 1, 1);
+    const auto source = pane.view.snapshot();
+    const auto before = f.broker->stats();
+    pane.scaleBox.setSelectedId(4, juce::dontSendNotification); pane.scaleBox.onChange();
+    const auto device = softwarePicture(pane.view);
+    const auto after = f.broker->stats();
+    check(pane.view.spectrumScale() == Scale::Device && source && pane.view.snapshot() == source &&
+              before.consumers == after.consumers && before.taps == after.taps && f.acquired == 1 &&
+              before.transforms == after.transforms && before.publications == after.publications,
+          "Device uses the selected scale with the same calibrated window, tap and broker work");
+
+    const float left = 5.f + look::fontCaption * 3.f, top = 21.f + look::fontCaption;
+    const float width = static_cast<float>(device.getWidth()) - 10.f - 18.f - look::fontCaption * 3.f;
+    const float height = static_cast<float>(device.getHeight()) - 10.f - 16.f - 29.f - look::fontCaption;
+    const auto x = [=](double hz) {
+        return juce::roundToInt(left + (width - 1.f) * static_cast<float>(std::log(hz / 10.) / std::log(2400.)));
+    };
+    const auto y = [=](float db) { return juce::roundToInt(top - (height - 1.f) * db / 120.f); };
+    const auto hasInk = [&](juce::Rectangle<int> area) {
+        for (int iy = area.getY(); iy < area.getBottom(); ++iy)
+            for (int ix = area.getX(); ix < area.getRight(); ++ix)
+                if (device.getPixelAt(ix, iy) != look::display) return true;
+        return false;
+    };
+    const auto peak = y(-6.0206f);
+    check(hasInk({x(750.) - 1, peak - 2, 3, 5}) && device.getPixelAt(x(750.), peak + 16) == look::display,
+          "Device projects the 750 Hz calibrated peak onto the 120 dB log view with no fill");
+    check(hasInk({6, y(-12.f) - 4, 24, 9}) && hasInk({x(1000.) - 10, 22, 20, 9}),
+          "Device paints level labels on the left and decade labels along the top");
+    bool grid = true;
+    for (const float level : {-12.f, -24.f, -36.f})
+        grid = grid && device.getPixelAt(x(37.), y(level)) != look::display &&
+            device.getPixelAt(x(37.), y(level) + 2) == look::display;
+    check(grid, "Device uses 12 dB divisions and preserves the calibrated range");
+
+    pane.setMode(SharedSpectrumView::Mode::SpectrumAverage);
+    writeFrames(f, 1024); f.broker->pump(); pane.frame(f.broker, 1, 1);
+    const auto measured = pane.view.snapshot();
+    const auto *bins = pane.view.spectrumBins().data();
+    pane.setSpectrumScale(Scale::Extended); pane.setSpectrumScale(Scale::Device);
+    check(pane.scaleBox.getSelectedId() == 4 && measured && bins && measured == pane.view.snapshot() &&
+              bins == pane.view.spectrumBins().data() && SharedSpectrumViewTestAccess::hasScaledPlot(pane.view),
+          "Device projection also leaves the existing averaged publication intact");
+}
+
 void spectrogramHistoryMotion() {
     using namespace adi::ui;
     using Mode = SharedSpectrumView::Mode;
@@ -1846,7 +1899,7 @@ int main() {
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
-          spectrogramHistoryMotion(); classicScopeSurface(); mixAnalyserPages(); compareAndAveragePages(); }
+          spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface(); mixAnalyserPages(); compareAndAveragePages(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

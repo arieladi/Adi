@@ -59,7 +59,7 @@ class SharedSpectrumView final : public juce::Component,
     bool paletteReversed() const noexcept { return paletteReversed_; }
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
-    enum class SpectrumScale { Wide, Detail, Extended };
+    enum class SpectrumScale { Wide, Detail, Extended, Device };
     void setSpectrumScale(SpectrumScale);
     SpectrumScale spectrumScale() const noexcept { return spectrumScale_; }
     enum class HistoryMotion { Scroll, Sweep };
