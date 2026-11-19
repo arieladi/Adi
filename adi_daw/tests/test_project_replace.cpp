@@ -96,6 +96,21 @@ void publication(){
     check(media::replaceFile(source,target).status==media::PublishStatus::published && read(target)=="missing target bytes","confirmed replacement can publish an absent endpoint");
     write(source,"atomic only");fs::remove(target);
     check(media::publishFile(source,target,{refuse},media::PublishPolicy::AtomicOnly).status==media::PublishStatus::failed && !fs::exists(target) && fs::exists(source),"authoritative no-clobber path never falls back to a visible copy");
+    write(target,"bound old target");hooks={};hooks.expectedTarget=media::readFileIdentity(target,error);
+    const auto saved=temp.path()/"OldTarget";fs::rename(target,saved);write(target,"another writer");
+    check(media::replaceFile(source,target,hooks).status==media::PublishStatus::failed && read(target)=="another writer" &&
+          read(saved)=="bound old target" && fs::exists(source),"explicit preflight identity refuses a different file under the destination lease");
+    fs::remove(target);
+    check(media::replaceFile(source,target,hooks).status==media::PublishStatus::failed && !fs::exists(target) && fs::exists(source),
+          "bound replacement never falls back to publishing an unexpectedly absent target");
+    write(target,"bound again");hooks.expectedTarget=media::readFileIdentity(target,error);
+    const auto diverted=temp.path()/"DivertedTarget";
+    hooks.validateTarget=[&](const fs::path& path) {
+        fs::rename(path,diverted);write(path,"validation-time arrival");return std::error_code{};
+    };
+    check(media::replaceFile(source,target,hooks).status==media::PublishStatus::failed && read(target)=="validation-time arrival" &&
+          read(diverted)=="bound again" && fs::exists(source),"identity is rechecked after lease-scoped validation before native rename");
+    fs::remove(target);
     audio::onAudioThread=true;const auto rt=media::replaceFile(source,target);std::error_code denied;auto refusedLease=media::ProjectFileLease::openShared(source,denied);audio::onAudioThread=false;
     check(rt.status==media::PublishStatus::failed && !refusedLease && !fs::exists(target),"publication and lease acquisition refuse the audio thread");
 }

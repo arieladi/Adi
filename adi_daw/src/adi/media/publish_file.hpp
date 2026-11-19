@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <filesystem>
+#include <functional>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -74,9 +75,13 @@ struct ReplaceHooks {
     std::error_code (*rename)(const std::filesystem::path&, const std::filesystem::path&) = nullptr;
     std::error_code (*syncDirectory)(const std::filesystem::path&) = nullptr;
     // Runs under the destination's exclusive lease, before any publication.
-    std::error_code (*validateTarget)(const std::filesystem::path&) = nullptr;
+    std::function<std::error_code(const std::filesystem::path&)> validateTarget;
     bool (*retryable)(const std::error_code&) = nullptr;
     void (*retryWait)(unsigned milliseconds) = nullptr;
+    // Optional existing-file binding. When set, a missing or different target
+    // fails under the exclusive lease. Expected-absent callers instead use
+    // publishFile(AtomicOnly). This is not an OS compare-and-swap rename.
+    std::optional<FileIdentity> expectedTarget{};
 };
 // The replacing rename replaceFile uses (test hooks reuse it). On Windows it
 // replaces a destination held open only by handles that share delete -- the

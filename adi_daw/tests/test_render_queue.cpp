@@ -881,6 +881,134 @@ void foldedCollisionNames() {
 std::error_code failDirectorySync(const fs::path&) { return std::make_error_code(std::errc::io_error); }
 std::error_code confirmDirectorySync(const fs::path&) { return {}; }
 std::error_code refuseRename(const fs::path&, const fs::path&) { return std::make_error_code(std::errc::operation_not_supported); }
+void identityBoundReplace() {
+    Fixture f;
+    bool preparedBeforeProgress=false,progressBeforePrepared=false;
+    Control preparedControl;
+    preparedControl.progress=[&](JobId,std::uint64_t,std::uint64_t) {
+        if(!preparedBeforeProgress)progressBeforePrepared=true;
+    };
+    const auto preparedRender=render::detail::renderWavPrepared(f.job("prepared-bridge"),{},preparedControl,0,1,
+        [&](const Result& prepared) {
+            preparedBeforeProgress=prepared.framesWritten==0 && prepared.snapshot.has_value() &&
+                !fs::exists(prepared.output);
+        });
+    check(preparedRender.state==JobState::Completed && preparedBeforeProgress && !progressBeforePrepared &&
+          matches(read(preparedRender,866),137),
+          "NI's reusable prepared-render bridge receives names and revision before Main progress or audio");
+    const auto write=[](const fs::path& path,const char* bytes) {
+        std::ofstream out(path,std::ios::binary);out<<bytes;out.close();
+        if(!out)throw std::runtime_error("Replace fixture write");
+    };
+    const auto text=[](const fs::path& path) {
+        std::ifstream in(path,std::ios::binary);return std::string{std::istreambuf_iterator<char>(in),{}};
+    };
+    auto job=f.job("replace");job.collision=Collision::Replace;
+    const auto target=job.directory/"replace.wav";
+    write(target,"old complete delivery");
+    std::error_code error;const auto oldIdentity=media::readFileIdentity(target,error);
+    const auto oldHash=media::blake3File(target).hex;
+    Queue queue;queue.add(job);queue.run();const auto complete=queue.snapshot().front().result;
+    check(complete.state==JobState::Completed && complete.publication && !complete.publication->usedFallback &&
+          complete.output==target && complete.replacement && complete.replacement->existing==oldIdentity &&
+          complete.replacement->blake3==oldHash && matches(read(complete,866),137) && f.noStage(),
+          "explicit Replace binds old identity and bytes, then publishes real rendered PCM at the same name");
+    check(media::readFileIdentity(target,error)!=oldIdentity,
+          "successful native Replace installs the staged file identity rather than editing old bytes in place");
+    const auto manifest=nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["job"]["collision"]=="replace" &&
+          manifest["members"][0]["result"]["replacement_preflight"]["blake3"]==oldHash,
+          "run manifest distinguishes requested Replace and its bound preflight target");
+    job.nameTemplate="absent-replace";
+    const auto absent=renderWav(job,{});
+    check(absent.state==JobState::Completed && absent.replacement && !absent.replacement->existing &&
+          !absent.publication->usedFallback && matches(read(absent,866),137),
+          "Replace with absent preflight target uses native no-clobber publication");
+    for(const auto* mutation:{"rebound","removed","in-place"}) {
+        job.nameTemplate=mutation;
+        const auto selected=job.directory/media::pathFromUtf8(job.nameTemplate+".wav");
+        const auto kept=job.directory/media::pathFromUtf8(job.nameTemplate+".kept");
+        write(selected,"old bytes");bool changed=false;Control control;
+        control.progress=[&](JobId,std::uint64_t done,std::uint64_t) {
+            if(!done || changed)return;changed=true;
+            if(job.nameTemplate=="rebound") {fs::rename(selected,kept);write(selected,"new writer");}
+            else if(job.nameTemplate=="removed")fs::rename(selected,kept);
+            else write(selected,"new bytes"); // Same native identity, same byte count.
+        };
+        const auto failed=renderWav(job,{},control);
+        check(changed && failed.state==JobState::Failed && !failed.publication && failed.framesWritten==866 && f.noStage(),
+              "identity change, disappearance, and in-place edit during render each refuse Replace");
+        check(job.nameTemplate=="removed" ? !fs::exists(selected) && text(kept)=="old bytes" :
+              text(selected)==(job.nameTemplate=="rebound" ? "new writer" : "new bytes"),
+              "Replace refusal leaves another writer's bytes or missing path unchanged");
+        if(job.nameTemplate=="in-place")
+            check(failed.replacement && media::readFileIdentity(selected,error)==failed.replacement->existing && fs::file_size(selected)==9,
+                  "in-place refusal is verified with the same native identity and byte count");
+    }
+    job.nameTemplate="Stra\xC3\x9F" "e-replace";
+    const auto selected=job.directory/media::pathFromUtf8(job.nameTemplate+".wav");
+    const auto folded=job.directory/"STRASSE-REPLACE.WAV";
+    write(selected,"old folded bytes");bool introduced=false;Control foldedRace;
+    foldedRace.progress=[&](JobId,std::uint64_t done,std::uint64_t) {
+        if(done && !introduced){introduced=true;write(folded,"new folded occupant");}
+    };
+    const auto collision=renderWav(job,{},foldedRace);
+    check(introduced && collision.state==JobState::Failed && !collision.publication &&
+          text(selected)=="old folded bytes" && text(folded)=="new folded occupant" && f.noStage(),
+          "a new portable-fold collision during render preserves both files");
+    const auto ambiguous=renderWav(job,{});
+    check(ambiguous.state==JobState::Failed && ambiguous.framesWritten==0 && !ambiguous.publication,
+          "Replace refuses an ambiguous preflight collision set before audio processing");
+    fs::remove(folded);job.nameTemplate="STRASSE-REPLACE";
+    const auto foldOnly=renderWav(job,{});
+    check(foldOnly.state==JobState::Failed && foldOnly.framesWritten==0 && text(selected)=="old folded bytes",
+          "Replace does not silently select a different fold-only spelling");
+    job.nameTemplate="directory-replace";fs::create_directory(job.directory/"directory-replace.wav");
+    const auto directory=renderWav(job,{});
+    check(directory.state==JobState::Failed && directory.framesWritten==0 &&
+          fs::is_directory(job.directory/"directory-replace.wav"),"Replace refuses a directory without touching it");
+    job.nameTemplate="hardlink-replace";
+    const auto alias=job.directory/"hardlink-replace.wav";
+    fs::create_hard_link(selected,alias);
+    const auto linked=renderWav(job,{});
+    check(linked.state==JobState::Completed && matches(read(linked,866),137) && text(selected)=="old folded bytes",
+          "replacing one ordinary hardlink leaves the unselected alias's old bytes intact");
+    job.nameTemplate="replace-native-case";
+    const auto cased=job.directory/"REPLACE-NATIVE-CASE.wav";write(cased,"case bytes");
+    const bool nativeAlias=fs::exists(job.directory/"replace-native-case.wav");
+    const auto caseResult=renderWav(job,{});
+    check(nativeAlias ? caseResult.state==JobState::Completed && matches(read(caseResult,866),137) :
+          caseResult.state==JobState::Failed && text(cased)=="case bytes",
+          "case spelling is replaceable only when native identity proves it is the requested file");
+    job.nameTemplate="locked-replace";const auto locked=job.directory/"locked-replace.wav";write(locked,"leased bytes");
+    auto lease=media::ProjectFileLease::openShared(locked,error);
+    const auto inUse=renderWav(job,{});
+    check(lease && inUse.state==JobState::Failed && !inUse.publication && text(locked)=="leased bytes" && f.noStage(),
+          "active shared lease refuses Replace without deleting the old delivery");lease.reset();
+    Control refusal;refusal.publicationHooks.rename=refuseRename;
+    const auto unsupported=renderWav(job,{},refusal);
+    check(unsupported.state==JobState::Failed && !unsupported.publication && text(locked)=="leased bytes" && f.noStage(),
+          "unsupported native replacement fails without copy fallback or renaming the delivery");
+    Control warning;warning.publicationHooks.syncDirectory=failDirectorySync;
+    const auto warned=renderWav(job,{},warning);
+    check(warned.state==JobState::Completed && warned.publication && !warned.publication->durabilityConfirmed &&
+          !warned.publication->warning.empty() && matches(read(warned,866),137),
+          "Replace keeps published-with-durability-warning distinct from failure");
+    job.nameTemplate="absent-replace-race";Control arrival;
+    arrival.publicationHooks.rename=[](const fs::path& source,const fs::path& path) {
+        {std::ofstream file(path,std::ios::binary);file<<"late arrival";}
+        return nativeExclusiveRename(source,path);
+    };
+    const auto raced=renderWav(job,{},arrival);
+    check(raced.state==JobState::Failed && !raced.publication && text(raced.output)=="late arrival" && f.noStage(),
+          "absent Replace never adopts a late native arrival as an overwrite target");
+    job.nameTemplate="cancel-replace";const auto cancelledPath=job.directory/"cancel-replace.wav";
+    write(cancelledPath,"kept on cancel");std::stop_source stop;Control cancel;cancel.stop=stop.get_token();
+    cancel.progress=[&](JobId,std::uint64_t done,std::uint64_t){if(done)stop.request_stop();};
+    const auto cancelled=renderWav(job,{},cancel);
+    check(cancelled.state==JobState::Cancelled && !cancelled.publication && text(cancelledPath)=="kept on cancel" && f.noStage(),
+          "cancelled Replace preserves the preflight target and removes only its private stage");
+}
 void stageCleanupResults() {
 #if defined(_WIN32)
     for (const bool cancel : {false, true}) {
@@ -1214,7 +1342,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); collisionModes(); foldedCollisionNames(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

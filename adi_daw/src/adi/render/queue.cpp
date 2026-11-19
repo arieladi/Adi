@@ -55,9 +55,42 @@ bool occupiedBeforePublication(const fs::path& path) {
         if(foldedFilename(entry.path())==key)return true;
     return false;
 }
+std::vector<std::string> foldedOccupants(const fs::path& path) {
+    const auto key=foldedFilename(path);
+    std::vector<std::string> names;
+    for(const auto& entry:fs::directory_iterator(path.parent_path()))
+        if(foldedFilename(entry.path())==key)names.push_back(media::pathUtf8(entry.path().filename()));
+    std::sort(names.begin(),names.end());
+    return names;
+}
+media::FileIdentity ordinaryOutputIdentity(const fs::path& path) {
+    std::error_code error;
+    const auto status=fs::symlink_status(path,error);
+    if(error || !fs::is_regular_file(status))
+        throw std::runtime_error("Replace requires an existing ordinary file at the requested path");
+    const auto identity=media::readFileIdentity(path,error);
+    if(!identity)throw std::runtime_error("cannot identify replacement destination: "+error.message());
+    return *identity;
+}
+void verifyReplacement(const Result& result) {
+    const auto& binding=*result.replacement;
+    if(result.output!=binding.target || foldedOccupants(result.output)!=binding.foldedNames)
+        throw std::runtime_error("replacement path or folded collision set changed since preflight");
+    if(!binding.existing) {
+        if(occupiedNative(result.output))throw std::runtime_error("replacement destination arrived after absent preflight");
+        return;
+    }
+    if(ordinaryOutputIdentity(result.output)!=*binding.existing)
+        throw std::runtime_error("replacement destination identity changed since preflight");
+    const auto digest=media::blake3File(result.output);
+    if(!digest || digest.hex!=binding.blake3 || ordinaryOutputIdentity(result.output)!=*binding.existing)
+        throw std::runtime_error("replacement destination contents or identity changed since preflight");
+    if(foldedOccupants(result.output)!=binding.foldedNames)
+        throw std::runtime_error("replacement collision set changed during validation");
+}
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
-    if (j.collision != Collision::Fail && j.collision != Collision::Increment)
+    if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
         throw std::invalid_argument("unsupported export collision policy");
     if (!j.regionId && (j.beginSample < 0 || j.endSample <= j.beginSample)) throw std::invalid_argument("export range must be nonempty and nonnegative");
     if (!std::isfinite(j.session.sampleRate) || j.session.sampleRate < 8000 || j.session.sampleRate > 768000 ||
@@ -253,11 +286,36 @@ void validateOutputName(const fs::path& output) {
 }
 
 void detail::prepareOutput(Result& result,Collision collision,const char* suffix,const char* collisionMessage) {
-    if(collision!=Collision::Fail && collision!=Collision::Increment)
+    result.replacement.reset();
+    if(collision!=Collision::Fail && collision!=Collision::Increment && collision!=Collision::Replace)
         throw std::invalid_argument("unsupported export collision policy");
     validateOutputName(result.output);
     const auto directory=result.output.parent_path();
     if(!fs::is_directory(directory))throw std::runtime_error("export directory does not exist");
+    if(collision==Collision::Replace) {
+        // Freeze the resolved parent so a later working-directory or parent
+        // symlink change cannot silently redirect the selected delivery.
+        result.output=fs::canonical(directory)/result.output.filename();
+        ReplacementBinding binding;binding.target=result.output;
+        binding.foldedNames=foldedOccupants(result.output);
+        if(!occupiedNative(result.output)) {
+            if(!binding.foldedNames.empty())
+                throw std::runtime_error("Replace refuses a fold-only collision at another spelling");
+        } else {
+            binding.existing=ordinaryOutputIdentity(result.output);
+            if(binding.foldedNames.size()>1)
+                throw std::runtime_error("Replace refuses an ambiguous folded collision set");
+            if(!binding.foldedNames.empty() &&
+                ordinaryOutputIdentity(result.output.parent_path()/media::pathFromUtf8(binding.foldedNames.front()))!=*binding.existing)
+                throw std::runtime_error("Replace refuses a folded collision with another file");
+            const auto digest=media::blake3File(result.output);
+            if(!digest)throw std::runtime_error("cannot hash replacement destination");
+            binding.blake3=digest.hex;
+        }
+        result.replacement=std::move(binding);
+        verifyReplacement(result);
+        return;
+    }
     std::set<std::string> names;
     std::uint64_t entries=0;
     for(const auto& entry:fs::directory_iterator(directory)) {
@@ -333,11 +391,25 @@ void detail::publishOutput(const fs::path& stage, Result& result, media::Publish
                           const char* collisionMessage) {
     // The chosen spelling is frozen. This is a fresh folded check, not an
     // atomic cross-process folded reservation; native no-clobber still follows.
-    if(occupiedBeforePublication(result.output))throw std::runtime_error(collisionMessage);
+    const bool replacing=result.replacement && result.replacement->existing.has_value();
+    if(result.replacement) {
+        if(!replacing)verifyReplacement(result);
+        else if(result.output!=result.replacement->target)
+            throw std::runtime_error("replacement path changed since preflight");
+    } else if(occupiedBeforePublication(result.output))throw std::runtime_error(collisionMessage);
+    media::ReplaceHooks replaceHooks;
+    if(replacing) {
+        replaceHooks.rename=hooks.rename;replaceHooks.syncDirectory=hooks.syncDirectory;
+        replaceHooks.expectedTarget=result.replacement->existing;
+        replaceHooks.validateTarget=[&result](const fs::path&) {
+            verifyReplacement(result);return std::error_code{};
+        };
+    }
     // Reserve the fallback message before the irreversible commit point.
     result.publication.emplace(PublicationReport{false, false,
         "file published; durability could not be confirmed"});
-    auto published = media::publishFile(stage, result.output, hooks, media::PublishPolicy::AtomicOnly);
+    auto published = replacing ? media::replaceFile(stage,result.output,std::move(replaceHooks)) :
+        media::publishFile(stage, result.output, hooks, media::PublishPolicy::AtomicOnly);
     if (published.status != media::PublishStatus::published) {
         result.publication.reset();
         throw std::runtime_error(published.status == media::PublishStatus::exists
@@ -353,6 +425,10 @@ void detail::publishOutput(const fs::path& stage, Result& result, media::Publish
 
 Result renderWav(Job job, engine::DeviceLoader loader, Control control,
                        JobId id, std::uint64_t counter) {
+    return detail::renderWavPrepared(std::move(job),std::move(loader),std::move(control),id,counter,{});
+}
+Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control control,
+                       JobId id, std::uint64_t counter,const std::function<void(const Result&)>& prepared) {
     Result result;
     try {
         cancellation(control);
@@ -413,6 +489,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         const auto filename = resolveName(job.nameTemplate, names) + ".wav";
         result.output = job.directory / media::pathFromUtf8(filename);
         detail::prepareOutput(result,job.collision,".wav","export destination already exists");
+        if(prepared)prepared(result);
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
         const auto endpoint = session.offlineOutput(job.source.trackId, job.source.tap);
@@ -630,7 +707,7 @@ std::string serializeRunManifest(const RunReport& run) {
             }
             item["job"] = {{"project", media::pathUtf8(job.project)}, {"directory", media::pathUtf8(job.directory)},
                 {"name_template", job.nameTemplate}, {"source", sourceValue(job.source)},
-                {"collision",job.collision==Collision::Fail ? "fail" : "increment"},
+                {"collision",job.collision==Collision::Fail ? "fail" : job.collision==Collision::Increment ? "increment" : "replace"},
                 {"requested_range", {{"begin_sample", job.beginSample}, {"end_sample", job.endSample},
                     {"region_id", job.regionId ? Json(*job.regionId) : Json(nullptr)}}},
                 {"requested_profile", std::move(profile)}};
@@ -641,6 +718,12 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"error", result.error}, {"publication", nullptr}, {"stage_cleanup", nullptr},
                 {"normalization", nullptr},
                 {"resolved_snapshot", nullptr}, {"ni_stem_snapshots", Json::array()}, {"media_verification", nullptr}};
+            if(result.replacement) {
+                const auto& binding=*result.replacement;
+                value["replacement_preflight"]={{"target",media::pathUtf8(binding.target)},
+                    {"existing_identity",binding.existing ? Json{{"volume",binding.existing->volume},{"file",binding.existing->file}} : Json(nullptr)},
+                    {"blake3",binding.blake3},{"folded_names",binding.foldedNames}};
+            }
             if(result.mediaVerification) {
                 const auto& verification=*result.mediaVerification;
                 value["media_verification"]={{"scope","external_audio_clips"},

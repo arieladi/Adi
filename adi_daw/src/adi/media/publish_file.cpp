@@ -395,11 +395,14 @@ PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selecte
             error.clear();const auto status=fs::symlink_status(target,error);
             const bool absent=error==std::errc::no_such_file_or_directory || (!error && status.type()==fs::file_type::not_found);
             if(error && !absent)return {PublishStatus::failed,false,error.message()};
+            if(absent && hooks.expectedTarget)return {PublishStatus::failed,false,"expected replacement destination is missing"};
             std::shared_ptr<ProjectFileLease> lease;
             if(!absent){
                 if(!fs::is_regular_file(status))return {PublishStatus::failed,false,"destination is not a regular file"};
                 lease=ProjectFileLease::openExclusive(target,error);
                 if(!lease)return {PublishStatus::failed,false,"destination is in use or inaccessible: "+error.message()};
+                if(hooks.expectedTarget && lease->identity()!=*hooks.expectedTarget)
+                    return {PublishStatus::failed,false,"destination identity changed since preflight"};
                 if(lease->identity()==*sourceId)return {PublishStatus::failed,false,"source and destination identify the same file"};
             }
             if(hooks.validateTarget && (error=hooks.validateTarget(target)))return {PublishStatus::failed,false,"destination validation: "+error.message()};
@@ -408,6 +411,13 @@ PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selecte
                 if(error==std::errc::file_exists)continue;
             }else{
                 for(unsigned attempt=0;;++attempt){
+                    if(hooks.expectedTarget) {
+                        const auto currentStatus=fs::symlink_status(target,error);
+                        if(error || !fs::is_regular_file(currentStatus))
+                            return {PublishStatus::failed,false,"replacement destination is no longer an ordinary file"};
+                        if(attempt>0 && hooks.validateTarget && (error=hooks.validateTarget(target)))
+                            return {PublishStatus::failed,false,"destination validation: "+error.message()};
+                    }
                     const auto current=identityAt(target,error);
                     if(!current || *current!=lease->identity())return {PublishStatus::failed,false,"destination changed during replacement"};
                     error=hooks.rename?hooks.rename(source,target):renameReplacing(source,target);
