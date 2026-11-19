@@ -22,7 +22,10 @@ jobs:
   # that changes only Markdown no build reads (the rule is ci.yml's, in
   # .github/scripts/markdown_only.sh). Three runners, one of them macOS, cost
   # more than this one Linux job does. Its name must not begin "GUI shell /",
-  # which is how land_top.sh finds the three shell checks.
+  # which is how land_top.sh finds the three shell checks. land_checks.py reads
+  # this job's name, the workflow's and the matrix's size (a Markdown-only
+  # skip counts only beside this job's SUCCESS); test_land_checks.py fails if
+  # they drift from what is written here.
   changes:
     name: 'ui: which jobs run'
     runs-on: ubuntu-latest

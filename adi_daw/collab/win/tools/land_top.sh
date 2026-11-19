@@ -5,8 +5,8 @@
 # merges it. The PRs below N are then closed by close_landed.sh, not here.
 #
 # "Green" is decided by land_checks.py beside this file (19 November): adi_daw's "gate" check is
-# SUCCESS, the three "GUI shell / ..." checks are SUCCESS or SKIPPED when Step 7 UI ran, and
-# nothing is pending or failed. The old rule, at least 20 OK checks, now applies only to a PR
+# SUCCESS, nothing is pending or failed, and when Step 7 UI ran all three "GUI shell / ..." checks
+# exist and are SUCCESS or SKIPPED (or its one Markdown-only placeholder is SKIPPED). The old rule, at least 20 OK checks, now applies only to a PR
 # whose newest adi_daw run has no "gate" check (it ran before the gate existed), and only when
 # two polls in a row agree, so a new run whose gate has not been created yet cannot pass it.
 # A draft runs no CI, so a draft N is marked ready first; merge_stack.sh would do that anyway.

@@ -14,8 +14,11 @@ Prints one tab-separated line, the verdict first:
                land_top.sh reruns it once
     GATE       adi_daw's "gate" concluded without SUCCESS and no other check
                says why: land_top.sh stops and names it
-    LAND       "gate" is SUCCESS, every "GUI shell / ..." check is SUCCESS or
-               SKIPPED, nothing runs and nothing failed
+    LAND       "gate" is SUCCESS, nothing runs, nothing failed, and Step 7 UI
+               either never ran or shows its whole answer: all three
+               "GUI shell / ..." checks SUCCESS or SKIPPED, or the one skipped
+               placeholder of a Markdown-only change ("ui: which jobs run"
+               SUCCESS beside it)
     LEGACY     the newest adi_daw run has no "gate" check (a run from before
                the gate existed): the old rule, nothing runs, nothing failed and
                at least 20 checks passed; land_top.sh wants it twice in a row
@@ -36,6 +39,17 @@ How the checks are read:
     gate, which needs that job, reports what it means.
   - "gate" is left out of bad-urls and cancelled-urls: it fails BECAUSE a leg
     failed or was cancelled, and the leg is the one to read or rerun.
+  - THE GUI SHELL IS COUNTED, NOT ASSUMED. Step 7 UI has no gate of its own,
+    and a check GitHub has not created yet is not "pending", it is absent:
+    after "ui: which jobs run" finishes there is a moment with no
+    "GUI shell / ..." check at all, or one of the three. "Every GUI shell
+    check passed" is true of none, so once any Step 7 UI check is present
+    LAND needs all GUI_SHELLS of them, or the single unexpanded
+    "GUI shell / ${{ matrix.os }}" SKIPPED that ui.yml leaves when its
+    `changes` job (SUCCESS) answered code=false. A draft's run leaves that
+    placeholder too, but with "ui: which jobs run" SKIPPED, and it is not
+    accepted: it says nothing about the ready pull request's run, which may
+    simply not have been created yet.
 """
 
 from __future__ import annotations
@@ -47,6 +61,11 @@ import sys
 GATE = "gate"
 GATE_WORKFLOW = "adi_daw"
 GUI_PREFIX = "GUI shell / "
+GUI_WORKFLOW = "Step 7 UI"
+GUI_PLAN = "ui: which jobs run"
+# ui.yml's shell matrix: windows-latest, macos-latest, ubuntu-latest.
+# test_land_checks.py reads ui.yml and fails if this and the matrix disagree.
+GUI_SHELLS = 3
 LEGACY_MIN_OK = 20
 FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR", "ACTION_REQUIRED"}
 PASSED = {"SUCCESS", "SKIPPED"}
@@ -79,6 +98,25 @@ def normalise(c: dict) -> dict:
             "url": url, "when": when}
 
 
+def gui_shell_ok(rows: list[dict]) -> bool:
+    """Whether Step 7 UI, in its newest run, has given its whole answer and it
+    is a pass. True when Step 7 UI never ran (its paths filter left it out)."""
+    ui = [c for c in rows if c["workflow"] == GUI_WORKFLOW
+          or c["name"].startswith(GUI_PREFIX) or c["name"] == GUI_PLAN]
+    if not ui:
+        return True
+    shells = [c for c in ui if c["name"].startswith(GUI_PREFIX)]
+    expanded = [c for c in shells if not placeholder(c["name"])]
+    if expanded:
+        return (len({c["name"] for c in expanded}) >= GUI_SHELLS
+                and all(c["conclusion"] in PASSED for c in expanded))
+    # No shell ran. Only ui.yml's Markdown-only answer may stand for it: its
+    # `changes` job succeeded and the shell matrix was skipped unexpanded.
+    plan = [c for c in ui if c["name"] == GUI_PLAN]
+    return (len(shells) == 1 and shells[0]["conclusion"] == "SKIPPED"
+            and len(plan) == 1 and plan[0]["conclusion"] == "SUCCESS")
+
+
 def decide(rollup: list[dict]) -> list[str]:
     checks = [normalise(c) for c in rollup]
 
@@ -108,7 +146,7 @@ def decide(rollup: list[dict]) -> list[str]:
     gate_url = "" if gate is None else gate["url"]
     if gate is not None and gate["conclusion"] == "CANCELLED":
         cancelled.append(gate["url"])  # the whole run was cancelled: rerun it
-    gui_ok = all(c["conclusion"] in PASSED for c in named if c["name"].startswith(GUI_PREFIX))
+    gui_ok = gui_shell_ok(rows)
 
     if pending:
         verdict = "WAIT"
@@ -119,8 +157,9 @@ def decide(rollup: list[dict]) -> list[str]:
     elif gate is None:
         verdict = "LEGACY" if legacy_ok >= LEGACY_MIN_OK else "WAIT"
     elif gate["conclusion"] == "SUCCESS":
-        # A GUI shell check that is neither a pass, a failure nor a cancellation
-        # (NEUTRAL, STALE) is not a pass: wait for a run that settles it.
+        # The GUI shell's whole answer, or wait for it: checks not created yet,
+        # one of three, or one that is neither a pass, a failure nor a
+        # cancellation (NEUTRAL, STALE) is not a pass.
         verdict = "LAND" if gui_ok else "WAIT"
     elif gate["conclusion"] == "SKIPPED":
         # The newest run was a draft's, which builds nothing. land_top.sh marks
