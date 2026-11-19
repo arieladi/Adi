@@ -70,7 +70,8 @@ void TruePeakMeter::process(const float* const* x, int channels, int frames) noe
         const int slot = head_;
         head_ = (head_ + 1) % kTapsPerPhase;
         for (int c = 0; c < chans; ++c) {
-            const double s = static_cast<double>(x[c][i]);
+            const double sample = static_cast<double>(x[c][i]);
+            const double s = std::isfinite(sample) ? sample : 0.0;
             peak = std::max(peak, std::fabs(s));   // never below the sample peak
             if (factor_ == 1) continue;
             double* h = history_[c];

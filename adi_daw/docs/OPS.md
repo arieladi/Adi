@@ -1803,8 +1803,11 @@ application settings enters a payload.
 creates a locator or cycle marker. Time base defaults to musical (0, ticks),
 linear (1) uses nanoseconds. `pos` and `length` stay in that base's units.
 Kinds are position (default), cycle, chapter and sync. A supplied length defaults
-the kind to cycle; cycles require positive length. `marker.move {id,pos}` keeps
-its base, and `marker.resize {id,length}` resizes cycles. `marker.rename {id,name}`
+the kind to cycle. Cycles require positive length. `marker.move {id,pos}` keeps
+its base, and `marker.resize {id,length}` resizes cycles. New positions are
+nonnegative and a cycle end must be within the same range, up to 2^50 musical
+ticks or the maximum signed 64-bit nanosecond value. History can replay marker
+positions saved by older versions. `marker.rename {id,name}`
 and `marker.setColor {id,color?}` edit identity/colour (omit colour to clear;
 otherwise a Live palette index 0..69). Notes/prompts use `{id,text}`, including
 an empty string to clear. Prompts are literal stored data, never executed here.
