@@ -61,6 +61,34 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DEV-22: EQ Eight opens at Live 12.4's default curve
+
+**PR requested:** head `devices/eq-eight-defaults` (0009be42, one commit on bedee5ab), base `main`.
+Live 12.4's EQ Eight browser default comes from its default preset in the Core Library, read in
+the director's research. It differs from ADI's in 24 stored values; the type numbers follow
+Live's menu order, which ADI's menu already has.
+- **Curve A.** Band 1 is a low shelf at 30 Hz, bands 2 and 3 bells at 200 Hz and 1 kHz, band 4 a
+  high shelf at 5 kHz, all on. Bands 5 to 8 are off, at 100 Hz, 10 kHz and 5 kHz, then a 12 dB high
+  cut at 18 kHz.
+- **Curve B (L/R and M/S).** Bands 3 to 6 are on, as bells at 100, 500, 2,000 and 10,000 Hz. Bands 1,
+  2, 7 and 8 are off: a 12 dB low cut at 40 Hz, a low shelf at 200 Hz, a high shelf at 5 kHz and a
+  12 dB high cut at 18 kHz.
+- **Already matching:** every gain 0 dB and every Q 0.7071, so the default response stays
+  bit-exact unity (tested). Also Stereo, Edit A, Adaptive Q on, Scale 100 %, Output 0 dB and HQ off.
+- **Saved projects:** a project saved earlier keeps its own values (ADR-0188 d3). Only a fresh EQ
+  Eight opens differently.
+
+The native core and the canvas's `[adi.param]` defaults take the same table; `EqEight::value(n)`
+lets a test read a default. The test is first: native and canvas defaults against Live's table,
+24 wrong before in each. The Pd suite's peak measurement now sets band 1's type itself.
+`adi_eq_eight_tests` 45, `adi_eq_eight_pd_tests` 100; CTest 246/246 (MSVC Debug, /W4 /WX).
+
+Live's Core Library has default presets for ten audio effects. ADI has now taken Auto Filter's,
+Chorus-Ensemble's, Delay's, EQ Eight's, Phaser-Flanger's and Reverb's (as far as their controls
+allow), Saturator's (on #659; Width, Curve and Period wait on reading 7), and Hybrid Reverb's Dry/Wet. Limiter and Roar are not ADI built-ins. The
+devices with no default preset (Compressor, Echo, Redux, Resonators, Multiband Dynamics, Vocoder,
+and the queue's new effects) take their defaults from reading 6 and its like.
+
 ## 2026-11-19 — DEV-22: Reverb's other defaults, where the control means what Live's does
 
 **PR requested:** head `devices/reverb-defaults` (ee00241c, one commit stacked on `devices/reverb-equal-power`,
