@@ -42,7 +42,7 @@ namespace adi::device {
 
 class JuceDeviceLoader {
 public:
-    JuceDeviceLoader();
+    explicit JuceDeviceLoader(bool includeDefaultSearchPaths = true);
 
     /// A directory searched for both formats, ahead of the defaults. Adding
     /// one after a scan schedules another scan on the next request.

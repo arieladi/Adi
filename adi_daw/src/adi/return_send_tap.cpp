@@ -8,8 +8,21 @@
 #include <stdexcept>
 namespace adi {
 namespace {
+bool hasTable(const SQLite::Database& db, const char* name) {
+    SQLite::Statement query(db,
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 "
+        "UNION ALL SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name=?1)");
+    query.bind(1, name);
+    return query.executeStep() && query.getColumn(0).getInt() != 0;
+}
 bool hasPolicies(SQLite::Database& db) {
-    return db.execAndGet("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='return_send_taps') OR EXISTS(SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name='return_send_taps')").getInt()!=0;
+    return hasTable(db, "return_send_taps");
+}
+std::optional<IndividualSendTap> parseIndividualTap(std::string_view name) {
+    if (name == "pre_fx") return IndividualSendTap::PreFx;
+    if (name == "post_fx") return IndividualSendTap::PostFx;
+    if (name == "post_mixer") return IndividualSendTap::PostMixer;
+    return std::nullopt;
 }
 void target(SQLite::Database& db,std::int64_t id) {
     if(id<=0)throw std::runtime_error("return tap needs a positive track id");
@@ -69,7 +82,119 @@ bool inverse(OpContext& context,const Payload& payload,Payload& result,std::stri
 std::string fileIdentity(SQLite::Database& db) {
     const auto* filename=sqlite3_db_filename(db.getHandle(),"main");return filename?filename:"";
 }
+bool setIndividualTap(OpContext& context, const Payload& payload, std::string& error) {
+    try {
+        const auto id = detail::signedInteger(payload.at("id"));
+        SQLite::Statement route(context.db, "SELECT 1 FROM routing WHERE id=? AND kind='send'");
+        route.bind(1, id);
+        if (!route.executeStep()) throw std::runtime_error("send tap requires an existing send");
+        if (const auto found = payload.find("tap"); found != payload.end()) {
+            const auto name = found->get<std::string>();
+            if (!parseIndividualTap(name)) throw std::runtime_error("unknown send tap");
+            SQLite::Statement update(context.db,
+                "INSERT INTO routing_send_taps(routing_id,tap) VALUES(?,?) "
+                "ON CONFLICT(routing_id) DO UPDATE SET tap=excluded.tap");
+            update.bind(1, id);
+            update.bind(2, name);
+            update.exec();
+        } else {
+            SQLite::Statement clear(context.db, "DELETE FROM routing_send_taps WHERE routing_id=?");
+            clear.bind(1, id);
+            clear.exec();
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        error = exception.what();
+        return false;
+    }
 }
+bool captureIndividualTap(OpContext& context, const Payload& payload, Payload& result, std::string& error) {
+    try {
+        const auto id = detail::signedInteger(payload.at("id"));
+        result = {{"id", id}};
+        SQLite::Statement query(context.db, "SELECT tap FROM routing_send_taps WHERE routing_id=?");
+        query.bind(1, id);
+        if (query.executeStep()) result["tap"] = query.getColumn(0).getString();
+        return true;
+    } catch (const std::exception& exception) {
+        error = exception.what();
+        return false;
+    }
+}
+}
+std::string_view individualSendTapName(IndividualSendTap tap) noexcept {
+    switch (tap) {
+        case IndividualSendTap::PreFx: return "pre_fx";
+        case IndividualSendTap::PostFx: return "post_fx";
+        case IndividualSendTap::PostMixer: return "post_mixer";
+    }
+    return {};
+}
+
+std::map<std::int64_t, IndividualSendTap> readIndividualSendTaps(const SQLite::Database& db) {
+    std::map<std::int64_t, IndividualSendTap> result;
+    if (!hasTable(db, "routing_send_taps")) return result;
+    SQLite::Statement query(db, "SELECT routing_id, tap FROM routing_send_taps");
+    while (query.executeStep())
+        if (const auto tap = parseIndividualTap(query.getColumn(1).getString()))
+            result.emplace(query.getColumn(0).getInt64(), *tap);
+    return result;
+}
+
+bool allowedSendToGroupedReturn(const SQLite::Database& db, std::int64_t source,
+                                std::int64_t destination, std::optional<std::int64_t> movedTrack,
+                                std::optional<std::int64_t> newParent) {
+    SQLite::Statement check(db,
+        "WITH RECURSIVE tree(id,kind,parent_id) AS ("
+        " SELECT id,kind,CASE WHEN id=?3 THEN ?4 ELSE parent_id END FROM tracks), ancestors(id) AS ("
+        " SELECT parent_id FROM tree WHERE id=?1 AND parent_id IS NOT NULL"
+        " UNION SELECT t.parent_id FROM tree t JOIN ancestors a ON t.id=a.id"
+        " WHERE t.parent_id IS NOT NULL)"
+        " SELECT NOT EXISTS(SELECT 1 FROM tree d JOIN tree g ON g.id=d.parent_id"
+        " WHERE d.id=?2 AND d.kind='return' AND g.kind='group' AND g.id NOT IN (SELECT id FROM ancestors))");
+    check.bind(1, source);
+    check.bind(2, destination);
+    if (movedTrack) check.bind(3, *movedTrack);
+    else check.bind(3);
+    if (newParent) check.bind(4, *newParent);
+    else check.bind(4);
+    return check.executeStep() && check.getColumn(0).getInt() != 0;
+}
+
+std::vector<OpRequest> copyGroupSendRequests(const Store& store,
+    const std::map<std::int64_t, std::int64_t>& trackIds,
+    const std::map<std::int64_t, std::int64_t>& routingIds) {
+    auto& db = const_cast<SQLite::Database&>(store.db());
+    const auto taps = readIndividualSendTaps(db);
+    std::vector<OpRequest> requests;
+    for (const auto& [sourceId, copiedId] : routingIds) {
+        auto route = detail::captureRow(db, "routing", "id", sourceId);
+        if (!route || route->at("kind") != "send" || route->at("src_kind") != "track" ||
+            route->at("dst_kind") != "track" || copiedId <= 0 || sourceId == copiedId)
+            throw std::runtime_error("invalid routing ID for a copied send");
+        const auto from = trackIds.find(detail::signedInteger(route->at("src_id")));
+        if (from == trackIds.end() || from->second <= 0)
+            throw std::runtime_error("the copied send needs its copied source track");
+        auto destination = detail::signedInteger(route->at("dst_id"));
+        if (const auto to = trackIds.find(destination); to != trackIds.end())
+            destination = to->second;
+        route->at("id") = copiedId;
+        route->at("src_id") = from->second;
+        route->at("dst_id") = destination;
+        OpRequest request;
+        request.opType = "routing.connect";
+        request.payload = {{"id", copiedId}, {"srcKind", "track"}, {"src", from->second},
+                           {"dstKind", "track"}, {"dst", destination}, {"kind", "send"}, {"row", *route}};
+        if (taps.contains(sourceId)) {
+            auto tap = detail::captureRow(db, "routing_send_taps", "routing_id", sourceId);
+            tap->at("routing_id") = copiedId;
+            request.payload["sendTapRow"] = std::move(*tap);
+        }
+        requests.push_back(std::move(request));
+    }
+    return requests;
+}
+
 std::optional<bool> explicitReturnSendTap(SQLite::Database& db,std::int64_t id) {
     if(!hasPolicies(db))return {};
     SQLite::Statement query(db,"SELECT p.pre_fader FROM return_send_taps p JOIN tracks t ON t.id=p.track_id WHERE p.track_id=? AND t.kind='return'");query.bind(1,id);
@@ -79,22 +204,35 @@ std::optional<bool> explicitReturnSendTap(SQLite::Database& db,std::int64_t id) 
 std::map<std::int64_t,ReturnSendTap> readReturnSendTaps(const Store& store) {
     std::map<std::int64_t,ReturnSendTap> result;auto& db=const_cast<SQLite::Database&>(store.db());
     SQLite::Statement tracks(db,"SELECT id FROM tracks WHERE kind='return'");while(tracks.executeStep())result.emplace(tracks.getColumn(0).getInt64(),ReturnSendTap{});
+    if (hasPolicies(db)) {
+        SQLite::Statement policies(db, "SELECT track_id,pre_fader FROM return_send_taps");
+        while (policies.executeStep()) {
+            const auto found = result.find(policies.getColumn(0).getInt64());
+            if (found != result.end()) found->second = {policies.getColumn(1).getInt() != 0, true, false};
+        }
+    }
+    const auto individual = readIndividualSendTaps(db);
     std::map<std::int64_t,std::pair<bool,bool>> seen;
-    SQLite::Statement edges(db,"SELECT dst_id,pre_fader FROM routing WHERE kind='send' AND dst_kind='track'");
+    std::map<std::int64_t, std::set<IndividualSendTap>> effective;
+    SQLite::Statement edges(db,"SELECT dst_id,pre_fader,id FROM routing WHERE kind='send' AND dst_kind='track'");
     while(edges.executeStep()) {
-        const auto id=edges.getColumn(0).getInt64();if(!result.contains(id))continue;
-        auto& flags=seen[id];if(edges.getColumn(1).getInt()!=0)flags.first=true;else flags.second=true;
+        const auto id = edges.getColumn(0).getInt64();
+        const auto policy = result.find(id);
+        if (policy == result.end()) continue;
+        const bool rawPre = edges.getColumn(1).getInt() != 0;
+        auto& flags = seen[id];
+        if (rawPre) flags.first = true;
+        else flags.second = true;
+        const bool pre = policy->second.explicitChoice ? policy->second.preFader : rawPre;
+        const auto tap = individual.find(edges.getColumn(2).getInt64());
+        effective[id].insert(tap != individual.end() ? tap->second
+                             : pre ? IndividualSendTap::PostFx : IndividualSendTap::PostMixer);
     }
     for(auto& [id,tap]:result) {
-        const auto flags=seen[id];tap.preFader=flags.first && !flags.second;tap.legacyMixed=flags.first && flags.second;
+        const auto flags = seen[id];
+        if (!tap.explicitChoice) tap.preFader = flags.first && !flags.second;
+        tap.legacyMixed = effective[id].size() > 1;
     }
-    if(hasPolicies(db)) {
-        SQLite::Statement policies(db,"SELECT track_id,pre_fader FROM return_send_taps");
-        while(policies.executeStep()) {
-            const auto found=result.find(policies.getColumn(0).getInt64());if(found==result.end())continue;
-            found->second={policies.getColumn(1).getInt()!=0,true,false};
-        }
-    } // An older schema retains legacy routing.
     return result;
 }
 bool allowSendEdgeTapEdit(SQLite::Database& db,std::int64_t id,bool pre,std::string& error) {
@@ -104,7 +242,15 @@ bool allowSendEdgeTapEdit(SQLite::Database& db,std::int64_t id,bool pre,std::str
 }
 std::span<const OpDescriptor> returnSendTapOps() {
     static const Field fields[]={{"id",FieldType::Int,true},{"pre",FieldType::Bool,false},{"restore",FieldType::Object,false}};
-    static const OpDescriptor ops[]={{"return.setSendTap","Choose Pre/Post on a return",Scope::Edit,EngineImpact::GraphRebuild,fields,false,false,apply,inverse,""}};
+    static const Field individualFields[] = {
+        {"id", FieldType::Int, true},
+        {"tap", FieldType::Text, false},
+    };
+    static const OpDescriptor ops[] = {
+        {"return.setSendTap","Choose Pre/Post on a return",Scope::Edit,EngineImpact::GraphRebuild,fields,false,false,apply,inverse,""},
+        {"routing.setSendTap", "Choose the tap for one send", Scope::Edit, EngineImpact::GraphRebuild,
+         individualFields, false, false, setIndividualTap, captureIndividualTap, ""},
+    };
     return ops;
 }
 PreparedReturnSend prepareSendToReturn(Store& store,std::int64_t routingId,std::int64_t sourceTrack,std::int64_t returnTrack) {
@@ -113,6 +259,8 @@ PreparedReturnSend prepareSendToReturn(Store& store,std::int64_t routingId,std::
         if(store.readOnly() || routingId<=0 || sourceTrack<=0)throw std::runtime_error("invalid new send or read-only project");
         auto& db=store.db();std::optional<SQLite::Transaction> transaction;if(sqlite3_get_autocommit(db.getHandle())!=0)transaction.emplace(db,SQLite::TransactionBehavior::DEFERRED);
         target(db,returnTrack);SQLite::Statement source(db,"SELECT 1 FROM tracks WHERE id=?");source.bind(1,sourceTrack);if(!source.executeStep())throw std::runtime_error("send source track missing");
+        if (!allowedSendToGroupedReturn(db, sourceTrack, returnTrack))
+            throw std::runtime_error("the source must be inside the group that owns this return");
         const auto tap=readReturnSendTaps(store).at(returnTrack);result.sourceFile=fileIdentity(db);result.options.expectHead.emplace(OpJournal(store).headSeq());
         OpRequest connect;connect.opType="routing.connect";connect.label="Create Send";connect.payload={{"id",routingId},{"srcKind","track"},{"src",sourceTrack},{"dstKind","track"},{"dst",returnTrack},{"kind","send"}};result.requests.push_back(connect);
         if(!tap.explicitChoice && tap.preFader){OpRequest inherit;inherit.opType="routing.setPreFader";inherit.label=connect.label;inherit.payload={{"id",routingId},{"pre",true}};result.requests.push_back(std::move(inherit));}

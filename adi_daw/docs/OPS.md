@@ -1695,6 +1695,7 @@ rate conversion, missing-file snapshot and immutable-content publication limit.
 | `routing.setGain` | e | S | sym, coalescable | P0 |
 | `routing.setPan` | e | S | sym, coalescable | P1 |
 | `routing.setPreFader` | e | G | sym | P0 |
+| `routing.setSendTap` | e | G | cap, sym | P1 |
 | `routing.setEnabled` | e | S | sym | P0 |
 | `routing.reorder` | e | S | sym | P1 |
 | `mixer.setVolume` | e | S | sym, coalescable | P0 |
@@ -1725,13 +1726,26 @@ lanes `panLeft` and `panRight` use real -1..+1 units and the existing override /
 Re-Enable Automation path. The window does not implement the panning matrix.
 
 `return.setSendTap {id, pre}` is one return-owned Pre/Post choice (ADR-0203 d3).
-It persists with zero sends and changes every incoming send as one undo step.
+It persists with zero sends and changes the inherited tap in one undo step.
 Ordinary new routing.connect sends inherit an explicit choice on their return.
 A conflicting new per-edge routing.setPreFader edit refuses; the same value is
 allowed. Historical scalar payloads retain their old apply semantics. Absent
 preferences preserve legacy row taps and expose uniform or mixed state; no
 migration rewrites existing audio. A producer for a new send captures the
 uniform legacy choice as literal ops before creating it.
+
+`routing.setSendTap {id, tap}` chooses `pre_fx`, `post_fx`, or `post_mixer`
+for one send (ADR-0245 d10). Omit `tap` to inherit the return's setting again.
+The inverse restores the prior tap or inheritance. A change to the return
+default preserves the individual choices. The snapshot marks unequal
+effective taps as mixed.
+
+A return inside a group accepts sends from descendants of that group. Its
+output joins those descendants before the group's devices. Moving a track or
+subgroup out removes any sends it loses access to, with the rows and their
+taps captured in the same undo step. Group-copy producers append
+`copyGroupSendRequests` after the cloned track ops in one transaction so
+internal sends target the copied returns.
 
 Its captured inverse uses internal optional restore {current, target}, each with
 nullable choice and ordered incoming {id, pre} values. It checks current flags,
@@ -2086,7 +2100,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**211 ops** — 71 P0, 84 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**212 ops** — 71 P0, 85 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

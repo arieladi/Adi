@@ -8,6 +8,32 @@
 
 int main() {
     adi::test::TempDirectory scratch("play_render", "channels");
+    const auto parsed=[](std::vector<std::string> words,Options& options) {
+        std::vector<char*> arguments;for(auto& word:words)arguments.push_back(word.data());
+        return parse(static_cast<int>(arguments.size()),arguments.data(),options);
+    };
+    for(const auto workers:{0,5,11})for(const auto block:{256,2048}) {
+        Options options;
+        if(!parsed({"adi_play","private.adi","--workers",std::to_string(workers),"--block",std::to_string(block),
+            "--diagnostics","private-run","--search-only",scratch.path().string()},options) ||
+            options.workers!=workers || options.block!=block || !options.searchOnly || options.diagnosticCapacity!=262144)return 1;
+    }
+    for(const auto* invalid:{"-1","17","5junk"}){Options options;if(parsed({"adi_play","private.adi","--workers",invalid},options))return 1;}
+    {Options options;if(parsed({"adi_play","private.adi","--diagnostics","private-run","--dry"},options))return 1;}
+    {Options options;if(parsed({"adi_play","private.adi","--diagnostic-capacity","10"},options))return 1;}
+    {Options options;if(!parsed({"adi_play","private.adi"},options) || options.workers!=-1 || options.searchOnly || !options.diagnostics.empty())return 1;}
+    {
+        adi_play::CallbackTimings timings(2);adi_play::CallbackTiming row;
+        row.startTicks=100;row.endTicks=200;row.frames=256;row.sampleRate=48000;
+        {adi::audio::CallbackScope callback;timings.record(row);timings.record(row);timings.record(row);}
+        if(timings.observed()!=3 || timings.rows().size()!=2 || timings.dropped()!=1)return 1;
+        const auto prefix=(scratch.path()/"diagnostic-test").string();std::string diagnosticError;
+        if(!adi_play::writeDiagnostics(prefix,timings,{{"status","TEST: synthetic timing rows; no device opened"}},0,diagnosticError))return 1;
+        std::ifstream json(adi_play::diagnosticPath(prefix,".json"));const auto receipt=nlohmann::json::parse(json);
+        if(receipt.at("capture").at("dropped")!=1 || receipt.at("after_ready").at("callbacks")!=2)return 1;
+        std::ifstream csv(adi_play::diagnosticPath(prefix,".callbacks.csv"));std::string line;int lines=0;
+        while(std::getline(csv,line))++lines;if(lines!=3)return 1;
+    }
     adi::StoreError error{};
     auto store=adi::Store::createEmpty(scratch.path()/"render.adi",error);
     if(!store)return 1;
@@ -15,9 +41,14 @@ int main() {
     for(int channels : {1,4,6}) {
         SineNode tone(220,0.125f);
         adi::engine::Session session;
+        const std::uint32_t workers=channels==1?0U:channels==4?5U:11U;
+        if(!session.setParallelRendering(workers,1,2))return 1;
         session.setSourcesFor([&](std::int64_t id){return id==1 ? std::vector<adi::engine::Node*>{&tone} : std::vector<adi::engine::Node*>{};});
         adi::engine::SessionSpec spec;spec.channels=channels;spec.sampleRate=48000;spec.maxFrames=64;
         if(!session.load(*store,{},spec))return 1;
+        // Worker count is an upper bound: this single-track graph need not
+        // contain a wide eligible level. Do not mistake that for failed setup.
+        if(!session.graph().currentGraph() || session.graph().currentGraph()->renderWorkerCount()>workers)return 1;
         session.transport().play(true);
         // Intentionally start with the old two-channel allocation: production
         // must resize it to the Session format before copying any samples.
@@ -36,6 +67,6 @@ int main() {
         for(int c=0;c<channels;++c)for(int i=0;i<960;++i)
             if(decoded.getSample(c,i)!=capture.getSample(c,i))return 1;
     }
-    std::printf("PASS -- mono, four-channel and six-channel Session captures round-trip exactly\n");
+    std::printf("PASS -- diagnostic parsing/capture bounds and configured 0/5/11-worker mono/four/six-channel offline Session captures; no device opened\n");
     return 0;
 }

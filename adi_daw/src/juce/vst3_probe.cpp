@@ -1011,6 +1011,56 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
           "the fixture's counters are reachable: " + bin.getFullPathName().toStdString());
     if (live == nullptr || overlaps == nullptr || inProcess == nullptr) return;
 
+    const auto workerCalls = reinterpret_cast<Count>(lib.getFunction("adiFixtureWorkerProcessCalls"));
+    check(workerCalls != nullptr, "the VST3 fixture exposes calls off its owner thread");
+    if (workerCalls) {
+        class Pattern final : public adi::engine::Node {
+        public:
+            void process(const adi::engine::NodeIo& io) noexcept override {
+                for (int c = 0; c < io.channels; ++c)
+                    for (int i = io.blockOffset; i < io.blockOffset + io.frames; ++i)
+                        io.out[c][i] = static_cast<float>((17 * i + 3 * c) % 97 - 48) / 64.0f;
+            }
+        };
+        using Audio = std::array<std::array<float, 256>, 2>;
+        auto render = [&](bool parallel) {
+            std::array<std::unique_ptr<adi::device::DeviceInstance>, 4> devices;
+            std::array<std::unique_ptr<adi::device::DeviceNode>, 4> nodes;
+            Pattern pattern;
+            adi::engine::SumNode sum;
+            adi::engine::Graph graph;
+            graph.setChannels(2);
+            const auto source = graph.addNode(pattern);
+            const auto output = graph.addNode(sum);
+            graph.setOutput(output);
+            for (std::size_t i = 0; i < devices.size(); ++i) {
+                devices[i] = make(256);
+                nodes[i] = std::make_unique<adi::device::DeviceNode>(*devices[i]);
+                const auto node = graph.addNode(*nodes[i]);
+                graph.connect(source, node);
+                graph.connect(node, output);
+            }
+            if (parallel) graph.setParallelRendering(2, 1, 2);
+            graph.prepare(sr, 256);
+            Audio samples{};
+            float* out[]{samples[0].data(), samples[1].data()};
+            adi::engine::AudioIo io;
+            io.out = out;
+            io.numOut = 2;
+            io.frames = 256;
+            graph.process(io);
+            if (parallel)
+                check(graph.stats().workerNodeBlocks > 0, "independent VST3 slots run on graph workers");
+            return samples;
+        };
+        const int before = workerCalls();
+        const auto serial = render(false);
+        check(workerCalls() == before, "serial VST3 processing stays on the callback thread");
+        const auto parallel = render(true);
+        check(workerCalls() > before && parallel == serial && serial[0][0] != 0,
+              "real VST3 calls moved to workers and produced identical dense audio");
+    }
+
     using ReadTransport = void (*)(double*);
     const auto readTransport = reinterpret_cast<ReadTransport>(lib.getFunction("adiFixtureReadTransport"));
     check(readTransport != nullptr, "the VST3 fixture exposes what process received");
@@ -1056,6 +1106,44 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
         }
     }
 
+    {
+        auto dev = make(256);
+        if (auto* v3 = dynamic_cast<Vst3Device*>(dev.get()); v3 && v3->usingRawProcessor()) {
+            std::array<float, 256> left{}, right{}, keyLeft{}, keyRight{};
+            keyLeft[40] = 0.25f;
+            keyRight[40] = -0.5f;
+            const float* key[]{keyLeft.data(), keyRight.data()};
+            float* out[]{left.data(), right.data()};
+            adi::engine::NodeIo io;
+            io.out = out;
+            io.channels = 2;
+            io.frames = 64;
+            io.blockOffset = 32;
+            io.sidechain = key;
+            v3->process(io);
+            check(left[40] == 0.25f && right[40] == -0.5f && left[39] == 0.0f,
+                  "the VST3 auxiliary input receives the segment's stereo key at the right offset");
+            io.sidechain = nullptr;
+            v3->process(io);
+            check(left[40] == 0.0f && right[40] == 0.0f, "an unconnected key is silent on the next call");
+
+            std::array<double, 256> wideLeft{}, wideRight{}, wideKeyLeft{}, wideKeyRight{};
+            wideKeyLeft[40] = 0.1;
+            wideKeyRight[40] = -0.2;
+            const double* wideKey[]{wideKeyLeft.data(), wideKeyRight.data()};
+            double* wideOut[]{wideLeft.data(), wideRight.data()};
+            v3->willBeHanded(adi::engine::Precision::Float64);
+            v3->prepare(sr, 256);
+            io.out = nullptr;
+            io.out64 = wideOut;
+            io.sidechain64 = wideKey;
+            v3->process(io);
+            check(v3->processingDouble() && wideLeft[40] == 0.1 && wideRight[40] == -0.2,
+                  "the auxiliary input preserves double precision at both channels");
+        } else {
+            check(false, "the side-chain fixture loaded through the raw VST3 processor");
+        }
+    }
     // A new block size on a device still active reaches the plug-in. JUCE's
     // prepareToPlay returns at once on an active instance at the rate and
     // block it is handed, and prepare handed it them first.

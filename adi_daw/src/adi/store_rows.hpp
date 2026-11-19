@@ -257,6 +257,7 @@ struct Routing {
     /// planner that cannot see it cannot honour the rule.
     std::string origin = "user";
     std::optional<bool> storedPreFader{}; // set when a return policy overrides the raw row
+    std::optional<IndividualSendTap> sendTap{};
 };
 
 // --- the whole readable project ---------------------------------------------

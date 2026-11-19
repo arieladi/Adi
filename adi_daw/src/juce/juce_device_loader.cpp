@@ -12,8 +12,11 @@
 
 namespace adi::device {
 
-JuceDeviceLoader::JuceDeviceLoader()
-    : vst3Paths_(vst3_.defaultSearchPaths()), clapPaths_(ClapHost::defaultSearchPaths()) {}
+JuceDeviceLoader::JuceDeviceLoader(bool includeDefaultSearchPaths) {
+    if(includeDefaultSearchPaths) {
+        vst3Paths_=vst3_.defaultSearchPaths();clapPaths_=ClapHost::defaultSearchPaths();
+    }
+}
 
 void JuceDeviceLoader::addSearchPath(const juce::File& dir) {
     vst3Paths_.add(dir);
