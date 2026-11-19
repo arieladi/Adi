@@ -62,6 +62,8 @@ void themeAndDensityTables() {
               "a theme's text stands off its panel and lanes, and its ink off its accent");
         check(apart(t.knobNeedle, t.panel) && apart(t.knobNeedle, t.lane) && t.knobRing != t.panel,
               "a theme's knob needle stands off its panel and lanes, and its ring is not the panel");
+        check(level(t.knobFaceHigh) > level(t.knobFaceLow) && level(t.knobFaceHoverHigh) > level(t.knobFaceHoverLow),
+              "a theme's knob dial is lit from its lighter stop, under the pointer too");
     }
     // The densities: Compact is Live's sizes as built, Open is roomier in every measure.
     check(densityFromSetting(densityName(DensityId::Open)) == DensityId::Open &&

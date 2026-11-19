@@ -260,7 +260,8 @@ CommitResult commitFreeze(Store &store, FreezeEdit &prepared, std::uint64_t gene
                 error = "freeze publication copy changed";
                 return false;
             }
-            const auto published = media::publishFile(publication, file.target);
+            const auto published = media::publishFile(publication, file.target, {},
+                                                      media::PublishPolicy::AtomicOnly);
             if (published.status == media::PublishStatus::exists) {
                 const auto status = fs::symlink_status(file.target, ec);
                 const auto existing = !ec && fs::is_regular_file(status)

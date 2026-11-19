@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_browser.hpp"
+#include "ui_controls.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
 #include <algorithm>
@@ -372,10 +373,10 @@ void BrowserPanel::paint(juce::Graphics &g) {
     g.fillRoundedRectangle(0, bar - 4, w, h - 2 * bar + 8, look::radiusControl);
     g.fillRoundedRectangle(strip, h - bar - 4, w - strip, bar + 4, look::radiusControl);
     // The round buttons: show/hide the browser at the top, the groove pool at the foot.
+    // Round, in the shared button's colours at rest (language.png part B).
     for (const float y : {0.5f, h - 19.5f}) {
-        g.setColour(look::band);
-        g.fillEllipse(0, y, 19, 19);
-        look::triangle(g, {7, y + 5, 7, 9}, 0, look::panel);
+        controls::roundButton(g, {0, y, 19, 19}, controls::ButtonState::Rest);
+        look::triangle(g, {7, y + 5, 7, 9}, 0, controls::labelColour(controls::ButtonState::Rest));
     }
     // The search field.
     g.setColour(look::panel);
@@ -427,10 +428,12 @@ void BrowserPanel::paint(juce::Graphics &g) {
                                        getWidth() - kStripWidth - 2 * look::border, 21);
     g.setColour(look::panel);
     g.fillRect(preview);
+    // Round, in the shared button's colours at rest, its preview ring kept.
+    const auto headphones = juce::Rectangle<float>(11, 11).withCentre(
+        {static_cast<float>(preview.getX()) + 13, static_cast<float>(preview.getCentreY())});
+    controls::roundButton(g, headphones, controls::ButtonState::Rest);
     g.setColour(look::focus);
-    g.drawEllipse(juce::Rectangle<float>(11, 11).withCentre(
-                      {static_cast<float>(preview.getX()) + 13, static_cast<float>(preview.getCentreY())}),
-                  2.f);
+    g.drawEllipse(headphones, 2.f);
 }
 void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
     if (sidebarArea_.contains(e.getPosition()))

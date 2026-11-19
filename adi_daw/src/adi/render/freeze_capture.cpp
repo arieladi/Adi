@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/render/freeze_capture.hpp"
+#include "adi/engine/timeline_clips.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/freeze_fingerprint.hpp"
 #include "adi/freeze_groups.hpp"
@@ -215,7 +216,10 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
             }
         engine::Session session;
         session.graph().setFadeFrames(0);
-        if (!session.load(*snapshot, std::move(loader), spec.session))
+        auto offlineSpec = spec.session;
+        offlineSpec.offline = true;
+        offlineSpec.performanceState = false;
+        if (!session.load(*snapshot, std::move(loader), offlineSpec))
             throw std::runtime_error(session.error());
         if (session.stats().placeholders || session.stats().skipped || !session.problems().empty()) {
             std::string why = "freeze requires a fully resolved project";
@@ -279,7 +283,7 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
                     const bool consumed = source && !source->prefixDevices.empty();
                     forwarded[member] =
                         !consumed &&
-                        std::any_of(model.clips.begin(), model.clips.end(), [member](const auto &clip) {
+                        std::ranges::any_of(engine::timelineClips(model), [member](const auto &clip) {
                             return clip.trackId == member && clip.kind == "midi" && !clip.muted;
                         });
                 }
