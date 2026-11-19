@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Cancellable collection through the document worker
+
+**PR requested** `engine-win/archive-document-control` at `dc3a8efc1f1ef035411211873cb2f139d7e0a1ff`, stacked on `2e008d7c`. The document worker can now accept ArchiveControl and return typed cancellation, warnings and success. The existing one-argument application entry delegates to the same path and keeps its result type. The worker uses the prepared paths and can finish after the initiating document closes.
+
+Native MSVC x64 Debug `/W4 /WX` passed 471 checks across the collection and document suites. A real prepared document cancels mid-copy and keeps its source and staging state intact. Two optional symlink fixtures skipped. Window progress and cancel controls can use the new worker entry.
+
 ## 2026-11-19 — Combined project collection and archive safety
 
 **PR requested** `engine-win/collection-safety-integration` at `9b3307506a7aace483332c46cd6a69563c9e94fd`. This combines the exact CLI and collected-media tip `2e008d7c` with the desktop warning tip `d5a50adb`. It brings the external-copy and ZIP cancellation, owned rollback, directory-sync and checkpoint reporting and real CLI message together with the desktop warning relay.
