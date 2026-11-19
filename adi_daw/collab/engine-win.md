@@ -6,9 +6,29 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ## FOR THE DIRECTOR
 
+PD-12 needs a network project policy. SQLite WAL's shared index supports connections on one host. FULL sync alone does not give safe active editing across networked hosts. Recommend an active local .adi and a closed Save a Copy or backup on the share. If active editing on network storage is needed, rule on a separate rollback-journal mode and its reader/writer restrictions, then test it on the supported share. This blocks the network part of PD-12. [SQLite WAL](https://sqlite.org/wal.html#overview) · [SQLite over a network](https://www.sqlite.org/useovernet.html)
+
 DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across machines. Existing saved JUCE identifiers embed the installed path's hash and the cache retains only the existing 32-bit class hash. Recommend continuing to read existing identifiers and adding the exact VST3 class ID alongside them for new records. A single candidate can be checked against a legacy saved path hint under the existing identifier rule. Matching projects with no usable legacy hint or exact class ID needs a compatibility choice.
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
+
+## 2026-11-19 — PD-02 cancellation while copying archive media
+
+**PR requested** `engine-win/collect-media-stream` at `85fe86e7c07847a3829ee5f3d909f21e844fb0c1`, stacked on ZIP streaming `734f7b6f`. External media copied into an archive's private snapshot can stop between chunks of at most 64 KiB and reports per-file source bytes. Ordinary Collect All and Save keeps its existing path. The closed stage is validated before publication; cancellation uses the existing identity-aware rollback and carries its warnings to the worker result. Tests cover an earlier completed copy, callback failure, a cancel just before SQL commit and unchanged source bytes.
+
+Native MSVC x64 Debug `/W4 /WX` passed 466 checks across four suites. Three optional symlink cases and the multi-gigabyte ZIP exercise were not run. SQLite backup, legacy extraction and individual hash reads still use phase-level cancellation.
+
+## 2026-11-19 — PD-12 Windows removable-storage sync
+
+**PR requested** `engine-win/project-removable-sync` at `8c51acaacba1425a0198719f3a31e34af504f66d`, stacked on Defensive mode `7db7e05a`. Writable project Stores resolve their actual volume and select FULL when Windows classifies it as DRIVE_REMOVABLE. Fixed storage retains NORMAL. The create and reopen tests verify the actual connection settings on the attached fixed volume. Physical removable and network volumes were unavailable in this run. Windows can classify an external drive as fixed.
+
+Native MSVC x64 Release `/O2 /W4 /WX` passed 760 product checks and the WAL benchmark self-test. Two optional symlink cases skipped. The PD-12 network case needs the decision above. [Windows mount lookup](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamew) · [Drive types](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdrivetypew)
+
+## 2026-11-19 — PD-11 combined settings safety and debounce
+
+**PR requested** `engine-win/settings-safety-integration` at `31322dab548455d7414440490289c7a411dd5044`. Merges exact debounce `ead3d01b` and recovery `4f04868c` topic parents, with all four protected document states enforced before scheduling writes. It keeps strict reads, previous-good backup, atomic saves, migration, retry and quit flush. A real locked Windows file retains the scheduled edit and delays retry until the file can be read completely.
+
+Native MSVC x64 Debug `/W4 /WX` passed 1,161 checks across six core suites, including 12 new integration checks. The JUCE desktop target linked using the exact combined settings, migration and application entry sources in a local verification build. UI behavior was not rerun interactively.
 
 ## 2026-11-19 — Scanner warm-path and helper integration
 
