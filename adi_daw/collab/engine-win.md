@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Combined export and project publication
+
+**PR requested** `engine-win/publication-safety-integration` at `20f27d66b66647e3973148c2b1d0aacca8431901`. The exact tested parents are export/presets `0b6ddcce` and collection/desktop `9b330750`. Both native identity helpers stay in the shared publisher API. Native rename and verified-copy directory-sync reporting, replacement identity binding and identity-aware rollback retain their tested contracts. Use this tested tip to review the two publication stacks together.
+
+Strict native MSVC x64 Debug `/W4 /WX` passed 1,153 checks across nine suites. Four symlink fixture groups skipped. The NI helper, naming and metadata gates ran, and the platform codec gate still refused the full encoded NI path. This combined tree was tested in headless core. Read-only three-way against main `796fe498` showed no conflict.
+
 ## 2026-11-19 — Cancellable collection through the document worker
 
 **PR requested** `engine-win/archive-document-control` at `dc3a8efc1f1ef035411211873cb2f139d7e0a1ff`, stacked on `2e008d7c`. The document worker can now accept ArchiveControl and return typed cancellation, warnings and success. The existing one-argument application entry delegates to the same path and keeps its result type. The worker uses the prepared paths and can finish after the initiating document closes.
