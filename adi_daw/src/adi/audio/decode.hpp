@@ -49,7 +49,7 @@ enum class DecodeProblem {
     UnknownFormat,  // not a format the decoder reads
     Corrupt,        // a known format, but its data does not decode (truncated, damaged)
     Unsupported,    // decodes, but outside the bounds: over 768 kHz, 0 or over 64 channels
-    NoSpace,        // the minimum free space cannot be kept, even after eviction
+    NoSpace,        // one estimate exceeds the cache cap, or disk headroom cannot be kept
     CacheWrite,     // the cache folder cannot be written
     Cancelled,
     CodecUnavailable,
@@ -89,7 +89,7 @@ struct DecodeCacheLimits {
 /// key keeps its default.
 [[nodiscard]] DecodeCacheLimits limitsFromSettings(const nlohmann::json& values);
 
-/// Test seams. Both default to the real thing.
+/// Test seams. Time/space default to the real thing; callbacks default empty.
 struct DecodeCacheHooks {
     /// A use stamp; later calls return larger values. Default: UTC microseconds.
     std::function<std::int64_t()> clock;
@@ -98,6 +98,10 @@ struct DecodeCacheHooks {
     /// Owner worker service point between PCM blocks/AAC packets. Called
     /// outside the cache mutex; must not reenter this cache. Empty by default.
     std::function<void()> checkpoint;
+    /// Test-only boundary after a complete target is published/adopted, before
+    /// cache accounting. Outside the mutex; must not throw or reenter this cache.
+    /// Empty in production. May request cancellation of the current call.
+    std::function<void()> afterPublish;
 };
 
 class DecodeCache {
@@ -111,6 +115,8 @@ public:
     [[nodiscard]] std::filesystem::path playable(const std::filesystem::path& source);
     /// Same owner-worker operation, cancellable during hashing/PCM blocks/AAC
     /// packets and draining. Cancellation removes only this call's private files.
+    /// A completed publication is accounted before the final cancellation check;
+    /// a cancelled call leaves it evictable and acquires no returned-file pin.
     [[nodiscard]] std::filesystem::path playable(const std::filesystem::path& source,std::stop_token);
 
     /// A live session stopped reading a file playable() returned. Pins count:

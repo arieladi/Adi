@@ -444,7 +444,9 @@ DecodeCache::DecodeCache(fs::path folder, DecodeCacheLimits limits, DecodeCacheH
 fs::path DecodeCache::fileFor(const std::string& hash) const { return folder_ / (hash + ".wav"); }
 
 std::int64_t DecodeCache::stamp() {
-    lastStamp_ = std::max(hooks_.clock(), lastStamp_ + 1);
+    // A representable but extreme index hint must not overflow on the next use.
+    const auto next = lastStamp_ == std::numeric_limits<std::int64_t>::max() ? lastStamp_ : lastStamp_ + 1;
+    lastStamp_ = std::max(hooks_.clock(), next);
     return lastStamp_;
 }
 
@@ -460,7 +462,14 @@ void DecodeCache::loadIndex() {
             for (const auto& [hash, e] : entries.items()) {
                 if (!isHash(hash) || !e.is_object()) continue;
                 Item item;
-                item.lastUse = e.value("lastUse", std::int64_t{0});
+                if (const auto use = e.find("lastUse"); use != e.end()) {
+                    if (!use->is_number_integer()) continue;
+                    if (use->is_number_unsigned()) {
+                        const auto value = use->get<std::uint64_t>();
+                        if (value > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) continue;
+                        item.lastUse = static_cast<std::int64_t>(value);
+                    } else item.lastUse = use->get<std::int64_t>();
+                }
                 items_[hash] = item;
             }
         }
@@ -589,6 +598,9 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
     try {
         decodeTo(source, format, partial, [&](std::uint64_t estimate) {
             std::lock_guard lock(mutex_);
+            if (estimate > limits_.maxBytes)
+                throw DecodeError(DecodeProblem::NoSpace, display(source) + ": estimated decoded size " +
+                    std::to_string(estimate) + " bytes exceeds cache maximum " + std::to_string(limits_.maxBytes));
             evict(estimate, hash.hex);
             if (freeBytes() < limits_.minFreeBytes + estimate)
                 throw DecodeError(DecodeProblem::NoSpace, display(source) + ": decoding needs " + std::to_string(estimate) +
@@ -607,7 +619,7 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
             }
             fs::remove(partial);
         } else if(published.status!=media::PublishStatus::published)throw DecodeError(DecodeProblem::CacheWrite,published.error);
-        cancelled(stop);
+        if(hooks_.afterPublish)hooks_.afterPublish();
     } catch (...) {
         fs::remove(partial, ec);
         throw;
@@ -617,10 +629,13 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
     auto& item = items_[hash.hex];
     item.bytes = static_cast<std::uint64_t>(fs::file_size(target, ec));
     item.lastUse = stamp();
-    ++item.pins;
     ++stats_.decodes;
     evict(0, hash.hex);
     saveIndex();
+    // Publication is complete: cancellation leaves useful, counted PCM, but
+    // must not acquire a lease for a path the caller will never receive.
+    cancelled(stop);
+    ++item.pins;
     return target;
 }
 
