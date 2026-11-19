@@ -14,6 +14,30 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-16, step 2: Max's integers and subpatchers, made explicit
+
+**`devices/amxd-translator` (`fe9fa8af`), one commit on top of step 1** — the same PR request now
+carries both steps.
+
+- Each Max box now maps to a fragment (Pd boxes, their inner connections, where the Max inlets and
+  outlets landed), so a Max/Pd difference is written into the patch instead of refused.
+- **Integers**: `[+ 1]`, `[/ 2]`, `[% 3]`, comparisons, `[min]`/`[max]`/`[abs]` with an int or no
+  argument, `[pack]`/`[unpack]` (default "0 0", and `i` slots), `[trigger]`'s `i`, the number box —
+  each int inlet through `[i]` first; integer division and int outlets through `[i]` after. Float
+  forms unchanged; float modulo refused.
+- **Subpatchers**: `[p name]` → `[pd name]`, recursively; ports keep Max's left-to-right order and
+  are `[inlet~]`/`[outlet~]` where a signal crosses; a refusal inside is named by path
+  (`p helper/obj-1`).
+- Played in libpd: `[+ 1]` fed 2.7 → 3; `[/ 2]` fed 7 → 3; `[> 0]` fed 0.5 → 0; `[pack]` fed 2.9
+  → 2 0; `[unpack]` fed 3.7 4.2 → 4 then 3; `[t i f]` fed 2.5 → 2.5 then 2; a signal `[p half]`
+  plays × 0.5 exactly; a control `[p inc]` fed 1.5 → 2. Plant: int inlets bypassing `[i]` → 3
+  failures. 38 checks; CTest **247/247**.
+
+**PR requested** — as step 1's entry (head `devices/amxd-translator`, now `fe9fa8af`).
+
+**Still to do in DEV-16:** `line~` as segments, bpatchers, MIDI devices (after DEV-14/18), the AI
+path for the rest, Suite's modulators (after DEV-07), parity against Live (readings).
+
 ## 2026-11-19 — DEV-16, step 1: the `.amxd` translator — reader, pre-flight, the exact subset
 
 **`devices/amxd-translator` (`70c63694`), stacked on `devices/pd-object-walk`.** P2, taken now
