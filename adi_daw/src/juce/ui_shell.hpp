@@ -411,6 +411,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     StatusBar status;
     juce::TextButton aiTab{"AI"};
     BrowserPanel browser{*this};
+    // The bar over the track names and their controls (the Arrangement sheet; DF-W25): made before the
+    // arrangement, which keeps its Show in step with the view chosen.
+    NamesBar namesBar;
     ArrangementView arrangement;
     // Live's Undo History (manual 5.4.2; A5): View › Undo History and Ctrl/Cmd+Alt+Z. Its own window
     // in the app (ui_main.cpp); not a child of this one.
@@ -486,7 +489,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // The ★ Reference track, or 0 when no track is it.
     std::int64_t referenceTrack() const noexcept;
     MixerViewResizer mixerViewResizer{*this};
-    // Live's strip down the arrangement's outer edge, with the flip arrows.
+    // Live's strip down the arrangement's outer edge: the view switches and the track height.
     SideStrip strip;
     juce::Rectangle<int> stripArea() const noexcept { return stripArea_; }
     juce::Rectangle<int> mixerViewArea() const noexcept { return mixerViewArea_; }

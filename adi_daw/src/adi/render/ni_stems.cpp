@@ -15,7 +15,7 @@
 namespace adi::render {
 namespace fs = std::filesystem;
 namespace {
-struct Cancelled {};
+using detail::Cancelled;
 void tick(const Control &control) {
     if (control.stop.stop_requested())
         throw Cancelled{};
@@ -26,7 +26,8 @@ void tick(const Control &control) {
 }
 struct Stage {
     fs::path path;
-    explicit Stage(const fs::path &parent) {
+    std::optional<StageCleanupFailure>& failure;
+    Stage(const fs::path &parent, Result& result) : failure(result.stageCleanup) {
         static std::atomic<std::uint64_t> serial{0};
         for (int i = 0; i < 128; ++i) {
             auto candidate =
@@ -43,10 +44,9 @@ struct Stage {
         }
         throw std::runtime_error("cannot reserve NI Stems stage");
     }
-    ~Stage() {
-        std::error_code error;
-        fs::remove_all(path, error);
-    }
+    ~Stage() { detail::discardStage(std::move(path), failure); }
+    Stage(const Stage&) = delete;
+    Stage& operator=(const Stage&) = delete;
 };
 fs::path captureProject(const Job &job, const Stage &stage) {
     StoreError error{};
@@ -121,15 +121,18 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         tick(control);
         if (!audio::aacCodecAvailable())
             throw std::runtime_error("NI Stems AAC codec is unavailable or cannot verify sample alignment on this system");
-        Stage stage(job.directory);
+        Stage stage(job.directory, result);
         const auto project = captureProject(job, stage);
         const auto ni = *job.niStems;
+        const auto collision = job.collision;
         job.project = project;
         job.directory = stage.path;
         job.niStems.reset();
+        job.collision = Collision::Fail; // private intermediates never inherit delivery renumbering
         job.encoding.format = audio::WavFormat::Float32;
         job.encoding.dither = audio::WavDither::None;
         Control renderControl = control;
+        renderControl.publicationHooks = {}; // internal WAVs are private staging outputs
         renderControl.progress = [&](JobId current, std::uint64_t done, std::uint64_t total) {
             if (total > 999990ULL * 1024)
                 throw std::runtime_error("NI export exceeds AAC packet limit");
@@ -141,11 +144,14 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
             throw Cancelled{};
         if (rendered.state != JobState::Completed)
             throw std::runtime_error(rendered.error);
+        if (!rendered.snapshot)
+            throw std::runtime_error("NI Main render has no captured project snapshot");
+        detail::retainIntermediateMedia(result, rendered);
+        result.snapshot = std::move(rendered.snapshot);
         result.framesWritten = rendered.framesWritten;
         result.output = stage.path.parent_path() / rendered.output.filename();
         result.output.replace_extension(".stem.mp4");
-        if (fs::exists(result.output))
-            throw std::runtime_error("NI Stems destination already exists");
+        detail::prepareOutput(result,collision,".stem.mp4","NI Stems destination already exists");
         std::vector<audio::AacTrack> tracks;
         std::vector<audio::StemLabel> labels;
         auto encode = [&](const fs::path &wave, unsigned ordinal) {
@@ -172,6 +178,14 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
                     throw std::runtime_error(rendered.error);
                 if (rendered.framesWritten != result.framesWritten)
                     throw std::runtime_error("NI Stems render ranges diverged");
+                if (!rendered.snapshot || rendered.snapshot->journalHead != result.snapshot->journalHead ||
+                    rendered.snapshot->beginSample != result.snapshot->beginSample ||
+                    rendered.snapshot->endSample != result.snapshot->endSample ||
+                    rendered.snapshot->sampleRate != result.snapshot->sampleRate ||
+                    rendered.snapshot->regionId != result.snapshot->regionId)
+                    throw std::runtime_error("NI Stems project snapshots diverged");
+                detail::retainIntermediateMedia(result, rendered);
+                result.stemSnapshots.push_back(std::move(*rendered.snapshot));
                 wave = rendered.output;
                 labels.push_back({ni.stems[index].name.empty() ? "Stem " + std::to_string(index + 1)
                                                                : ni.stems[index].name,
@@ -197,13 +211,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         tick(control);
         audio::writeAacMovie(output, tracks, audio::makeStemManifest(labels), [&] { tick(control); });
         tick(control);
-        const auto published = media::publishFile(output, result.output, {},
-                                                  media::PublishPolicy::AtomicOnly);
-        if (published.status != media::PublishStatus::published)
-            throw std::runtime_error(published.status == media::PublishStatus::exists
-                                         ? "NI Stems destination already exists"
-                                         : published.error);
-        result.state = JobState::Completed;
+        detail::publishVerifiedOutput(output, result, control, "NI Stems destination already exists");
     } catch (const Cancelled &) {
         result.state = JobState::Cancelled;
     } catch (const std::exception &error) {

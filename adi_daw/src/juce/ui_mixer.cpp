@@ -1272,10 +1272,6 @@ void MixerPanel::paint(juce::Graphics &g) {
 void MixerPanel::paintTop(juce::Graphics &g) const {
     g.setColour(look::band);
     g.fillRect(0, 0, getWidth(), rowsBand().getStart());
-    // H and W, Live's Optimize Arrangement Height and Width, beside the Overview's end.
-    for (const auto &[label, x] : {std::pair{"H", getWidth() - 43}, std::pair{"W", getWidth() - 21}})
-        controls::button(g, juce::Rectangle<float>(static_cast<float>(x), 4, 18, 15), controls::ButtonState::Rest,
-                         label, look::fontField);
 }
 juce::Range<int> MixerPanel::rowsBand() const noexcept {
     if (vertical_)
@@ -1300,24 +1296,6 @@ void MixerPanel::paintOverChildren(juce::Graphics &g) {
     g.setColour(look::separator);
     g.fillRect(0, bottom, 2, getHeight() - bottom);
 }
-FlipButton::FlipButton() : juce::Button("Flip Sides") {
-    setTitle("Flip Sides");
-    setTooltip("Flip sides");
-    setClickingTogglesState(false);
-    // A view command, reached from the keyboard through the View menu: it takes no focus.
-    setWantsKeyboardFocus(false);
-    setMouseClickGrabsKeyboardFocus(false);
-}
-void FlipButton::paintButton(juce::Graphics &g, bool over, bool down) {
-    // Two small arrows, one each way, as Bitwig draws its own.
-    g.setColour(getToggleState() ? look::accent : over || down ? look::textBright : look::textOnBand);
-    const auto r = getLocalBounds().toFloat().reduced(3.f, 2.f);
-    const float upper = r.getY() + r.getHeight() * .3f, lower = r.getY() + r.getHeight() * .7f;
-    juce::Path arrows;
-    arrows.addArrow({r.getX(), upper, r.getRight(), upper}, 1.4f, 5.f, 4.f);
-    arrows.addArrow({r.getRight(), lower, r.getX(), lower}, 1.4f, 5.f, 4.f);
-    g.fillPath(arrows);
-}
 TrackHeightButton::TrackHeightButton() : juce::Button("Use Large Track Height") {
     setTitle("Use Large Track Height");
     setTooltip("Use Large Track Height: every track at its own height; off, at half of it.");
@@ -1335,62 +1313,27 @@ void TrackHeightButton::paintButton(juce::Graphics &g, bool over, bool down) {
             g.fillRect(r.getX() + static_cast<float>(column) * (w + 2.f), r.getY() + static_cast<float>(bar) * pitch, w,
                        std::max(1.f, pitch - 1.5f));
 }
-SelectorButton::SelectorButton(const juce::String &letters, const juce::String &tooltip) : juce::Button(letters) {
-    setTooltip(tooltip);
-    setClickingTogglesState(false);
-    setMouseClickGrabsKeyboardFocus(false);
-    setWantsKeyboardFocus(false);
-}
-void SelectorButton::paintButton(juce::Graphics &g, bool, bool) {
-    // Round, in the shared button's colours (language.png part B): the accent when on, the rest's
-    // box and edge when off; its letters in the state's label colour.
-    const auto r = getLocalBounds().toFloat();
-    const auto state = getToggleState() ? controls::ButtonState::On : controls::ButtonState::Rest;
-    if (state == controls::ButtonState::On) {
-        g.setColour(look::accent);
-        g.fillEllipse(r);
-    } else {
-        g.setColour(look::buttonRest);
-        g.fillEllipse(r);
-        g.setColour(look::buttonEdge);
-        g.drawEllipse(r.reduced(look::hairline / 2), look::hairline);
-    }
-    g.setColour(controls::labelColour(state));
-    g.setFont(look::font(getButtonText().length() > 1 ? look::fontMini : look::fontMicro, true));
-    g.drawText(getButtonText(), r, juce::Justification::centred);
-}
-SideStrip::SideStrip() {
-    addAndMakeVisible(flip);
-    addAndMakeVisible(tracks);
-    for (auto *s : {&inOut, &returns, &mixer, &delay})
-        addAndMakeVisible(*s);
-    inOut.setToggleState(true, juce::dontSendNotification);
-    returns.setToggleState(true, juce::dontSendNotification);
-    mixer.setToggleState(true, juce::dontSendNotification);
-    // Mixer only shows its state: the track controls' mixer has no toggle to switch. Delay is off
-    // until Track Options shows the Track Delay (Live's default Set hides it).
-    mixer.setInterceptsMouseClicks(false, false);
+SideStrip::SideStrip() { addAndMakeVisible(tracks); }
+void SideStrip::setHead(int y) {
+    if (y == head_)
+        return;
+    head_ = y;
+    resized();
+    repaint();
 }
 void SideStrip::resized() {
-    // Under the two view switches: the flip arrows, then the track height. At the foot, over the
-    // time ruler's band: In/Out, Returns, Mixer, Delay.
-    flip.setBounds(4, 47, 19, 15);
-    tracks.setBounds(4, 64, 19, 14);
-    int y = getHeight() - ArrangementView::kTimeRulerHeight - 4 * 19;
-    for (auto *s : {&inOut, &returns, &mixer, &delay}) {
-        s->setBounds(7, y, 15, 15);
-        y += 19;
-    }
+    // Under the two view switches, the track height.
+    tracks.setBounds(4, head_ + 47, 19, 14);
 }
 void SideStrip::paint(juce::Graphics &g) {
     g.fillAll(look::band);
     // At the strip's head, Live's switches between Arrangement and Session View; the
-    // Arrangement's is lit. Two shared buttons (language.png part B), their lines in the label's colour.
+    // Arrangement's is lit.
     for (int i = 0; i < 2; ++i) {
-        const juce::Rectangle<float> r(4.f, 3.f + 22.f * static_cast<float>(i), 19, 19);
-        const auto state = i == 0 ? controls::ButtonState::On : controls::ButtonState::Rest;
-        controls::button(g, r, state);
-        g.setColour(controls::labelColour(state));
+        const juce::Rectangle<float> r(4.f, static_cast<float>(head_) + 3.f + 22.f * static_cast<float>(i), 19, 19);
+        g.setColour(look::selectorEdge);
+        g.fillEllipse(r);
+        g.setColour(i == 0 ? look::accent : look::panel);
         for (int line = 0; line < 3; ++line)
             if (i == 0)
                 g.fillRect(r.getX() + 5, r.getY() + 6 + 3.f * static_cast<float>(line), 9.f, 1.6f);
