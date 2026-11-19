@@ -14,6 +14,7 @@
 #include "scanner_readiness.hpp"
 #include "scanner_session_reopen.hpp"
 #include "scanner_discovery.hpp"
+#include "scanner_search_settings.hpp"
 namespace {
 bool catalogueContracts() {
     namespace fs = std::filesystem;
@@ -238,6 +239,7 @@ int main() {
     if(!adi::test::scannerReadinessContracts())return 1;
     if(!adi::test::scannerSessionReopenContracts())return 1;
     if(!adi::test::scannerDiscoveryContracts())return 1;
+    if(!adi::test::scannerSearchSettingsContracts())return 1;
 #endif
     adi::test::TempDirectory scratch("play_render", "channels");
     adi::StoreError error{};

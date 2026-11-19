@@ -4,6 +4,7 @@
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
 #include "juce/juce_device_loader.hpp"
+#include "juce/plugin_search_settings.hpp"
 #include "app_audio_page.hpp"
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
@@ -85,6 +86,7 @@ class AdiApplication final : public juce::JUCEApplication,
             settings_ = std::make_unique<settings::AppSettings>(
                 settings::AppSettings::forApp(appdata::App::Daw));
         commands_ = std::make_unique<AppCommands>(*settings_);
+        configurePluginSources();
         manager_.addChangeListener(this);
         if (project == juce::File{}) {
             // ADI has no unsaved state: every op is committed to a file, so a new
@@ -221,6 +223,10 @@ class AdiApplication final : public juce::JUCEApplication,
     }
 
   private:
+    void configurePluginSources() {
+        std::string error;
+        if(!device::configurePluginSearchPaths(loader_,*settings_,error))report(error);
+    }
     void report(const std::string &text) {
         if (smokeOutput_ != juce::File{}) {
             std::fprintf(stderr, "ADI: %s\n", text.c_str());
@@ -735,7 +741,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
                 // settings, and every open window follows at its next frame.
-                settingsWindow_->panel().onChange = [this] { commands_->reload(); };
+                settingsWindow_->panel().onChange = [this] {
+                    commands_->reload();
+                    configurePluginSources();
+                };
             }
             settingsWindow_->setVisible(true);
             settingsWindow_->toFront(true);

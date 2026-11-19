@@ -17,16 +17,31 @@
 namespace adi::device {
 
 JuceDeviceLoader::JuceDeviceLoader(bool includeDefaultSearchPaths) {
-    if(includeDefaultSearchPaths) {
-        vst3Paths_=vst3_.defaultSearchPaths();clapPaths_=ClapHost::defaultSearchPaths();
-    }
+    if(includeDefaultSearchPaths)setSearchPaths(defaultSearchPaths());
+}
+
+PluginSearchPaths JuceDeviceLoader::defaultSearchPaths() const {
+    if(audio::onAudioThread)return {};
+    return {vst3_.defaultSearchPaths(),ClapHost::defaultSearchPaths()};
+}
+
+void JuceDeviceLoader::setSearchPaths(const PluginSearchPaths& paths) {
+    if(audio::onAudioThread)return;
+    bool same=searchPaths_->clap==paths.clap && searchPaths_->vst3.getNumPaths()==paths.vst3.getNumPaths();
+    for(int i=0;same && i<paths.vst3.getNumPaths();++i)
+        same=searchPaths_->vst3.getRawString(i)==paths.vst3.getRawString(i);
+    if(same)return;
+    auto next=std::make_shared<PluginSearchPaths>(paths);
+    searchPaths_=std::move(next);
+    scanned_=false;
 }
 
 void JuceDeviceLoader::addSearchPath(const juce::File& dir) {
     if(audio::onAudioThread)return;
-    vst3Paths_.add(dir);
-    clapPaths_.push_back(dir.getFullPathName().toStdString());
-    scanned_ = false;
+    auto next=*searchPaths_;
+    next.vst3.add(dir);
+    next.clap.push_back(dir.getFullPathName().toStdString());
+    setSearchPaths(next);
 }
 
 void JuceDeviceLoader::scan() {
@@ -47,6 +62,7 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discover(DiscoveryMode 
 }
 
 std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(DiscoveryMode mode,bool allowLegacyFallback) {
+    const auto searchPaths=searchPaths_; // Keep both formats on one admitted configuration.
     auto result=std::make_shared<DiscoveryResult>();result->mode=mode;result->catalogue=publishedCatalogue_;
     const auto failed=[&](const std::string& message,scan::State state) {
         result->error=message;result->report.complete=false;
@@ -75,9 +91,9 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
             if(scanConfig_.process.cancel && scanConfig_.process.cancel->load(std::memory_order_relaxed)) {
                 result->report.cancelled=true;failed("discovery cancelled",scan::State::Cancelled);return result;
             }
-            result->report=vst3_.scan(vst3Paths_,*stagedVst3,config);
+            result->report=vst3_.scan(searchPaths->vst3,*stagedVst3,config);
             if(result->report.complete && !result->report.cancelled) {
-                auto clapReport=clap_.scan(clapPaths_,config);
+                auto clapReport=clap_.scan(searchPaths->clap,config);
                 result->report.complete=clapReport.complete;result->report.cancelled=clapReport.cancelled;
                 for(auto& failure:clapReport.failures)result->report.failures.push_back(std::move(failure));
                 if(result->report.complete && !result->report.cancelled)stagedClap=clap_.plugins();

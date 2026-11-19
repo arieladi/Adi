@@ -529,3 +529,23 @@ startup scheduling, persistent application scan logs beyond command output,
 native VST3 class-ID indexing, expanded alias traversal, expiry/retry service
 integration and Settings UI remain separate DEV-25 work. Stored metadata is
 neither proof of current filesystem freshness nor instantiated/audio readiness.
+
+The desktop now applies its existing source Settings after loading settings and
+after the Settings panel's existing change notification. VST3 uses JUCE's default
+locations only while `plugins.useVst3SystemFolders` is enabled, plus
+`plugins.vst3Folders`. CLAP retains its convention locations and `CLAP_PATH`,
+plus `plugins.clapFolders`. Custom lists remain format-specific; empty entries
+are ignored, identical entries are deduplicated, and relative custom paths use
+the current directory as the headless command does. A path containing NUL is
+reported and leaves the prior configuration intact.
+
+This replaces only future discovery inputs. It launches no helper, walks no
+root and opens no registry. An already admitted operation captures one root
+configuration for both formats. Existing instances and the accepted catalogue
+are retained until an explicit discovery publishes a replacement; CacheOnly
+still reads all eligible persisted metadata, not a root-filtered view. Changing
+sources is neither a rescan nor a Clean operation and does not prune rows.
+The headless command's combined `--search`/`--search-only` inputs are unchanged.
+No automatic startup discovery, Settings scan action, preference or worker
+default is added. The isolated real-module `scanner_search_settings.hpp` gate
+covers these configuration, publication and native discovery boundaries.

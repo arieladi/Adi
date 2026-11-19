@@ -40,6 +40,12 @@
 
 namespace adi::device {
 
+/// Future discovery inputs, separate from the last published catalogue.
+struct PluginSearchPaths {
+    juce::FileSearchPath vst3;
+    std::vector<std::string> clap;
+};
+
 enum class DiscoveryMode { Incremental, CacheOnly, Refresh };
 enum class DiscoveryOutcome { Published, Missing, Legacy, Failed, Cancelled };
 
@@ -62,6 +68,13 @@ struct DiscoveryResult {
 class JuceDeviceLoader {
 public:
     explicit JuceDeviceLoader(bool includeDefaultSearchPaths = true);
+
+    /// Format conventions only; no directory enumeration or module loading.
+    [[nodiscard]] PluginSearchPaths defaultSearchPaths() const;
+    /// Owner only. Replaces future roots without scanning or discarding the
+    /// accepted catalogue/instances. An admitted discovery keeps its own roots.
+    /// Callback calls are refused before allocation; identical input is a no-op.
+    void setSearchPaths(const PluginSearchPaths&);
 
     /// A directory searched by explicit discovery, ahead of the defaults.
     /// Adding a root does not invalidate or bypass a hydrated snapshot.
@@ -139,8 +152,7 @@ private:
     ClapHost clap_;
     std::unique_ptr<juce::KnownPluginList> known_ = std::make_unique<juce::KnownPluginList>();
     std::vector<ClapPluginRef> clapCatalogue_;
-    juce::FileSearchPath vst3Paths_;
-    std::vector<std::string> clapPaths_;
+    std::shared_ptr<const PluginSearchPaths> searchPaths_ = std::make_shared<PluginSearchPaths>();
     bool scanned_ = false;
     bool hydrationAttempted_ = false;
     bool catalogueHydrated_ = false;
