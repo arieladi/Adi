@@ -2,10 +2,14 @@
 #include "adi/plugin_scanner.hpp"
 #include "adi/scan_batch.hpp"
 #include "adi/scan_stamp.hpp"
+#include "adi/scan_stamp_decimal.hpp"
+#include "adi/media/blake3.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <chrono>
+#include <limits>
+#include <span>
 #include <cstdio>
 #include <fstream>
 #include <future>
@@ -70,6 +74,50 @@ struct Fixture {
     std::unique_ptr<Scanner> scanner(){auto s=Scanner::open(config,error);if(!s)throw std::runtime_error(error);return s;}
     std::unique_ptr<PluginRegistry> registry(){auto r=PluginRegistry::open(config.registry,error);if(!r)throw std::runtime_error(error);return r;}
 };
+void nativeTimeCounts(const fs::path& self) {
+    using adi::scan::detail::tickDecimal;
+    check(tickDecimal(0)=="0" && tickDecimal(1)=="1" && tickDecimal(-1)=="-1","native tick decimal preserves zero and sign");
+    check(tickDecimal(std::numeric_limits<std::int8_t>::min())=="-128" &&
+          tickDecimal(std::numeric_limits<std::int8_t>::max())=="127","small signed rep boundaries remain exact");
+    check(tickDecimal(std::numeric_limits<std::int64_t>::min())=="-9223372036854775808" &&
+          tickDecimal(std::numeric_limits<std::int64_t>::max())=="9223372036854775807","native tick decimal does not negate the signed minimum");
+    check(tickDecimal(INT64_C(134395527812363862))=="134395527812363862" &&
+          tickDecimal(INT64_C(134395527812363863))=="134395527812363863","Windows epoch-sized raw ticks retain a one-tick difference without nanosecond multiplication");
+#if defined(__SIZEOF_INT128__)
+    __extension__ using Wide=__int128;
+    const Wide half=Wide{1}<<126;const Wide maximum=(half-1)+half;const Wide minimum=-maximum-1;
+    check(tickDecimal(maximum)=="170141183460469231731687303715884105727" &&
+          tickDecimal(minimum)=="-170141183460469231731687303715884105728","wide file-clock signed extrema remain exact");
+    const Wide above64=Wide{1}<<64;
+    check(tickDecimal(above64)=="18446744073709551616" &&
+          tickDecimal(above64+1)=="18446744073709551617" &&
+          tickDecimal(-above64)=="-18446744073709551616","wide native ticks are not narrowed to 64 bits");
+#endif
+#if defined(_WIN32)
+    Fixture f(self);const auto path=fs::canonical(f.candidate("timestamp.clap","unchanged bytes"));
+    using Duration=fs::file_time_type::duration;
+    const fs::file_time_type original{Duration{INT64_C(134395527812363862)}};
+    fs::last_write_time(path,original);
+    check(fs::last_write_time(path)==original,"Windows fixture retains the exact original native file-clock count");
+    const std::string helperHash(64,'a');std::string error,legacyBytes;
+    const auto field=[&](const std::string& value){legacyBytes+=std::to_string(value.size())+":"+value+"\n";};
+    // Independent reference to the pre-conversion stamp format. Do not use the
+    // new decimal helper to generate its own expected bytes.
+    field("adi.scan.success-stamp/1");field(std::to_string(kPacketSchema));field("clap");field(helperHash);
+    field(utf8(path));field(utf8(path.filename()));field(utf8(fs::canonical(path)));
+    field(std::to_string(fs::file_size(path)));field(std::to_string(original.time_since_epoch().count()));
+    const auto legacy=media::blake3Bytes(std::as_bytes(std::span(legacyBytes.data(),legacyBytes.size())));
+    const auto before=candidateStamp("clap",path,helperHash,error);
+    check(before && legacy && *before==legacy.hex,"Windows stamp preserves the original raw-tick decimal field exactly");
+    fs::last_write_time(path,original+Duration{1});
+    const auto changed=candidateStamp("clap",path,helperHash,error);
+    check(fs::last_write_time(path)==original+Duration{1} && before && changed && *before!=*changed && content(path)=="unchanged bytes","one native tick alone changes the stamp without content or size changes");
+    fs::last_write_time(path,original);
+    check(candidateStamp("clap",path,helperHash,error)==before,"restoring the native tick count restores exactly the original stamp");
+#else
+    (void)self;
+#endif
+}
 int helper(const std::vector<std::string>& args) {
     const auto path=native(args[3]);std::ofstream(marker(path),std::ios::app)<<"launch\n";
     const auto module=binary(path);if(!fs::exists(module))return 65;
@@ -113,6 +161,7 @@ int helper(const std::vector<std::string>& args) {
     std::fwrite(packet->data(),1,packet->size(),stdout);return 0;
 }
 void reuseAndChanges(const fs::path& self) {
+    nativeTimeCounts(self);
     Fixture f(self);const auto path=f.candidate();auto scanner=f.scanner();
     const auto a=scanner->probe("clap",path),b=scanner->probe("clap",path);
     scanner.reset();scanner=f.scanner();const auto c=scanner->probe("clap",path);
