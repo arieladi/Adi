@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DEV-25 registry admission with two writers
+
+**PR requested** — `engine-win/scanner-registry-write-admission`, `0f7289b2d5bfe7375bb618bf2ee19e3ff9bb672d`, stacked on `engine-win/vst3-discovery-aliases`. Two native SQLite connections reproduced failures in stamped admission and typed completion while a competing writer held a short transaction. Beginning these read/write transactions with the existing busy timeout and an immediate lease fixes the snapshot upgrade race. Child processes still start after admission commits. Strict Windows x64 MSVC passed the 74 cache checks, the scanner suite and all 15 native VST3 sequence cases. This supplies the separate-connection prerequisite for parallel scan probes.
+
 ## 2026-11-19 — EX-07 identity-bound replacement and Windows AAC gate
 
 **PR requested** — `engine-win/export-identity-replace`, `41b74d57f2e48e9c9fc25d1e8466d37fbda5b04c`, stacked on `engine-win/export-folded-collisions`. Explicit Replace captures the requested regular file's native identity, BLAKE3 and folded collision set at preflight. Publication checks the same binding with the replacement lease. If the target was absent at preflight the output still goes through atomic no-clobber. NI binds the final name before the Main render begins. Strict native x64 MSVC passed 515 checks covering project replacement, actual WAV, pre-audio preparation ordering and the NI shared publisher. The existing file APIs leave an external writer a last-check-to-rename race. Whole-group reservation, confirmation wiring and complete native NI encoding remain open. Integrate the separate settings branch's callable replacement validation and EX-09's shared validator when combining branches.
