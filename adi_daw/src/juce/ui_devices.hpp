@@ -213,6 +213,7 @@ class DevicePanelView final : public juce::Component {
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
     std::optional<DevicePanelData> dragTarget_;
+    std::uint64_t dragEpoch_ = 0;
     std::string editingParameter_;
     double editingValue_ = 0;
     bool editingBegan_ = false;

@@ -918,6 +918,7 @@ bool DevicePanelView::beginFunctionDrag() {
     endFunctionParameter();
     if (!safe || !safe->validTarget()) return false;
     dragTarget_ = std::move(expected);
+    ++dragEpoch_;
     return true;
 }
 const DevicePanelData *DevicePanelView::functionDragTarget() const noexcept {
@@ -1882,11 +1883,22 @@ juce::PopupMenu DeviceChainStrip::functionMenuFor(std::int64_t track,
 }
 bool DeviceChainStrip::dropFunction(DevicePanelView &source, std::optional<std::int64_t> before) {
     const auto *expected = source.functionDragTarget();
-    if (!expected || &source.strip.root != &root || expected->track != selectedTrack || !source.validTarget() ||
-        !validExpected(*expected) || !moveFunction) return false;
+    const auto track = selectedTrack;
+    if (!expected || &source.strip.root != &root || expected->track != track)
+        return false;
     const auto captured = *expected;
-    source.dragTarget_.reset();
-    return moveFunction(captured, selectedTrack, before);
+    const auto epoch = source.dragEpoch_;
+    const auto origin = SafePointer<DevicePanelView>(&source);
+    const auto destination = SafePointer<DeviceChainStrip>(this);
+    const auto current = [&] {
+        return destination && origin && destination->selectedTrack == track &&
+               origin->dragEpoch_ == epoch && origin->functionDragTarget();
+    };
+    if (!source.validTarget() || !current() || !destination->validExpected(captured) || !current() ||
+        !destination->moveFunction)
+        return false;
+    origin->dragTarget_.reset();
+    return destination->moveFunction(captured, track, before);
 }
 void DeviceChainStrip::cancelFunctionInteractions() {
     ++addMenuEpoch_;
