@@ -10,6 +10,18 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DEV-25 native Windows shortcuts
+
+**PR requested** — `engine-win/scanner-windows-shortcuts`, `cdb8f6846097ca1b0b059d5e698a57c3086fe1bd`, stacked on `engine-win/vst3-discovery-aliases`. VST3 and CLAP discovery can read bounded native Shell Link bytes, follow stored absolute file/folder targets and deduplicate their canonical paths. Chains have a 32-hop cap and cycles stop. The owner reads link data without shell execution or target recovery/search. Direct stored UNC paths retain ordinary filesystem behaviour. Strict x64 MSVC passed 176 checks over four suites, including 18 native shortcut checks and an actual junction cycle. The optional directory-symlink case needed privilege unavailable during this run. Finder aliases stay open.
+
+## 2026-11-19 — EX-09 project-owned saved export jobs
+
+**PR requested** — `engine-win/project-saved-render-jobs`, `0756e2be06e7a71b90816ecb52a74ba341a4322c`, stacked on `engine-win/render-preset-groups`. Stores an ordered validated list in the existing Layer 3 `session_state` outside Undo. Save and load are separate from enqueueing and rendering. SQLite validation and replacement share an immediate transaction. Corrupt or newer existing bytes stay intact. Load from a copied or Save As project rebinds only the owning project path and keeps project-local source IDs. The caller opens the owning Store by an absolute path. Strict x64 MSVC passed 274 checks, including 84 new persistence, rollback, reopen and malformed-byte checks. User and project presets, queue UI and RPC are separate.
+
+## 2026-11-19 — PD-11 complete settings document bytes
+
+**PR requested** — `engine-win/settings-json-full-bytes`, `c4d4f32c5505e054e18ab22db4bf902347cca7b3`, stacked on `engine-win/settings-read-failures`. The shared parse boundary refuses literal NUL bytes. Startup retains the complete malformed bytes through the existing corrupt-copy path. A bad save reread leaves destination and backup untouched. Both failures reproduced before the fix. Strict x64 MSVC passed settings, migrations and the 29-check read-safety suite.
+
 ## 2026-11-19 — DEV-25 dedicated helper self-test protocol
 
 **PR requested** — `engine-win/scanner-helper-self-test`, `7f8ed3f8bfc46bac2e92f11c338a13ee57651578`, stacked on `engine-win/vst3-discovery-aliases`. The dedicated helper accepts exact `--self-test` and emits a versioned structural receipt with its metadata schema and compiled formats. The command reaches no plug-in factory or registry. Strict Windows x64 MSVC passed 133 checks each with JUCE disabled and enabled. Actual CLAP initialization remained once over three ordinary unchanged probes, and a separate controlled case counted one ordinary child. Parent activation remains a separate slice, so the existing warm scan launch count is preserved.
