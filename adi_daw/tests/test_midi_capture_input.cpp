@@ -109,7 +109,50 @@ void malformedAndRejection() {
     check(feed(parser,refused,0xb0,7,100)==0 && parser.sinkRejections()==rejected+1,"ordinary controller sink pressure is counted and nonblocking");
     refused.refuse=false;check(feed(parser,refused,0xb0,7,101)==1 && refused.count==1 && refused.events[0].value==101.0/127,"parser remains usable after controller delivery rejection");
 }
+
+void initialExpressionRouting() {
+    MpeParser parser;
+    parser.setZone(MpeZone::lower());
+    Sink sink;
+    const auto bend=feed(parser,sink,0xe1,1,65,3);
+    const auto msb=feed(parser,sink,0xb1,74,64,4);
+    const auto lsb=feed(parser,sink,0xb1,106,1,5);
+    const auto attack=feed(parser,sink,0x91,60,100,7);
+    check(bend==0 && msb==0 && lsb==0 && attack==3,
+          "input emits both idle member values only when the note is accepted");
+
+    std::array<MpeOut,64> native{};
+    MpeOutList noteExpression(native.data(),static_cast<std::int32_t>(native.size()));
+    MpeRouter nativeRouter;
+    nativeRouter.configure(ExpressionRoute::NoteExpression,{});
+    {
+        audio::CallbackScope callback;
+        nativeRouter.route(sink.events.data(),sink.count,0,noteExpression);
+    }
+    check(noteExpression.size()==3 && native[0].kind==MpeOut::Kind::NoteOn &&
+          native[1].kind==MpeOut::Kind::Expression && native[2].kind==MpeOut::Kind::Expression &&
+          native[1].noteId==native[0].noteId && native[2].noteId==native[0].noteId &&
+          native[1].frame==7 && native[2].frame==7 && native[2].value==8193.0/16383,
+          "the native router delivers initial expression at the attack with exact timbre");
+
+    std::array<MpeOut,64> wire{};
+    MpeOutList midi(wire.data(),static_cast<std::int32_t>(wire.size()));
+    MpeRouter midiRouter;
+    midiRouter.configure(ExpressionRoute::MpeMidi,{});
+    {
+        audio::CallbackScope callback;
+        midiRouter.route(sink.events.data(),sink.count,0,midi);
+    }
+    bool exactBend=false;
+    for(std::int32_t i=0;i<midi.size();++i) {
+        const auto& event=wire[static_cast<std::size_t>(i)];
+        if(event.kind==MpeOut::Kind::NoteOn)break;
+        if(event.kind==MpeOut::Kind::Control && event.ctrl==kCtrlPitchBend && event.frame==7)
+            exactBend=event.word==8321;
+    }
+    check(exactBend,"the MPE MIDI router prepares the exact bend before the attack");
 }
-int main(){try{chordsAndRouting();allKeysAndReset();controllers();malformedAndRejection();check(allocations==0 && audio::callbackFileIo==0,"polyphony/controller parsing and router/Capture delivery allocate nothing and perform no callback I/O");}
+}
+int main(){try{chordsAndRouting();allKeysAndReset();controllers();malformedAndRejection();initialExpressionRouting();check(allocations==0 && audio::callbackFileIo==0,"polyphony/controller parsing and router/Capture delivery allocate nothing and perform no callback I/O");}
 catch(const std::exception& e){std::printf("EXCEPTION: %s\n",e.what());check(false,"fixture must complete");}
 std::printf("midi_capture_input: %d checks, %d failures\n",checks,failures);return failures?1:0;}

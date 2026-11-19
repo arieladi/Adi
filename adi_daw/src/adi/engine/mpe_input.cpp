@@ -50,12 +50,28 @@ void MpeParser::reset() noexcept {
     // dropped one.
 }
 
+void MpeParser::setZone(const MpeZone& z) noexcept {
+    if(zone_.active!=z.active || zone_.masterChan!=z.masterChan ||
+       zone_.firstMember!=z.firstMember || zone_.lastMember!=z.lastMember) {
+        for(auto& state:chans_) {
+            state.idle={};
+            state.timbreMsb=-1;
+        }
+    }
+    zone_=z;
+}
+
+std::size_t MpeParser::activeNoteIndex(const ChannelState& state) noexcept {
+    for(std::size_t i=state.heldCount;i>0;--i)
+        if(state.held[i-1].id && state.held[i-1].release<0)return i-1;
+    return state.heldCount;
+}
+
 std::uint64_t MpeParser::activeNoteOn(std::uint8_t chan1) const noexcept {
     if (chan1 < 1 || chan1 > 16) return 0;
     const auto& state=chans_[chan1-1];
-    for(std::size_t i=state.heldCount;i>0;--i)
-        if(state.held[i-1].id && state.held[i-1].release<0)return state.held[i-1].id;
-    return 0;
+    const auto index=activeNoteIndex(state);
+    return index<state.heldCount?state.held[index].id:0;
 }
 
 bool MpeParser::emit(Sink sink, void* ctx, const Event& e) noexcept {
@@ -63,6 +79,36 @@ bool MpeParser::emit(Sink sink, void* ctx, const Event& e) noexcept {
     if (!sink(ctx, e)) { ++rejected_; return false; }
     return true;
 }
+
+bool MpeParser::emitExpression(std::uint8_t channel,std::uint64_t noteId,ExpressionDim dim,
+                               double value,Sink sink,void* context) noexcept {
+    Event event;
+    event.type=EventType::NoteExpression;event.frame=frame_;event.channel=channel;
+    event.noteId=noteId;event.dim=static_cast<std::uint16_t>(dim);event.value=value;
+    return emit(sink,context,event);
+}
+
+int MpeParser::sendInitial(HeldNote& note,std::uint8_t channel,Sink sink,void* context) noexcept {
+    int sent=0;
+    if(note.initial.bend!=kNoExpression) {
+        if(!emitExpression(channel,note.id,ExpressionDim::Pitch,
+                           bendToSemitones(note.initial.bend,zone_.memberBendSemitones),
+                           sink,context))return 0;
+        note.initial.bend=kNoExpression;
+        ++sent;
+    }
+    if(note.initial.timbre!=kNoExpression) {
+        const auto word=note.initial.timbre;
+        const auto value=word&kSevenBitTimbre?cc7ToUnit(static_cast<std::uint8_t>(word)):
+                                              cc14ToUnit(word);
+        if(emitExpression(channel,note.id,ExpressionDim::Timbre,value,sink,context)) {
+            note.initial.timbre=kNoExpression;
+            ++sent;
+        }
+    }
+    return sent;
+}
+
 bool MpeParser::releaseNote(const HeldNote& note,std::uint8_t channel,std::uint8_t velocity,
                             Sink sink,void* context) noexcept {
     Event event;
@@ -92,11 +138,16 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
     const bool member = zone_.isMember(chan1);
 
     int emitted = 0;
+    // A refused initial value stays with the accepted note. Retry at this
+    // message's frame, since the note's original block may have completed.
     for(std::size_t at=0;at<cs.heldCount;) {
-        const auto& note=cs.held[at];
+        auto& note=cs.held[at];
         if(note.release>=0 && releaseNote(note,chan1,static_cast<std::uint8_t>(note.release),sink,ctx)) {
             ++emitted;forgetNote(cs,at);
-        } else ++at;
+        } else {
+            if(note.release<0 && note.id)emitted+=sendInitial(note,chan1,sink,ctx);
+            ++at;
+        }
     }
 
     switch (type) {
@@ -124,6 +175,7 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                     if(!held.id)forgetNote(cs,at);
                     else if(releaseNote(held,chan1,vel,sink,ctx)) {++emitted;forgetNote(cs,at);}
                     else held.release=vel;
+                    if(!activeNoteOn(chan1) && cs.idle.timbre==kNoExpression)cs.timbreMsb=-1;
                     return emitted;
                 }
                 if(cs.dropped[key])--cs.dropped[key];
@@ -131,9 +183,12 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 return emitted;
             }
             {
+                const auto initial=cs.idle;
+                cs.idle={};
                 if(cs.heldCount==cs.held.size() || cs.dropped[key] || nextNoteId_==0) {
                     if(cs.dropped[key]!=std::numeric_limits<std::uint32_t>::max())++cs.dropped[key];
                     ++droppedStarts_;
+                    if(!activeNoteOn(chan1))cs.timbreMsb=-1;
                     return emitted;
                 }
                 Event e;
@@ -147,8 +202,12 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 e.value   = cc7ToUnit(vel);    // velocity as a DOUBLE, 0..1
                 ++notesStarted_;
                 const bool sent=emit(sink,ctx,e);
-                cs.held[cs.heldCount++]={sent?e.noteId:0,key,-1};
-                if(sent)++emitted;
+                auto& held=cs.held[cs.heldCount++];
+                held={sent?e.noteId:0,key,-1};
+                if(sent) {
+                    held.initial=initial;
+                    emitted+=1+sendInitial(held,chan1,sink,ctx);
+                } else if(!activeNoteOn(chan1))cs.timbreMsb=-1;
             }
             return emitted;
         }
@@ -158,18 +217,17 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
             const auto word = static_cast<std::uint16_t>(
                 (static_cast<std::uint16_t>(bytes[2] & 0x7F) << 7) |
                 static_cast<std::uint16_t>(bytes[1] & 0x7F));
-            Event e;
-            e.type    = EventType::NoteExpression;
-            e.frame   = frame_;
-            e.channel = chan1;
-            e.dim     = static_cast<std::uint16_t>(ExpressionDim::Pitch);
-            // A member channel's bend is THIS NOTE's pitch, in semitones, at
-            // the member range -- which defaults to +/-48, not +/-2. Getting
-            // that wrong is a transposition, not a subtle error.
-            e.value   = bendToSemitones(word, member ? zone_.memberBendSemitones
-                                                     : zone_.masterBendSemitones);
-            e.noteId  = member ? activeNoteOn(chan1) : 0;
-            if (emit(sink, ctx, e)) ++emitted;
+            const auto at=activeNoteIndex(cs);
+            if(member && at==cs.heldCount) {
+                cs.idle.bend=word;
+                return emitted;
+            }
+            const auto value=bendToSemitones(word,member?zone_.memberBendSemitones:
+                                                         zone_.masterBendSemitones);
+            if(emitExpression(chan1,member?cs.held[at].id:0,ExpressionDim::Pitch,value,sink,ctx)) {
+                if(member)cs.held[at].initial.bend=kNoExpression;
+                ++emitted;
+            }
             return emitted;
         }
 
@@ -189,8 +247,6 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
             if (n < 3) return 0;
             const std::uint8_t cc  = static_cast<std::uint8_t>(bytes[1] & 0x7F);
             const std::uint8_t val = static_cast<std::uint8_t>(bytes[2] & 0x7F);
-            cs.cc[cc] = val;
-            cs.ccSeen[cc] = true;
 
             // Only member-channel CC74/106 is MPE timbre. Ordinary controls,
             // including master-channel pedals and plain MIDI timbre, retain
@@ -202,43 +258,24 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 return emitted;
             }
 
-            // An LSB completing a high-resolution pair. This is the branch the
-            // whole mandate rests on: taking the MSB alone would hand
-            // downstream a 7-bit value that LOOKS like a double, and the
-            // Continuum's extra bits would vanish with nothing failing.
-            if (cc >= 32 && isHighResMsb(static_cast<std::uint8_t>(cc - 32))) {
-                const std::uint8_t msbCc = static_cast<std::uint8_t>(cc - 32);
-                if (!cs.ccSeen[msbCc]) return 0;   // no MSB yet: not 14-bit
-                const auto word = static_cast<std::uint16_t>(
-                    (static_cast<std::uint16_t>(cs.cc[msbCc]) << 7) |
-                    static_cast<std::uint16_t>(val));
-                if (msbCc != kTimbreCcMsb) return 0;   // only Y is mapped today
-                Event e;
-                e.type    = EventType::NoteExpression;
-                e.frame   = frame_;
-                e.channel = chan1;
-                e.dim     = static_cast<std::uint16_t>(ExpressionDim::Timbre);
-                e.value   = cc14ToUnit(word);
-                e.noteId  = activeNoteOn(chan1);
-                if (emit(sink, ctx, e)) ++emitted;
+            // An MSB is useful on its own. Its LSB can refine it to 14 bits.
+            const bool sevenBit=cc==kTimbreCcMsb;
+            if(sevenBit)cs.timbreMsb=val;
+            else if(cs.timbreMsb<0)return emitted;
+            const auto word=static_cast<std::uint16_t>(sevenBit?kSevenBitTimbre|val:
+                                             (static_cast<unsigned>(cs.timbreMsb)<<7)|val);
+            const auto at=activeNoteIndex(cs);
+            if(at==cs.heldCount) {
+                cs.idle.timbre=word;
                 return emitted;
             }
-
-            // A bare MSB with no LSB following is a legitimate 7-bit CC, and
-            // it is emitted as one. Waiting for an LSB that never comes would
-            // drop every ordinary controller.
-            if (cc == kTimbreCcMsb) {
-                Event e;
-                e.type    = EventType::NoteExpression;
-                e.frame   = frame_;
-                e.channel = chan1;
-                e.dim     = static_cast<std::uint16_t>(ExpressionDim::Timbre);
-                e.value   = cc7ToUnit(val);
-                e.noteId  = activeNoteOn(chan1);
-                if (emit(sink, ctx, e)) ++emitted;
-                return emitted;
+            auto& note=cs.held[at];
+            if(emitExpression(chan1,note.id,ExpressionDim::Timbre,
+                              sevenBit?cc7ToUnit(val):cc14ToUnit(word),sink,ctx)) {
+                note.initial.timbre=kNoExpression;
+                ++emitted;
             }
-            return 0;
+            return emitted;
         }
 
         default:
