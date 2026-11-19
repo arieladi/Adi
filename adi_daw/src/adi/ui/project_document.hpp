@@ -140,6 +140,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
     bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    bool insertPlugin(const rows::PluginRef &, std::int64_t track,
+                      std::optional<std::int64_t> before = {}, const PluginInsertOptions& = {});
     bool addMixFunction(mix::Function, std::int64_t track);
     bool moveMixFunction(const DevicePanelData &expected, std::int64_t track,
                          std::optional<std::int64_t> before);
@@ -183,6 +185,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    bool finishInsert(PreparedBuiltinInsert);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
     // and for a gesture, so a gesture's quiet timer and its End agree.

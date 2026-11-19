@@ -989,6 +989,30 @@ int main(int argc, char **argv) {
         }
     }
     {
+        auto external = ui::ProjectDocument::open(temp.path() / "external-plugin.adi", true, test::knobsLoader(), error);
+        check(external != nullptr, "a fresh document for external insertion");
+        if (external) {
+            rows::PluginRef plugin;
+            plugin.format = "clap";
+            plugin.uid = test::kKnobsUid;
+            plugin.name = "External knobs";
+            plugin.subtype = "instrument";
+            check(external->insertPlugin(plugin, 2), "the external insert entry point loads the resolved plug-in on MIDI");
+            const auto& devices = external->session().model().devices;
+            const auto found = std::find_if(devices.begin(), devices.end(),
+                [](const rows::Device& row) { return row.name == "External knobs"; });
+            const auto* instance = found == devices.end() ? nullptr : external->session().instanceFor(found->id);
+            const auto undo = external->ops().nextUndo();
+            check(instance && instance->loaded() && undo && undo->label == "Insert External knobs",
+                  "the inserted instance is realized in the Session and offered as one Undo");
+            check(external->ops().undo().ok && external->synchronise() &&
+                  external->store().db().execAndGet("SELECT count(*) FROM plugin_refs WHERE uid='" +
+                      std::string(test::kKnobsUid) + "'").getInt() == 0,
+                  "one document Undo removes the external plug-in reference and instance");
+            external->release();
+        }
+    }
+    {
         // Live's device clipboard (manual 23.2.1; D2, N18, #394), on a device the project stores and
         // no plug-in loaded: Copy reads the stored rows only; Paste in front of a device is one undo
         // step with a new id and the source's stored parameters; Cut and Paste bring it back.
