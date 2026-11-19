@@ -102,7 +102,7 @@ int main() {
                   views.load("stack").mixStackBaseHeight == 140 && !views.load("other").mixStackBaseHeight,
               "Stack search and row size persist per project window");
         store->db().exec(R"(INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES('project',NULL,'shell.old-stack',
-            '{"version":1,"zoom":1.5,"deviceHeight":196,"panels":[{"id":0,"width":300,"collapsed":false},
+            '{"version":1,"zoom":1.5,"deviceHeight":196,"docked":true,"panels":[{"id":0,"width":300,"collapsed":false},
              {"id":1,"width":200,"collapsed":false}],"mixview.stack.baseHeight":18446744073709551615,
              "mixview.stack.search":42}'))");
         const auto old = views.load("old-stack");
