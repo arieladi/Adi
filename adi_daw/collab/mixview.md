@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-19, night — pace the fixed Split de-esser prototype
+
+The private fixed Split proof now schedules stereo convolution across each 128-sample hop and shares its prepared kernel spectra. The two channels keep separate histories. The last phase is at frame 94 or 110, leaving the 256-sample convolution delay and the total 512/512/768-sample delay intact. The bounds are 48 or 56 phases per hop and at most one fixed-size phase at any sample. This is a work bound with CPU timing still deferred.
+
+MSVC Release, Debug and the portable scalar build each passed 249 tests with zero callback allocations or frees. A failed replacement and stopped reset were exercised in mid-hop. Refusing a nonfinite kernel or invalid key route preserves the prior stream. All six full saved 44.1/48/96 kHz replays match the prior ADI output byte for byte. Release also preserved both 48 kHz cases at blocks 127, 129 and 511. Split remains a private component proof. The existing Wide branches, registration and the current review build are unchanged.
+
 ### 2026-11-19 — Bound the Limiter's silent-start case
 
 Windows Release passed all 288 native Limiter checks. Two actual Transparent instances with dither off took 117+139-sample segments at 48 kHz. Omitting 64 leading zero blocks preserved the first programme and its delayed output byte for byte. The history control admitted a second programme, then omitted silent callbacks on one instance. It moved real buffered samples into later callbacks while the continuously run instance was already silent. This narrows the available idle optimization to prepared histories that are proven empty. It does not give a general post-programme release bound.
