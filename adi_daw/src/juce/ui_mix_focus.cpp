@@ -330,7 +330,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
         if (redraw_) {
             rebuildScope();
             redraw_ = false;
-            repaint(plot_.toNearestInt().getUnion(sumLabel_));
+            repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
         }
         return;
     }
@@ -404,7 +404,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
         if (!scope.getToggleState()) rebuildPlot();
         rebuildScope();
         redraw_ = false;
-        repaint(plot_.toNearestInt().getUnion(sumLabel_));
+        repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
     }
 }
 void MixFocus::clearBarScopeData() {
