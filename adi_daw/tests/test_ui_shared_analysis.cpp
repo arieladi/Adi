@@ -1430,6 +1430,16 @@ void spectrogramHistoryMotion() {
               clearedSweep.getPixelAt(left + head + 2, top + height / 2) == look::display &&
               sibling.subscribed(),
           "a local history reset starts a new sweep without clearing sibling data or retaining old pixels");
+    check(fresh && fresh->columns.size() == width &&
+              fresh->columns[width / 2].serial <= clearAt && fresh->columns.back().serial > clearAt,
+          "the shared publication retains a full history spanning the local clear boundary");
+    const auto clearedRepaints = root.fake->repaints;
+    const auto clearedStats = f.broker->stats();
+    for (int frame = 0; frame < 8; ++frame) view.frame();
+    check(fresh && view.snapshot() == fresh && sibling.snapshot() == fresh &&
+              root.fake->repaints == clearedRepaints && sameWork(clearedStats, f.broker->stats()) &&
+              samePixels(clearedScroll, softwarePicture(view)),
+          "unchanged post-clear frames retain their raster without invalidation or analysis work");
 
     root.setVisible(false);
     const auto hidden = f.broker->stats();
