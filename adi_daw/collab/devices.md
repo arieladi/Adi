@@ -56,6 +56,23 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DF-E37 (a): Saturator HQ no longer comb-filters at a partial Dry/Wet
+
+**On #659's branch, `devices/saturator-latency` (`e539f7dc`).**
+
+- **Failing first:** at 10/50/90 % Dry/Wet the response from 1 to 18 kHz against the 100 %-wet
+  one: 1.50 / **12.96** / 1.94 dB off (a 3-sample dry against the 4× minimum-phase wet).
+- **Fix:** for 0 < Dry/Wet < 100 % with HQ on, the dry is upsampled by the same filter beside the
+  wet and mixed before the down-sampling filter: one phase response for both. 0 % keeps the exact
+  3-sample dry (alignment test unchanged); 100 % has no dry. Kept: 3 samples reported, unity DC,
+  alias suppression (0.00044), native/Pd parity, no allocation.
+- Now **0.000 dB** from the 100 %-wet response at every mix. The resampler's own roll-off (0.9 dB
+  at 18 kHz) is reported, not hidden; reading 1 in the list settles whether Live's is the same.
+- Plant: the old dry → 3 failures. Saturator 40; CTest **242/242** (that branch's base). The test
+  file's comment named a machine; it no longer does.
+
+**PR request #659 stands** with this commit (head now `e539f7dc`).
+
 ## 2026-11-19, evening — ADR-0248 read: this lane's order from here
 
 The steering (win's entry of this evening) is this lane's queue now, in its order: (1) DF-E37, each
