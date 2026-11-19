@@ -142,26 +142,6 @@ void insertionAndHistory() {
           !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",9,prepared.deviceId).ok,"unknown/unavailable devices, missing track and selection on another track refuse");
 #endif
 }
-void playingSession() {
-#if ADI_WITH_PD
-    Project project;auto& store=*project.store;auto& db=store.db();
-    const auto prepared=prepareBuiltinInsert(store,"org.adidaw.builtin.utility",1);check(commitBuiltinInsert(store,prepared).ok,"session fixture inserts builtin");
-    std::vector<float> samples(8192,0.25f);audio::WavWriter writer(project.temporary.path()/"audio.wav",48000,2,audio::WavFormat::Float32);writer.write(samples.data(),4096);writer.close();
-    db.exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'test','audio.wav','wav')");
-    db.exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,1000000000)");
-    db.exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,4096)");
-    OpRequest gain;gain.opType="device.setParam";gain.payload={{"dev",prepared.deviceId},{"param","11"},{"norm",126.0/155}};
-    check(OpJournal(store).commit(gain).ok,"persist builtin control as ordinary parameter op");
-    Session session;session.graph().setFadeFrames(0);
-    check(session.load(store,withBuiltinDevices(),{2,48000,64}) && session.stats().loaded==1,"project internal reference becomes loaded device in ordinary Session");
-    if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
-    session.transport().play();std::array<std::array<float,64>,2> output{};float* out[]={output[0].data(),output[1].data()};
-    bool primed=true;
-    for(int block=0;block<20;++block) {primed=primed && session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=64;session.process(io);}
-    check(primed && std::abs(output[0][63]-0.25f*std::pow(10.0f,6.0f/20))<2e-5f,"stored built-in gain processes real clip audio through the complete graph");
-#endif
-}
-}
 // DF-E50: automation on a built-in device is applied, at its frame. Utility's
 // Gain is "11", -120..35 dB on a linear curve, so 0 dB is 120/155 and +6 dB
 // 126/155; its core ramps a gain change over 5 ms.
@@ -241,4 +221,25 @@ void automatedSession() {
     }
 #endif
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();playingSession();automationEvents();automatedSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+void playingSession() {
+#if ADI_WITH_PD
+    Project project;auto& store=*project.store;auto& db=store.db();
+    const auto prepared=prepareBuiltinInsert(store,"org.adidaw.builtin.utility",1);check(commitBuiltinInsert(store,prepared).ok,"session fixture inserts builtin");
+    std::vector<float> samples(8192,0.25f);audio::WavWriter writer(project.temporary.path()/"audio.wav",48000,2,audio::WavFormat::Float32);writer.write(samples.data(),4096);writer.close();
+    db.exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'test','audio.wav','wav')");
+    db.exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,1000000000)");
+    db.exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,4096)");
+    OpRequest gain;gain.opType="device.setParam";gain.payload={{"dev",prepared.deviceId},{"param","11"},{"norm",126.0/155}};
+    check(OpJournal(store).commit(gain).ok,"persist builtin control as ordinary parameter op");
+    Session session;session.graph().setFadeFrames(0);
+    check(session.load(store,withBuiltinDevices(),{2,48000,64}) && session.stats().loaded==1,"project internal reference becomes loaded device in ordinary Session");
+    if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
+    session.transport().play();std::array<std::array<float,64>,2> output{};float* out[]={output[0].data(),output[1].data()};
+    bool primed=true;
+    for(int block=0;block<20;++block) {primed=primed && session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=64;session.process(io);}
+    check(primed && std::abs(output[0][63]-0.25f*std::pow(10.0f,6.0f/20))<2e-5f,"stored built-in gain processes real clip audio through the complete graph");
+#endif
+    automationEvents();automatedSession();  // DF-E50
+}
+}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();playingSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
