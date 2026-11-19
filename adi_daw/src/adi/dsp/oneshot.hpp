@@ -135,6 +135,8 @@ class OneShot final : public DeviceInstance {
     std::array<double, 256> noteGains_{};
     std::size_t noteGainHead_ = 0, noteGainCount_ = 0;
     void event(const engine::Event &, const Sample *, std::array<double, Count> &) noexcept;
+    static bool slice(int key, const Sample &s, const std::array<double, Count> &p, double &begin,
+                      double &end) noexcept;
     void noteOn(const engine::Event &, const Sample &, const std::array<double, Count> &) noexcept;
     double read(const Sample &, double, int) const noexcept;
     void processSample(const engine::NodeIo&, const Sample*, std::uint64_t,

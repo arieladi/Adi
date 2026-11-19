@@ -335,6 +335,79 @@ void pdMidi() {
 // Live's 0..1.25, shown as 0..125 %. Voices: Live's default is the sixth entry
 // of its chooser, 6 under any list that begins 1..6; the chooser's list is a
 // reading still to take, so ADI keeps every whole number from 1 to 32.
+// Several note-ons at their frames, one 64-sample block at a time; the left channel.
+std::vector<float> playNotes(OneShot &d, int count, std::initializer_list<std::pair<int, int>> notes) {
+    d.release();
+    d.prepare(48000, 64);
+    std::vector<float> out(static_cast<std::size_t>(count));
+    std::array<float, 64> l{}, r{};
+    float *ptrs[]{l.data(), r.data()};
+    for (int at = 0; at < count; at += 64) {
+        engine::Event events[8]{};
+        int size = 0;
+        for (const auto &[frame, key] : notes)
+            if (frame >= at && frame < at + 64 && size < 8)
+                events[size++] = {frame - at, engine::EventType::NoteOn, 0,
+                                  static_cast<std::uint16_t>(key), 1, 0, 1};
+        engine::NodeIo io{};
+        io.out = ptrs;
+        io.channels = 2;
+        io.frames = std::min(64, count - at);
+        io.events = {events, size};
+        d.process(io);
+        std::copy_n(l.begin(), io.frames, out.begin() + at);
+    }
+    return out;
+}
+// DF-E46: in Slice mode a key with no slice plays nothing and steals nothing;
+// a Transient or Manual slice is refused past End and cut at End.
+void sliceKeys() {
+    std::vector<float> regions(4096);
+    for (std::size_t i = 0; i < regions.size(); ++i)
+        regions[i] = static_cast<float>(i / 1024 + 1) * .1f;  // .1 .2 .3 .4, 1,024 samples each
+    {
+        OneShot d;
+        configure(d);
+        set(d, OneShot::Mode, 2);
+        set(d, OneShot::Regions, 4);  // keys 36..39
+        set(d, OneShot::SlicePlayback, 0);  // Mono
+        d.publishSample(regions, 1, 48000);
+        const auto mono = playNotes(d, 512, {{0, 37}, {256, 46}});
+        check(std::abs(mono[300] - .2f) < 1e-6f, "Mono: a key with no slice does not cut the playing slice (DF-E46 a)");
+        set(d, OneShot::SlicePlayback, 1);  // Poly
+        set(d, OneShot::Voices, 2);
+        const auto poly = playNotes(d, 512, {{0, 36}, {100, 37}, {200, 46}});
+        check(std::abs(poly[300] - .3f) < 1e-6f, "Poly: a key with no slice does not kill the oldest voice (DF-E46 a)");
+        // A refused note still takes the per-note gain queued for it, so the
+        // next note gets its own (the Sampler queues one per forwarded note-on).
+        set(d, OneShot::SlicePlayback, 0);
+        d.release();
+        d.prepare(48000, 64);
+        d.queueNoteGain(.5);
+        d.queueNoteGain(1);
+        const auto gains = playNotes(d, 256, {{0, 46}, {64, 37}});
+        check(std::abs(gains[100] - .2f) < 1e-6f, "a refused key takes its queued gain; the next note keeps its own");
+    }
+    {
+        OneShot d;
+        configure(d);
+        set(d, OneShot::Mode, 2);
+        set(d, OneShot::SliceBy, 3);  // Manual
+        set(d, OneShot::SlicePlayback, 0);
+        set(d, OneShot::End, 50);  // End at 2,048
+        const std::array<std::size_t, 3> marks{0, 1024, 3072};
+        d.publishSample(regions, 1, 48000, marks);
+        const auto cut = playNotes(d, 2048, {{0, 37}});  // slice 1024..3072, End 2048
+        check(std::abs(cut[500] - .2f) < 1e-6f && cut[1100] == 0, "a Manual slice running past End is cut at End (DF-E46 b)");
+        const auto past = playNotes(d, 512, {{0, 38}});  // slice from 3072, past End
+        check(energy(past) == 0, "a Manual slice beginning past End is refused: no click (DF-E46 b)");
+        set(d, OneShot::SliceBy, 2);  // Transient
+        std::vector<float> onsets(4096, 0.f);
+        onsets[3072] = .8f;
+        d.publishSample(onsets, 1, 48000);
+        check(energy(playNotes(d, 512, {{0, 37}})) == 0, "a Transient slice beginning past End is refused too");
+    }
+}
 void liveDefaults() {
     struct Row {
         OneShot::Param param;
@@ -370,6 +443,7 @@ void liveDefaults() {
 }
 } // namespace
 int main() {
+    sliceKeys();
     liveDefaults();
     parameterModulation();
     preparedSamples();
