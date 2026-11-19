@@ -334,6 +334,29 @@ void cornerLevel() {
         sum += point.y;
     expect(std::abs(sum / static_cast<double>(f.wave.size()) - .675) < 1.e-5 && f.ends == 1,
            "fader moves the arithmetic mean of the point heights for irregular spacing");
+
+    const auto readout = [&](std::array<float, 4> heights) {
+        for (std::size_t i = 0; i < heights.size(); ++i)
+            f.wave[i].y = std::round(heights[i] * 65535.f) / 65535.f;
+        p.refresh();
+        juce::Image image(juce::Image::RGB, p.getWidth(), p.getHeight(), true);
+        {
+            juce::Graphics graphics(image);
+            p.paintEntireComponent(graphics, true);
+        }
+        std::vector<juce::uint32> pixels;
+        for (int y = 168; y < 186; ++y)
+            for (int x = 348; x < 422; ++x)
+                pixels.push_back(image.getPixelAt(x, y).getARGB());
+        return pixels;
+    };
+    const auto uniform = [&](float value) { return readout({value, value, value, value}); };
+    const auto sixty = uniform(.60f), sixtyOne = uniform(.61f);
+    expect(sixty != sixtyOne && uniform(.605f) == sixty && uniform(.609f) == sixty &&
+               uniform(.6099f) == sixty && uniform(.615f) == sixtyOne,
+           "Volume shows the completed whole percentage through the next integer boundary");
+    expect(readout({.22f, .80f, .05f, .65f}) == uniform(.43f),
+           "mixed point heights preserve the forty-three percent readout");
 }
 void syncDivisions() {
     Fixture f;

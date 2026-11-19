@@ -31,6 +31,12 @@ void box(juce::Graphics &g, Rect r, juce::Colour c, float radius = 3.f) {
     g.fillRoundedRectangle(r, radius);
 }
 juce::String percent(double v) { return juce::String(juce::roundToInt(100 * v)) + "%"; }
+juce::String volumePercent(float mean) {
+    // A stored 16-bit point can lie half a height step below an integer percentage.
+    constexpr double halfHeightStep = .5 / 65535.;
+    const int whole = static_cast<int>(100. * (mean + halfHeightStep));
+    return juce::String(whole) + "%";
+}
 juce::String frequency(double hz) {
     return hz >= 1000 ? juce::String(hz / 1000, 2) + " kHz" : juce::String(hz, hz >= 10 ? 0 : 2) + " Hz";
 }
@@ -779,7 +785,7 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
         label(g,
               key_.stage == 1   ? percent(2. * mean)
               : key_.stage == 2 ? percent(2. * mean - 1)
-                                : percent(mean),
+                                : volumePercent(mean),
               {348, 168, 74, 18}, 14, ink);
     }
     box(g, {440, 96, 115, 96}, plate);
