@@ -1,8 +1,42 @@
 # win — log
 
-ORC-VST, Windows 10 IoT Enterprise LTSC · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.5
-(on salon-tv, Windows 11, until 2026-09-30).
+The lead PC, Windows 10 IoT Enterprise LTSC · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.5
+(on the director's second PC, Windows 11, until 2026-09-30).
 Only the `win` agent writes to this file. Newest entry at the top.
+
+---
+
+## 2026-11-19, night — two window loans to the Mix View seat; DF-E35 (b) lent to engine-win
+
+**For engine-win.** The director answered the two questions at the top of your log: Q-I yes, an interrupted recording comes back as Stop would have placed it, one undo step; Q-J, Live's three Pow-r slots are Shaped 1, 2 and 3 (SoX's Lipshitz, improved E-weighted and Shibata tables). ADR-0250; PD-06 and EX-06 stay M5's rows and wait their turn.
+
+**For engine-win and the engine seat.** DF-E35 (b), the Freeze and Bounce in Place refusals a silent take causes, does not wait for #677: the engine lends engine-win Freeze's extent loop in `src/adi/freeze_commands.cpp` (read `engine::timelineClips` instead of every stored clip) and Bounce in Place's extent query in `src/adi/bounce_commands.cpp` (`lane_id IS NULL`), the two-file candidate in `collab/engine-win.md`, with its eight cases as a test in the repository and the engine seat reviewing the hunk. No open branch touches either file. DF-E35 (a), the snapshot's lane id, still waits for #677 (ADR-0248 d3); main-row hit testing and paint are the window's half.
+
+**For the Mix View seat and the window lane.** Both requests in `collab/mixview.md` of 19 November are granted, each hunk reviewed by the window lane before it lands (collab/README.md's loans paragraph):
+- **DF-M60 (a): the retiree detach loop of `ProjectDocument::synchronise`.** Only that loop, keyed by the capture's generation as `ParamOps::attachSession` already is; no open branch touches `synchronise`. It goes in DF-M60's order of ADR-0248 d10: after #651's EQ fix (DF-M60 (c)).
+- **Focus Match's stale-capture guard: the command-drain block of `src/adi/ui/window_state.hpp` and one pass-through accessor in `src/juce/ui_shell.hpp`.** The drain publishes the applied Locate revision before it acknowledges the command; a test shows an empty drain does no added work, and the transport's behaviour is otherwise unchanged. No open branch touches `window_state.hpp`; `window/input-clock` and `window/undo-settles` touch other parts of `ui_shell.hpp`, so whichever lands second merges main. It comes after DF-M60, as a fix to a built feature, before any new Mix View item.
+
+---
+
+## 2026-11-19, night — racks first after 3 December; Live's Beat Repeat the first device for his glitch-effect racks; his rack presets read-only (ADR-0249)
+
+**For the seats — read first.** Text only: nothing here changes a queue before 3 December, except the clones seat's scrub of its public log, a public-rule fix, and its handoff entry (ADR-0249 d8); the function-first order of ADR-0248 d2 stands until then. A seat proposed to build a collection of glitch-effect racks the director owns as Pd devices, one device per rack. Win approved the goal with changes and the director agreed every recommendation (his words: "agree with all your recommendations"). The racks play the Live way: ADI Racks with Live's rack structure, macros and modulation, filled with ADI's equivalents of Live's devices, each already a Pd canvas over a native core (ADR-0249 d1).
+- **Engine seat.** After 3 December, once your ADR-0248 d6 list is done: DEV-01, then DEV-03 (rack structure operations, exact undo, rack paste), then DEV-06 (macros), then DEV-07 (the evaluator, the route tables, the modulator nodes), then DEV-32 (the director's own rack presets, `.adg`, read-only with a loss report), ahead of any other engine row of M2 to M7. The trade he accepted: TM-SV-01 and the other rows you would have taken next wait behind DEV-01, DEV-03, DEV-06 and DEV-07; DEV-32 follows them, ahead of TM-SV-01, by win's placement (ADR-0249 d3). Live's note-driven modulators still follow DEV-18, and the envelope follower keyed from another track follows DEV-05 and MX-24. `src/adi/device_copy.*` is yours from now, with the rack work; the window keeps `ProjectDocument::pasteDevice`, and its loan to the Mix View seat for DF-M60 stands (d8). A song jump by ±N beats is not wanted now (DF-E41).
+- **Devices lane.** After 3 December, in your ADR-0248 d8 order: DF-E37, OneShot and the Sampler loadable, DF-E36, then Compressor, Glue Compressor, Gate and Limiter, then Live's Beat Repeat (ADR-0249 d7): `org.adidaw.builtin.beat-repeat`, one pull request in your trees; a bounded stereo history of its INPUT allocated in prepare, not a feedback delay; a resampling read head; song position delivered to the core. Put its questions on your ONE list of Live readings: the capture direction, a Grid change while repeating, the fractional phase of a slice, the joins, its behaviour at a locate, the longest history needed at 20 BPM. It is "built, not verified" until a Live 12.4 render agrees. Then the LFO and Shaper modulator kernels, DEV-07's device side, before the rest of DEV-22 (d8). The older device versions the director's rack presets name come behind the current devices (d2). Local jumps inside a device's own history are yours, as Beat Repeat's own behaviour (d9). The clones seat leaves you a handoff entry marked for after 3 December; it changes nothing in your order before then.
+- **Window lane.** The rack and macro panels, Map mode and the modulation ring are yours, each from a sheet the director agrees first (ADR-0243, ADR-0244; one new sheet a week, ADR-0248 d14). Nothing of it before that sheet, and nothing before 3 December.
+- **Clones seat.** ADI-Shaper only. First, now: scrub your public log in a new commit of the names ADR-0249 d11 keeps out of the repository and of the collection's structure, the machine name, the misspelt device name and your path reservation request, which is refused (the repeat core is Live's Beat Repeat, the devices lane's). Then one handoff entry addressed to the devices lane and marked "for after 3 December": your prototype's test method, the Beat Repeat reading questions, and whether Beat Repeat's input history and ADI-Shaper's Time stage share one stereo-history kernel. Then continue your ADR-0248 d11 order. No clone of the collection's third-party Max for Live devices until the director says yes and gives the name (DF-E43). Nothing of the collection enters the repository (ADR-0249 d11).
+
+**What happened.** Win checked the proposal against main and the director's research: nearly all of the collection's device slots are Live's stock devices, and nearly all of its Max for Live slots are Live's LFO and Shaper. No rack plays on main: the session skips every rack and every device inside one. The director's five answers, each win's recommendation: his own rack presets read in ADI, read-only, once racks, macros and modulation play (d2); racks, macros and modulation brought forward to right after 3 December, with TM-SV-01 and the engine's other next rows behind them (d3); no song jump by ±N beats now (d4); no commitment to modulation beyond Live's, an item-by-item list from win after 3 December (d5); clones of the collection's third-party Max for Live devices later, only those he plays, under his names (d6). Expected, not promised: the first rack plays about January to February 2027, the hardest rack about February to March, with any slot ADI cannot yet fill, such as an older device version, reported missing.
+
+**Text only.** ADR-0249; PLAN: step R (DEV-01, DEV-03, DEV-06, DEV-07 and the new DEV-32), DEV-22's queue after Limiter, DEV-16, TM-SV-01 behind R, §1.6, §4's R takes; LANES §1 and §2 item 5; FEATURES §6 and OPS §9.7 priorities; DEFERRED: DF-E41 to DF-E43; RESERVATIONS: ADR-0250 and DF-E44 next free; `collab/README.md`: `src/adi/device_copy.*` in the engine's paths.
+
+---
+
+## 2026-11-19, late — Live's Limiter, Auto Pan and Tuner back in the devices queue; machine names out of the logs
+
+**For the devices lane.** Live's Limiter device is not built. The queue said "Limiter merged, #259", but #259 was a release-time fix in ADI's own limiter core (`src/adi/dsp/limiter`), which the export's brickwall uses; no Live Limiter canvas, panel or measured render exists. It is queued after Gate (DEV-22 in PLAN, LANES §2 item 5, the prompt of 5 November). Auto Pan and Tuner were in no queue; they follow Align Delay. When you reach item 5 of your queue, check the whole list against the Live 12.4 manual's audio effects chapter and log any other gap for win; this does not move ahead of ADR-0248's order (fix before new, d2's session goal until 3 December).
+
+**Text only.** The lead PC and the director's second PC are no longer named in `collab/win.md`, `collab/window.md`, LANES, one quotation in DECISIONS and the clones reading prompt of 4 November. The clones seat scrubs its own log on its branch.
 
 ---
 
@@ -423,7 +457,7 @@ fix; code and doc never drift silently.
 review applied before the merge; its one open item (O4, the engine's per-instance token) becomes a
 needs row with W2.
 
-**Eleven window surfaces, one batch, on this PC.** The window lane's seat has been on ORC-VST since
+**Eleven window surfaces, one batch, on this PC.** The window lane's seat has been on this PC since
 the 3rd, so win ran the 5 November work list (#459) as a batch: one agent per surface, each with its
 gate, picture and PR, a poller landing them in stack order. On main tonight: #465 A1 Save As (N3's
 window half), #467 A2 the batch commit, #470 A3 one undo step per strip drag (N7), #472 C1 Automation
@@ -441,7 +475,7 @@ clang's FMA contraction made a typed 10 ms read 10.000000000000021, the test now
 outage, a stash of uncommitted fixes) and a second workflow finished them: a batch plans its
 finisher from the start.
 
-**The Live 12 readings, first checkpoint.** His seats on SALON-TV ran the brief of the 5th: measured
+**The Live 12 readings, first checkpoint.** His seats on his second PC ran the brief of the 5th: measured
 the 70-colour palette in both themes, the Pre/Post colours through save and reopen, Insert Return with
 its undo; read the build, the settings census and the export census; the rest not run, the true-peak
 method invalid. Mission 2 is written, `NowWeReverse/Live12-readings/MISSION-2-2026-11-08.md`: 113
@@ -528,7 +562,7 @@ StackModel, whose PR #463 opened in the evening.
 
 **The Live 12 readings and ADI-View.** The readings brief is written,
 `NowWeReverse/Live12-readings/BRIEF-2026-11-05.md`: 122 readings by milestone, on a fresh Live profile
-on SALON-TV; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
+on his second PC; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
 current builds good enough and handed a new brief, the ADI-View combined retest against five analyser
 references, with a standalone test app to be built by Codex; the plan is in
 `NowWeReverse/UI-Testing/20261105T1420-adi-view-combined-reference` (plan, handoff to Codex, report,
@@ -1021,17 +1055,16 @@ short paths, and the main checkout is the drone's.
 
 ---
 
-## 2026-10-01 — win moves from salon-tv to ORC-VST
+## 2026-10-01 — win moves to a new PC
 
-**Why:** the director moved the Windows lead to a new PC. salon-tv keeps its own roles (Plex and home
-monitoring); its ADI drone tasks stop there and move here.
+**Why:** the director moved the Windows lead to a new PC. The old PC keeps its other roles; its ADI drone tasks stop there and move here.
 
-**The machine:** ORC-VST, Windows 10 IoT Enterprise LTSC 2021 (build 19044), i7-4930K (no AVX2),
+**The machine:** Windows 10 IoT Enterprise LTSC 2021 (build 19044), i7-4930K (no AVX2),
 16 GB, GTX 1070 (8 GB). The repo is at `D:\Documents\GitHub\Adi`, no longer
 `C:\Users\Adi\Documents\GitHub\Adi`; worktrees go under `D:\Documents\GitHub\Adi-wt\`.
 
-**The toolchain is salon-tv's, component for component:**
-- VS 2022 Community 17.14.41 at the default path, installed from salon-tv's exported `.vsconfig`
+**The toolchain is the old PC's, component for component:**
+- VS 2022 Community 17.14.41 at the default path, installed from the old PC's exported `.vsconfig`
   (27 components). MSVC 14.44.35207 (cl 19.44.35229), with the bundled CMake 3.31.6 and Ninja 1.12.1.
 - Python 3.14.7 and Node 24.19 LTS.
 - Ollama 0.35.0 with qwen2.5-coder:7b, 100% on the 1070. It runs through the CUDA 12 runner, because
@@ -1044,7 +1077,7 @@ monitoring); its ADI drone tasks stop there and move here.
 
 **The copy was checked, not re-cloned:**
 - `git fsck` is clean, and every branch's commits are on origin.
-- salon-tv's eight worktree registrations are pruned.
+- The old PC's eight worktree registrations are pruned.
 - The AdiGuard worktree `adiguard-osc4` is re-pointed at the D: path.
 
 **Still to do:**
