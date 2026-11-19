@@ -1,10 +1,9 @@
 # CT-02 bounded audio loop-pass capture
 
-This slice extends the existing hardware-input recorder and actual Session path.
-It does not complete CT-02: no take lanes, main-lane copies or per-pass Undo are
-published yet. The existing linear materializer refuses an opted-in loop result,
-including one incomplete pass, before staging files or creating project rows.
-The private source remains available for explicit recovery or discard.
+The hardware-input recorder captures one continuous file per target and a pass
+log through Session. The owner prepares it with `recording::prepareLoopCommit`
+and publishes it with `recording::commit`. `prepareCommit` is the linear entry
+point and refuses loop results before staging files or creating project rows.
 
 ## API and intervals
 
@@ -72,6 +71,23 @@ There is no callback vector growth, allocation, file access or mutex; existing
 lock-free publication and ring atomics retain the single-owner/single-driver
 lifetime protocol. The owner copies the used log only after acknowledgment.
 
+## Publishing completed takes
+
+The owner supplies a media ID per target and a new lane and clip ID per pass.
+The new lanes appear in pass order as a group above existing take lanes.
+The take clips reference exact windows of the captured source. Media import and
+all lanes, takes and main-lane edits commit in one SQL transaction. Each pass
+has a distinct `Record` Undo group. The shared media row belongs to the first
+group. An incomplete last pass replaces its captured interval while the
+preceding main-lane material at either edge remains audible. An Undo restores
+the preceding pass's main-lane result and removes the undone take.
+
+Main-lane placement uses the arrangement's material edit planner. Recording
+leaves authored automation alone. Capture boundaries must round-trip exactly
+through the current musical clock. Accepted pre-loop samples keep their logged
+project positions. The procedure stages audio on the project's volume and
+uses identity-bound cleanup if the transaction fails.
+
 ## Verification and remaining work
 
 Strict x64 recorder tests exercise real Session/WAV capture at both processing
@@ -87,7 +103,6 @@ These are deterministic engine tests using supplied input, not a hardware-driver
 latency or long-duration recording measurement. The pass log is retained in the
 completed result, not persisted as a crash-recovery journal.
 
-Remaining CT-02: atomic one-media/multiple-take publication per target; new versus
-reused lane policy; last-pass copies to main; per-pass history and the AT-3 Undo
-rule; punch/pre-roll placement; recovery persistence; owner/UI integration and
-long-running device tests. No new register number or CT-02 completion is claimed.
+Remaining CT-02 work includes automatic take-lane reuse, punch and pre-roll
+policy, latency compensation, recovery persistence, desktop wiring and
+long-running device checks.
