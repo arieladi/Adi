@@ -668,6 +668,19 @@ void rollbackAndCli() {
     const auto path = good.store->path(); check(good.store->close(), "close legacy fixture for command"); good.store.reset();
     check(cli("extract-media " + quote(path), good.temp.path() / "extract.log") == 0, "extract-media CLI succeeds on legacy file");
     check(cli("check " + quote(path), good.temp.path() / "check.log") == 0, "extracted legacy file passes CLI check");
+    Fixture held; legacy(held, false);
+    SQLite::Database reader(media::pathUtf8(held.store->path()), SQLite::OPEN_READONLY);
+    reader.exec("BEGIN");
+    check(reader.execAndGet("SELECT count(*) FROM media_blobs").getInt() > 0,
+          "the second connection holds the legacy snapshot");
+    const auto heldLog = held.temp.path() / "extract-held.log";
+    const auto heldStatus = cli("extract-media " + quote(held.store->path()), heldLog);
+    check(heldStatus != 0 && read(heldLog).find("media extraction committed") != std::string::npos,
+          "extract-media reports a committed extraction when its database close cannot fold the WAL");
+    check(held.store->db().execAndGet("SELECT count(*) FROM media_blobs").getInt() == 0 &&
+              reader.execAndGet("SELECT count(*) FROM media_blobs").getInt() > 0 && resolves(*held.store, 10),
+          "the extraction has committed while the old reader retains its snapshot");
+    reader.exec("COMMIT");
     Fixture gap; legacy(gap,false); gap.store->db().exec("DELETE FROM media_blobs WHERE media_id=10 AND chunk_index=0");
     check(!media::extractMedia(*gap.store).ok, "chunk index gap refused");
 }
