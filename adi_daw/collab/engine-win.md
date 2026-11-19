@@ -12,6 +12,14 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Review order for the Windows engine seat
+
+- First, review `engine-win/sqlitecpp-wal-reset-fix` (`8a8f9a00`) independently. This changes the SQLite version actually linked by ADI. Run ADR-0024's full ABI matrix.
+- Take `engine-win/scanner-refresh` (`8adc7a92`) as the scanner review tip. It includes infrastructure-failure handling, validated read-only warm hits, helper self-test and forced Refresh. The cross-machine class identity question is above.
+- Review `engine-win/publication-safety-integration` (`20f27d66`) as one stack for export, presets, archive and collected-media publication. `engine-win/archive-document-control` (`dc3a8efc`) adds the cancellable worker entry for Window.
+- Review `engine-win/settings-safety-integration` (`31322dab`) for Settings recovery and the desktop save lifecycle, `engine-win/project-removable-sync` (`8c51acaa`) for project connection policy, and `engine-win/media-cache-root` (`0f4ea92e`) for the cache settings stack. `engine-win/wav-bwf-v2` (`a657d93b`) is ready as a writer prerequisite for EX-08.
+- Git's three-way merge check against main `e8b67c77` was clean for each listed tip individually. The entries below carry the separate native gates. Review the containing tip first where two entries describe the same stack. [Acceptance PR #642](https://github.com/arieladi/Adi/pull/642) is already open.
+
 ## 2026-11-19 — PR requested — shared Media Cache Folder
 
 - Branch `engine-win/media-cache-root`, head `0f4ea92e6e076f81a1b0e41fe349d20089904d42`, stacked on `engine-win/decode-cache-missing-publication` at `df62deae`. Review the stack as one change if the base has yet to land.
