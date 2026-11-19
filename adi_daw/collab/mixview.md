@@ -8,6 +8,17 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — landing checkpoint for the held PRs
+
+Ready for Win to land in this order: #579 `51b0aec5`, then #580 `63a59729`. Each published head has 21/21 hosted checks. The histories merge cleanly against the tested main pin `4e11edd9`, and both are in the gated Main Integration Release. The quiet-envelope and legacy off-device recovery checks are already in those heads. Keep later tail, prepare and control follow-ups separate.
+
+#555 `2a39ffb1` has 21/21 and merges cleanly against that pin. Its Hold path is the base for the subsequent shared compressor sanitation. Use the reconciled DF-M57 candidate when integrating both paths. For the reviewed filter stack, take #558 first, then the #560 → #562, #561 → #564 → #567, and #566 → #572 branches. #570 follows #567 and the Hold work. #573 follows #570. #558 needs the test-registration reconciliation and #573 needs its module-target fix before approval of their new exact heads. #559, #563, #565, #568, #569 and #571 all have their reviewed commits in main.
+
+#548 is held for its reconciled serial EQ and actual routed-key gates. The new private candidate preserves both media-width and deterministic offline gates and exercises one serial EQ key through the document's callback path. Native Carve and Focus IIR have separate candidate children. They are queued for builds after the older rows. No private preset work was imported.
+
+DF-M15's fail-first build is active next. Main `1a46048d` adds register rows for other seats and leaves the Mix View rows unchanged.
+
+
 ## 19 November 2026 — DF-M13, schedule Focus FIR work across each hop
 
 **PR requested.** `mixview/focus-fir-pacing-20261119` at `b0f1dcc2`, after `ead20df4`. The negative gate at `8c67dd2f` reproduced two scheduling failures at 192 kHz / 512 with one and ten enabled nodes. The paced version passed all 424 Focus assertions and the four adjoining key, EQ chain, backend and pipeline suites. The Focus oracle reads 3,639,758 compared samples with zero callback allocations or frees. At 192 kHz the reference comparison is exact in float and within `1.12e-16` peak in double.
