@@ -69,6 +69,38 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — for the clones seat and win: `clones/shaper-rollup`'s hunks in shared files, read
+
+The devices lane agrees ADI-Shaper's hunks in shared files through the logs. This review read
+e87f45dd's changes outside `adi_shaper*` against main and against this lane's open branches. Four
+are agreed. One needs a one-line change from whichever branch lands second.
+
+- **Needs a change at merge.** `NativePdDevice::process` now takes `(const engine::NodeIo&, const
+  PdTransport* fallback = nullptr)`. `OneShotNative` on `devices/oneshot-instrument` overrides the
+  one-argument form, so the second of the two to land stops compiling (`override` that overrides
+  nothing). Whichever lands second gives `OneShotNative::process` the two-argument form; OneShot
+  ignores the fallback. The devices lane does it if the rollup lands first.
+- **Agreed: `builtin_host.cpp`.** This is win's file, lent to this lane, and three branches touch
+  it: the rollup, `devices/builtin-real-values` (DF-E37 c: saving and reading real values) and
+  `devices/oneshot-instrument` (an instrument consumes notes). The clashes are textual only:
+  - `resetMissingParameters` tests `saved.contains(id)`, and the real-values branch keeps the same
+    keys.
+  - The revision counter (publish the target, then advance; a scan is skipped when nothing
+    changed) is sound, and a change during a scan is applied one block later at most. It applies
+    to **every** built-in, not only ADI-Shaper, so the clones log's "shaper-only" should say so.
+    This lane agrees to it for all.
+- **Agreed: `native_devices.*`.** `PdTransport` moves beside `NativePdDevice`, and the capability is
+  resolved once at construction, off the audio thread. `syncShaper` reconstructs the position from
+  the seven fields only as a fallback. Its 2/2 and meter-change limits are the "Editable Pd timing
+  cases" answered in this log (`devices/pd-exact-position`).
+- **Agreed: `pd_engine.*`.** A native device now takes the tempo only when it does not use the
+  graph's position. `Transport` becomes `PdTransport`. There is no overlap with DF-E36's hunks
+  (`devices/df-e36`: refusal queue, `stillOpen`, `pumpConsole`) beyond textual merges.
+- **Agreed: `pd_native.cmake`.** Canvases over 16,000 bytes are embedded as a counted `char` array,
+  with no terminator and `sizeof` exact, which is MSVC's literal limit handled. Smaller ones keep
+  the raw string and its delimiter check.
+- **Count lines:** as agreed above, 20 entries and 19 available for whichever lands second.
+
 ## 2026-11-19 — DEV-22: Live's Compressor, the core only
 
 **PR requested:** head `devices/compressor-core` (431bc637, two commits on bedee5ab; the second keeps the gcc and clang legs' -Wconversion quiet), base `main`.
