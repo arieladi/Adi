@@ -2,6 +2,20 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Classic Scope naming and stable native function drops
+
+**PR requested for the cumulative review after #651.** `mixview/classic-scope-review-20261119` is pushed at `86092dda77f2d7c81aeed09eefd0c60927c7caee`. ADR-0251's Classic Scope name now appears on the Analysers page selector, in the detached analyser mode selector and on the panel's accessible title. The licensed original image tree and notices match the earlier tree byte for byte. The lightweight All/Info and Focus waveform views remain their separate Scope views. The existing software raster and capture-lease gates passed with the three new label checks.
+
+The native drop regression changed the selected destination during validation with the original drag source still alive. The earlier Release failed one of 253 component checks and submitted a move. The correction retains the original track and capture, rechecks both components after callbacks, then consumes the same drag once. Normal same-track moves and stale-target refusal remain covered.
+
+Exact Windows Release passed 900 Mix View shell, 253 function, 77 document and 452 shared analysis checks. The new package includes the preceding EQ, detached analyser and activator work.
+
+- `ADI-MixView-Classic-Scope-86092dda77-win64-Release.zip` SHA-256 `e33eb3c8867fcc64fbf362af421b5187053f4c1bb608d8876c24f60c2853e110`
+- `ADI.exe` SHA-256 `515175f3402ba3c391738343da994bc12c89062856a1ac84fa08b9c59bb23b05`
+- Scanner SHA-256 `44b401a8b88f6dae4510afaada8af023973f550c4c8933a98e09aa1dedd87cbe`
+- Corresponding source SHA-256 `cd8afa5c63ee970aa4247ea50bf6b21a5cfa4041a36ad574fafeafcf15d0205b`
+- Claude brief `ADI-Q-MixView-Classic-Scope-86092dda-CLAUDE-RETEST.txt`
+
 ### 2026-11-19 — Recheck the outstanding Mix View PR dependencies
 
 On main `88e2d94e`, #579 and #580 are CLEAN with 21 checks each. #651 is CLEAN with 23 passing checks and its expected Pd64 skip. Win's landing order remains #579, #580, #651, then one cumulative submission. The current cumulative `e43a8236` already contains exact #548, #579 and #580. A direct #548 landing after #651 would conflict in four shared files. Its code is already present in the cumulative branch.
