@@ -18745,7 +18745,7 @@ about Reason's pitch editor:
 - "yes to all your picks and reason drift, keep going"
 - "slide notes (FL), a drum editor with drum maps (Cubase) are not needed (drum editor of Ableton is
   better) but the rest you suggested if not crippling the Ableton functions then please add them"
-- "also go on Ableton complete research on salon-tv to make sure we don't miss any Ableton
+- "also go on Ableton complete research on [his second PC] to make sure we don't miss any Ableton
   qualities, like i can put 2 different midi channel different colors then select both and open them
   together to see different color midi and edit both channel at once etc.. not sure we know Ableton
   can do it from our doc.. (and it defiantly can)"
@@ -19457,3 +19457,179 @@ questions stay open with him, listed at the end.
 | `docs/PLAN.md` | DEV-31, ADI-Shaper, a decided row at M6 (d11) |
 | `collab/prompts/2026-11-19-*.md` | two lines in each (d12) |
 | `collab/win.md` | the entry of 19 November, evening; it replaces the earlier entry's "DF-E27 first" |
+
+## ADR-0249 — Racks first after 3 December; Live's Beat Repeat the first device for his glitch-effect racks; his own rack presets load read-only — `DECIDED` (2026-11-19) — **DIRECTOR'S RULING OF 19 NOVEMBER ON WIN'S REVIEW; MOVES DEV-01, DEV-03, DEV-06 (AMENDS ADR-0203 d10) AND DEV-07 (FROM M7) FORWARD; NARROWS PLAN §1.6; ADDS PLAN DEV-32; WIN'S PLACEMENTS NAMED BELOW, THE DIRECTOR MAY STRIKE THEM**
+
+**What this records.** On 19 November the clones seat proposed to build a collection of glitch-effect
+racks the director owns as Pure Data devices, each rack one device. Win reviewed the proposal against
+main and the director's research. The racks are almost all Live's own devices: nearly all of their
+device slots are Live's stock devices, and nearly all of their Max for Live slots are Live's own
+LFO and Shaper. What they need is Live's Rack, its macros and modulation, which the plan already
+holds as DEV-01, DEV-03, DEV-06 and DEV-07, and the devices DEV-22 queues. No rack plays on main today: the
+session skips every rack and every device inside one (ADR-0122 d8). Win's verdict was approve with
+changes, with five questions for the director and a recommendation on each. His words: "agree with
+all your recommendations". Nothing here changes a queue before 3 December (ADR-0248 d2), except
+the clones seat's scrub of its public log, a public-rule fix, and its handoff entry (d8). d8's
+paths and the kernels' place, DEV-32's place in R and DEV-07's split from DEV-18 (d3) are win's,
+under ADR-0248 d3 and ADR-0203 d1; the director may strike them.
+
+### Decisions
+
+1. **The route: racks the Live way, not whole-rack Pd devices.** A whole rack built as one Pure Data
+   device is not taken. It would be a second rack, macro and modulation runtime beside the engine's
+   (PLAN §1.4, §1.5), and the user could not open its chains, swap a device or remap a macro, as Live
+   allows (ADR-0203 d1). The racks play as ADI Racks (DEV-01) with Live's rack structure operations
+   (DEV-03), macros (DEV-06) and modulation (DEV-07, ADR-0230), filled with ADI's equivalents of
+   Live's devices (DEV-22), as ADR-0203 d1 and ADR-0245 d4 already say. "As Pd" holds by design:
+   each of those equivalents is a canvas of the Pd tier over a native core. Editing one in the app
+   waits for DEV-10 and DF-E36. A one-patch rack with cables is later the Grid's user patch (DEV-10,
+   DEV-15).
+2. **His own rack presets load in ADI, read-only (his first answer).** Once racks, macros and
+   modulation play (d3), ADI reads Live's rack preset files (`.adg`) with a report of what does not
+   load, in the form of DAWproject's loss report (TM-IC-03). The older versions of Live's devices
+   that such presets name are mapped too, as Live does when it opens them; which ones and how is
+   win's call under ADR-0203 d1, and the devices lane builds them behind the current devices in
+   DEV-22's queue. This narrows PLAN §1.6's exclusion of other programs' preset formats: Live's own
+   rack presets are read. Reading Live Sets (`.als`) stays his question Q-P. The engine owns the
+   reader, beside TM-IC-03; PLAN DEV-32 is its row, at R (d3). His rack presets stay on his disk:
+   none of them, and nothing taken from them, enters the repository. The test fixtures are separate
+   minimal racks of Live's stock devices, saved for the purpose in Live 12.4 through the devices
+   lane's ONE list (ADR-0248 d8, d14), or hand-written files.
+3. **Racks, macros and modulation come forward (his second answer).** DEV-01, DEV-03 (with its rack
+   paste), DEV-06 and DEV-07 leave P2 (ADR-0203 d10) and M7. The engine takes them right after 3
+   December, once its ADR-0248 d6 list is done, in that order, ahead of the rows it would have taken
+   next. The trade, which he accepted: TM-SV-01 (Global Quantization, which carries Live's quantized
+   locator and scrub jumps) and the engine's other next rows wait behind DEV-01, DEV-03, DEV-06 and
+   DEV-07. DEV-32 follows them, ahead of TM-SV-01, because d10's loss report is DEV-32's; that place
+   is win's placement under his first answer, to strike if wrong. Live's note-driven modulators
+   (Envelope MIDI, Shaper MIDI, Expression Control) stay after DEV-18 (M6), and the envelope
+   follower keyed from another track stays after DEV-05 and MX-24 (M4, XC-34); the rest of DEV-07
+   no longer waits for them (win's split). Expected, not promised: the first rack plays about
+   January to February 2027, the hardest rack about February to March 2027, with any slot ADI
+   cannot yet fill, such as an older device version, reported missing (d10); without the move,
+   about the second quarter of 2027. PLAN places the five rows in a step of their own, R, which the
+   engine takes once its ADR-0248 d6 list is done, ahead of any other engine row of M2 to M7. The
+   priority labels follow: FEATURES §6's racks, macros and cross-track modulation targets and OPS
+   §9.7's chain and macro operations go from P2 to P1; the Drum Rack and zones (DEV-02, DEV-04,
+   `chain.setZones`) stay P2.
+4. **No song jump by ±N beats now (his third answer).** Live has such a jump only through its
+   programming interface, so in ADI it would be an addition. Not now; DF-E41 holds it. If he asks
+   for it later, it is an engine transport command on TM-SV-01, never triggered from inside a
+   device, under a name he gives.
+5. **Modulation beyond Live's: no commitment (his fourth answer).** DEV-07 delivers Live's
+   modulators in mono or global scope (ADR-0230). Bitwig's modulators and Reason's CV and Gate are
+   not taken now, and cables stay in the Grid only (ADR-0245 d5). After 3 December win gives him an
+   item-by-item list to rule, as with the Clip View additions (`docs/CLIP-VIEW-ADDITIONS.md`);
+   DF-E42 holds it.
+6. **Clones of the collection's third-party Max for Live devices: later (his fifth answer).** Only
+   those he actually plays, each a measured clone under a name he gives, after he says yes to it;
+   DF-E43 holds it. Until then no seat builds one.
+7. **The first production milestone: Live's Beat Repeat**, a DEV-22 device built by the devices
+   lane in its own trees, UID `org.adidaw.builtin.beat-repeat`, one pull request. It starts after 3
+   December in the lane's ADR-0248 d8 order: DF-E37, OneShot and the Sampler made loadable, DF-E36,
+   then Compressor, Glue Compressor, Gate and Limiter, then Beat Repeat.
+   - Its core keeps a bounded stereo history of its INPUT, allocated in prepare. It is not a
+     feedback delay that records its own output. A resampling read head plays Pitch. Song position
+     reaches the core: the lane extends the native adapter, which today passes only the tempo.
+   - Before its contract is written, Live readings settle: the capture direction; a Grid change
+     while repeating; the fractional phase of a slice; the joins; its behaviour at a locate; the
+     longest history needed, at 20 BPM. They go on the devices lane's ONE list of Live readings.
+   - Its tests: Live's parameter names, ranges and defaults with fixed ids; no allocation in
+     process; no adapter delay, latency kept while bypassed; events off the 64-frame ticks at 44.1,
+     48 and 96 kHz with irregular blocks; Chance exact at 0 and 100 %; a locate and a loop wrap
+     under the effect; save and reopen; the native core equal to the canvas; plants that prove the
+     tests can fail; the strict warning legs.
+   - It is "built, not verified" until a Live 12.4 render agrees (ADR-0108). No parity claim rests
+     on a synthetic oracle.
+8. **Who owns what** (ADR-0248 d3 applied).
+   - **Devices lane:** the reusable effects, Live's devices under DEV-22 with Live's names in its
+     own trees; the older device versions of d2; and the LFO and Shaper modulator kernels, DEV-07's
+     device side. Because d3 brings DEV-07 forward, the two kernels come right after Beat Repeat,
+     before the rest of DEV-22's queue.
+   - **Engine:** host modulation (the evaluator, the route tables, the modulator nodes), the Rack
+     (the splice that retires the session's skip of racks), macros, DEV-03's structure operations and
+     rack paste, and the `.adg` reader of d2. ADR-0248 d3's table named no owner for
+     `src/adi/device_copy.*`; the engine, which wrote it (N18, N51), owns it from now and changes it
+     with the rack work. The window keeps `ProjectDocument::pasteDevice`
+     (`src/adi/ui/project_document.cpp`), which calls it, and its loan to the Mix View seat for
+     DF-M60 stands.
+   - **Window:** the rack and macro panels, Map mode and the modulation ring, each from a sheet the
+     director agrees first (ADR-0243, ADR-0244; one new sheet a week, ADR-0248 d14). Not before.
+   - **Clones:** ADI-Shaper only (DEV-31, ADR-0248 d11); clones of third-party Max for Live devices
+     only on his later yes and his names (d6). The path the seat asked to reserve for a repeat
+     device is refused: that core is Live's Beat Repeat, in the devices lane's trees. The seat now
+     scrubs its public log of the collection's names and structure, and leaves one handoff entry for the
+     devices lane, marked for after 3 December: its prototype's test method, the Beat Repeat reading
+     questions, and whether Beat Repeat's input history and ADI-Shaper's Time stage share one
+     stereo-history kernel, as the one pitch kernel is shared.
+   - **Win:** `builtin_catalog.cpp` and `builtin_host.cpp`, lent to the devices lane; PLAN, DEFERRED
+     and RESERVATIONS; the amendment of ADR-0060 d1's rack mechanism that DEV-01 names.
+9. **Buffer jumps.** Local jumps come first: jumps inside a device's own captured history, as Live's
+   Beat Repeat makes them (Interval, Offset, Gate, Variation). They are Live's own device behaviour,
+   so they need no ruling, and they are the devices lane's under DEV-22. Jumps of the song's
+   playhead are Live's quantized locator and scrub jumps, already planned in TM-SV-01, which d3 puts
+   behind the racks.
+10. **The acceptance target.** The hardest rack in the collection, the one that waits on the most
+    missing devices, plays as an ADI Rack: all its outer slots play, its macros and its LFOs on
+    their routes recall and undo, any slot ADI cannot yet fill appears in the loss report, and its
+    sound is compared with his own Live 12.4 render, taken through the ONE list. It is the target,
+    not the first build: a smaller rack proves the path first, once Live's Limiter, DEV-01 and
+    DEV-06 exist.
+11. **Privacy.** His rack presets, and the review material made from them, stay private, off the
+    repository. No file, UID, catalog entry, parameter or macro label, test, branch, commit or pull
+    request title names the collection, one of its racks, a macro label or a third-party device from
+    it. Live's own devices keep Live's names.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0203 d10 | racks, macros and the multimapper curves leave P2: DEV-01, DEV-03 and DEV-06 come right after 3 December, at P1 (d3) |
+| ADR-0248 d3, d6, d8 | `src/adi/device_copy.*` is the engine's (d8); the engine's rack rows follow its d6 list; the devices lane's Beat Repeat and the LFO and Shaper kernels follow its d8 order (d7, d8) |
+| `docs/PLAN.md` §1.6 | other programs' preset formats stay out; Live's own rack presets are read (d2) |
+| `docs/PLAN.md` DEV-01, DEV-03, DEV-06, DEV-07, TM-SV-01, the milestones, §4 | the four rows in a step R right after 3 December, ahead of any other engine row of M2 to M7; DEV-07 leaves M7, its note-driven modulators still after DEV-18 and the keyed envelope follower after DEV-05 and MX-24; TM-SV-01 waits behind them and, by win's placement, DEV-32; the takes RK1, RK2, RK4 and RK5 move from P2 to R (d3) |
+| `docs/PLAN.md` DEV-16 | Suite's LFO and Shaper kernels leave it: DEV-07's device side, in R; the Envelope Follower stays (d8) |
+| `docs/PLAN.md` DEV-22 | Beat Repeat after Limiter, then the LFO and Shaper kernels; the older device versions behind the current devices (d2, d7, d8) |
+| `docs/PLAN.md` DEV-32 | new: his own rack presets read, read-only, with a loss report (d2) |
+| `docs/LANES.md` §1, §2 item 5 | DEV-03 and the modulation nodes and routes move to R; Beat Repeat, then the LFO and Shaper kernels, after Limiter; the older device versions behind the current devices (d2, d3, d7, d8) |
+| `docs/FEATURES.md` §6, §10.5; `docs/OPS.md` §9.7 | racks, macros, cross-track modulation targets and the chain and macro operations from P2 to P1; the Drum Rack and `chain.setZones` stay P2 (d3) |
+| `collab/README.md` | ADR 0249 used; `src/adi/device_copy.*` in the engine's paths (d8) |
+| `docs/DEFERRED.md` | DF-E41 to DF-E43 (d4, d5, d6) |
+| `collab/RESERVATIONS.md` | the next free ADR is 0250, the next free DF-E id DF-E44 |
+| `collab/win.md` | the entry of 19 November, night |
+
+## ADR-0250 — An interrupted recording comes back; Live's three Pow-r slots are Shaped 1, 2 and 3 — `DECIDED` (2026-11-19) — **DIRECTOR'S ANSWERS TO PLAN Q-I AND Q-J, 19 NOVEMBER; ANSWERS PD-06 AND EX-06**
+
+**What this records.** The Windows engine seat parked two of the plan's questions for the director in
+its log on 19 November: Q-I, whether a recording running when ADI or the machine died comes back, and
+Q-J, what fills the three Pow-r slots of Live's export dither. Win put each with the plan's
+recommendation. His words: "agree with your recommendations on Q-I and Q-J". Both rows are M5's; the
+answers change no order before 3 December (ADR-0248 d2).
+
+### Decisions
+
+1. **An interrupted recording comes back (Q-I (a), PD-06).** On the next launch after a crash or a
+   power cut, a take ADI was recording is placed as Stop would have placed it, as one undo step, and
+   the reopen question names it. It is an addition: Live's own recovery leaves this uncertain. PD-06's
+   contract holds: a plan file written at record start; a header repair (RIFF or RF64) only for the
+   recorder's own files in its record folder; recovery is Stop's prepared batch carrying the
+   recording id, so a take is never placed twice; refused on a read-only project. After a power cut,
+   the last unwritten block (at most one) may be missing. It waits on the recording plan and session
+   evidence of CT-02 and PD-05.
+2. **Shaped 1, Shaped 2 and Shaped 3 fill Live's three Pow-r slots (Q-J (a), EX-06).** ADI's export
+   dither offers Live's six choices: Triangular, Rectangular, Shaped 1, Shaped 2, Shaped 3 and None.
+   The three shaped modes are open noise-shaped dithers from SoX's published tables: Lipshitz (Shaped
+   1), improved E-weighted (Shaped 2) and Shibata (Shaped 3), in that order, the names win's proposal
+   that he accepted with the rest. EX-06's contract holds: one quantizer for WAV, AIFF and FLAC,
+   seeded, partition-independent, applied once and never at 32-bit float; shaped modes keep headroom
+   so a full-scale peak does not clip; a rate with no table falls back as stated. The shapes in ADI-L
+   may replace them later, if his list of plug-ins to rework includes ADI-L's dither (Q-J (b)).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| `docs/PLAN.md` Q-I, Q-J | answered (d1, d2) |
+| `docs/PLAN.md` PD-06, EX-06, §4 M5 | yes to recovery; the three names and their shapes (d1, d2) |
+| `collab/README.md` | ADR 0250 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0251 |
