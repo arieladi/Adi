@@ -64,12 +64,16 @@ MSVC x64 Release with /W4 /WX passed eleven CTest suites in each Pd precision. T
 | Active configuration | ADI at 256 | Reference at 256 | ADI at 2,048 | Reference at 2,048 |
 |---|---:|---:|---:|---:|
 | Three-band Volume | 24.1 / 52.2 | 40.6 / 92.5 | 113.2 / 301.2 | 249.4 / 488.6 |
+| Width, mono | 1.7 / 2.2 | 19.6 / 49.2 | 6.3 / 18.3 | 76.0 / 189.9 |
+| Pan, alternating hard endpoints | 0.9 / 1.6 | 30.0 / 73.0 | 6.6 / 11.8 | 165.3 / 407.1 |
 | Filter | 23.9 / 62.9 | 80.0 / 208.6 | 187.2 / 402.3 | 348.5 / 838.5 |
 | Sweep | 7.1 / 23.7 | 42.4 / 91.1 | 54.3 / 134.7 | 118.2 / 285.9 |
 | Drive | 52.2 / 144.9 | 131.3 / 971.8 | 436.9 / 1115.1 | 797.7 / 3177.9 |
 | Crush | 21.1 / 43.0 | 66.4 / 208.6 | 166.3 / 331.8 | 241.1 / 781.0 |
 
-Median thread cycles per block decreased by 37.6–76.3% across these ten comparisons, including input restoration and timing overhead. The 256-frame deadline was 5.33 ms. ADI exceeded it on 8 of 51,200 calls (Filter 2, Drive 4, Crush 2), and the reference exceeded it on 16. Both recorded zero misses at 2,048 frames. In the four-second stereo comparisons the largest per-channel RMS difference was 0.00003535 for Drive. Both paths reported 16 frames of delay for Drive and zero for the other four cases. Width and Pan have DSP coverage within the seven-stage suite and were outside this timing matrix.
+Median thread cycles per block decreased by 37.6–96.6% across the fourteen stage and block-size comparisons, including input restoration and timing overhead. Callback medians decreased by 31.0–97.0%. At 256 frames the 5.33 ms deadline was exceeded on 9 of 71,680 ADI calls (Width 1, Filter 2, Drive 4, Crush 2), and 16 reference calls. Both recorded zero misses at 2,048 frames.
+
+The four-second stereo captures used the same absolute start. Both devices reported 16 samples for Drive and zero for the Volume, Filter, Sweep and Crush settings. The largest channel RMS difference among those five cases was 0.00003535 for Drive. On the mono Width and alternating hard Pan settings, ADI reported zero and the running reference reported 16. The older reference readings of zero for these settings were obtained at startup. After compensating those 16 samples, both Width channels agreed within 2.2 × 10⁻¹¹ RMS. The held Pan levels followed the independent endpoint oracle within 6 × 10⁻⁹ RMS when measured at least 128 samples away from an edge. The switching transients differ: the compensated whole-capture RMS residual was 0.00907 left and 0.00498 right. These tests cover one selected setting per stage.
 
 ## 2026-11-19 — DEV-31 review scope
 
