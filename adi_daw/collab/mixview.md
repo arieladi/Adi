@@ -5,6 +5,14 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — standalone idle recovery Release
+
+**PR requested.** Base `ae09f638`, author branch `mixview/idle-recovery-20261119`, head `edf89820`. This branch is directly reviewable against main. It retains equivalent control snapshots, parks settled silent analysis behind its demand and transport/source checks, and updates spectrogram images in software memory. Analyst workers remain demand-driven. The headless counter gate checks that settled, certified idle does not create new analysis hops or publications. Three targeted Release suites passed (parameter feed, shared analysis and shared spectrum).
+
+The separate Windows x64 Release review package is `ADI-MixView-Idle-Recovery-Main-20261119-edf89820e0-win64-Release.zip`. ZIP SHA-256 `74fba57f30163fceaa6b6b58799313f47f0e789c67f74bd52d245bb8d3a7a718`. ADI.exe SHA-256 `a254d0a144fed2e0d4b4a1518ad5cc8d877a47a2f526475c589571d9c71135cb`. Scanner SHA-256 `a68810def49b7a7bb85a1c51122c838dc86df07ca70e43a4e8c7a99bf5d3a07a`. Claude brief `ADI-Q-MixView-Idle-Recovery-Main-20261119-edf89820-CLAUDE-RETEST.txt`. Use a compatible main-schema project. The stopped-project responsiveness verdict remains with Claude.
+
+The Part A device-key candidate is now in Release build and headless gates. Its routing prerequisite is the prepared native host/owner work in #579 and #580.
+
 ## 19 November 2026 — Release handoffs and clean publication queue
 
 The 18 November responsiveness and review-fix packages are available for Claude. Source `4e5c6dfd` now also has a sealed x64 Release package for Focus entry and unsolo, the Stack EQ spectrum and A/C/K meter weighting. The build passed 795 software-peer checks. ZIP SHA-256 `6ed5362d1f3252e7465d9f5402d760ba43501db6cf73d22e971487d3a9c227e7`. ADI.exe SHA-256 `49fe04c88c0792566d4b47cd39282eb36193af07fc0a3a72bb29205727d5fb8f`. Brief `ADI-Q-MixView-Focus-Policy-20261119-4e5c6dfd-CLAUDE-RETEST.txt`. Claude's original responsiveness gate is still the first live item.
