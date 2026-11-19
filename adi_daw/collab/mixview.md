@@ -8,6 +8,19 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — Part B step 6, Analysers page and shared meter data
+
+**PR requested.** `mixview/analysers-review-20261119` at `f79a0dc4`, stacked after `3603a1c5`. All and individual Spectrum, Spectrogram, Scope, Phase and Loudness views use Main, the selected channel or a fixed stable ID. The Analysis table subscribes to metering only and reads clipping counts from the shared meter calculation. Source choices refresh on actual project view changes, including rename and removal at the initial generation. Hiding the table or its window releases its meter leases. The Mix View Info preview reads the shared spectrum and spectrogram presentation settings through its own display lease.
+
+Release gates: 834 Mix View software-peer checks and all three targeted suites (shared analysis, shared spectrum and Mix View functions). The new regressions cover source refresh at generation zero, meter-only clip counts and the visible Info preview. Live side-by-side checks are in the brief.
+
+Review `ADI-MixView-Analysers-20261119-f79a0dc4b6-win64-Release`.
+- App SHA-256 `1912ad49e54db1a7cd92b7513f211ba5c89e583fc8f5986ff81201ff7c4f9fe8`
+- ZIP SHA-256 `01ad7a7da832543824faf6577e9ae8d7f0a0890d403a71da30782f6d6e506866`
+- Scanner SHA-256 `04d6e4b6dd166bb977c0b2cc2a6256626f88d6ed8fa3112c13ddf0570a1f4855`
+- Brief `ADI-Q-MixView-Analysers-20261119-f79a0dc4-CLAUDE-RETEST.txt`
+
+
 ## 19 November 2026 — design step 5 Main meter Release
 
 **PR requested.** Author branch `mixview/main-meter-review-20261119`, head `3603a1c5`, after Sounding Now `0016e5b0`. The right-hand Main meter reads the shared post-fader feed with balance, correlation, Peak, Dynamic and RMS, holds, weighting, scale, Float and Reset. L/R/M/S and Flat/A/C/K Filter Listen are temporary physical Main monitor modes. The headless audio tests verify that the Main tap, export and Cue stay independent. Closing or hiding the owner restores Stereo.
