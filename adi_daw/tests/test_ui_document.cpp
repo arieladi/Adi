@@ -57,17 +57,114 @@ double bin(const std::array<float, 2048> &data, int k) {
 // DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
 class SurfaceKnobs final : public device::DeviceInstance {
   public:
+    explicit SurfaceKnobs(std::int32_t initialLatency = 37) : reportedLatency(initialLatency) {}
     const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
     bool loaded() const noexcept override { return true; }
     void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
-    std::int32_t latencySamples() const noexcept override { return 37; }
+    std::int32_t latencySamples() const noexcept override { return reportedLatency; }
     std::int32_t paramCount() const noexcept override { return controls.paramCount(); }
     const device::ParamDescriptor *paramAt(std::int32_t i) const noexcept override { return controls.paramAt(i); }
     device::ParamValue getParam(const std::string &id) const noexcept override { return controls.getParam(id); }
     bool setParam(const std::string &id, const device::ParamValue &v) override { return controls.setParam(id, v); }
     std::string paramText(const std::string &id, double v) const override { return controls.paramText(id, v); }
+    std::int32_t reportedLatency;
     test::Knobs controls;
 };
+
+Payload readLatencyReport(Store &store) {
+    SQLite::Statement query(store.db(), "SELECT value FROM session_state WHERE key='devices.reported_latency'");
+    return query.executeStep() ? Payload::parse(query.getColumn(0).getString()) : Payload(nullptr);
+}
+
+void reportedDeviceLatency(const std::filesystem::path &dir) {
+    const auto loader = [](std::int32_t latency) -> engine::DeviceLoader {
+        return [latency](const engine::DeviceRequest &request, std::string &error)
+            -> std::unique_ptr<device::DeviceInstance> {
+            if (request.ref && request.ref->uid == test::kKnobsUid) return std::make_unique<SurfaceKnobs>(latency);
+            error = "fixture has no such device";
+            return nullptr;
+        };
+    };
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "reported-latency.adi", true, loader(0), error);
+    check(document != nullptr, "reported latency document opens");
+    if (!document) return;
+    auto &store = document->store();
+    auto &db = store.db();
+    db.exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+            test::kKnobsUid + "','Latency controls'),(4,'clap','test.unavailable','Unavailable')");
+    std::vector<OpRequest> add(3);
+    add[0].opType = "chain.create";
+    add[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    add[1].opType = add[2].opType = "device.insert";
+    add[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "Loaded"}, {"latency", 0}};
+    add[2].payload = {{"id", 4}, {"chain", 3}, {"ord", 1}, {"ref", 4}, {"name", "Unavailable"}, {"latency", 999}};
+    check(document->ops().submit(std::move(add)).ok && document->synchronise(), "latency fixture devices load");
+    document->tick(0);
+    auto *knobs = dynamic_cast<SurfaceKnobs *>(document->session().instanceFor(3));
+    if (!knobs) { check(false, "resolved fixture device"); return; }
+    const auto initial = readLatencyReport(store);
+    check(initial.is_object() && initial["version"] == 1 && initial["devices"].size() == 1 &&
+              initial["devices"][0]["device_id"] == 3 && initial["devices"][0]["latency_samples"] == 0,
+          "loaded zero is explicit and an unavailable device has no reported measurement");
+
+    using Event = engine::ParamEventKind;
+    const auto beforeHead = History(store).head();
+    check(document->parameterGesture(3, "cutoff", Event::Begin, .5) &&
+              document->parameterGesture(3, "cutoff", Event::Value, .6), "open a real uncommitted parameter gesture");
+    knobs->reportedLatency = 237;
+    document->tick(10);
+    check(History(store).head() == beforeHead && readLatencyReport(store) == initial,
+          "an uncommitted gesture does not rewrite the reported latency");
+    check(document->parameterGesture(3, "cutoff", Event::End, .6), "commit the control gesture");
+    const auto settledHead = History(store).head();
+    document->tick(20);
+    const auto settled = readLatencyReport(store);
+    const Payload latencyRow{{"device_id", 3}, {"plugin_ref_id", 3}, {"format", "clap"},
+                             {"uid", test::kKnobsUid}, {"latency_samples", 237}};
+    check(settledHead && settledHead != beforeHead && settled.is_object() && settled["history_head"] == *settledHead &&
+              settled["devices"].size() == 1 && settled["devices"][0] == latencyRow && History(store).head() == settledHead &&
+              db.execAndGet("SELECT latency_samples FROM devices WHERE id=3").getInt() == 0,
+          "settled report is bound to the actual identity and history without an authored edit");
+    const auto changes = db.execAndGet("SELECT total_changes()").getInt64();
+    document->tick(30);
+    check(db.execAndGet("SELECT total_changes()").getInt64() == changes,
+          "a repeated settled reading causes no SQL write");
+
+    check(document->deviceAction("device.setLatency", {{"id", 3}, {"latency", 19}}), "explicit authored latency remains editable");
+    document->prepare(96000., 256);
+    knobs->reportedLatency = 475;
+    const auto copy = dir / "reported-latency-copy.adi";
+    check(document->saveCopy(copy), "Save a Copy refreshes a settled rate and latency before the next tick");
+    StoreError openError{};
+    auto saved = Store::open(copy, openError, true);
+    check(saved != nullptr, "read the copied project without activating any devices");
+    if (!saved) return;
+    const auto copied = readLatencyReport(*saved);
+    const auto copiedHead = History(*saved).head();
+    check(copiedHead && copied.is_object() && copied["sample_rate"] == 96000. && copied["history_head"] == *copiedHead &&
+              copied["devices"].size() == 1 && copied["devices"][0]["latency_samples"] == 475 &&
+              saved->db().execAndGet("SELECT latency_samples FROM devices WHERE id=3").getInt() == 19,
+          "copied file retains exact measured samples, rate and history separately from the authored value");
+    saved.reset();
+    auto reopened = ui::ProjectDocument::open(copy, false, loader(61), error);
+    check(reopened != nullptr, "reopen activates the saved project using the current device");
+    if (!reopened) return;
+    const auto measuredAgain = readLatencyReport(reopened->store());
+    check(measuredAgain.is_object() && measuredAgain["sample_rate"] == reopened->session().spec().sampleRate &&
+              measuredAgain["devices"].size() == 1 && measuredAgain["devices"][0]["latency_samples"] == 61 &&
+              History(reopened->store()).head() == copiedHead &&
+              reopened->store().db().execAndGet("SELECT latency_samples FROM devices WHERE id=3").getInt() == 19,
+          "reopen replaces the saved observation with the new reported latency and preserves history");
+    check(document->ops().undo().ok && document->synchronise() &&
+              db.execAndGet("SELECT latency_samples FROM devices WHERE id=3").getInt() == 0,
+          "Undo reverses only the explicit authored latency");
+    check(document->deviceAction("device.remove", {{"id", 3}}), "remove the measured device");
+    document->tick(40);
+    const auto removed = readLatencyReport(store);
+    check(removed.is_object() && removed["devices"].is_array() && removed["devices"].empty(),
+          "removed and unavailable devices leave no measured row");
+}
 
 void refusedBeginOwnership(const std::filesystem::path &dir) {
     using engine::ParamEventKind;
@@ -1358,6 +1455,7 @@ int main(int argc, char **argv) {
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
+    reportedDeviceLatency(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

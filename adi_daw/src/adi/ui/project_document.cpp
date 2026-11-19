@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
 #include "adi/device_key_routes.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <algorithm>
 #include <chrono>
 #include <mutex>
@@ -104,6 +106,7 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
         document->realisedGeneration_ = document->view_.generation();
         document->parameterOps_.attachSession(document->session_);
         document->feed_.publish(document->session_, document->realisedGeneration_);
+        document->persistReportedLatencies();
         error.clear();
         return document;
     } catch (const std::exception &e) {
@@ -118,6 +121,7 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
         refused.error = "Project is read-only";
         return refused;
     }
+    refreshReportedLatenciesForSave();
     History history(*store_);
     return history.takeSnapshot(name, nowUtc, utcOffsetMinutes);
 }
@@ -137,6 +141,7 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     }
     // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
     // the members hold the Store itself, which keeps its identity across the switch.
+    refreshReportedLatenciesForSave();
     const auto result = store_->saveAs(path);
     if (!result.ok) {
         error_ = "Save As failed: " + result.error;
@@ -179,6 +184,7 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
     warning_.clear();
     if (refuseExisting(path, "Save a Copy", error_))
         return false;
+    refreshReportedLatenciesForSave();
     const auto result = store_->saveCopy(path);
     if (!result.ok) {
         error_ = "Save a Copy failed: " + result.error;
@@ -190,6 +196,7 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
 }
 bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
+    refreshReportedLatenciesForSave();
     const auto result = store_->collectAllAndSave();
     if (!result.ok) {
         error_ = "Collect All and Save failed: " + result.error;
@@ -209,6 +216,7 @@ bool ProjectDocument::collectAllAndSave() {
 bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
     if (refuseExisting(zip, "Collect and Export", error_))
         return false;
+    refreshReportedLatenciesForSave();
     out.project = media::projectFolder(*store_) / store_->path().filename();
     out.zip = zip;
     error_.clear();
@@ -301,6 +309,58 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     parameterOps_.drain(captureNowMs(), requests);
     commitCaptured(requests);
     feed_.publish(session_, realisedGeneration_);
+    persistReportedLatencies();
+}
+void ProjectDocument::refreshReportedLatenciesForSave() {
+    if (realisedGeneration_ != view_.generation()) return;
+    feed_.publish(session_, realisedGeneration_);
+    persistReportedLatencies();
+}
+void ProjectDocument::persistReportedLatencies() {
+    if (store_->readOnly() || realisedGeneration_ != view_.generation()) return;
+    const auto current = feed_.current();
+    const auto sequence = session_.realisedAppliedSequence();
+    const auto rate = session_.spec().sampleRate;
+    if (reportedLatencyFeed_ && sequence == reportedLatencySequence_ && rate == reportedLatencyRate_ &&
+        (current == reportedLatencyFeed_ ||
+         std::equal(current->begin(), current->end(), reportedLatencyFeed_->begin(), reportedLatencyFeed_->end(),
+                    [](const DevicePanelData &a, const DevicePanelData &b) {
+                        return a.id == b.id && a.instance == b.instance && a.available == b.available &&
+                               a.latency == b.latency;
+                    }))) {
+        reportedLatencyFeed_ = current;
+        return;
+    }
+    const auto source = appliedSource(*store_);
+    if (source.sequence() != sequence || !session_.presentationReady(source, sequence) ||
+        !sqlite3_get_autocommit(store_->db().getHandle())) return;
+    // An open edit can preview new latency before those settings enter history.
+    const auto guard = gesture::detail::beginNavigation(*store_);
+    if (!guard.status.ok()) return;
+    try {
+        const auto head = History(*store_).head();
+        Payload report{{"version", 1}, {"sample_rate", rate},
+                       {"history_head", head ? Payload(*head) : Payload(nullptr)}, {"devices", Payload::array()}};
+        auto &devices = report["devices"];
+        for (const auto &device : *current) {
+            if (!device.available) continue;
+            const auto *entry = session_.entryFor(device.id);
+            if (!entry || !entry->resolvedPluginRef) continue;
+            devices.push_back({{"device_id", device.id}, {"plugin_ref_id", *entry->resolvedPluginRef},
+                               {"format", entry->resolvedFormat}, {"uid", entry->resolvedUid},
+                               {"latency_samples", device.latency}});
+        }
+        SQLite::Statement write(store_->db(), "INSERT INTO session_state(key,value) "
+            "VALUES('devices.reported_latency',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value "
+            "WHERE session_state.value<>excluded.value");
+        write.bind(1, report.dump());
+        write.exec();
+        reportedLatencyFeed_ = current;
+        reportedLatencySequence_ = sequence;
+        reportedLatencyRate_ = rate;
+    } catch (const SQLite::Exception &e) {
+        warning_ = std::string("Device latency report could not be saved: ") + e.what();
+    }
 }
 void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
