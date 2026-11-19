@@ -140,6 +140,25 @@ def cases():
     r = without(full_run(), UI_PLAN)
     yield "a Step 7 UI run from before 'ui: which jobs run' existed", r, "LAND"
 
+    # Review of 19 November: console-plugin.yml and midi-helper.yml both name
+    # their jobs "build (<os>)". Keyed by name, the later pass hid the failure.
+    r = full_run() + [
+        check("build (windows-latest)", "FAILURE", "console-plugin", 800, "2026-11-19T10:00:00Z"),
+        check("build (windows-latest)", "SUCCESS", "midi-helper", 810, "2026-11-19T10:30:00Z")]
+    yield "one workflow's build failed, another's of the same name passed later", r, "FAILED"
+    r = full_run() + [
+        check("build (macos-latest)", "CANCELLED", "midi-helper", 810, "2026-11-19T10:00:00Z"),
+        check("build (macos-latest)", "SUCCESS", "console-plugin", 800, "2026-11-19T10:30:00Z")]
+    yield "one workflow's build cancelled, another's of the same name passed later", r, "CANCELLED"
+    r = full_run() + [
+        check("build (ubuntu-latest)", None, "console-plugin", 800, "2026-11-19T10:00:00Z"),
+        check("build (ubuntu-latest)", "SUCCESS", "midi-helper", 810, "2026-11-19T10:30:00Z")]
+    yield "one workflow's build still running, another's of the same name passed", r, "WAIT"
+    r = full_run() + [
+        check("build (windows-latest)", "SUCCESS", "console-plugin", 800),
+        check("build (windows-latest)", "SUCCESS", "midi-helper", 810)]
+    yield "both workflows' builds of the same name passed", r, "LAND"
+
     yield "a draft's run is never a pass", draft_run(), "WAIT"
     r = draft_run() + [check("which legs run", None, ADI, 700, "2026-11-19T12:00:00Z")]
     yield "marked ready: the new run is the one that counts", r, "WAIT"

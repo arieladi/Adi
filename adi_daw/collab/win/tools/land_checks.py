@@ -33,6 +33,10 @@ How the checks are read:
     checks on the same head, and that run's gate says nothing about this one.
     Run ids grow, and each check's details URL carries its run's id.
   - Within that run the newest attempt of each check counts: a rerun replaces.
+    A check is its WORKFLOW AND NAME together, never its name alone:
+    console-plugin.yml and midi-helper.yml both name their jobs
+    "build (<os>)", and keyed by name a later passing one hid an earlier
+    failing one.
   - A name GitHub never expanded ("matrix.name", or one still holding "${{")
     belongs to a matrix job that was skipped or cancelled before its matrix
     existed. It is never a pass, a failure or a cancellation of its own; the
@@ -126,19 +130,23 @@ def decide(rollup: list[dict]) -> list[str]:
             newest[c["workflow"]] = max(newest.get(c["workflow"], c["run"]), c["run"])
     current = [c for c in checks if c["run"] is None or c["run"] == newest.get(c["workflow"])]
 
-    # Newest attempt per name; on a tie the later entry wins (jq's sort_by + last).
-    latest: dict[str, dict] = {}
+    # Newest attempt per (workflow, name); on a tie the later entry wins (jq's
+    # sort_by + last). Not per name: two workflows share "build (<os>)".
+    latest: dict[tuple[str, str], dict] = {}
     for c in current:
-        prev = latest.get(c["name"])
+        key = (c["workflow"], c["name"])
+        prev = latest.get(key)
         if prev is None or c["when"] >= prev["when"]:
-            latest[c["name"]] = c
+            latest[key] = c
     rows = list(latest.values())
     named = [c for c in rows if not placeholder(c["name"])]
 
     pending = sum(1 for c in rows if c["conclusion"] is None)
     bad = [c["url"] for c in named if c["name"] != GATE and c["conclusion"] in FAILED]
     cancelled = [c["url"] for c in named if c["name"] != GATE and c["conclusion"] == "CANCELLED"]
-    legacy_ok = sum(1 for c in named if c["conclusion"] in PASSED)
+    # Distinct names, as the old jq rule counted them: the legacy threshold
+    # keeps its meaning now that two workflows' "build (<os>)" are two rows.
+    legacy_ok = len({c["name"] for c in named if c["conclusion"] in PASSED})
 
     gate = next((c for c in named if c["name"] == GATE
                  and c["workflow"] in (GATE_WORKFLOW, "")), None)
