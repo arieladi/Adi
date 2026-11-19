@@ -10,6 +10,16 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Render cleanup and settings bundle import
+
+**PR requested** — `engine-win/export-stage-cleanup` at `d32f30caf62629db4867be4e10011704d70c794d`, stacked on `engine-win/export-collision-modes` at `cbbc4202`. Title **Report private render stage cleanup failures separately**.
+
+EX-07. WAV and NI report the private stage path and native error separately from delivery and publication status. Actual Windows sharing refusals left a private folder and preserved both a cancelled job's absence of output and a completed WAV's exact PCM. The run manifest records the cleanup result. Three strict x64 MSVC suites passed 445 checks. Native AAC and optional source symlink cases were skipped.
+
+**PR requested** — `engine-win/settings-bundle-schema` at `72d2d37912003a8cb96a60537c703ef11a33eec4`, stacked on `engine-win/settings-bundle-safe` at `675f79a4`. Title **Check bundle manifest and settings schemas before import**.
+
+PD-11. The manifest and settings document must use a supported integer schema and agree on the application before applying any value or appending to the change log. Valid exported v1 bundles retain settings, role resolution and presets. Seventy refusal cases preserved input bytes and target state. Three strict x64 MSVC suites passed 344 checks. Preset schema and migration remain separate.
+
 ## 2026-11-19 · Persisted hosted Session reopen
 
 **PR requested** — `engine-win/session-catalogue-reopen` at `ecdf7cfd994a80de023de5229e62368093c3451b`, stacked on `engine-win/scanner-case-sequence` at `2ebd09ee`. Title **Verify saved VST3 and CLAP Sessions reopen without scanning**.
