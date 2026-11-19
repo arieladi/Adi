@@ -10,8 +10,8 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.sidechainChannels, d.name, d.enabled, d.instrument, d.plugin, d.uid,
-                        d.metadata, d.cachedRecords, d.defaults, d.parameterGroups, d.processingIssue,
+                        d.name, d.enabled, d.instrument, d.plugin, d.uid,
+                        d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
                         d.resolved.configured, d.resolved.showsConfigureHint, d.resolved.modifiableCount);
     };
     return card(a) == card(b) &&
