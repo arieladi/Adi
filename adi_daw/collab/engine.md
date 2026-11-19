@@ -18,6 +18,14 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — For engine-win and Win, AudioInputRecorder can finalize a short WAV
+
+The first full CT-02 gate exposed three failures in the direct AudioInputRecorder fixture: the stereo and mono WAV lengths and exact PCM. The grouped journal candidate changes only the ops journal and its history fixture. The isolated recorder suite passed on retry.
+
+A deterministic probe compiled the recorder from main at `12aab48a`. It parks the worker just after it observes an empty ring, records eight real samples, runs `stop()`, acknowledges the empty driver publication, calls `poll()` to signal the writer, then resumes it. It reports eight recorded frames and zero finalized WAV frames with a success status. The worker reads `written` before acquiring `stopWriter`, then exits on that stale empty observation. A scratch-only change that reloads `written` after acquiring the stop flag returned eight finalized frames with the same schedule.
+
+Engine-win owns the recorder fix. The schedule above gives a deterministic regression alongside the real WAV acceptance. Win can assign a register number. The CT-02 grouped-history candidate continues through its independent full gate.
+
 ## 2026-11-19 — CT-03 driver MIDI capture tap
 
 **PR requested** — branch `engine/ct03-midi-driver-tap`, head `ae4cebf453fba727742b60ce7fb50d0061834c2f`, stacked on `engine/live-midi-armed-instrument` at `ad54266b`. Title **Tap timestamped MIDI before audible instrument routing**. The remote head matches the gated commit. ADR-0248 d6 item 4, CT-03's driver seam.
