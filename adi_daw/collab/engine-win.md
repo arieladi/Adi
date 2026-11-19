@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — SQLite pin for the upstream WAL-reset fix
+
+**PR requested** `engine-win/sqlitecpp-wal-reset-fix` at `8a8f9a00f703c3d30a224ff207e6827f6dc49522`, independent of other engine topics. One dependency moves under ADR-0024. SQLiteCpp MIT tag 3.3.3 `59a047b8d3fe8574406ed73ab9fac0474e87bd03` bundled SQLite 3.49.2. Verified release tag 3.4.0 `df0a28ca9733f687ab7ce77f070c0df84368a45e` bundles 3.53.4, which includes SQLite's upstream fix for the rare WAL-reset corruption bug. The provenance job still prints the fetched pin and amalgamation version. [SQLite advisory](https://sqlite.org/wal.html#the_wal_reset_bug) · [SQLiteCpp release](https://github.com/SRombauts/SQLiteCpp/releases/tag/3.4.0)
+
+A fresh strict MSVC x64 Debug `/W4 /WX` build used that exact release and `adi_tool versions` reported linked SQLite 3.53.4. Eight targeted Store, migration, operations, project, collection and registry suites passed 786 checks. Two symlink cases skipped for Windows privilege. Request the full ABI matrix before landing, per ADR-0024. The existing PD-12 measurements describe the recorded SQLite 3.49.2 run.
+
 ## 2026-11-19 — PD-02 ZIP entry cancellation and progress
 
 **PR requested** `engine-win/collect-zip-stream` at `734f7b6f6bd58f7f549ef28f0bfe2f473e6da683`, stacked on owned media rollback `a67c3344`. Collection now reports an entry's source bytes on the worker and can cancel between chunks of at most 64 KiB, including the final chunk before publication. Cancellation or a progress callback failure is sticky. The private archive is discarded and the source project and existing ZIPs keep their bytes. The real collection regression cancels 256 KiB into a 4 MiB media entry.
