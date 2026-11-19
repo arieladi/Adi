@@ -34,7 +34,10 @@ component defaults, not a device factory preset.
 `prepare` creates a fresh stream and offers a strong failure guarantee.
 `reprepare` models a stopped processing restart at the same float-rounded rate
 and layout, retaining settings and the prepared graph. It updates capacity and
-requests the same reset without allocating. It is not a processing-setup call
+requests the same reset. The default Incremental contract does not allocate;
+CompleteRequests stages scratch growth before changing the old stream, retaining
+capacity when it already fits. Contract changes require a fresh `prepare`.
+It is not a processing-setup call
 alone. `reset` clears hold and detector histories and requests the Classic
 silence baseline for each envelope's next processed sample. Adaptive release
 lookup and coefficient caches survive reset/reprepare; fresh `prepare` starts
@@ -58,16 +61,42 @@ change that cadence; arbitrary block-size bit identity is not promised.
 Contexts are invalidated by reset and successful preparation. IO precision is
 fixed until reset/preparation. Invalid calls preserve the current segment cursor.
 
-The incremental API processes only the supplied segment. It does not implement
-the reference's whole-request near-baseline alias predicate (the envelope and
-every stage input within 1e-9 of the baseline), which can defer pending envelope initialization.
-No per-sample silence shortcut, future-segment read or added latency substitutes
-for that predicate. Exact equivalence in that quiet boundary and its CPU behavior
-remain unverified; the component is not a whole-plugin equivalence claim.
+`PrepareSpec::contract` defaults to `ProcessingContract::Incremental`, preserving
+that segment API. It processes only the supplied segment and does not apply a
+whole-request near-baseline alias predicate.
 
-The accepted rate range is 44.1–96 kHz, with float-rounded internal rate.
-Validation covers generated signals at 44.1, 48 and 96 kHz; it does not establish
-all intermediate rates or all control combinations. Tests cover hold expiry,
+The explicit `CompleteRequests` contract instead accepts `processRequest` over
+one complete, currently available graph span. A request need not be an entire
+hardware callback. Its caller supplies the real request boundaries: each starts
+the 16-sample cadence at zero, and changing those boundaries can change sound.
+Grouping the same requests into different enclosing callbacks does not change
+them. Mixing the two processing APIs is refused without changing the stream.
+
+CompleteRequests captures both key planes before any main write and prepares
+four float scratch planes. Both key histories advance independently, including
+channels with zero mixer weight. Before each envelope runs, its float-rounded
+state and every input sample must lie within 1e-9 of that envelope's baseline to
+alias the complete input. An alias retains input provenance and constant flags,
+all adaptive state and pending initialization. Otherwise the envelope consumes
+pending initialization and processes the entire request. Equal sample values
+alone never imply a Constant source. Ordinary unity ratio skips detector controls
+while preserving upstream key demand. No future input, extra latency or
+per-sample silence shortcut substitutes for this full-request decision.
+
+A caller that supports live routing can keep a single External CompleteRequests
+stream. With no route, use the two programme planes as exact key aliases.
+An active route supplies its two key planes. A routed source without samples
+supplies zero planes and feeds silence. Switching these inputs at a request
+boundary keeps the existing detector history. The caller determines route
+availability independently of sample pointers.
+
+Neither contract implements outer graph completion or whole-device sleep.
+These are demanded-span processing contracts, not a whole-plugin equivalence
+or quiet-CPU claim. Controls remain fixed in both contracts.
+
+The accepted rate range is 44.1–768 kHz, with float-rounded internal rate.
+The 44.1, 48 and 96 kHz end-to-end cases are supplemented by generated
+admission and processing tests at 176.4, 192, 384 and 768 kHz. Tests cover hold expiry,
 hysteresis, stereo key choices, physical-block segmentation, state reset and
 continuation, failed preparation, alias refusal, both IO precisions and zero
 callback allocation/deallocation. No CPU or live-host performance claim is made.
