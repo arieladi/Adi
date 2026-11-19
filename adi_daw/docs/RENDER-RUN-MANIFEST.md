@@ -54,12 +54,40 @@ Version 1 records:
 - Actual output path, written-frame count, error, publication flags/warning,
   and available normalization measurements. The stable job ID is also the
   runner's dither-seed mixing ordinal.
+- `result.resolved_snapshot` and the member's `journal_head`: the current journal
+  branch head, resolved source ID/tap, sample rate, output-range bounds, region ID
+  and name-expansion values. The read occurs inside the same SQLite transaction
+  as the graph, before device loading can service another writer. Zero is the
+  captured SQL NULL head before any operation (also possible after Undo); null
+  means no captured revision is available in this report, including an incomplete
+  result copy, never a fabricated revision zero. The
+  journal head is not the largest sequence in the operation log. Invalid/missing
+  current-branch metadata fails capture instead of being reported as zero.
+- NI Main uses `resolved_snapshot`; `ni_stem_snapshots` records each supplied
+  source in stream order. NI's existing private SQLite backup pins the original
+  database revision before individual renders. Main and actual stems must have
+  identical journal heads, ranges, rates and region IDs. Its rewritten private
+  media paths do not alter the original head. Unused silent slots have no project
+  source and therefore no fabricated snapshot entry.
+  A failed NI attempt can retain Main and only the stems completed before the
+  failure; the list alone is not a completed-delivery claim.
 
-This is the warning/reporting slice of EX-07, not its full provenance or collision
-contract. `journal_head` and `media_identities` are explicitly null/unavailable.
-Resolved cycle-range/source identities, rendered-output hashes, codec version,
-cleanup-failure reporting, run timestamps/identity, and durable manifest storage
-are not captured. Existing no-clobber publication and volume-native case behavior
+Resolved bounds are output sample positions before latency compensation/preroll,
+with an exclusive end. They are distinct from the job's requested bounds when a
+cycle marker selects the range. Captured names are the metadata used for each
+render; NI's supplied stem labels remain in the requested profile. A snapshot
+can remain on an attempt that later fails or is cancelled: it proves which rows
+were read, not that a file was published. No project snapshot is made at enqueue;
+job values, run membership, per-job revision/names and publication retain their
+four separate ownership moments.
+
+These are the warning/reporting and journal-revision slices of EX-07/EX-01, not
+their full provenance or collision contracts. `media_identities` remains null:
+referenced-media BLAKE3 checks at start and immediately before publication,
+rendered-output hashes, codec version, cleanup-failure reporting, run
+timestamps/identity, and durable manifest storage are not captured. The journal
+head identifies row history; it does not identify mutable external media bytes.
+Existing no-clobber publication and volume-native case behavior
 remain; Fail/Increment/Replace selection and folded-name delivery preflight need
 their separate policy/implementation. The caller still owns naming and storage of
 the JSON report. No new project operations, schema, Undo behavior, or sidecar

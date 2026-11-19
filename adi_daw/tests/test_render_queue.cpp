@@ -4,6 +4,8 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/ops.hpp"
+#include "adi/history.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -12,6 +14,7 @@
 #include <cstdio>
 #include <fstream>
 #include <limits>
+#include <span>
 #include <stdexcept>
 
 namespace {
@@ -23,6 +26,16 @@ int checks = 0, failures = 0;
 void check(bool ok, const char* name) {
     ++checks;
     if (!ok) {++failures; std::printf("FAIL: %s\n", name);}
+}
+OpRequest request(const char* type, Payload payload) {
+    OpRequest result;
+    result.opType = type; result.payload = std::move(payload);
+    return result;
+}
+std::int64_t commit(Store& store, std::span<const OpRequest> requests) {
+    const auto result = OpJournal(store).commit(requests);
+    if (!result.ok || result.seqs.empty()) throw std::runtime_error("fixture journal commit: " + result.error);
+    return result.seqs.back();
 }
 float source(std::int64_t frame, int channel) {
     return static_cast<float>((frame % 191) - 95) / 128.0f + static_cast<float>(channel) / 16.0f;
@@ -204,6 +217,8 @@ void cancellationAndFailures() {
         const auto result=renderMasterWav(j,{},c);
         check(result.state==JobState::Cancelled && !fs::exists(j.directory/ ("cancel-"+std::to_string(when)+".wav")) && f.noStage(),
               "cancellation before, during and before publication leaves no file or stage");
+        check(result.snapshot.has_value()==(when!=0) && (!result.snapshot || result.snapshot->journalHead==0),
+              "cancellation distinguishes unavailable snapshot from captured revision zero");
     }
     auto j=f.job("existing");
     {std::ofstream file(j.directory/"existing.wav"); file<<"keep me";}
@@ -292,20 +307,32 @@ void latencyChanges() {
 }
 void coherentRevision() {
     Fixture f; f.effect();
+    const std::array beforeEdits{request("project.setName", {{"name", "Before snapshot"}})};
+    const auto beforeHead=commit(*f.store,beforeEdits);
+    std::int64_t afterHead=0;
     auto job=f.job("{project}-{bpm}");
     const auto result=renderMasterWav(job,[&](const DeviceRequest&,std::string&) {
         // Another open connection commits while the renderer loads devices,
         // between its row projection and its filename/tempo projection.
-        f.store->db().exec("UPDATE project SET name='Later'; UPDATE tempo_map SET bpm=75; UPDATE tracks SET muted=1 WHERE id=1;");
+        const std::array edits{request("project.setName", {{"name", "Later"}}),
+            request("track.setMute", {{"id", 1}, {"muted", true}})};
+        afterHead=commit(*f.store,edits);
+        f.store->db().exec("UPDATE tempo_map SET bpm=75;");
         return std::make_unique<Delay>();
     });
-    check(result.output.filename()=="Before-120.0.wav" && matches(read(result,866),137),
+    check(result.output.filename()=="Before snapshot-120.0.wav" && matches(read(result,866),137),
           "concurrent committed edits cannot mix project revisions within one job");
+    check(result.snapshot && result.snapshot->journalHead==beforeHead && beforeHead<afterHead &&
+          result.snapshot->source.trackId==9 && result.snapshot->names.project=="Before snapshot" &&
+          result.snapshot->beginSample==137 && result.snapshot->endSample==1003,
+          "journal head, resolved Main, range and names come from the graph's same read snapshot");
     const auto next=renderMasterWav(job,[](const DeviceRequest&,std::string&) {return std::make_unique<Delay>();});
     const auto samples=read(next,866);
     check(next.output.filename()=="Later-75.0.wav" && !samples.empty() &&
           std::all_of(samples.begin(),samples.end(),[](float x) {return x==0;}),
           "the next job sees committed metadata and mute changes together");
+    check(next.snapshot && next.snapshot->journalHead==afterHead && next.snapshot->names.project=="Later",
+          "next render records the newly committed head, not the earlier job's revision");
     Queue queue;
     auto missing=job; missing.project=f.dir.path()/"missing.adi";
     const auto failed=queue.add(missing);
@@ -319,6 +346,76 @@ void coherentRevision() {
 void addDevice(Fixture& f,int track,int id) {
     f.store->db().exec("INSERT INTO device_chains(id,track_id) VALUES("+std::to_string(id)+","+std::to_string(track)+");"
         "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES("+std::to_string(id)+","+std::to_string(id)+",0,1,'Effect');");
+}
+void queuedRevisionRegions() {
+    Fixture f;
+    f.store->db().exec("INSERT INTO markers(id,time_base,pos_ns,length_ns,name,kind) VALUES(1,1,0,1000000,'Queued region','cycle');");
+    auto job=f.job("{project}-{region}-{track}-{counter}");
+    job.regionId=1; job.source={1,OfflineTap::PreFader};
+    Queue queue;
+    const auto first=queue.add(job);
+    queue.add(job);
+    const std::array before{request("project.setName", {{"name", "First project"}}),
+        request("track.rename", {{"id", 1}, {"name", "First source"}}),
+        request("marker.rename", {{"id", 1}, {"name", "First region"}}),
+        request("marker.move", {{"id", 1}, {"pos", 1000000}}),
+        request("marker.resize", {{"id", 1}, {"length", 3000000}})};
+    const auto firstHead=commit(*f.store,before); // after enqueue, before run
+    std::int64_t secondHead=0;
+    Control control;
+    control.progress=[&](JobId id,std::uint64_t done,std::uint64_t total) {
+        if (id!=first || done!=total || secondHead!=0) return;
+        // After job one's last audio block, before its publication and job two's
+        // snapshot. A revision at publication would mislabel the first file.
+        const std::array between{request("project.setName", {{"name", "Second project"}}),
+            request("track.rename", {{"id", 1}, {"name", "Second source"}}),
+            request("marker.rename", {{"id", 1}, {"name", "Second region"}}),
+            request("marker.move", {{"id", 1}, {"pos", 5000000}}),
+            request("marker.resize", {{"id", 1}, {"length", 2000000}})};
+        secondHead=commit(*f.store,between);
+    };
+    queue.run({},control);
+    const auto entries=queue.snapshot();
+    const auto& a=entries[0].result;
+    const auto& b=entries[1].result;
+    check(matches(read(a,144),48) && matches(read(b,96),240),
+          "queued cycle jobs hear the independently resolved start/end from their own revision");
+    check(a.output.filename()=="First project-First region-First source-1.wav" &&
+          b.output.filename()=="Second project-Second region-Second source-2.wav",
+          "names resolve after enqueue and again for the next job, not at run entry or publication");
+    check(a.snapshot && b.snapshot && a.snapshot->journalHead==firstHead && b.snapshot->journalHead==secondHead &&
+          firstHead<secondHead && a.snapshot->source.trackId==1 && a.snapshot->source.tap==OfflineTap::PreFader &&
+          a.snapshot->beginSample==48 && a.snapshot->endSample==192 &&
+          b.snapshot->beginSample==240 && b.snapshot->endSample==336 &&
+          a.snapshot->sampleRate==48000 && a.snapshot->regionId==1 &&
+          a.snapshot->names.region=="First region" && b.snapshot->names.region=="Second region",
+          "actual source, tap, range, region names and journal heads are captured per job");
+    const auto manifest=nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    const auto& firstMember=manifest["members"][0];
+    const auto& secondMember=manifest["members"][1];
+    check(firstMember["journal_head"]==firstHead && secondMember["journal_head"]==secondHead &&
+          firstMember["result"]["resolved_snapshot"]["journal_head"]==firstHead &&
+          firstMember["result"]["resolved_snapshot"]["source"]["tap"]=="pre_fader" &&
+          firstMember["result"]["resolved_snapshot"]["begin_sample"]==48 &&
+          secondMember["result"]["resolved_snapshot"]["end_sample"]==336 &&
+          secondMember["result"]["resolved_snapshot"]["names"]["track"]=="Second source",
+          "JSON records the exact resolved provenance, including the older first head at publication");
+    check(firstMember["job"]["requested_range"]["begin_sample"]==137 &&
+          firstMember["job"]["requested_range"]["end_sample"]==1003 &&
+          firstMember["job"]["requested_range"]["region_id"]==1 &&
+          firstMember["media_identities"].is_null(),
+          "resolved coordinates do not overwrite the enqueued range or invent media byte identities");
+}
+void revisionAfterUndo() {
+    Fixture f;
+    const std::array edits{request("project.setName", {{"name", "Undone name"}})};
+    const auto recorded=commit(*f.store,edits);
+    check(History(*f.store).undo().ok,"revision fixture undoes its journalled name edit");
+    const auto result=renderWav(f.job("{project}"),{});
+    check(result.state==JobState::Completed && result.output.filename()=="Before.wav" &&
+          result.snapshot && result.snapshot->journalHead==0 && recorded>0 &&
+          f.store->db().execAndGet("SELECT MAX(seq) FROM ops").getInt64()==recorded,
+          "snapshot captures the current empty head after Undo, not the largest recorded sequence");
 }
 void directStems() {
     Fixture f;f.effect();f.parallel();addDevice(f,2,2);addDevice(f,9,9);
@@ -403,6 +500,9 @@ void regionStems() {
     q.run();const auto result=q.snapshot()[0].result;
     check(result.output.filename()=="Changed-Audio-120.0.wav" && matches(read(result,3000),1000),
           "region bounds/names resolve at render time; absolute end integrates the tempo change");
+    check(result.snapshot && result.snapshot->beginSample==1000 && result.snapshot->endSample==4000 &&
+          result.snapshot->regionId==1 && result.snapshot->names.region=="Changed",
+          "musical region report uses the same integrated tempo bounds and name as its output");
     f.store->db().exec("INSERT INTO markers(id,time_base,pos_ns,length_ns,name,kind) VALUES(2,1,2000000,7000000,'Clock','cycle');");
     j.regionId=2;
     check(matches(read(renderWav(j,{}),336),96),"nanosecond region bounds resolve to exact output samples");
@@ -677,10 +777,11 @@ void runManifests() {
           "manifest takes edited job values when that member actually starts");
     check(doc["members"][2]["state"]=="unstarted" && doc["members"][2]["removed_before_start"]==true &&
           doc["members"][2]["result"].is_null(),"removed pending member remains unstarted, without a fabricated result");
-    check(doc["members"][0]["journal_head"].is_null() && doc["members"][0]["media_identities"].is_null() &&
+    check(doc["members"][0]["journal_head"]==0 && doc["members"][0]["media_identities"].is_null() &&
+          doc["members"][0]["result"]["resolved_snapshot"]["journal_head"]==0 &&
           doc["members"][0]["job"]["requested_profile"]["container"]=="wav" &&
           doc["members"][0]["job"]["requested_profile"]["sample_rate"]==48000,
-          "manifest captures requested format without inventing journal or media provenance");
+          "manifest records captured revision zero while media identities remain unavailable");
     queue.run();
     check(queue.lastRun().plannedCount==1 && queue.lastRun().members.front().id==4 &&
           retained.members.size()==3 && retained.members.front().state==JobState::Completed,
@@ -708,7 +809,9 @@ void runManifests() {
     failed.add(missing); failed.add(f.job("after-missing")); failed.run();
     const auto failedDoc=nlohmann::json::parse(serializeRunManifest(failed.lastRun()));
     check(failedDoc["members"][0]["state"]=="failed" && !failedDoc["members"][0]["result"]["error"].get<std::string>().empty() &&
-          failedDoc["members"][1]["state"]=="completed", "failed member does not hide later completed work");
+          failedDoc["members"][0]["journal_head"].is_null() &&
+          failedDoc["members"][0]["result"]["resolved_snapshot"].is_null() &&
+          failedDoc["members"][1]["state"]=="completed", "failed open has unavailable revision and does not hide later completed work");
     RunReport incomplete; incomplete.plannedCount=2; incomplete.captureComplete=false;
     const auto incompleteDoc=nlohmann::json::parse(serializeRunManifest(incomplete));
     check(incompleteDoc["planned_count"]==2 && incompleteDoc["capture_complete"]==false && incompleteDoc["members"].empty(),
@@ -716,7 +819,7 @@ void runManifests() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); publicationResults(); runManifests();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); publicationResults(); runManifests();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

@@ -60,6 +60,21 @@ struct PublicationReport {
     bool usedFallback = false;
     std::string warning;
 };
+struct NameContext {
+    std::string project, track, group, bpm;
+    std::uint64_t counter = 1;
+    std::string region = "";
+};
+struct RenderSnapshot {
+    // Zero represents the captured SQL NULL head before any journal operation.
+    // An absent Result::snapshot, not zero, means the snapshot is unavailable.
+    std::int64_t journalHead = 0;
+    Source source; // resolved track ID (including the actual Main ID), and tap
+    std::int64_t beginSample = 0, endSample = 0; // resolved output range, exclusive end
+    double sampleRate = 0;
+    std::optional<std::int64_t> regionId{};
+    NameContext names; // the values used to resolve this output's name
+};
 struct Result {
     JobState state = JobState::Pending;
     std::filesystem::path output;
@@ -69,6 +84,12 @@ struct Result {
     // Absent means no successful publication. A warning never changes Completed
     // to Failed; durability is distinct from verified publication.
     std::optional<PublicationReport> publication{};
+    // Captured inside the same read transaction as the graph and output names.
+    // May exist on a later failed/cancelled attempt; it does not mean published.
+    std::optional<RenderSnapshot> snapshot{};
+    // NI's actual supplied stems, in stream order; unused silent slots have no
+    // project source. Main is snapshot above. All share its revision and range.
+    std::vector<RenderSnapshot> stemSnapshots{};
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct RunMember {
@@ -89,13 +110,9 @@ struct RunReport {
 };
 // Caller-owned serialization/persistence; no sidecar is written by the queue.
 // May throw (allocation, invalid UTF-8). Never changes queue or output state.
-// Version 1 captures requested job values and results, not journal/media hashes.
+// Version 1 captures requested values plus available resolved revision/results;
+// media identities/hashes are not captured yet.
 [[nodiscard]] std::string serializeRunManifest(const RunReport&);
-struct NameContext {
-    std::string project, track, group, bpm;
-    std::uint64_t counter = 1;
-    std::string region = "";
-};
 // Strict brace expansion, {{ / }} for literals; returns one portable filename
 // component without an extension. Unknown/malformed tokens and empty names throw.
 [[nodiscard]] std::string resolveName(const std::string&, const NameContext&);

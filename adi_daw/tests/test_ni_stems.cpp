@@ -210,6 +210,9 @@ void integration() {
           "NI Stems rejects its final suffix overflow although the intermediate WAV name fits");
     render::Queue queue;
     const auto id = queue.add(job);
+    const auto capturedHead = OpJournal(*store).headSeq();
+    check(capturedHead.has_value(), "NI source has a real journalled media-import head");
+    std::int64_t laterHead = 0;
     unsigned services = 0;
     static unsigned publicationSyncs = 0;
     publicationSyncs = 0;
@@ -220,8 +223,13 @@ void integration() {
     };
     control.serviceHost = [&] {
         if (++services == 2) {
-            store->db().exec(
-                "UPDATE tracks SET name='Edited After Snapshot' WHERE id=1; DELETE FROM audio_clips;");
+            OpRequest rename;
+            rename.opType = "track.rename";
+            rename.payload = {{"id", 1}, {"name", "Edited After Snapshot"}};
+            const auto committed = OpJournal(*store).commit(rename);
+            check(committed.ok && !committed.seqs.empty(), "NI original project changes after its private capture");
+            if (!committed.seqs.empty()) laterHead = committed.seqs.back();
+            store->db().exec("DELETE FROM audio_clips;");
         }
     };
     queue.run({}, control);
@@ -238,6 +246,17 @@ void integration() {
               runManifest["members"][0]["result"]["publication"]["durability_confirmed"] == false &&
               runManifest["members"][0]["job"]["requested_profile"]["container"] == "ni_stems_mp4",
           "NI publication warning and format are retained in the run manifest");
+    check(result.snapshot && capturedHead && result.snapshot->journalHead == *capturedHead &&
+              laterHead > *capturedHead && result.snapshot->source.trackId == 9 &&
+              result.snapshot->beginSample == 127 && result.snapshot->endSample == 11003 &&
+              result.stemSnapshots.size() == 1 && result.stemSnapshots[0].journalHead == *capturedHead &&
+              result.stemSnapshots[0].source.trackId == 1 && result.stemSnapshots[0].names.track == "Drums",
+          "NI Main and actual stem preserve one original revision, range and names after source edits");
+    check(runManifest["members"][0]["journal_head"] == capturedHead.value_or(-1) &&
+              runManifest["members"][0]["result"]["ni_stem_snapshots"].size() == 1 &&
+              runManifest["members"][0]["result"]["ni_stem_snapshots"][0]["source"]["track_id"] == 1 &&
+              runManifest["members"][0]["result"]["ni_stem_snapshots"][0]["end_sample"] == 11003,
+          "NI run JSON records actual supplied streams without inventing sources for silent slots");
     check(result.framesWritten == 10876 && result.output.filename() == "NI Export.stem.mp4" &&
               clean(dir.path()),
           "queue publishes exact cropped range and removes only its stage");

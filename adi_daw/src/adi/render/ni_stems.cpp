@@ -142,6 +142,9 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
             throw Cancelled{};
         if (rendered.state != JobState::Completed)
             throw std::runtime_error(rendered.error);
+        if (!rendered.snapshot)
+            throw std::runtime_error("NI Main render has no captured project snapshot");
+        result.snapshot = std::move(rendered.snapshot);
         result.framesWritten = rendered.framesWritten;
         result.output = stage.path.parent_path() / rendered.output.filename();
         result.output.replace_extension(".stem.mp4");
@@ -174,6 +177,13 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
                     throw std::runtime_error(rendered.error);
                 if (rendered.framesWritten != result.framesWritten)
                     throw std::runtime_error("NI Stems render ranges diverged");
+                if (!rendered.snapshot || rendered.snapshot->journalHead != result.snapshot->journalHead ||
+                    rendered.snapshot->beginSample != result.snapshot->beginSample ||
+                    rendered.snapshot->endSample != result.snapshot->endSample ||
+                    rendered.snapshot->sampleRate != result.snapshot->sampleRate ||
+                    rendered.snapshot->regionId != result.snapshot->regionId)
+                    throw std::runtime_error("NI Stems project snapshots diverged");
+                result.stemSnapshots.push_back(std::move(*rendered.snapshot));
                 wave = rendered.output;
                 labels.push_back({ni.stems[index].name.empty() ? "Stem " + std::to_string(index + 1)
                                                                : ni.stems[index].name,

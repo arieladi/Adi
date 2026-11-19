@@ -180,6 +180,15 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             // Metadata, device states and playback rows describe one database
             // revision, sampled when this job starts, never when it is queued.
             SQLite::Transaction snapshot(store->db());
+            // Pin the read revision before loading devices (which may service
+            // external writers). Do not use headSeq(): it also returns null on
+            // read errors, indistinguishable there from the legitimate base.
+            std::int64_t journalHead = 0;
+            {
+                SQLite::Statement head(store->db(), "SELECT head_seq FROM op_branches WHERE is_current=1");
+                if (!head.executeStep()) throw std::runtime_error("export project has no current journal branch");
+                if (!head.getColumn(0).isNull()) journalHead = head.getColumn(0).getInt64();
+            }
             auto renderSpec=job.session;
             renderSpec.performanceState=false;
             renderSpec.exporting=true;
@@ -208,6 +217,8 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             if (job.regionId) resolveRegion(job, session.model(), *snap->tempo, names);
             names.bpm = textproj::renderF64(snap->tempo->bpmAt(snap->tempo->secondsToTicks(
                 static_cast<double>(job.beginSample) / job.session.sampleRate)));
+            result.snapshot = RenderSnapshot{journalHead, job.source, job.beginSample, job.endSample,
+                job.session.sampleRate, job.regionId, names};
             snapshot.commit();
         }
         const auto filename = resolveName(job.nameTemplate, names) + ".wav";
@@ -387,6 +398,15 @@ std::string serializeRunManifest(const RunReport& run) {
         return {{"track_id", source.trackId},
                 {"tap", source.tap == engine::OfflineTap::PreFader ? "pre_fader" : "post_fader"}};
     };
+    const auto snapshotValue = [&](const RenderSnapshot& snapshot) -> Json {
+        return {{"journal_head", snapshot.journalHead}, {"source", sourceValue(snapshot.source)},
+            {"begin_sample", snapshot.beginSample}, {"end_sample", snapshot.endSample},
+            {"sample_rate", snapshot.sampleRate},
+            {"region_id", snapshot.regionId ? Json(*snapshot.regionId) : Json(nullptr)},
+            {"names", {{"project", snapshot.names.project}, {"track", snapshot.names.track},
+                {"group", snapshot.names.group}, {"bpm", snapshot.names.bpm},
+                {"counter", snapshot.names.counter}, {"region", snapshot.names.region}}}};
+    };
     Json manifest{{"version", 1}, {"planned_count", run.plannedCount},
                   {"capture_complete", run.captureComplete}, {"members", Json::array()}};
     for (const auto& member : run.members) {
@@ -428,7 +448,14 @@ std::string serializeRunManifest(const RunReport& run) {
         if (member.result) {
             const auto& result = *member.result;
             Json value{{"output", media::pathUtf8(result.output)}, {"frames_written", result.framesWritten},
-                {"error", result.error}, {"publication", nullptr}, {"normalization", nullptr}};
+                {"error", result.error}, {"publication", nullptr}, {"normalization", nullptr},
+                {"resolved_snapshot", nullptr}, {"ni_stem_snapshots", Json::array()}};
+            if (result.snapshot) {
+                item["journal_head"] = result.snapshot->journalHead;
+                value["resolved_snapshot"] = snapshotValue(*result.snapshot);
+            }
+            for (const auto& stem : result.stemSnapshots)
+                value["ni_stem_snapshots"].push_back(snapshotValue(stem));
             if (result.publication) value["publication"] = {
                 {"durability_confirmed", result.publication->durabilityConfirmed},
                 {"used_fallback", result.publication->usedFallback}, {"warning", result.publication->warning}};
