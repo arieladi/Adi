@@ -107,33 +107,55 @@ void observeLimiterReduction() {
     held = doc->observeLimiterReduction(enabled->id, enabled->runtime);
     check(held && !held.read(), "enabling the graph device opens a fresh telemetry epoch");
 
-    check(doc->deviceAction("device.remove", {{"id", old->id}}) &&
-          doc->addMixFunction(mix::Function::Compressor, 3),
-          "remove a limiter and reuse its ID for a genuinely different function");
+    check(doc->deviceAction("device.remove", {{"id", old->id}}), "remove the observed limiter");
+    check(!held && !held.read() && !source->observed() &&
+          !doc->observeLimiterReduction(old->id, enabled->runtime),
+          "retirement immediately revokes the held lease and refuses new readers");
+
+    // Undo can restore the same device ID and retained runtime. A previously
+    // revoked observer must still stay outside its new capture interval.
+    check(doc->ops().undo().ok && doc->synchronise(), "Undo restores the retired limiter");
+    const auto restored = limiter();
+    auto* restoredInstance = doc->session().instanceFor(old->id);
+    check(restored && restored->id == old->id && restoredInstance == instance,
+          "Undo restores the original ID and runtime");
+    if (!restored || !restoredInstance) return;
+    auto revived = doc->observeLimiterReduction(restored->id, restored->runtime);
+    check(revived && !revived.read() && !held && !held.read(),
+          "the restored runtime admits only a fresh lease");
+    render(*restoredInstance, 14, 0, 256);
+    check(revived.read() && revived.read()->renderBlock == 14 && !held.read(),
+          "only the fresh lease sees audio from the restored runtime");
+    held.reset();
+    check(source->observed() && revived.read(), "closing the stale lease leaves the restored runtime's fresh reader active");
+    check(doc->ops().redo().ok && doc->synchronise() && !revived && !revived.read() && !source->observed(),
+          "Redo retires the restored runtime and revokes its fresh reader");
+
+    check(doc->addMixFunction(mix::Function::Compressor, 3), "add a genuinely different native function");
     doc->tick(0);
     const auto publication = doc->parameterFeed().current();
     const auto foreign = std::find_if(publication->begin(), publication->end(),
-        [old](const auto& row) { return row.id == old->id && row.uid == "org.adidaw.mix.compressor"; });
-    check(foreign != publication->end() && !foreign->runtime.sameInstance(old->runtime) &&
-          !held && !held.read() && !source->observed(),
-          "retirement revokes held readers and reusing the numeric ID cannot revive them");
+        [](const auto& row) { return row.uid == "org.adidaw.mix.compressor"; });
+    check(foreign != publication->end() && foreign->id > old->id &&
+          !foreign->runtime.sameInstance(old->runtime) && !revived && !revived.read() && !source->observed(),
+          "a newly authored function uses an ID beyond the retained limiter");
     if (foreign == publication->end()) return;
     check(!doc->observeLimiterReduction(foreign->id, old->runtime) &&
           !doc->observeLimiterReduction(foreign->id, foreign->runtime),
-          "a reused ID accepts neither a stale runtime nor the non-limiter replacement");
+          "the new device rejects both the retired token and non-limiter telemetry");
     check(doc->addMixFunction(mix::Function::Limiter, 3), "another native limiter can be observed independently");
     const auto replacement = limiter();
     check(replacement && !replacement->runtime.sameInstance(old->runtime),
           "the second limiter has a distinct runtime identity");
     if (!replacement) return;
     auto fresh = doc->observeLimiterReduction(replacement->id, replacement->runtime);
-    held.reset();
+    revived.reset();
     auto* next = doc->session().instanceFor(replacement->id);
     check(fresh && !fresh.read() && next && next != instance,
           "the replacement owns an independent fresh subscription");
     if (!next) return;
-    render(*next, 14, 0, 256);
-    check(fresh.read() && fresh.read()->renderBlock == 14,
+    render(*next, 15, 0, 256);
+    check(fresh.read() && fresh.read()->renderBlock == 15,
           "releasing a held stale lease leaves the replacement reading active");
 
     const auto secondSource = device::limiterReductionSource(*next);
@@ -143,8 +165,8 @@ void observeLimiterReduction() {
     next->prepare(48000, 256);
     auto rearmed = doc->observeLimiterReduction(replacement->id, replacement->runtime);
     fresh.reset();
-    render(*next, 15, 0, 256);
-    check(rearmed && rearmed.read() && rearmed.read()->renderBlock == 15,
+    render(*next, 16, 0, 256);
+    check(rearmed && rearmed.read() && rearmed.read()->renderBlock == 16,
           "reprepare requires a fresh lease and stale release cannot alter it");
     doc.reset();
     check(!rearmed && !rearmed.read() && secondSource && !secondSource->observed(),

@@ -10252,7 +10252,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   "the visible model and generic panels show actual device order and the shared parameter feed");
             if (first && first->controls.size() == 2) {
                 const auto stable = surface.model().chainRef(2, 30);
-                const auto itemTime = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+                const auto itemTime = std::max(baseTime + surface.model().constants().heightAnimMs + 1,
+                    static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().focusItem(stable, itemTime);
                 surface.frameAt(actual.reader(), itemTime + 80);
                 stack::ItemGeo inspected, sibling;
@@ -10315,7 +10316,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 const auto compactTime = std::max(dragTime + 20,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setAutoZoom(false, compactTime);
-                surface.model().setBaseHeight(44, compactTime);
+                surface.model().focusRow(surface.model().rowRef(2), compactTime);
+                surface.model().setBaseHeight(surface.model().constants().tierFloors[0], compactTime);
                 surface.frameAt(actual.reader(), compactTime + 200);
                 stack::ItemGeo folded;
                 if (const auto i = surface.model().shownIndex(2))
