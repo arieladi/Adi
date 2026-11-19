@@ -14,6 +14,35 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-29 (c): the true-peak brickwall in `LookaheadLimiter`
+
+**`devices/limiter-true-peak` (`d9f8e4d0`), stacked on `devices/true-peak`** (it uses the meter's
+interpolator).
+
+- `setTruePeak(bool)`, **off by default**: the detector is `TruePeakMeter`'s own interpolator
+  (now `TruePeakMeter::design`/`factorFor`, so a limited signal reads at the ceiling on the
+  meter), upsample-and-hold, and each audio sample's target is the ceiling over the largest
+  interpolated value within 2 samples of it. Latency = lookahead + `truePeakDelay()` (8 + 2 at
+  every oversampled rate, 0 from 176.4 kHz where the Annex oversamples by 1), reported, whole
+  samples. `process()` for double as well as float; the delay line is double either way.
+- Measured, on the quarter-rate sine at 45° (+6 dBTP), 11 kHz + 997 Hz, hard-gated quarter-rate
+  bursts, +12 dB noise and +12 dB doublets, at 44.1/48/96 kHz: every sample at or under the
+  ceiling exactly; true peak over the ceiling under 0.001 dB with a lookahead of 64 or more
+  (worst 0.0003, noise) and under 0.05 dB with none (worst 0.025, noise). Without the 2-sample
+  spread the noise residue is 0.28 dB, so the spread stays. The old sample-peak mode leaves
+  +2.96 dB on the quarter-rate sine, asserted.
+- Below the ceiling in true peak: the input, exactly `latencySamples()` late, bit for bit, float
+  and double. Plant: detection back to sample peak -> 47 failures. DSP **262** (was 151); CTest
+  **243/243**.
+
+**PR requested** — title "A true-peak brickwall in LookaheadLimiter, off by default (DEV-29 c,
+EX-05 LD5)"; head `devices/limiter-true-peak` at `d9f8e4d0`; base `devices/true-peak` until the
+stack lands, then `main`. Body: the commit message.
+
+**For the engine (DEV-29 c's other half):** the refine loop (≤ 4 trials, ±3 dB steps, 0.02 LU
+plateau) inside `NormalizationCapture`, with the encoded true-peak check after dither as the final
+gate, is yours; turn the brickwall on with `setTruePeak(true)` and report `latencySamples()`.
+
 ## 2026-11-19 — DEV-14, step 1: a patch's MIDI output comes back on its frame; the host's reset bang
 
 **`devices/pd-midi-out` (`b046391d`), stacked on `devices/pd-block-quantum`.**
