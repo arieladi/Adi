@@ -55,6 +55,43 @@ struct Fixture {
         [this](std::int64_t, ScopePoint) { ++acquireCalls; return tap; },
         [this](std::int64_t, ScopePoint) { ++releaseCalls; }, SharedAnalysis::Mode::Manual};
 };
+void focusScopeBarTiming() {
+    constexpr auto quarter = adi::textproj::kPPQ;
+    const adi::engine::TempoMap constant{{{0, 120., 0}}};
+    using adi::ui::focusScopeBarAtTick;
+    const auto start = focusScopeBarAtTick(0, 48000., constant, {});
+    const auto inside = focusScopeBarAtTick(3 * quarter, 48000., constant, {});
+    const auto next = focusScopeBarAtTick(4 * quarter, 48000., constant, {});
+    check(start && inside && next && start->firstTick == 0 && start->nextTick == 4 * quarter &&
+              start->range.first == 0 && start->range.frames == 96000 && start->range.sampleRate == 48000. &&
+              inside->range.first == start->range.first && inside->range.frames == start->range.frames &&
+              next->firstTick == start->nextTick && next->range.first == 96000 && next->range.frames == 96000,
+          "the Focus interval stays anchored to its bar and advances at the next boundary");
+
+    const adi::engine::TempoMap change{{{0, 120., 0}, {2 * quarter, 60., 0}}};
+    const auto stepped = focusScopeBarAtTick(3 * quarter, 48000., change, {});
+    check(stepped && stepped->range.first == 0 && stepped->range.frames == 144000,
+          "one bar integrates the tempo on both sides of a tempo step");
+
+    const std::vector<adi::textproj::Meter> signatures{{0, 4, 4}, {2 * quarter, 6, 8}};
+    const auto fragment = focusScopeBarAtTick(quarter, 48000., constant, signatures);
+    const auto compound = focusScopeBarAtTick(2 * quarter, 48000., constant, signatures);
+    check(fragment && compound && fragment->nextTick == 2 * quarter && fragment->range.frames == 48000 &&
+              compound->firstTick == fragment->nextTick && compound->nextTick == 5 * quarter &&
+              compound->range.first == 48000 && compound->range.frames == 72000,
+          "a signature change ends the short bar and starts a real six-eighths interval");
+
+    const adi::engine::TempoMap fractional{{{0, 123., 0}}};
+    const auto firstEdge = focusScopeBarAtTick(0, 48000., fractional, {});
+    const auto secondEdge = focusScopeBarAtTick(4 * quarter, 48000., fractional, {});
+    check(firstEdge && secondEdge && firstEdge->range.frames == 93659 && secondEdge->range.first == 93659 &&
+              secondEdge->range.frames == 93658,
+          "adjacent bars round absolute project samples to one shared edge");
+    check(!focusScopeBarAtTick(-1, 48000., constant, {}) && !focusScopeBarAtTick(0, 0., constant, {}) &&
+              !focusScopeBarAtTick(0, 48000., {}, {}) &&
+              !focusScopeBarAtTick(std::numeric_limits<std::int64_t>::max(), 48000., constant, {}),
+          "negative ticks, missing timing and overflowing bars produce no Focus interval");
+}
 void focusScopeWindows() {
     const auto tapA = std::make_shared<ScopeTap>(48000., 1.);
     const auto tapB = std::make_shared<ScopeTap>(48000., 1.);
@@ -1636,7 +1673,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeWindows(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeWindows(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

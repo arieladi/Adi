@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "shared_analysis.hpp"
+#include "adi/engine/snapshot.hpp"
+#include "adi/textproj.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -14,6 +16,15 @@ struct FocusScopeRange {
     std::size_t frames = 0;
     double sampleRate = 0.;
 };
+struct FocusScopeBar {
+    std::int64_t firstTick = 0, nextTick = 0;
+    FocusScopeRange range;
+};
+
+inline std::optional<FocusScopeBar> focusScopeBarAtTick(std::int64_t, double, const engine::TempoMap &,
+                                                        const std::vector<textproj::Meter> &) noexcept {
+    return {};
+}
 struct FocusSumReading {
     std::array<double, 2> peak{}, rms{};
 };
