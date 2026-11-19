@@ -64,10 +64,64 @@ method); Live's files and renders stay in the director's research.
     Peak/RMS/Expand mode, Lin/Log envelope, Dry/Wet). At those defaults: a 1 kHz sine in 6 dB steps
     from -48 to 0 dBFS, 500 ms each, for the static curve; a 1 kHz sine at -6 dBFS switched on for
     300 ms after silence, then off, for attack and release; an impulse of 0.5 for the delay.
+18. **Beat Repeat (ADR-0249 d7; it is built after 3 December, its reading may come now).** A fresh
+    Beat Repeat at 48 kHz, every control as shown. Then feed it a click every 1/16 at a different
+    level each, so every frame can be told apart:
+    - the capture: which frames the first repeat holds, and whether the trigger frame is its first;
+    - a Grid change while repeating, at a marked time: the first slice it affects, and where
+      playback resumes;
+    - at 117 BPM and Grid 1/16 (a slice of 6,153.846 samples): the first frame of each of 16
+      successive repeats, to tell a carried fractional phase from per-slice rounding;
+    - a slice that wraps across two marked levels: the length and weights of the join;
+    - a locate while it repeats, including one back to the same position: which earlier frames it
+      can still play;
+    - at 20 BPM with the longest Interval and Grid: the oldest input frame it plays, in samples, at
+      44.1, 48 and 96 kHz.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
+
+## 2026-11-19 — main's PD_FLOATSIZE=64 leg is red: two fixes, OneShot's outputs and parameters rounded through float
+
+**For win: main's `Pd tier at PD_FLOATSIZE=64` job has failed since `bedee5ab`.** The job's comment
+puts the fix at the head of the queue. Both causes are this lane's devices, and both fixes are
+ready.
+
+- **PR requested: `devices/oneshot-double`** (552851b2, one commit on 88e2d94e), base `main`. The
+  cause: `adi.oneshot~` was the one external that handed Pd's output vectors to its core as
+  `float*`. At 64 those vectors are double, so the patch played garbage (`adi_oneshot_pd_tests`, 6
+  of 38 failing on main, as in CI). It now takes `FloatSignals`' float views of its two outputs, as
+  every other external does; at 32 they are the vectors themselves. Result: 38/38 at 64, and CTest
+  246/246 at 64 and at 32 (MSVC Debug, /W4 /WX).
+- **PR requested: `devices/pd-param-float`** (ac0b7b1b, one commit on 88e2d94e), base `main`.
+  - The cause: at 64, fourteen externals passed a parameter to their core as the double
+    `atom_getfloat` returns, where the native path rounds it through float as Pd at 32 does. A
+    default that float holds exactly hides this. 0.9 Hz, 0.7 or 0.2977 does not, and the two paths
+    then drift apart. That is why `chorus-ensemble-defaults` and `reverb-defaults` fail native
+    parity at 64, and why AutoFilter and EQ Eight differed by 2^-25 on main.
+  - The fix: every external rounds the value through float.
+  - The test is first: the 64-bit parity check, which allowed one float ulp, is now exact as at 32.
+    On main it fails for AutoFilter and EQ Eight; with the fix all 17 canvases match bit for bit at
+    64. CTest 246/246 at 32. At 64 it is 245/246, the one left being OneShot's, fixed by the branch above. With both fixes and the two defaults branches merged on main, native parity, OneShot, Reverb and Chorus-Ensemble all pass at 64.
+- **Order:** both go ahead of this lane's other branches, `pd-param-float` before
+  `chorus-ensemble-defaults` and `reverb-defaults`. The combined tree of the 18 branches (entry
+  below) passes 253/253 at 32. At 64 it fails exactly these two suites, both fixed here.
+
+## 2026-11-19 — ADR-0249 read: the new effects come after 3 December; Beat Repeat's questions are on the list
+
+ADR-0249 (win's entry of tonight) answers the question to win below. Compressor, Glue Compressor,
+Gate and Limiter come after 3 December, then Live's Beat Repeat, then the LFO and Shaper modulator
+kernels (DEV-07's device side), then the rest of DEV-22. **Struck:** the question "new effects
+before 3 December?". `devices/compressor-core` waits for that turn and for reading 17.
+- **Beat Repeat's questions** are reading 18 under FOR THE DIRECTOR, as d7 asks: the capture, a Grid
+  change while repeating, the fractional phase of a slice, the joins, a locate, and the longest
+  history at 20 BPM. The device is "built, not verified" until a Live 12.4 render agrees.
+- **The shared stereo-history kernel** with ADI-Shaper's Time stage: this lane's answer stands (the
+  clones entry below). One ring with an integer-age read, separate storage per instance, decided
+  when Beat Repeat starts.
+- **Item 5's check against the manual's audio effects chapter** (win's late entry) is done when this
+  lane reaches item 5, as asked: Live's Limiter, Auto Pan and Tuner are noted as queued.
 
 ## 2026-11-19 — for win: this lane's 18 open branches merge onto main together, in this order
 
