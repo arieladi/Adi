@@ -101,13 +101,7 @@ MixOutputMeter::MixOutputMeter() {
     floatButton.setToggleState(true, juce::dontSendNotification);
     floatButton.onClick = [this] { repaint(plot_); };
     resetButton.setTitle("Reset Main meter interval");
-    resetButton.onClick = [this] {
-        if (eligible() && lease_.restartStereoMeter()) {
-            shown_.reset();
-            main_.reset();
-            repaint(plot_);
-        }
-    };
+    resetButton.onClick = [this] { resetInterval(); };
     for (juce::Component *child :
          std::array<juce::Component *, 5>{&scaleBox, &weightingBox, &channelBox, &floatButton, &resetButton})
         addAndMakeVisible(child);
@@ -159,6 +153,13 @@ void MixOutputMeter::resetProfile() {
     shown_.reset();
     main_.reset();
     repaint(plot_);
+}
+void MixOutputMeter::resetInterval() {
+    if (eligible() && lease_.restartStereoMeter()) {
+        shown_.reset();
+        main_.reset();
+        repaint(plot_);
+    }
 }
 void MixOutputMeter::stopWatching() {
     for (auto &other : ancestors_)
@@ -251,6 +252,11 @@ void MixOutputMeter::resized() {
 void MixOutputMeter::paint(juce::Graphics &g) {
     g.fillAll(look::panel);
     paintReadings(g, plot_);
+}
+void MixOutputMeter::mouseUp(const juce::MouseEvent &event) {
+    if (event.mods.isLeftButtonDown() && !event.mods.isPopupMenu() && event.mouseWasClicked() &&
+        plot_.contains(event.getMouseDownPosition()) && plot_.contains(event.getPosition()))
+        resetInterval();
 }
 void MixOutputMeter::paintReadings(juce::Graphics &g, juce::Rectangle<int> area) {
     g.setColour(look::display);

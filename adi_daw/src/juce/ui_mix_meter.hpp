@@ -19,6 +19,7 @@ class MixOutputMeter final : public juce::Component, private juce::ComponentList
     juce::ComboBox listenBox;
     void resized() override;
     void paint(juce::Graphics &) override;
+    void mouseUp(const juce::MouseEvent &) override;
     bool subscribed() const noexcept { return static_cast<bool>(lease_); }
     std::shared_ptr<const SharedAnalysis::StereoMeterResult> reading() const noexcept { return shown_; }
     std::optional<MainMeterSnapshot> loudness() const noexcept { return main_; }
@@ -30,6 +31,7 @@ class MixOutputMeter final : public juce::Component, private juce::ComponentList
     void chooseAudition(Audition mode);
     void stopAudition();
     void resetProfile();
+    void resetInterval();
     void release();
     bool eligible() const noexcept;
     void componentVisibilityChanged(juce::Component &) override;

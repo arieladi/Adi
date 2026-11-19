@@ -480,11 +480,41 @@ void permanentMainMeter() {
     meter.scaleBox.setSelectedId(3, juce::sendNotificationSync);
     meter.frame(f.broker, 1, source);
     check(meter.reading() == initial && reads == 1, "K scale relabels the same reading and does not rearm analysis");
+    const auto releaseMouse = [&](juce::Point<float> down, juce::Point<float> up, juce::ModifierKeys buttons,
+                                  bool dragged = false) {
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), up, buttons,
+                                    1.f, 0.f, 0.f, 0.f, 0.f, &meter, &meter, now, down, now, 1, dragged};
+        meter.mouseUp(event);
+    };
+    const juce::Point<float> plotClick{76.f, 160.f};
+    const juce::Point<float> controlsClick = meter.weightingBox.getBounds().getCentre().toFloat();
+    {
+        auto otherReader = f.broker->acquireStereoMeter(1, {});
+        check(otherReader.readStereoMeter() == initial, "another same-profile reader shares the Main interval");
+        releaseMouse(plotClick, plotClick, juce::ModifierKeys::rightButtonModifier);
+        releaseMouse(plotClick, plotClick, juce::ModifierKeys::leftButtonModifier, true);
+        releaseMouse(plotClick, controlsClick, juce::ModifierKeys::leftButtonModifier);
+        releaseMouse(controlsClick, plotClick, juce::ModifierKeys::leftButtonModifier);
+        check(meter.reading() == initial && otherReader.readStereoMeter() == initial,
+              "only a primary click within the plot restarts the meter");
+        releaseMouse(plotClick, plotClick, juce::ModifierKeys::leftButtonModifier);
+        meter.frame(f.broker, 1, source);
+        check(!meter.reading() && !meter.loudness() && !otherReader.readStereoMeter() && reads == 1,
+              "a click on the meter restarts the shared interval without reading or resetting Main loudness");
+        const auto afterClick = f.broker->stats();
+        check(meter.subscribed() && afterClick.consumers == 2 && afterClick.domains == 1 &&
+                  afterClick.spectralPlans == 0 && f.acquired == 1 && f.released == 0,
+              "meter click keeps both observers on one live tap without an FFT");
+        f.write(1024); f.broker->pump(); meter.frame(f.broker, 1, source);
+        check(meter.reading() && meter.reading() == otherReader.readStereoMeter() && meter.loudness() && reads == 2,
+              "both observers resume at the first new result and Main loudness is projected again");
+    }
     meter.channelBox.setSelectedId(2, juce::sendNotificationSync);
     meter.weightingBox.setSelectedId(2, juce::sendNotificationSync);
     meter.frame(f.broker, 1, source);
     check(!meter.reading() && meter.scaleBox.getSelectedId() == 3, "M/S and A weighting start a fresh measurement, retaining its scale");
-    f.write(1024); f.broker->pump(); meter.frame(f.broker, 1, source);
+    f.write(2048); f.broker->pump(); meter.frame(f.broker, 1, source);
     check(meter.reading() && meter.reading()->reading.maximumPeak[1] == 0.,
           "in-phase stereo shows no Side signal after changing the meter profile");
     meter.resetButton.onClick();
@@ -508,7 +538,7 @@ void permanentMainMeter() {
               calls.size() == 5 && calls.back() == MixOutputMeter::Audition::Stereo && meter.listenBox.getSelectedId() == 1,
           "an ancestor hide releases the meter and ends Filter Listen");
     const auto hiddenReads = reads;
-    f.write(2048); f.broker->pump(); meter.frame(f.broker, 1, source);
+    f.write(3072); f.broker->pump(); meter.frame(f.broker, 1, source);
     check(!meter.reading() && reads == hiddenReads && f.broker->stats().consumers == 0,
           "hidden meter frames make no new analysis demand and poll no loudness");
     owner.setVisible(true);
