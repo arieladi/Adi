@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-11 settings persistence scheduling
+
+**PR requested** — `engine-win/settings-debounce`, `ead3d01b3640688fb3785aaae7312112be64606f`, stacked on `engine-win/settings-last-good`. The app applies Preferences, command, device/channel and import-prompt changes immediately. The owner timer saves after 500 ms of quiet. A failed save retains pending edits and retries after 1, 2, 4, 8, 16 and then 30 seconds. An edit cannot bypass backoff. Normal quit flushes pending edits and reports a final failure; the shutdown path covers direct app exit. Existing explicit save remains available. The separate change log still writes on edit. A foreign file refuses in-memory changes as well as publication. Strict x64 MSVC built the desktop app and passed 226 settings and 2,746 UI shell checks, including real backups and reopen after the UI's scheduled write. Merge the adjacent load-status guard additions from the schema migration branch when combining these slices.
+
 ## 2026-11-19 — EX-09 native render job JSON
 
 **PR requested** — `engine-win/render-job-json`, `3e6b6352670808ac5ec944fc91c141a772824565`, fresh main base `315b9433`. The strict versioned codec records the persistent Job fields on that base, keeps native UTF-8 paths and exact integer values, and rejects unknown fields, duplicate keys, unsupported enums and live-only objects. It shares the pure validator with queue admission and rendering. Native strict x64 MSVC passed 364 checks across the codec, render queue and NI metadata suites. The NI AAC codec was unavailable in that build. EX-07's unmerged collision field must join the codec and its tests before persisted jobs can use it. User and project preset stores, field-group application and queue API work remain open.
