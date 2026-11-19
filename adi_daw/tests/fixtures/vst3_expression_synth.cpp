@@ -40,6 +40,8 @@
 // `adiFixtureInProcess`, how many process calls are inside a plugin now; and
 // `adiFixtureOverlaps`, how many setActive or setupProcessing calls arrived
 // while a process call was inside the same plugin.
+// `adiFixtureCompletedProcessCalls` counts successfully rendered nonempty
+// blocks, so a passthrough fixture can prove it participated in a Session.
 //
 // Each voice is a sine at the note's pitch, with pressure as amplitude
 // (0.25 + 0.75 p) and timbre as a 3rd harmonic (0.05 + 0.95 t) -- chosen so a
@@ -84,6 +86,7 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include "scanner_case_controls.hpp"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -127,6 +130,8 @@ std::atomic<int> g_inProcess{0};
 // Owned headless auxiliary-bus observations; never contribute to the output.
 std::atomic<double> g_keyFirst{0}, g_keyLast{0};
 std::atomic<int> g_keyChannels{0},g_mainInPlace{0};
+std::atomic<std::uint64_t> g_completedProcessCalls{0};
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 std::array<std::atomic<double>, 12> g_transport{};
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
@@ -346,6 +351,7 @@ public:
             }
         }
         render(data);
+        if (data.numSamples > 0) g_completedProcessCalls.fetch_add(1, std::memory_order_relaxed);
         return kResultOk;
     }
 
@@ -695,6 +701,7 @@ public:
     uint32 PLUGIN_API release() override { return 1; }
 
     tresult PLUGIN_API getFactoryInfo(PFactoryInfo* info) override {
+        scanner_case::receipt("getFactoryInfo");
         if (info == nullptr) return kInvalidArgument;
         *info = PFactoryInfo{};
         std::snprintf(info->vendor, sizeof info->vendor, "adi_daw tests");
@@ -702,8 +709,12 @@ public:
         info->flags = PFactoryInfo::kNoFlags;
         return kResultOk;
     }
-    int32 PLUGIN_API countClasses() override { return 3; }
+    int32 PLUGIN_API countClasses() override {
+        scanner_case::receipt("countClasses");
+        return scanner_case::enabled()?(scanner_case::option("ADI_SCAN_ONE_CLASS")?1:2):3;
+    }
     tresult PLUGIN_API getClassInfo(int32 index, PClassInfo* info) override {
+        scanner_case::receipt("getClassInfo");
         PClassInfo2 i2{};
         if (getClassInfo2(index, &i2) != kResultOk || info == nullptr) return kInvalidArgument;
         *info = PClassInfo{};
@@ -714,6 +725,7 @@ public:
         return kResultOk;
     }
     tresult PLUGIN_API getClassInfo2(int32 index, PClassInfo2* info) override {
+        scanner_case::receipt("getClassInfo2");
         if (info == nullptr || index < 0 || index > 2) return kInvalidArgument;
         *info = PClassInfo2{};
         const TUID* cids[3] = {&kMpeCid, &kNoteExprCid, &kPlainCid};
@@ -724,11 +736,13 @@ public:
         std::snprintf(info->name, sizeof info->name, "%s", names[index]);
         std::snprintf(info->subCategories, sizeof info->subCategories, "Instrument|Synth");
         std::snprintf(info->vendor, sizeof info->vendor, "adi_daw tests");
-        std::snprintf(info->version, sizeof info->version, "1.0.0");
+        std::snprintf(info->version, sizeof info->version, "%s",
+            scanner_case::enabled() && scanner_case::option("ADI_SCAN_VERSION_TWO")?"2.0.0":"1.0.0");
         std::snprintf(info->sdkVersion, sizeof info->sdkVersion, "%s", kVstVersionString);
         return kResultOk;
     }
     tresult PLUGIN_API createInstance(FIDString cid, FIDString wanted, void** obj) override {
+        scanner_case::receipt("createInstance");
         if (obj == nullptr) return kInvalidArgument;
         *obj = nullptr;
         TUID want;
@@ -749,6 +763,13 @@ public:
 }  // namespace
 
 extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
+    scanner_case::receipt("GetPluginFactory");
+    if(scanner_case::enabled()) {
+        const auto failure=scanner_case::option("ADI_SCAN_FAIL");
+        if(failure==1)return nullptr;
+        if(failure==2)std::this_thread::sleep_for(std::chrono::seconds(15));
+        if(failure==3)std::_Exit(73);
+    }
     static Factory factory;
     return &factory;
 }
@@ -757,6 +778,9 @@ extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureLiveSynths() { return g_liveSynths.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureOverlaps() { return g_overlaps.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureInProcess() { return g_inProcess.load(); }
+extern "C" SMTG_EXPORT_SYMBOL std::uint64_t adiFixtureCompletedProcessCalls() {
+    return g_completedProcessCalls.load(std::memory_order_relaxed);
+}
 extern "C" SMTG_EXPORT_SYMBOL void adiFixtureReadTransport(double* output) {
     for (std::size_t i = 0; i < g_transport.size(); ++i)
         output[i] = g_transport[i].load(std::memory_order_relaxed);

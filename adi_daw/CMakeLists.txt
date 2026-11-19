@@ -289,6 +289,9 @@ add_library(adi_core STATIC
     src/adi/plugin_registry.cpp
     src/adi/scan_process.cpp
     src/adi/plugin_scanner.cpp
+    src/adi/scan_catalogue.cpp
+    src/adi/scan_prune.cpp
+    src/adi/scan_stamp.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
@@ -940,6 +943,24 @@ target_compile_definitions(adi_plugin_scanner_tests PRIVATE
 add_dependencies(adi_plugin_scanner_tests adi_plugin_scanner adi_scan_clap_fixture adi_scan_clap_static_fixture)
 add_test(NAME adi_plugin_scanner_tests COMMAND adi_plugin_scanner_tests)
 
+add_executable(adi_scan_self_test_tests tests/test_scan_self_test.cpp)
+target_link_libraries(adi_scan_self_test_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_scan_self_test_tests PRIVATE
+    ADI_SCAN_HELPER="$<TARGET_FILE:adi_plugin_scanner>"
+    ADI_SCAN_FIXTURE="$<TARGET_FILE:adi_scan_clap_fixture>")
+add_dependencies(adi_scan_self_test_tests adi_plugin_scanner adi_scan_clap_fixture)
+add_test(NAME adi_scan_self_test_tests COMMAND adi_scan_self_test_tests)
+
+add_executable(adi_scan_cache_tests tests/test_scan_cache.cpp)
+target_link_libraries(adi_scan_cache_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scan_cache_tests COMMAND adi_scan_cache_tests)
+add_executable(adi_scan_prune_tests tests/test_scan_prune.cpp)
+target_link_libraries(adi_scan_prune_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scan_prune_tests COMMAND adi_scan_prune_tests)
+add_executable(adi_scan_catalogue_tests tests/test_scan_catalogue.cpp)
+target_link_libraries(adi_scan_catalogue_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scan_catalogue_tests COMMAND adi_scan_catalogue_tests)
+
 add_executable(adi_scan_process_tests tests/test_scan_process.cpp)
 target_link_libraries(adi_scan_process_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_scan_process_tests COMMAND adi_scan_process_tests)
@@ -1419,6 +1440,7 @@ if(ADI_WITH_JUCE)
         JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0 JUCE_DISABLE_JUCE_VERSION_PRINTING=1
         JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_VST=0 JUCE_PLUGINHOST_AU=0
         JUCE_PLUGINHOST_LV2=0 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_ARA=0)
+    target_compile_definitions(adi_scan_self_test_tests PRIVATE ADI_EXPECT_SCAN_VST3=1)
     get_target_property(_adi_scan_incs juce::juce_audio_processors_headless INTERFACE_INCLUDE_DIRECTORIES)
     if(_adi_scan_incs)
         target_include_directories(adi_plugin_scanner SYSTEM PRIVATE ${_adi_scan_incs})
@@ -1640,6 +1662,19 @@ if(ADI_WITH_JUCE)
         target_include_directories(adi_vst3_scanner_tests SYSTEM PRIVATE ${_adi_scan_incs})
         add_dependencies(adi_vst3_scanner_tests adi_plugin_scanner adi_test_vst3)
         add_test(NAME adi_vst3_scanner_tests COMMAND adi_vst3_scanner_tests)
+        if(WIN32)
+            # DEV-25's Windows path aliases and actual PE size/time replacement.
+            # No installed plug-ins or audio driver; every candidate is owned.
+            add_executable(adi_scanner_case_sequence_tests tests/test_scanner_case_sequence.cpp)
+            target_link_libraries(adi_scanner_case_sequence_tests PRIVATE adi_core juce::juce_audio_processors_headless)
+            get_target_property(_adi_scanner_case_defs adi_vst3_scanner_tests COMPILE_DEFINITIONS)
+            target_compile_definitions(adi_scanner_case_sequence_tests PRIVATE ${_adi_scanner_case_defs}
+                ADI_SCAN_MODULE="$<TARGET_FILE:adi_test_vst3>")
+            target_include_directories(adi_scanner_case_sequence_tests SYSTEM PRIVATE ${_adi_scan_incs})
+            add_dependencies(adi_scanner_case_sequence_tests adi_plugin_scanner adi_test_vst3)
+            add_test(NAME adi_scanner_case_sequence_tests COMMAND adi_scanner_case_sequence_tests)
+            set_tests_properties(adi_scanner_case_sequence_tests PROPERTIES TIMEOUT 45)
+        endif()
     endif()
 
     # adi_core carries device_core.cpp and, through its PUBLIC include dir, the
@@ -1686,7 +1721,7 @@ if(ADI_WITH_JUCE)
     target_compile_features(adi_play_render_tests PRIVATE cxx_std_20)
     get_target_property(_adi_play_defs adi_play COMPILE_DEFINITIONS)
     target_compile_definitions(adi_play_render_tests PRIVATE ${_adi_play_defs})
-    target_link_libraries(adi_play_render_tests PRIVATE adi_core
+    target_link_libraries(adi_play_render_tests PRIVATE adi_core adi_settings
         juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
     if(_adi_proc_incs)
         target_include_directories(adi_play_render_tests SYSTEM PRIVATE ${_adi_proc_incs})
@@ -1695,6 +1730,17 @@ if(ADI_WITH_JUCE)
     if(TARGET adi_test_vst3)
         add_dependencies(adi_play adi_test_vst3)
         target_compile_definitions(adi_play PRIVATE ADI_TEST_VST3="${_adi_fixture}")
+        add_dependencies(adi_play_render_tests adi_test_vst3 adi_scan_cache_tests)
+        target_compile_definitions(adi_play_render_tests PRIVATE
+            ADI_CATALOGUE_FIXTURE="${_adi_fixture}"
+            ADI_DISCOVERY_TEST_HELPER="$<TARGET_FILE:adi_scan_cache_tests>"
+            ADI_CATALOGUE_SCANNER="$<TARGET_FILE:adi_plugin_scanner>")
+        add_library(adi_catalogue_clap_fixture MODULE tests/fixtures/catalogue_clap.cpp)
+        target_include_directories(adi_catalogue_clap_fixture SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
+        target_link_libraries(adi_catalogue_clap_fixture PRIVATE adi_warnings)
+        set_target_properties(adi_catalogue_clap_fixture PROPERTIES PREFIX "" SUFFIX ".clap")
+        add_dependencies(adi_play_render_tests adi_catalogue_clap_fixture)
+        target_compile_definitions(adi_play_render_tests PRIVATE ADI_CATALOGUE_CLAP="$<TARGET_FILE:adi_catalogue_clap_fixture>")
     endif()
 
     target_link_libraries(adi_audio_probe PRIVATE
@@ -1725,7 +1771,7 @@ if(ADI_WITH_JUCE)
     # our strict warning policy on our sources, as the scanner already does,
     # rather than applying it to those third-party module implementations.
     set(_adi_juce_owned_sources)
-    foreach(_adi_juce_target IN ITEMS adi_vst3_probe adi_vst3_scanner_tests adi_vst3_key_tests
+    foreach(_adi_juce_target IN ITEMS adi_vst3_probe adi_vst3_scanner_tests adi_vst3_key_tests adi_scanner_case_sequence_tests
                                     adi_play adi_play_render_tests adi_audio_probe)
         if(TARGET ${_adi_juce_target})
             get_target_property(_adi_juce_sources ${_adi_juce_target} SOURCES)

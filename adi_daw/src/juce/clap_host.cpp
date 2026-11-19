@@ -4,6 +4,7 @@
 
 #include "juce/clap_host.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/scan_batch.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1981,56 +1982,44 @@ ClapLibrary* ClapHost::libraryFor(const std::string& path, std::string& error) {
 }
 
 std::vector<std::string> ClapHost::findBundles(const std::vector<std::string>& paths) {
-    if(audio::onAudioThread)return {};
-    namespace fs = std::filesystem;
-    std::vector<std::string> out;
-    for (const auto& bytes : paths) {
-        const fs::path dir(std::u8string(bytes.begin(),bytes.end()));
-        std::error_code ec;
-        if (!fs::is_directory(dir, ec)) continue;
-        // skip_permission_denied: one unreadable vendor folder must not end
-        // the walk for everything after it.
-        fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
-        const fs::recursive_directory_iterator end;
-        for (; !ec && it != end; it.increment(ec)) {
-            std::string ext = pathBytes(it->path().extension());
-            for (char& c : ext) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-            if (ext != ".clap") continue;
-            out.push_back(pathBytes(it->path()));
-            std::error_code dirEc;
-            if (it->is_directory(dirEc)) it.disable_recursion_pending();   // a macOS bundle
-        }
-    }
-    std::sort(out.begin(), out.end());
-    out.erase(std::unique(out.begin(), out.end()), out.end());
-    return out;
+    return scan::findCandidates(paths, ".clap");
 }
 
 scan::Report ClapHost::scan(const std::vector<std::string>& paths,const scan::Config& config) {
     scan::Report report;
     if(audio::onAudioThread){report.complete=false;return report;}
     const auto bundles=findBundles(paths);
-    if(bundles.empty()){found_.clear();return report;}
-    std::string error;auto scanner=scan::Scanner::open(config,error);
-    if(!scanner){report.complete=false;report.failures.push_back({"",error,scan::State::Unavailable});return report;}
     std::vector<ClapPluginRef> found;
-    for(const auto& path:bundles) {
-        const auto result=scanner->probe("clap",std::filesystem::path(std::u8string(path.begin(),path.end())));
+    const auto probe = [&](scan::Scanner& scanner, std::size_t index) {
+        const auto& path = bundles[index];
+        return scanner.probe("clap", std::filesystem::path(std::u8string(path.begin(), path.end())));
+    };
+    const auto accept = [&](std::size_t index, const scan::Result& result) {
+        const auto& path = bundles[index];
         if(result.state!=scan::State::Ready) {
             report.failures.push_back({result.path.empty()?path:result.path,result.error,result.state});
             if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
-                report.complete=false;report.cancelled=result.state==scan::State::Cancelled;return report;
+                report.cancelled=result.state==scan::State::Cancelled;
+                return false;
             }
-            continue;
+            return true;
         }
         if(result.plugins.size()>scan::kMaximumPlugins-found.size()) {
-            report.complete=false;report.failures.push_back({path,"CLAP catalogue descriptor bound",scan::State::Invalid});return report;
+            report.failures.push_back({path,"CLAP catalogue descriptor bound",scan::State::Invalid});
+            return false;
         }
         for(const auto& plugin:result.plugins) {
             ClapPluginRef value;value.bundlePath=result.path;value.id=plugin.id;value.name=plugin.name;
             value.vendor=plugin.vendor;value.version=plugin.version;value.features=plugin.features;
             value.isInstrument=plugin.instrument;found.push_back(std::move(value));
         }
+        return true;
+    };
+    std::string error;
+    report.complete = scan::detail::visitProbes(bundles.size(), config, probe, accept, error);
+    if (!report.complete) {
+        if (!error.empty()) report.failures.push_back({"", std::move(error), scan::State::Unavailable});
+        return report;
     }
     found_=std::move(found);return report;
 }
