@@ -46,6 +46,8 @@ class ExportPage final : public juce::Component {
     std::vector<std::pair<std::int64_t, std::string>> tracks_;
     std::vector<textproj::Meter> meters_;
     bool startOk_ = true, lengthOk_ = true;
+    juce::String shownStart_, shownLength_;
+    std::int64_t exactStart_ = 0, exactLength_ = 0;
     std::vector<std::string> refusals_;
     std::string status_;
     bool rendering_ = false;

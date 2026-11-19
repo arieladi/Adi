@@ -185,18 +185,23 @@ class AdiApplication final : public juce::JUCEApplication,
     // device waits for the engine's render worker (EX-11's engine half), and is refused with that reason.
     void openExport(const ExportChoices &initial) {
         if (exportWindow_) {
-            exportWindow_->toFront(true);
-            return;
+            // Shown again while it is up or rendering; one Escape or the close button hid is made afresh,
+            // with the choices of now.
+            if (exportWindow_->isVisible() || render_.joinable()) {
+                exportWindow_->setVisible(true);
+                exportWindow_->toFront(true);
+                return;
+            }
+            closeExport();
         }
-        if (!document_)
+        if (!document_ || !root_)
             return;
+        // Rendered Track: the tracks in the lanes' order, as the Arrangement shows them.
         std::vector<std::pair<std::int64_t, std::string>> tracks;
         std::vector<textproj::Meter> meters;
-        if (const auto current = document_->view().current()) {
-            for (const auto &t : current->tracks)
-                if (t && t->kind != "master")
-                    tracks.emplace_back(t->id, t->name);
-        }
+        for (const auto &row : root_->arrangement.geometry.rows(root_->reader()))
+            if (row.track != nullptr && row.track->kind != "master")
+                tracks.emplace_back(row.track->id, row.track->name);
         meters = root_->reader().meters();
         auto page = std::make_unique<ExportPage>(initial, std::move(tracks), std::move(meters));
         exportPage_ = page.get();
@@ -250,7 +255,27 @@ class AdiApplication final : public juce::JUCEApplication,
             });
             if (file == juce::File{} || !document_)
                 return;
-            file = file.withFileExtension(".wav");
+            // ".wav" is added to a name without it, never swapped for another extension the name holds; a
+            // file the chooser did not ask about is never replaced.
+            const auto chosenFile = file;
+            file = withExtension(file, "wav");
+            if (file != chosenFile && file.exists()) {
+                if (exportPage_)
+                    exportPage_->showDone(file.getFileName().toStdString() + " already exists; choose it to replace it.");
+                return;
+            }
+            // The renderer writes the name as given or not at all.
+            const auto stem = file.getFileNameWithoutExtension().toStdString();
+            std::string resolved;
+            try {
+                resolved = render::resolveName(literalTemplate(stem), {});
+            } catch (const std::exception &) {
+            }
+            if (resolved != stem) {
+                if (exportPage_)
+                    exportPage_->showDone("A WAV cannot be named \"" + stem + "\"; choose another name.");
+                return;
+            }
             // The user chose to replace it: the old file goes to the trash, so a failed render loses nothing.
             if (file.existsAsFile() && !file.moveToTrash()) {
                 if (exportPage_)
@@ -272,13 +297,29 @@ class AdiApplication final : public juce::JUCEApplication,
         // Each device is made on the message thread and handed back; Cancel or Quit stops the wait.
         engine::DeviceLoader made = [this, alive, stop = renderStop_.get_token()](const engine::DeviceRequest &rq,
                                                                                   std::string &error) {
+            if (stop.stop_requested() || !alive->load()) {
+                error = "the export was stopped";
+                return std::unique_ptr<device::DeviceInstance>{};
+            }
+            // Only ADI's own devices render here; another maker's plug-in waits for the engine's render
+            // worker, whatever the project held when Export was pressed.
+            if (rq.ref == nullptr || rq.ref->format != "internal") {
+                error = "A project with VST3 or CLAP plug-ins renders once the engine's render worker is on main (EX-11).";
+                return std::unique_ptr<device::DeviceInstance>{};
+            }
+            // The posted call owns copies of what it reads: the render's rows may be gone when it runs.
+            auto row = std::make_shared<rows::Device>(*rq.device);
+            auto ref = std::make_shared<rows::PluginRef>(*rq.ref);
+            engine::DeviceRequest owned = rq;
+            owned.device = row.get();
+            owned.ref = ref.get();
             auto promise = std::make_shared<std::promise<std::unique_ptr<device::DeviceInstance>>>();
             auto future = promise->get_future();
             auto why = std::make_shared<std::string>();
-            juce::MessageManager::callAsync([this, alive, rq, promise, why] {
+            juce::MessageManager::callAsync([this, alive, stop, owned, row, ref, promise, why] {
                 std::unique_ptr<device::DeviceInstance> instance;
-                if (alive->load())
-                    instance = loader_.fn()(rq, *why);
+                if (alive->load() && !stop.stop_requested())
+                    instance = loader_.fn()(owned, *why);
                 promise->set_value(std::move(instance));
             });
             while (future.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready)
@@ -298,8 +339,11 @@ class AdiApplication final : public juce::JUCEApplication,
                     exportPage_->showProgress(fraction);
             });
         };
-        render_ = std::thread([this, alive, job = std::move(job), made, control] {
-            const auto result = render::renderWav(job, made, control);
+        render_ = std::thread([this, alive, job = std::move(job), made, control, stop = renderStop_.get_token()] {
+            auto result = render::renderWav(job, made, control);
+            // A Cancel while devices were made reads as the cancel it is.
+            if (stop.stop_requested() && result.state != render::JobState::Completed)
+                result.state = render::JobState::Cancelled;
             juce::MessageManager::callAsync([this, alive, result] {
                 if (!alive->load())
                     return;
@@ -410,6 +454,9 @@ class AdiApplication final : public juce::JUCEApplication,
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
         importStop_.request_stop();
+        // An export of the old project stops, and its page goes: its tracks and range were that project's.
+        stopRender();
+        closeExport();
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
         mainMeterSource_.reset();

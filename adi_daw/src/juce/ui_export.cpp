@@ -27,6 +27,10 @@ ExportPage::ExportPage(ExportChoices initial, std::vector<std::pair<std::int64_t
     std::vector<juce::String> rates;
     for (const int r : kExportSampleRates)
         rates.push_back(juce::String(r));
+    // The project's own rate is always offered, where the list does not hold it (192 kHz, say).
+    if (choices_.sampleRate > 0 &&
+        std::find(kExportSampleRates.begin(), kExportSampleRates.end(), choices_.sampleRate) == kExportSampleRates.end())
+        rates.push_back(juce::String(choices_.sampleRate));
     fill(sampleRate, rates, juce::String(choices_.sampleRate));
     fill(fileType, {kExportFileTypes.begin(), kExportFileTypes.end()}, juce::String(choices_.fileType));
     fill(bitDepth, {"16", "24", "32"}, juce::String(choices_.bitDepth));
@@ -34,6 +38,12 @@ ExportPage::ExportPage(ExportChoices initial, std::vector<std::pair<std::int64_t
     const auto pos = barPosition(choices_.startTicks, meters_);
     start.setText(juce::String(pos.bar) + "." + juce::String(pos.beat) + "." + juce::String(pos.sixteenth), false);
     length.setText(exportLengthText(choices_.startTicks, choices_.lengthTicks, meters_), false);
+    // The fields show sixteenths; the range they were filled from is kept exact while they are unchanged,
+    // so the song's last part is not cut to a sixteenth.
+    shownStart_ = start.getText();
+    shownLength_ = length.getText();
+    exactStart_ = choices_.startTicks;
+    exactLength_ = choices_.lengthTicks;
     includeReturnAndMain.setToggleState(choices_.includeReturnAndMain, juce::dontSendNotification);
     renderAsLoop.setToggleState(choices_.renderAsLoop, juce::dontSendNotification);
     convertToMono.setToggleState(choices_.convertToMono, juce::dontSendNotification);
@@ -90,7 +100,7 @@ ExportPage::ExportPage(ExportChoices initial, std::vector<std::pair<std::int64_t
     addAndMakeVisible(cancelButton);
     read();
     judge();
-    setSize(kWidth, kRow * static_cast<int>(rows_.size()) + 24 + 4 * 18 + 40);
+    setSize(kWidth, kRow * static_cast<int>(rows_.size()) + 24 + 4 * 36 + 38 + 40);
 }
 ExportPage::~ExportPage() = default;
 void ExportPage::read() {
@@ -109,6 +119,14 @@ void ExportPage::read() {
         lengthOk_ = true;
     } else
         lengthOk_ = false;
+    if (start.getText() == shownStart_) {
+        choices_.startTicks = exactStart_;
+        startOk_ = true;
+        if (length.getText() == shownLength_) {
+            choices_.lengthTicks = exactLength_;
+            lengthOk_ = true;
+        }
+    }
     choices_.includeReturnAndMain = includeReturnAndMain.getToggleState();
     choices_.renderAsLoop = renderAsLoop.getToggleState();
     choices_.convertToMono = convertToMono.getToggleState();
@@ -163,12 +181,12 @@ void ExportPage::paint(juce::Graphics &g) {
     // Why Export is not offered, then the render's progress or how it ended.
     g.setColour(look::textDim);
     for (std::size_t i = 0; i < refusals_.size() && i < 4; ++i) {
-        g.drawFittedText(juce::String::fromUTF8(refusals_[i].c_str()), 16, y + 4, getWidth() - 32, 18,
-                         juce::Justification::centredLeft, 1);
-        y += 18;
+        g.drawFittedText(juce::String::fromUTF8(refusals_[i].c_str()), 16, y + 4, getWidth() - 32, 36,
+                         juce::Justification::centredLeft, 2);
+        y += 36;
     }
     if (!status_.empty())
-        g.drawText(juce::String::fromUTF8(status_.c_str()), 16, getHeight() - 34, getWidth() - 240, 24,
-                   juce::Justification::centredLeft, true);
+        g.drawFittedText(juce::String::fromUTF8(status_.c_str()), 16, getHeight() - 34 - 38, getWidth() - 32, 36,
+                         juce::Justification::centredLeft, 2);
 }
 } // namespace adi::ui

@@ -9740,16 +9740,23 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
           "outside the application it says where it runs");
     std::optional<ExportChoices> asked;
     root.exportAudio = [&](const ExportChoices &c) { asked = c; };
-    // With nothing selected and the loop off: the whole song, at the project's rate.
-    check(root.command(AppCommands::ExportAudio) && asked && asked->startTicks == 0 &&
-              asked->lengthTicks == root.arrangementEnd() && asked->track == 0 &&
-              asked->sampleRate == root.reader().sampleRate(),
-          "the whole song from its start, Main, at the project's rate");
+    // With nothing selected: the loop brace, whether the loop is on or not (New's brace: four bars), Main,
+    // at the project's rate.
+    const auto &transport = root.reader().transport();
+    check(root.command(AppCommands::ExportAudio) && asked && !transport.loopEnabled &&
+              asked->startTicks == transport.loopStartTicks &&
+              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks && asked->lengthTicks == 4 * textproj::kWhole &&
+              asked->track == 0 && asked->sampleRate == root.reader().sampleRate(),
+          "the loop brace with the loop off, Main, at the project's rate");
     auto &sel = root.arrangement.geometry.selection;
     sel.start = 3840;
     sel.end = 3840 * 5;
     check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
           "a time selection is the range, as Live's");
+    sel.start = 3840 * 5;
+    sel.end = 3840;
+    check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
+          "a selection made right to left is the same range");
     sel.start = sel.end = 0;
     // The page: Live's rows in Live's order, Main and the tracks to render.
     ExportChoices c = *asked;
@@ -9772,6 +9779,17 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
               page.start.getText() == "1.1.1" && page.length.getText() == "2.0.0" && page.refusals().empty() &&
               page.exportButton.isEnabled(),
           "Main, from 1.1.1 for 2.0.0: Export is offered");
+    {
+        // The range as filled is kept exact while its fields are unchanged; the project's rate is offered
+        // when the list lacks it.
+        ExportChoices odd = c;
+        odd.lengthTicks = textproj::kWhole + 7;
+        odd.sampleRate = 192000;
+        ExportPage exact(odd, {}, root.reader().meters());
+        check(exact.choices().lengthTicks == textproj::kWhole + 7 && exact.choices().sampleRate == 192000 &&
+                  exact.sampleRate.getText() == "192000",
+              "an unedited range stays exact past the sixteenths it shows, and 192 kHz stays 192 kHz");
+    }
     page.encodeMp3.setToggleState(true, juce::dontSendNotification);
     page.encodeMp3.onClick();
     check(!page.exportButton.isEnabled() && page.refusals().size() == 1 &&
@@ -12134,16 +12152,17 @@ int main(int argc, char **argv) {
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), then Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport},
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them; Quit is the application menu's on the Mac");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the menu bar: File, Edit, Create, View, Options, Navigate");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::Quit},
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
+                                                C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them; it ends with Quit and no longer holds Settings");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
