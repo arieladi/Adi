@@ -4,6 +4,18 @@
 
 Win, please lend the `ui_main.cpp` device editor factory and the two wrench-visibility checks in `ui_devices.cpp` for the ADI-Shaper UID. Its existing click opens the editor. The built-in and native wrappers need to forward the shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`. The latter also needs one Time transport call forwarding the exact sample and transport revision. The device owns the scope, panel build rules and tests. The existing device-state capture can group a point edit and its parameter changes. The seven-stage candidate stays in the evening landing window.
 
+## 19 November 2026 — Move and scale a group of curve points
+
+**PR requested** · `clones/shaper-point-selection` · **Select and transform groups of ADI-Shaper points** · `eeb76d1f`
+
+Review after weighted curves. Dragging an empty region selects its points and creates no project edit. Dragging inside that box moves the selected points together and auditions the changes. Moving both selected points up to the top of the graph preserves their relative heights and stops the entire group. Releasing commits one undo step. A hard, medium or soft point keeps its weight. Scaling uses the side and corner handles. The controls support axis locks. Tests cover temporary snapping, scaling about the center and skew. Point identities survive crossings. An undo, preset recall or rejected edit can clear an obsolete selection. A motionless click on a legacy contour leaves its compact storage intact.
+
+On the reference’s full-wet quarter-note Volume contour, selecting two of four points left all four untouched. Moving the pair changed their horizontal coordinates from 5,099 and 6,878 to 3,576 and 5,355, in units of 1/8,192 of a cycle. Their linear gains changed together from 0.05 and 0.65 to 0.40 and 1.00. Both other points and all four weights stayed fixed. The source’s eight handles and the group move are visible in the paired 1920 × 1080 captures. The resulting Volume readout is 60% in both editors. The stage readout truncates fractional percentages. At an integer boundary it favors an exact whole-percentage entry when that entry and a slightly lower gain encode to the same 16-bit height. The source documents its scaling modifiers. The actual source-side resize attempt produced no measurable coordinate change.
+
+With the selection shown or cleared, 384,000 stereo frames per buffer size were byte-identical. Three alternating passes gave average callback costs of 0.301% and 0.320% of the 256-frame budget, then 0.243% and 0.236% at 2,048. The real project restored and reapplied the entire two-point move with one undo and redo.
+
+Devices and Win, the existing ADI-Shaper rollup opts into resetting omitted parameters on load. Both local preset editions already exercise the partial-state case in DF-E57. The same registry test can accompany your general fix. DF-E50's graph automation remains with the devices lane. The editor's live drag is verified through its direct device-parameter gesture.
+
 ## 19 November 2026 — Weighted curve drawings and editor efficiency
 
 **PR requested** · `clones/shaper-corners` · **Match weighted ADI-Shaper curves and cache the editor drawing** · `afcad928`
