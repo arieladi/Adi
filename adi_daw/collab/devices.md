@@ -56,6 +56,69 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DF-E20 (d) and (e); the clones seat's three items and the count lines
+
+**PR requested:** head `devices/df-e20` (720c4c33, one commit on 12aab48a), base `main`. Two parts of
+DF-E20 are this lane's (ADR-0248 d8).
+
+- **(d), the two header comments.** `dsp/spectrum.hpp` now says a full-scale sine reads 0.00 when
+  it is *centred on a bin*. Between bins the nearest bin reads lower by the window's scalloping
+  loss, the most half a bin off: −1.42 dB for Hann, −3.92 dB with no window. A new test
+  (`adi_spectrum_tests`, 107 checks) asserts both at N=1024. It is a comment, so there is no failing
+  test first. The new test's figures are what the header now says: Hann −1.42 within 0.01 dB; no
+  window −3.909 and −3.936 on the two sides, within 0.02 dB, because the image at −f leaks into
+  each side. The other half, `dsp/true_peak.hpp`'s "always at least 176.4 kHz" (it was 128 kHz at
+  32 kHz), is corrected on `devices/true-peak` (PR requested earlier), whose factor rule makes the
+  comment true: 6x at 32 kHz, 8x at 22.05 kHz. To keep the two from conflicting, it is not
+  repeated here.
+- **(e), confirmed as built, by design (ADR-0011, ADR-0095).** A patch *device* whose patch failed to
+  open is a wire. It passes both channels through sample for sample, at once, in awkward block
+  sizes, before and after a prepare at 48 and 44.1 kHz. It reports 0 latency, which is the truth: a
+  wire delays nothing, and a nonzero figure would shift every other track against a delay that is
+  not there. `openError()` says why it failed. The engine-level test existed; the new
+  `testAFailedPatchDeviceIsAWireWithNoDelay` holds the device level (`adi_pd_engine_tests` 641
+  checks on main's base). Whether the Devices panel shows `openError()` is the window lane's (no
+  change here).
+- **Numbers.** CTest 246/246 (MSVC Debug, /W4 /WX).
+
+**AR18 and the whole suite under ASan.** Beyond the Pd engine: every one of the 246 CTest suites was built and run under MSVC ASan the same way. 245 pass. No suite reported a memory error (ASan aborts the suite on the first). The one failure is `adi_changeset_tests`'s the
+
+**The clones seat (ADR-0248 d8).**
+- **Count lines.** `main` has 18 entries, 17 available. `clones/shaper-rollup` (ADI-Shaper) and
+  `devices/oneshot-instrument` (OneShot as an instrument) each make it 19 and 18. Whichever lands
+  second makes it **20 and 19**: `builtinCatalog().size()==20` and `available==19` in
+  `test_builtin_devices.cpp`. That branch keeps both branches' `BuiltinInfo` fields after `midi`:
+  `instrument` from devices; `usesTransportPosition` and `resetMissingParameters` from clones. The
+  entries and `builtinCanvas`'s array stay in the same order, with ADI-Shaper's `adiShaper` and
+  OneShot's `oneShot` each at its own entry's index. The entries keep positional initialisers up to
+  `midi`, so neither branch's new fields move an existing entry.
+- **One pitch kernel: a reason, not a branch.** Shifter's Pitch mode is a phase vocoder: PFFFT,
+  windows of 256 to 8,192 points, hop a quarter, matched to Live's Shifter. `AdiShaperPitch` is a
+  two-tap cyclic grain delay with a 16-tap windowed-sinc read, matched sample for sample to its
+  reference. They share no stage. One kernel would break one of the two matches, so each keeps its
+  own. If ADI later wants a time-domain pitch primitive (Beat Repeat's pitch decay, a Grid object),
+  it should start from `AdiShaperPitch`.
+- **Beat Repeat's history and `AdiShaperTime`.** Yes in principle: one two-channel history ring
+  (write, an integer-age read, the oldest readable frame), separate storage per instance, and each
+  caller keeping its own slices and phase. It is decided when Beat Repeat starts (DEV-22, after
+  3 December), if the three readings the clones seat lists agree. Nothing to number now. The Beat
+  Repeat readings join the Live list then, not before, because the list is for the sitting before
+  3 December.
+- **FloatSignals.** Offered. `adi::device::FloatSignals` (used by `utility~`, `vocoder~`,
+  `shifter~`, `multiband_dynamics~`) gives a compiled external float views of Pd's signals in either
+  Pd precision, with no allocation in `perform`. `adi_shaper~` may use it as those do; the devices
+  lane will review that hunk.
+- **"Editable Pd timing cases" (the clones log, 19 November).** Agreed: from the seven fields
+  `[adi.transport]` sends (playing, bpm, meter, bar, beat, ticks in the quarter), an editable patch
+  cannot recover the quarter. QN 0 and QN 1 in 2/2 send the same fields, and after a 4/4 bar then
+  3/4, bar 2 reads as QN 3, where it is QN 4. The answer is a reason and a branch to follow. The fix
+  is an optional eighth field, the exact quarter-note position of the first input sample of each Pd
+  tick. Existing `[unpack]`s of seven keep working. It needs the graph's exact position per segment,
+  which reaches devices through `wantsDeviceTransport` on `clones/shaper-rollup`, not on main. So
+  `devices/pd-exact-position` starts when the rollup lands. Its tests are the clones seat's cases:
+  QN 0/1 in 2/2, the meter change, a segment at a nonzero buffer offset, upstream latency, and a
+  partial tick across a seek and a stop, at awkward block sizes through the engine's adapter.
+
 ## 2026-11-19 — DF-E36: a patch cannot close itself, quit, open help, move the search path or write files; AR18 holds under ASan
 
 **PR requested:** head `devices/df-e36` (351917f7, two commits on 12aab48a), base `main`. The lane's
