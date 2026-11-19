@@ -184,8 +184,24 @@ class AdiApplication final : public juce::JUCEApplication,
     // The loader's catalogue as the Browser lists it: its VST3 lines and its CLAP descriptors, with the
     // files its last scan could not read.
     PluginListing pluginListing() {
-        if (loader_.stats().scans == 0)
-            loader_.scan();
+        // The first scan runs on the message thread (N58 asks for one off it): a moment after the
+        // Status Bar has said so and the window has painted, so the window never looks hung without a
+        // word. A Quit while it runs leaves the file being read marked, as the loader's own scan does.
+        if (loader_.stats().scans == 0) {
+            if (!pluginScanQueued_) {
+                pluginScanQueued_ = true;
+                juce::Timer::callAfterDelay(100, [this] {
+                    if (juce::JUCEApplicationBase::getInstance() != this)
+                        return;
+                    loader_.scan();
+                    if (root_)
+                        root_->browser.pluginsChanged();
+                });
+            }
+            PluginListing waiting;
+            waiting.scanning = true;
+            return waiting;
+        }
         PluginListing out;
         for (const auto &line : loader_.knownPlugins())
             if (auto entry = parseKnownVst3(line))
@@ -197,8 +213,14 @@ class AdiApplication final : public juce::JUCEApplication,
         out.failed = report.failures.size();
         if (report.cancelled)
             out.error = "the scan was cancelled.";
+        else if (!report.complete)
+            // The scan stopped part way: its first failure says why.
+            out.error = report.failures.empty() || report.failures.front().error.empty()
+                            ? std::string("the scan stopped part way.")
+                            : report.failures.front().error;
         return out;
     }
+    bool pluginScanQueued_ = false;
     void stopLibrary() {
         if (!libraryThread_.joinable())
             return;

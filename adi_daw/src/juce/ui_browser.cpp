@@ -367,6 +367,10 @@ std::string BrowserPanel::droppedDevice(const juce::var &description) {
     const auto uid = text.fromFirstOccurrenceOf("adi-device:", false, false).toStdString();
     return findBuiltin(uid) != nullptr ? uid : std::string();
 }
+void BrowserPanel::pluginsChanged() {
+    if (selected_ >= 0 && sidebar_[static_cast<std::size_t>(selected_)].name == "Plug-Ins")
+        choose(selected_);
+}
 std::string BrowserPanel::pluginWaits(const PluginEntry &p) {
     return "Loading " + p.name + " waits for the engine's insert of a plug-in (window log, N57).";
 }
@@ -497,8 +501,13 @@ void BrowserPanel::choose(int i) {
         } else if (plugIns) {
             if (!listPlugins)
                 root_.say("Plug-ins list in the application, from its plug-in scan.");
+            else if (plugins_.scanning)
+                root_.say("Scanning the plug-ins; they list when the scan is done.");
             else if (!plugins_.error.empty())
-                root_.say("The plug-ins could not be scanned: " + plugins_.error);
+                root_.say("The plug-ins could not all be scanned: " + plugins_.error);
+            else if (plugins_.plugins.empty() && plugins_.failed > 0)
+                root_.say("No plug-in could be listed: " + std::to_string(plugins_.failed) +
+                          " plug-in files could not be scanned.");
             else if (plugins_.plugins.empty())
                 root_.say("No VST3 or CLAP plug-ins were found. Add their folders in the Settings' Plug-Ins page.");
             else if (plugins_.failed > 0)

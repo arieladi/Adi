@@ -94,6 +94,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // The plug-ins the app's loader found, asked for when Plug-Ins is chosen; unset outside the app.
     // A first scan may run then, on the message thread (N58 asks for one off it).
     std::function<PluginListing()> listPlugins;
+    // The app's scan is done: Plug-Ins, if it is the label chosen, lists what it found.
+    void pluginsChanged();
     const PluginListing &plugins() const noexcept { return plugins_; }
     // What a load of a plug-in says until the engine inserts one (N57).
     static std::string pluginWaits(const PluginEntry &);

@@ -26,7 +26,8 @@ struct PluginEntry {
 struct PluginListing {
     std::vector<PluginEntry> plugins;
     std::size_t failed = 0; // files the scan could not read; the rest are listed
-    std::string error;      // the scan could not run at all
+    std::string error;      // the scan stopped, or could not run at all
+    bool scanning = false;  // the first scan is still to run: the list comes when it is done
 };
 // A plug-in's kind from its CLAP descriptor: an instrument, a note effect (a MIDI effect) or an effect.
 inline PluginEntry::Kind clapKind(bool instrument, std::string_view features) {

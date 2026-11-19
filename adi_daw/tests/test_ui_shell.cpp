@@ -2626,9 +2626,24 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         browser.choose(plugIns);
         check(browser.rows().empty() && root.error().rfind("No VST3 or CLAP plug-ins were found", 0) == 0,
               "with none found, it says where to add their folders");
+        found.failed = 2;
+        browser.choose(plugIns);
+        check(browser.rows().empty() && root.error() == "No plug-in could be listed: 2 plug-in files could not be scanned.",
+              "with none listed and files unread, it says so, not to add folders");
         found.error = "the scan was cancelled.";
         browser.choose(plugIns);
-        check(root.error() == "The plug-ins could not be scanned: the scan was cancelled.", "and a scan that failed says so");
+        check(root.error() == "The plug-ins could not all be scanned: the scan was cancelled.", "and a scan that stopped says why");
+        // The first scan: Plug-Ins says it is scanning and lists when the app says the scan is done.
+        found = {};
+        found.scanning = true;
+        browser.choose(plugIns);
+        check(browser.rows().empty() && root.error() == "Scanning the plug-ins; they list when the scan is done.",
+              "the first scan says it runs, before anything lists");
+        found = {};
+        found.plugins = {*echo};
+        browser.pluginsChanged();
+        check(browser.rows().size() == 3 && browser.rows()[2].plugin != nullptr && browser.rows()[2].plugin->name == "Echo",
+              "when the scan is done, what it found lists");
         browser.listPlugins = nullptr;
     }
     browser.choose(audioEffects);
