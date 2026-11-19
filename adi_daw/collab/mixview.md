@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M50/DF-M49 Stack browser searches tool names
+
+The left Search channels and tools field now matches the names of devices and native tools on each channel, as well as the channel name. Existing group and Sounding now membership still applies. Choosing a result reveals the channel by stable identity. Typing keeps the selection and adds no Undo step. The search reads passive chain metadata on a changed query or project view and retains the matches across unchanged frames.
+
+Fixture-only `ff664290` failed four checks covering tool matching, selection, group recovery and refresh on an update. Exact Windows x64 Release `c854f7f69c187ce469a246d42a9dd9dbaf8df2cc` passed 893 Mix View component checks and three targeted CTests. ZIP SHA-256 `3a77504f79434264103aa61a277393b2e6fc66ee4390a1daf5eda97e98798d47`; ADI.exe SHA-256 `3314e976f98929297365e9ab8b32b43135d4b4fd6d09918ab24aeb7ffd1e817e`. Claude's brief covers shortcut, matching, filter precedence, selection and rename/remove/Undo.
+
+**PR requested.** Include `mixview/stack-tool-search-20261119` after the Focus Scope sum in the cumulative review.
+
 ### 19 November — Window loan requested for Focus Match seek validation
 
 The Learn Match repro distinguishes queued Locate, acknowledged Locate with only old capture, and a fresh publication from just one source. The existing window input can show the same position before and after a queued same-position Locate, while both analysis publications still describe the old audio. Position and the analyzer generation cannot identify that gap.
