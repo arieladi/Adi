@@ -3,6 +3,7 @@
 #include "adi/ui/shared_analysis.hpp"
 #include "adi/ui/analysis_palettes.hpp"
 #include "adi/ui/spectrum_slope.hpp"
+#include "adi/ui/theme.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
 #include <limits>
@@ -155,6 +156,7 @@ class AnalysisPane final : public juce::Component {
     juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
   private:
     Source source_ = Source::Main;
+    ThemeId palettePreviewTheme_ = ThemeId::Dark;
 };
 
 // Optional compact projection of the same broker: identical source/configuration

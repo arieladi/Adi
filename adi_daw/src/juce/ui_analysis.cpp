@@ -20,6 +20,26 @@ float heightFor(float value, juce::Rectangle<float> area) {
 juce::String meterNumber(float value) {
     return std::isfinite(value) ? juce::String(value, 1) : juce::String("--");
 }
+std::size_t currentThemeIndex() noexcept {
+    const auto theme = std::ranges::find(kThemes, look::themeId());
+    return theme == kThemes.end() ? 0 : static_cast<std::size_t>(theme - kThemes.begin());
+}
+const juce::Image &palettePreview(std::size_t index) {
+    // On the message thread, share themed default previews and fixed stock swatches across panes.
+    static std::array<juce::Image, kThemes.size()> themed;
+    static std::array<juce::Image, palettes::count> stock;
+    auto &image = index == palettes::defaultIndex ? themed[currentThemeIndex()] : stock[index];
+    if (image.isNull()) {
+        constexpr int width = 96, height = 8;
+        image = juce::Image(juce::Image::RGB, width, height, false);
+        juce::Image::BitmapData pixels(image, juce::Image::BitmapData::writeOnly);
+        for (int x = 0; x < width; ++x) {
+            const auto colour = analysisPaletteColour(index, static_cast<std::uint8_t>(x * 255 / (width - 1)));
+            for (int y = 0; y < height; ++y) pixels.setPixelColour(x, y, colour);
+        }
+    }
+    return image;
+}
 } // namespace
 juce::Colour analysisPaletteColour(std::size_t palette, std::uint8_t sample, bool reverse) noexcept {
     if (palette >= palettes::count) palette = palettes::defaultIndex;
@@ -38,9 +58,7 @@ juce::Colour analysisPaletteColour(std::size_t palette, std::uint8_t sample, boo
         }
         return colors;
     }();
-    const auto theme = std::ranges::find(kThemes, look::themeId());
-    const auto table = theme == kThemes.end() ? 0 : static_cast<std::size_t>(theme - kThemes.begin());
-    return original[table][reverse ? 255u - sample : sample];
+    return original[currentThemeIndex()][reverse ? 255u - sample : sample];
 }
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
@@ -613,21 +631,12 @@ AnalysisPane::AnalysisPane() {
         else setSpectrumSlope(requestedSpectrumSlope());
     };
     restoreSlopeControls(SpectrumSlope::Flat); addAndMakeVisible(slopeBox);
-    static const auto previews = [] {
-        std::array<juce::Image, palettes::count> images;
-        for (std::size_t i = 0; i < images.size(); ++i) {
-            images[i] = juce::Image(juce::Image::RGB, 96, 8, false);
-            juce::Image::BitmapData pixels(images[i], juce::Image::BitmapData::writeOnly);
-            for (int x = 0; x < 96; ++x) for (int y = 0; y < 8; ++y)
-                pixels.setPixelColour(x, y, analysisPaletteColour(i, static_cast<std::uint8_t>(x * 255 / 95)));
-        }
-        return images;
-    }();
+    palettePreviewTheme_ = look::themeId();
     for (std::size_t i = 0; i < palettes::count; ++i) {
         const auto name = palettes::id(i);
         paletteBox.getRootMenu()->addItem(static_cast<int>(i) + 1,
             i == 0 ? juce::String("ADI (default)") : juce::String::fromUTF8(name.data(), static_cast<int>(name.size())),
-            true, false, previews[i]);
+            true, false, palettePreview(i));
     }
     const auto paletteChanged = [this] {
         if (onPaletteChange) onPaletteChange();
@@ -688,6 +697,15 @@ void AnalysisPane::setSpectrumSlope(SpectrumSlope slope) {
     view.setSpectrumSlope(slope); restoreSlopeControls(view.spectrumSlope());
 }
 void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t main, std::int64_t selected) {
+    if (const auto theme = look::themeId(); theme != palettePreviewTheme_) {
+        palettePreviewTheme_ = theme;
+        for (juce::PopupMenu::MenuItemIterator item(*paletteBox.getRootMenu()); item.next();) {
+            if (item.getItem().itemID != static_cast<int>(palettes::defaultIndex) + 1) continue;
+            if (auto *preview = dynamic_cast<juce::DrawableImage *>(item.getItem().image.get()))
+                preview->setImage(palettePreview(palettes::defaultIndex));
+            break;
+        }
+    }
     view.present(std::move(broker), source_ == Source::Selected ? selected : main); view.frame();
 }
 void AnalysisPane::usePageControls() {

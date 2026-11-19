@@ -591,6 +591,51 @@ bool samePixels(const juce::Image &a, const juce::Image &b) {
         if (a.getPixelAt(x, y) != b.getPixelAt(x, y)) return false;
     return true;
 }
+void paletteMenuTheme() {
+    using namespace adi::ui;
+    Root root;
+    AnalysisPane pane;
+    root.setBounds(0, 0, 500, 420);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    root.addAndMakeVisible(pane);
+    pane.setBounds(root.getLocalBounds());
+    pane.setMode(SharedSpectrumView::Mode::Spectrogram);
+    pane.setPalette("rocket", true);
+
+    const auto swatch = [&pane](std::size_t index) {
+        const auto id = static_cast<int>(index) + 1;
+        for (juce::PopupMenu::MenuItemIterator item(*pane.paletteBox.getRootMenu()); item.next();) {
+            if (item.getItem().itemID != id) continue;
+            if (const auto *preview = dynamic_cast<const juce::DrawableImage *>(item.getItem().image.get()))
+                return preview->getImage();
+        }
+        return juce::Image{};
+    };
+    const auto oldTheme = look::themeId();
+    const auto density = look::densityId();
+    const auto initialDefault = swatch(palettes::defaultIndex);
+    const auto rocket = palettes::find("rocket");
+    const auto initialStock = swatch(rocket);
+    check(initialDefault.isValid() && initialDefault.getPixelAt(0, 0) == look::display && initialStock.isValid(),
+          "an open analyser pane uses the current theme's default and a fixed stock swatch");
+
+    look::apply(oldTheme == ThemeId::Light ? ThemeId::Dark : ThemeId::Light, density);
+    pane.frame({}, 0, 0);
+    const auto currentDefault = swatch(palettes::defaultIndex);
+    check(currentDefault.isValid() && currentDefault.getPixelAt(0, 0) == look::display &&
+              !samePixels(initialDefault, currentDefault) && swatch(rocket) == initialStock &&
+              pane.requestedPalette() == "rocket" && pane.reverseButton.getToggleState(),
+          "changing theme refreshes only the default thumbnail and preserves the palette selection");
+    const auto repaints = root.fake->repaints;
+    pane.frame({}, 0, 0);
+    pane.frame({}, 0, 0);
+    check(swatch(palettes::defaultIndex) == currentDefault && root.fake->repaints == repaints,
+          "unchanged frames reuse the same menu image without repainting");
+    look::apply(oldTheme, density);
+    pane.frame({}, 0, 0);
+    check(swatch(palettes::defaultIndex) == initialDefault, "returning to a theme reuses its original default thumbnail");
+}
 // Independent pixel oracle for the original ADI rendering law (01992652).
 // Fixed view bounds below map one displayed hop/row to one software pixel.
 bool originalRasterPixels(SharedSpectrumView &view, const SharedAnalysis::Result &result) {
@@ -1080,7 +1125,7 @@ void mixAnalyserPages() {
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
-          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); compactAnalyzerDock(); palettesAndFrozenRaster(); restartedRasterDomain();
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); mixAnalyserPages(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
