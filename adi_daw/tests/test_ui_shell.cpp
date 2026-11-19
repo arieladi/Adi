@@ -9786,10 +9786,12 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     page.includeReturnAndMain.setToggleState(false, juce::dontSendNotification);
     page.includeReturnAndMain.onClick();
     check(page.exportButton.isEnabled(), "with the effects off, the track's own signal renders");
-    page.length.setText("one bar", true);
+    page.length.setText("one bar", false);
+    page.length.onTextChange();
     check(!page.exportButton.isEnabled() && page.refusals()[0].find("Render Length is not a length") != std::string::npos,
           "a length that is not one is refused");
-    page.length.setText("1.2.0", true);
+    page.length.setText("1.2.0", false);
+    page.length.onTextChange();
     check(page.exportButton.isEnabled() && page.choices().lengthTicks == textproj::kWhole + textproj::kWhole / 2,
           "1.2.0 is a bar and two beats");
     std::optional<ExportChoices> exported;
@@ -9818,7 +9820,16 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
               job.source.trackId == 0,
           "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize");
     one.normalize = false; // a silent song has no peak to normalize
-    job = exportJob(one, document->store().path(), dir / "Song {mix}.wav", *tempo);
+    // New's Set holds Reverb and Delay, which a build without Pd cannot load, and the renderer renders
+    // only a project whose every device loads: an empty project here.
+    {
+        StoreError made{};
+        auto empty = Store::createEmpty(dir / "export-empty.adi", made);
+        check(empty != nullptr, "an empty project to render");
+        if (empty)
+            empty->db().exec("INSERT INTO project(id,name) VALUES(1,'Export'); INSERT INTO tracks(id,kind,name) VALUES(1,'master','Main')");
+    }
+    job = exportJob(one, dir / "export-empty.adi", dir / "Song {mix}.wav", *tempo);
     const auto result = render::renderWav(job, {});
     if (result.state != render::JobState::Completed)
         std::printf("render: %s\n", result.error.c_str());
@@ -12174,7 +12185,7 @@ int main(int argc, char **argv) {
                       C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
-                      C::LastId == C::FitToTimeRange,
+                      C::ExportAudio == C::FitToTimeRange + 1 && C::LastId == C::ExportAudio,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "

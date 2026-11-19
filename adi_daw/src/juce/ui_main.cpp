@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
 #include "adi/render/queue.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
