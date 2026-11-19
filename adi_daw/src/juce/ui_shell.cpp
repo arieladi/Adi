@@ -82,8 +82,9 @@ void AppCommands::reload() {
     manager.getKeyMappings()->resetToDefaultMappings();
 }
 bool AppCommands::setInfoView(bool on, std::string &why) {
-    if (!settings_.set("lookfeel.showInfoView", on, {}, why) || !settings_.save(why))
+    if (!settings_.set("lookfeel.showInfoView", on, {}, why))
         return false;
+    settings_.saveSoon();
     infoView_ = on;
     return true;
 }
@@ -94,17 +95,22 @@ std::optional<float> AppCommands::keptZoom(const std::string &window, const std:
     return static_cast<float>(*kept);
 }
 bool AppCommands::keepZoom(const std::string &window, const std::string &display, float zoom, std::string &why) {
-    return settings::setWindowZoom(settings_, window, display, zoom, {}, why) && settings_.save(why);
+    if (!settings::setWindowZoom(settings_, window, display, zoom, {}, why))
+        return false;
+    settings_.saveSoon();
+    return true;
 }
 bool AppCommands::setTabMovesFocus(bool on, std::string &why) {
-    if (!settings_.set("lookfeel.tabMovesFocus", on, {}, why) || !settings_.save(why))
+    if (!settings_.set("lookfeel.tabMovesFocus", on, {}, why))
         return false;
+    settings_.saveSoon();
     tabMovesFocus_ = on;
     return true;
 }
 bool AppCommands::setWrapTabNavigation(bool on, std::string &why) {
-    if (!settings_.set("lookfeel.wrapTabNavigation", on, {}, why) || !settings_.save(why))
+    if (!settings_.set("lookfeel.wrapTabNavigation", on, {}, why))
         return false;
+    settings_.saveSoon();
     wrapTab_ = on;
     return true;
 }

@@ -509,6 +509,75 @@ void testLastGoodBackup() {
           "a published reset does not win against a subsequent hand edit");
 }
 
+void testScheduledSave() {
+    using namespace std::chrono_literals;
+    const AppSettings::SaveClock::time_point start{};
+    section("quiet-window settings save, bounded failure retry and quit flush");
+    adi::test::TempDirectory temp("settings", "scheduled-save");
+    const auto file = temp.path() / "settings.json";
+    const auto backup = temp.path() / "settings.json.bak";
+    AppSettings store(appdata::App::Daw, file);
+    store.setLogUserChanges(false);
+    std::string why;
+    store.saveSoon(start);
+    check(!store.tick(start + 1s) && !store.flush() && !fs::exists(file), "idle settings perform no write");
+
+    check(store.set("lookfeel.theme", "light", kUser, why) &&
+              store.get("lookfeel.theme") == "light", "the change is in force before publishing");
+    store.saveSoon(start);
+    check(!store.tick(start + 499ms) && !fs::exists(file), "the original quiet window has not expired");
+    check(store.set("lookfeel.theme", "dark", kUser, why), "a later edit replaces the first one");
+    store.saveSoon(start + 300ms);
+    const std::string earlier = R"({"schema":1,"app":"ADI","values":{"audio.bufferSize":256}})";
+    writeText(file, earlier);
+    check(!store.tick(start + 799ms) && readText(file) == earlier && !fs::exists(backup),
+          "the later edit extends the deadline");
+    const auto saved = store.tick(start + 800ms);
+    check(saved && saved->saved && readText(backup) == earlier &&
+              store.get("audio.bufferSize") == 256 &&
+              Value::parse(readText(file)).at("values").at("lookfeel.theme") == "dark",
+          "the single scheduled write merges the hand edit and keeps the previous document");
+    check(!store.tick(start + 900ms) && !store.flush() && readText(backup) == earlier,
+          "later polls and clean quit do not rotate the backup");
+
+    check(fs::remove(backup) && fs::create_directory(backup) &&
+              store.set("lookfeel.theme", "light", kUser, why), "block backup publication with an owned directory");
+    const auto beforeFailure = readText(file);
+    store.saveSoon(start + 1s);
+    const auto failed = store.tick(start + 1500ms);
+    check(failed && !failed->saved && !failed->diagnostic.empty() &&
+              readText(file) == beforeFailure && store.get("lookfeel.theme") == "light",
+          "a failed write preserves the last file and the pending edit");
+    check(store.set("audio.bufferSize", 128, kUser, why), "a newer pending edit is still accepted");
+    store.saveSoon(start + 1600ms);
+    check(!store.tick(start + 2499ms), "a new edit does not bypass retry backoff");
+    const auto retried = store.tick(start + 2500ms);
+    check(retried && !retried->saved, "the first retry is one second after failure");
+    check(!store.tick(start + 4499ms), "the second retry waits for two seconds");
+    auto at = start + 4500ms;
+    for (const auto delay : {4s, 8s, 16s, 30s, 30s}) {
+        const auto retry = store.tick(at);
+        check(retry && !retry->saved && !store.tick(at + delay - 1ms),
+              "retry delay grows to the 30-second limit");
+        at += delay;
+    }
+    check(fs::remove(backup), "release the backup destination");
+    const auto flushed = store.flush();
+    check(flushed && flushed->saved && !store.tick(at) &&
+              readText(backup) == beforeFailure &&
+              Value::parse(readText(file)).at("values").at("audio.bufferSize") == 128,
+          "quit flush bypasses backoff, preserves the backup and cancels retries");
+
+    check(store.reset("lookfeel.theme", kUser, why), "queue a reset before the next quiet window");
+    store.saveSoon(at);
+    const auto current = readText(file);
+    check(!store.tick(at + 499ms), "a fresh edit receives its own 500 ms quiet window");
+    const auto early = store.flush();
+    check(early && early->saved && readText(backup) == current &&
+              !Value::parse(readText(file)).at("values").contains("lookfeel.theme"),
+          "quit before the deadline still publishes the explicit reset");
+}
+
 void testCorruptKeptAside() {
     section("a corrupt file is kept aside, never overwritten silently");
     adi::test::TempDirectory temp("settings", "corrupt");
@@ -545,6 +614,8 @@ void testApplicationsNeverShare() {
     check(dj.status() == LoadStatus::ForeignApp, "ADiJ pointed at ADI's file refuses it");
     check(dj.get("lookfeel.theme") == "os", "and reads none of its values");
     std::string why;
+    check(!dj.set("lookfeel.theme", "dark", kUser, why) && why.find("another application") != why.npos,
+          "an edit cannot be scheduled over another application's settings");
     check(!dj.save(why) && readText(file) == before,
           "and never overwrites it: " + why);
 }
@@ -997,6 +1068,7 @@ int runAll() {
     testUnknownKeysSurvive();
     testAtomicSave();
     testLastGoodBackup();
+    testScheduledSave();
     testCorruptKeptAside();
     testApplicationsNeverShare();
     testChangeLog();

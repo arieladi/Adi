@@ -11325,14 +11325,16 @@ int main(int argc, char **argv) {
               zoomed.keyPressed(juce::KeyPress('-', cmd, 0)) && zoomed.interfaceZoom() == .75f,
           "Ctrl/Cmd+- zooms out");
     {
-        // Kept per window and per display (window.zoom, N4), saved at once, and read when the
-        // window opens again on that display.
+        // Zoom is live immediately and persists when the settings timer reaches its deadline.
         const auto display = displayAt(zoomed.getScreenBounds().getCentre());
+        const settings::AppSettings zoomBeforeSave(appdata::App::Daw, settings.file());
+        const auto saved = settings.tick(settings::AppSettings::SaveClock::now() + std::chrono::milliseconds{500});
         settings::AppSettings reread(appdata::App::Daw, settings.file());
         check(commands.keptZoom("zoomed", display) == .75f && !commands.keptZoom("tips", display) &&
+                  !settings::windowZoom(zoomBeforeSave, "zoomed", display) && saved && saved->saved &&
                   settings::windowZoom(reread, "zoomed", display) == .75 &&
                   settings.get("window.zoom").contains(settings::windowZoomKey("zoomed", display)),
-              "each window's zoom is kept for its display in the App settings, saved at once");
+              "each window's zoom is live for its display and survives the scheduled save");
         AdiWindow again(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands, persistence, session,
                                                            "zoomed"),
                         commands, false);
@@ -13591,12 +13593,17 @@ int main(int argc, char **argv) {
             auto edited = start;
             edited.monoOutputs[1].on = false;
             edited.monoInputs[0].on = false; // not this dialog's side: left as kept
-            settings::AppSettings reread(appdata::App::Daw, settings.file());
             check(keepChannelConfig(settings, "Interface", false, edited, refused) &&
                       channelConfigFor(settings, "Interface", 4, 2).monoInputs == handed->monoInputs &&
-                      !channelConfigFor(settings, "Interface", 4, 2).monoOutputs[1].on &&
-                      settings::channelConfig(reread, "Interface").has_value(),
-                  "the output side kept beside the inputs, each from its own dialog, saved at once");
+                      !channelConfigFor(settings, "Interface", 4, 2).monoOutputs[1].on,
+                  "the output side is kept beside the inputs, each from its own dialog");
+            const settings::AppSettings channelsBeforeSave(appdata::App::Daw, settings.file());
+            const auto saved = settings.tick(settings::AppSettings::SaveClock::now() + std::chrono::milliseconds{500});
+            const settings::AppSettings reread(appdata::App::Daw, settings.file());
+            check(!settings::channelConfig(channelsBeforeSave, "Interface").has_value() && saved && saved->saved &&
+                      channelConfigFor(reread, "Interface", 4, 2).monoInputs == handed->monoInputs &&
+                      !channelConfigFor(reread, "Interface", 4, 2).monoOutputs[1].on,
+                  "a scheduled save persists both sides of the device configuration");
             const auto bits = channelBits(channelConfigFor(settings, "Interface", 4, 2).activeInputs(), 4);
             check(bits[0] && bits[1] && bits[2] && !bits[3] && channelBits({1, 2, 5}, 4).countNumberOfSetBits() == 2,
                   "the record's channels in use are the device's channel bits, none beyond the device");
@@ -13623,14 +13630,18 @@ int main(int argc, char **argv) {
         if (auto *row = rowFor(flag)) {
             auto *button = dynamic_cast<juce::TextButton *>(row->control.get());
             const bool wasOn = settings.get(flag->key).get<bool>();
+            const settings::AppSettings beforeClick(appdata::App::Daw, settings.file());
             if (button) {
                 button->setToggleState(!wasOn, juce::dontSendNotification);
                 button->onClick();
             }
+            const settings::AppSettings beforeTick(appdata::App::Daw, settings.file());
+            const auto saved = settings.tick(settings::AppSettings::SaveClock::now() + std::chrono::milliseconds{500});
             settings::AppSettings reread(appdata::App::Daw, settings.file());
-            check(button && settings.get(flag->key) == !wasOn && reread.get(flag->key) == !wasOn &&
+            check(button && settings.get(flag->key) == !wasOn && beforeClick.stored() == beforeTick.stored() &&
+                      saved && saved->saved && reread.get(flag->key) == !wasOn &&
                       button->getButtonText() == (wasOn ? "Off" : "On"),
-                  "a switch applies at once and is written at once, with no OK button");
+                  "a switch applies at once and persists on the settings timer");
             panel.defaults.onClick();
             check(settings.get(flag->key) == flag->defaultValue && button &&
                       button->getToggleState() == flag->defaultValue.get<bool>(),

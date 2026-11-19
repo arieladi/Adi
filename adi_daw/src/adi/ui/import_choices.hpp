@@ -45,17 +45,19 @@ inline bool importAsks(const settings::AppSettings &settings) {
     const auto v = settings.get("editing.importOptions");
     return !v.is_string() || v.get<std::string>() == "ask" || copyAsks(settings);
 }
-// The prompt's answer kept as the last choices, and saved; a copy setting of "ask" stays "ask".
+// Keep the prompt's answer as the last choices and schedule persistence. A copy setting of "ask" stays "ask".
 // `nowUtc` (microseconds) dates the settings' change log, as the Settings window does.
 inline bool keepImportChoices(settings::AppSettings &settings, const ImportChoices &choices, std::string &why,
                               std::int64_t nowUtc = 0) {
     settings::ChangeContext who;
     who.timeUtc = nowUtc;
-    return settings.set("record.importAutoWarp", choices.warp, who, why) &&
-           settings.set("record.importEdgeFades", choices.edgeFades, who, why) &&
-           settings.set("record.defaultWarpMode", std::string(audio::warpModeName(choices.mode)), who, why) &&
-           (copyAsks(settings) ||
-            settings.set("files.copyImportedMedia", std::string(choices.copyIn ? "always" : "never"), who, why)) &&
-           settings.save(why);
+    if (!settings.set("record.importAutoWarp", choices.warp, who, why) ||
+        !settings.set("record.importEdgeFades", choices.edgeFades, who, why) ||
+        !settings.set("record.defaultWarpMode", std::string(audio::warpModeName(choices.mode)), who, why) ||
+        (!copyAsks(settings) &&
+         !settings.set("files.copyImportedMedia", std::string(choices.copyIn ? "always" : "never"), who, why)))
+        return false;
+    settings.saveSoon();
+    return true;
 }
 } // namespace adi::ui

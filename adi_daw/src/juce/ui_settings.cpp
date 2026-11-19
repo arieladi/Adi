@@ -380,9 +380,7 @@ SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
                     }
         if (onChange)
             onChange();
-        std::string why;
-        if (!store.save(why))
-            setHelp("Not saved: " + juce::String::fromUTF8(why.c_str()));
+        store.saveSoon();
         for (auto &row : rows_)
             row->refresh();
     };
@@ -507,7 +505,7 @@ void SettingsPanel::setHelp(const juce::String &text) {
     repaint(pageArea().withTrimmedTop(std::max(0, pageArea().getHeight() - kHelpHeight)));
 }
 bool SettingsPanel::change(const settings::Setting &s, const settings::Value &v) {
-    // Applied at once and written at once: Live has no OK button (Master Reference V.1).
+    // The value takes effect immediately. Persist once the changes settle.
     std::string why;
     if (!store.set(s.key, v, {settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000}, why)) {
         setHelp(juce::String::fromUTF8(why.c_str()));
@@ -516,10 +514,7 @@ bool SettingsPanel::change(const settings::Setting &s, const settings::Value &v)
     // The value is in force from here, written or not.
     if (onChange)
         onChange();
-    if (!store.save(why)) {
-        setHelp("Not saved: " + juce::String::fromUTF8(why.c_str()));
-        return false;
-    }
+    store.saveSoon();
     return true;
 }
 juce::Rectangle<int> SettingsPanel::pageArea() const noexcept {

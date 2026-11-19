@@ -24,6 +24,7 @@
 #include "adi/appdata.hpp"
 #include "adi/settings/registry.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -58,6 +59,12 @@ struct ChangeContext {
 
 class AppSettings {
 public:
+    using SaveClock = std::chrono::steady_clock;
+    struct SaveAttempt {
+        bool saved;
+        std::string diagnostic;
+    };
+
     /// This application's own file: appdata::pathsFor(app).config/settings.json.
     [[nodiscard]] static AppSettings forApp(appdata::App app);
 
@@ -91,6 +98,13 @@ public:
     /// directory-durability warning in why.
     bool save(std::string& why);
 
+    /// Schedule pending changes after 500 ms without an edit. Poll and flush
+    /// on the settings owner's thread. An empty result means no write was
+    /// attempted. A successful write can include a durability warning.
+    void saveSoon(SaveClock::time_point now = SaveClock::now()) noexcept;
+    [[nodiscard]] std::optional<SaveAttempt> tick(SaveClock::time_point now = SaveClock::now());
+    [[nodiscard]] std::optional<SaveAttempt> flush();
+
     /// The raw stored values, unknown keys included -- what save writes.
     [[nodiscard]] const Value& stored() const { return values_; }
 
@@ -111,6 +125,9 @@ private:
     std::optional<std::filesystem::path> aside_;
     Value values_ = Value::object();
     std::set<std::string> pendingKeys_;
+    std::optional<SaveClock::time_point> quietUntil_;
+    std::optional<SaveClock::time_point> retryAfter_;
+    std::chrono::seconds retryDelay_{1};
     bool logUsers_ = true;
 };
 

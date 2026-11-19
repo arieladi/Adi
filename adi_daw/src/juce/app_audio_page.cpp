@@ -29,7 +29,10 @@ bool keepChannelConfig(settings::AppSettings &store, const std::string &device, 
         record.monoOutputs = edited.monoOutputs;
         record.stereoOutputs = edited.stereoOutputs;
     }
-    return settings::setChannelConfig(store, device, record, {}, why) && store.save(why);
+    if (!settings::setChannelConfig(store, device, record, {}, why))
+        return false;
+    store.saveSoon();
+    return true;
 }
 juce::String useChannelConfig(juce::AudioDeviceManager &manager, const settings::AppSettings &store) {
     auto *device = manager.getCurrentAudioDevice();

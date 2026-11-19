@@ -10,6 +10,7 @@
 #include "ui_shell.hpp"
 #include "mix_function_host.hpp"
 #include <chrono>
+#include <cstdio>
 #include <optional>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <atomic>
@@ -210,10 +211,38 @@ class AdiApplication final : public juce::JUCEApplication,
         window_.reset();
         document_.reset();
         commands_.reset();
+        if (settings_) {
+            if (const auto result = settings_->flush(); result && (!result->saved || !result->diagnostic.empty())) {
+                const auto message = std::string(result->saved ? "Settings: " : "Settings could not be saved: ") +
+                                     result->diagnostic;
+                juce::Logger::writeToLog(juce::String::fromUTF8(message.c_str()));
+                if (!result->saved) {
+                    std::fprintf(stderr, "ADI: %s\n", message.c_str());
+                    setApplicationReturnValue(1);
+                }
+            }
+        }
         settings_.reset();
     }
-    // Every edit is already in the file (ADR-0203 d13): quitting asks nothing.
-    void systemRequestedQuit() override { quit(); }
+    // Project edits are already in the file (ADR-0203 d13). Flush pending preferences.
+    void systemRequestedQuit() override {
+        if (settingsQuitWarning_)
+            return;
+        if (settings_) {
+            const auto result = settings_->flush();
+            if (result && !result->saved) {
+                settingsQuitWarning_ = true;
+                juce::AlertWindow::showMessageBoxAsync(
+                    juce::MessageBoxIconType::WarningIcon, "ADI",
+                    "Settings could not be saved.\n" + juce::String::fromUTF8(result->diagnostic.c_str()),
+                    {}, window_.get(), juce::ModalCallbackFunction::create([this](int) { quit(); }));
+                return;
+            }
+            if (result && !result->diagnostic.empty())
+                juce::Logger::writeToLog(juce::String::fromUTF8(result->diagnostic.c_str()));
+        }
+        quit();
+    }
     void anotherInstanceStarted(const juce::String &commandLine) override {
         auto file = juce::File(commandLine.unquoted());
         if (file.existsAsFile())
@@ -783,12 +812,23 @@ class AdiApplication final : public juce::JUCEApplication,
         if (type.startsWith("Windows Audio"))
             type = "WASAPI";
         set("audio.driverType", type.toStdString());
-        if (!settings_->save(why))
-            report(why);
+        settings_->saveSoon();
         if (settingsWindow_)
             settingsWindow_->panel().refreshValues();
     }
     void timerCallback() override {
+        if (settings_ && !settingsQuitWarning_) {
+            if (const auto result = settings_->tick()) {
+                if (result->saved) {
+                    settingsSaveError_.clear();
+                    if (!result->diagnostic.empty())
+                        juce::Logger::writeToLog(juce::String::fromUTF8(result->diagnostic.c_str()));
+                } else if (settingsSaveError_ != result->diagnostic) {
+                    settingsSaveError_ = result->diagnostic;
+                    report("Settings could not be saved. " + settingsSaveError_);
+                }
+            }
+        }
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
@@ -824,6 +864,8 @@ class AdiApplication final : public juce::JUCEApplication,
         }
     }
     bool noAudio_ = false, smokeSettings_ = false;
+    bool settingsQuitWarning_ = false;
+    std::string settingsSaveError_;
     juce::File smokeOutput_;
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;

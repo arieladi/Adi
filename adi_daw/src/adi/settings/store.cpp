@@ -180,6 +180,7 @@ Value AppSettings::get(const std::string& key) const {
 bool AppSettings::write(const std::string& key, const Value& value, const ChangeContext& who,
                         std::string& why, bool removeOverride) {
     if (status_ == LoadStatus::NewerSchema) { why = kNewerSchemaReadOnly; return false; }
+    if (status_ == LoadStatus::ForeignApp) { why = "settings belong to another application"; return false; }
     const Setting* s = find(key);
     if (!s) { why = "no setting named '" + key + "'"; return false; }
     if (s->scope == Scope::Project) {
@@ -268,6 +269,9 @@ bool AppSettings::save(std::string& why) {
         }
         values_ = std::move(merged);
         pendingKeys_.clear();
+        quietUntil_.reset();
+        retryAfter_.reset();
+        retryDelay_ = std::chrono::seconds{1};
         why = std::move(published.warning);
         if (!backupWarning.empty()) {
             if (!why.empty()) why += '\n';
@@ -278,6 +282,27 @@ bool AppSettings::save(std::string& why) {
         why = error.what();
         return false;
     }
+}
+
+void AppSettings::saveSoon(SaveClock::time_point now) noexcept {
+    if (!pendingKeys_.empty()) quietUntil_ = now + std::chrono::milliseconds{500};
+}
+
+std::optional<AppSettings::SaveAttempt> AppSettings::tick(SaveClock::time_point now) {
+    if (!quietUntil_ || now < *quietUntil_ || (retryAfter_ && now < *retryAfter_)) return {};
+    auto attempt = flush();
+    if (attempt && !attempt->saved) {
+        retryAfter_ = now + retryDelay_;
+        retryDelay_ = std::min(retryDelay_ * 2, std::chrono::seconds{30});
+    }
+    return attempt;
+}
+
+std::optional<AppSettings::SaveAttempt> AppSettings::flush() {
+    if (pendingKeys_.empty()) return {};
+    std::string diagnostic;
+    const bool saved = save(diagnostic);
+    return SaveAttempt{saved, std::move(diagnostic)};
 }
 
 std::filesystem::path AppSettings::changeLogFile() const {
