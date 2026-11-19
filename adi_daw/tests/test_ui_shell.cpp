@@ -11040,10 +11040,19 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     check(first->getBounds() == displayed, "Text/Menu release starts from the same displayed child bounds");
                     editPoseTime += 300;
                 }
-                const auto dragTime = itemTime + 660;
-                surface.frameAt(actual.reader(), dragTime);
+                // Present an intermediate pose independently of the Text/Menu release timings.
+                const auto dragTime = std::max(itemTime + 660,
+                    static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
+                const auto heightAnimation = surface.model().constants().heightAnimMs;
+                surface.model().focusItem(surface.model().chainRef(2, 31), dragTime);
+                const auto retargetTime = dragTime + heightAnimation + 1;
+                surface.frameAt(actual.reader(), retargetTime);
+                surface.model().focusItem(stable, retargetTime);
+                const auto dragPoseTime = retargetTime + heightAnimation / 4;
+                surface.frameAt(actual.reader(), dragPoseTime);
                 const auto heldItemBounds = first->getBounds();
-                surface.model().advance(dragTime + 7); // model events may advance between visible frames
+                const auto unseenTime = dragPoseTime + 7;
+                surface.model().advance(unseenTime); // model events may advance between visible frames
                 auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(30));
                 const auto beforeUndo = actual.undoTitle(false);
                 auto &slider = first->controls[0]->slider;
@@ -11061,17 +11070,27 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                       "new live parameter publications preserve the tile, capture identity and intermediate item rectangle");
                 slider.onDragEnd();
                 document->tick(20);
-                actual.frame();
+                // A frame at the pre-release stamp is normalised to the release tick.
+                // The next wall-clock shell frame may already be partway through easing.
+                surface.frameAt(actual.reader(), unseenTime);
                 check(!surface.model().capture() && begins == 1 && ends == 1 &&
-                          actual.undoTitle(false) == "Undo UI knobs: Cutoff" && first->getBounds() == heldItemBounds,
+                          actual.undoTitle(false) == "Undo UI knobs: Cutoff" && findPanel(30) == first &&
+                          surface.model().chainRef(2, 30) == stable && first->getBounds() == heldItemBounds,
                       "tile release balances one host gesture/undo and resumes from the last presented bounds");
+                const auto settleDeadline = surface.model().nextDeadline();
+                const bool hasResumeFrame = settleDeadline != stack::kNever;
+                const auto settledTime = hasResumeFrame ? settleDeadline : unseenTime;
+                if (hasResumeFrame)
+                    surface.frameAt(actual.reader(), settledTime);
+                check(hasResumeFrame && findPanel(30) == first && first->getHeight() > heldItemBounds.getHeight(),
+                      "the released tile resumes its pending enlargement on a later frame");
                 check(actual.command(AppCommands::Undo), "undo the tile drag");
                 document->tick(30); actual.frame();
                 check(knobs && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
                           actual.undoTitle(false) == beforeUndo,
                       "one undo restores the untouched parameter through the shared authority");
                 std::fputs("[shell] mix fixture compact activator start\n", stderr);
-                const auto compactTime = std::max(dragTime + 20,
+                const auto compactTime = std::max(settledTime + 20,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setAutoZoom(false, compactTime);
                 actual.devices.fold(30);
