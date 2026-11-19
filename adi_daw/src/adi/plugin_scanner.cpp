@@ -4,6 +4,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/scan_stamp.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/windows_shortcut.hpp"
 #include <nlohmann/json.hpp>
 #include <utf8proc.h>
 #include <array>
@@ -194,22 +195,64 @@ std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
         pending.emplace_back(std::u8string(bytes.begin(), bytes.end()));
     std::set<fs::path> visited;
     std::set<std::string> candidates;
+    const auto suffixOf = [](const fs::path& path) {
+        auto suffix = utf8(path.extension());
+        for (char& c : suffix) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+        return suffix;
+    };
+#if defined(_WIN32)
+    const auto followShortcut = [&](fs::path path) -> std::optional<fs::path> {
+        std::set<fs::path> links;
+        for (unsigned hop = 0; hop <= 32; ++hop) {
+            std::error_code error;
+            path = fs::canonical(path, error);
+            if (error) return std::nullopt;
+            if (suffixOf(path) != ".lnk" || !fs::is_regular_file(path, error))
+                return error ? std::nullopt : std::optional<fs::path>(path);
+            if (hop == 32 || !links.insert(path).second) return std::nullopt;
+            auto target = windowsShortcutTarget(path);
+            if (!target) return std::nullopt;
+            path = std::move(*target);
+        }
+        return std::nullopt;
+    };
+    const auto addShortcut = [&](const fs::path& link) {
+        const auto target = followShortcut(link);
+        if (!target) return;
+        if (suffixOf(*target) == extension) candidates.insert(utf8(*target));
+        else {
+            std::error_code error;
+            if (fs::is_directory(*target, error)) pending.push_back(*target);
+        }
+    };
+#endif
     const fs::directory_iterator end;
     while (!pending.empty()) {
         std::error_code ec;
         const auto dir = fs::canonical(pending.back(), ec);
         pending.pop_back();
         if (ec || !visited.insert(dir).second) continue;
+#if defined(_WIN32)
+        if (suffixOf(dir) == ".lnk" && fs::is_regular_file(dir, ec)) {
+            addShortcut(dir);
+            continue;
+        }
+#endif
         fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
         for (; !ec && it != end; it.increment(ec)) {
-            auto suffix = utf8(it->path().extension());
-            for (char& c : suffix) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+            const auto suffix = suffixOf(it->path());
             std::error_code entryError;
             if (suffix == extension) {
                 const auto module = fs::canonical(it->path(), entryError);
                 if (!entryError) candidates.insert(utf8(module));
                 continue; // A bundle is a candidate, not another search directory.
             }
+#if defined(_WIN32)
+            if (suffix == ".lnk" && it->is_regular_file(entryError)) {
+                addShortcut(it->path());
+                continue;
+            }
+#endif
             if (it->is_directory(entryError)) pending.push_back(it->path());
         }
     }

@@ -25,6 +25,8 @@ std::optional<std::string> encodeMetadata(const std::string& format,
 std::filesystem::path defaultScannerExecutable(); // sibling of current executable
 /// Enumerate a plug-in format without loading its modules. Returns sorted,
 /// canonical UTF-8 paths, and follows native links without repeating folders.
+/// Windows .lnk files use stored absolute targets only (no Shell Resolve/search),
+/// with a 1 MiB file cap and at most 32 shortcut hops. Invalid links are skipped.
 std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
                                         std::string_view extension);
 std::int64_t systemUtcMicros() noexcept;
