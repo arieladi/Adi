@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19, order the MIDI settings before the graph-worker preference
+
+**PR requested** — `engine-win/graph-worker-setting` at `35a035acaf21b95da53e47923b217e945de1905d`, after Window-fn's MIDI settings `6cec1b83` and current main `88e2d94e`. The merge retains both Settings sections. The existing engine application wiring can merge the resolved settings tip. The worker preference stays Auto at granted buffers of 1,024 samples and above, serial below the threshold or for an unknown buffer, with explicit Off.
+
+**MEASURED.** With the portable settings and single-WAV stack also present, strict MSVC x64 `/W4 /WX` passed 317 settings checks and 244 project-document checks. The public candidate merges to the exact tested tree. Hosted worker hardware remeasurement and the engine's desktop wiring are separate.
+
+**Remaining owner gates.** DF-E35 a needs the snapshot loan after #677, CT-03 needs the engine's absent-stream note producer, EX-11 hosted rendering needs the engine and Window lifecycle contract, and the existing SQLiteCpp request needs Win's ABI matrix. No further engine-win finding in the current d7 queue lacks a candidate.
+
 ## 2026-11-19, order portable settings before the single WAV follow-up
 
 **PR requested** — `engine-win/single-wav-export` at `1da021ae72b764729ba0da9aa6914a67772765d6`, after portable settings `0e6c6663`, file publication `b4485df6` and current main `88e2d94e`. Land the settings and publication families first. The merge preserves both the guarded existing-file binding for explicit WAV Replace and the separate portable settings policy. The Window-facing Job fields are unchanged.
