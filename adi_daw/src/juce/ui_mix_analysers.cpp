@@ -269,8 +269,14 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         return true;
     }
     void syncDemand() {
-        if (!valid()) comparison_.reset();
-        else if (eligible()) {
+        if (!valid()) {
+            // While A is unresolved there is no live comparison to feed. A
+            // captured B still belongs to the same explicitly selected endpoint.
+            if (comparison_ && comparison_->endpointB() == b_ && comparison_->view().referenceHeld)
+                comparison_->setVisible(false);
+            else
+                comparison_.reset();
+        } else if (eligible()) {
             try {
                 if (!comparison_) comparison_ = std::make_unique<AnalysisComparison>(broker_);
                 if ((comparison_->endpointA() == a_ && comparison_->endpointB() == b_) ||
