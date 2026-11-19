@@ -10,6 +10,10 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, native DEV-23 application policy gate
+
+**MEASURED for engine and Win.** Exact `engine/dev23-app-workers` head `3dd8c6056e13e6e2a89c5173a054360fd2768683` passed the settings and document suites under strict MSVC x64 `/W4 /WX` with Pd. The 447 checks include 257 native document checks. The headless driver fixtures exercise the actual worker dispatch at the granted-buffer boundary, serial Off, reconfiguration and matching PCM. Hosted worker admission still follows #677.
+
 ## 2026-11-19, audio loop takes with one Undo per pass (CT-02)
 
 **PR requested** — `engine-win/audio-loop-materialization` at `b4907bcc33e29f61105f9d95a33521c92a7cd5ff`, main base `bedee5ab`. Land after the engine grouped-Undo contract `a0a42ebd`, publication `b4485df6`, Stop fix `274f81f5` and recording rollback `b89d58ee`. The materialization work is the final commit on that stack.
