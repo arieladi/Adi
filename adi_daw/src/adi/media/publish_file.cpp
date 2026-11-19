@@ -502,7 +502,7 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         const auto synced=syncStaged(source);
         if(synced)return {PublishStatus::failed,false,"sync staging file: "+synced.message()};
         const auto error = hooks.rename ? hooks.rename(source, target) : renameExclusive(source, target);
-        if (!error) return publishedResult(target,*identity);
+        if (!error) return publishedResult(target,*identity,hooks.syncDirectory);
         if (error == std::errc::file_exists) return {PublishStatus::exists, false, error.message()};
         if(policy==PublishPolicy::AtomicOnly)return {PublishStatus::failed,false,"atomic publication: "+error.message()};
         copying = true;
@@ -539,7 +539,7 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         // Failure to remove a private staging name does not invalidate the
         // verified destination; its owning staging directory cleans it later.
         std::error_code ignored; fs::remove(source, ignored);
-        auto result = publishedResult(target, *copyIdentity);
+        auto result = publishedResult(target, *copyIdentity, hooks.syncDirectory);
         result.usedFallback = true;
         return result;
     } catch (const std::exception& e) { return {PublishStatus::failed, copying, e.what()}; }

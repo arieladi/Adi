@@ -64,13 +64,17 @@ void audioDirectory(const fs::path& folder) {
     fs::create_directories(audio);
 }
 fs::path publish(const fs::path& staged, const fs::path& folder, const std::string& original,
-                 std::int64_t id, detail::PublishedRollback& owned) {
+                 std::int64_t id, detail::PublishedRollback& owned, std::string& warning, PublishHooks hooks) {
     const auto name = safeName(original, id);
     for (unsigned i = 0; i < 10000; ++i) {
         const auto target = folder / "audio" / pathFromUtf8(i == 0 ? name : std::to_string(id) + "-" + std::to_string(i) + "-" + name);
         owned.files.push_back({target,{}});
-        const auto result = publishFile(staged, target, {}, PublishPolicy::VerifiedCopyFallback);
-        if (result.status == PublishStatus::published) {owned.files.back().identity=result.identity;return target;}
+        const auto result = publishFile(staged, target, hooks, PublishPolicy::VerifiedCopyFallback);
+        if (result.status == PublishStatus::published) {
+            owned.files.back().identity=result.identity;
+            detail::appendMediaPublicationWarning(warning,target,result);
+            return target;
+        }
         owned.files.pop_back();
         if (result.status != PublishStatus::exists) throw std::runtime_error("publish media: " + pathUtf8(target) + ": " + result.error);
     }
@@ -112,9 +116,17 @@ void streamChunks(SQLite::Database& db, std::int64_t id, const fs::path& target)
     out.close(); if (!out) throw std::runtime_error("close failed: " + pathUtf8(target));
 }
 }
-FileResult extractMedia(Store& store) {
+void detail::appendMediaPublicationWarning(std::string& warning, const fs::path& target, const PublishResult& result) {
+    if(result.durabilityConfirmed && result.warning.empty())return;
+    if(!warning.empty())warning+="; ";
+    warning+=pathUtf8(target)+": ";
+    warning+=result.warning.empty() ? "file published; directory durability could not be confirmed" : result.warning;
+}
+FileResult extractMedia(Store& store) { return detail::extractMedia(store,{}); }
+FileResult detail::extractMedia(Store& store, PublishHooks hooks) {
     detail::PublishedRollback published;
     try {
+        std::string warning;
         if (store.readOnly()) return {false, "project is read-only"};
         SQLite::Transaction transaction(store.db());
         const auto ids = embeddedIds(store.db());
@@ -127,15 +139,19 @@ FileResult extractMedia(Store& store) {
             const auto staged = stage.path / pathFromUtf8(safeName(name, id));
             streamChunks(store.db(), id, staged);
             verify(staged, row.at("hash_blake3").get<std::string>());
-            const auto target = publish(staged, folder, name, id, published);
+            const auto target = publish(staged, folder, name, id, published, warning, hooks);
             relocate(store.db(), id, folder, target);
             SQLite::Statement erase(store.db(), "DELETE FROM media_blobs WHERE media_id=?"); erase.bind(1, id); erase.exec();
         }
-        transaction.commit(); published.committed = true; return {true, {}};
+        transaction.commit(); published.committed = true; return {true, {}, std::move(warning)};
     } catch (const std::exception& e) { return {false, e.what(),published.rollback()}; }
 }
 FileResult collectExport(const fs::path& input, const fs::path& output,
                          const ArchiveControl& control) {
+    return detail::collectExport(input,output,control,{});
+}
+FileResult detail::collectExport(const fs::path& input, const fs::path& output,
+                                const ArchiveControl& control, PublishHooks mediaPublication) {
     try {
         const auto target = fs::absolute(output);
         if (fs::exists(target) || fs::is_symlink(fs::symlink_status(target))) return {false, "output already exists: " + pathUtf8(target)};
@@ -153,11 +169,14 @@ FileResult collectExport(const fs::path& input, const fs::path& output,
         advanceArchive(control, {ArchivePhase::CollectMedia});
         auto copy = Store::open(copyPath, error);
         if (!copy || copy->readOnly()) throw std::runtime_error("cannot open snapshot for relocation");
-        const auto extraction = extractMedia(*copy);
+        const auto extraction = detail::extractMedia(*copy,mediaPublication);
         if (!extraction.ok) throw std::runtime_error(extraction.error);
-        auto collected=detail::collectSnapshotMedia(*copy, control);
+        auto collected=detail::collectSnapshotMedia(*copy, control,mediaPublication);
         if(collected.cancelled)return {false, "collection export cancelled", std::move(collected.warning), true};
         if(!collected.ok)return collected;
+        // These files are private archive inputs. Their directory-flush
+        // warnings do not describe the final ZIP, whose bytes and publication
+        // are flushed independently below. Actual input failures still abort.
         audioDirectory(project);
         const auto report = checkProject(*copy, true);
         if (!report.clean()) throw std::runtime_error("collected project failed check: " + report.findings.front().detail);

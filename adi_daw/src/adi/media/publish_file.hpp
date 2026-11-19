@@ -59,10 +59,12 @@ struct PublishResult {
 };
 enum class PublishPolicy { VerifiedCopyFallback, AtomicOnly };
 // Test support, off-callback: refuse native rename or disturb a completed
-// private staging copy before verification. Null hooks use the real OS.
+// private staging copy before verification, or fail the directory flush after
+// publication. Null hooks use the real OS. Hooks are local to this invocation.
 struct PublishHooks {
     std::error_code (*rename)(const std::filesystem::path&, const std::filesystem::path&) = nullptr;
     void (*afterCopy)(const std::filesystem::path&) = nullptr;
+    std::error_code (*syncDirectory)(const std::filesystem::path&) = nullptr;
 };
 // Source is a private, closed staging file on the destination filesystem.
 // Never replaces a destination. Fallback flushes, closes and verifies a private

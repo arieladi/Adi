@@ -313,10 +313,11 @@ void copyMedia(const fs::path& source,const fs::path& staged,const media::Archiv
     if(!output)throw std::runtime_error("private media copy close failed");
     stopCollection(&control);
 }
-media::FileResult collectFiles(Store& store, const media::ArchiveControl* control) {
+media::FileResult collectFiles(Store& store, const media::ArchiveControl* control, media::PublishHooks hooks) {
     if(detail::appliedDispatchActive(store))return {false,"reentrant collection during applied-batch delivery",{}};
     media::detail::PublishedRollback files;
     try {
+        std::string warning;
         auto& db=store.db();
         if(store.readOnly() || store.schemaMajor()!=kSchemaMajor)return {false,"project is read-only or unsupported",{}};
         if(!sqlite3_get_autocommit(db.getHandle()) || sqlite3_next_stmt(db.getHandle(),nullptr))
@@ -366,13 +367,16 @@ media::FileResult collectFiles(Store& store, const media::ArchiveControl* contro
                     else fs::copy_file(source,staged);
                     verify(staged);stopCollection(control);
                     files.files.push_back({target,{}});
-                    const auto result = media::publishFile(staged, target, {},
+                    const auto result = media::publishFile(staged, target, hooks,
                                                            media::PublishPolicy::VerifiedCopyFallback);
                     if(result.status!=media::PublishStatus::published) {
                         files.files.pop_back();
                         if(result.status!=media::PublishStatus::exists)throw std::runtime_error("publish media: "+result.error);
                         verify(target);fs::remove(staged);
-                    }else files.files.back().identity=result.identity;
+                    }else {
+                        files.files.back().identity=result.identity;
+                        media::detail::appendMediaPublicationWarning(warning,target,result);
+                    }
                 }
                 stopCollection(control);
                 locations[hash]=media::pathUtf8(target.lexically_relative(folder));
@@ -386,6 +390,11 @@ media::FileResult collectFiles(Store& store, const media::ArchiveControl* contro
             return paths!=before;
         },true);
         stopCollection(control);
+        // Allocate both possible reports before COMMIT. A reporting allocation
+        // must not turn an already committed collection into a failed result.
+        auto checkpointWarning=warning;
+        if(!checkpointWarning.empty())checkpointWarning+="; ";
+        checkpointWarning+="collection saved; WAL checkpoint is pending";
         db.exec("COMMIT");transaction.committed=true;files.committed=true;
         int logFrames = 0, checkpointedFrames = 0;
         const auto status = sqlite3_wal_checkpoint_v2(db.getHandle(), "main", SQLITE_CHECKPOINT_PASSIVE,
@@ -393,7 +402,7 @@ media::FileResult collectFiles(Store& store, const media::ArchiveControl* contro
         // PASSIVE can return SQLITE_OK after making partial progress when a
         // reader is pinned. The path changes have already committed.
         const bool pending = status != SQLITE_OK || checkpointedFrames < logFrames;
-        return {true, {}, pending ? std::string("collection saved; WAL checkpoint is pending") : std::string{}};
+        return {true, {}, pending ? std::move(checkpointWarning) : std::move(warning)};
     }catch(const CollectionCancelled&){return {false,"media collection cancelled",files.rollback(),true};}
     catch(const std::exception& e){return {false,e.what(),files.rollback()};}
 }
@@ -401,11 +410,14 @@ media::FileResult collectFiles(Store& store, const media::ArchiveControl* contro
 StoreFileResult Store::collectAllAndSave() {
     if(detail::appliedDispatchActive(*this))return {false,"reentrant collection during applied-batch delivery",{}};
     if(closed_ || !db_)return {false,"project is closed",{}};
-    auto result=collectFiles(*this,nullptr);
+    auto result=media::detail::collectMedia(*this,{});
     return {result.ok,std::move(result.error),std::move(result.warning)};
 }
-media::FileResult media::detail::collectSnapshotMedia(Store& store,const ArchiveControl& control) {
-    return collectFiles(store,&control);
+media::FileResult media::detail::collectMedia(Store& store,PublishHooks hooks) {
+    return collectFiles(store,nullptr,hooks);
+}
+media::FileResult media::detail::collectSnapshotMedia(Store& store,const ArchiveControl& control,PublishHooks hooks) {
+    return collectFiles(store,&control,hooks);
 }
 StoreFileResult Store::collectAndExport(const std::filesystem::path& output) const {
     if(closed_ || !db_)return {false,"project is closed",{}};

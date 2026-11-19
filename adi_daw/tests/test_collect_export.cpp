@@ -87,6 +87,14 @@ struct ZipReader {
 std::error_code refuseRename(const fs::path&, const fs::path&) {
     return std::make_error_code(std::errc::operation_not_supported);
 }
+unsigned directorySyncCalls=0;
+std::error_code refuseDirectorySync(const fs::path&) {
+    ++directorySyncCalls;
+    return std::make_error_code(std::errc::io_error);
+}
+media::PublishHooks publicationWarningHooks(bool fallback) {
+    return {fallback ? refuseRename : nullptr, nullptr, refuseDirectorySync};
+}
 void corruptCopy(const fs::path& path) { write(path, "corrupt"); }
 void failCopy(const fs::path& path) { write(path, "partial"); throw std::runtime_error("injected copy failure"); }
 void concurrentDestination(const fs::path& copy) {
@@ -136,6 +144,22 @@ void publication() {
     check(read(source) == bytes, "failed copy retains the original stage");
     check(std::distance(fs::directory_iterator(temp.path()), fs::directory_iterator{}) == 2,
           "private copy staging is removed on success, collision and failure");
+}
+void publicationWarnings() {
+    for(const bool fallback : {false,true}) {
+        adi::test::TempDirectory temp{"publish_warning", "media"};
+        const auto source=temp.path()/"source", target=temp.path()/"target";
+        write(source,"durability warning bytes");
+        directorySyncCalls=0;
+        const auto result=media::publishFile(source,target,publicationWarningHooks(fallback));
+        check(result.status==media::PublishStatus::published && result.error.empty() &&
+                  result.usedFallback==fallback && result.identity.has_value(),
+              "directory sync refusal remains a published result for rename and fallback");
+        check(directorySyncCalls==1 && !result.durabilityConfirmed && !result.warning.empty(),
+              "both publication branches invoke the per-call directory sync hook once");
+        check(!fs::exists(source) && read(target)=="durability warning bytes",
+              "post-publication warning preserves the actual published bytes");
+    }
 }
 void collectionCancellation() {
     using media::ArchivePhase;
@@ -569,6 +593,49 @@ void extraction(bool upgraded) {
     check(checkProject(*f.store,true).clean(), "extracted files hash correctly and project check is clean");
     check(media::extractMedia(*f.store).ok, "extraction is idempotent");
 }
+void extractionPublicationWarnings() {
+    for(const bool fallback : {false,true}) {
+        Fixture f;legacy(f,true);
+        directorySyncCalls=0;
+        const auto result=media::detail::extractMedia(*f.store,publicationWarningHooks(fallback));
+        check(result.ok && result.error.empty() && directorySyncCalls==2,
+              "legacy extraction commits despite per-media durability warnings");
+        for(const std::int64_t id : {10,11}) {
+            const auto row=media::mediaRow(f.store->db(),id);
+            const auto target=f.temp.path()/media::pathFromUtf8(row.at("rel_path").get<std::string>());
+            check(read(target)==std::string(80000,id==10?'x':'y') &&
+                      result.warning.find(media::pathUtf8(target))!=std::string::npos,
+                  "extraction reports each affected published path with intact media");
+        }
+        check(f.store->db().execAndGet("SELECT count(*) FROM media_blobs").getInt()==0 &&
+                  f.store->db().execAndGet("SELECT sum(embedded) FROM media_files").getInt()==0,
+              "warning-only extraction commits blob removal and external references");
+        const auto repeated=media::detail::extractMedia(*f.store,publicationWarningHooks(fallback));
+        check(repeated.ok && repeated.warning.empty() && directorySyncCalls==2,
+              "idempotent extraction has no new publication warning");
+    }
+}
+void archivePrivatePublicationWarnings() {
+    for(const bool embedded : {false,true}) {
+        Fixture f;
+        if(embedded)legacy(f,true);
+        else {f.add("external/one.bin","first archive media",1);f.add("external/two.bin","second archive media",2);}
+        const auto before=digestProject(*f.store).text;
+        directorySyncCalls=0;
+        const auto output=f.temp.path()/"private-warning.zip";
+        const auto result=media::detail::collectExport(f.store->path(),output,{},publicationWarningHooks(true));
+        check(result.ok && result.error.empty() && !result.cancelled && directorySyncCalls>=2,
+              "private extraction or collection durability warnings do not fail final ZIP publication");
+        check(result.warning.find(".adi-media-")==std::string::npos && digestProject(*f.store).text==before,
+              "archive result does not relay private-stage paths or mutate the original project");
+        ZipReader reader(output);
+        const auto unpacked=f.temp.path()/"unpacked";
+        check(reader.extract(unpacked),"archive with private-stage warning remains a complete readable ZIP");
+        StoreError error{};const auto copy=Store::open(unpacked/"song.adi",error,true);
+        check(copy && checkProject(*copy,true).clean(),
+              "archived media hashes and references remain valid after private-stage warning");
+    }
+}
 void resolution() {
     Fixture f; f.add("external.bin", "resolve", 30);
     const auto row = media::mediaRow(f.store->db(),30);
@@ -744,10 +811,38 @@ void partialCheckpointWarning() {
     check(completed.ok && completed.warning.find("WAL checkpoint is pending") == std::string::npos,
           "a new collection after reader release completes without a checkpoint warning");
 }
+void collectionPublicationWarnings() {
+    for(const bool fallback : {false,true}) {
+        Fixture f;
+        f.add("external/one.bin","first collected bytes",1);
+        f.add("external/two.bin","second collected bytes",2);
+        SQLite::Database reader(media::pathUtf8(f.store->path()),SQLite::OPEN_READONLY);
+        reader.exec("BEGIN");
+        const auto prior=reader.execAndGet("SELECT rel_path FROM media_files WHERE id=1").getString();
+        directorySyncCalls=0;
+        const auto result=media::detail::collectMedia(*f.store,publicationWarningHooks(fallback));
+        check(result.ok && result.error.empty() && directorySyncCalls==2 &&
+                  result.warning.find("WAL checkpoint is pending")!=std::string::npos,
+              "live collection combines per-media publication and partial checkpoint warnings without failure");
+        for(const std::int64_t id : {1,2}) {
+            const auto row=media::mediaRow(f.store->db(),id);
+            const auto target=f.temp.path()/media::pathFromUtf8(row.at("rel_path").get<std::string>());
+            check(read(target)==(id==1?"first collected bytes":"second collected bytes") &&
+                      result.warning.find(media::pathUtf8(target))!=std::string::npos,
+                  "collection reports each affected published path with intact media");
+        }
+        check(reader.execAndGet("SELECT rel_path FROM media_files WHERE id=1").getString()==prior,
+              "publication warning does not invalidate the pinned reader's original snapshot");
+        reader.exec("COMMIT");
+        const auto repeated=media::detail::collectMedia(*f.store,publicationWarningHooks(fallback));
+        check(repeated.ok && repeated.warning.empty() && directorySyncCalls==2,
+              "reused collected media does not invent new durability warnings after checkpoint completes");
+    }
+}
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); collection(); collectionCancellation(); cancellationInsideMediaCopy(); cancellationAfterCollectedFile(); terminalCopyCancellation(); emptyCopyCancellation(); cancellationInsideEntry(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); partialCheckpointWarning(); }
+    try { publication(); publicationWarnings(); collection(); collectionCancellation(); cancellationInsideMediaCopy(); cancellationAfterCollectedFile(); terminalCopyCancellation(); emptyCopyCancellation(); cancellationInsideEntry(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); extractionPublicationWarnings(); archivePrivatePublicationWarnings(); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); partialCheckpointWarning(); collectionPublicationWarnings(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

@@ -20,6 +20,8 @@ struct FileResult {
 // unsupported paths remain and are named in warning; other hosts conservatively
 // retain public files rather than race a pathname unlink. A crash may leave
 // harmless unreferenced files.
+// Successful extraction can return a path-qualified warning for media whose
+// publication completed but directory durability could not be confirmed.
 FileResult extractMedia(Store&);
 enum class ArchivePhase { Snapshot, CollectMedia, WriteArchive, Publish };
 struct ArchiveProgress {
