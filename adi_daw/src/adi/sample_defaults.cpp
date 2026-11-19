@@ -88,10 +88,9 @@ SampleDefaultsCapture captureSampleDefaults(Store& store,std::int64_t clipId,dou
             known(*properties,{"clip_id","end_marker_ticks","signature_numerator","signature_denominator","scale_root","scale_id","scale_mask"});
             settings.endMarkerTicks=optionalInteger(*properties,"end_marker_ticks");settings.signatureNumerator=optionalInteger(*properties,"signature_numerator");settings.signatureDenominator=optionalInteger(*properties,"signature_denominator");
         }
-        if(!settings.warpEnabled && settings.endMarkerTicks) {
-            edit::TimeMap time(store.db());const auto origin=root.at("time_base")==0?integer(root.at("pos_ticks")):time.ticks(integer(root.at("pos_ns")));
-            const auto marker=nanos(time.durationSeconds(origin,*settings.endMarkerTicks),referenceRate);settings.sourceEndNs=settings.sourceEndNs?std::min(*settings.sourceEndNs,marker):marker;settings.endMarkerTicks.reset();
-        }
+        // copyClip freezes a legacy unwarped End when it has no physical pin.
+        // Save the same effective source clock that playback uses.
+        if (!settings.warpEnabled && settings.sourceEndNs) settings.endMarkerTicks.reset();
         std::string error;if(library::validateSampleSettings(settings,error)!=library::SampleSettingsProblem::None)throw std::runtime_error(error);
         result.hash=media.getColumn(0).getString();if(result.hash.size()!=64 || result.hash.find_first_not_of("0123456789abcdef")!=std::string::npos)throw std::runtime_error("invalid source content hash");result.settings=std::move(settings);result.ok=true;
     }catch(const std::exception& e){result.error=e.what();}
