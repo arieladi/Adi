@@ -71,6 +71,38 @@ Version 1 records:
   source and therefore no fabricated snapshot entry.
   A failed NI attempt can retain Main and only the stems completed before the
   failure; the list alone is not a completed-delivery claim.
+- For WAV, `media_identities` records the external audio-clip files actually
+  selected by the loaded ClipPlayback generation. Its immutable off-callback
+  source view supplies the path and media/clip IDs from that generation's read
+  snapshot, including Session's frozen-source substitutions. It does not rerun
+  a separate resolver against mutable rows. Unopened muted clips are excluded;
+  other constructed clip sources are checked even if outside the selected range.
+- Each distinct resolved file is hashed with BLAKE3 after Session preparation,
+  before offline processing, and again immediately before publication. A native
+  `(volume,file)` identity key joins hardlinks, symlinks and volume-native case
+  aliases. Each distinct selected path incurs one native identity read per pass;
+  keyed lookup replaces pairwise filesystem-equivalence checks. All referring
+  clip/media IDs, selected paths and stored hash values are retained. Every
+  selected path must still name its captured native identity when rechecked,
+  even when a replacement has identical bytes. `native_identity` records that
+  run-local key, not a persistent or portable content identifier. The shared
+  publisher identity reader uses Windows `GetFileInformationByHandle` or POSIX
+  `stat`, follows symlinks, and refuses callbacks. An unavailable native identity
+  fails with its filesystem error; there is no path-only fallback claiming the
+  same alias/rebinding guarantees. Cancellation is checked
+  between files and between the hasher's fixed 64 KiB reads.
+- A stored 64-digit hexadecimal BLAKE3 is compared with the measured start hash
+  (uppercase spelling is normalized for comparison). A mismatch fails before
+  rendering. Legacy non-digest labels are not treated as proof: `matches_stored`
+  is null and actual measured bytes supply the baseline. The second digest must
+  match that baseline; a same-size rewrite is a failure too. A failed job can
+  retain partial identities or its mismatching second digest without publishing.
+- `result.media_verification` states `scope: external_audio_clips`,
+  `start_complete` and `publication_verified`. The latter means the recheck
+  succeeded before the publication attempt, not that publication itself succeeded.
+  An empty identities array with both flags true means no external clip inputs;
+  null means this report has no such verification. Media reporting does not write
+  hashes back to the project or change the input files.
 
 Resolved bounds are output sample positions before latency compensation/preroll,
 with an exclusive end. They are distinct from the job's requested bounds when a
@@ -81,12 +113,26 @@ were read, not that a file was published. No project snapshot is made at enqueue
 job values, run membership, per-job revision/names and publication retain their
 four separate ownership moments.
 
-These are the warning/reporting and journal-revision slices of EX-07/EX-01, not
-their full provenance or collision contracts. `media_identities` remains null:
-referenced-media BLAKE3 checks at start and immediately before publication,
-rendered-output hashes, codec version, cleanup-failure reporting, run
-timestamps/identity, and durable manifest storage are not captured. The journal
-head identifies row history; it does not identify mutable external media bytes.
+These are the warning/reporting, journal-revision and WAV external-clip input
+slices of EX-07/EX-01, not their full provenance or collision contracts. Hashing
+is an endpoint comparison, not a locked byte snapshot: it cannot rule out a
+write-and-restore between checks, a preparation-time source race, or a change
+after the final check. Decode/warp caches remain the existing engine's concern;
+the new identities describe their original external inputs, not cache contents.
+Native keys inherit the publisher's filesystem-identity contract: they are not
+leases and may be reused after deletion. Network providers returning incomplete
+or unstable identities are not covered by the local filesystem regression tests.
+Plugin-owned samples/impulses and other loader-private external files are outside
+the source view. Embedded clip audio already requires extraction in ClipPlayback.
+
+NI's internal WAV renders receive the same per-render guard, but the final NI
+container does not yet aggregate one shared media baseline or recheck it after
+all AAC work. Its `media_identities` and `media_verification` remain null rather
+than claiming final-container verification. Each internal render currently hashes
+its own unique files; a shared NI-wide baseline/recheck is separate work.
+Rendered-output hashes, codec version, cleanup-failure reporting, run
+timestamps/identity, and durable manifest storage are also not captured. The
+journal head identifies row history independently of measured media bytes.
 Existing no-clobber publication and volume-native case behavior
 remain; Fail/Increment/Replace selection and folded-name delivery preflight need
 their separate policy/implementation. The caller still owns naming and storage of

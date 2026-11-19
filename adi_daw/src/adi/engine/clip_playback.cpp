@@ -63,6 +63,8 @@ struct Page {
 };
 struct PrefixPending {};
 struct Clip {
+    std::int64_t clipId = 0, mediaId = 0;
+    std::string storedBlake3;
     std::int64_t track = 0, start = 0, end = 0, offset = 0, length = 0;
     std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0, playEnd = 0;
     std::int64_t inCurve = 1, outCurve = 1;
@@ -452,6 +454,7 @@ struct ClipPlayback::Impl {
     Transport& transport;
     std::int32_t maxFrames;
     std::vector<std::unique_ptr<Clip>> clips;
+    std::vector<ClipMediaSource> externalSources;
     std::vector<std::unique_ptr<TrackSource>> tracks;
     std::vector<std::string> problems;
     std::atomic<bool> stalled{false};
@@ -485,6 +488,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const auto media=std::find_if(project->rows.media.begin(),project->rows.media.end(),[&](const auto& m){return m.id==a->mediaId;});
             if(media==project->rows.media.end() || media->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
             auto clip=std::make_unique<Clip>();
+            clip->clipId=row.id; clip->mediaId=media->id; clip->storedBlake3=media->hashBlake3;
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");
@@ -620,6 +624,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
         } catch(const std::exception& e) { impl_->problems.push_back(label+e.what()+"; silent"); }
     }
+    impl_->externalSources.reserve(impl_->clips.size());
+    for(auto& clip:impl_->clips)
+        impl_->externalSources.push_back({clip->clipId,clip->mediaId,fs::absolute(clip->path),std::move(clip->storedBlake3)});
     for(auto& t:impl_->tracks) t->owner=impl_;
     if(impl_->clips.empty()) return;
     impl_->worker=std::jthread([p=impl_.get()](std::stop_token stop){
@@ -639,6 +646,10 @@ std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
     return {};
 }
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
+std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {
+    if(audio::onAudioThread)return {};
+    return impl_->externalSources;
+}
 void ClipPlayback::stallForTest(bool v) noexcept { impl_->stalled.store(v,std::memory_order_release); }
 void ClipPlayback::setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest* probe) noexcept {
     impl_->requestProbe.store(probe,std::memory_order_release);

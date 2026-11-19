@@ -75,6 +75,27 @@ struct RenderSnapshot {
     std::optional<std::int64_t> regionId{};
     NameContext names; // the values used to resolve this output's name
 };
+struct MediaReference {
+    std::int64_t clipId = 0, mediaId = 0;
+    std::filesystem::path selectedPath;
+    std::string storedBlake3;
+    // Null means the legacy row does not contain a comparable 64-digit digest.
+    std::optional<bool> matchesStored{};
+};
+struct MediaIdentity {
+    std::filesystem::path path;
+    media::FileIdentity nativeIdentity{}; // run-local alias/rebinding check, not a portable digest
+    std::string blake3AtStart;
+    std::optional<std::string> blake3BeforePublication{};
+    std::vector<MediaReference> references;
+};
+struct MediaVerification {
+    // Covers this generation's external audio-clip inputs, not plugin samples.
+    // One identity per resolved file, even when many clips/media rows use it.
+    std::vector<MediaIdentity> identities;
+    bool startComplete = false;
+    bool publicationVerified = false;
+};
 struct Result {
     JobState state = JobState::Pending;
     std::filesystem::path output;
@@ -90,6 +111,9 @@ struct Result {
     // NI's actual supplied stems, in stream order; unused silent slots have no
     // project source. Main is snapshot above. All share its revision and range.
     std::vector<RenderSnapshot> stemSnapshots{};
+    // WAV acceptance; absent means no verification report (including NI's final
+    // container). Empty + both flags true means no external clip inputs.
+    std::optional<MediaVerification> mediaVerification{};
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct RunMember {
@@ -111,7 +135,7 @@ struct RunReport {
 // Caller-owned serialization/persistence; no sidecar is written by the queue.
 // May throw (allocation, invalid UTF-8). Never changes queue or output state.
 // Version 1 captures requested values plus available resolved revision/results;
-// media identities/hashes are not captured yet.
+// external clip-media identities are captured by WAV jobs when available.
 [[nodiscard]] std::string serializeRunManifest(const RunReport&);
 // Strict brace expansion, {{ / }} for literals; returns one portable filename
 // component without an extension. Unknown/malformed tokens and empty names throw.

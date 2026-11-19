@@ -3,6 +3,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -12,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -99,6 +101,76 @@ void resolveRegion(Job& job, const rows::Model& model, const engine::TempoMap& t
 }
 struct Cancelled {};
 void cancellation(const Control& c) { if (c.stop.stop_requested()) throw Cancelled{}; }
+std::optional<std::string> comparableHash(std::string hash) {
+    if(hash.size()!=64)return std::nullopt;
+    for(auto& c:hash) {
+        if(c>='A' && c<='F')c=static_cast<char>(c-'A'+'a');
+        if(!((c>='0' && c<='9') || (c>='a' && c<='f')))return std::nullopt;
+    }
+    return hash;
+}
+std::string hashMedia(const fs::path& path,const Control& control) {
+    cancellation(control);
+    auto hash=media::blake3File(path,control.stop);
+    if(hash.error==media::HashError::cancelled)throw Cancelled{};
+    if(!hash)throw std::runtime_error("cannot hash export media: "+media::pathUtf8(path));
+    cancellation(control);
+    return std::move(hash.hex);
+}
+media::FileIdentity mediaIdentityAt(const fs::path& path) {
+    std::error_code error;
+    const auto identity=media::readFileIdentity(path,error);
+    if(!identity)throw fs::filesystem_error("cannot identify export media",path,error);
+    return *identity;
+}
+void captureMedia(const engine::ClipPlayback& playback,MediaVerification& report,const Control& control) {
+    // Each distinct selected spelling incurs one native identity read. Keyed
+    // lookup joins hard links, symlinks and native case aliases without pairwise
+    // filesystem queries or a host-independent case-folding rule.
+    std::map<fs::path,std::size_t> selectedPaths;
+    std::map<std::pair<std::uint64_t,std::uint64_t>,std::size_t> nativeFiles;
+    for(const auto& source:playback.externalSources()) {
+        cancellation(control);
+        auto selected=selectedPaths.find(source.path);
+        if(selected==selectedPaths.end()) {
+            const auto native=mediaIdentityAt(source.path);
+            const auto [found,inserted]=nativeFiles.try_emplace({native.volume,native.file},report.identities.size());
+            if(inserted) {
+                MediaIdentity identity;
+                identity.path=fs::canonical(source.path);
+                identity.nativeIdentity=native;
+                identity.blake3AtStart=hashMedia(identity.path,control);
+                report.identities.push_back(std::move(identity));
+            }
+            selected=selectedPaths.emplace(source.path,found->second).first;
+        }
+        auto& identity=report.identities[selected->second];
+        const auto expected=comparableHash(source.storedBlake3);
+        identity.references.push_back({source.clipId,source.mediaId,source.path,source.storedBlake3,
+            expected ? std::optional<bool>(*expected==identity.blake3AtStart) : std::nullopt});
+        if(expected && *expected!=identity.blake3AtStart)
+            throw std::runtime_error("export media differs from stored BLAKE3: "+media::pathUtf8(identity.path));
+    }
+    report.startComplete=true;
+}
+void verifyMedia(MediaVerification& report,const Control& control) {
+    std::map<fs::path,media::FileIdentity> selectedPaths;
+    for(auto& identity:report.identities) {
+        identity.blake3BeforePublication=hashMedia(identity.path,control);
+        for(const auto& reference:identity.references) {
+            cancellation(control);
+            auto selected=selectedPaths.find(reference.selectedPath);
+            if(selected==selectedPaths.end())
+                selected=selectedPaths.emplace(reference.selectedPath,mediaIdentityAt(reference.selectedPath)).first;
+            if(selected->second!=identity.nativeIdentity)
+                throw std::runtime_error("export media path changed during render: "+media::pathUtf8(reference.selectedPath));
+        }
+        if(*identity.blake3BeforePublication!=identity.blake3AtStart)
+            throw std::runtime_error("export media changed during render: "+media::pathUtf8(identity.path));
+    }
+    cancellation(control);
+    report.publicationVerified=true;
+}
 } // namespace
 
 std::string resolveName(const std::string& pattern, const NameContext& context) {
@@ -230,6 +302,8 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         if (!graph) throw std::runtime_error("export has no master graph");
         const auto endpoint = session.offlineOutput(job.source.trackId, job.source.tap);
         if (!endpoint) throw std::runtime_error("export source has no audio output at the selected tap");
+        result.mediaVerification.emplace();
+        captureMedia(*session.clips(),*result.mediaVerification,control);
         const auto latency = endpoint->latency;
         auto& coalescer = session.devices().coalescer();
         coalescer.setQuietPeriodMs(0); // offline jobs must not outrun the live debounce
@@ -333,6 +407,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         });
         else writer->close();
         cancellation(control);
+        verifyMedia(*result.mediaVerification,control);
         detail::publishOutput(staged, result, control.publicationHooks, "export destination already exists");
     } catch (const Cancelled&) {
         result.state = JobState::Cancelled;
@@ -449,7 +524,25 @@ std::string serializeRunManifest(const RunReport& run) {
             const auto& result = *member.result;
             Json value{{"output", media::pathUtf8(result.output)}, {"frames_written", result.framesWritten},
                 {"error", result.error}, {"publication", nullptr}, {"normalization", nullptr},
-                {"resolved_snapshot", nullptr}, {"ni_stem_snapshots", Json::array()}};
+                {"resolved_snapshot", nullptr}, {"ni_stem_snapshots", Json::array()}, {"media_verification", nullptr}};
+            if(result.mediaVerification) {
+                const auto& verification=*result.mediaVerification;
+                value["media_verification"]={{"scope","external_audio_clips"},
+                    {"start_complete",verification.startComplete},{"publication_verified",verification.publicationVerified}};
+                item["media_identities"]=Json::array();
+                for(const auto& identity:verification.identities) {
+                    Json mediaValue{{"path",media::pathUtf8(identity.path)}, {"blake3_at_start",identity.blake3AtStart},
+                        {"native_identity",{{"volume",identity.nativeIdentity.volume},{"file",identity.nativeIdentity.file}}},
+                        {"blake3_before_publication",identity.blake3BeforePublication ? Json(*identity.blake3BeforePublication) : Json(nullptr)},
+                        {"references",Json::array()}};
+                    for(const auto& reference:identity.references)
+                        mediaValue["references"].push_back({{"clip_id",reference.clipId},{"media_id",reference.mediaId},
+                            {"selected_path",media::pathUtf8(reference.selectedPath)},
+                            {"stored_blake3",reference.storedBlake3},
+                            {"matches_stored",reference.matchesStored ? Json(*reference.matchesStored) : Json(nullptr)}});
+                    item["media_identities"].push_back(std::move(mediaValue));
+                }
+            }
             if (result.snapshot) {
                 item["journal_head"] = result.snapshot->journalHead;
                 value["resolved_snapshot"] = snapshotValue(*result.snapshot);

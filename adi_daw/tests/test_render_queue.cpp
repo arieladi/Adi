@@ -2,7 +2,9 @@
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
@@ -219,6 +221,9 @@ void cancellationAndFailures() {
               "cancellation before, during and before publication leaves no file or stage");
         check(result.snapshot.has_value()==(when!=0) && (!result.snapshot || result.snapshot->journalHead==0),
               "cancellation distinguishes unavailable snapshot from captured revision zero");
+        check(result.mediaVerification.has_value()==(when!=0) &&
+              (!result.mediaVerification || (result.mediaVerification->startComplete && !result.mediaVerification->publicationVerified)),
+              "cancelled WAV keeps completed start hashes without claiming publication verification");
     }
     auto j=f.job("existing");
     {std::ofstream file(j.directory/"existing.wav"); file<<"keep me";}
@@ -403,8 +408,9 @@ void queuedRevisionRegions() {
     check(firstMember["job"]["requested_range"]["begin_sample"]==137 &&
           firstMember["job"]["requested_range"]["end_sample"]==1003 &&
           firstMember["job"]["requested_range"]["region_id"]==1 &&
-          firstMember["media_identities"].is_null(),
-          "resolved coordinates do not overwrite the enqueued range or invent media byte identities");
+          firstMember["media_identities"].size()==1 &&
+          firstMember["result"]["media_verification"]["publication_verified"]==true,
+          "resolved coordinates stay separate from the requested range and measured media verification");
 }
 void revisionAfterUndo() {
     Fixture f;
@@ -777,11 +783,11 @@ void runManifests() {
           "manifest takes edited job values when that member actually starts");
     check(doc["members"][2]["state"]=="unstarted" && doc["members"][2]["removed_before_start"]==true &&
           doc["members"][2]["result"].is_null(),"removed pending member remains unstarted, without a fabricated result");
-    check(doc["members"][0]["journal_head"]==0 && doc["members"][0]["media_identities"].is_null() &&
+    check(doc["members"][0]["journal_head"]==0 && doc["members"][0]["media_identities"].size()==1 &&
           doc["members"][0]["result"]["resolved_snapshot"]["journal_head"]==0 &&
           doc["members"][0]["job"]["requested_profile"]["container"]=="wav" &&
           doc["members"][0]["job"]["requested_profile"]["sample_rate"]==48000,
-          "manifest records captured revision zero while media identities remain unavailable");
+          "manifest records captured revision zero and measured external clip identities");
     queue.run();
     check(queue.lastRun().plannedCount==1 && queue.lastRun().members.front().id==4 &&
           retained.members.size()==3 && retained.members.front().state==JobState::Completed,
@@ -817,9 +823,183 @@ void runManifests() {
     check(incompleteDoc["planned_count"]==2 && incompleteDoc["capture_complete"]==false && incompleteDoc["members"].empty(),
           "incomplete capture is explicit, never an apparently complete empty run");
 }
+void mediaIdentities() {
+    {
+        Fixture f;
+        const auto path=f.dir.path()/"audio.wav";
+        std::error_code error;
+        const auto identity=media::readFileIdentity(path,error);
+        check(identity.has_value() && !error,"native source identity reader returns a regular file key");
+        const auto missing=media::readFileIdentity(f.dir.path()/"missing.wav",error);
+        check(!missing && error,"native source identity reader preserves a missing-path error");
+        const auto directory=media::readFileIdentity(f.dir.path(),error);
+        check(!directory && error,"native source identity reader refuses directories");
+        std::optional<media::FileIdentity> refused;
+        {audio::CallbackScope callback;refused=media::readFileIdentity(path,error);}
+        check(!refused && error==std::errc::operation_not_permitted,
+              "native source identity reader refuses callback filesystem access");
+    }
+    {
+        Fixture f;
+        const auto path=f.dir.path()/"audio.wav";
+        const auto hash=media::blake3File(path);
+        if(!hash)throw std::runtime_error("fixture hash");
+        // A canonical stored hash is compared with actual bytes, including a
+        // legacy uppercase spelling. Other fixtures retain their 'test' label.
+        auto upper=hash.hex;
+        for(auto& c:upper)if(c>='a' && c<='f')c=static_cast<char>(c-'a'+'A');
+        SQLite::Statement update(f.store->db(),"UPDATE media_files SET hash_blake3=? WHERE id=1");
+        update.bind(1,upper); update.exec();
+        Queue queue; queue.add(f.job("verified-media")); queue.run();
+        const auto result=queue.snapshot().front().result;
+        check(result.state==JobState::Completed && result.mediaVerification &&
+              result.mediaVerification->startComplete && result.mediaVerification->publicationVerified,
+              "unchanged imported media verifies before playback and publication");
+        const auto& identity=result.mediaVerification.value().identities.at(0);
+        check(fs::equivalent(identity.path,path) && identity.blake3AtStart==hash.hex &&
+              identity.blake3BeforePublication==hash.hex && identity.references.size()==1 &&
+              identity.references[0].matchesStored==true,
+              "measured bytes confirm a comparable stored BLAKE3 without trusting it blindly");
+        const auto doc=nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+        check(doc["members"][0]["media_identities"][0]["blake3_at_start"]==hash.hex &&
+              doc["members"][0]["media_identities"][0]["native_identity"]["volume"]==identity.nativeIdentity.volume &&
+              doc["members"][0]["media_identities"][0]["native_identity"]["file"]==identity.nativeIdentity.file &&
+              doc["members"][0]["media_identities"][0]["blake3_before_publication"]==hash.hex &&
+              doc["members"][0]["media_identities"][0]["references"][0]["matches_stored"]==true &&
+              doc["members"][0]["result"]["media_verification"]["scope"]=="external_audio_clips",
+              "run JSON exposes verified hashes and the bounded source scope");
+    }
+    {
+        Fixture f;
+        f.store->db().exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES"
+            "(2,'legacy-alias','./audio.wav','wav'),(3,'unused','missing.wav','wav');"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns,muted) VALUES"
+            "(2,1,'audio',1,0,1000000000,0),(3,1,'audio',1,0,1000000000,0),(4,1,'audio',1,0,1000000000,1);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES"
+            "(2,1,0,4096),(3,2,0,4096),(4,3,0,4096);");
+        const auto result=renderWav(f.job("deduplicated-media"),{});
+        check(result.state==JobState::Completed && result.mediaVerification &&
+              result.mediaVerification->identities.size()==1 && result.mediaVerification->publicationVerified,
+              "multiple clips and canonical path aliases use one file identity per verification pass");
+        const auto& refs=result.mediaVerification.value().identities.at(0).references;
+        check(refs.size()==3 && std::all_of(refs.begin(),refs.end(),[](const auto& ref){return !ref.matchesStored.has_value();}),
+              "legacy labels use measured hashes and unopened muted clips are excluded");
+    }
+    {
+        Fixture f;
+        const auto original=f.dir.path()/"audio.wav", alias=f.dir.path()/"hardlink.wav", copy=f.dir.path()/"copy.wav";
+        std::error_code error;
+        fs::create_hard_link(original,alias,error);
+        if(error)std::printf("SKIP: source hardlink aliases unavailable (%s)\n",error.message().c_str());
+        else {
+            fs::copy_file(original,copy);
+            const auto originalId=media::readFileIdentity(original,error);
+            const auto aliasId=media::readFileIdentity(alias,error);
+            const auto copyId=media::readFileIdentity(copy,error);
+            check(originalId && aliasId==originalId && copyId && copyId!=originalId,
+                  "native identity joins hardlinks but distinguishes an identical-byte copy");
+            f.store->db().exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES"
+                "(2,'legacy-hardlink','hardlink.wav','wav'),(3,'legacy-copy','copy.wav','wav');"
+                "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES"
+                "(2,1,'audio',1,0,1000000000),(3,1,'audio',1,0,1000000000);"
+                "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES"
+                "(2,2,0,4096),(3,3,0,4096);");
+            const auto result=renderWav(f.job("native-aliases"),{});
+            check(result.state==JobState::Completed && result.mediaVerification &&
+                  result.mediaVerification->publicationVerified && result.mediaVerification->identities.size()==2,
+                  "keyed native dedup hashes a hardlink pair once and keeps a separate identical-byte file");
+            const auto& identities=result.mediaVerification.value().identities;
+            const auto links=std::find_if(identities.begin(),identities.end(),[&](const auto& entry) {
+                return originalId && entry.nativeIdentity==*originalId;
+            });
+            check(links!=identities.end() && links->references.size()==2 &&
+                  identities[0].blake3AtStart==identities[1].blake3AtStart,
+                  "all hardlink references survive dedup without using content hash as the file key");
+        }
+    }
+    {
+        Fixture f;
+        const auto original=f.dir.path()/"audio.wav", alias=f.dir.path()/"symbolic.wav", copy=f.dir.path()/"copy.wav";
+        std::error_code error;
+        fs::create_symlink(original,alias,error);
+        if(error)std::printf("SKIP: source symlink rebinding unavailable (%s)\n",error.message().c_str());
+        else {
+            fs::copy_file(original,copy);
+            f.store->db().exec("UPDATE media_files SET rel_path='symbolic.wav' WHERE id=1");
+            bool rebound=false;
+            Control control;
+            control.progress=[&](JobId,std::uint64_t done,std::uint64_t) {
+                if(rebound || done==0)return;
+                fs::remove(alias);fs::create_symlink(copy,alias);rebound=true;
+            };
+            const auto result=renderWav(f.job("rebound-source"),{},control);
+            check(rebound && result.state==JobState::Failed && !result.publication &&
+                  result.error.find("export media path changed during render:")==0 &&
+                  !fs::exists(result.output) && f.noStage(),
+                  "same-byte symlink rebind fails against captured native identity before publication");
+            const auto& identity=result.mediaVerification.value().identities.at(0);
+            check(identity.blake3BeforePublication==identity.blake3AtStart &&
+                  !result.mediaVerification->publicationVerified && fs::exists(original) && fs::exists(copy),
+                  "unchanged representative digest cannot hide a rebound selected path or remove sources");
+        }
+    }
+    {
+        Fixture f;
+        const auto path=f.dir.path()/"audio.wav";
+        const auto before=media::blake3File(path).hex;
+        const auto bytes=fs::file_size(path);
+        bool rewritten=false;
+        Control control;
+        control.progress=[&](JobId,std::uint64_t done,std::uint64_t) {
+            if(rewritten || done==0)return;
+            std::fstream file(path,std::ios::binary|std::ios::in|std::ios::out);
+            if(!file)throw std::runtime_error("fixture rewrite open");
+            const auto offset=static_cast<std::streamoff>(bytes-1);
+            char value=0; file.seekg(offset); file.read(&value,1);
+            value=static_cast<char>(static_cast<unsigned char>(value)^1u);
+            file.seekp(offset); file.write(&value,1); file.flush();
+            if(!file)throw std::runtime_error("fixture rewrite failed");
+            rewritten=true;
+        };
+        Queue queue;queue.add(f.job("changed-media"));queue.run({},control);
+        const auto result=queue.snapshot().front().result;
+        const auto after=media::blake3File(path).hex;
+        check(rewritten && before!=after && fs::file_size(path)==bytes &&
+              result.state==JobState::Failed && result.error.find("export media changed during render:")==0 &&
+              !result.publication && !fs::exists(result.output) && f.noStage(),
+              "real same-size source rewrite fails before publication and preserves the changed source");
+        const auto& verification=result.mediaVerification.value();
+        check(verification.startComplete && !verification.publicationVerified &&
+              verification.identities.at(0).blake3AtStart==before &&
+              verification.identities.at(0).blake3BeforePublication==after && result.framesWritten==866,
+              "content recheck catches an out-of-range byte edit after complete staged audio, independent of size");
+        const auto doc=nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+        check(doc["members"][0]["state"]=="failed" &&
+              doc["members"][0]["result"]["media_verification"]["publication_verified"]==false &&
+              doc["members"][0]["media_identities"][0]["blake3_before_publication"]==after,
+              "failed run JSON retains the changed measured hash without claiming verified publication");
+    }
+    {
+        Fixture f;
+        const auto original=f.dir.path()/"audio.wav", alternate=f.dir.path()/"alternate.wav";
+        audio::WavWriter writer(alternate,48000,2,audio::WavFormat::Float32);
+        std::vector<float> silence(8192,0);writer.write(silence.data(),4096);writer.close();
+        const auto alternateHash=media::blake3File(alternate).hex;
+        SQLite::Statement update(f.store->db(),"UPDATE media_files SET hash_blake3=?,abs_path_hint=? WHERE id=1");
+        update.bind(1,alternateHash);update.bind(2,media::pathUtf8(alternate));update.exec();
+        const auto result=renderWav(f.job("stored-mismatch"),{});
+        check(result.state==JobState::Failed && result.framesWritten==0 && !result.publication &&
+              result.error.find("export media differs from stored BLAKE3:")==0 && !fs::exists(result.output),
+              "valid stored digest mismatch refuses before audio instead of silently trusting the row");
+        const auto& verification=result.mediaVerification.value();
+        check(!verification.startComplete && fs::equivalent(verification.identities.at(0).path,original) &&
+              verification.identities[0].references.at(0).matchesStored==false,
+              "identity follows ClipPlayback's actual relative source, not a second resolver's alternate hint");
+    }
+}
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); publicationResults(); runManifests();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); publicationResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

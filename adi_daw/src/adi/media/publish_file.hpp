@@ -17,6 +17,11 @@ struct FileIdentity {
     std::uint64_t volume = 0, file = 0;
     friend bool operator==(const FileIdentity&, const FileIdentity&) = default;
 };
+// Off-callback identity of a regular file, following symlinks. Reuses the
+// publisher's native volume/file key; this is not a persistent content hash or
+// an open-file lease. Failure retains the native error (no path-only fallback).
+[[nodiscard]] std::optional<FileIdentity> readFileIdentity(const std::filesystem::path&,
+                                                          std::error_code&) noexcept;
 // Owner-only native protection for an open project, before SQLite opens and
 // until it closes. Shared leases permit existing SQLite reader/writer policy;
 // an authoritative replacement alone takes an exclusive lease. POSIX uses a

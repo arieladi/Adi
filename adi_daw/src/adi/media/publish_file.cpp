@@ -294,6 +294,10 @@ std::error_code renameReplacing(const fs::path& source,const fs::path& target) n
     std::error_code error;fs::rename(source,target,error);return error;
 #endif
 }
+std::optional<FileIdentity> readFileIdentity(const fs::path& path,std::error_code& error) noexcept {
+    if(audio::onAudioThread){error=std::make_error_code(std::errc::operation_not_permitted);return {};}
+    return identityAt(path,error);
+}
 struct ProjectFileLease::Impl {
     NativeFile file=invalidFile;
     fs::path path;
