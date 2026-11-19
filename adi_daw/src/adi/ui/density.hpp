@@ -36,6 +36,12 @@ enum class DensityId { Compact, Open };
     ADI_DENSITY_INT(mixStackNearRow) /* one row from the centre of the lens */ \
     ADI_DENSITY_INT(mixStackOuterRow) /* two rows from the centre of the lens */ \
     ADI_DENSITY_INT(mixStackFocusedRow) /* the centre of the lens */ \
+    ADI_DENSITY_INT(mixPageWidth) /* a Mix View page tab */ \
+    ADI_DENSITY_INT(mixChannelMinWidth) /* left channel column */ \
+    ADI_DENSITY_INT(mixChannelMaxWidth) \
+    ADI_DENSITY_INT(mixChannelRowHeight) \
+    ADI_DENSITY_INT(mixChannelLevelWidth) \
+    ADI_DENSITY_INT(mixInfoHeight) /* the compact analyser in the left column */ \
     /* corners */ \
     ADI_DENSITY_FLOAT(radiusSmall) /* a small mark, a pill's ends at the smallest */ \
     ADI_DENSITY_FLOAT(radiusThumb) /* a scroll bar's thumb */ \

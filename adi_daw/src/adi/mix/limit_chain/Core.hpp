@@ -23,13 +23,14 @@ struct Statistics {std::uint64_t clipFrames=0,limiterFrames=0,keyHistoryFrames=0
 
 /// Independent pages, fixed audio order Clip -> Limiter. Standard C++ interface;
 /// optional implementation linkage keeps JUCE out of the core DAW library.
-/// Single audio publisher; prepare/destruction and continuation restore are owner-only
+/// Single audio publisher; prepare/reset/destruction and continuation restore are owner-only
 /// with the driver stopped. Disabled stages retain state and process zero frames.
 class Core final {
 public:
     Core();~Core();
     Core(const Core&)=delete;Core& operator=(const Core&)=delete;
     void prepare(const PrepareSpec&,const Settings&);
+    // Retain the applied plan and withdraw any offer the stopped graph didn't admit.
     void reset(const Settings&) noexcept;
     void setBackgroundActive(bool) noexcept;
     [[nodiscard]] bool supportsClip() const noexcept;

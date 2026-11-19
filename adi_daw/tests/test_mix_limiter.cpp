@@ -75,6 +75,32 @@ void exactAdapter() {
         adapter->release();
     }
 }
+void loudnessMaximaFollowPublishedReadings() {
+    l::LoudnessMeter meter;
+    meter.prepare(48000, 2);
+    std::array<float, 480> block{};
+    const std::array<const float *, 2> stereo{block.data(), block.data()};
+    for (int i = 0; i < 300; ++i)
+        meter.process(stereo.data(), static_cast<int>(block.size()));
+    for (std::size_t i = 0; i < 256; ++i)
+        block[i] = static_cast<float>(std::sin(6.283185307179586 * static_cast<double>(i) / 48.));
+    meter.process(stereo.data(), 256);
+    const auto peak = meter.snapshot();
+    check(std::isfinite(peak.momentary) && peak.maxMomentary >= peak.momentary,
+          "first audible sub-hop momentary reading is included in the maximum");
+    check(std::isfinite(peak.shortTerm) && peak.maxShortTerm >= peak.shortTerm,
+          "first audible sub-hop short-term reading is included in the maximum");
+    for (int i = 0; i < 10; ++i)
+        meter.process(stereo.data(), 256, false);
+    const auto paused = meter.snapshot();
+    check(paused.maxMomentary == peak.maxMomentary && paused.maxShortTerm == peak.maxShortTerm,
+          "loudness maxima hold while recording is paused");
+    meter.reset();
+    const auto cleared = meter.snapshot();
+    check(std::isinf(cleared.maxMomentary) && cleared.maxMomentary < 0.f &&
+              std::isinf(cleared.maxShortTerm) && cleared.maxShortTerm < 0.f,
+          "loudness reset clears both maxima");
+}
 void loudnessDemand() {
     constexpr int frames = 256;
     l::EngineSettings settings;
@@ -458,6 +484,6 @@ void disableAtLatencyOffer() {
 }
 }
 int main() {
-    exactAdapter();loudnessDemand();parametersAndState();capabilitiesAndPolicy();layouts();exportConfigurationAutomation();latencyHandoff();disableAtLatencyOffer();
+    exactAdapter();loudnessDemand();loudnessMaximaFollowPublishedReadings();parametersAndState();capabilitiesAndPolicy();layouts();exportConfigurationAutomation();latencyHandoff();disableAtLatencyOffer();
     std::printf("mix limiter: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }

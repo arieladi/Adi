@@ -34,7 +34,7 @@ const std::set<std::string> materialTables{
     "event_streams","note_expression","automation_lanes","automation_data","automation_segment_ranges",
     "media_files","routing","plugin_refs","device_chains","devices","plugin_params","plugin_state",
     "device_panels","device_panel_params","device_expression_routes","markers","marker_details","remarks",
-    "frozen_renders","frozen_groups","return_send_taps","session_state","state_blobs"};
+    "frozen_renders","frozen_groups","return_send_taps","routing_key_taps","session_state","state_blobs"};
 Tables readTables(const Store& store) {
     Tables result;
     SQLite::Statement tables(store.db(),"SELECT name FROM sqlite_master WHERE type IN ('table','view') UNION SELECT name FROM sqlite_temp_master WHERE type IN ('table','view') ORDER BY name");
@@ -106,7 +106,7 @@ Tables topology(Tables value) {
         {"group_summing",{"track_id","enabled","flavor"}},
         {"routing",{"id","src_kind","src_id","dst_kind","dst_id","kind","ord","pre_fader","enabled","origin"}}};
     const std::set<std::string> whole{"plugin_refs","device_chains","devices","plugin_params","plugin_state",
-        "device_expression_routes","track_recording_options","frozen_renders","frozen_groups","return_send_taps"};
+        "device_expression_routes","track_recording_options","frozen_renders","frozen_groups","return_send_taps","routing_key_taps"};
     for(auto it=value.begin();it!=value.end();) {
         const auto fields=retained.find(it->first);
         if(fields==retained.end()) {if(whole.contains(it->first)){++it;continue;}it=value.erase(it);continue;}
@@ -468,6 +468,18 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->signatures=image->model.signatures;out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;
         options.devicesFor=[owner](std::int64_t id){return owner->trackChain(id);};
+        // The GUI publishes both preview and committed generations through here.
+        // Keep auxiliary edges when an ordinary edit replaces the playing graph.
+        options.keyTapFor=[owner](std::int64_t track,Tap tap)->std::optional<Node*> {
+            if(tap==Tap::PreFx && owner->frozenSources_.contains(track))return std::nullopt;
+            return owner->tapFor(track,tap);
+        };
+        options.keyDeviceFor=[owner](std::int64_t device)->Node* {
+            const auto* entry=owner->entryFor(device);auto* instance=owner->instanceFor(device);
+            return entry && !entry->retired && !entry->parked && !entry->placeholder &&
+                instance && instance->loaded() && instance->sidechainInputChannels()>0
+                ? owner->nodeFor(device):nullptr;
+        };
         options.tapFor=[owner](std::int64_t id,Tap tap){return owner->tapFor(id,tap==Tap::PostFader?Tap::PostFx:tap);};
         options.sendFor=[owner](std::int64_t id)->Node*{return owner->strips_.sendFor(id);};
         options.sendTailFor=[owner](std::int64_t id){return owner->summing_.sendTailFor(id);};
@@ -489,6 +501,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         out->rebuild.model=[image]{return &image->model;};
         out->rebuild.channels=owner->spec_.channels;out->rebuild.sampleRate=owner->spec_.sampleRate;out->rebuild.maxFrames=owner->spec_.maxFrames;
         out->rebuild.devicesFor=options.devicesFor;out->rebuild.sourcesFor=options.sourcesFor;
+        out->rebuild.keyTapFor=options.keyTapFor;out->rebuild.keyDeviceFor=options.keyDeviceFor;
         out->rebuild.tapFor=options.tapFor;out->rebuild.sendFor=options.sendFor;out->rebuild.sendTailFor=options.sendTailFor;
         out->rebuild.feedbackFor=options.feedbackFor;out->rebuild.eventSourceFor=options.eventSourceFor;
         out->rebuild.monitors=options.monitors;out->rebuild.transportState=timing;
@@ -519,6 +532,17 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(!owner->appliedSource_.sameConnection(base.source))return refused("preview source does not match the loaded Session");
         try {
             auto next=readImage(store,base,owner->overridden_,tempoRule(owner));
+            // The document and the coordinator can see the same key transaction
+            // on different ticks. Publish it once, keeping the running readers.
+            if (active.empty()) {
+                if (const auto keyed = owner->refreshDeviceKeys(store, next->viewBytes)) {
+                    if (!*keyed) return refused(owner->error());
+                    committed = next;
+                    viewCommitted(next);
+                    return owner->presentationReady(base.source, base.sequence) ? PresentationStatus{} :
+                        PresentationStatus{PresentationState::Pending, "waiting for earlier device delivery", {}};
+                }
+            }
             if(committed && sameBase(committed->base,base) && committed->bytes==next->bytes &&
                committed->transport==next->transport && committed->cue==next->cue && committed->overrides==owner->overridden_) {
                 if(!owner->presentationReady(base.source,base.sequence))return {PresentationState::Pending,"earlier device delivery or capture is pending",{}};

@@ -1692,6 +1692,7 @@ rate conversion, missing-file snapshot and immutable-content publication limit.
 | `return.setSendTap` | e | G | cap | P1 |
 | `routing.connect` | e | G | pair `routing.disconnect` | P0 |
 | `routing.disconnect` | e | G | cap | P0 |
+| `routing.setKeyTap` | e | G | state capture (absent = Post Mixer) | P1 |
 | `routing.setGain` | e | S | sym, coalescable | P0 |
 | `routing.setPan` | e | S | sym, coalescable | P1 |
 | `routing.setPreFader` | e | G | sym | P0 |
@@ -2086,7 +2087,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**211 ops** — 71 P0, 84 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**212 ops** — 71 P0, 85 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

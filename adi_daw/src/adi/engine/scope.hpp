@@ -73,6 +73,9 @@ public:
         bool advancing = false;
         std::uint64_t transportRevision = 0;
     };
+    struct ParkedSilence {
+        std::int64_t begin = 0, end = 0;
+    };
     /// Message thread: `seconds` of stereo at `sampleRate`, allocated here.
     ScopeTap(double sampleRate, double seconds);
 
@@ -110,6 +113,10 @@ public:
     [[nodiscard]] std::int64_t capacity() const noexcept { return capacity_; }
     [[nodiscard]] std::int64_t written() const noexcept { return written_.load(std::memory_order_acquire); }
     [[nodiscard]] double sampleRate() const noexcept { return sampleRate_; }
+    /// The last contiguous range of certified silent samples while parked. A reader
+    /// interested in pictures may leave that range idle after its display has settled.
+    /// Raw waveforms still retain the same samples and timeline span records.
+    [[nodiscard]] ParkedSilence lastParkedSilence() const noexcept;
 
 private:
     struct StampSpan {
@@ -142,6 +149,7 @@ private:
     std::uint64_t lastRevision_ = 0;
     std::atomic<std::int64_t> written_{0};    ///< frames complete, published with release
     std::atomic<std::int64_t> pending_{0};    ///< frames complete or being written now
+    std::atomic<std::int64_t> quietBegin_{0}, quietEnd_{0};
     std::atomic<std::int32_t> latency_{0};
 };
 

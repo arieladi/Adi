@@ -195,6 +195,87 @@ void serialAndKey(){
         check(exact&&combined.latencySamples()==c.latencySamples()+l.latencySamples(),"combined audio equals Clip then Limiter with external key delayed by Clip latency");
     }
 }
+
+void externalKeyAliasing(){
+    chain::Settings s;
+    s.clipEnabled=true;
+    s.clip[clip::online]=0;
+    s.clip[clip::input]=18;
+    s.limiter.inputGainDb=8;
+    s.limiter.externalSidechain=true;
+    for (const bool crossed : {false, true}) {
+        chain::Core aliased, copied;
+        // Processing more than one internal chunk also exercises the next chunk's raw key.
+        aliased.prepare({48000,64,limiter::ChannelLayout::stereo()},s);
+        copied.prepare({48000,64,limiter::ChannelLayout::stereo()},s);
+        aliased.setBackgroundActive(false);
+        copied.setBackgroundActive(false);
+        bool exact=true, zeroLatency=true;
+        for (std::uint64_t i=1;i<=32;++i) {
+            Audio subject,reference,key;
+            subject.signal(static_cast<int>(i),2.5f);
+            reference.samples=subject.samples;
+            key.samples[0]=subject.samples[crossed?1u:0u];
+            key.samples[1]=subject.samples[crossed?0u:1u];
+            const float* source[]{subject.constPointers[crossed?1u:0u],subject.constPointers[crossed?0u:1u]};
+            const auto block=begin(aliased,i,aliased.latencySamples(),s);
+            zeroLatency=zeroLatency&&block.clipLatency==0;
+            {
+                RT rt;
+                exact=aliased.process(subject.pointers.data(),source,128,s,block)&&exact;
+            }
+            render(copied,reference,&key,128,s,begin(copied,i,copied.latencySamples(),s));
+            exact=exact&&subject.samples==reference.samples;
+        }
+        check(zeroLatency&&exact,crossed ?
+              "zero-latency Clip preserves a cross-channel aliased external key" :
+              "zero-latency Clip preserves an exact same-channel external key");
+    }
+    chain::Core core;
+    core.prepare({48000,64,limiter::ChannelLayout::stereo()},s);
+    core.setBackgroundActive(false);
+    Audio a;
+    a.signal(0,2.5f);
+    const auto before=a.samples;
+    const float* shiftedKey[]{a.constPointers[0]+1,a.constPointers[1]};
+    const auto block=begin(core,1,core.latencySamples(),s);
+    bool rejected;
+    {
+        RT rt;
+        rejected=!core.process(a.pointers.data(),shiftedKey,127,s,block);
+    }
+    check(rejected&&a.samples==before&&core.statistics().clipFrames==0,
+          "shifted Clip key overlap is rejected before changing any audio");
+}
+
+void resetWithdrawsClaim(){
+    chain::Settings disabled;
+    disabled.clipEnabled=false;
+    disabled.limiterEnabled=false;
+    auto enabled=disabled;
+    enabled.clipEnabled=true;
+    enabled.clip[clip::online]=2;
+    chain::Core core;
+    core.prepare({48000,128,limiter::ChannelLayout::stereo()},disabled);
+    core.setBackgroundActive(false);
+    (void)begin(core,1,0,enabled);
+    const auto stale=core.claimPendingLatencyChange(enabled);
+    check(stale.token&&stale.samples>0&&core.configurationBusy(),"reset fixture claims nonzero Clip latency");
+    core.reset(disabled);
+    check(!core.pendingLatencyChange().token&&!core.configurationBusy()&&core.latencySamples()==0,
+          "reset withdraws the claim and retains the applied configuration");
+    check(!begin(core,2,stale.samples,disabled).generation,
+          "reset does not admit the withdrawn graph latency");
+    const auto waiting=begin(core,3,0,enabled);
+    const auto replacement=core.claimPendingLatencyChange(enabled);
+    check(waiting.generation&&!waiting.clipEnabled&&replacement.token&&replacement.token!=stale.token&&
+              replacement.samples==stale.samples,
+          "the same request after reset gets a new claim and retains the old plan until admission");
+    const auto admitted=begin(core,4,replacement.samples,enabled);
+    check(admitted.clipEnabled&&!core.configurationBusy()&&core.latencySamples()==replacement.samples,
+          "the replacement claim admits normally");
+}
+
 void structuralAdmission(){
     chain::Settings s;chain::Core core;core.prepare({48000,128,limiter::ChannelLayout::stereo()},s);core.setBackgroundActive(false);
     const int base=core.latencySamples();Audio a;a.signal(0);auto first=begin(core,1,base,s);render(core,a,nullptr,64,s,first);
@@ -369,7 +450,7 @@ void backendFadeLatency(){
     backend->release();
 }
 }
-int main(){try{limiterOnly();blockReduction();clipOnly();serialAndKey();structuralAdmission();ownerClaimIntent();backendOwnerClaim();keyHistoryWhileLimiterOff();disabledLimiterConfiguration();backendState();backendFadeLatency();
+int main(){try{limiterOnly();blockReduction();clipOnly();serialAndKey();externalKeyAliasing();resetWithdrawsClaim();structuralAdmission();ownerClaimIntent();backendOwnerClaim();keyHistoryWhileLimiterOff();disabledLimiterConfiguration();backendState();backendFadeLatency();
     check(allocations==0,"no callback C++ allocations in composition or admissions");check(deallocations==0,"no callback C++ deallocations in composition or admissions");
 }catch(const std::exception& e){++failures;std::printf("FAIL exception: %s\n",e.what());}
 std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

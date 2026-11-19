@@ -199,6 +199,7 @@ public:
         if(!prepared_)return;
         backend_->pumpMainThread(settings(readValues()));publishLatency(backend_->advertisedLatency());
     }
+    std::int32_t sidechainInputChannels() const noexcept override {return channels_;}
     void process(const engine::NodeIo& io) noexcept override {
         const ReactivationGate::Pass pass(gate_);
         if(io.frames<=0||io.blockOffset<0)return;

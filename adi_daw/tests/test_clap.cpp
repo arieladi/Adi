@@ -23,6 +23,7 @@
 #include "juce/clap_host.hpp"
 
 #include <cmath>
+#include <array>
 #include <algorithm>
 #include <cstring>
 #include <utility>
@@ -1820,6 +1821,7 @@ void testTheBusLayoutIsAsked() {
                 *info = clap_audio_port_info_t{};
                 info->id = index;
                 info->channel_count = 2;
+                info->flags = index==0?CLAP_AUDIO_PORT_IS_MAIN:0;
                 std::snprintf(info->name, sizeof info->name, "%s%u",
                               isInput ? "in" : "out", index);
                 return true;
@@ -2420,6 +2422,7 @@ void testPrepareReactivatesWhenTheLayoutMoves() {
                            clap_audio_port_info_t* info) -> bool {
                 (void) p; (void) idx;
                 info->channel_count = isInput ? 2u : 2u;
+                info->flags = idx==0?CLAP_AUDIO_PORT_IS_MAIN:0;
                 return true;
             };
         }
@@ -2605,6 +2608,11 @@ struct Fake64 {
     int calls = 0;
     bool saw32 = false, saw64 = false, mixed = false;
     bool sideFedZeros64 = true;            ///< the second input port, at 64, held zeros
+    bool mainInput = true;
+    std::uint32_t keyChannels = 2;
+    double keyFirst = 0, keyLast = 0;
+    bool extraZero = true;
+
     bool active = false;
     int portReads = 0, portReadsWhileActive = 0;   ///< audio-ports.h: deactivated only
 
@@ -2646,7 +2654,9 @@ struct Fake64 {
             info->channel_count = 2;
             info->flags = isInput ? (i == 1 ? f.secondInputFlags : f.flags)
                                   : (f.outputFlags >= 0 ? static_cast<std::uint32_t>(f.outputFlags) : f.flags);
-            info->port_type = CLAP_PORT_STEREO;
+            if(i==0 && (!isInput || f.mainInput))info->flags|=CLAP_AUDIO_PORT_IS_MAIN;
+            if(isInput && i==(f.mainInput?1u:0u))info->channel_count=f.keyChannels;
+            info->port_type = info->channel_count==1?CLAP_PORT_MONO:CLAP_PORT_STEREO;
             info->in_place_pair = CLAP_INVALID_ID;
             return true;
         };
@@ -2669,6 +2679,17 @@ struct Fake64 {
             if (any32 && any64) f.mixed = true;
             f.saw32 = f.saw32 || any32;
             f.saw64 = f.saw64 || any64;
+            const auto keyIndex=f.mainInput?1u:0u;
+            if(pd->audio_inputs_count>keyIndex && pd->frames_count>0) {
+                const auto& key=pd->audio_inputs[keyIndex];
+                f.keyFirst=key.data64?key.data64[0][0]:key.data32[0][0];
+                f.keyLast=key.data64?key.data64[0][pd->frames_count-1]:key.data32[0][pd->frames_count-1];
+            }
+            if(pd->audio_inputs_count>2) {
+                const auto& extra=pd->audio_inputs[2];
+                for(std::uint32_t c=0;c<extra.channel_count;++c)for(std::uint32_t i=0;i<pd->frames_count;++i)
+                    f.extraZero=f.extraZero && (extra.data64?extra.data64[c][i]==0:extra.data32[c][i]==0);
+            }
             const clap_audio_buffer_t& out = pd->audio_outputs[0];
             const clap_audio_buffer_t* in = pd->audio_inputs_count > 0 ? &pd->audio_inputs[0] : nullptr;
             for (std::uint32_t c = 0; c < out.channel_count; ++c) {
@@ -2717,6 +2738,33 @@ struct Io64 {
         else      { io.in = in32; io.out = out32; }
     }
 };
+
+void testDeviceKeyInputBuses() {
+    section("device keys -- declared main/aux roles, widths and segment offsets");
+    for(int mode=0;mode<3;++mode)for(const auto keyWidth:{1u,2u}) {
+        Fake64 fake;fake.inputs=3;fake.keyChannels=keyWidth;fake.steady.reserve(16);
+        if(mode==2){fake.flags=0;fake.secondInputFlags=0;}
+        DeviceIdentity identity;identity.format="clap";ClapDevice device(&fake.plugin,identity);
+        check(device.sidechainInputChannels()==static_cast<std::int32_t>(keyWidth),"aux width is known before activation");
+        device.willBeHanded(mode?engine::Precision::Float64:engine::Precision::Float32);device.prepare(48000,32);
+        Io64 buffers(32,.875,mode!=0);
+        std::array<float,32> left{},right{};std::array<double,32> wideLeft{},wideRight{};
+        for(std::size_t i=0;i<32;++i){left[i]=static_cast<float>(i)/32;right[i]=.5f;wideLeft[i]=static_cast<double>(i)/32;wideRight[i]=.5;}
+        const float* key32[]{left.data(),right.data()};const double* key64[]{wideLeft.data(),wideRight.data()};
+        buffers.io.blockOffset=7;buffers.io.frames=11;
+        if(mode)buffers.io.sidechain64=key64;else buffers.io.sidechain=key32;
+        const auto portReads=fake.portReads;
+        device.process(buffers.io);
+        check(fake.keyFirst==7./32 && fake.keyLast==17./32 && fake.extraZero,"only the first aux gets the exact key segment; other ports stay silent");
+        check(fake.portReads==portReads && fake.portReadsWhileActive==0,"callback and cached key capability read no SDK layout");
+        buffers.io.sidechain=nullptr;buffers.io.sidechain64=nullptr;device.process(buffers.io);
+        check(fake.keyFirst==0 && fake.keyLast==0,"disconnected key is cleared, never the preceding block");
+    }
+    Fake64 instrument;instrument.inputs=1;instrument.mainInput=false;instrument.steady.reserve(4);
+    DeviceIdentity id;ClapDevice device(&instrument.plugin,id);device.prepare(48000,32);
+    Io64 buffers(32,.875,true);buffers.io.sidechain64=buffers.in64;device.process(buffers.io);
+    check(device.sidechainInputChannels()==2 && instrument.keyFirst==.875,"a declared aux-only input at port zero is a key, not a fabricated main bus");
+}
 
 void testA64BitPluginSaysSo() {
     section("ADR-0207 d2 -- a CLAP whose every port takes 64 bits processes double");
@@ -3296,6 +3344,7 @@ int main() {
     testRescanAllPreservesIndicesAndClearKeepsTheLane();
     testAutomationReachesClapInPlainUnits();
     testAnEchoDoesNotBecomeAnEdit();
+    testDeviceKeyInputBuses();
     testA64BitPluginSaysSo();
     testAt64ThePluginIsHandedDouble();
     testAt64AFloatOnlyPluginIsConverted();

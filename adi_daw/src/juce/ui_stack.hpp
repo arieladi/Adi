@@ -68,6 +68,7 @@ class StackTab final : public juce::Component {
     void focusLost(FocusChangeType) override;
     void focusOfChildComponentChanged(FocusChangeType) override;
     void focus(std::int64_t track);
+    void filterChannels(std::optional<std::vector<std::int64_t>>);
     std::int64_t focused() const noexcept;
     void hover(std::int64_t track);
     std::int64_t hovered() const noexcept;
@@ -87,6 +88,8 @@ class StackTab final : public juce::Component {
     juce::TextEditor search;
     juce::ComboBox channelScope;
     juce::String emptyMessage() const;
+    juce::PopupMenu functionMenu();
+    juce::TextButton addFunction{"+ Function"};
     juce::Slider rowSize;
     juce::ToggleButton autoZoom{"Auto Zoom"}, pinsOnly{"Pinned"}, navigator{"Navigator"};
     static constexpr int kDisplayHeight = 56, kHeaderHeight = 30;

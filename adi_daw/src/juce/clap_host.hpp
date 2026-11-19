@@ -261,6 +261,7 @@ public:
     /// moves with it: the graph is built once more, asks again, and that build
     /// leaves the plug-in active.
     [[nodiscard]] bool processesDouble() const noexcept override { return double64_; }
+    [[nodiscard]] std::int32_t sidechainInputChannels() const noexcept override { return keyChannels_; }
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
@@ -482,6 +483,8 @@ private:
     std::vector<clap_id> paramIds_;
     bool activated_ = false;
     bool double64_ = false;            ///< every port takes 64 bits (see processesDouble)
+    std::int32_t mainInputBus_=0, keyInputBus_=-1, keyChannels_=0;
+    void readInputBusRoles(); // deactivated, owner only; the callback reads these cached indices
     bool processing_ = false;          ///< start_processing succeeded (ADR-0123)
     std::int64_t startFailures_ = 0;
     double sampleRate_ = 0.0;

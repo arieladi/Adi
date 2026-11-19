@@ -9409,6 +9409,118 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
 }
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
+void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "mixview-navigation.adi", err);
+    check(store != nullptr, "channel navigation test project opens");
+    if (!store) return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Channel navigation')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    const auto add = [&](std::int64_t id, const char *kind, const char *name, std::int64_t parent,
+                         std::int64_t index) {
+        OpRequest request;
+        request.opType = "track.create";
+        request.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}};
+        if (parent) request.payload["parent"] = parent;
+        request.label = "Create track";
+        return submitter.submit(std::move(request)).ok;
+    };
+    check(add(1, "master", "Main", 0, 0) && add(10, "group", "Rhythm", 0, 10) &&
+              add(11, "audio", "Kick", 10, 0) && add(12, "group", "Low End", 10, 1) &&
+              add(13, "audio", "Bass", 12, 0) && add(14, "midi", "Lead", 0, 20),
+          "browser fixture has nested groups and an unrelated track");
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "mix-navigation");
+    UiPeerRoot fake;
+    fake.setSize(1200, 760);
+    fake.addAndMakeVisible(root);
+    root.setBounds(fake.getLocalBounds());
+    fake.setVisible(true);
+    fake.addToDesktop(0);
+    check(dynamic_cast<UiFakePeer *>(fake.getPeer()) && fake.getPeer()->getNativeHandle() == nullptr,
+          "channel navigation uses the software peer");
+    auto tap = std::make_shared<engine::ScopeTap>(48000, SharedAnalysis::kTapSeconds);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](std::int64_t, engine::ScopePoint) { return tap; },
+        [](std::int64_t, engine::ScopePoint) {}, SharedAnalysis::Mode::Manual);
+    root.sharedAnalysis = broker;
+    check(root.setMixView(true, false), "open Mix View with the channel browser");
+    root.frame();
+    auto &mix = root.mixViewPanel;
+    auto &nav = mix.channels;
+    mix.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
+    check(nav.isShowing() && nav.trackAt(0) == 10 && nav.trackAt(4) == 14 && nav.trackAt(5) == 1,
+          "the browser presents ordered authored channels, with Main at the end");
+    check(nav.preview.mode() == SharedSpectrumView::Mode::Spectrogram && nav.preview.subscribed(),
+          "the boxed Info defaults to a visible shared spectrogram");
+    nav.search.setText("  bAsS ", false);
+    nav.search.onTextChange();
+    check(nav.trackAt(0) == 13 && nav.trackAt(1) == 0, "channel search trims and ignores case");
+    const auto originalOps = value(*store, "SELECT count(*) FROM ops");
+    const auto originalUndo = root.undoTitle(false);
+    nav.list.selectRow(0);
+    root.frame();
+    check(session.selection().track == 13 && mix.stack.focused() == 13 && nav.preview.track() == 13,
+          "choosing Bass selects its real channel, focuses its Stack row and changes the Info source");
+    nav.search.setText({}, false);
+    nav.search.onTextChange();
+    const auto rhythm = nav.show.getItemId(1);
+    nav.show.setSelectedId(rhythm, juce::sendNotificationSync);
+    check(nav.trackAt(0) == 10 && nav.trackAt(3) == 13 && nav.trackAt(4) == 1 && nav.trackAt(5) == 0 &&
+              mix.stack.model().shownIndex(13) && !mix.stack.model().shownIndex(14),
+          "group selection filters both browser and Stack to nested members and Main");
+    const auto full = mix.getBounds();
+    mix.setSize(400, full.getHeight());
+    mix.frame(root.reader());
+    check(!nav.isVisible() && !nav.preview.subscribed() && mix.stack.model().shownIndex(14),
+          "narrowing releases Info demand and removes the group filter while its chooser is hidden");
+    mix.setBounds(full);
+    mix.frame(root.reader());
+    check(nav.show.getSelectedId() == rhythm && !mix.stack.model().shownIndex(14) && nav.preview.subscribed(),
+          "widening restores the chosen group and only then resumes Info demand");
+    commands.activate(root);
+    check(root.command(AppCommands::SearchBrowser) && nav.search.hasKeyboardFocus(true),
+          "Search focuses the Mix View channel browser");
+    bool protectedContext = true;
+    for (auto *control : std::array<juce::Component *, 5>{&nav.search, &nav.show, &nav.infoMode, &nav.openInfo, &nav.list}) {
+        control->grabKeyboardFocus();
+        protectedContext = protectedContext && mix.hasChannelControlFocus();
+        for (const int command : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate,
+                                   AppCommands::RenameTrack, AppCommands::DeleteTrack}) {
+            juce::ApplicationCommandInfo context(command);
+            commands.getCommandInfo(command, context);
+            protectedContext = protectedContext && !root.command(command) &&
+                (context.flags & juce::ApplicationCommandInfo::isDisabled) != 0;
+        }
+    }
+    check(protectedContext, "channel browser and Info controls prevent edits to a stale Stack or track target");
+    nav.infoMode.setSelectedId(2, juce::sendNotificationSync);
+    mix.analysis.setMode(SharedSpectrumView::Mode::Phase);
+    const auto previewCentre = nav.preview.getLocalBounds().getCentre().toFloat();
+    nav.mouseDown(pressAt(nav.preview, previewCentre, juce::ModifierKeys::leftButtonModifier));
+    nav.mouseUp(pressAt(nav.preview, previewCentre));
+    root.frame();
+    check(mix.tab() == MixViewPanel::Tab::Analysis && mix.analysis.isVisible() &&
+              mix.analysis.mode() == SharedSpectrumView::Mode::Phase &&
+              nav.preview.mode() == SharedSpectrumView::Mode::Spectrum,
+          "Info opens the functional Analysers page and keeps an independent preview mode");
+    check(value(*store, "SELECT count(*) FROM ops") == originalOps && root.undoTitle(false) == originalUndo,
+          "channel navigation and analyser choices create no edits or Undo entries");
+    check(add(15, "group", "Earlier group", 0, 5), "insert another group ahead of the selected group");
+    root.frame();
+    check(nav.show.getSelectedId() == rhythm && nav.show.getItemId(2) == rhythm && nav.trackAt(0) == 10,
+          "group selection keeps its identity across changed menu positions");
+    check(root.setMixView(false, false) && !nav.preview.subscribed(), "closing the Mix View releases Info demand");
+    nav.openInfo.onClick();
+    check(!root.state().mixView, "a late Info callback cannot reopen the closed Mix View");
+    fake.removeChildComponent(&root);
+    fake.removeFromDesktop();
+}
+
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "mixview.adi", err);
@@ -9459,7 +9571,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "a fresh Stack shows channels with empty chains");
     panel.stack.channelScope.setSelectedId(1, juce::sendNotificationSync);
     check(panel.stack.model().shownCount() == 0 &&
-              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("Device View"),
+              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("+ Function"),
           "the With tools filter explains how to add a first tool");
     {
         const auto selectionBefore = root.arrangement.geometry.selection;
@@ -9614,17 +9726,17 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "the Control Bar selects the Mix View segment");
     commands.getCommandInfo(AppCommands::ToggleMixView, info);
     check((info.flags & juce::ApplicationCommandInfo::isTicked) != 0, "and the menu's item ticked");
-    // The tabs: the draft's five, in its order and names; STACK shown first, P1's only tab.
-    bool named = true;
-    for (int i = 0; i < MixViewPanel::kTabCount; ++i)
-        named = named && panel.tabs[static_cast<std::size_t>(i)]->getButtonText() ==
-                             MixViewPanel::kTabNames[static_cast<std::size_t>(i)];
-    check(named && panel.tabs[1]->getButtonText() == "STACK", "OVERVIEW, STACK, SCOPE & PHASE, SPECTROGRAM, CTZ CASCADE");
+    check(panel.tabs[1]->isVisible() && panel.tabs[1]->getButtonText() == "Stack" &&
+              panel.tabs[5]->isVisible() && panel.tabs[5]->getButtonText() == "Analysers" &&
+              !panel.tabs[0]->isVisible() && !panel.tabs[2]->isVisible() && !panel.tabs[3]->isVisible() &&
+              !panel.tabs[4]->isVisible(), "only functional primary Mix View pages get buttons");
     check(panel.tab() == MixViewPanel::Tab::Stack && panel.tabs[1]->getToggleState() && panel.stack.isVisible() &&
               panel.stack.model().shownCount() == 4,
           "STACK shows, lit, with a row for each channel");
-    check(panel.stack.getBounds() == panel.body() && panel.body().getY() >= MixViewPanel::kHeaderHeight,
-          "under the tabs");
+    check(panel.channels.isVisible() && panel.body().contains(panel.channels.getBounds()) &&
+              panel.body().contains(panel.stack.getBounds()) &&
+              panel.channels.getRight() < panel.stack.getX() && panel.body().getY() >= MixViewPanel::kHeaderHeight,
+          "channels and Stack sit beside one another below the page buttons");
     {
         const auto before = panel.getBounds();
         check(!root.state().mixAnalyzerDock && !panel.analyzerDockShown(), "right analyzer dock is opt-in by default");
@@ -9643,11 +9755,13 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                         panel.getLocalBounds().contains(panel.floating.getBounds()) &&
                         !panel.analyzerToggle.getBounds().intersects(panel.floating.getBounds());
             for (std::size_t i = 0; i < panel.tabs.size(); ++i) {
+                if (!panel.tabs[i]->isVisible()) continue;
                 fits = fits && panel.getLocalBounds().contains(panel.tabs[i]->getBounds()) &&
                     !panel.tabs[i]->getBounds().intersects(panel.analyzerToggle.getBounds()) &&
                     !panel.tabs[i]->getBounds().intersects(panel.floating.getBounds());
                 for (std::size_t j = i + 1; j < panel.tabs.size(); ++j)
-                    fits = fits && !panel.tabs[i]->getBounds().intersects(panel.tabs[j]->getBounds());
+                    if (panel.tabs[j]->isVisible())
+                        fits = fits && !panel.tabs[i]->getBounds().intersects(panel.tabs[j]->getBounds());
             }
             check(fits && (!panel.analyzerDockShown() || panel.stack.getWidth() >= MixViewPanel::kStackMinimumWidth),
                   "tabs, dock toggle and float wrap without overlap while channel editing keeps its minimum");
@@ -9684,11 +9798,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         panel.analysis.reverseButton.setToggleState(false, juce::dontSendNotification); panel.analysis.reverseButton.onClick();
         panel.analysis.setMode(SharedSpectrumView::Mode::Spectrum); root.frame();
     }
-    panel.tabs[0]->onClick();
+    check(root.chooseMixViewTab(0), "a legacy Overview page can still be recalled");
     root.frame();
     check(root.state().mixViewTab == 0 && panel.tab() == MixViewPanel::Tab::Overview && !panel.stack.isVisible() &&
-              panel.tabs[0]->getToggleState() && !panel.tabs[1]->getToggleState(),
-          "a click on OVERVIEW shows its shared-analysis view");
+              panel.tabs[5]->getToggleState() && !panel.tabs[1]->getToggleState(),
+          "legacy Overview stays functional under the Analysers page");
     check(persistence.load("mix", {}).mixViewTab == 0 && persistence.load("mix", {}).mixView,
           "the tab and the view are kept with the window's view (ui_view)");
     check(root.command(AppCommands::SearchBrowser) && panel.tab() == MixViewPanel::Tab::Stack && !root.browser.isVisible(),
@@ -10647,10 +10761,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 const int chromeHeight = mix.getHeight() - mix.body().getHeight();
                 mix.setSize(900, chromeHeight + MixViewPanel::kDockMinimumHeight - 1); mix.frame(actual.reader());
                 check(mix.body().getHeight() == 419 && actual.state().mixAnalyzerDock && !mix.analyzerDockShown() &&
-                          broker->stats().consumers == 0,
-                      "requested dock below 420 px body height releases all its demand and preserves the preference");
+                          broker->stats().consumers == (mix.channels.preview.subscribed() ? 1u : 0u),
+                      "requested dock below 420 px releases dock demand independently of the Info analyser");
                 mix.setSize(900, chromeHeight + MixViewPanel::kDockMinimumHeight); mix.frame(actual.reader());
-                check(mix.body().getHeight() == 420 && mix.analyzerDockShown() && broker->stats().consumers == 3 &&
+                check(mix.body().getHeight() == 420 && mix.analyzerDockShown() &&
+                          broker->stats().consumers == 3u + (mix.channels.preview.subscribed() ? 1u : 0u) &&
                           surface.getWidth() >= MixViewPanel::kStackMinimumWidth,
                       "420 px admission restores all three shared views without taking channel editing width");
                 std::array<float, 1024> signal{};
@@ -10827,17 +10942,17 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     return at != demands.end() && !at->second.empty();
                 };
                 check(stackSurface.model().windowView().channelScope == stack::ChannelScope::WithTools &&
-                          !stackSurface.model().shownIndex(2) && has(&observed.devices) && !has(&stackSurface),
-                      "With tools omits generic plug-in rows and requests no Stack parameters");
+                          !stackSurface.model().shownIndex(2) && !has(&observed.devices) && !has(&stackSurface),
+                      "With tools omits generic rows and the hidden Device View has no demand");
                 stackSurface.channelScope.setSelectedId(2, juce::sendNotificationSync);
                 observed.frame();stackSurface.frameAt(observed.reader(), time + 200);
                 check(stackSurface.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
-                          stackSurface.model().shownIndex(2) && has(&observed.devices) && has(&stackSurface),
-                      "device strip and realised Stack controls own independent parameter demand");
+                          stackSurface.model().shownIndex(2) && !has(&observed.devices) && has(&stackSurface),
+                      "only visible Stack controls demand parameters in the full Mix View");
                 window.minimisationStateChanged(true);observed.frame();
-                check(demands.empty(), "minimizing the main window releases both attached parameter consumers");
+                check(demands.empty(), "minimizing the main window releases the docked Mix View demand");
                 window.minimisationStateChanged(false);observed.frame();stackSurface.frameAt(observed.reader(), time + 220);
-                check(has(&observed.devices) && has(&stackSurface), "restoring the main window refreshes both visible consumers");
+                check(!has(&observed.devices) && has(&stackSurface), "restoring Mix View refreshes Stack and leaves Device View hidden");
                 FloatingHost host(observed, commands, document->views(), document->view(),
                     [](std::int64_t) { return true; }, false);
                 check(detachMixView(host, observed, true), "parameter demand detaches Stack to its own software window");
@@ -10864,11 +10979,12 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     observed.frame();
                     check(demands.empty(), "docking into minimized main does not revive hidden parameter work");
                     window.minimisationStateChanged(false);observed.frame();
-                    check(has(&observed.devices) && has(&stackSurface), "main restore after redocking refreshes current controls");
+                    check(!has(&observed.devices) && has(&stackSurface), "restoring a redocked Mix View refreshes Stack only");
                     floatingPeer.removeFromDesktop();
                 } else check(false, "detached parameter window exists");
                 check(observed.setMixView(false, false), "close the parameter-demand Stack");
-                check(!has(&stackSurface) && has(&observed.devices), "closing Stack keeps the visible device strip's demand");
+                observed.frame();
+                check(!has(&stackSurface) && has(&observed.devices), "returning to Arrangement resumes its visible Device View");
                 mainPeer.removeChildComponent(&window);mainPeer.removeFromDesktop();
             }
             check(demands.empty(), "surface destruction releases all parameter demand owners");
@@ -10980,6 +11096,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::string(argv[1]) == "--mixview-only") {
         // Deliberately before every UiPeerRoot/addToDesktop/reference() branch below.
         // Fake plug-ins and UiFakePeer only; no native window, desktop input/capture or audio device.
+        mixChannelNavigation(commands, temp.path());
         mixViewShell(commands, temp.path(), true);
         std::printf("%d checks, %d failures (Mix View fake-peer components)\n", checks, failures);
         return failures ? 1 : 0;
@@ -13918,6 +14035,7 @@ int main(int argc, char **argv) {
     clipViewTime(commands, temp.path());
     clipViewClipTime(commands, temp.path());
     clipViewMulti(commands, temp.path());
+    mixChannelNavigation(commands, temp.path());
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());

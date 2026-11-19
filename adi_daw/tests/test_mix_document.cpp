@@ -151,8 +151,59 @@ void observeLimiterReduction() {
           "closing the document revokes even an externally held view lease");
 }
 
+
+void replaceHighestFunction() {
+    test::TempDirectory temp("mix_document", "removed-native-id");
+    std::string error;
+    auto doc = ui::ProjectDocument::open(temp.path() / "project.adi", true, device::withBuiltinDevices(), error);
+    if (!doc || !doc->addMixFunction(mix::Function::Eq, 2)) {
+        check(false, "add original EQ through the native function edit");
+        return;
+    }
+    const auto find = [&](std::string_view uid) -> std::optional<ui::DevicePanelData> {
+        const auto publication = doc->parameterFeed().current();
+        for (const auto& device : *publication)
+            if (device.uid == uid) return device;
+        return {};
+    };
+    const auto eq = find("org.adidaw.mix.eq");
+    check(eq && eq->available, "highest authored EQ is available in the shared device feed");
+    if (!eq) return;
+    auto* oldInstance = doc->session().instanceFor(eq->id);
+    check(oldInstance && doc->deviceAction("device.remove", {{"id", eq->id}}) &&
+              doc->addMixFunction(mix::Function::Limiter, 3), "remove the highest device and add the limiter on another track");
+    const auto limiter = find("org.adidaw.mix.limiter");
+    check(limiter && limiter->available && limiter->track == 3 && limiter->id > eq->id,
+          "new authored device ID advances past the retired EQ");
+    if (!limiter) return;
+    doc->setParameterDemand(doc.get(), {limiter->id});
+    auto* newInstance = doc->session().instanceFor(limiter->id);
+    const auto panel = find("org.adidaw.mix.limiter");
+    if (!panel) {
+        check(false, "limiter panel remains available after requesting control metadata");
+        return;
+    }
+    const auto group = panel->groups().find("0");
+    check(newInstance && newInstance != oldInstance && newInstance->identity().uid == panel->uid &&
+              group != panel->groups().end() && group->second.groupId == "limiter" && !panel->parameters().empty() &&
+              std::none_of(panel->parameters().begin(), panel->parameters().end(), [](const auto& control) { return control.missing; }),
+          "Device View and STACK share the new limiter's actual controls");
+    check(!doc->deviceTargetCurrent(eq->id, eq->runtime, eq->instance),
+          "removed EQ target cannot edit the new limiter");
+    const bool undoAdd = doc->ops().undo().ok && doc->synchronise();
+    const bool undoRemove = doc->ops().undo().ok && doc->synchronise();
+    doc->tick(1);
+    check(undoAdd && undoRemove && doc->session().instanceFor(eq->id) == oldInstance && find(eq->uid).has_value(),
+          "Undo restores the original EQ runtime");
+    const bool redoRemove = doc->ops().redo().ok && doc->synchronise();
+    const bool redoAdd = doc->ops().redo().ok && doc->synchronise();
+    doc->tick(2);
+    check(redoRemove && redoAdd && doc->session().instanceFor(limiter->id) == newInstance && find(limiter->uid).has_value(),
+          "Redo restores the same independently authored limiter runtime");
+}
 }
 int main() {
+    replaceHighestFunction();
     observeLimiterReduction();
     test::TempDirectory temp("mix_document","native-functions");std::string error;
     auto doc=ui::ProjectDocument::open(temp.path()/"project.adi",true,device::withBuiltinDevices(),error);
@@ -160,7 +211,7 @@ int main() {
     auto count=[&] {return doc->store().db().execAndGet(
         "SELECT count(*) FROM devices d JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE p.uid LIKE 'org.adidaw.mix.%'").getInt();};
     check(count()==0,"fresh project has no reserved or silently enabled functions");
-    check(!doc->addMixFunction(mix::Function::Compressor,2)&&count()==0,"unported core has an honest refusal");
+    check(!doc->addMixFunction(mix::Function::Deesser,2)&&count()==0,"unported core has an honest refusal");
     check(doc->addMixFunction(mix::Function::Limiter,2)&&count()==1,"opt-in real native limiter adds in one batch");
     doc->tick(0);
     const auto publication=doc->parameterFeed().current();

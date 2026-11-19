@@ -385,6 +385,33 @@ void compoundAdmission() {
               core.latencySamples() == delayed.samples,
           "delayed EQ plan admits at the aggregate owner's next physical boundary");
 }
+void returnedSettingsWithdrawLatency() {
+    const eq::Settings active;
+    auto temporary = active;
+    temporary.lookaheadMs = 8;
+    eq::Core core;
+    core.prepare({48000, 256, 2}, active);
+    check(core.requestConfiguration(temporary) && core.pendingLatencyChange().samples == 384,
+          "temporary EQ lookahead offers 384 samples");
+    check(core.requestConfiguration(active) && core.pendingLatencyChange().token == 0 &&
+              core.latencySamples() == 0,
+          "return to the active EQ settings withdraws a superseded lookahead before adoption");
+
+    const auto onOldPath = core.beginBlock(1, 0, temporary);
+    check(onOldPath.generation && core.pendingLatencyChange().samples == 384,
+          "callback lookahead offers the new latency while staying on the old path");
+    const auto retired = core.beginBlock(2, 0, active);
+    check(retired.generation && core.pendingLatencyChange().token == 0 && core.latencySamples() == 0,
+          "old configured latency and restored settings keep EQ running without a stale offer");
+
+    (void)core.beginBlock(3, 0, temporary);
+    const auto retained = core.pendingLatencyChange();
+    check(core.beginBlock(3, 0, active, false).generation &&
+              core.pendingLatencyChange().token == retained.token,
+          "a parent holding admission protects its child offer across a reversal");
+    check(core.beginBlock(3, 0, active).generation && core.pendingLatencyChange().token == 0,
+          "standalone EQ withdrawal also works within the original physical block");
+}
 void pinCompoundControls() {
     eq::Settings plan, controls;
     plan.structure = eq::Structure::Matched;
@@ -428,6 +455,7 @@ int main() {
         lifecycle();
         latencyCapacity();
         compoundAdmission();
+        returnedSettingsWithdrawLatency();
         pinCompoundControls();
         check(allocations == 0, "zero callback C++ allocations");
         check(deallocations == 0, "zero callback C++ deallocations");

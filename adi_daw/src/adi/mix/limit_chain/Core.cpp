@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
+#include "adi/mix/AudioPlanes.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <tuple>
 #include <vector>
@@ -60,7 +62,8 @@ struct Core::Impl {
                 limiterStyle==settings.limiter.styleIndex && limiterOversampling==settings.limiter.oversampling &&
                 limiterTruePeak==settings.limiter.truePeak && limiterLookahead==settings.limiter.lookaheadMs;
         }
-    } requested;
+    };
+    std::optional<Request> requested;
     BlockContext current;
     Statistics stats;
 
@@ -87,7 +90,7 @@ struct Core::Impl {
         // be cached in a graph; its exact request remains immutable until audio
         // admits that latency. The owner refuses further manual structural edits.
         if(offer&stateBits)return;
-        if(next==requested)return;
+        if(requested && next==*requested)return;
         // Reserve before changing the plain request. A simultaneous owner claim
         // either freezes the old tuple or observes the completely published new one.
         if(!pending.compare_exchange_strong(offer,writingBit,std::memory_order_acq_rel))return;
@@ -153,7 +156,7 @@ void Core::prepare(const PrepareSpec& spec,const Settings& settings) {
     d.clearKey();d.generation=nextPreparation.fetch_add(1,std::memory_order_relaxed)+1;
     d.current={};d.lastPhysical=d.blockSequence=d.limiterToken=0;d.stats={};
     d.lastDisabledRequest=settings.limiter;
-    d.requested={d.clipOn,d.limiterOn,settings.offline,d.clipLatency,d.limiterLatency,d.clipExponent,0,
+    d.requested=Impl::Request{d.clipOn,d.limiterOn,settings.offline,d.clipLatency,d.limiterLatency,d.clipExponent,0,
         settings.limiter.styleIndex,settings.limiter.oversampling,settings.limiter.truePeak,settings.limiter.lookaheadMs};
     d.pending.store(0,std::memory_order_release);d.appliedLatency.store(d.clipLatency+d.limiterLatency,std::memory_order_release);
     d.prepared=true;
@@ -161,6 +164,8 @@ void Core::prepare(const PrepareSpec& spec,const Settings& settings) {
 void Core::reset(const Settings& settings) noexcept {
     auto& d=*impl_;if(!d.prepared)return;
     d.clip.reset(settings.clip);d.limiter.reset();d.clearKey();d.current={};d.lastPhysical=0;
+    d.requested.reset();
+    d.pending.store(0,std::memory_order_release);
 }
 void Core::setBackgroundActive(bool active) noexcept {impl_->limiter.setBackgroundActive(active);}
 bool Core::supportsClip() const noexcept {return impl_->prepared;}
@@ -177,7 +182,7 @@ LatencyChange Core::claimPendingLatencyChange(const Settings& settings) noexcept
     // Claiming prevents both request replacement and audio admission while this
     // owner reads the plain tuple. The current owner values can be newer than
     // audio's last callback, so stale intent must not become a latency promise.
-    const bool current=d.requested.matches(settings);
+    const bool current=d.requested->matches(settings);
     const auto result=current?changeFrom(word):LatencyChange{};
     d.pending.store(current?word|claimedBit:word,std::memory_order_release);
     return result;
@@ -191,9 +196,10 @@ BlockContext Core::beginBlock(std::uint64_t physicalBlock,std::int32_t configure
     if(physicalBlock && physicalBlock==d.lastPhysical && d.current.generation==d.generation)return d.current;
     const auto pending=d.pending.load(std::memory_order_acquire);
     if((pending&claimedBit) && static_cast<std::int32_t>(static_cast<std::uint32_t>(pending))==configuredTotal) {
-        d.clipOn=d.requested.clipOn;d.limiterOn=d.requested.limiterOn;
-        d.clipLatency=d.requested.clipLatency;d.limiterLatency=d.requested.limiterLatency;
-        if(d.clipOn){d.clipExponent=d.requested.clipExponent;d.clipOffline=d.requested.offline;}
+        const auto& request=*d.requested;
+        d.clipOn=request.clipOn;d.limiterOn=request.limiterOn;
+        d.clipLatency=request.clipLatency;d.limiterLatency=request.limiterLatency;
+        if(d.clipOn){d.clipExponent=request.clipExponent;d.clipOffline=request.offline;}
         d.appliedLatency.store(configuredTotal,std::memory_order_release);d.pending.store(0,std::memory_order_release);
     }
     if(configuredTotal!=d.appliedLatency.load(std::memory_order_relaxed))return {};
@@ -222,6 +228,21 @@ bool Core::process(float* const* main,const float* const* key,std::int32_t frame
         block.generation!=d.current.generation || block.block!=d.current.block)return false;
     for(int ch=0;ch<d.spec.channels.size();++ch)if(!main[ch])return false;
     if(frames==0)return true;
+    const int channels=d.spec.channels.size();
+    std::array<bool,2> copyKey{};
+    if(block.clipEnabled) {
+        if(channels==2 && audioPlanesOverlap(main[0],main[1],frames))return false;
+        // A shifted key could refer to samples already overwritten in an earlier
+        // Clip chunk. Keep exact aliases, including a cross-channel key, legal.
+        if(key && (block.limiterEnabled || block.clipLatency>0))
+            for(int ch=0;ch<channels;++ch) {
+                if(!key[ch])continue;
+                for(int m=0;m<channels;++m) {
+                    if(key[ch]==main[m])copyKey[static_cast<std::size_t>(ch)]=block.clipLatency==0;
+                    else if(audioPlanesOverlap(key[ch],static_cast<const float*>(main[m]),frames))return false;
+                }
+            }
+    }
     d.request(settings);
     if(!block.clipEnabled) {
         if(block.limiterEnabled) {
@@ -245,7 +266,16 @@ bool Core::process(float* const* main,const float* const* key,std::int32_t frame
         const auto n=std::min(d.clip.capacity(),frames-offset);
         std::array<float*,2> audio{main[0]+offset,d.spec.channels.size()==2?main[1]+offset:nullptr};
         std::array<const float*,2> directKey{};
-        for(int ch=0;ch<d.spec.channels.size();++ch)directKey[static_cast<std::size_t>(ch)]=key&&key[ch]?key[ch]+offset:nullptr;
+        for(int ch=0;ch<channels;++ch) {
+            const auto channel=static_cast<std::size_t>(ch);
+            if(!key || !key[ch])continue;
+            const auto* source=key[ch]+offset;
+            if(copyKey[channel]) {
+                std::copy_n(source,n,d.keyScratch[channel].data());
+                source=d.keyScratch[channel].data();
+            }
+            directKey[channel]=source;
+        }
         const auto delayed=d.key(key,offset,n,true);
         if(!d.clip.process(audio.data(),n,settings.clip,block.clip))return false;
         limiter::BlockReduction chunk;

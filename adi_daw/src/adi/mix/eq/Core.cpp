@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
 #include "Preview.hpp"
+#include "../filters/FlushDenormals.hpp"
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4100 4127 4334 5030)
@@ -16,9 +17,6 @@
 #include <cmath>
 #include <stdexcept>
 #include <vector>
-#if defined(_M_X64) || defined(__SSE2__)
-#include <xmmintrin.h>
-#endif
 
 namespace adi::mix::eq {
 DesignPreview designPreview(const Settings &settings, double sampleRate) {
@@ -79,13 +77,6 @@ bool samePlan(const Settings &a, const Settings &b) noexcept {
     return a.structure == b.structure && a.lookaheadMs == b.lookaheadMs &&
            a.spectralResolution == b.spectralResolution && spectral(a) == spectral(b);
 }
-struct FlushDenormals {
-#if defined(_M_X64) || defined(__SSE2__)
-    unsigned previous = _mm_getcsr();
-    FlushDenormals() { _mm_setcsr(previous | 0x8040U); }
-    ~FlushDenormals() { _mm_setcsr(previous); }
-#endif
-};
 } // namespace
 bool valid(const Settings &s) noexcept {
     if (static_cast<unsigned>(s.structure) > 5 || static_cast<unsigned>(s.spectralResolution) > 2 ||
@@ -170,8 +161,16 @@ struct Core::Implementation {
                                   static_cast<ADISharedEqSpectralDynamics::Resolution>(s.spectralResolution))
                             : 0);
     }
-    void consider(const Settings &desired) noexcept {
-        if (pending.load(std::memory_order_relaxed) || samePlan(active, desired))
+    void consider(const Settings &desired, bool canWithdraw = false) noexcept {
+        const auto currentOffer = pending.load(std::memory_order_relaxed);
+        if (currentOffer && !canWithdraw)
+            return;
+        if (samePlan(active, desired)) {
+            if (currentOffer)
+                pending.store(0, std::memory_order_release);
+            return;
+        }
+        if (currentOffer)
             return;
         offer = desired;
         if (++offerSerial == 0)
@@ -359,17 +358,23 @@ struct Core::Implementation {
         for (int ch = 0; ch < keyChannels; ++ch)
             if (key[ch] == nullptr)
                 return false;
-        [[maybe_unused]] FlushDenormals flush;
+        [[maybe_unused]] filters::FlushDenormals flush;
         consider(desired);
         const auto s = pinned(desired);
         apply(s);
-        const bool external = s.externalSidechain && keyChannels > 0, bypass = forced || s.bypass;
+        const bool bypass = forced || s.bypass;
+        const bool missingExternalKey = s.externalSidechain && keyChannels == 0;
         for (int offset = 0; offset < frames;) {
             const int count = std::min(spec.maximumFrames, frames - offset);
             for (int ch = 0; ch < 2; ++ch) {
                 const auto channel = static_cast<std::size_t>(ch);
                 const auto *input = main[std::min(ch, spec.channels - 1)] + offset;
-                const auto *detector = external ? key[std::min(ch, keyChannels - 1)] + offset : input;
+                if (missingExternalKey) {
+                    std::copy_n(input, count, mainPointers[channel]);
+                    std::fill_n(keyPointers[channel], count, 0.);
+                    continue;
+                }
+                const auto *detector = s.externalSidechain ? key[std::min(ch, keyChannels - 1)] + offset : input;
                 for (int i = 0; i < count; ++i) {
                     mainPointers[channel][i] = static_cast<double>(input[i]);
                     keyPointers[channel][i] = static_cast<double>(detector[i]);
@@ -458,7 +463,7 @@ bool Core::requestConfiguration(const Settings &s) noexcept {
     auto &i = *implementation;
     if (!i.prepared || !valid(s))
         return false;
-    i.consider(s);
+    i.consider(s, true);
     return true;
 }
 BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, const Settings &s,
@@ -467,21 +472,27 @@ BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, c
     if (!i.prepared || !valid(s) || configured < 0)
         return {};
     if (physical && physical == i.lastPhysical) {
-        i.consider(s);
+        i.consider(s, admitPending && configured == i.committedLatency.load(std::memory_order_relaxed));
         return i.blockAdmitted ? BlockContext{i.generation, i.block} : BlockContext{};
     }
     i.lastPhysical = physical;
     ++i.block;
     i.blockAdmitted = false;
     const auto pending = i.pending.load(std::memory_order_acquire);
+    bool canWithdraw = false;
     if (admitPending && pending && configured == static_cast<std::int32_t>(pending & 0xffffffffU)) {
         i.active = i.offer;
         i.committedLatency.store(configured, std::memory_order_release);
         i.pending.store(0, std::memory_order_release);
+    } else if (admitPending && configured == i.committedLatency.load(std::memory_order_relaxed)) {
+        // The callback still uses the old PDC. Reverting to the active plan
+        // can withdraw its unused offer. A serial parent holding an offer
+        // passes admitPending=false and keeps its child token stable.
+        canWithdraw = pending != 0;
     }
     if (configured != i.committedLatency.load(std::memory_order_relaxed))
         return {};
-    i.consider(s);
+    i.consider(s, canWithdraw);
     i.blockAdmitted = true;
     return {i.generation, i.block};
 }

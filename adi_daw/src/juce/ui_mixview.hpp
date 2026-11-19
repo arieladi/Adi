@@ -5,6 +5,7 @@
 #include "adi/ui/theme.hpp"
 #include "ui_stack.hpp"
 #include "ui_analysis.hpp"
+#include "ui_mix_channels.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <memory>
@@ -67,10 +68,8 @@ class MixViewPanel final : public juce::Component {
   public:
     enum class Tab { Overview, Stack, ScopePhase, Spectrogram, Cascade, Analysis };
     static constexpr int kTabCount = 6;
-    static constexpr std::array<const char *, kTabCount> kTabNames{"OVERVIEW", "STACK", "SCOPE & PHASE",
-                                                                   "SPECTROGRAM", "CTZ CASCADE", "ANALYSIS"};
-    // The tabs' widths, Live's 17 pt fields on its dark band.
-    static constexpr std::array<int, kTabCount> kTabWidths{72, 52, 100, 100, 92, 72};
+    static constexpr std::array<const char *, kTabCount> kTabNames{"Overview", "Stack", "Scope & Phase",
+                                                                   "Spectrogram", "", "Analysers"};
     static constexpr int kHeaderHeight = 25;
     // The ★ Reference strip under the tabs (ADR-0209 d11): the track against the arrangement's
     // length, [REF] and [Reference Track].
@@ -97,6 +96,7 @@ class MixViewPanel final : public juce::Component {
     juce::Rectangle<int> timeline() const noexcept;
     // STACK follows each channel's actual authored devices and optional native functions.
     StackTab stack;
+    MixChannelBrowser channels;
     SharedSpectrumView spectrum;
     AnalysisPane analysis;
     AnalysisDock analyzerDock;
@@ -105,10 +105,17 @@ class MixViewPanel final : public juce::Component {
     bool setAnalyzerWidth(int);
     void adoptViewState(); // owner constructor body, after WindowState exists
     bool hasAnalyzerControlFocus() const;
+    bool hasChannelControlFocus() const { return channels.isVisible() && channels.hasKeyboardFocus(true); }
+    bool focusChannelSearch();
     bool analyzerDockShown() const noexcept { return analyzerDock.isVisible(); }
     static constexpr int kStackMinimumWidth = 320, kDockMinimumWidth = 240, kDockGap = 6;
     static constexpr int kDockMinimumHeight = 420, kHeaderSingleRowWidth = 632;
-    void suspendAnalysis(bool value) { spectrum.suspend(value); analysis.suspend(value); analyzerDock.suspend(value); }
+    void suspendAnalysis(bool value) {
+        spectrum.suspend(value);
+        analysis.suspend(value);
+        analyzerDock.suspend(value);
+        channels.preview.suspend(value);
+    }
 
   private:
     AdiRootComponent &root_;
