@@ -596,11 +596,16 @@ void parkedMainLoudnessProjection() {
               after.workerPasses == stable.workerPasses && after.cursorReads == stable.cursorReads &&
               after.spectralPlans == 0,
           "an unchanged loudness frame makes no paint or analysis work");
+    snapshot.shortTermLufs = -24.f;
+    snapshot.integratedLufs = -18.f;
+    meter.frame(f.broker, 1, source);
+    check(reads == 5 && meter.loudness() == snapshot && root.fake->repaints == stablePaint,
+          "Main updates not shown on the stereo meter do not repaint its readout");
     snapshot.sampleRate = 44100.;
     meter.frame(f.broker, 1, source);
-    check(meter.reading() == envelope && !meter.loudness() && reads == 5, "a stale loudness format clears the overlay");
+    check(meter.reading() == envelope && !meter.loudness() && reads == 6, "a stale loudness format clears the overlay");
     meter.suspend(true); meter.frame(f.broker, 1, source);
-    check(!meter.reading() && !meter.loudness() && reads == 5 && f.broker->stats().consumers == 0,
+    check(!meter.reading() && !meter.loudness() && reads == 6 && f.broker->stats().consumers == 0,
           "suspending an eligible meter releases its lease and stops loudness polling");
     root.removeFromDesktop();
 }
