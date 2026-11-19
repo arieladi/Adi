@@ -8,6 +8,12 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M26 actual Stack chains without reserved slots
+
+**PR requested.** `mixview/no-reserved-slots-1119` is pushed at `6679713e` after DF-M25. Snapshot projection builds real device-chain items directly, with no previous reserve-and-clear for hidden EQ, Ducking or Limiter slots. Active device IDs, retained gestures, channel hierarchy and order still use the actual chain. Model consumers can still supply their own explicit generic items.
+
+The red fixture `2c00f17d` failed the first-refresh allocation check with pre-reserved real storage. The Release passed all 632 model checks and 870 software-peer checks. Release ADI.exe SHA-256 `da522e8b85246753ecfe0f7e55816093191ad4f1b562c93c19fba9d64eadb4de`. This is an internal projection repair and uses the previous visual review brief. Logs are in `NowWeReverse/ADI-View/mixview-seat/dfm26-built-20261119`. DF-M27 remains closed by ADR-0240.
+
 ## 19 November 2026 — DF-M25 return from the detached analyser
 
 **PR requested.** `mixview/detached-analyser-return-1119` is pushed at `a2e7e931` after DF-M24. The analyser's Mix View action opens Stack on the channel whose data is displayed, even when normal entry with two solos would open Focus. It retains the analyser and its current mode and keeps explicit Stack group filters. A missing source falls back to a valid current channel. The action writes no project Undo step.
