@@ -3,6 +3,7 @@
 // ADR-0156: one decoder for imported audio, into the decoding cache.
 // Fixtures: tests/fixtures/decode (README.md there says how each was made).
 #include "adi/audio/decode.hpp"
+#include "adi/audio/ffprobe_audio.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "temp_directory.hpp"
@@ -325,10 +326,56 @@ void settings() {
     const auto bad = limitsFromSettings({{kCacheMaxSizeKey, -5}, {kCacheMinFreeKey, "x"}});
     check(bad.maxBytes == d.maxBytes && bad.minFreeBytes == d.minFreeBytes, "limits: an illegal value keeps the default");
 }
+
+void ffprobeMetadata(const fs::path& folder) {
+    const std::string valid = R"({"streams":[{"index":2,"codec_type":"audio","sample_rate":"48000","channels":2}]})";
+    const auto stream = parseFfprobeAudio(valid);
+    check(stream.index == 2 && stream.sampleRate == 48000 && stream.channels == 2,
+          "ffprobe retains the absolute audio stream index and PCM layout");
+    check(problemOf([&] { (void)parseFfprobeAudio(R"({"streams":[]})"); }) == DecodeProblem::NoAudio,
+          "ffprobe's empty audio selection means no audio");
+
+    const auto refuse = [](std::string_view text, DecodeProblem code) {
+        return problemOf([&] { (void)parseFfprobeAudio(text); }) == code;
+    };
+    check(refuse(valid + std::string("\0suffix", 7), DecodeProblem::Corrupt), "ffprobe refuses bytes after a null");
+    check(refuse(std::string(65537, ' '), DecodeProblem::Corrupt), "ffprobe refuses oversized JSON");
+    check(refuse(R"({"streams":[],"x":[[[[[[[[[[{"y":0}]]]]]]]]]]})", DecodeProblem::Corrupt),
+          "ffprobe refuses excessive nesting in ignored fields");
+    check(refuse(R"({"streams":[{},{}]})", DecodeProblem::Corrupt), "ffprobe refuses an ambiguous selection");
+    for (const char* field : {"-1", "2.5", "4294967296", "true", "\"2\""}) {
+        auto packet = nlohmann::json::parse(valid);
+        packet["streams"][0]["index"] = nlohmann::json::parse(field);
+        check(refuse(packet.dump(), DecodeProblem::Corrupt), std::string("ffprobe refuses invalid index ") + field);
+    }
+    auto packet = nlohmann::json::parse(valid);
+    auto& audio = packet["streams"][0];
+    audio["channels"] = 65;
+    check(refuse(packet.dump(), DecodeProblem::Unsupported), "ffprobe enforces the decode channel limit");
+    audio["channels"] = 1;
+    audio["sample_rate"] = "768001";
+    check(refuse(packet.dump(), DecodeProblem::Unsupported), "ffprobe enforces the decode sample-rate limit");
+    audio["sample_rate"] = "48000junk";
+    check(refuse(packet.dump(), DecodeProblem::Corrupt), "ffprobe requires a complete decimal sample rate");
+
+    const auto absent = folder / "absent-ffprobe";
+    check(problemOf([&] { (void)probeFfprobeAudio(absent, {}); }) == DecodeProblem::Unsupported,
+          "a missing ffprobe reports unsupported");
+    std::stop_source stopped;
+    stopped.request_stop();
+    check(problemOf([&] { (void)probeFfprobeAudio(absent, {}, stopped.get_token()); }) == DecodeProblem::Cancelled,
+          "a cancelled ffprobe refuses before looking for the tool");
+}
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        // Optional native gate against an explicitly chosen ffprobe and owned media.
+        if (argc == 4 && std::string_view(argv[1]) == "--ffprobe") {
+            const auto stream = probeFfprobeAudio(argv[2], argv[3]);
+            std::printf("%u %u %u\n", stream.index, stream.sampleRate, stream.channels);
+            return 0;
+        }
         adi::test::TempDirectory tmp("decode", "suite");
         formats(tmp.path());
         refusals(tmp.path());
@@ -338,6 +385,7 @@ int main() {
         pinned(tmp.path());
         freeSpace(tmp.path());
         settings();
+        ffprobeMetadata(tmp.path());
     } catch (const std::exception& e) {
         check(false, std::string("unexpected exception: ") + e.what());
     }
