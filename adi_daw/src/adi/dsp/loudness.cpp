@@ -102,9 +102,8 @@ void LoudnessMeter::prepare(double sampleRate, std::span<const double> channelWe
     highPassState_.assign(n, State{});
     integrated_.prepare(kBins);
     range_.prepare(kBins);
-    truePeakOn_ = n > 0 && n <= static_cast<std::size_t>(TruePeakMeter::kMaxChannels);
-    if (truePeakOn_) truePeak_.prepare(rate_);
-    truePeakScratch_.assign(n * static_cast<std::size_t>(kChunk), 0.f);
+    truePeakOn_ = n > 0;
+    truePeak_.prepare(rate_, static_cast<int>(n));
     reset();
 }
 
@@ -139,18 +138,7 @@ void LoudnessMeter::process(const float* const* channels, int frames) noexcept {
 
 void LoudnessMeter::process(const double* const* channels, int frames) noexcept {
     run(channels, frames);
-    if (!truePeakOn_) return;
-    const int n = this->channels();
-    const float* views[TruePeakMeter::kMaxChannels] = {};
-    for (int at = 0; at < frames; at += kChunk) {
-        const int part = std::min(kChunk, frames - at);
-        for (int c = 0; c < n; ++c) {
-            float* chunk = truePeakScratch_.data() + static_cast<std::size_t>(c) * kChunk;
-            for (int i = 0; i < part; ++i) chunk[i] = static_cast<float>(channels[c][at + i]);
-            views[c] = chunk;
-        }
-        truePeak_.process(views, n, part);
-    }
+    if (truePeakOn_ && frames > 0) truePeak_.process(channels, this->channels(), frames);
 }
 
 template <class Sample>

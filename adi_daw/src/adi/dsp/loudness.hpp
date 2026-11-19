@@ -3,7 +3,7 @@
 // The one loudness meter (DEV-28; ADR-0203 d14, XC-03): ITU-R BS.1770 loudness
 // with EBU Mode's readings (EBU Tech 3341: momentary, short-term, integrated,
 // maximum momentary and short-term; Tech 3342: loudness range), and true peak
-// through ADI's TruePeakMeter. Every reading ADI shows or uses is meant to come
+// through ADI's TruePeakMeter, on every channel, from float or double input. Every reading ADI shows or uses is meant to come
 // from this class: Main's meter, export normalization, Auto Gain Stage's LUFS
 // mode, `analyze.loudness`, the Reference's matched loudness.
 //
@@ -57,7 +57,7 @@ public:
         double range = 0.0;                 ///< LU (Tech 3342)
         double maxMomentary = -kInfinity;   ///< LUFS since reset, while running
         double maxShortTerm = -kInfinity;   ///< LUFS since reset, while running
-        double truePeak = -kInfinity;       ///< dBTP since reset (up to 8 channels)
+        double truePeak = -kInfinity;       ///< dBTP since reset, every channel
         bool rangeValid = false;            ///< at least one short-term value gated in
         bool running = true;
     };
@@ -132,8 +132,6 @@ private:
 
     TruePeakMeter truePeak_;
     bool truePeakOn_ = false;
-    static constexpr int kChunk = 256;
-    std::vector<float> truePeakScratch_;   ///< double input, converted for the TP meter
 };
 
 }  // namespace adi::dsp

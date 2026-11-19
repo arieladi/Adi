@@ -25,9 +25,12 @@ double besselI0(double x) {
 
 }  // namespace
 
-void TruePeakMeter::prepare(double sampleRate) {
-    // The Annex: at least 176.4 kHz after oversampling.
-    factor_ = sampleRate < 88200.0 - 1.0 ? 4 : (sampleRate < 176400.0 - 1.0 ? 2 : 1);
+void TruePeakMeter::prepare(double sampleRate, int channels) {
+    // The Annex: at least 176.4 kHz after oversampling (see the header).
+    const double rate = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000.0;
+    factor_ = std::clamp(static_cast<int>(std::ceil(176400.0 / rate - 1e-9)), 1, kMaxFactor);
+    channels_ = std::max(0, channels);
+    history_.assign(static_cast<std::size_t>(channels_) * kTapsPerPhase, 0.0);
     const int n = factor_ * kTapsPerPhase;
     taps_.assign(static_cast<std::size_t>(n), 0.0);
     if (factor_ > 1) {
@@ -53,8 +56,7 @@ void TruePeakMeter::prepare(double sampleRate) {
 }
 
 void TruePeakMeter::reset() noexcept {
-    for (auto& ch : history_)
-        for (double& v : ch) v = 0.0;
+    std::fill(history_.begin(), history_.end(), 0.0);
     head_ = 0;
     peak_ = 0.0;
 }
@@ -64,7 +66,16 @@ double TruePeakMeter::peakDb() const noexcept {
 }
 
 void TruePeakMeter::process(const float* const* x, int channels, int frames) noexcept {
-    const int chans = std::min(channels, kMaxChannels);
+    run(x, channels, frames);
+}
+
+void TruePeakMeter::process(const double* const* x, int channels, int frames) noexcept {
+    run(x, channels, frames);
+}
+
+template <class Sample>
+void TruePeakMeter::run(const Sample* const* x, int channels, int frames) noexcept {
+    const int chans = std::min(channels, channels_);
     double peak = peak_;
     for (int i = 0; i < frames; ++i) {
         const int slot = head_;
@@ -73,7 +84,7 @@ void TruePeakMeter::process(const float* const* x, int channels, int frames) noe
             const double s = static_cast<double>(x[c][i]);
             peak = std::max(peak, std::fabs(s));   // never below the sample peak
             if (factor_ == 1) continue;
-            double* h = history_[c];
+            double* h = history_.data() + static_cast<std::size_t>(c) * kTapsPerPhase;
             h[slot] = s;
             // y_p = sum_k taps[p + k*M] * x[n - k]; x[n - k] is h[slot - k].
             for (int p = 0; p < factor_; ++p) {
