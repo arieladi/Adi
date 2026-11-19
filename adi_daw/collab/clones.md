@@ -1,5 +1,15 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER Filter, flanger and phaser
+
+**PR requested** — `clones/adi-shaper-modulation` at `d18b7d11`. Title **Add measured multiband Filter and flanger/phaser stages to ADi-SHAPER**. Review after `clones/adi-shaper` (`295056b6`). Win opens and lands the PR.
+
+Two optional stages extend the rack to five. Each band has a primary and secondary eight-point contour, blend, clock and mode. Five clean filters cover 6 and 12 dB/octave low-pass and high-pass responses and 12 dB/octave band-pass. Liquid includes a flanger and 4-, 8-, 12- or 16-stage phasers, with feedback polarity per band. All 133 earlier parameter IDs retain their meanings. Older stored states open with both new stages disabled.
+
+The clean low-pass matched the six original response gates at 400 Hz and 8 kHz. Five-mode held-out stereo impulse error was below 0.000008 at the tested small-signal levels. The moving cutoff/resonance fixture differed by up to 0.000037. At extreme resonance, a half-amplitude impulse through a gentle filter showed deviations up to 0.01655. Across fifteen flanger center/feedback fixtures the first 5,000 normalized impulse samples differed by less than 0.000075. The highest tested phaser feedback retained a 0.0222 normalized tail discrepancy. These acoustic differences remain reviewable.
+
+Six Release MSVC /W4 /WX suites passed, including genuine editable Pd versus native Filter and Liquid processing across irregular segments. Coverage includes stored state, cancellation of disabled modules, independent bands, sample-rate changes and modulation. The device and UI handoffs remain in their respective owner lanes.
+
 ## 2026-11-19 — Drive and Crush measurement reservation
 
 On `clones/adi-shaper-drive-crush` the clones seat takes `src/adi/dsp/adi_shaper_drive.*`, `src/adi/dsp/adi_shaper_crush.*`, their dedicated tests, and the same ADi-SHAPER canvas, compiled-in external and test module. Existing device-stage IDs remain stable. Additional level, alias, hold-rate and latency measurements precede the audio implementation.
