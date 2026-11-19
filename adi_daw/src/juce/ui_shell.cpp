@@ -981,10 +981,14 @@ bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, 
         return fail("Devices load in the application.");
     if (track == 0 || reader().findTrack(track) == nullptr)
         return fail("Select a track to load " + name + " onto.");
+    const juce::Component::SafePointer<AdiRootComponent> alive(this);
     if (!loadBuiltin(uid, track, before))
         return false;
-    // The strip shows the new device on the next frame; the browser keeps the focus, as Live's.
-    devices.repaint();
+    if (alive) {
+        say({});
+        // The strip updates on the next frame and the browser keeps focus.
+        devices.repaint();
+    }
     return true;
 }
 std::string AdiRootComponent::pluginWindowKey(std::int64_t device) { return "plugin:" + std::to_string(device); }

@@ -1949,12 +1949,15 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
     case Clip::Cut:
     case Clip::Copy:
         return data != nullptr && copy && copy(*device, c == Clip::Cut);
-    case Clip::Paste:
+    case Clip::Paste: {
         if (!paste || !holdsCopy || !holdsCopy())
             return false;
-        if (data != nullptr)
-            return paste(data->track, *device);
-        return endChosen() && selectedTrack >= 0 && paste(selectedTrack, std::nullopt);
+        const SafePointer<DeviceChainStrip> alive(this);
+        const bool pasted = data ? paste(data->track, *device)
+                                 : endChosen() && selectedTrack >= 0 && paste(selectedTrack, std::nullopt);
+        if (pasted && alive) root.say({});
+        return pasted;
+    }
     case Clip::Duplicate: {
         if (data == nullptr || !duplicate || (!data->plugin && mix::functionForUid(data->uid)))
             return false;

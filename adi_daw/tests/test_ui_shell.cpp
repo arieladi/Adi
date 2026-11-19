@@ -2537,7 +2537,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
                                                  std::to_string(track)).getInt();
     };
 #if ADI_WITH_PD
-    check(browser.load(find("Auto Filter")), "a double-click on Auto Filter loads it");
+    root.say("Earlier device insertion was refused.");
+    check(browser.load(find("Auto Filter")) && root.error().empty(),
+          "a successful built-in insertion clears the earlier refusal from the Status Bar");
     refresh();
     check(chainOf(4) == std::vector<std::string>{"Auto Filter"} && chains(4) == 1 &&
               document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert Auto Filter",
@@ -9149,7 +9151,9 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     check(focus(0) && key('c') && clipboard.has_value() && chain() == std::vector<std::int64_t>{3} &&
               document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore,
           "Ctrl/Cmd+C on the focused device copies it, and writes nothing");
-    check(focus(0) && key('v'), "Ctrl/Cmd+V on the focused device pastes");
+    root.say("Earlier device action was refused.");
+    check(focus(0) && key('v') && root.error().empty(),
+          "Ctrl/Cmd+V on the focused device pastes and clears the earlier refusal");
     refresh();
     auto order = chain();
     check(order.size() == 2 && order[0] > 3 && order[1] == 3 && label() == "Paste Device" &&
@@ -9188,7 +9192,9 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.devices.endChosen() && !root.devices.focusedDevice() && root.devices.canClipboard(Clip::Paste) &&
               !root.devices.canClipboard(Clip::Copy),
           "a click past the last device chooses the chain's end: Paste can go there, Copy has no device");
-    check(key('v'), "Ctrl/Cmd+V at the chain's end");
+    root.say("Earlier device action was refused.");
+    check(key('v') && root.error().empty(),
+          "Ctrl/Cmd+V at the chain's end pastes and clears the earlier refusal");
     refresh();
     order = chain();
     check(order.size() == 2 && order[0] == 3 && order[1] > 3 && label() == "Paste Device",

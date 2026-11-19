@@ -431,7 +431,7 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->loadPlugin = [this](const rows::PluginRef& ref, std::int64_t track) {
             const bool ok = document_->insertPlugin(ref, track);
-            if (!ok && root_) root_->say(document_->error());
+            if (root_) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->catalogPlugins = [this] {
