@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-02 and PD-04 collected-media durability receipts
+
+**PR requested** `engine-win/collect-publication-warnings` at `37e3ce5ead7a40fd8b3564c225af78e9856279ba`, stacked on `99b03094`. Live Collect All and Save and legacy extraction retain path-qualified directory-sync warnings after successful publication. Both rename and verified-copy fallback keep file identity for rollback. The collection result can carry both media warnings and a partial WAL checkpoint warning. A private ZIP input's directory-sync advisory does not become a warning about the independently checked and published archive.
+
+Strict native MSVC x64 Debug `/W4 /WX` passed 335 checks across three suites, including 34 new assertions. Real rename/fallback and pinned-reader cases passed. Three optional symlink fixtures skipped for Windows privilege. Public Store signatures remain compatible.
+
 ## 2026-11-19 — Missing decode-cache publications
 
 **PR requested** `engine-win/decode-cache-missing-publication` at `df62deaef6ed928ac83d868c365c475e5855d007`, stacked on Cache Folder `b89e9a5b`. A failed cache file size read now refuses before incrementing bytes, stats or pins on publication or on a warm hit. The deterministic regression removes a completed owned target before accounting. It reproduces the false success, phantom size and extra pin on the base, then verifies clean refusal and an ordinary retry.
