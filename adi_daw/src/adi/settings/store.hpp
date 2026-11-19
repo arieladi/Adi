@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -41,7 +42,7 @@ enum class LoadStatus {
     Loaded,        // read
     CorruptKept,   // did not parse; moved aside to `keptAside`, defaults in use
     ForeignApp,    // names another application; untouched, defaults in use, saving refused
-    NewerSchema,   // written by a newer build: read, its unknown keys kept
+    NewerSchema,   // written by a newer build: read familiar values, refuse writes
 };
 [[nodiscard]] const char* toString(LoadStatus);
 
@@ -77,15 +78,18 @@ public:
     /// change when the log is on. Does not save.
     bool set(const std::string& key, const Value& value, const ChangeContext& who, std::string& why);
 
-    /// Back to the registry default, for one key or a whole page (the page's
-    /// Defaults button, ADR-0125 d3's recovery).
+    /// Erase the override so the value follows the registry default. Applies
+    /// to one key or all App-scope overrides on the requested page.
     bool reset(const std::string& key, const ChangeContext& who, std::string& why);
     void resetPage(const std::string& page, const ChangeContext& who);
 
-    /// Writes the file atomically (a temporary beside it, then a rename).
-    /// Keys this build does not know are written back exactly as read.
-    /// Refused for a file that names another application.
-    bool save(std::string& why) const;
+    /// Rereads settings, overlays pending changes and saves atomically, with a
+    /// .bak of the prior good document. Keys that were not edited here keep
+    /// their latest value on disk, including keys this build does not know.
+    /// Refused for a file that names another application or uses a newer schema,
+    /// including if it appeared after loading. A successful save can put a
+    /// directory-durability warning in why.
+    bool save(std::string& why);
 
     /// The raw stored values, unknown keys included -- what save writes.
     [[nodiscard]] const Value& stored() const { return values_; }
@@ -97,15 +101,16 @@ public:
     [[nodiscard]] std::filesystem::path changeLogFile() const;
 
 private:
-    bool write(const std::string& key, const Value& value, const ChangeContext& who, std::string& why);
+    bool write(const std::string& key, const Value& value, const ChangeContext& who,
+               std::string& why, bool removeOverride = false);
     void log(const std::string& key, const Value& before, const Value& after, const ChangeContext& who) const;
 
     appdata::App app_;
     std::filesystem::path file_;
     LoadStatus status_ = LoadStatus::Defaults;
     std::optional<std::filesystem::path> aside_;
-    int schema_ = kSettingsSchema;
     Value values_ = Value::object();
+    std::set<std::string> pendingKeys_;
     bool logUsers_ = true;
 };
 

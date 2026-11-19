@@ -2,6 +2,7 @@
 #pragma once
 #include <filesystem>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -77,7 +78,7 @@ struct ReplaceHooks {
     std::error_code (*rename)(const std::filesystem::path&, const std::filesystem::path&) = nullptr;
     std::error_code (*syncDirectory)(const std::filesystem::path&) = nullptr;
     // Runs under the destination's exclusive lease, before any publication.
-    std::error_code (*validateTarget)(const std::filesystem::path&) = nullptr;
+    std::function<std::error_code(const std::filesystem::path&)> validateTarget;
     bool (*retryable)(const std::error_code&) = nullptr;
     void (*retryWait)(unsigned milliseconds) = nullptr;
 };

@@ -411,13 +411,102 @@ void testUnknownKeysSurvive() {
                            : Value();
     check(kept == Value({{"attack", 3}, {"release", 300}}),
           "and the newer build's key is still there, exactly");
+    check(s.reset("lookfeel.theme", kUser, why) && !s.stored().contains("lookfeel.theme") &&
+          s.get("lookfeel.theme") == find("lookfeel.theme")->defaultValue,
+          "reset follows the registered default and removes its stored override");
+    check(s.set("lookfeel.theme", "light", kUser, why), "prepare a page override again");
+    s.resetPage(find("lookfeel.theme")->page, kUser);
+    const auto remaining = s.stored();
+    check(!remaining.contains("lookfeel.theme") && remaining.at("audio.bufferSize") == 1024 &&
+          remaining.at("future.meterBallistics") == kept,
+          "page reset erases its overrides and preserves other pages and unknown keys");
+    check(s.save(why) && Value::parse(readText(file)).at("values") == remaining,
+          "saved settings omit defaults removed by reset");
 
-    writeText(file, R"({"schema": 3, "app": "ADI", "values": {"lookfeel.theme": "light"}})");
+    const std::string future = R"({"schema": 3, "app": "ADI", "values": {"lookfeel.theme": "light"},
+         "futureHeader": {"mustSurvive": true}})";
+    writeText(file, future);
+    const auto logBefore = readText(s.changeLogFile());
     AppSettings newer(appdata::App::Daw, file);
     check(newer.status() == LoadStatus::NewerSchema && newer.get("lookfeel.theme") == "light",
           "a newer schema is read");
-    check(newer.save(why) && Value::parse(readText(file)).at("schema") == 3,
-          "and saved without downgrading its schema number");
+    check(!newer.set("lookfeel.theme", "dark", kUser, why) &&
+          !newer.reset("lookfeel.theme", kUser, why), "newer settings refuse mutation and reset");
+    newer.resetPage("Theme & Colors", kUser);
+    check(!newer.save(why) && why.find("read-only") != std::string::npos &&
+          newer.get("lookfeel.theme") == "light" && readText(newer.changeLogFile()) == logBefore &&
+          readText(file) == future, "newer settings and their change log stay byte-identical");
+
+    const std::string futureShape = R"({"schema": 18446744073709551615, "app": "ADI", "values": []})";
+    writeText(file, futureShape);
+    AppSettings incompatible(appdata::App::Daw, file);
+    check(incompatible.status() == LoadStatus::NewerSchema && !incompatible.keptAside() &&
+          !incompatible.save(why) && readText(file) == futureShape,
+          "a newer schema with a different shape is kept in place without narrowing its version");
+}
+
+void testAtomicSave() {
+    section("atomic saves own their stage and protect a late destination");
+    adi::test::TempDirectory temp("settings", "atomic-save");
+    const auto file = temp.path() / "settings.json";
+    const auto oldStage = temp.path() / "settings.json.tmp";
+    writeText(oldStage, "another writer's temporary file");
+    AppSettings settings(appdata::App::Daw, file);
+    std::string why;
+    check(settings.set("lookfeel.theme", "light", kUser, why) && settings.save(why),
+          "save through a private stage: " + why);
+    check(readText(oldStage) == "another writer's temporary file" &&
+              Value::parse(readText(file)).at("values").at("lookfeel.theme") == "light",
+          "the public document changes and the unrelated temporary file survives");
+
+    const std::string replacements[] = {
+        R"({"schema": 3, "app": "ADI", "values": {"future.key": 3}})",
+        R"({"schema": 1, "app": "ADiJ", "values": {}})",
+        "incomplete external write",
+    };
+    for (const auto& replacement : replacements) {
+        writeText(file, replacement);
+        check(!settings.save(why) && !why.empty() && readText(file) == replacement,
+              "reject a late incompatible destination without changing its bytes");
+    }
+    bool residue = false;
+    for (const auto& entry : fs::directory_iterator(temp.path())) {
+        residue = residue || entry.path().filename().string().starts_with(".adi-settings-");
+    }
+    check(!residue, "successful and refused saves both clean their private stages");
+}
+
+void testLastGoodBackup() {
+    section("reread, merge pending changes and preserve the prior good document");
+    adi::test::TempDirectory temp("settings", "last-good");
+    const auto file = temp.path() / "settings.json";
+    const auto backup = temp.path() / "settings.json.bak";
+    AppSettings store(appdata::App::Daw, file);
+    std::string why;
+    check(store.set("lookfeel.theme", "light", kUser, why) && store.save(why) &&
+              !fs::exists(backup), "the first save has no previous version to back up");
+
+    const std::string handEdit = R"({"schema": 1, "app": "ADI", "extra": 13, "values": {
+        "lookfeel.theme": "dark", "audio.bufferSize": 256, "future.userKey": [5, 6]}})";
+    writeText(file, handEdit);
+    check(store.reset("lookfeel.theme", kUser, why), "queue a reset over a hand edit");
+    check(fs::create_directory(backup) && !store.save(why) && readText(file) == handEdit,
+          "an unavailable backup prevents replacing the current settings");
+    check(fs::remove(backup) && store.save(why) && readText(backup) == handEdit,
+          "retry writes the exact previous document to the backup");
+    const auto merged = Value::parse(readText(file));
+    const auto& values = merged.at("values");
+    check(!values.contains("lookfeel.theme") && values.at("audio.bufferSize") == 256 &&
+              values.at("future.userKey") == Value::array({5, 6}) && merged.at("extra") == 13 &&
+              store.get("audio.bufferSize") == 256,
+          "the reset wins for its key while the other manual edits are adopted");
+
+    auto later = merged;
+    later.at("values")["lookfeel.theme"] = "dark";
+    writeText(file, later.dump());
+    check(store.save(why) && store.get("lookfeel.theme") == "dark" &&
+              readText(backup) == later.dump(),
+          "a published reset does not win against a subsequent hand edit");
 }
 
 void testCorruptKeptAside() {
@@ -906,6 +995,8 @@ int runAll() {
     testCatalogue();
     testStoreBasics();
     testUnknownKeysSurvive();
+    testAtomicSave();
+    testLastGoodBackup();
     testCorruptKeptAside();
     testApplicationsNeverShare();
     testChangeLog();
