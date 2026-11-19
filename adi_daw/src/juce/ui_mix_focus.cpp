@@ -519,12 +519,11 @@ void MixFocus::rebuildScope() {
         scopeRange_ = focusScopeRange(scopeSources_);
         if (scopeRange_ && scopeShown) {
             const auto columns = std::min(plotColumns, scopeRange_->frames);
-            const auto reading = focusProjectSum(scopeSources_, *scopeRange_, columns,
+            sum_ = focusProjectSum(scopeSources_, *scopeRange_, columns,
                 [&](std::size_t column, const FocusSumColumn &extrema) {
                     for (std::size_t ch = 0; ch < scopeSumPaths_.size(); ++ch)
                         appendColumn(scopeSumPaths_[ch], column, columns, extrema.low[ch], extrema.high[ch]);
                 });
-            if (!sumLabel_.isEmpty()) sum_ = reading;
         } else if (scopeRange_ && !sumLabel_.isEmpty()) {
             sum_ = focusReadSum(scopeSources_, *scopeRange_);
         }
@@ -591,12 +590,17 @@ void MixFocus::paint(juce::Graphics &g) {
     const auto plot = plot_.toNearestInt();
     const bool scopeShown = scope.getToggleState();
     const bool sumShown = scopeShown && (!scopeSumPaths_[0].isEmpty() || !scopeSumPaths_[1].isEmpty());
+    const bool sumOverRange = scopeShown && sum_ && (sum_->peak[0] > 1. || sum_->peak[1] > 1.);
     juce::String title = scopeShown ? "Scope" : "Together";
     if (scopeShown && alignment_ != Alignment::Ready)
         title += "   Individual traces";
     else if (scopeShown && scopeRange_) {
+        if (sumOverRange) {
+            title = "Sum over 0 dBFS";
+            g.setColour(look::record);
+        }
         title += "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
-        if (sumShown) title += "   Sum overlay";
+        if (sumShown && !sumOverRange) title += "   Sum overlay";
     }
     const int titleWidth = sumLabel_.isEmpty() ? plot.getWidth() : std::max(0, sumLabel_.getX() - plot.getX());
     g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
