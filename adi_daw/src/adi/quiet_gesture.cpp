@@ -4,6 +4,16 @@
 #include <stdexcept>
 #include <utility>
 namespace adi::gesture {
+namespace {
+Status transitionStatus(State state) {
+    if (state == State::Cancelling)
+        return {Error::Closed, "quiet gesture cancellation is pending"};
+    if (state == State::Committing)
+        return {Error::Reentrant, "quiet gesture commit is in progress"};
+    return {};
+}
+} // namespace
+
 QuietSession::QuietSession(std::unique_ptr<Session> session, std::uint64_t quietMilliseconds)
     : session_(std::move(session)), quiet_(quietMilliseconds), thread_(std::this_thread::get_id()) {
     if (!session_ || !quiet_ || session_->state() != State::Open)
@@ -29,10 +39,14 @@ UpdateResult QuietSession::update(std::unique_ptr<const Input> input, std::uint6
     if (!admitted.ok())
         return {std::move(admitted), {}};
     seen_ = now;
-    if (session_->state() == State::Committed || session_->state() == State::Cancelled)
+    const auto state = session_->state();
+    if (state == State::Committed || state == State::Cancelled)
         return {{Error::Closed, "quiet gesture has ended"}, {}};
-    if (session_->state() == State::SourceLost)
+    if (state == State::SourceLost)
         return {{Error::SourceLost, "quiet gesture source is lost"}, {}};
+    auto transition = transitionStatus(state);
+    if (!transition.ok())
+        return {std::move(transition), session_->preview()};
     if (due(now))
         return {{Error::Busy, "quiet interval elapsed; poll End before a fresh gesture"}, {}};
     auto result = session_->update(std::move(input));
@@ -45,9 +59,13 @@ QuietPoll QuietSession::poll(std::uint64_t now) {
     if (!admitted.ok())
         return {std::move(admitted), {}};
     seen_ = now;
-    if (session_->state() == State::SourceLost)
+    const auto state = session_->state();
+    if (state == State::SourceLost)
         return {{Error::SourceLost, "quiet gesture source is lost"}, {}};
-    if (session_->state() == State::Committed || session_->state() == State::Cancelled || !due(now))
+    auto transition = transitionStatus(state);
+    if (!transition.ok())
+        return {std::move(transition), {}};
+    if (state == State::Committed || state == State::Cancelled || !due(now))
         return {};
     auto ended = session_->commit();
     auto status = ended.status;
