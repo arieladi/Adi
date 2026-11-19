@@ -39,6 +39,58 @@ std::uint16_t sampleBytes(WavFormat f) {
     switch(f) { case WavFormat::Pcm16:return 2; case WavFormat::Pcm24:return 3; case WavFormat::Float32:return 4; }
     throw std::invalid_argument("WAV format");
 }
+void metadataRequire(bool ok,const char* field) {
+    if(!ok)throw std::invalid_argument(field);
+}
+void asciiField(const std::string& value,std::size_t maximum,const char* field) {
+    metadataRequire(value.size()<=maximum && std::all_of(value.begin(),value.end(),[](unsigned char c){return c!=0 && c<=127;}),field);
+}
+unsigned decimal(const std::string& value,std::size_t first,std::size_t count) {
+    unsigned result=0;
+    for(std::size_t i=first;i<first+count;++i) {
+        metadataRequire(value[i]>='0' && value[i]<='9',"BWF date/time digits");
+        result=result*10+static_cast<unsigned>(value[i]-'0');
+    }
+    return result;
+}
+std::uint16_t loudnessCode(const std::optional<double>& value,bool range) {
+    if(!value)return 0x7fff;
+    metadataRequire(std::isfinite(*value) && *value>=(range?0.0:-99.99) && *value<=99.99,"BWF loudness out of range");
+    const auto code=static_cast<std::int16_t>(std::round(*value*100.0));
+    return static_cast<std::uint16_t>(code);
+}
+std::array<std::uint16_t,5> validateV2(const WavMetadata& metadata) {
+    const auto& v=*metadata.bwfV2;
+    asciiField(metadata.description,256,"BWF description");
+    asciiField(metadata.originator,32,"BWF originator");
+    asciiField(v.originatorReference,32,"BWF originator reference");
+    asciiField(v.originationDate,10,"BWF origination date");
+    if(!v.originationDate.empty()) {
+        metadataRequire(v.originationDate.size()==10,"BWF origination date length");
+        const auto year=decimal(v.originationDate,0,4),month=decimal(v.originationDate,5,2),day=decimal(v.originationDate,8,2);
+        constexpr std::array<unsigned,12> days{31,28,31,30,31,30,31,31,30,31,30,31};
+        metadataRequire(month>=1 && month<=12,"BWF origination month");
+        const bool leap=year%4==0 && (year%100!=0 || year%400==0);
+        metadataRequire(day>=1 && day<=days[month-1]+static_cast<unsigned>(month==2 && leap),"BWF origination day");
+    }
+    asciiField(v.originationTime,8,"BWF origination time");
+    if(!v.originationTime.empty()) {
+        metadataRequire(v.originationTime.size()==8,"BWF origination time length");
+        metadataRequire(decimal(v.originationTime,0,2)<=23 && decimal(v.originationTime,3,2)<=59 &&
+                        decimal(v.originationTime,6,2)<=59,"BWF origination time range");
+    }
+    metadataRequire(v.codingHistory.size()<sentinel-602,"BWF coding history size");
+    asciiField(v.codingHistory,static_cast<std::size_t>(sentinel-603),"BWF coding history ASCII");
+    metadataRequire(v.codingHistory.empty() || v.codingHistory.ends_with("\r\n"),"BWF coding history termination");
+    for(std::size_t i=0;i<v.codingHistory.size();++i) {
+        if(v.codingHistory[i]=='\r') {
+            metadataRequire(i+1<v.codingHistory.size() && v.codingHistory[i+1]=='\n',"BWF coding history CR/LF");
+            ++i;
+        }else metadataRequire(v.codingHistory[i]!='\n',"BWF coding history CR/LF");
+    }
+    return {loudnessCode(v.loudnessValue,false),loudnessCode(v.loudnessRange,true),loudnessCode(v.maxTruePeakLevel,false),
+            loudnessCode(v.maxMomentaryLoudness,false),loudnessCode(v.maxShortTermLoudness,false)};
+}
 }
 WavWriter::WavWriter(const std::filesystem::path& path, std::uint32_t rate,
                      std::uint16_t channels, WavFormat format, const WavMetadata* metadata,
@@ -49,6 +101,8 @@ WavWriter::WavWriter(const std::filesystem::path& path, std::uint32_t rate,
     const auto align=static_cast<std::uint32_t>(channels)*bytes_;
     require(channels && rate && align<=65535 && static_cast<std::uint64_t>(align)*rate<=sentinel);
     require(!metadata || metadata->ixml.size()<sentinel);
+    std::array<std::uint16_t,5> loudness{};
+    if(metadata && metadata->bwfV2)loudness=validateV2(*metadata);
     file_.exceptions(std::ios::failbit|std::ios::badbit);
     file_.open(path,std::ios::binary|std::ios::in|std::ios::out|std::ios::trunc);
     tag(file_,"RIFF"); put(file_,0,4); tag(file_,"WAVE");
@@ -68,9 +122,20 @@ WavWriter::WavWriter(const std::filesystem::path& path, std::uint32_t rate,
         tag(file_,"fact"); put(file_,4,4); factOffset_=static_cast<std::uint64_t>(file_.tellp()); put(file_,0,4);
     }
     if(metadata) {
-        tag(file_,"bext"); put(file_,602,4);
+        const auto* v=metadata->bwfV2?&*metadata->bwfV2:nullptr;
+        tag(file_,"bext"); put(file_,602+(v?v->codingHistory.size():0),4);
         textField(file_,metadata->description,256); textField(file_,metadata->originator,32);
-        zeros(file_,32+10+8); put(file_,metadata->timeReference,8); put(file_,0,2); zeros(file_,254);
+        if(v) {
+            textField(file_,v->originatorReference,32);textField(file_,v->originationDate,10);textField(file_,v->originationTime,8);
+            put(file_,metadata->timeReference,8);put(file_,2,2);
+            for(const auto byte:v->umid)file_.put(static_cast<char>(byte));
+            for(const auto code:loudness)put(file_,code,2);
+            zeros(file_,180);
+            file_.write(v->codingHistory.data(),static_cast<std::streamsize>(v->codingHistory.size()));
+            if(v->codingHistory.size()&1U)file_.put(0);
+        }else {
+            zeros(file_,32+10+8); put(file_,metadata->timeReference,8); put(file_,0,2); zeros(file_,254);
+        }
         if(!metadata->ixml.empty()) {
             tag(file_,"iXML"); put(file_,metadata->ixml.size(),4);
             file_.write(metadata->ixml.data(),static_cast<std::streamsize>(metadata->ixml.size()));

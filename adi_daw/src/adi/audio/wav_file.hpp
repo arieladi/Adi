@@ -1,18 +1,36 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 
 namespace adi::audio {
 enum class WavFormat { Pcm16, Pcm24, Float32 };
 enum class WavDither { None, Triangular, Rectangular };
+struct BwfV2Metadata {
+    // Caller-supplied ASCII, never generated from a clock, identity or job.
+    // Empty text is zero-filled. Nonempty date/time use YYYY?MM?DD / hh?mm?ss;
+    // EBU permits any non-NUL ASCII separator (normally '-' and ':').
+    std::string originatorReference; // <=32 bytes; allocation/uniqueness is the caller's
+    std::string originationDate;     // exactly 10 bytes when supplied
+    std::string originationTime;     // exactly 8 bytes when supplied
+    std::array<std::uint8_t,64> umid{}; // opaque caller-owned SMPTE UMID, zero if absent
+    std::string codingHistory;       // ASCII CR/LF-terminated rows, no implicit terminator
+    // Physical units: LUFS, LU, dBTP, LUFS, LUFS. Missing encodes 0x7fff.
+    // Supplied values must be finite, within [-99.99,99.99] (range [0,99.99]);
+    // multiply by 100 and round to nearest, ties away from zero.
+    std::optional<double> loudnessValue, loudnessRange, maxTruePeakLevel;
+    std::optional<double> maxMomentaryLoudness, maxShortTermLoudness;
+};
 struct WavMetadata {
     std::string description;
     std::string originator;
     std::uint64_t timeReference = 0; // samples since midnight
     std::string ixml;              // optional XML bytes, no implicit terminator
+    std::optional<BwfV2Metadata> bwfV2{}; // absent retains the exact legacy v0 layout/validation
 };
 
 // Off-callback streaming I/O. Throws on invalid arguments, unsupported formats,
@@ -21,7 +39,9 @@ struct WavMetadata {
 // Optional dither is in destination LSBs, applied once before PCM rounding.
 // Its seeded stream advances in interleaved sample order, independent of write
 // boundaries. Float32 never dithers. Existing writers default to no dither.
-// A non-null metadata pointer emits a version-0 bext, plus iXML when nonempty.
+// A non-null metadata pointer emits bext v0 unless bwfV2 is supplied, plus raw
+// iXML when nonempty. V2 validates ASCII/length/date/time/history and loudness
+// before opening the file; fields are fixed at construction, not patched later.
 // close() reports finalization errors; destructor is best effort, never throws.
 class WavWriter {
 public:
