@@ -35,10 +35,27 @@ until then a need is named by its item.
 | Reserve: one N row. Live MIDI input to the armed track's instrument, taking the window's per-port rings (`MidiEventRing` of `MidiPortEvent`: MIDI 1.0 bytes, the UMP group, the arrival time in ms of JUCE's high-resolution clock) through a published list the callback reads | engine (ADR-0248 d6 item 4) | SRF-05: the director's keyboard into OneShot or his VST3 | the rings fill and are drained on the message thread; the MIDI Indicators light |
 | Reserve: one N row. A `midi.port.name` row, so a port's record can be found by name when its identifier changes (the registry's comment promises the healing) | engine-win (`src/adi/settings/registry.cpp`) | SRF-05: a keyboard on another USB socket keeps its switches | records are keyed by identifier and direction only |
 | Reserve: one N row. The render worker's contract for plug-ins (instances made and given state on the message thread, processing on the worker, `serviceHost` marshalled), so Export renders a project with a VST3 or CLAP | engine-win (EX-11's engine half, the export pipeline) | EX-11: one of the director's VST3s in the exported WAV | the page refuses such a project, saying why |
+| Reserve: one N row. `notes::prepareBatch(snapshot, ops)`: one prepared `note.applyDiff` whose effects are the legacy note ops (insert, delete, move, resize, setVelocity, setMute) applied in turn with the overlap rule each applies | engine (`src/adi/note_diff*`, MI-01) | MI-01: a note edit of any size writes the stream once, one op in the history | the editor sends one op per note, one undo step per edit, as today |
 | Reserve: one N row. The snapshot's track fields for recording: `TrackNode::recordArmed`, `monitorMode` and `inputRef`, from `tracks.record_armed`, `monitor_mode` and `input_ref` | engine (`src/adi/engine/snapshot.*`) | MX-09: the strips' Arm and the monitoring switch read the frame's snapshot as every other control does (ADR-0201) | the application hands the window the session's rows (`Session::model()`) once a frame, and an action reads them fresh |
 | Reserve: one N row. The input-monitor node of MX-09: a live input per monitored track, from its input (channels 1/2 until `input_ref` has its grammar, MX-25), heard per `monitor_mode` (In always; Auto while armed and no clip plays; Off never) | engine (ADR-0248 d6, item 4) | MX-09: the director hears what he records | Arm and the switch store their choice; nothing is heard of the input; Record records |
 | Reserve: one N row. A failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today: `recording::prepareCommit` takes only a clean result) | engine (`src/adi/recording_commands.*`) | MX-09: a take is not lost to one click on the timeline | the take is dropped and the Status Bar says why, at once |
 | Reserve: one N row. Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | win (AWAITING 20) and the engine | MX-09: a new audio track should monitor as Live's does once the input-monitor node exists | the switch shows Off on New's tracks, as stored |
+
+---
+
+## 2026-11-19, window-fn — MI-01 parked: the window's switch to note.applyDiff waits for one engine helper
+
+Tried and taken back: the Note Editor's batches turned into one `note.applyDiff` from the clip's stream as
+stored and the batch's final values (a translator over note.insert, delete, move, resize, setVelocity and
+setMute). Transpose, velocity, mute and Add Chord passed, but 13 of the shell suite's note checks
+failed: each legacy note op applies the engine's overlap rule as it lands (a note moved into a longer note
+of its key cuts it short; a chop, a stretch, Fit to Time Range and Set Length build on what the op before
+left), and a diff of final values skips those steps. Copying the overlap rule into the window would make
+two owners of it. Nothing of this is pushed.
+
+**Asked of the engine (need below):** `notes::prepareBatch(snapshot, ops)`, one prepared `note.applyDiff`
+whose effects are exactly the legacy ops applied in turn (it already plans each one: `legacyApply`). The
+window then routes every note batch through it in `AdiRootComponent::submitEdits`, about twenty lines.
 
 ---
 
