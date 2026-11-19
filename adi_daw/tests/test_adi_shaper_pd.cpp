@@ -328,6 +328,18 @@ int main() try {
           "both stages and shapes restore from earlier project state");
     check(device->getParam("287").real == 0 && device->getParam("341").real == 0 && device->latencySamples() == 0,
           "earlier five-stage projects restore without drive latency or degradation");
+    // Reusing a live device must sound the same as a fresh instance when
+    // the incoming project predates the last six modules.
+    for (const int id : {287, 341, 416, 464, 536, 626}) set(*device, id, 1);
+    set(*device, 715, 1);
+    device->process(io);
+    check(device->latencySamples() == 16, "live newer state enables Drive delay");
+    check(device->loadState("state", adi::Payload::to_cbor(modState)), "load older project over active new modules");
+    device->process(io);
+    for (const int id : {287, 341, 416, 464, 536, 626})
+        check(device->getParam(std::to_string(id)).real == 0, "missing stage resets on reused device");
+    check(device->getParam("715").real == 0 && device->latencySamples() == 0,
+          "missing option and previous latency reset on load");
     const auto firstEpoch = device->latencyEpoch();
     set(*device, 287, 1);
     set(*device, 341, 1);

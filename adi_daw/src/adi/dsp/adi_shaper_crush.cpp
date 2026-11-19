@@ -7,10 +7,14 @@
 
 namespace adi::dsp {
 namespace {
-// The normalized hold range is exponential with an offset. Its measured
-// anchors are 8.82 Hz, 3 kHz, and 44.1 kHz before the full-rate bypass.
-constexpr double holdRatio = (44100.0 - 3000.0) / (3000.0 - 8.82);
-constexpr double holdScale = (3000.0 - 8.82) / (holdRatio - 1.0);
+// The small offset above 3 kHz is audible on long fractional hold captures.
+constexpr double holdLow = 8.82;
+constexpr double holdMid = 3000.00500679;
+constexpr double holdHigh = 44100.0;
+constexpr double holdRatio = (holdHigh - holdMid) / (holdMid - holdLow);
+constexpr double holdScale = (holdMid - holdLow) / (holdRatio - 1.0);
+constexpr double totalLevelRange = 32767.0;
+constexpr double linearLevelRange = 14.0 * totalLevelRange / 32768.0;
 constexpr unsigned clockIntervals = 256;
 const std::array<double, clockIntervals + 1> exponent = [] {
     std::array<double, clockIntervals + 1> table{};
@@ -46,7 +50,7 @@ void AdiShaperCrush::updateResolution(float height) noexcept {
     bits_ = height;
     const double u = height;
     const double u2 = u * u, u4 = u2 * u2, u8 = u4 * u4, u16 = u8 * u8;
-    levels_ = 1.0 + 14.0 * u + 32753.0 * (u16 * u16);
+    levels_ = 1.0 + linearLevelRange * u + (totalLevelRange - linearLevelRange) * (u16 * u16);
     const double remaining = 1.0 - u;
     quantizedGain_ = (1.0 - .25 * remaining * remaining * remaining) / levels_;
 }
@@ -63,7 +67,7 @@ void AdiShaperCrush::updateClock(float height) noexcept {
     // A short residual polynomial keeps the fractional sample clock precise
     // while a moving contour avoids a transcendental function at audio rate.
     const double power = exponent[slot] * (1.0 + x * (1.0 + x * (.5 + x / 6.0)));
-    const double hz = 8.82 + holdScale * (power - 1.0);
+    const double hz = holdLow + holdScale * (power - 1.0);
     step_ = std::min(hz / rate_, 1.0);
     period_ = 1.0 / step_;
 }

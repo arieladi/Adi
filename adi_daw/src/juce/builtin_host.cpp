@@ -41,7 +41,7 @@ double normalized(const PdParamDecl& declaration,double value) noexcept {
 class BuiltinDevice final:public DeviceInstance {
 public:
     BuiltinDevice(const BuiltinInfo& info,const rows::PluginRef& reference)
-        :info_(info),declarations_(parsePdDeclarations(builtinCanvas(info.uid))),
+        :info_(info),shaper_(info.uid=="org.adidaw.builtin.adi-shaper"),declarations_(parsePdDeclarations(builtinCanvas(info.uid))),
          native_(makeNativePdDevice(builtinCanvas(info.uid),info.inputs,2)) {
         if(!native_)throw std::runtime_error("canonical built-in factory did not create "+std::string(info.name));
         identity_={reference.format,reference.uid,reference.name,reference.vendor,reference.version};
@@ -66,7 +66,7 @@ public:
         if(info_.midi)midi_.resize(4096);
     }
     const DeviceIdentity& identity()const noexcept override{return identity_;}
-    bool wantsDeviceTransport()const noexcept override{return info_.uid=="org.adidaw.builtin.adi-shaper";}
+    bool wantsDeviceTransport()const noexcept override{return shaper_;}
     bool loaded()const noexcept override{return native_!=nullptr;}
     std::int32_t paramCount()const noexcept override{return static_cast<std::int32_t>(descriptors_.size());}
     const ParamDescriptor* paramAt(std::int32_t index)const noexcept override {
@@ -82,7 +82,9 @@ public:
         const auto index=findIndex(id);
         if(index==descriptors_.size() || !std::isfinite(value.normalized) || value.normalized<0 || value.normalized>1)return false;
         const double canonical=normalized(declarations_.params[index],natural(declarations_.params[index],value.normalized));
-        targets_[index].store(static_cast<float>(canonical),std::memory_order_release);return true;
+        targets_[index].store(static_cast<float>(canonical),std::memory_order_release);
+        if(shaper_)shaperRevision_.fetch_add(1,std::memory_order_release);
+        return true;
     }
     std::string paramText(const std::string& id,double value)const override {
         const auto index=findIndex(id);if(index==descriptors_.size() || !std::isfinite(value))return {};
@@ -104,7 +106,7 @@ public:
         native_->prepare(rate,frames);
         for(auto& [slot,sample]:preparedSamples)(void)samples_.publish(slot,std::move(sample));
         std::fill(applied_.begin(),applied_.end(),std::numeric_limits<float>::quiet_NaN());
-        applyParameters();publishLatency();
+        applyParameters(true);publishLatency();
         router_.configure(desiredRoute(),engine::ExpressionCaps{},15);router_.reset();
         rate_=rate;frames_=frames;prepared_=true;
     }
@@ -174,6 +176,19 @@ public:
                 const auto index=findIndex(parameter.key());
                 if(index!=descriptors_.size())pending.emplace_back(index,static_cast<float>(normalized(declarations_.params[index],natural(declarations_.params[index],target))));
             }
+            if(shaper_) {
+                // Old racks predate some stages. A preset import into an
+                // already-running rack must match opening the same project.
+                const auto& saved=value.at("params");
+                for(std::size_t i=0;i<descriptors_.size();++i)
+                    if(!saved.contains(descriptors_[i].id))
+                        pending.emplace_back(i,static_cast<float>(descriptors_[i].defaultValue.normalized));
+                const ReactivationGate::Hold hold(gate_);
+                extra_=std::move(value);
+                for(const auto& [index,target]:pending)targets_[index].store(target,std::memory_order_release);
+                shaperRevision_.fetch_add(1,std::memory_order_release);
+                return true;
+            }
             extra_=std::move(value);
             for(const auto& [index,target]:pending)targets_[index].store(target,std::memory_order_release);
             return true;
@@ -184,7 +199,14 @@ private:
         for(std::size_t i=0;i<descriptors_.size();++i)if(descriptors_[i].id==id)return i;
         return descriptors_.size();
     }
-    void applyParameters()noexcept {
+    void applyParameters(bool force=false)noexcept {
+        if(shaper_) {
+            // Parameter writers publish after storing the new target. A
+            // racing write changes the revision for the following callback.
+            const auto revision=shaperRevision_.load(std::memory_order_acquire);
+            if(!force && revision==appliedShaperRevision_)return;
+            appliedShaperRevision_=revision;
+        }
         for(std::size_t i=0;i<descriptors_.size();++i) {
             const float target=targets_[i].load(std::memory_order_acquire);
             if(target!=applied_[i]) {
@@ -198,7 +220,11 @@ private:
         if(latency_.exchange(latency,std::memory_order_relaxed)!=latency)epoch_.fetch_add(1,std::memory_order_relaxed);
     }
     engine::ExpressionRoute desiredRoute()const noexcept{return route_.load(std::memory_order_acquire);}
-    const BuiltinInfo& info_;DeviceIdentity identity_;PdDeclarations declarations_;
+    const BuiltinInfo& info_;
+    const bool shaper_;
+    std::atomic<std::uint64_t> shaperRevision_{0};
+    std::uint64_t appliedShaperRevision_=0;
+    DeviceIdentity identity_;PdDeclarations declarations_;
     std::unique_ptr<NativePdDevice> native_;std::vector<ParamDescriptor> descriptors_;
     std::unique_ptr<std::atomic<float>[]> targets_;std::vector<float> applied_;
     ReactivationGate gate_;bool prepared_=false;double rate_=0;std::int32_t frames_=0;

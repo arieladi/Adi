@@ -57,6 +57,13 @@ void quantizer(Crush& band) {
         for(int i=0;i<5;++i) static_cast<void>(inv.decode(mono(band, s.input, s.height, 1)));
         near(inv.decode(mono(band, s.input, s.height, 1)), s.firstLevel, .000015, "settled level height");
     }
+    // Positive low-level steps between the nominal and measured first thresholds.
+    for (auto [height, input] : std::array<std::array<float, 2>, 2>{{
+             {.125f, .1818200f}, {.25f, .1111125f}}}) {
+        band.reset();
+        for (int i=0; i<16; ++i)
+            near(mono(band, input, height, 1), 0, 1e-8, "measured first threshold");
+    }
 }
 void clock(Crush& band) {
     for (auto [index, first, settled] : std::array<std::array<float, 3>, 2>{{
@@ -84,6 +91,30 @@ void clock(Crush& band) {
             const double pole=std::exp(-2*std::numbers::pi*10/rate);
             near(actual, i==0 ? (1+pole)/2 : (1+pole)/2*(pole-1)*std::pow(pole,i-1), 2e-7,
                  "full resolution DC response");
+        }
+    }
+}
+void longClock(Crush& band) {
+    // A marked sample on a live DC input exposes the fractional hold time.
+    // Independent captures contain 0.5, 2 and 6 seconds of pre-roll.
+    struct Marker { float height; int frame; double first, held, tolerance; };
+    constexpr Marker markers[]{
+        {.25f, 24062, .12490189, .24299639, .007},
+        {.375f, 96026, .12491496, .24347907, .004},
+        {.5f, 96015, .06728267, .41987836, .00001},
+        {.5f, 288015, .12481332, .25966132, .00001},
+        {.75f, 24003, .00201411, .49797773, .004}
+    };
+    check(band.prepare(48000), "prepare long clock test");
+    constexpr float background = .0625f;
+    for (const auto& mark : markers) {
+        band.reset();
+        UndoHighPass inverse(48000);
+        for (int i=0; i<=mark.frame+1; ++i) {
+            const float input = i == mark.frame ? background + .5f : background;
+            const double value = inverse.decode(mono(band, input, 1, mark.height)) - background;
+            if (i == mark.frame) near(value, mark.first, mark.tolerance, "long fractional wrap");
+            if (i == mark.frame+1) near(value, mark.held, mark.tolerance, "long fractional capture");
         }
     }
 }
@@ -126,7 +157,7 @@ void dither(Crush& band) {
 int main() try {
     Crush band;
     check(band.prepare(48000),"prepare band");
-    quantizer(band);clock(band);combined(band);dither(band);
+    quantizer(band);clock(band);longClock(band);combined(band);dither(band);
     check(!band.prepare(std::numeric_limits<double>::infinity()),"invalid sample rate");
     near(mono(band,.321f,.1f,.1f),.321f,0,"invalid-rate dry signal");
     std::puts("ADi-SHAPER Crush resolution, antialiasing, hold clock, dither, and DC response passed.");
