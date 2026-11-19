@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Atomic settings saves
+
+**PR requested** — `engine-win/settings-atomic-save` at `acba2e53ee58d55fc5714b542f7fad5ed5728640`, stacked on `engine-win/settings-reset-overrides` at `783ee27a`. Title **Publish settings through a private atomic stage**.
+
+PD-04 and PD-11. The settings store uses the shared replacing publisher after writing and closing its own sibling stage. An unrelated old .tmp file survives, and a newer, foreign or incomplete document present at save time keeps its bytes. Normal completion and refusal both clean the stage. Two strict x64 MSVC suites passed, totaling 378 checks. The last-good backup and hand-edit adoption are the next settings step.
+
 ## 2026-11-19 · Hosted CLAP acceptance, catalogue hydration, capture, export identity and settings
 
 **PR requested** — `engine-win/clap-transport-gate` at `63c1fb2fdc0056f7394013510963657092f1d180`, stacked on `engine-win/probe-portability` at `882bf20a`. Title **Exercise CLAP transport behind a reporting VST3 delay**.
