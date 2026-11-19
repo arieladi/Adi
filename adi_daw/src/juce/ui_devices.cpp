@@ -647,7 +647,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
     if (nativeFunction()) hint += "\nNative Mix View function; drag the header to move it within this channel.";
     if (!d.processingIssue.empty()) {
         hint += "\nConfiguration failed: " + juce::String(d.processingIssue);
-        hint += "\nRemove the device, then Undo to retry.";
+        hint += "\nTo retry, reopen this project using File > Open Project.";
     }
     if (title.getTooltip() != hint) title.setTooltip(hint);
     const auto activatorHint = juce::String(nativeFunction() ? "Remove this Mix View function. Undo restores its settings."
