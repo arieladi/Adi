@@ -112,8 +112,12 @@ inline std::optional<std::int64_t> focusWindowEnd(std::int64_t first, std::int64
 // this collector neither acquires taps nor advances the transport.
 class FocusScopeBarProjection {
   public:
+    struct MidColumn {
+        double low, high;
+    };
+
     bool prepare(FocusScopeRange range, std::span<const FocusScopeBarSource> sources,
-                 std::size_t requestedColumns, std::uint64_t transportRevision) {
+                 std::size_t requestedColumns, std::uint64_t transportRevision, bool includeMid = false) {
         const auto columns = std::min({requestedColumns, range.frames,
                                        static_cast<std::size_t>(SharedAnalysis::kMaxFftSize)});
         if (sources.size() < 2 || columns == 0 || !transportRevision || range.first < 0 ||
@@ -131,8 +135,11 @@ class FocusScopeBarProjection {
 
         constexpr auto inf = std::numeric_limits<double>::infinity();
         std::vector<FocusSumColumn> bins((sources.size() + 1) * columns, FocusSumColumn{{inf, inf}, {-inf, -inf}});
+        std::vector<MidColumn> midBins;
+        if (includeMid) midBins.assign(sources.size() * columns, MidColumn{inf, -inf});
         std::vector<FocusScopeBarSource> identities(sources.begin(), sources.end());
         bins_ = std::move(bins);
+        midBins_ = std::move(midBins);
         sources_ = std::move(identities);
         range_ = range;
         transportRevision_ = transportRevision;
@@ -162,6 +169,30 @@ class FocusScopeBarProjection {
                 return false;
         }
 
+        if (midBins_.empty()) appendValid<false>(blocks, count);
+        else appendValid<true>(blocks, count);
+        return true;
+    }
+
+    [[nodiscard]] std::size_t frames() const noexcept { return bins_.empty() ? 0 : frames_; }
+    [[nodiscard]] bool complete() const noexcept { return range_.frames != 0 && frames() == range_.frames; }
+    [[nodiscard]] std::span<const FocusSumColumn> memberColumns(std::size_t member) const noexcept {
+        return member < sources_.size() ? lane(member) : std::span<const FocusSumColumn>{};
+    }
+    [[nodiscard]] std::span<const MidColumn> memberMidColumns(std::size_t member) const noexcept {
+        if (midBins_.empty() || !visibleColumns_ || member >= sources_.size()) return {};
+        return std::span(midBins_).subspan(member * columns_, visibleColumns_);
+    }
+    [[nodiscard]] std::span<const FocusSumColumn> sumColumns() const noexcept { return lane(sources_.size()); }
+    [[nodiscard]] std::optional<FocusSumReading> sumReading() const noexcept {
+        if (!frames()) return {};
+        const auto count = static_cast<double>(frames_);
+        return FocusSumReading{peak_, {std::sqrt(energy_[0] / count), std::sqrt(energy_[1] / count)}};
+    }
+
+  private:
+    template <bool IncludeMid>
+    void appendValid(std::span<const FocusScopeBarBlock> blocks, std::size_t count) noexcept {
         const auto remember = [](FocusSumColumn &column, const std::array<double, 2> &sample) {
             for (std::size_t ch = 0; ch < sample.size(); ++ch) {
                 column.low[ch] = std::min(column.low[ch], sample[ch]);
@@ -176,7 +207,15 @@ class FocusScopeBarProjection {
                 std::array<double, 2> value{};
                 for (std::size_t member = 0; member < blocks.size(); ++member) {
                     const std::array<double, 2> sample{blocks[member].left[at], blocks[member].right[at]};
-                    remember(bins_[member * columns_ + column_], sample);
+                    const auto index = member * columns_ + column_;
+                    remember(bins_[index], sample);
+                    if constexpr (IncludeMid) {
+                        // Combine corresponding samples before binning to preserve cancellation.
+                        const auto mid = (sample[0] + sample[1]) * .5;
+                        auto &bin = midBins_[index];
+                        bin.low = std::min(bin.low, mid);
+                        bin.high = std::max(bin.high, mid);
+                    }
                     value[0] += sample[0];
                     value[1] += sample[1];
                 }
@@ -191,22 +230,8 @@ class FocusScopeBarProjection {
             visibleColumns_ = column_ + 1;
             if (frames_ == endOfColumn_ && ++column_ < columns_) extendColumn();
         }
-        return true;
     }
 
-    [[nodiscard]] std::size_t frames() const noexcept { return bins_.empty() ? 0 : frames_; }
-    [[nodiscard]] bool complete() const noexcept { return range_.frames != 0 && frames() == range_.frames; }
-    [[nodiscard]] std::span<const FocusSumColumn> memberColumns(std::size_t member) const noexcept {
-        return member < sources_.size() ? lane(member) : std::span<const FocusSumColumn>{};
-    }
-    [[nodiscard]] std::span<const FocusSumColumn> sumColumns() const noexcept { return lane(sources_.size()); }
-    [[nodiscard]] std::optional<FocusSumReading> sumReading() const noexcept {
-        if (!frames()) return {};
-        const auto count = static_cast<double>(frames_);
-        return FocusSumReading{peak_, {std::sqrt(energy_[0] / count), std::sqrt(energy_[1] / count)}};
-    }
-
-  private:
     void extendColumn() noexcept {
         // Same floor(c * frames / columns) edges as the short Scope projection,
         // without a potentially overflowing product on a long bar.
@@ -225,6 +250,7 @@ class FocusScopeBarProjection {
     FocusScopeRange range_;
     std::vector<FocusScopeBarSource> sources_;
     std::vector<FocusSumColumn> bins_;
+    std::vector<MidColumn> midBins_;
     std::uint64_t transportRevision_ = 0;
     std::size_t columns_ = 0, framesPerColumn_ = 0, remainder_ = 0;
     std::size_t frames_ = 0, column_ = 0, endOfColumn_ = 0, carry_ = 0, visibleColumns_ = 0;
