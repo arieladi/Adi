@@ -10,6 +10,14 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, MIDI port name and manual-arm default for Window-fn
+
+**PR requested** — `engine-win/window-fn-recording-settings` at `6cec1b83236a7262536d9b36036d8c85fb73f316`, based on main `bedee5ab`.
+
+**For Window-fn.** Store a last known text name in each directional record under `midi.ports`. The Device row `midi.port.name` supplies validation and an empty default. Existing records without names remain valid. `record.autoArmOnSelect` defaults to `none`, as in the Settings Catalogue and the current ruling. The earlier instrument/MIDI default is superseded. Explicitly saved choices still load. Window-fn owns matching changing identifiers by name and applying the arm preference.
+
+**MEASURED.** Five assertions failed with the previous settings registry. Strict Windows x64 MSVC `/W4 /WX` passed all 193 checks after the change, including independent input/output records, invalid type and scope refusal and exact reload of saved values.
+
 ## 2026-11-19, Freeze and Bounce in Place read audible extents (DF-E35 b)
 
 **PR requested** — `engine-win/take-lane-render-extent` at `759014e9e7d79fce4d2cbe609042bbd3b4e4e6de`, based on main `bedee5ab`. The engine seat reviews its two lent extent hunks. Freeze uses the timeline clip accessor for track and group scope. Bounce in Place queries main-lane extents. Take clips survive its replacement. The time-base and overflow checks stay in use.
