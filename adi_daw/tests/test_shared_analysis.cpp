@@ -128,6 +128,43 @@ void focusScopeWindows() {
               "overflowing stamps cannot form an independent trace or participate in a combined range");
     }
 }
+void focusScopeSumProjection() {
+    using namespace adi::ui;
+    SharedAnalysis::Result a, b;
+    for (auto *source : {&a, &b}) {
+        source->advancing = true;
+        source->transportRevision = 7;
+        source->sampleRate = 48000.;
+        source->outputs = SharedAnalysis::Scope;
+    }
+    a.firstStamp = 100;
+    b.firstStamp = 101;
+    a.scopeLeft = {9.f, .8f, .8f, -.8f, .5f, -.5f};
+    b.scopeLeft = {-.8f, .8f, -.8f, -.5f, .5f, 9.f};
+    a.scopeRight = {9.f, .25f, .25f, -.25f, .5f, -.5f};
+    b.scopeRight = {.25f, -.25f, .25f, .5f, -.5f, 9.f};
+    const std::array<const SharedAnalysis::Result *, 2> sources{&a, &b};
+    const auto range = focusScopeRange(sources);
+    check(range && range->first == 101 && range->frames == 5,
+          "the sum projection fixture spans exactly the five shared samples");
+    if (!range) return;
+
+    std::array<FocusSumColumn, 2> columns;
+    std::size_t emitted = 0;
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    const auto reading = focusProjectSum(sources, *range, columns.size(),
+        [&](std::size_t column, const FocusSumColumn &extrema) { columns[column] = extrema; ++emitted; });
+    observeAllocationSizes = false;
+    constexpr auto hot = 2. * static_cast<double>(.8f);
+    check(emitted == columns.size() && allocationSizeCount == 0 &&
+              columns[0].low == std::array{0., 0.} && columns[0].high == std::array{hot, .5} &&
+              columns[1].low == std::array{-hot, -1.} && columns[1].high == std::array{0., 1.},
+          "stereo bins cancel in sample order and retain peaks beyond unity without allocating");
+    const auto numeric = focusReadSum(sources, *range);
+    check(reading.peak == std::array{hot, 1.} && reading.peak == numeric.peak && reading.rms == numeric.rms,
+          "the plotted stereo extrema and numeric peak/RMS agree on the same unclipped sample sum");
+}
 void parkedSilence() {
     Fixture f;
     auto request = SharedAnalysis::Request{1};
@@ -1546,7 +1583,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeWindows(); focusScopeSumProjection(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

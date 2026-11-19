@@ -32,6 +32,8 @@ struct MixFocusTestAccess {
     static bool waitingForAlignment(const MixFocus &focus) { return focus.alignment_ != MixFocus::Alignment::Ready; }
     static bool independent(const MixFocus &focus) {
         return !focus.scopeRange_ && !focus.sum_ && focus.scopeHasTrace_ &&
+               std::all_of(focus.scopeSumPaths_.begin(), focus.scopeSumPaths_.end(),
+                           [](const auto &path) { return path.isEmpty(); }) &&
                std::all_of(focus.members_.begin(), focus.members_.end(),
                            [](const auto &member) { return !member.scopePaths[0].isEmpty(); });
     }

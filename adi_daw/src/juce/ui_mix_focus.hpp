@@ -58,6 +58,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void componentParentHierarchyChanged(juce::Component &) override;
     void componentBeingDeleted(juce::Component &) override;
     void rebuildPlot();
+    void clearScopeSum();
     void rebuildScope();
     void refreshControls();
     AdiRootComponent &root_;
@@ -68,6 +69,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::vector<const SharedAnalysis::Result *> scopeSources_;
     std::optional<FocusScopeRange> scopeRange_;
     std::optional<FocusSumReading> sum_;
+    std::array<juce::Path, 2> scopeSumPaths_;
     std::vector<Member> members_;
     std::vector<std::int64_t> choices_;
     std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;

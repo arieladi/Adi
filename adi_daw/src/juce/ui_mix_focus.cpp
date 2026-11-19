@@ -49,7 +49,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
             onEdit(active_);
     };
     scope.setTitle("Synchronous Focus scope");
-    scope.setTooltip("Show the overlapping, untriggered post-fader audio windows from the Focus channels.");
+    scope.setTooltip("Show the Focus channels' post-fader waveforms and their sum when aligned.");
     scope.onClick = [this] { redraw_ = true; repaint(); };
     scroll_.setViewedComponent(&strip_, false);
     scroll_.setScrollBarsShown(false, true);
@@ -123,6 +123,7 @@ void MixFocus::setMembers(const std::vector<std::int64_t> &ids, bool promoteSolo
     auto retired = std::move(members_);
     members_ = std::move(next);
     ++membershipPose_;
+    clearScopeSum();
     const auto exists = [this](auto id) {
         return std::any_of(members_.begin(), members_.end(), [id](auto &m) { return m.id == id; });
     };
@@ -209,8 +210,7 @@ void MixFocus::drop() {
         for (auto &path : m.scopePaths) path.clear();
     }
     scopeSources_.clear();
-    scopeRange_.reset();
-    sum_.reset();
+    clearScopeSum();
     scopeHasTrace_ = false;
     masked_.clear();
     broker_.reset();
@@ -487,9 +487,13 @@ void MixFocus::rebuildPlot() {
         masked_.emplace_back(xAt(left), xAt(right));
     }
 }
-void MixFocus::rebuildScope() {
+void MixFocus::clearScopeSum() {
     scopeRange_.reset();
     sum_.reset();
+    for (auto &path : scopeSumPaths_) path.clear();
+}
+void MixFocus::rebuildScope() {
+    clearScopeSum();
     scopeHasTrace_ = false;
     scopeSources_.clear();
     const bool scopeShown = scope.getToggleState();
@@ -498,13 +502,34 @@ void MixFocus::rebuildScope() {
             for (auto &path : member.scopePaths) path.clear();
     if (!scopePlaying_ || (!scopeShown && sumLabel_.isEmpty())) return;
 
+    const auto plotColumns = static_cast<std::size_t>(std::max(0.f, plot_.getWidth()));
+    const auto appendColumn = [this](juce::Path &path, std::size_t column, std::size_t columns,
+                                     double low, double high) {
+        const auto x = plot_.getX() + static_cast<float>(column) * plot_.getWidth() / static_cast<float>(columns);
+        const auto y = [this](double value) {
+            return plot_.getCentreY() - static_cast<float>(std::clamp(value, -1., 1.)) * plot_.getHeight() * .5f;
+        };
+        if (column == 0) path.startNewSubPath(x, y(low));
+        else path.lineTo(x, y(low));
+        if (high != low) path.lineTo(x, y(high));
+    };
     const bool aligned = alignment_ == Alignment::Ready;
     if (aligned) {
         for (const auto &member : members_) scopeSources_.push_back(member.data.get());
         scopeRange_ = focusScopeRange(scopeSources_);
-        if (scopeRange_ && !sumLabel_.isEmpty()) sum_ = focusReadSum(scopeSources_, *scopeRange_);
+        if (scopeRange_ && scopeShown) {
+            const auto columns = std::min(plotColumns, scopeRange_->frames);
+            const auto reading = focusProjectSum(scopeSources_, *scopeRange_, columns,
+                [&](std::size_t column, const FocusSumColumn &extrema) {
+                    for (std::size_t ch = 0; ch < scopeSumPaths_.size(); ++ch)
+                        appendColumn(scopeSumPaths_[ch], column, columns, extrema.low[ch], extrema.high[ch]);
+                });
+            if (!sumLabel_.isEmpty()) sum_ = reading;
+        } else if (scopeRange_ && !sumLabel_.isEmpty()) {
+            sum_ = focusReadSum(scopeSources_, *scopeRange_);
+        }
     }
-    if (!scopeShown || (aligned && !scopeRange_)) return;
+    if (!scopeShown || plotColumns == 0 || (aligned && !scopeRange_)) return;
 
     for (auto &member : members_) {
         if (!member.data) continue;
@@ -515,7 +540,7 @@ void MixFocus::rebuildScope() {
         if (!window) continue;
         const auto &range = *window;
         scopeHasTrace_ = true;
-        const auto steps = std::min<std::size_t>(range.frames, static_cast<std::size_t>(std::max(1.f, plot_.getWidth())));
+        const auto steps = std::min(range.frames, plotColumns);
         const auto start = static_cast<std::size_t>(range.first - data.firstStamp);
         for (std::size_t ch = 0; ch < member.scopePaths.size(); ++ch) {
             auto &path = member.scopePaths[ch];
@@ -524,13 +549,7 @@ void MixFocus::rebuildScope() {
                 const auto from = start + (p * range.frames) / steps;
                 const auto to = start + ((p + 1) * range.frames) / steps;
                 const auto [low, high] = std::minmax_element(samples.data() + from, samples.data() + to);
-                const auto x = plot_.getX() + static_cast<float>(p) * plot_.getWidth() / static_cast<float>(steps);
-                const auto y = [this](float v) {
-                    return plot_.getCentreY() - std::clamp(v, -1.f, 1.f) * plot_.getHeight() * .5f;
-                };
-                if (p == 0) path.startNewSubPath(x, y(*low));
-                else path.lineTo(x, y(*low));
-                if (*high != *low) path.lineTo(x, y(*high));
+                appendColumn(path, p, steps, *low, *high);
             }
         }
     }
@@ -571,11 +590,14 @@ void MixFocus::paint(juce::Graphics &g) {
     g.setFont(look::font(look::fontBody, true));
     const auto plot = plot_.toNearestInt();
     const bool scopeShown = scope.getToggleState();
+    const bool sumShown = scopeShown && (!scopeSumPaths_[0].isEmpty() || !scopeSumPaths_[1].isEmpty());
     juce::String title = scopeShown ? "Scope" : "Together";
     if (scopeShown && alignment_ != Alignment::Ready)
         title += "   Individual traces";
-    else if (scopeShown && scopeRange_)
+    else if (scopeShown && scopeRange_) {
         title += "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
+        if (sumShown) title += "   Sum overlay";
+    }
     const int titleWidth = sumLabel_.isEmpty() ? plot.getWidth() : std::max(0, sumLabel_.getX() - plot.getX());
     g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
                std::max(0, plot.getY() - scroll_.getBottom()), juce::Justification::centredLeft);
@@ -601,6 +623,14 @@ void MixFocus::paint(juce::Graphics &g) {
     g.setColour(look::outline);
     if (scopeShown) {
         g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
+        if (sumShown) {
+            juce::Graphics::ScopedSaveState saved(g);
+            g.reduceClipRegion(plot);
+            g.setColour(look::text.withAlpha(.6f));
+            g.strokePath(scopeSumPaths_[1], juce::PathStrokeType(look::line));
+            g.setColour(look::text);
+            g.strokePath(scopeSumPaths_[0], juce::PathStrokeType(look::heavyLine));
+        }
         for (const auto &member : members_) {
             g.setColour(member.colour.withMultipliedAlpha(.6f));
             g.strokePath(member.scopePaths[1], juce::PathStrokeType(look::hairline));
