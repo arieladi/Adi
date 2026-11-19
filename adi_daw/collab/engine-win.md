@@ -10,6 +10,16 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, single-WAV export and full Windows file identity (EX-07, DF-E19, DF-E32 d)
+
+**PR requested** — `engine-win/single-wav-export` at `77438d2e552fcf42eb46060641cc8835d368cde4`. Replaces the #666 export head after the publication reliability family at `c36e200d`. The branch carries win's `eee05d0e`, retains its folded collision and media verification, and preserves the closed-stage publication retries.
+
+**For Window EX-11.** Set `Job.directory` and `Job.exactWavFilename` from the Save dialog, with the complete WAV filename. Use Fail by default and Replace after explicit overwrite confirmation. The renderer keeps the chosen literal spelling, checks the complete UTF-8 name before staging and records the chosen and delivered paths. Replace binds the existing file and checks identity, content and the folded collision set again before publication. The native runner, manifest and tests are ready. The Window still owns the Export page and the engine and Window own message-thread host preparation and servicing.
+
+File identity now uses the complete Windows volume and file identifier when available. The legacy fallback is limited to unsupported queries and refuses sentinel indices. The export deduplication key, manifest, lease and rollback share the widened representation. Actual NTFS aliases and separate volumes passed. The different high halves and sentinel behavior use controlled fixtures, with physical ReFS pending. [Windows FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)
+
+Strict MSVC x64 `/W4 /WX`: nine suites and 1,515 checks, plus 54 in the separate-volume recording check. The literal-name fixture was rerun with a portable parent-alias assertion. Native NI encoding and optional link cases lacked support on this test host.
+
 ## 2026-11-19, Windows device names in the publication family (DF-E32 c)
 
 **PR requested** — use `engine-win/file-publication-reliability` at `c36e200dddb8f4fee47f3f26ae325805a3418e6c` for DF-E32 a/b/c. This fast-forward adds the final 200-byte filename check and escapes device names when ASCII spaces occur before a dot. The generated name keeps those spaces and its original case. Ordinary nearby names and leading spaces keep their spelling.
