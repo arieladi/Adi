@@ -24,18 +24,23 @@ juce::String meterNumber(float value) {
 juce::Colour analysisPaletteColour(std::size_t palette, std::uint8_t sample, bool reverse) noexcept {
     if (palette >= palettes::count) palette = palettes::defaultIndex;
     if (palette != palettes::defaultIndex) return juce::Colour(0xff000000u | palettes::rgb(palette, sample, reverse));
-    // Preserve the exact original 256-node JUCE color law and integer pixel
-    // indexing. This initialization occurs on owner-side view construction.
+    // Keep the same quantized interpolation in each shared theme.
     static const auto original = [] {
-        std::array<juce::Colour, 256> colors;
-        for (std::size_t i = 0; i < colors.size(); ++i) {
-            const auto strength = static_cast<float>(i) / 255.f;
-            colors[i] = look::display.interpolatedWith(look::value, strength)
-                .interpolatedWith(look::accent, std::max(0.f, (strength - .7f) / .3f));
+        std::array<std::array<juce::Colour, 256>, kThemes.size()> colors;
+        for (std::size_t table = 0; table < colors.size(); ++table) {
+            const auto &theme = themeFor(kThemes[table]);
+            const juce::Colour background(theme.display), value(theme.value), accent(theme.accent);
+            for (std::size_t i = 0; i < colors[table].size(); ++i) {
+                const auto strength = static_cast<float>(i) / 255.f;
+                colors[table][i] = background.interpolatedWith(value, strength)
+                    .interpolatedWith(accent, std::max(0.f, (strength - .7f) / .3f));
+            }
         }
         return colors;
     }();
-    return original[reverse ? 255u - sample : sample];
+    const auto theme = std::ranges::find(kThemes, look::themeId());
+    const auto table = theme == kThemes.end() ? 0 : static_cast<std::size_t>(theme - kThemes.begin());
+    return original[table][reverse ? 255u - sample : sample];
 }
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
@@ -44,9 +49,11 @@ struct SharedSpectrumView::Raster {
     std::array<juce::Colour, 256> colors{};
     juce::Image image;
     std::uint64_t revision = 0, epoch = 0, column = 0;
+    ThemeId theme = ThemeId::Dark;
     bool paletteDirty = true;
     Raster() { intensity.fill(gap); }
     void setPalette(std::size_t index, bool reverse) noexcept {
+        theme = look::themeId();
         for (std::size_t i = 0; i < colors.size(); ++i)
             colors[i] = analysisPaletteColour(index, static_cast<std::uint8_t>(i), reverse);
         paletteDirty = true;
@@ -265,6 +272,11 @@ void SharedSpectrumView::armFreshBoundary() noexcept {
 }
 void SharedSpectrumView::frame() noexcept {
     updateDemand();
+    if (raster_ && raster_->theme != look::themeId()) {
+        raster_->setPalette(paletteIndex_, paletteReversed_);
+        try { raster_->recolor(); } catch (...) { raster_.reset(); }
+        repaint();
+    }
     if (!lease_) return;
     broker_->requestFrame();
     updateDemand(); // owner resolution may have changed pending availability/generation

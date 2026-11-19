@@ -667,6 +667,16 @@ void palettesAndFrozenRaster() {
           "reverse and grayscale recolor valid pixels while missing history remains background");
     view.setPalette("adi");
     check(samePixels(picture, softwarePicture(view)), "returning to original palette restores every frozen displayed pixel");
+    const auto oldTheme = look::themeId();
+    const auto density = look::densityId();
+    look::apply(oldTheme == ThemeId::Light ? ThemeId::Dark : ThemeId::Light, density);
+    view.frame();
+    check(snapshot && analysisPaletteColour(0, 0) == look::display && !samePixels(picture, softwarePicture(view)) &&
+              originalRasterPixels(view, *snapshot) && view.snapshot() == snapshot,
+          "a theme switch recolors gaps and signal in a frozen raster without changing its publication");
+    look::apply(oldTheme, density);
+    view.frame();
+    check(samePixels(picture, softwarePicture(view)), "restoring the theme restores every frozen pixel");
     for (int i = 0; i < 4; ++i) { view.frame(); (void)softwarePicture(view); }
     const auto after = f.broker->stats();
     check(after.transforms == before.transforms && after.analysisWindows == before.analysisWindows &&
