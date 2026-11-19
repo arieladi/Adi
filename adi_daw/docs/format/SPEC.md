@@ -221,8 +221,10 @@ Captured paths on both sides of history ops become local, absolute hints are
 cleared and missing flags reset. Undo/Redo and branch switching keep using the
 collected files after the folder moves. It requires a writable supported Store,
 no live SQL statements and no active transaction, and runs off the audio thread.
-The caller refreshes its view/session after success. Committed WAL data is saved;
-a blocked passive checkpoint is reported as a warning, with success retained.
+The caller refreshes its view/session after success. The location changes are
+already committed before the passive checkpoint. A partial checkpoint, including
+`SQLITE_OK` with a pinned reader and frames still pending, returns a warning and
+retains the successful collection result.
 
 `Store::collectAndExport(zip)` uses the existing streaming ZIP64 STORE exporter
 on a private SQLite backup, collects that copy by the same rules, checks it,

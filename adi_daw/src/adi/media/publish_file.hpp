@@ -23,6 +23,14 @@ struct FileIdentity {
 // an open-file lease. Failure retains the native error (no path-only fallback).
 [[nodiscard]] std::optional<FileIdentity> readFileIdentity(const std::filesystem::path&,
                                                           std::error_code&) noexcept;
+// Roll back one exposed publication only when a Windows DELETE handle proves
+// its expected identity. The handle denies concurrent opens/rename/delete and
+// never follows a final reparse point. Missing paths are already clean.
+// Other hosts conservatively retain the path: pathname unlink is not a
+// compare-and-remove operation. Errors require the owner to report retention.
+// This verifies object identity, not unchanged contents; owner/off-callback.
+[[nodiscard]] std::error_code removePublishedFile(const std::filesystem::path&,
+                                                  const FileIdentity&) noexcept;
 // Owner-only native protection for an open project, before SQLite opens and
 // until it closes. Shared leases permit existing SQLite reader/writer policy;
 // an authoritative replacement alone takes an exclusive lease. POSIX uses a
@@ -57,7 +65,8 @@ struct PublishResult {
 };
 enum class PublishPolicy { VerifiedCopyFallback, AtomicOnly };
 // Test support, off-callback: refuse native rename or disturb a completed
-// private staging copy before verification. Null hooks use the real OS.
+// private staging copy before verification, or fail the directory flush after
+// publication. Null hooks use the real OS. Hooks are local to this invocation.
 struct PublishHooks {
     std::error_code (*rename)(const std::filesystem::path&, const std::filesystem::path&) = nullptr;
     void (*afterCopy)(const std::filesystem::path&) = nullptr;
