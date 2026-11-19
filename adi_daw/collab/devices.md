@@ -56,6 +56,55 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DF-E36: a patch cannot close itself, quit, open help, move the search path or write files; AR18 holds under ASan
+
+**PR requested:** head `devices/df-e36` (351917f7, two commits on 12aab48a), base `main`. The lane's
+third item (ADR-0248 d8). Each part a failing test first; then the fix in the DEV-09 overlays of
+`juce/pd_loader_fix.cmake` (each with its needle check), `juce/pd_engine.*`, `juce/pd_device.hpp`
+and `juce/pd_declarations.cpp`.
+
+- **(a) The canvas freed twice.** A `g_editor.c` overlay refuses `menuclose` to a root canvas (force
+  0, 1, no argument) and force 2 to any canvas, by name ("ADI refused [menuclose N] (DEV-09)"); force
+  0 or 1 to a subpatch, which headless only hides it, stays. `open()` and `close()` also check the
+  patch is still in Pd's canvas list before `getdollarzero` and `closefile`. Tests: force 0, 1, 2, no
+  argument, the loadbang-only form (inside `libpd_openfile`) and a `[namecanvas]` alias. The unfixed
+  suite crashed (access violation) on the first case.
+- **The row's "consider menusave and menusaveas":** a real hole, so closed. A patch could write its
+  own text to any name in any folder (`[; pd-x.pd savetofile name dir(`: the unfixed test wrote
+  `leaked.pd` into another temporary folder), overwrite its own file with what it made of itself at
+  run time (`menusave`), or write its data (`write`). A `g_readwrite.c` overlay refuses all three by
+  name. `menusaveas` only asks a GUI, of which there is none. Objects that write files (`[text
+  define]`, `[array define]`, `[soundfiler]`, `writesf~`) remain the PD4 deny set win owes an ADI
+  line for.
+- **(b) `menuclose 3`.** Refused in the same overlay; the test runs a second engine whose audio must keep
+  flowing, with `pd-A.pd` and `pd-sub` as targets. Plant (force 3
+  let through): 3 failures.
+- **(c) `help-intro` and `done-popup 2`.** An `s_path.c` overlay of `open_via_helppath` refuses every
+  help patch ("ADI refused a help patch: NAME (DEV-09)"); ADI calls it from nowhere, and
+  `libpd_openfile` and abstraction loading do not pass there. The test plants `intro-help.pd` and
+  `intro.pd` whose `[print leaked]` must not print.
+- **(d) The print queue.** Refusals have their own 16-slot MPSC queue, which a flood of `[print]` cannot
+  fill; a full console queue writes "[N pieces dropped]" where the gap is. `PdDevice::pumpMainThread`
+  now drains the console through a new `PdPatchEngine::pumpConsole()`; pumped every 10 blocks, a
+  `[metro 1]` flood drops nothing. AR8's audio-thread allocation count stays at 0. Plant (refusal queue
+  off): 1 failure.
+- **(e) The search path.** A `g_canvas.c` overlay refuses `declare -path`, `-stdpath`, `-lib` and
+  `-stdlib` by name, from the box, the file's `#X declare` record and a run-time message alike; the
+  engine's own `libpd_add_to_search_path` is untouched. The static check now reads `#X declare`
+  records as `[declare]` boxes. Plant (help and declare overlays off): 2 failures.
+- **Numbers.** `adi_pd_engine_tests` 660 checks pass; CTest 246/246 (MSVC Debug, /W4 /WX).
+
+**AR18 under ASan.** The whole Pd engine suite (660 checks) was built with MSVC 14.44's
+`/fsanitize=address`. That is a Debug build with `/Zi /Ob0 /Od`, without `/RTC1`, which ASan does not
+take; `ASAN_OPTIONS=detect_leaks=0`. It runs clean. With the `#A` unbind in `pd_free` planted out, the
+AR18 check fails, and ASan reports the heap use-after-free the overlay exists for: `pd_findbyclass`
+(m_pd.c) from `garray_free` (g_array.c:618), on a canvas freed by `glist_clear` from the test's
+`clear` message. Restored, it runs clean again. For win: no CI leg runs ASan on Windows. One would
+take the two flags above. This is a request only, with no `.github` edit from this lane.
+
+**Next.** DF-E20 (d), the two header comments, and (e), whether a patch device whose patch failed to
+open passes audio and reports no latency, now that DF-E36 is in. Then DEV-22, one branch each.
+
 ## 2026-11-19 — the Sampler's loadability needs one decision on its sample path (for win)
 
 OneShot plays from a MIDI clip now (entry below). The Sampler is not a canvas: its zones (up to
