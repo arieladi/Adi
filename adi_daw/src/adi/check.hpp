@@ -23,6 +23,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -53,5 +54,9 @@ struct CheckReport {
 /// how a corrupt project becomes a plausible-looking wrong one.
 // With verifyMediaFiles, also resolve and hash external files (read-only).
 CheckReport checkProject(const Store&, bool verifyMediaFiles = false);
+
+/// A SQLite page-level check on a separate read-only connection. Safe to run
+/// on a worker without a Store. It does not verify the ADI schema or media.
+CheckReport quickCheck(const std::filesystem::path&);
 
 }  // namespace adi

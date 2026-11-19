@@ -13,6 +13,7 @@
 
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <unordered_set>
 
@@ -80,18 +81,26 @@ const std::set<std::string> kNotRows = {
 
 // --- 1. what SQLite can tell us itself -----------------------------------------
 
-void checkSqlite(Ctx& c) {
+void checkSqlitePages(Ctx& c, const char* sql, const char* code) {
     c.ran();
     try {
-        SQLite::Statement st(c.db, "PRAGMA integrity_check");
+        SQLite::Statement st(c.db, sql);
+        bool returnedResult = false;
         while (st.executeStep()) {
+            returnedResult = true;
             const auto v = st.getColumn(0).getString();
             if (v != "ok")
-                c.add(Severity::Error, "sqlite.integrity", "database", v);
+                c.add(Severity::Error, code, "database", v);
         }
+        if (!returnedResult)
+            c.add(Severity::Error, code, "database", "SQLite returned no check result");
     } catch (const std::exception& e) {
-        c.add(Severity::Error, "sqlite.integrity", "database", e.what());
+        c.add(Severity::Error, code, "database", e.what());
     }
+}
+
+void checkSqlite(Ctx& c) {
+    checkSqlitePages(c, "PRAGMA integrity_check", "sqlite.integrity");
 
     c.ran();
     try {
@@ -509,6 +518,25 @@ void checkRemarks(Ctx& c) {
 }
 
 }  // namespace
+
+CheckReport quickCheck(const std::filesystem::path& path) {
+    CheckReport report;
+    try {
+        if (path.empty()) throw std::invalid_argument("No database path was supplied");
+        if (path.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos)
+            throw std::invalid_argument("The database path contains a null byte");
+        const auto bytes = std::filesystem::absolute(path).generic_u8string();
+        const std::string filename(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        SQLite::Database db(filename, SQLite::OPEN_READONLY);
+        db.exec("PRAGMA trusted_schema = OFF");
+        Ctx c{db, report};
+        checkSqlitePages(c, "PRAGMA quick_check(1)", "sqlite.quickCheck");
+    } catch (const std::exception& e) {
+        report.findings.push_back({Severity::Error, "sqlite.quickCheckOpen", "database", e.what()});
+        ++report.errors;
+    }
+    return report;
+}
 
 CheckReport checkProject(const Store& s, bool verifyMediaFiles) {
     CheckReport r;

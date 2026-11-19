@@ -21,6 +21,8 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 namespace {
@@ -93,6 +95,58 @@ void testCleanProject() {
     check(r.clean(), "clean() agrees");
 }
 
+void testQuickCheck() {
+    section("quick_check reads the database without a Store");
+    Fixture f("quick");
+    check(static_cast<bool>(f.store), "created the quick-check fixture");
+    if (!f.store) return;
+
+    const auto pageSize = f.db().execAndGet("PRAGMA page_size").getInt64();
+    const auto opsPage = f.db().execAndGet(
+        "SELECT rootpage FROM sqlite_schema WHERE name='ops'").getInt64();
+    const auto project = f.dir / "p.adi";
+    const auto live = quickCheck(project);
+    check(live.clean() && live.checksRun == 1, "healthy file checks through a separate WAL reader");
+    f.store.reset();
+
+    const auto copied = f.dir / fs::path(u8"diagnostic-\u00e9.adi");
+    fs::copy_file(project, copied);
+    const auto readBytes = [](const fs::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    const auto healthyBytes = readBytes(copied);
+    const auto healthy = quickCheck(copied);
+    check(healthy.clean() && healthy.checksRun == 1, "closed project at a Unicode path checks clean");
+    check(!healthyBytes.empty() && readBytes(copied) == healthyBytes, "checking keeps file bytes unchanged");
+    auto invalidName = copied.native();
+    invalidName.push_back(fs::path::value_type{});
+    check(!quickCheck(fs::path(invalidName)).clean(), "embedded null is refused before opening the healthy prefix");
+
+    const auto offset = (opsPage - 1) * pageSize;
+    const bool validOffset = offset > 0 && offset < static_cast<std::int64_t>(healthyBytes.size());
+    check(validOffset, "the ops B-tree starts within the owned copy");
+    if (!validOffset) return;
+    {
+        std::fstream bytes(copied, std::ios::in | std::ios::out | std::ios::binary);
+        bytes.seekp(offset);
+        bytes.put('\0'); // Invalidate the ops B-tree page type.
+        bytes.close();
+        check(static_cast<bool>(bytes), "planted the damaged page in the copy");
+    }
+    const auto damagedBytes = readBytes(copied);
+    const auto damaged = quickCheck(copied);
+    check(!damaged.clean() && has(damaged, "sqlite.quickCheck"), "SQLite reports the damaged page");
+    check(damagedBytes != healthyBytes && readBytes(copied) == damagedBytes,
+          "reporting damage leaves the damaged bytes unchanged");
+
+    const auto missing = f.dir / "missing.adi";
+    const auto absent = quickCheck(missing);
+    check(!absent.clean() && has(absent, "sqlite.quickCheckOpen") && !fs::exists(missing),
+          "missing input reports an open error and is not created");
+    check(!quickCheck({}).clean(), "empty input is refused");
+}
+
 // --- the polymorphic references, which SQLite cannot enforce -------------------
 
 void testDanglingPolyRef() {
@@ -107,6 +161,7 @@ void testDanglingPolyRef() {
     const auto r = checkProject(*f.store);
     check(has(r, "ref.dangling"), "a routing endpoint naming a missing track is caught");
     check(r.errors >= 1, "and it is an error, not a warning");
+    check(quickCheck(f.dir / "p.adi").clean(), "quick_check leaves ADI references to checkProject");
 
     // The message has to say which row and which target, or it is useless.
     const auto it = std::find_if(r.findings.begin(), r.findings.end(),
@@ -379,6 +434,7 @@ int main() {
     std::printf("adi_check_tests -- ADR-0029/0033, what SQLite cannot enforce\n\n");
     try {
         testCleanProject();
+        testQuickCheck();
         testDanglingPolyRef();
         testExternalKindsAreNotErrors();
         testUnknownKindIsAWarning();
