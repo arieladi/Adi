@@ -14,6 +14,17 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+2. **Readings from Live on this machine: may this seat drive Live, or will you take them?**
+   (Blocks most of the lane's remaining parity work.) Control of Live was declined when this
+   seat asked (Arpeggiate's style order, MIDI only). What waits on readings: the 18 arpeggio
+   orders (DEV-19, the XC-25 ordering function), Simpler's voices/velocity/envelope slopes
+   (DEV-21), Redux's defaults and Saturator's HQ curve (DEV-22), Envelope Follower and Shaper
+   (DEV-07's modulators), Beats/Texture (TM-WT-03). **Recommendation:** allow this seat to
+   drive Live for one-device-one-question readings, MIDI-only first, never while engine-win runs
+   an ASIO measurement (its log is checked first; Live here uses ASIO4ALL); readings stay in the
+   private folder, only the measured statements reach this log. Otherwise, each reading is
+   written as a one-paragraph recipe here for you to take.
+
 ## 2026-11-19 — DEV-16, step 4: what the director's own device uses most
 
 **`devices/amxd-translator` (`607d3d5a`), one more commit on the same PR request.** Chosen by the
