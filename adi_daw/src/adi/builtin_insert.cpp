@@ -92,7 +92,7 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
         else {
             result.referenceId=ids.next("plugin_refs");
             auto row=referenceRow(db,{{"id",result.referenceId},{"format","internal"},{"uid",uid},{"vendor","ADI"},
-                {"name",info->name},{"version","1"},{"subtype","effect"},{"path_hint",""},{"is_shell",0},{"shell_id",nullptr}});
+                {"name",info->name},{"version","1"},{"subtype",info->instrument?"instrument":"effect"},{"path_hint",""},{"is_shell",0},{"shell_id",nullptr}});
             append("pluginRef.register",{{"id",result.referenceId},{"row",row}},"plugin",result.referenceId);
         }
         if(before) {

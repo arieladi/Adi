@@ -66,6 +66,10 @@ public:
         if(info_.midi)midi_.resize(4096);
     }
     const DeviceIdentity& identity()const noexcept override{return identity_;}
+    // DEV-21: an instrument consumes the notes it is given; an effect passes them.
+    engine::EventFlow eventFlow()const noexcept override{
+        return info_.instrument?engine::EventFlow::Consume:engine::EventFlow::Through;
+    }
     bool loaded()const noexcept override{return native_!=nullptr;}
     std::int32_t paramCount()const noexcept override{return static_cast<std::int32_t>(descriptors_.size());}
     const ParamDescriptor* paramAt(std::int32_t index)const noexcept override {
@@ -152,7 +156,7 @@ public:
                 if(bytes.size()>40u*1024u*1024u)return false;
                 const auto value=Payload::from_cbor(bytes);const auto metadata=inspectBuiltinSample(value);
                 if(metadata.uid!=info_.uid || role!="sample:"+std::to_string(metadata.slot) || !samples_.has(metadata.slot))return false;
-                const double rate=prepared_?rate_:(metadata.empty?48000:value.at("derived").at("rate").get<double>());
+                const double rate=prepared_?rate_:(metadata.empty || !value.contains("derived")?48000:value.at("derived").at("rate").get<double>());
                 auto prepared=restoreBuiltinSample(value,rate);
                 // Allocate/copy before publication; a failed state never half-applies.
                 auto pending=sampleStates_;pending[metadata.slot]=value;

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/sample_slots.hpp"
+#include "adi/blob.hpp"
+#include <cstring>
 #include "temp_directory.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "juce/builtin_host.hpp"
@@ -48,7 +51,7 @@ struct Project {
 };
 #endif
 void catalogueAndHost() {
-    check(builtinCatalog().size()==18 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
+    check(builtinCatalog().size()==19 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
     std::set<std::string_view> identities;int available=0;
     for(const auto& info:builtinCatalog()) {
         check(identities.insert(info.uid).second && !info.name.empty() && !info.category.empty() && !info.group.empty(),"catalogue identities are unique and labels/category/folder are present");
@@ -68,7 +71,7 @@ void catalogueAndHost() {
         check(allocations.load(std::memory_order_relaxed)==0,"canonical built-in processing allocates nothing");
     }
 #if ADI_WITH_PD
-    check(available==17,"all registered native canonical factories are available");
+    check(available==18,"all registered native canonical factories are available");
 #else
     check(available==0,"PD-disabled build advertises no unavailable backend as loadable");
 #endif
@@ -160,4 +163,57 @@ void playingSession() {
 #endif
 }
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();playingSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+// DEV-21: OneShot is a loadable instrument, so a MIDI clip sounds. Through
+// the product's own calls: the browser insert (registered as an instrument),
+// the sample slot assignment (#414), an ordinary Session with a MIDI clip.
+void instrumentSession() {
+#if ADI_WITH_PD
+    const auto* info=findBuiltin("org.adidaw.builtin.oneshot");
+    check(info && info->instrument && info->midi && info->inputs==0 && info->available,"OneShot is in the catalogue as an instrument");
+    auto instance=load("org.adidaw.builtin.oneshot");
+    check(instance->eventFlow()==EventFlow::Consume,"and consumes the notes it is given");
+    Project project;auto& store=*project.store;auto& db=store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(2,'midi','Keys')");
+    const auto inserted=prepareBuiltinInsert(store,"org.adidaw.builtin.oneshot",2);
+    check(inserted.ok && commitBuiltinInsert(store,inserted).ok,"the browser inserts OneShot on a MIDI track");
+    check(db.execAndGet("SELECT subtype FROM plugin_refs WHERE uid='org.adidaw.builtin.oneshot'").getString()=="instrument",
+          "registered with subtype instrument");
+    // A 1 kHz sine at 0.5, 1 s, stereo.
+    const auto file=project.temporary.path()/"tone.wav";
+    {
+        std::vector<float> tone(96000);
+        for(std::size_t i=0;i<48000;++i)tone[2*i]=tone[2*i+1]=static_cast<float>(.5*std::sin(2*3.141592653589793*1000*static_cast<double>(i)/48000));
+        audio::WavWriter writer(file,48000,2,audio::WavFormat::Float32);writer.write(tone.data(),48000);writer.close();
+    }
+    const auto assigned=prepareSampleAssignment(store,inserted.deviceId,1,file,48000,7);
+    if(!assigned.ok)std::printf("assign: %s\n",assigned.error.c_str());
+    check(assigned.ok && commitSampleAssignment(store,assigned).ok,"the sample is assigned to OneShot's slot as one undo step");
+    // One note: C3 (60, OneShot's root) from the start, one quarter, full velocity.
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(5,2,'midi',0,23063040)");
+    {
+        StreamHeader header{static_cast<std::uint32_t>(FourCC::Notes),1,40,1,0};
+        NoteRecord note{};note.start_ticks=0;note.dur_ticks=5765760;note.note_id=1;note.key=60;note.vel_on=127;
+        note.vel_off=64;note.probability=10000;
+        std::vector<std::uint8_t> bytes(sizeof header+sizeof note);
+        std::memcpy(bytes.data(),&header,sizeof header);std::memcpy(bytes.data()+sizeof header,&note,sizeof note);
+        SQLite::Statement statement(db,"INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(50,5,'notes',?)");
+        statement.bind(1,bytes.data(),static_cast<int>(bytes.size()));statement.exec();
+    }
+    Session session;session.graph().setFadeFrames(0);
+    const bool loaded=session.load(store,withBuiltinDevices(),{2,48000,64});
+    if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
+    check(loaded,"the project with OneShot loads in an ordinary Session");
+    session.transport().play();
+    std::array<std::array<float,64>,2> output{};float* out[]={output[0].data(),output[1].data()};
+    double peak=0;int firstSound=-1;
+    for(int block=0;block<200;++block) {
+        (void)session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=64;session.process(io);
+        for(int i=0;i<64;++i){const double v=std::abs(static_cast<double>(output[0][static_cast<std::size_t>(i)]));
+            if(v>1e-4 && firstSound<0)firstSound=block*64+i;peak=std::max(peak,v);}
+    }
+    std::printf("METRIC OneShot in a Session: first sound at frame %d, peak %.4f\n",firstSound,peak);
+    // At full velocity, OneShot's default Volume (Live's -12 dB) on the 0.5 sine.
+    check(firstSound>=0 && firstSound<256 && std::abs(peak-.5*std::pow(10.,-12./20))<2e-3,"the MIDI clip's note plays the sample through OneShot, at its default -12 dB");
+#endif
+}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();playingSession();instrumentSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
