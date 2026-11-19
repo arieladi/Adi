@@ -1003,6 +1003,12 @@ if(ADI_WITH_PD)
         ADI_PD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/pd")
     add_test(NAME adi_pd_engine_tests COMMAND adi_pd_engine_tests)
 
+    # DEV-10: the three starter templates parse, walk clean, open and play.
+    add_executable(adi_pd_template_tests tests/test_pd_templates.cpp)
+    target_link_libraries(adi_pd_template_tests PRIVATE adi_core adi_warnings)
+    target_compile_definitions(adi_pd_template_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd")
+    add_test(NAME adi_pd_template_tests COMMAND adi_pd_template_tests)
+
 
 endif()
 
