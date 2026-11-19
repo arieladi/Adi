@@ -513,6 +513,8 @@ int main(int argc, char** argv) {
     spec.sampleRate = rate;
     spec.maxFrames = o.block;
     spec.precision = o.precision;
+    spec.offline = o.render > 0;
+    spec.performanceState = !spec.offline;
     const bool loaded = session.load(*store, loader.fn(), spec);
     report(session, loader, peek);
     if (!loaded) {

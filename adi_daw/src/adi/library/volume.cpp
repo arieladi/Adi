@@ -38,7 +38,7 @@ bool MarkerVolumeProvider::identify(const fs::path& root, Volume& out, std::stri
         if (!fs::exists(marker)) {
             const auto staged = scratch.path / "marker";
             { std::ofstream f(staged, std::ios::binary); f << "ADI-VOLUME-1\n" << newId() << '\n'; f.close(); if (!f) throw std::runtime_error("cannot write volume marker"); }
-            const auto result = media::publishFile(staged, marker);
+            const auto result = media::publishFile(staged, marker, {}, media::PublishPolicy::AtomicOnly);
             if (result.status == media::PublishStatus::failed) throw std::runtime_error(result.error);
         }
         if (fs::is_symlink(fs::symlink_status(marker))) throw std::runtime_error("volume marker must not be a symlink");

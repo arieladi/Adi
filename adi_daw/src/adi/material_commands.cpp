@@ -276,7 +276,8 @@ CommitResult commitMaterial(Store& store,MaterialEdit& material,Actor actor) {
             fs::copy_file(files->staged,publication,fs::copy_options::none);
             const auto copied=media::blake3File(publication,files->stop);
             if(!copied || copied.hex!=files->hash){error="material changed while staging publication";return false;}
-            const auto published=media::publishFile(publication,files->target);
+            const auto published = media::publishFile(publication, files->target, {},
+                                                      media::PublishPolicy::AtomicOnly);
             if(published.status==media::PublishStatus::exists) {
                 // Undo retains owned media for redo. A new import with the
                 // same content/id may safely reference that existing regular

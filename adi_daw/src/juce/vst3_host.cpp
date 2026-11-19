@@ -7,6 +7,7 @@
 
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivstphysicalui.h>
+#include <pluginterfaces/vst/ivstprocesscontext.h>
 
 #include <algorithm>
 #include <cmath>
@@ -476,7 +477,8 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // now hands this device the other width is a reactivation too.
     const bool wantDouble = handed64_ && canDouble_;
     if (prepared_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
-        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_) {
+        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_ &&
+        inst_->isNonRealtime() == requestedOffline_) {
         return;
     }
     // From here JUCE stops and reactivates the component and the buffers are
@@ -514,6 +516,8 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // the old sample size. Releasing an instance that is not active does
     // nothing.
     inst_->releaseResources();
+    inst_->setNonRealtime(requestedOffline_);
+    inst_->setPlayHead(&playHead_);
     // The width, before `prepareToPlay`: it hands `setupProcessing`
     // `kSample64` when the processor is set to double.
     inst_->setProcessingPrecision(wantDouble ? juce::AudioProcessor::doublePrecision
@@ -591,6 +595,21 @@ void Vst3Device::release() {
     const ReactivationGate::Hold hold(gate_);   // as in `prepare`
     prepared_ = false;
     if (inst_ != nullptr) inst_->releaseResources();
+}
+
+juce::Optional<juce::AudioPlayHead::PositionInfo> Vst3Device::PlayHead::getPosition() const {
+    if (!clock) return juce::nullopt;
+    PositionInfo position;
+    position.setTimeInSamples(clock->sample);
+    position.setPpqPosition(clock->quarterNotes);
+    position.setPpqPositionOfLastBarStart(clock->barStart);
+    position.setBpm(clock->bpm);
+    position.setTimeSignature(TimeSignature{clock->numerator, clock->denominator});
+    position.setIsPlaying(clock->playing);
+    position.setIsLooping(clock->looping);
+    if (clock->looping)
+        position.setLoopPoints(LoopPoints{clock->loopBeginQuarterNotes, clock->loopEndQuarterNotes});
+    return position;
 }
 
 void Vst3Device::process(const engine::NodeIo& io) noexcept {
@@ -711,7 +730,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         }
 
         Steinberg::Vst::ProcessData pd{};
-        pd.processMode = Steinberg::Vst::kRealtime;
+        pd.processMode = inst_->isNonRealtime() ? Steinberg::Vst::kOffline : Steinberg::Vst::kRealtime;
         pd.symbolicSampleSize = double_ ? Steinberg::Vst::kSample64 : Steinberg::Vst::kSample32;
         pd.numSamples = n;
         pd.numInputs = 1;
@@ -722,7 +741,26 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         pd.outputEvents = nullptr;
         pd.inputParameterChanges = &paramChanges_;
         pd.outputParameterChanges = &outParams_;
-        pd.processContext = nullptr;
+        Steinberg::Vst::ProcessContext context{};
+        if (const auto* clock = io.deviceTransport) {
+            using Context = Steinberg::Vst::ProcessContext;
+            context.state = Context::kProjectTimeMusicValid | Context::kBarPositionValid |
+                            Context::kTempoValid | Context::kTimeSigValid;
+            if (clock->playing) context.state |= Context::kPlaying;
+            context.sampleRate = sampleRate_;
+            context.projectTimeSamples = clock->sample;
+            context.projectTimeMusic = clock->quarterNotes;
+            context.barPositionMusic = clock->barStart;
+            context.tempo = clock->bpm;
+            context.timeSigNumerator = clock->numerator;
+            context.timeSigDenominator = clock->denominator;
+            if (clock->looping) {
+                context.state |= Context::kCycleActive | Context::kCycleValid;
+                context.cycleStartMusic = clock->loopBeginQuarterNotes;
+                context.cycleEndMusic = clock->loopEndQuarterNotes;
+            }
+            pd.processContext = &context;
+        }
 
         const Steinberg::tresult r = processor_->process(pd);
         if (r != Steinberg::kResultOk) {
@@ -752,6 +790,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     // which is a bug report; a 7-bit buffer is a plugin that sounds nearly
     // right, which is not. ADR-0057 has the route.
 
+    playHead_.clock = io.deviceTransport;
     if (double_) {
         juce::AudioBuffer<double> view(scratch64_.getArrayOfWritePointers(), ch, n);
         inst_->processBlock(view, midi_);
@@ -759,6 +798,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         juce::AudioBuffer<float> view(scratch_.getArrayOfWritePointers(), ch, n);
         inst_->processBlock(view, midi_);
     }
+    playHead_.clock = nullptr;
     copyOut(io, n, ch);
 }
 

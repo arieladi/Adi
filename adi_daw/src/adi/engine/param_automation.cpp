@@ -64,20 +64,22 @@ void DeviceAutomation::run(Lane& lane, EventList& out, std::int32_t frame, std::
 }
 
 void DeviceAutomation::emit(EventList& out, std::int32_t frames) noexcept {
+    emitAtInput(out, frames, 0);
+}
+
+void DeviceAutomation::emitAtInput(EventList& out, std::int32_t frames, std::int32_t arrival) noexcept {
     if (lanes_.empty() || frames <= 0) return;
     if (!transport_.playing()) {
         // Parked: one position, the same every block, so a lane sends once and
         // then again only when the playhead is moved (the chase on locate).
-        const std::int64_t at = transport_.sampleAt(0);
+        const std::int64_t at = transport_.inputSample(0, arrival);
         for (Lane& lane : lanes_) offer(lane, out, 0, at);
         return;
     }
     std::int32_t frame = 0;
     while (frame < frames) {
-        const std::int64_t first = transport_.sampleAt(frame);
-        const std::int64_t count = std::clamp<std::int64_t>(transport_.contiguousFrames(frame, frames - frame), 1,
-                                                            frames - frame);
-        const std::int32_t end = frame + static_cast<std::int32_t>(count);
+        const std::int64_t first = transport_.inputSample(frame, arrival);
+        const std::int32_t end = frame + transport_.inputContiguousFrames(first, frames - frame);
         for (Lane& lane : lanes_) run(lane, out, frame, end, first);
         frame = end;
     }
