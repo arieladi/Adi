@@ -9488,6 +9488,10 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
           "the browser presents ordered authored channels, with Main at the end");
     check(nav.preview.mode() == SharedSpectrumView::Mode::Spectrogram && nav.preview.subscribed(),
           "the boxed Info defaults to a visible shared spectrogram");
+    const auto meterBounds = mix.mainMeter.getBounds();
+    check(mix.mainMeter.isShowing() && mix.mainMeter.subscribed() &&
+              meterBounds.getRight() == mix.body().getRight() && meterBounds.getX() > mix.stack.getRight(),
+          "the passive Main meter occupies the right rail beside the Stack");
     nav.search.setText("  bAsS ", false);
     nav.search.onTextChange();
     check(nav.trackAt(0) == 13 && nav.trackAt(1) == 0, "channel search trims and ignores case");
@@ -9507,8 +9511,9 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
     const auto full = mix.getBounds();
     mix.setSize(400, full.getHeight());
     mix.frame(root.reader());
-    check(!nav.isVisible() && !nav.preview.subscribed() && mix.stack.model().shownIndex(14),
-          "narrowing releases Info demand and removes the group filter while its chooser is hidden");
+    check(!nav.isVisible() && !nav.preview.subscribed() && !mix.mainMeter.isVisible() &&
+              !mix.mainMeter.subscribed() && mix.stack.model().shownIndex(14),
+          "narrowing releases the two analysis regions and removes the hidden group filter");
     mix.setBounds(full);
     mix.frame(root.reader());
     check(nav.show.getSelectedId() == rhythm && !mix.stack.model().shownIndex(14) && nav.preview.subscribed(),
@@ -9539,6 +9544,12 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
               mix.analysis.mode() == SharedSpectrumView::Mode::Phase &&
               nav.preview.mode() == SharedSpectrumView::Mode::Spectrum,
           "Info opens the functional Analysers page and keeps an independent preview mode");
+    check(mix.mainMeter.getBounds() == meterBounds && mix.mainMeter.subscribed() &&
+              !mix.mainMeter.getBounds().intersects(mix.analysis.getBounds()),
+          "the same Main meter remains docked when paging to Analysers");
+    mix.mainMeter.weightingBox.grabKeyboardFocus();
+    check(mix.hasAnalyzerControlFocus() && !root.command(AppCommands::DeleteTrack),
+          "Main meter readout controls cannot forward destructive shortcuts to the selected track");
     check(value(*store, "SELECT count(*) FROM ops") == originalOps && root.undoTitle(false) == originalUndo,
           "channel navigation and analyser choices create no edits or Undo entries");
     check(add(15, "group", "Earlier group", 0, 5), "insert another group ahead of the selected group");
@@ -9605,7 +9616,8 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
               "choosing, refreshing and leaving Sounding now create no edit or Undo entry");
         root.mixer.meter = {};
     }
-    check(root.setMixView(false, false) && !nav.preview.subscribed(), "closing the Mix View releases Info demand");
+    check(root.setMixView(false, false) && !nav.preview.subscribed() && !mix.mainMeter.subscribed(),
+          "closing the Mix View releases Info and Main meter demand immediately");
     nav.openInfo.onClick();
     check(!root.state().mixView, "a late Info callback cannot reopen the closed Mix View");
     fake.removeChildComponent(&root);
@@ -10867,11 +10879,13 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 const int chromeHeight = mix.getHeight() - mix.body().getHeight();
                 mix.setSize(900, chromeHeight + MixViewPanel::kDockMinimumHeight - 1); mix.frame(actual.reader());
                 check(mix.body().getHeight() == 419 && actual.state().mixAnalyzerDock && !mix.analyzerDockShown() &&
-                          broker->stats().consumers == (mix.channels.preview.subscribed() ? 1u : 0u),
+                          broker->stats().consumers == (mix.channels.preview.subscribed() ? 1u : 0u) +
+                              (mix.mainMeter.subscribed() ? 1u : 0u),
                       "requested dock below 420 px releases dock demand independently of the Info analyser");
                 mix.setSize(900, chromeHeight + MixViewPanel::kDockMinimumHeight); mix.frame(actual.reader());
                 check(mix.body().getHeight() == 420 && mix.analyzerDockShown() &&
-                          broker->stats().consumers == 3u + (mix.channels.preview.subscribed() ? 1u : 0u) &&
+                          broker->stats().consumers == 3u + (mix.channels.preview.subscribed() ? 1u : 0u) +
+                              (mix.mainMeter.subscribed() ? 1u : 0u) &&
                           surface.getWidth() >= MixViewPanel::kStackMinimumWidth,
                       "420 px admission restores all three shared views without taking channel editing width");
                 std::array<float, 1024> signal{};

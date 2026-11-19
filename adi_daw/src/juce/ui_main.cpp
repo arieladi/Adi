@@ -324,6 +324,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                              document_->session().spec().sampleRate);
             }});
         root->infoSpectrum.setMainMeterSource(mainMeterSource_);
+        root->mixViewPanel.mainMeterSource = mainMeterSource_;
         root->mixViewPanel.analysis.view.setMainMeterSource(mainMeterSource_);
         root->mixViewPanel.analyzerDock.meters.setMainMeterSource(mainMeterSource_);
         root->devices.functionAvailability = device::mixFunctionAvailability;

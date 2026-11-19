@@ -193,6 +193,7 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : song(root), ref(root), stac
     addAndMakeVisible(eye);
     addChildComponent(stack);
     addChildComponent(channels);
+    addChildComponent(mainMeter);
     channels.onChoose = [this](std::int64_t id) {
         const juce::Component::SafePointer<MixViewPanel> alive(this);
         auto &selection = root_.arrangement.geometry.selection;
@@ -250,6 +251,7 @@ void MixViewPanel::adoptViewState() {
 }
 bool MixViewPanel::hasAnalyzerControlFocus() const {
     return AnalysisPane::anyControlsFocused() || analyzerToggle.hasKeyboardFocus(true) ||
+        (mainMeter.isVisible() && mainMeter.hasKeyboardFocus(true)) ||
         (analyzerDock.isVisible() && analyzerDock.hasKeyboardFocus(true)) ||
         (analysis.isVisible() && analysis.hasKeyboardFocus(true));
 }
@@ -327,6 +329,8 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
     analysis.frame(root_.sharedAnalysis, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
     if (!alive) return;
     analyzerDock.frame(root_.sharedAnalysis, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
+    if (!alive) return;
+    if (mainMeter.isVisible()) mainMeter.frame(root_.sharedAnalysis, root_.analysisTrack(reader), mainMeterSource.lock());
 }
 bool MixViewPanel::setAnalyzerDock(bool visible) {
     auto &state = root_.state();
@@ -392,6 +396,16 @@ void MixViewPanel::resized() {
     ref.setBounds(s.getX() + 210, sy, 38, look::fieldHeight);
     eye.setBounds(ref.getRight() + 6, sy, 124, look::fieldHeight);
     auto content = body();
+    const int roomForMeter = content.getWidth() - kStackMinimumWidth - look::gap;
+    const bool showMeter = roomForMeter >= look::mixMeterMinWidth && content.getHeight() >= look::mixMeterMinHeight;
+    mainMeter.setVisible(showMeter);
+    if (!alive) return;
+    if (showMeter) {
+        const int preferred = std::clamp(getWidth() / 8, look::mixMeterMinWidth, look::mixMeterMaxWidth);
+        mainMeter.setBounds(content.removeFromRight(std::min(roomForMeter, preferred)));
+        content.removeFromRight(look::gap);
+        if (!alive) return;
+    }
     const bool beside = tab() == Tab::Stack || tab() == Tab::Overview;
     const bool fits = content.getWidth() >= kStackMinimumWidth + kDockGap + kDockMinimumWidth &&
                       content.getHeight() >= kDockMinimumHeight;

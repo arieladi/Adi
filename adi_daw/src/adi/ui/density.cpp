@@ -51,6 +51,20 @@ constexpr Density kCompact{
     .knobSmall = 11.f,
     .knobMedium = 15.f,
     .knobLarge = 21.f,
+    .mixMeterMinWidth = 112,
+    .mixMeterMaxWidth = 152,
+    .mixMeterMinHeight = 210,
+    .mixMeterControlHeight = 19,
+    .mixMeterTitleHeight = 18,
+    .mixMeterRailHeight = 23,
+    .mixMeterRailLabelHeight = 12,
+    .mixMeterReadingHeight = 14,
+    .mixMeterChannelLabelHeight = 13,
+    .mixMeterMinimumBarHeight = 30,
+    .mixMeterLoudnessMinimumHeight = 100,
+    .mixMeterDenseScaleHeight = 280,
+    .mixMeterMaxBarWidth = 16,
+    .mixMeterSegmentHeight = 3,
 };
 // Open: Compact with more room, by the sheet's step (about 1.2; a device's type 9.5 to 11, its knob
 // 11 to 16).
@@ -100,6 +114,20 @@ constexpr Density kOpen{
     .knobSmall = 16.f,
     .knobMedium = 21.f,
     .knobLarge = 28.f,
+    .mixMeterMinWidth = 134,
+    .mixMeterMaxWidth = 182,
+    .mixMeterMinHeight = 252,
+    .mixMeterControlHeight = 22,
+    .mixMeterTitleHeight = 22,
+    .mixMeterRailHeight = 28,
+    .mixMeterRailLabelHeight = 14,
+    .mixMeterReadingHeight = 17,
+    .mixMeterChannelLabelHeight = 16,
+    .mixMeterMinimumBarHeight = 36,
+    .mixMeterLoudnessMinimumHeight = 120,
+    .mixMeterDenseScaleHeight = 336,
+    .mixMeterMaxBarWidth = 19,
+    .mixMeterSegmentHeight = 4,
 };
 } // namespace
 const Density &densityFor(DensityId id) { return id == DensityId::Open ? kOpen : kCompact; }

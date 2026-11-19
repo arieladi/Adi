@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/ui_analysis.hpp"
 #include "../src/juce/ui_look.hpp"
+#include "../src/juce/ui_mix_meter.hpp"
 #include "ui_fake_peer.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include <array>
@@ -444,6 +445,66 @@ void mainMetersSharedPresentation() {
     full.present({}, 0);
 }
 
+void permanentMainMeter() {
+    using adi::ui::MixOutputMeter;
+    Fixture f;
+    std::vector<MixOutputMeter::Audition> calls;
+    Root root;
+    juce::Component owner;
+    MixOutputMeter meter;
+    root.setSize(640, 560);
+    root.addAndMakeVisible(owner);
+    owner.setBounds(root.getLocalBounds());
+    owner.addAndMakeVisible(meter);
+    meter.setBounds(0, 0, 152, 520);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    int reads = 0;
+    const auto source = std::make_shared<adi::ui::MainMeterSource>(adi::ui::MainMeterSource{
+        1, [&]() -> std::optional<adi::ui::MainMeterSnapshot> {
+            ++reads;
+            return adi::ui::MainMeterSnapshot{1, 48000., 1, -16.f, -16.f, -16.f, -.9f};
+        }});
+    meter.frame(f.broker, 1, source);
+    check(meter.subscribed() && !meter.reading() && !meter.listenBox.isVisible() && reads == 0 &&
+              f.broker->stats().spectralPlans == 0,
+          "visible Main meter subscribes once without FFT or an unowned listen action");
+    f.write(); f.broker->pump(); meter.frame(f.broker, 1, source);
+    const auto initial = meter.reading();
+    check(initial && std::abs(initial->reading.maximumPeak[0] - .5) < 1.e-6 && meter.loudness() && reads == 1,
+          "Main meter publishes the stereo envelope and projects one existing loudness snapshot");
+    meter.scaleBox.setSelectedId(3, juce::sendNotificationSync);
+    meter.frame(f.broker, 1, source);
+    check(meter.reading() == initial && reads == 1, "K scale relabels the same reading and does not rearm analysis");
+    meter.channelBox.setSelectedId(2, juce::sendNotificationSync);
+    meter.weightingBox.setSelectedId(2, juce::sendNotificationSync);
+    meter.frame(f.broker, 1, source);
+    check(!meter.reading() && meter.scaleBox.getSelectedId() == 3, "M/S and A weighting start a fresh measurement, retaining its scale");
+    f.write(1024); f.broker->pump(); meter.frame(f.broker, 1, source);
+    check(meter.reading() && meter.reading()->reading.maximumPeak[1] == 0.,
+          "in-phase stereo shows no Side signal after changing the meter profile");
+    meter.resetButton.onClick();
+    meter.frame(f.broker, 1, source);
+    check(!meter.reading() && !meter.loudness(), "Reset drops only the meter interval and its compact readout");
+    meter.setAuditionSink([&](auto mode) { calls.push_back(mode); });
+    meter.listenBox.setSelectedId(5, juce::sendNotificationSync);
+    owner.setVisible(false);
+    check(!meter.subscribed() && f.broker->stats().consumers == 0 &&
+              calls == std::vector{MixOutputMeter::Audition::Side, MixOutputMeter::Audition::Stereo},
+          "an ancestor hide releases the meter and returns an owner-provided listen to Stereo");
+    const auto hiddenReads = reads;
+    f.write(2048); f.broker->pump(); meter.frame(f.broker, 1, source);
+    check(!meter.reading() && reads == hiddenReads && f.broker->stats().consumers == 0,
+          "hidden meter frames make no new analysis demand and poll no loudness");
+    owner.setVisible(true);
+    meter.suspend(true); meter.frame(f.broker, 1, source);
+    check(!meter.subscribed(), "explicit minimisation suspends even when the owner component remains visible");
+    meter.suspend(false); meter.frame(f.broker, 1, source);
+    check(meter.subscribed() && !meter.reading(), "restored meter waits for fresh data");
+    meter.setAuditionSink({});
+    root.removeFromDesktop();
+}
+
 void compactAnalyzerDock() {
     Fixture f;
     Root root;
@@ -849,7 +910,7 @@ void spectrumSlopeProjection() {
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
-          mainReadoutFormatProjection(); mainMetersSharedPresentation(); compactAnalyzerDock(); palettesAndFrozenRaster(); restartedRasterDomain();
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); compactAnalyzerDock(); palettesAndFrozenRaster(); restartedRasterDomain();
           freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

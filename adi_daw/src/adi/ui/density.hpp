@@ -68,7 +68,22 @@ enum class DensityId { Compact, Open };
     /* the ring knob, its radius in points (language.png part C) */ \
     ADI_DENSITY_FLOAT(knobSmall) \
     ADI_DENSITY_FLOAT(knobMedium) \
-    ADI_DENSITY_FLOAT(knobLarge)
+    ADI_DENSITY_FLOAT(knobLarge) \
+    /* the permanent Main meter */ \
+    ADI_DENSITY_INT(mixMeterMinWidth) \
+    ADI_DENSITY_INT(mixMeterMaxWidth) \
+    ADI_DENSITY_INT(mixMeterMinHeight) \
+    ADI_DENSITY_INT(mixMeterControlHeight) \
+    ADI_DENSITY_INT(mixMeterTitleHeight) \
+    ADI_DENSITY_INT(mixMeterRailHeight) \
+    ADI_DENSITY_INT(mixMeterRailLabelHeight) \
+    ADI_DENSITY_INT(mixMeterReadingHeight) \
+    ADI_DENSITY_INT(mixMeterChannelLabelHeight) \
+    ADI_DENSITY_INT(mixMeterMinimumBarHeight) \
+    ADI_DENSITY_INT(mixMeterLoudnessMinimumHeight) \
+    ADI_DENSITY_INT(mixMeterDenseScaleHeight) \
+    ADI_DENSITY_INT(mixMeterMaxBarWidth) \
+    ADI_DENSITY_INT(mixMeterSegmentHeight)
 struct Density {
 #define ADI_DENSITY_INT_MEMBER(name) int name;
 #define ADI_DENSITY_FLOAT_MEMBER(name) float name;

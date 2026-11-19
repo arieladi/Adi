@@ -6,6 +6,7 @@
 #include "ui_stack.hpp"
 #include "ui_analysis.hpp"
 #include "ui_mix_channels.hpp"
+#include "ui_mix_meter.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <memory>
@@ -97,6 +98,8 @@ class MixViewPanel final : public juce::Component {
     // STACK follows each channel's actual authored devices and optional native functions.
     StackTab stack;
     MixChannelBrowser channels;
+    MixOutputMeter mainMeter;
+    std::weak_ptr<const MainMeterSource> mainMeterSource;
     SharedSpectrumView spectrum;
     AnalysisPane analysis;
     AnalysisDock analyzerDock;
@@ -115,6 +118,7 @@ class MixViewPanel final : public juce::Component {
         analysis.suspend(value);
         analyzerDock.suspend(value);
         channels.preview.suspend(value);
+        mainMeter.suspend(value);
     }
 
   private:
