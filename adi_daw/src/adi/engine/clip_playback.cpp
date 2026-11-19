@@ -112,9 +112,13 @@ struct Clip {
     }
     template<typename V> V shaped(std::int64_t time,V gainValue)const noexcept {
         const auto local=time-start+offset;
-        if(fadeClock[0])gainValue*=clipFadeShape(static_cast<V>(local-*fadeClock[0])/static_cast<V>(*fadeClock[1]-*fadeClock[0]),inCurve,inTension);
+        const auto shape=[](std::int64_t progressed,std::int64_t width,std::int64_t curve,std::optional<double> tension) {
+            if(width==0)return progressed>=0?V{1}:V{0};
+            return clipFadeShape(static_cast<V>(progressed)/static_cast<V>(width),curve,tension);
+        };
+        if(fadeClock[0])gainValue*=shape(local-*fadeClock[0],*fadeClock[1]-*fadeClock[0],inCurve,inTension);
         else if(fadeIn>0)gainValue*=clipFadeShape(static_cast<V>(time-start)/static_cast<V>(fadeIn),inCurve,inTension);
-        if(fadeClock[2])gainValue*=clipFadeShape(static_cast<V>(*fadeClock[3]-1-local)/static_cast<V>(*fadeClock[3]-*fadeClock[2]),outCurve,outTension);
+        if(fadeClock[2])gainValue*=shape(*fadeClock[3]-1-local,*fadeClock[3]-*fadeClock[2],outCurve,outTension);
         else if(fadeOut>0)gainValue*=clipFadeShape(static_cast<V>(end-1-time)/static_cast<V>(fadeOut),outCurve,outTension);
         return gainValue;
     }
@@ -592,7 +596,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(fadeClock[i]) {
                     const auto first=a->warpEnabled?sourceDuration(*fadeClock[i]):fixedTime(*fadeClock[i]);
                     const auto last=a->warpEnabled?sourceDuration(*fadeClock[i+1]):fixedTime(*fadeClock[i+1]);
-                    if(last<=first)throw std::runtime_error("fade clock has no sample extent");
+                    // A valid stored span can quantize to a single boundary
+                    // at this device rate. Render it as a step at that sample.
+                    if(last<first)throw std::runtime_error("fade clock is reversed");
                     clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
                 }
             }
