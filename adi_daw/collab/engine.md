@@ -18,6 +18,16 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — CT-03 driver MIDI capture tap
+
+**PR requested** — branch `engine/ct03-midi-driver-tap`, head `ae4cebf453fba727742b60ce7fb50d0061834c2f`, stacked on `engine/live-midi-armed-instrument` at `ad54266b`. Title **Tap timestamped MIDI before audible instrument routing**. The remote head matches the gated commit. ADR-0248 d6 item 4, CT-03's driver seam.
+
+The owner starts an epoch with an ordered list of distinct armed MIDI or instrument tracks. The tap records the common typed Track stream before audition selection or note-ID conversion, including armed tracks that have no instrument. The first playable slice starts capture after count-in. Each span reports a half-open driver and timeline range with a pass ordinal, even across silent passes and successive callbacks in one pass. Events keep their original MIDI note IDs, the producer timestamp and the sample accepted by the driver. The epoch excludes earlier input, and applies late events at the earliest sample still available.
+
+**For engine-win** — from `Session::startMidiInputCapture`, get the frozen track mapping, rate and epoch from `Session::midiInputCapture`. Drain packets off the callback. A new pass is visible in the next span even when no MIDI happened. Close held notes at the old pass's last span end and carry voice ownership by the original IDs under the take materializer's policy. Input reset, device stop, seek, a clock gap, a loop reconfiguration and overrun report explicit capture outcomes. The queue publishes each complete logical slice as one unit, so an overrun leaves the preceding complete prefix. A stopped epoch can be drained before a new one starts. Take-lane editing and quantize remain with engine-win.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors passed 246 CTest suites, eight focused suites, the four validators and the format layout check. GCC and Clang 19 each passed 26 driver capture checks, and GCC repeated all 40 live-instrument checks. The oracle exercises two wraps in one callback, a silent pass, a late event, count-in, input reset, a missing driver frame, device close, and a one-sample loop that fills 4,095 packet slots and then rejects the next whole slice. Four compiled faults detected a missing tap, a linearized loop clock, partial publication and stale pre-epoch input. Logs are under `/workspace/adi-engine-validation`.
+
 ## 2026-11-19 — MX-09 audio input monitor node
 
 **PR requested** — branch `engine/mx09-input-monitor`, head `26706036ac2b5c50337dcbd396016c82cf0347a9`, base `12aab48a`. Title **Monitor resolved hardware input through the audio track**. The remote head matches the gated commit. ADR-0248 d6 item 4, audio monitor node.
