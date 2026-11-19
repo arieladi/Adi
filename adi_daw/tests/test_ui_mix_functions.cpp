@@ -22,6 +22,7 @@
 #include <numbers>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace adi;
@@ -689,6 +690,41 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     ordinary->enabled.onClick();
     check(op == "device.setEnabled" && payload.at("id").get<std::int64_t>() == 21,
           "ordinary plug-in activator keeps ordinary bypass semantics");
+    {
+        const auto targetCurrent = strip.targetCurrent;
+        const auto reenter = [&](DevicePanelData expected, bool validate, const char *command, const char *label) {
+            const bool authored = expected.enabled;
+            const bool requested = !authored;
+            Payload arguments{{"id", expected.id}};
+            if (std::string_view(command) == "device.setEnabled") arguments["enabled"] = requested;
+            int validations = 0, submissions = 0;
+            bool sameTarget = false, sameEdit = false;
+            strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t stamp) {
+                ++validations;
+                sameTarget = id == expected.id && stamp == expected.instance;
+                // Model a reentrant refresh while the borrowed record stays alive.
+                expected.enabled = requested;
+                return validate && sameTarget;
+            };
+            strip.submit = [&](const std::string &name, Payload p) {
+                ++submissions;
+                sameEdit = name == command && p == arguments;
+                return true;
+            };
+            const bool result = strip.setEnabledExpected(expected, requested);
+            strip.targetCurrent = targetCurrent;
+            strip.submit = submit;
+            check(validations == 1 && sameTarget && result == validate &&
+                      (validate ? submissions == 1 && sameEdit : submissions == 0),
+                  label);
+        };
+        reenter(publication->back(), true, "device.remove", "active native click retains removal through revalidation");
+        auto bypassed = publication->back();
+        bypassed.enabled = false;
+        reenter(bypassed, true, "device.setEnabled", "bypassed native click retains recovery through revalidation");
+        reenter(publication->front(), true, "device.setEnabled", "ordinary revalidated click keeps bypass semantics");
+        reenter(publication->back(), false, "device.remove", "refused revalidation submits no activation edit");
+    }
     check(native->beginFunctionDrag() && native->functionDragTarget() &&
               native->functionDragTarget()->id == 20 && native->functionDragTarget()->instance == 71,
           "a function drag retains its authored identity and current instance");
