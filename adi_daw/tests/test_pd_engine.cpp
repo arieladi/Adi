@@ -1693,6 +1693,43 @@ void testAShrunkPublishedTableDoesNotDeadlock() {
     watchdog.join();
 }
 
+// DEV-09 AR18 (PD2: plugdata-pd bdb30eed, BSD-3 like Pd). An abstraction's
+// canvas binds itself to the symbol #A when it finishes loading
+// (canvas_popabstraction) and nothing ever unbinds it. A file load saves and
+// restores #A around itself, so a whole patch opening is safe; an abstraction
+// created at run time (dynamic patching here, an attached editor in DEV-11) is
+// not. Free it and #A points at freed memory, which the next free of an array
+// dereferences (garray_free's pd_findbyclass on #A): a use-after-free under
+// ASan. The MSVC debug heap does not trap that read, so the check is on the
+// binding itself: once its owner is freed, #A must be bound to nothing.
+void testAnAbstractionFreedLeavesNoDanglingHashA() {
+    section("DEV-09 AR18 -- an abstraction freed at run time leaves #A bound to nothing");
+    TempDir tmp("hash-a");
+    tmp.write("an_abs.pd", "#N canvas 0 0 100 100 12;\n#X obj 10 10 inlet;\n");
+    tmp.write("dyn.pd", "#N canvas 0 0 300 200 12;\n"
+                        "#N canvas 0 0 200 200 sub 0;\n#X restore 10 100 pd sub;\n"
+                        "#X obj 10 10 loadbang;\n"
+                        "#X msg 10 40 \\; pd-dyn.pd obj 150 10 table adi-hash-a 4 \\; "
+                        "pd-sub obj 10 10 an_abs \\; pd-sub clear;\n"
+                        "#X connect 1 0 2 0;\n");
+    LibPdEngine eng(tmp.str(), "dyn.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+    std::string joined;
+    for (const auto& line : eng.consoleLines()) joined += line + "\n";
+    check(joined.find("couldn't create") == std::string::npos,
+          "the table and the abstraction were made at run time\n          console: " + joined);
+    {
+        // pd_this is this thread's: the engine selected its instance in open.
+        LibPdEngine::InstanceLock hold(eng);
+        check(gensym("#A")->s_thing == nullptr,
+              "after the abstraction is freed, #A is bound to nothing (not to freed memory)");
+    }
+    // Closing frees the table, whose garray_free walks #A: under ASan this is
+    // where a dangling binding was read.
+}
+
 }  // namespace
 
 #ifdef _WIN32
@@ -1753,6 +1790,7 @@ int main() {
     testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait();
     testPrintingFromARunningPatchAllocatesNothingOnTheAudioThread();
     testAShrunkPublishedTableDoesNotDeadlock();
+    testAnAbstractionFreedLeavesNoDanglingHashA();
     testASearchPathHoldingLoadableCodeIsRefusedToo();
     testADeclareThatAsksForALibraryIsRefused();
     testAbstractionsStillResolveThroughTheSamePath();
