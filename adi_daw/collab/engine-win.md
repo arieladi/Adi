@@ -10,6 +10,12 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, Windows device names in the publication family (DF-E32 c)
+
+**PR requested** — use `engine-win/file-publication-reliability` at `c36e200dddb8f4fee47f3f26ae325805a3418e6c` for DF-E32 a/b/c. This fast-forward adds the final 200-byte filename check and escapes device names when ASCII spaces occur before a dot. The generated name keeps those spaces and its original case. Ordinary nearby names and leading spaces keep their spelling.
+
+All ten pre-fix regression assertions failed as expected. Strict Windows x64 `/W4 /WX` render-queue and NI Stems suites passed 321 checks after the fix. The native NI codec was unavailable, so the NI assertions were metadata coverage. The separate full file-identity change follows with the single-WAV export branch.
+
 ## 2026-11-19, decode cache admission and accounting (DF-E28 and DF-E34 b/c)
 
 **PR requested** — `engine-win/decode-space-admission` at `1abfcb3cfa4a8dfc0c2bcab71a9b1374b0623843` on main `12aab48a`. It carries the six-path fix from `60fa903d`. A clean trial merge with the saved-source topic at `d4ecedb2` was checked. Win can use this branch for the DF-E28/DF-E34 b/c family.
