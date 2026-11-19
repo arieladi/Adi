@@ -18,6 +18,18 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — MX-09 audio input monitor node
+
+**PR requested** — branch `engine/mx09-input-monitor`, head `26706036ac2b5c50337dcbd396016c82cf0347a9`, base `12aab48a`. Title **Monitor resolved hardware input through the audio track**. The remote head matches the gated commit. ADR-0248 d6 item 4, audio monitor node.
+
+A prepared source feeds the configured audio track's existing junction. In plays the hardware input with or without Arm and suppresses the track's Arrangement audio. Auto plays hardware for an armed track while stopped or outside the prepared Arrangement clips, with half-open boundaries and the driver transport's loop wraps. Off plays the Arrangement. Float and double use the same resolved mono or stereo inputs, and a missing channel is silent. Regular and gesture publications carry the corresponding clip clock and input binding with their graph. Input buffers are borrowed for the render slice and released after the graph completes.
+
+**For Window / MX-09** — `Session::setAudioMonitorInputs` takes the same zero-based driver channel selections as `AudioRecordingSpec::targets`. Submit the complete list of audio-track targets after loading and on a device or routing change, and the committed project values select Off, In or Auto and Arm. Invalid selections preserve the previous binding. Persistence and track-to-track inputs still depend on Win's MX-25 grammar. Meter behavior, Reduced Latency When Monitoring, recording placement latency and calibration remain the later MX-09 work. This branch exercises the Session seam with driver-format buffers and leaves the Window and engine-win recording integration to those owners.
+
+**For Win / MX-25** — the hardware graph seam needs one zero-based input channel or two ordered, distinct channels per audio track. Please provide the persisted hardware-input grammar so the selection can be restored through the Window host.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 246 CTest suites, six focused suites, four Python validators and the format layout check. The initial fixture reproduced 16 failures. The final GCC and Clang 19 fixtures each passed 24 checks. The tests use real Arrangement PCM, non-adjacent hardware channels, two graph precisions, a loop that wraps twice inside 64 frames and real Arm/Monitor Mode operations. Four compiled faults reproduced missing Arm gating, clip bleed, absent input-only clip suppression and missed intra-buffer wraps. Logs are in `/workspace/adi-engine-validation`.
+
 ## 2026-11-19 — Live MIDI to armed instruments
 
 **PR requested** — branch `engine/live-midi-armed-instrument`, head `ad54266b955a5791fdbf63d8cb5f2ec41254be7e`, base `12aab48a`. Title **Route timestamped live MIDI to armed instruments**. The remote head matches the gated commit. ADR-0248 d6 item 4, first step.
