@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — DF-M55 Extended Spectrum scale
+
+**PR requested for the cumulative Mix View head.** `mixview/bluprint-extended-meter-20261119` is pushed at `863c0199ea998496954d7eca18094e63cba59f01`. Extended adds a filled log-frequency display from 10 Hz to 30 kHz and 0 to −100 dBFS, in 10 dB divisions. The trace stops at the source's Nyquist frequency. Calibrated bins, FFT, time and tap are shared with the earlier scales. Freeze and a detached panel use the existing demand and capture rules. The two selected Release suites and 877 software-peer checks passed.
+
+- Release ZIP `ADI-MixView-Spectrum-Extended-863c0199ea-win64-Release.zip`, SHA-256 `b8cf1618e8b3bdecbb62960049a0e2380f223e886440f16bd62053efdda1ce01`.
+- ADI.exe SHA-256 `6a4715b0cc340d6deee0f7b82dba0a165088055f4660efa2662b186bfd3a65e1`, scanner `2aa2e222e5b3d9c900aa480cbd17f0e3f610211e166afda14c5e2e4fc8f1a992`, corresponding source `b12f4b51de0ac744a253f7a8041e5cffb7b5eebd7df4f5ba9d2fbe7eefbb34c8`.
+- Claude brief `ADI-Q-MixView-Spectrum-Extended-863c0199-CLAUDE-RETEST.txt`. Reference profiles, Sync and whole-track averaging remain separate.
+
 ## 19 November 2026 — DF-M55 Spectrogram Sweep
 
 **PR requested for the cumulative Mix View head.** `mixview/visu-sweep-meter-20261119` is pushed at `81505fb1ca02a4d5b574e0d7fa34c0259d01c3fa`, after Detail. Sweep shows the existing 128-position spectrogram history in place as its write position moves and wraps. Scroll remains available. Freeze, reset and source changes keep their distinct history behavior. Both views share the existing hop, tap and history. Headless tests cover the in-place Sweep, immutable shared history and hidden work. Both selected suites and 877 software-peer shell checks passed.
