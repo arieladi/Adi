@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M55 calibrated Compare scales
+
+Compare now shows Wide, Detail, Extended and Device on the same axes for A and B. Its scale is independent of ordinary Spectrum. Both sides use the existing calibrated signal data; Hold B survives scale changes, and Resume and Clear wait for fresh measurements. The tests cover shared analysis and absence of demand when hidden.
+
+Author branch `mixview/compare-calibrated-meter-20261119` at `10ea9bbbc07ac290fe9f68af66c9f271169853c3`. Windows x64 Release passed 877 Mix View component checks and both targeted CTests. ZIP SHA-256 `9e78b154c82a74707beac723eda8f5a58bf1069bcbedb782836626654fbf549e`; ADI.exe SHA-256 `ba5c901139e3909d54997a416ddbe21778fb4d7821675594e062f6248e8937f5`. The retest brief covers A/B calibration, Hold, source changes and scales. Desktop comparison and live CPU are pending.
+
+**PR requested.** Include this commit after Device spectrum in the cumulative review.
+
 ### 19 November — DF-M55 Device spectrum
 
 Device adds a 10 Hz to 24 kHz spectrum with a 120 dB range, a top frequency ruler and a left dBFS ruler. It uses the existing calibrated analysis and draws through the actual Nyquist limit. Freeze, averaging and hidden analysis demand use the existing paths.
