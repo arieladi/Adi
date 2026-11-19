@@ -4,6 +4,8 @@
 
 #include "adi/engine/mpe_input.hpp"
 
+#include <limits>
+
 namespace adi::engine {
 
 MpeZone MpeZone::lower(std::uint8_t memberCount) noexcept {
@@ -50,13 +52,27 @@ void MpeParser::reset() noexcept {
 
 std::uint64_t MpeParser::activeNoteOn(std::uint8_t chan1) const noexcept {
     if (chan1 < 1 || chan1 > 16) return 0;
-    return chans_[chan1 - 1].noteId;
+    const auto& state=chans_[chan1-1];
+    for(std::size_t i=state.heldCount;i>0;--i)
+        if(state.held[i-1].id && state.held[i-1].release<0)return state.held[i-1].id;
+    return 0;
 }
 
 bool MpeParser::emit(Sink sink, void* ctx, const Event& e) noexcept {
     if (sink == nullptr) return false;
     if (!sink(ctx, e)) { ++rejected_; return false; }
     return true;
+}
+bool MpeParser::releaseNote(const HeldNote& note,std::uint8_t channel,std::uint8_t velocity,
+                            Sink sink,void* context) noexcept {
+    Event event;
+    event.type=EventType::NoteOff;event.frame=frame_;event.channel=channel;
+    event.noteId=note.id;event.dim=note.key;event.value=cc7ToUnit(velocity);
+    return emit(sink,context,event);
+}
+void MpeParser::forgetNote(ChannelState& state,std::size_t at) noexcept {
+    --state.heldCount;
+    for(;at<state.heldCount;++at)state.held[at]=state.held[at+1];
 }
 
 int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
@@ -68,17 +84,26 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
     if (status >= 0xF0) return 0;             // system messages are not ours
 
     const std::uint8_t type  = static_cast<std::uint8_t>(status & 0xF0);
-    const std::int32_t needed=type==0xD0?2:
-        (type==0x80 || type==0x90 || type==0xB0 || type==0xE0)?3:0;
-    if(needed==0 || n<needed)return 0;
+    const std::int32_t needed=(type==0xD0 || type==0xC0)?2:3;
+    if(n<needed)return 0;
     for(std::int32_t index=1;index<needed;++index)if(bytes[index]>=0x80)return 0;
     const std::uint8_t chan1 = static_cast<std::uint8_t>((status & 0x0F) + 1);
     ChannelState& cs = chan(chan1);
     const bool member = zone_.isMember(chan1);
 
     int emitted = 0;
+    for(std::size_t at=0;at<cs.heldCount;) {
+        const auto& note=cs.held[at];
+        if(note.release>=0 && releaseNote(note,chan1,static_cast<std::uint8_t>(note.release),sink,ctx)) {
+            ++emitted;forgetNote(cs,at);
+        } else ++at;
+    }
 
     switch (type) {
+        case 0xA0: // Polyphonic aftertouch has no key-addressed engine route.
+        case 0xC0: // Program change does not participate in note ownership.
+            ++unsupported_;
+            return emitted;
         case 0x90:
         case 0x80: {                           // note on, and note off
             if (n < 3) return 0;
@@ -91,22 +116,26 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
             const bool isOff = (type == 0x80) || (vel == 0);
 
             if (isOff) {
-                Event e;
-                e.type    = EventType::NoteOff;
-                e.frame   = frame_;
-                e.channel = chan1;
-                // Anchored to the note that is actually sounding on this
-                // channel. A note-off for a key we are not holding gets no
-                // id rather than a wrong one.
-                e.noteId  = member ? ((cs.key == key && cs.noteId != 0) ? cs.noteId : 0) : cs.plainNotes[key];
-                e.dim     = key;
-                e.value   = cc7ToUnit(vel);
-                if(!member)cs.plainNotes[key]=0;
-                if (e.noteId==cs.noteId && e.noteId!=0) { cs.noteId = 0; cs.key = 0; }
-                if (emit(sink, ctx, e)) ++emitted;
+                // The oldest matching start owns this release, independently
+                // of current zone membership and other keys held here.
+                for(std::size_t at=0;at<cs.heldCount;++at) {
+                    auto& held=cs.held[at];
+                    if(held.key!=key || held.release>=0)continue;
+                    if(!held.id)forgetNote(cs,at);
+                    else if(releaseNote(held,chan1,vel,sink,ctx)) {++emitted;forgetNote(cs,at);}
+                    else held.release=vel;
+                    return emitted;
+                }
+                if(cs.dropped[key])--cs.dropped[key];
+                else if(releaseNote({0,key,-1},chan1,vel,sink,ctx))++emitted;
                 return emitted;
             }
             {
+                if(cs.heldCount==cs.held.size() || cs.dropped[key] || nextNoteId_==0) {
+                    if(cs.dropped[key]!=std::numeric_limits<std::uint32_t>::max())++cs.dropped[key];
+                    ++droppedStarts_;
+                    return emitted;
+                }
                 Event e;
                 e.type    = EventType::NoteOn;
                 e.frame   = frame_;
@@ -116,11 +145,10 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 e.noteId  = nextNoteId_++;
                 e.dim     = key;               // the key, for a note event
                 e.value   = cc7ToUnit(vel);    // velocity as a DOUBLE, 0..1
-                cs.noteId = e.noteId;
-                cs.key    = key;
-                if(!member)cs.plainNotes[key]=e.noteId;
                 ++notesStarted_;
-                if (emit(sink, ctx, e)) ++emitted;
+                const bool sent=emit(sink,ctx,e);
+                cs.held[cs.heldCount++]={sent?e.noteId:0,key,-1};
+                if(sent)++emitted;
             }
             return emitted;
         }
@@ -140,7 +168,7 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
             // that wrong is a transposition, not a subtle error.
             e.value   = bendToSemitones(word, member ? zone_.memberBendSemitones
                                                      : zone_.masterBendSemitones);
-            e.noteId  = member ? cs.noteId : 0;
+            e.noteId  = member ? activeNoteOn(chan1) : 0;
             if (emit(sink, ctx, e)) ++emitted;
             return emitted;
         }
@@ -152,7 +180,7 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
             e.channel = chan1;
             e.dim     = static_cast<std::uint16_t>(ExpressionDim::Pressure);
             e.value   = cc7ToUnit(bytes[1]);
-            e.noteId  = member ? cs.noteId : 0;
+            e.noteId  = member ? activeNoteOn(chan1) : 0;
             if (emit(sink, ctx, e)) ++emitted;
             return emitted;
         }
@@ -191,7 +219,7 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 e.channel = chan1;
                 e.dim     = static_cast<std::uint16_t>(ExpressionDim::Timbre);
                 e.value   = cc14ToUnit(word);
-                e.noteId  = member ? cs.noteId : 0;
+                e.noteId  = activeNoteOn(chan1);
                 if (emit(sink, ctx, e)) ++emitted;
                 return emitted;
             }
@@ -206,7 +234,7 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 e.channel = chan1;
                 e.dim     = static_cast<std::uint16_t>(ExpressionDim::Timbre);
                 e.value   = cc7ToUnit(val);
-                e.noteId  = member ? cs.noteId : 0;
+                e.noteId  = activeNoteOn(chan1);
                 if (emit(sink, ctx, e)) ++emitted;
                 return emitted;
             }

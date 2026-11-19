@@ -59,7 +59,15 @@ void allKeysAndReset() {
     Sink reset;feed(parser,reset,0x90,60,100);const auto prior=reset.events[0].noteId;parser.reset();feed(parser,reset,0x80,60,0);feed(parser,reset,0x90,60,100);
     check(reset.events[1].noteId==0 && reset.events[2].noteId>prior,"reset clears per-key ownership without recycling source identities");
     Sink repeated;feed(parser,repeated,0x90,72,100);feed(parser,repeated,0x90,72,101);feed(parser,repeated,0x80,72,0);feed(parser,repeated,0x80,72,0);
-    check(repeated.events[2].noteId==repeated.events[1].noteId && repeated.events[3].noteId==0,"same-key retrigger retains the existing newest-identity release policy");
+    check(repeated.count==4 && repeated.events[2].noteId==repeated.events[0].noteId &&
+          repeated.events[3].noteId==repeated.events[1].noteId,"same-key retrigger releases both original identities in order");
+    std::array<MpeOut,4> routed{};
+    MpeOutList output(routed.data(),static_cast<std::int32_t>(routed.size()));
+    MpeRouter router;router.configure(ExpressionRoute::NoteExpression,{});
+    {audio::CallbackScope callback;router.route(repeated.events.data(),repeated.count,0,output);}
+    check(output.size()==4 && routed[2].kind==MpeOut::Kind::NoteOff && routed[3].kind==MpeOut::Kind::NoteOff &&
+          routed[2].noteId==routed[0].noteId && routed[3].noteId==routed[1].noteId,
+          "the actual router receives a release for each retriggered voice");
 }
 void controllers() {
     MpeParser parser;Sink sink;
