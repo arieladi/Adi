@@ -343,6 +343,7 @@ add_library(adi_core STATIC
     src/adi/builtin_insert.cpp
     src/adi/row_capture.cpp
     src/juce/builtin_host.cpp
+    src/juce/builtin_values.cpp
     src/adi/track_recording.cpp
     src/adi/row_capture.cpp
     src/adi/row_capture.cpp
@@ -978,6 +979,11 @@ add_test(NAME adi_masking_tests COMMAND adi_masking_tests)
 add_executable(adi_pd_declaration_tests tests/test_pd_declarations.cpp)
 target_link_libraries(adi_pd_declaration_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pd_declaration_tests COMMAND adi_pd_declaration_tests)
+
+# DF-E37 (c): a built-in's saved values survive a range change.
+add_executable(adi_builtin_value_tests tests/test_builtin_values.cpp)
+target_link_libraries(adi_builtin_value_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_builtin_value_tests COMMAND adi_builtin_value_tests)
 
 # libpd actually running, as against test_pd.cpp's contract-with-a-fake. The
 # patch directory is compiled in rather than found from the working directory,
