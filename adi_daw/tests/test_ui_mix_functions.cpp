@@ -42,6 +42,17 @@ struct MixFocusTestAccess {
                std::all_of(focus.members_.begin(), focus.members_.end(),
                            [](const auto &member) { return !member.path.isEmpty(); });
     }
+    static bool flatScopePaths(const MixFocus &focus) {
+        const auto oneSegment = [](const juce::Path &path) {
+            juce::Path::Iterator vertices(path);
+            return vertices.next() && vertices.elementType == juce::Path::Iterator::startNewSubPath &&
+                   vertices.next() && vertices.elementType == juce::Path::Iterator::lineTo && !vertices.next();
+        };
+        return std::ranges::all_of(focus.scopeSumPaths_, oneSegment) &&
+               std::ranges::all_of(focus.members_, [&](const auto &member) {
+                   return std::ranges::all_of(member.scopePaths, oneSegment);
+               });
+    }
     static bool sumStrokeAt(MixFocus &focus, float value) {
         const auto plot = focus.plot_;
         if (plot.isEmpty()) return false;
@@ -1288,6 +1299,8 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
           "the detailed analyzer and waveform share a publication and Focus aligns the two live sources");
     check(MixFocusTestAccess::sumStrokeAt(focus, .5f),
           "the Focus Scope visibly overlays the signed sum of two in-phase 0.25 member traces");
+    check(MixFocusTestAccess::flatScopePaths(focus),
+          "flat Focus member and sum traces contribute just one stroke segment per lane");
     auto floating = std::make_unique<juce::Component>();
     peer.addChildComponent(floating.get());
     floating->setBounds(peer.getLocalBounds());
@@ -1356,6 +1369,8 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     check(MixFocusTestAccess::sumStrokeAt(focus, 0.f) && afterSum.taps == beforeSum.taps &&
               afterSum.consumers == beforeSum.consumers,
           "an opposed pair collapses the visible sum to zero immediately without acquiring another analysis reader");
+    check(MixFocusTestAccess::flatScopePaths(focus),
+          "exact cancellation keeps one centerline segment and does not expand the member paths");
     const auto writeSum = [&](float leftA, float rightA, float leftB, float rightB) {
         std::array<float, 1024> left{}, right{};
         const auto stamp = driver.position();
