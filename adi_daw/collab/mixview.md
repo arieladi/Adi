@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M54 exact flat Scope path reduction
+
+The stroke builder now preserves the exact flat trace with one line instead of one vertex per column. It preserves visible endpoints, vertical extrema and every nonflat move, including very small changes. Cancellation stays on the same centerline. This uses fixed-size temporary state inside the existing projection, with no new analysis work, hidden state or audio processing.
+
+Fixture-only `2ed17ffd` failed both path-size checks. Exact Windows x64 Release `e5176331d85b4cf782383b4203df77fbc10d8829` passed the existing software paint checks, the exact geometry oracle, 893 Mix View shell checks and three targeted CTests. ADI.exe SHA-256 `296036d732275411fbf3dd1771f53177b4d686b70b73e0d260426e83213c918d`. This internal change leaves the plot geometry and audio intact. A measured CPU gain on music remains open.
+
+**PR requested.** Include `mixview/focus-flat-path-gate-20261119` after the Focus over-range indication in the cumulative review.
+
 ### 19 November — DF-M54 Focus Scope over-range indication
 
 An aligned stereo sum above full scale now flags Sum over 0 dBFS in the existing Scope title, including when the numeric readout is absent in a narrow panel. Exactly full scale leaves the normal title. The plot scale remains fixed, so member traces do not move when the sum exceeds it. A valid cancelled sum clears the indication; the data path uses the peaks from the existing signed sum calculation.
