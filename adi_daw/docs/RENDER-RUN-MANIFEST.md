@@ -16,6 +16,13 @@ Authoritative WAV/NI publication uses `PublishPolicy::AtomicOnly`: a rename
 refusal fails without publishing a copy. Successful outputs therefore report
 `usedFallback=false`; retaining the publisher flag does not opt into fallback.
 
+`Result::stageCleanup` records the directory and native error when private
+staging cannot be completely removed. WAV and NI check cleanup on every exit
+after a stage is created. The run manifest carries it in `stage_cleanup`, with
+`null` when there is no recorded failure. It is separate from the delivery
+state, publication warning and primary error. A completed file remains usable
+even if a private staging directory needs attention.
+
 `Job::collision` supports `Fail` (the default) and explicit `Increment` for one
 WAV or NI delivery. The original complete filename is tried first. If occupied,
 Increment selects `name (2).wav`, `name (3).wav`, and so on, or

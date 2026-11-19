@@ -49,7 +49,8 @@ void validate(const Job& j) {
 }
 struct Stage {
     fs::path path;
-    explicit Stage(const fs::path& parent) {
+    std::optional<StageCleanupFailure>& failure;
+    Stage(const fs::path& parent, Result& result) : failure(result.stageCleanup) {
         static std::atomic<unsigned long long> serial{0};
         const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
         for (int attempt = 0; attempt < 128; ++attempt) {
@@ -60,7 +61,9 @@ struct Stage {
         }
         throw std::runtime_error("cannot reserve render stage");
     }
-    ~Stage() { std::error_code ec; fs::remove_all(path, ec); }
+    ~Stage() { detail::discardStage(std::move(path), failure); }
+    Stage(const Stage&) = delete;
+    Stage& operator=(const Stage&) = delete;
 };
 std::int64_t addLatency(std::int64_t position, std::int64_t latency) {
     if (latency > 0 && position > std::numeric_limits<std::int64_t>::max() - latency)
@@ -258,6 +261,18 @@ void detail::prepareOutput(Result& result,Collision collision,const char* suffix
     throw std::runtime_error("export collision set changed during preflight; retry");
 }
 
+void detail::discardStage(fs::path&& directory, std::optional<StageCleanupFailure>& failure) noexcept {
+    std::error_code error;
+    try {
+        fs::remove_all(directory, error);
+    } catch (const std::bad_alloc&) {
+        error = std::make_error_code(std::errc::not_enough_memory);
+    } catch (...) {
+        error = std::make_error_code(std::errc::io_error);
+    }
+    if (error) failure.emplace(StageCleanupFailure{std::move(directory), error});
+}
+
 void detail::publishOutput(const fs::path& stage, Result& result, media::PublishHooks hooks,
                           const char* collisionMessage) {
     // Reserve the fallback message before the irreversible commit point.
@@ -363,7 +378,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             fp[c] = narrow.data() + c * block;
             if (!wide.empty()) dp[c] = wide.data() + c * block;
         }
-        Stage stage(job.directory);
+        Stage stage(job.directory, result);
         const auto staged = stage.path / "render.wav";
         std::unique_ptr<audio::WavWriter> writer;
         std::unique_ptr<NormalizationCapture> normalized;
@@ -565,7 +580,8 @@ std::string serializeRunManifest(const RunReport& run) {
         if (member.result) {
             const auto& result = *member.result;
             Json value{{"output", media::pathUtf8(result.output)}, {"frames_written", result.framesWritten},
-                {"error", result.error}, {"publication", nullptr}, {"normalization", nullptr},
+                {"error", result.error}, {"publication", nullptr}, {"stage_cleanup", nullptr},
+                {"normalization", nullptr},
                 {"resolved_snapshot", nullptr}, {"ni_stem_snapshots", Json::array()}, {"media_verification", nullptr}};
             if(result.mediaVerification) {
                 const auto& verification=*result.mediaVerification;
@@ -594,6 +610,11 @@ std::string serializeRunManifest(const RunReport& run) {
             if (result.publication) value["publication"] = {
                 {"durability_confirmed", result.publication->durabilityConfirmed},
                 {"used_fallback", result.publication->usedFallback}, {"warning", result.publication->warning}};
+            if (result.stageCleanup) value["stage_cleanup"] = {
+                {"directory", media::pathUtf8(result.stageCleanup->directory)},
+                {"error_code", result.stageCleanup->error.value()},
+                {"error_category", result.stageCleanup->error.category().name()},
+                {"error", result.stageCleanup->error.message()}};
             if (result.normalization) {
                 const auto& report = *result.normalization;
                 value["normalization"] = {{"source_lufs", optionalNumber(report.sourceLufs)},

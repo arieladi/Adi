@@ -64,6 +64,10 @@ struct PublicationReport {
     bool usedFallback = false;
     std::string warning;
 };
+struct StageCleanupFailure {
+    std::filesystem::path directory;
+    std::error_code error;
+};
 struct NameContext {
     std::string project, track, group, bpm;
     std::uint64_t counter = 1;
@@ -118,6 +122,9 @@ struct Result {
     // WAV acceptance; absent means no verification report (including NI's final
     // container). Empty + both flags true means no external clip inputs.
     std::optional<MediaVerification> mediaVerification{};
+    // A private staging directory could not be completely removed. Delivery
+    // already committed, if any, and the primary state and error still stand.
+    std::optional<StageCleanupFailure> stageCleanup{};
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct RunMember {
@@ -170,6 +177,7 @@ struct Control {
                                     JobId = 0, std::uint64_t counter = 1);
 void validateNiStems(const Job&);
 namespace detail {
+void discardStage(std::filesystem::path&&, std::optional<StageCleanupFailure>&) noexcept;
 // Select once before rendering/encoding the final delivery. Increment inserts
 // " (2)", " (3)", ... before the complete suffix. Never renumbers at publication.
 // The caller sets result.output to its original complete filename first.

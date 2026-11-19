@@ -18,6 +18,12 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 using namespace adi;
@@ -808,6 +814,51 @@ void collisionModes() {
 std::error_code failDirectorySync(const fs::path&) { return std::make_error_code(std::errc::io_error); }
 std::error_code confirmDirectorySync(const fs::path&) { return {}; }
 std::error_code refuseRename(const fs::path&, const fs::path&) { return std::make_error_code(std::errc::operation_not_supported); }
+void stageCleanupResults() {
+#if defined(_WIN32)
+    for (const bool cancel : {false, true}) {
+        Fixture f;
+        const auto job = f.job("cleanup");
+        struct GuardFile {
+            HANDLE handle = INVALID_HANDLE_VALUE;
+            ~GuardFile() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+        } guard;
+        fs::path guardedDirectory;
+        Control control;
+        std::stop_source stop;
+        control.stop = stop.get_token();
+        control.progress = [&](JobId, std::uint64_t, std::uint64_t) {
+            if (guard.handle != INVALID_HANDLE_VALUE) return;
+            for (const auto& entry : fs::directory_iterator(job.directory)) {
+                if (!entry.path().filename().string().starts_with(".adi-render-")) continue;
+                guardedDirectory = entry.path();
+                guard.handle = CreateFileW((guardedDirectory / L"guard").c_str(), GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (guard.handle == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot reserve the stage guard");
+                break;
+            }
+            if (cancel) stop.request_stop();
+        };
+        Queue queue;
+        queue.add(job);
+        queue.run({}, control);
+        const auto result = queue.snapshot().front().result;
+        check(guard.handle != INVALID_HANDLE_VALUE && result.stageCleanup &&
+              result.stageCleanup->directory == guardedDirectory && result.stageCleanup->error &&
+              fs::is_directory(guardedDirectory), "a real Windows sharing refusal reports the private residue");
+        check(result.error.empty() && (cancel
+                ? result.state == JobState::Cancelled && !fs::exists(result.output)
+                : result.state == JobState::Completed && result.publication && matches(read(result,866),137)),
+              "stage cleanup failure preserves the cancellation or completed WAV result");
+        const auto manifest = nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+        const auto& cleanup = manifest.at("members").at(0).at("result").at("stage_cleanup");
+        check(cleanup.is_object() && cleanup.at("directory") == media::pathUtf8(guardedDirectory) &&
+              cleanup.at("error_code").get<int>() != 0 && !cleanup.at("error").get<std::string>().empty(),
+              "run JSON keeps the cleanup location and native failure separately");
+    }
+#endif
+}
+
 void publicationResults() {
     Fixture f;
     Control control;
@@ -820,7 +871,8 @@ void publicationResults() {
           !result.publication->durabilityConfirmed && !result.publication->usedFallback &&
           result.publication->warning.find("directory sync")!=std::string::npos,
           "post-publication sync error is a completed WAV with warning, not a failed job");
-    check(matches(read(result,866),137) && f.noStage(),"sync warning preserves fully published audio and cleans stage");
+    check(matches(read(result,866),137) && f.noStage() && !result.stageCleanup,
+          "sync warning preserves fully published audio and cleans stage");
     const auto manifest=nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
     const auto& member=manifest["members"][0];
     check(member["state"]=="completed" && member["result"]["publication"]["warning"]==result.publication->warning &&
@@ -1095,7 +1147,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); collisionModes(); publicationResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); collisionModes(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

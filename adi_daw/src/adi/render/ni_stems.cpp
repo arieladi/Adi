@@ -26,7 +26,8 @@ void tick(const Control &control) {
 }
 struct Stage {
     fs::path path;
-    explicit Stage(const fs::path &parent) {
+    std::optional<StageCleanupFailure>& failure;
+    Stage(const fs::path &parent, Result& result) : failure(result.stageCleanup) {
         static std::atomic<std::uint64_t> serial{0};
         for (int i = 0; i < 128; ++i) {
             auto candidate =
@@ -43,10 +44,9 @@ struct Stage {
         }
         throw std::runtime_error("cannot reserve NI Stems stage");
     }
-    ~Stage() {
-        std::error_code error;
-        fs::remove_all(path, error);
-    }
+    ~Stage() { detail::discardStage(std::move(path), failure); }
+    Stage(const Stage&) = delete;
+    Stage& operator=(const Stage&) = delete;
 };
 fs::path captureProject(const Job &job, const Stage &stage) {
     StoreError error{};
@@ -121,7 +121,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         tick(control);
         if (!audio::aacCodecAvailable())
             throw std::runtime_error("NI Stems AAC codec is unavailable or cannot verify sample alignment on this system");
-        Stage stage(job.directory);
+        Stage stage(job.directory, result);
         const auto project = captureProject(job, stage);
         const auto ni = *job.niStems;
         const auto collision = job.collision;
