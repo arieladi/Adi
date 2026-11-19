@@ -5,6 +5,39 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-11-19 — DEV-09, step 2: native code refused at Pd's own loader; `[; pd quit]` and kin fenced (AR7)
+
+**`devices/pd-fence` (`b3adb315`), stacked on `devices/pd-teardown`** (both change
+`pd_loader_fix.cmake`).
+
+- **The bypass was real, and is now measured.** The engine's guards checked the patch
+  folder, the search paths and `[declare]`. A patch naming an object by absolute path,
+  by `../` path, or creating one from a message box at run time reached Pd's loader with
+  none of them, and Pd called `LoadLibrary` on the planted file. Now Pd's one native
+  loader (`sys_do_load_lib_from_file`) refuses every library and names it on the
+  console ("ADI refused native code: <dir>/<file>"); the external-scheduler path too.
+- **`[; pd quit 7]` ended the process with code 7** (the plant shows it: the test binary
+  exits 7 at that section). `quit`, `exit`, `verifyquit`, `open`, `menunew`,
+  `add-to-path`, `path-dialog`, `startup-dialog`, load/save/forget preferences, the
+  audio and MIDI device dialogs and `fast-forward` are each one refusal naming the
+  message. ADI opens patches with `libpd_openfile`, never `open`.
+- Tests (AR7): 19 new checks; `adi_pd_engine_tests` **620**. Plants: without the loader
+  refusal 6 checks fail (each of the three ways reached `LoadLibrary`); without the
+  `quit` fence the binary exits 7. Restored: 0 failures.
+
+MSVC `/W4 /WX`, the whole tree: clean. CTest **242 of 242**. (This build tree now links
+with `/INCREMENTAL:NO`: MSVC 19.44's incremental linker failed with LNK1000 on a relink;
+a local setting, nothing in the repository.)
+
+**PR requested** — title "Pd: native code refused at Pd's loader; [; pd quit/exit/open/
+paths] fenced (DEV-09 step 2, AR7)"; head `devices/pd-fence` at `b3adb315`; base
+`devices/pd-teardown` (the step-1 PR) until it lands, then `main`. Body: the commit
+message.
+
+**Next:** DEV-09 step 3, the audio thread: one `sys_trylock` per Pd tick (skip and count,
+never wait), every delivery inside it, no `sys_pollgui` there, the print hook through a
+queue, arrays read without libpd's lock-leaking path (AR8).
+
 ## 2026-11-19 — DEV-09, step 1: a closed Pd engine frees everything it allocated
 
 **`devices/pd-teardown` (`a7a95c58`), from `origin/main` `ae09f638`.** Files: this
