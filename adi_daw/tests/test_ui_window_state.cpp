@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/store.hpp"
 #include "adi/ui/density.hpp"
+#include "adi/ui/held_peaks.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/theme.hpp"
 #include "adi/ui/window_state.hpp"
@@ -8,6 +9,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <cstdio>
 #include <thread>
+#include <utility>
 using namespace adi;
 using namespace adi::ui;
 namespace {
@@ -20,6 +22,44 @@ void check(bool ok, const char *what) {
     }
 }
 // The theme and density tables (DF-W24): the window's every colour and size, by role.
+// DF-W32: the engine's held peak, taken once and shared by every view of the strip.
+float heldNow = 0;
+int takes = 0;
+float takeTest(const void *) noexcept {
+    ++takes;
+    return std::exchange(heldNow, 0.f);
+}
+void heldPeaksShared() {
+    adi::ui::HeldPeaks peaks;
+    const int meter = 0, other = 0;
+    const int rows = 0, mixerView = 0, floating = 0;
+    // The rows read first; the Mixer View reads in the same frame, after.
+    heldNow = .8f;
+    const float a = peaks.read(&meter, &rows, takeTest);
+    const float b = peaks.read(&meter, &mixerView, takeTest);
+    check(a == .8f && b == 0.f && takes == 2,
+          "a view's first read takes the held peak; a view new to the meter starts from then");
+    // A transient between frames: the first view to read takes it, the other still sees it.
+    heldNow = .9f;
+    const float c = peaks.read(&meter, &rows, takeTest);
+    const float d = peaks.read(&meter, &mixerView, takeTest);
+    check(c == .9f && d == .9f, "one transient, taken once, is shown by both views of the strip");
+    // Two transients before the Mixer View reads again: it shows the higher.
+    heldNow = .3f;
+    (void)peaks.read(&meter, &rows, takeTest);
+    heldNow = .6f;
+    (void)peaks.read(&meter, &rows, takeTest);
+    check(peaks.read(&meter, &mixerView, takeTest) == .6f, "a slower view shows the highest peak since it last read");
+    check(peaks.read(&meter, &mixerView, takeTest) == 0.f, "and nothing more once read");
+    // Another strip's meter is its own.
+    heldNow = .5f;
+    check(peaks.read(&other, &floating, takeTest) == .5f && peaks.read(&meter, &rows, takeTest) == 0.f && peaks.meters() == 2,
+          "another strip's held peak is its own");
+    peaks.forget(&floating);
+    peaks.forget(&rows);
+    peaks.forget(&mixerView);
+    check(peaks.meters() == 0, "a meter no view reads is let go");
+}
 void themeAndDensityTables() {
     // Each theme by its settings word, and back; "os" and anything unknown read as Dark, the default.
     for (const auto id : kThemes)
@@ -83,6 +123,7 @@ void themeAndDensityTables() {
 } // namespace
 int main() {
     themeAndDensityTables();
+    heldPeaksShared();
     test::TempDirectory temp("ui_state", "roundtrip");
     StoreError err{};
     auto store = Store::createEmpty(temp.path() / "p.adi", err);

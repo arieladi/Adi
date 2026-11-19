@@ -47,7 +47,7 @@ double meterLevel(double depth) noexcept;
 class MixerStrip final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit MixerStrip(MixerPanel &);
-    ~MixerStrip() override { pan.setLookAndFeel(nullptr); }
+    ~MixerStrip() override;
     void bind(std::int64_t track);
     void frame(bool changed) noexcept;
     void paint(juce::Graphics &) override;

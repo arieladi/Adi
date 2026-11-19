@@ -2,6 +2,7 @@
 #include "ui_mixer.hpp"
 #include "ui_shell.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/ui/held_peaks.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -26,6 +27,12 @@ float fallen(float shown, float now, double seconds) noexcept {
     const auto level = static_cast<float>(std::pow(10., db / 20));
     return level <= 1.e-6f ? now : std::max(now, level);
 }
+// The one owner of every strip meter's held peak, for all the windows' views (DF-W32).
+HeldPeaks &heldPeaks() {
+    static HeldPeaks peaks;
+    return peaks;
+}
+float takeHeldPeak(const void *meter) noexcept { return static_cast<const engine::StripMeter *>(meter)->takePeak(); }
 // The Solo's half-coloured state (look::LiveLook draws it), named once.
 const juce::Identifier kHalfLit{"live.half"};
 // Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf. What the bottom stop writes is
@@ -276,7 +283,17 @@ void MixerStrip::bind(std::int64_t id) {
     lastFrame_ = -1;
     frame(true);
 }
-void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
+void MixerStrip::resolveMeter() {
+    const auto *found = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr;
+    // Another meter, or none: its held peak's share is let go (DF-W32).
+    if (found != meter_)
+        heldPeaks().forget(this);
+    meter_ = found;
+}
+MixerStrip::~MixerStrip() {
+    heldPeaks().forget(this);
+    pan.setLookAndFeel(nullptr);
+}
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
     // A device put on a MIDI track or taken off it may give it an audio mixer or take it away.
@@ -364,13 +381,16 @@ void MixerStrip::frame(bool changed) noexcept {
     // bound before the session had a strip for its track finds the meter on a refresh.
     if (changed)
         resolveMeter();
-    const float peakNow = meter_ != nullptr ? meter_->peak.load(std::memory_order_relaxed) : 0.f;
+    // The peak is the highest the engine held since this strip last read it, taken once for every view
+    // of the strip (DF-W32), and never under the peak of the last callback.
+    const float held = meter_ != nullptr ? heldPeaks().read(meter_, this, takeHeldPeak) : 0.f;
+    const float peakNow = meter_ != nullptr ? std::max(meter_->peak.load(std::memory_order_relaxed), held) : 0.f;
     const float rmsNow = meter_ != nullptr ? meter_->rms.load(std::memory_order_relaxed) : 0.f;
     const double now = panel_.clock ? panel_.clock() : juce::Time::getMillisecondCounterHiRes() / 1000.;
     const double seconds = lastFrame_ < 0 ? 0 : std::max(0., now - lastFrame_);
     lastFrame_ = now;
-    // Live's peak level holds the highest peak it is shown (manual 18.1); the engine holds nothing
-    // between reads, so a callback no frame read is not in it (the held peak is N9's open half).
+    // Live's peak level holds the highest peak it is shown (manual 18.1): with the held peak, a
+    // callback between two frames is in it too.
     if (panel_.vertical() && peakNow > peakHold.held) {
         peakHold.held = peakNow;
         peakHold.repaint();
