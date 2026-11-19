@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/automation_clips.hpp"
+#include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/curves.hpp"
 #include <algorithm>
 #include <cmath>
@@ -166,13 +167,18 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
     if(lane.points.size()>budget){problems.push_back(prefix+"clip-envelope boundary budget exceeded");return;}
     if(row.timeBase!=0 && row.timeBase!=1){problems.push_back(prefix+"clip envelope: unknown lane time base");return;}
     std::size_t compiledPoints=0;
+    auto playingClips = timelineClips(model);
     for(const auto& p:lane.points)lane.changes.push_back(p.sample);
     for(const auto& data:model.automationData) {
         if(data.laneId!=row.id || !data.clipId)continue;
         const auto name=prefix+"clip envelope (clips#"+std::to_string(*data.clipId)+"): ";
         try {
-            const auto c=std::find_if(model.clips.begin(),model.clips.end(),[&](const auto& v){return v.id==*data.clipId;});
-            if(c==model.clips.end())throw std::runtime_error("missing clip");
+            const auto matches = [&](const auto& clip) { return clip.id == *data.clipId; };
+            const auto c = std::ranges::find_if(playingClips, matches);
+            if (c == playingClips.end()) {
+                if (std::ranges::none_of(model.clips, matches)) throw std::runtime_error("missing clip");
+                continue;
+            }
             if(c->muted)continue;
             if(c->aliasOf)throw std::runtime_error("alias envelope unsupported");
             auto track=row.ownerKind=="track"?std::optional<std::int64_t>(row.ownerId):deviceTrack(model,row.ownerId);
