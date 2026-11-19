@@ -24,6 +24,14 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — N52 independent fade start and end handles
+
+**PR requested** — branch `engine/n52-fade-start-handles`, head `65c0dd4c88e1a9063eaf3f27491f575ba46311b7`, main base `88e2d94e`. Title **N52: Add independent zero-gain handles for clip fades**.
+
+**For Window.** Each side of `clip.setFades` accepts `startTicks` as the zero-gain handle's distance inward from that clip edge. The existing `ticks` still locates the peak. A lower-handle edit can send `startTicks` alone. Include the current `startTicks` when moving the peak or bending an offset fade. Zero and the old payload return to the edge. The snapshot exposes both distances in `ClipNode::fadeInHandles` and `fadeOutHandles`. The existing Warp tick and unwarped nanosecond domains carry the authored bounds through Undo and reopen. A domain narrower than one device sample becomes a step at that sample.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Both passed clip edit (408), native playback (503 at both widths), clip candidate readiness (90), Warp playback, sample defaults and edit plan. The clips cover physical offsets across a tempo step, independent handle moves, one Undo for two sides, row absence, reopen and exact sample bounds. Three compiled faults detected missing source pins, missing snapshot projection and silence on sub-sample handles. CI, ops, Pd, schema and binary layout checks passed. Window owns the lower-handle drawing and gesture producer.
+
 ## 2026-11-19 — Supplemental clip-admission stress
 
 The revised claim fixture at `fc14ccbb` passed the PCM and claim assertions in all 600 Linux runs at concurrency 12. GCC ThreadSanitizer instrumented the revised fixture and playback translation unit and passed 24 of 24 runs without a race report. Run 223 separately failed “unavailable candidate pages time out instead of claiming readiness.” Its fixture sets the stall flag without observing the worker settle, so an iteration that already passed the flag can still service the next request. That setup gets a separate handshake and forced gate. The timeout and the production admission contract remain as before.
