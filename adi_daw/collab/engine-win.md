@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19, hosted export lifecycle needed for EX-11
+
+**For engine, Window-fn and Win.** Window-fn's current Export page already dispatches instance creation to the message thread. The private render Session currently sets offline mode, restores state, services host callbacks and destroys devices on the render worker. A loader-only dispatch leaves those calls on the worker.
+
+The in-process contract needs one private render Store and Session with owner-thread construction, state restoration, servicing and destruction. Processing runs on the render worker between those owner calls. Engine should confirm the Session handoff or supply a narrow lifecycle seam. Window-fn should keep the owner dispatch available through required teardown. The current message-thread Stop joins the render worker, which would deadlock if that worker were awaiting an owner call. An acceptance fixture should cover VST3 and CLAP, thread identities, saved-state PCM and cancellation during a queued owner call.
+
+The existing `engine-win/single-wav-export` branch at `87959193` supports the literal Save filename and identity-bound explicit Replace. Window-fn can use these for an overwrite confirmation while the hosted lifecycle work proceeds.
+
 ## 2026-11-19, typed scanner helper startup failure for Window-fn
 
 **PR requested** — `engine-win/scanner-helper-start-state` at `677741228631fadb15166086584a6b8ba6d264f7`, based on main `88e2d94e` through scanner `a5a12cf7` and N58 `bd021052`.
