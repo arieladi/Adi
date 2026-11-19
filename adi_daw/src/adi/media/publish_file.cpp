@@ -500,15 +500,42 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
     bool copying = false;
     try {
         std::error_code identityError;
+        const auto sourceStatus=fs::symlink_status(source,identityError);
+        if(identityError || !fs::is_regular_file(sourceStatus))
+            return {PublishStatus::failed,false,"staging file is not a regular closed file"};
         const auto sourceLease=ProjectFileLease::openExclusive(source,identityError);
         if(!sourceLease)return {PublishStatus::failed,false,"staging file is open or inaccessible: "+identityError.message()};
         const auto identity=std::optional<FileIdentity>(sourceLease->identity());
-        const auto synced=syncStaged(source);
+        const auto sameStage=[&] {
+            identityError.clear();
+            const auto status=fs::symlink_status(source,identityError);
+            if(identityError || !fs::is_regular_file(status))return false;
+            const auto current=identityAt(source,identityError);
+            return current && *current==*identity;
+        };
+        unsigned retries=0;
+        const auto retry=[&](const std::error_code& error) {
+            if(!transientRename(error) || retries==7)return false;
+            const unsigned delay=std::min(200u,10u<<retries++);
+            if(hooks.retryWait)hooks.retryWait(delay);
+            else std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<std::int64_t>(delay)));
+            return true;
+        };
+        std::error_code synced;
+        do {
+            if(!sameStage())return {PublishStatus::failed,false,"staging file changed before sync"};
+            synced=hooks.syncFile?hooks.syncFile(source):syncStaged(source);
+        }while(synced && retry(synced));
         if(synced)return {PublishStatus::failed,false,"sync staging file: "+synced.message()};
-        const auto error = hooks.rename ? hooks.rename(source, target) : renameExclusive(source, target);
+        std::error_code error;
+        do {
+            if(!sameStage())return {PublishStatus::failed,false,"staging file changed before publication"};
+            error=hooks.rename?hooks.rename(source,target):renameExclusive(source,target);
+        }while(error && retry(error));
         if (!error) return publishedResult(target,*identity,hooks.syncDirectory);
         if (error == std::errc::file_exists) return {PublishStatus::exists, false, error.message()};
         if(policy==PublishPolicy::AtomicOnly)return {PublishStatus::failed,false,"atomic publication: "+error.message()};
+        if(!sameStage())return {PublishStatus::failed,false,"staging file changed before copy fallback"};
         copying = true;
         const auto expected = blake3File(source);
         if (!expected) return {PublishStatus::failed, true, "cannot hash staging file"};
@@ -543,7 +570,7 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         // Failure to remove a private staging name does not invalidate the
         // verified destination; its owning staging directory cleans it later.
         std::error_code ignored; fs::remove(source, ignored);
-        auto result = publishedResult(target, *copyIdentity);
+        auto result = publishedResult(target, *copyIdentity, hooks.syncDirectory);
         result.usedFallback = true;
         return result;
     } catch (const std::exception& e) { return {PublishStatus::failed, copying, e.what()}; }

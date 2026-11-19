@@ -238,6 +238,8 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
     if (name.empty() || name == "." || name == "..") throw std::invalid_argument("export name is empty");
     if (name.size() > 200) throw std::invalid_argument("export name exceeds 200 UTF-8 bytes");
     auto stem = name.substr(0, name.find('.'));
+    // Windows ignores ASCII spaces before the first extension of a device name.
+    while (!stem.empty() && stem.back() == ' ') stem.pop_back();
     for (char& c : stem) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
     const bool numberedDevice = (stem.starts_with("COM") || stem.starts_with("LPT")) &&
         ((stem.size() == 4 && stem[3] >= '1' && stem[3] <= '9') ||

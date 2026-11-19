@@ -646,6 +646,18 @@ void namesAndValidation() {
           "Windows superscript device names are escaped, including names with extensions");
     for (const auto* reserved : {"CON", "con.txt", "PRN", "AUX", "nul.tar.gz", "COM9", "LPT9", "CONIN$", "CONOUT$"})
         check(resolveName(reserved,c)==std::string("_")+reserved,"reserved filename stem is escaped without changing case or extension");
+    for (const auto* reserved : {"AUX .2", "CON .x", "NUL .wav", "COM1 .2", "LPT9  .tmp",
+            "COM\xC2\xB9 .a", "lpt\xC2\xB2 .a", "CONIN$ .a", "CONOUT$ .a"}) {
+        check(resolveName(reserved,c)==std::string("_")+reserved,
+              "spaces before the first extension do not hide a reserved device stem");
+    }
+    for (const auto* ordinary : {"AUX x", " AUX .2", "COM0 .2", "COM10 .2", "LPT10 .2"}) {
+        check(resolveName(ordinary,c)==ordinary,"ordinary stems keep their original ASCII spaces");
+    }
+    auto projectWithDeviceStem=c;
+    projectWithDeviceStem.project="Aux .v2";projectWithDeviceStem.track="Main";
+    check(resolveName("{project} - {track}",projectWithDeviceStem)=="_Aux .v2 - Main",
+          "the default template escapes the project stem before a spaced dot");
     check(resolveName("COM0",c)=="COM0" && resolveName("COM10",c)=="COM10" && resolveName("LPT10",c)=="LPT10",
           "ordinary names sharing a device prefix remain unchanged");
     check(resolveName("Mix. . ",c)=="Mix" && resolveName("con. ",c)=="_con",
