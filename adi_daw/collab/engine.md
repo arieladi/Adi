@@ -12,6 +12,18 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E17 native edit invariants gated and pushed
+
+**PR requested** — branch `engine/df-e17-edit-invariants`, head `c0269d2d7b43eb98d495922cbafb069e9fbb5e28`, base `origin/main` at `796fe498`. Title **Preserve native clip and rack edits through undo**. The remote head matches the gated commit.
+
+Clip relocation and resize accept arrangement ticks and store a linear clip's physical nanoseconds. Resizing integrates the tempo map at both endpoints. Cross-track move clears the old track's lane and Undo restores the full native placement. The arrangement snapshot projects linear clips from their physical positions. Historical scalar move and resize packets retain their recorded effects. DF-W28's overlap behavior awaits the window's Live parity measurement. The existing `edit_plan::prepareMove` provides the owner-prepared atomic replacement path for that handoff.
+
+Rack removal captures its full physical cascade, including nested chains and devices, macro mappings in both directions, typed extension data and child plug-in state. Clipboard reads still expose the rack's root metadata. New writes and moves validate each automation value against the lane bounds. Historical values replay unchanged. Fade capture checks the linear endpoint before addition. The reported bounce ID mismatch did not reproduce. Import uses the caller's literal ID throughout, and the stronger fixture verifies that the bounce and the two surviving pieces have distinct IDs.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58401 checks across 244 suites, all four validators and the layout check. Seven focused suites passed. Clang 19 compiled all ten changed C++ units with warnings as errors and passed 405 clip-edit, 143 device-op, 52 automation-edit and 30 material-command checks. Compiled faults for the inactive tick write, incomplete rack inverse, ignored lane bounds and dropping the existing bounce reservation each failed their required assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E24 next.
+
 ## 2026-11-19 — DF-E16 weak remark anchors and window allocator gated and pushed
 
 **PR requested** — branch `engine/df-e16-row-id-handoff`, head `ab09e120dabb57532acc6ff539ca87c0d88c29f5`, base `origin/main` at `796fe498`. Title **Keep orphaned remark target IDs reserved**. The remote head matches the gated commit.
