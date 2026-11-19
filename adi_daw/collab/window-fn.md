@@ -43,6 +43,37 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-19, window-fn — AU-01: Automation Mode in the Arrangement (PR requested)
+
+**What it does** (`src/adi/ui/automation_mode.hpp`, `src/juce/ui_arrangement.*`, `ui_shell.*`): the bar's
+Automation Mode switch (Live 12 manual 25.2) draws each track's Volume envelope across its lane (the
+fader's level as a line where it has none). A click on a lane adds a breakpoint there, on the grid as the
+view snaps, at the value the height means; the lane's foot is silence, as the fader's. The track's Volume
+lane (real dB, the one the mixer plays) is made in the same batch when it has none. A breakpoint dragged
+is written once at the release; a double-click on one, or Delete on a chosen one, removes it, and the
+last one takes its lane, so the fader plays again. Breakpoints are linear (curve 1). Each edit is one
+undo step ("Add/Move/Delete Automation Point"). In the mode a lane's clicks are the envelope's: fade
+handles are hidden, a double-click neither makes nor opens a clip; Shift and Ctrl/Cmd still select.
+
+**Not yet:** choosing another parameter (Live's lane choosers in the track header wait for their look;
+pan is supported in `automation_mode.hpp` for when they come); lanes under the track (Unfold Track); AU-05,
+Lock Envelopes. The envelope is joined with straight lines between linear points; a curved segment drawn
+elsewhere shows straight until the drawing reads the curve formulas (SPEC 6.3.2).
+
+**Review:** two dimensions, each finding checked by a skeptic: 12 confirmed, 0 refuted, all fixed in the
+branch's last commit. Planted fault fires (no grid snap on a click).
+
+**Run:** Linux, GCC 13, Debug, JUCE on, Pd off, warnings as errors: `adi_app` and all 27 of `ui.yml`'s
+suites on main merged; `adi_ui_shell_tests` 2762 checks, 0 failures.
+
+**PR requested.** Branch `window-fn/automation-lanes` at `ecd6797b`. Title: **adi_daw: window-fn: AU-01,
+Automation Mode in the Arrangement: a track's Volume envelope drawn on its lane, breakpoints added,
+dragged and deleted, each one undo step**. Depends on nothing unlanded. **For the window lane:** the
+envelope's drawing (a line in `look::record`, squares on the points) is a stand-in until the Arrangement
+sheet draws it.
+
+---
+
 ## 2026-11-19, window-fn — item 10 parked: the recording and export parity checklists need the Live 12 manual's text
 
 The checklists are drafted row by row from the manual (chapter 21 for recording, 5.2 for export), each row
