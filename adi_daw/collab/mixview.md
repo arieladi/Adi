@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### #548 Windows rerun
+
+`eb5c68b8aa1b26524eb39b3a48d85d5261190d18` now has 21 successful hosted checks and a clean merge tree with current main. The exact Windows rerun passed the Pd timing fixture on the same source. Win can re-review this head for its existing dependency order while #651 remains the cumulative landing gate.
+
+**PR requested.** Existing #548, with the serial EQ and latency/precision fixes already logged.
+
 ### DF-M25: return to Analysers with the displayed channel
 
 The current register specifies the Analysers tab. The earlier `a2e7e931` slice deliberately restored a Stack row and its test pinned that choice. ADR-0237 d9 also asks to keep the displayed channel. Both fit by opening Analysers on that channel and the matching analyser page, while preserving the user's Stack scope and group filters for a later explicit switch. Request the `showAnalyzerWindow` return callback in `ui_floating.cpp` for this correction only. The existing safe owner, preferred docked or detached workspace and missing-source fallback can stay in that route.
