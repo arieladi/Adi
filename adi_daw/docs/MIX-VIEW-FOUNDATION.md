@@ -9,8 +9,19 @@ publication stamp; a renamed display label is never its identity.
 
 StackModel owns geometry, hit testing, hover, focus, selection, search, pins, lane scrolling,
 navigator and capture retention. The surface realizes the visible margin and retained edit
-targets. Value-only parameter publications preserve the existing components. Empty tracks show
-an empty chain; actual-device rows allocate no reserved processing slots.
+targets. Value-only parameter publications preserve the existing components. The default
+**With tools** list contains channels with an actual native Mix View function, keeping their
+ordinary inserts in real chain order. Membership uses native identity, never a display label,
+bypass or loading status. **All channels** also shows empty/ordinary-only chains, making the
+first-function add path discoverable. Neither mode creates processors or reserved slots.
+An explicit channel shortcut switches the visible selector to **All channels** when only tool
+membership excludes that valid target, then lands on its chain. It does not clear search, pins,
+folds or project scope, and eligible/invalid targets do not change the selector.
+
+All track records and ancestry remain available for scope, search and key roles. Search changes
+the displayed list, not audio targets or settings. A hidden nonmember ancestor's STACK fold
+does not suppress eligible descendants; returning to All channels restores its saved fold.
+A still-live captured item retains its row through a presentation filter until release.
 
 Expanded tiles reuse DevicePanelView and the document's parameter publication. Folded tiles show
 the name and activator. Parameters use the existing ParamOps/ProjectDocument gesture and undo
@@ -22,14 +33,74 @@ tab change and teardown end its capture. Both the view and the document validate
 target before editing. A stale callback must neither write a replacement instance nor fall
 through to a track-level Delete/Rename command. Search, pins and row-size settings currently
 last for the window lifetime; serializing the full model view state is a later UI slice.
+Search, channel-scope, row-size and toolbar-button focus own their keyboard handling: a stale
+device focus must not make Cut/Delete/Duplicate fall through to another device or track.
+The toolbar wraps for constrained widths without changing the row geometry law.
+
+## Focus inside a channel row
+
+Row enlargement and tool enlargement are separate presentation states. The inspected tool
+uses the row's available height while neighboring tools stay compact. Each tool's width,
+tier, painting and hit rectangle follow its own height. Hover changes presentation only;
+explicit keyboard focus retains priority until actual pointer movement and a fresh dwell.
+Layout-generated motion cannot hand a stationary pointer to another tool.
+
+A bounded transition set uses the existing frame clock and keeps the inspected horizontal
+position anchored while neighboring tools shrink. Lane arrows and wheel navigation continue
+from the displayed offset. There is no added DSP, analyzer demand or per-tool timer.
+
+Drag, text and menu capture retain the last completed displayed pose, including intermediate
+animation geometry. Painting, canvas hits and child bounds use that same pose. Stable target
+validation remains separate from geometry; a stale visible item cannot edit a replacement.
+Presentation callbacks may synchronously replace or destroy a surface, so model walks finish
+before invoking controls and a nested complete presentation supersedes an interrupted one.
+Release resumes from the retained pose through the common gesture and undo authority.
 
 ## Shared track analysis
+
+### Optional right dock
+
+The Mix View can show a right analyzer dock beside STACK or OVERVIEW while retaining the
+separate analyzer tab. It starts hidden with Main selected. Meters, Phase and Spectrum use
+the existing views and broker; compatible source, tap and channel settings share one domain,
+cursor and spectral transform. Only the meter view reads the existing weak Main loudness
+projection. Selected follows the current channel; a missing selection does not fall back to Main.
+
+Visibility, requested width and source settings are per-window view preferences, not audio
+parameters or project undo entries. Controls wrap within the compact column. Insufficient
+space hides the dock and releases its demand while preserving the requested preference.
+Hidden, frozen, suspended and closed presentations reuse the existing demand-release paths.
+The existing analyzer service and clock remain shared; audio algorithms and analyzer numerical
+kernels are unchanged.
+
+Requested dock/header layout changes wait while a STACK drag, text editor or menu owns its
+capture. The applied STACK rectangle and header geometry stay fixed through the edit; the
+latest request applies after release. Whole-surface hide, tab changes and minimization retain
+their existing immediate cleanup. Failed preference saves restore controls without discarding
+a frozen picture or changing its analysis demand. Analyzer controls own their edit-command
+context, preventing destructive keys from reaching an unrelated channel or device; ordinary
+project Undo retains its existing authority.
 
 The document owns SharedAnalysis. Visible consumers hold scoped leases keyed by track, tap point,
 FFT size, window and channel basis. Compatible consumers read the same immutable result and
 perform one transform. Different configurations share their underlying tap attachment without
 sharing incompatible results. The worker analyses only new samples and waits indefinitely with
 zero demand; the final consumer releases the audio tap.
+Stereo-power spectra omit an FFT only for an exactly zero sanitized lane, using the
+existing double-precision energy sum without another sample scan or a silence threshold.
+When one lane is active, the omitted lane's magnitude scratch is cleared before combining;
+complete silence retains the existing zero-output path without clearing unused scratch.
+The existing two-lane power combination,
+scope/meter samples and publication/history rules remain unchanged. Nonzero lanes, including
+subnormal input, keep the normal transform path. This is an analysis optimization, not an
+audio-processing shortcut or a CPU-percentage claim.
+The broker also has an optional fixed Average1s linear-magnitude profile, sharing
+the existing real-hop transform with Raw/Spectrogram and publishing a separate
+immutable sidecar. It is a numerical API only: Raw stays the visible/default view.
+It waits for new post-activation audio, advances on real hops rather than frames,
+and reports invalid FFT magnitudes without changing Raw output. See
+`SPECTRUM-AVERAGE.md` for demand, lifetime and recovery rules; no new worker/timer,
+Main loudness service or audio DSP is introduced.
 
 The first presentation is a calibrated Main spectrum, with stereo peak/RMS, in the Mix View's
 OVERVIEW and boxed Info area. Hover information temporarily replaces the boxed analyzer. These
@@ -37,28 +108,58 @@ components have no worker or timer of their own. Hidden, empty, clipped-out and 
 release demand; a detached visible Mix View keeps its own demand independently of the main
 window. Document shutdown revokes the service before Session is destroyed.
 
-Both presentations currently select Main only: PostFader, Mid, Hann, 1024 samples. Track selection,
-reference comparison and the rest of the combined analyzer modes remain later slices.
+The full analyzer selects Main or Selected, tap point and channel basis, with Spectrum, Scope,
+Meters, Phase and Spectrogram modes. Compact Info follows that presentation. Compatible requests
+retain the same Hann/1024 domain; Reference/Compare remains a separate implementation slice.
 
-This is an adapter over the existing newest-window track ScopeTap API. MX-30 still owns device
-taps, gapless consumer cursors, negotiated history and safe storage retirement. An old-rate tap
-is unavailable after a format change rather than being displayed with a false frequency scale.
-DEV-05/MX-24 own compensated device-specific key routes. These are separate from visual demand.
+Spectrogram offers the original ADI palette plus 46 public scientific palette families,
+preview strips and Reverse. Source pins, full licenses and the RGB8 conversion summary are in
+`third_party_notices/analysis_palettes/`; no other application's lookup table is claimed.
+Parent palette/reverse preferences persist per window. Compact Info follows them, while a new
+floating analyzer initially copies the parent and can make its own lifetime-local choice.
+
+Palette changes recolor cached intensity/gap indices, including a visible frozen picture,
+without changing its measurement or analysis demand. The original default's 256-color lookup
+and intensity indexing are retained. Owner frames prepare the raster; painting reads that
+image without regenerating palette or raster data. Discarding a measurement also discards its
+raster so recreated-domain counters cannot alias old pixels. Embedded and floating analyzer
+control focus protects the common app edit-command context. Resume, local Reset and reshow
+after discarding a picture fence the source's completed sample count. Cached publications,
+output-mask republication and processing an entirely pre-action backlog do not satisfy that
+barrier, even while another consumer retains the shared domain. A completed window must
+contain at least one newly written post-action sample; it need not be entirely post-action
+or aligned with another view. A new view may reuse a valid compatible initial stopped
+picture. Source replacement re-arms admission, and shutdown revokes retained frozen pictures.
+
+Spectrum also offers optional display slope: Flat (the unchanged ADI default) or
++4.5 dB/octave around 1 kHz. This changes only plotted bins, never raw calibrated
+results, comparison bins, sample peak/RMS or Main aggregate loudness/true peak.
+DC has no logarithmic correction. Owner configuration/frame work prepares bounded
+frequency offsets outside paint; unchanged metadata reuses them. A visible frozen
+Spectrum can be reprojected without requesting audio or analysis. The parent choice
+persists per window, Info follows, and floating analysis inherits then changes locally.
+The selector is disabled in other modes; spectrogram palettes and units are unchanged.
+
+The document supplies MX-30 leased source/device endpoints with independent consumer cursors,
+negotiated history, source generations and safe storage retirement. Unusable old-rate taps are
+unavailable rather than displayed with a false frequency scale. DEV-05/MX-24 own compensated
+device-specific key routes. These are separate from visual demand.
 
 ## Processing integration
 
 Actual devices continue through the established Session/Graph chain and shared parameter
-authority. The next processing slice supplies the opt-in native function cores from ADR-0237:
-EQ with unmasking, compressor, de-esser, gate, and limiter with clipping. Their movable device-area
-tabs and Mix View rows must address those same nodes. ADI Still remains an ordinary plug-in for
-now; no native function or EQ page is added. Separate standalone applications remain a guide
-question. Analyzers stay outside the processing chain.
+authority. Native EQ and independently enabled Clip-to-Limiter processing are wired through
+that same chain; device-area pages and Mix View rows address the same nodes. Unmasking,
+compressor, de-esser and gate native admission remain later slices. ADI Still remains an
+ordinary plug-in. Analyzers stay outside the processing chain.
 
 ### Native EQ serial provider
 
 The existing EQ function uses the shared serial processing adapter with EQ enabled and the
 downstream stages disabled. All 730 parameter IDs, saved-state values and common edit/undo paths
 remain the same. The adapter retains the authored EQ learning object across stopped reprepare.
+The native provider forces a stopped prepare when the engine switches between float and double,
+even at the same rate and buffer size. Same-format rebuilds retain the running state.
 An absent external key keeps the existing programme fallback; a connected silent key remains
 silent. This compatibility path does not create a device sidechain route.
 
@@ -66,11 +167,53 @@ Scalar edits run without configuration-owner jobs. Prepared-plan changes use one
 owner, a complete aggregate latency offer and physical-callback admission. Main relays published
 metadata; audio never starts or notifies the worker. Carve and Focus pages remain unavailable
 until their real controller and device-key routes are connected.
+Offline instances use a serialized owner that services the request before admitting the new
+physical block. Latency-neutral structure edits produce repeatable exports across render schedules.
 
-A parked configuration failure retains the last applied audio plan. Its nonfatal issue is copied
-through the common device publication and shown in the header with recovery guidance. This does
-not mark the device unloaded, disable controls or end a gesture. Ordinary pending work has no
-failure indication; the empty-status presentation is unchanged.
+A parked configuration failure retains the last applied audio plan. The device header reports the
+issue and offers remove, then Undo, to reprepare the saved settings. The device remains available
+and its controls and active gestures stay usable. Ordinary pending work has no warning.
+
+## Main meter readouts
+
+Meters mode can show the existing Main programme measurement: momentary, short-term and
+integrated LUFS, plus the held aggregate true peak in dBTP. This is a read-only projection of
+Session's persistent Main service before cue/metronome, not another meter, transform, tap or
+worker. Its fields have independent measurement intervals; they are not a sample-synchronous
+snapshot. Channel-basis selection still controls the analysis plot, while this strip remains
+explicitly labelled as the aggregate Main programme measurement.
+
+Only visible, unfrozen actual Main/Post Mixer views read those values. Selected non-Main,
+device-input/output and other tap points cannot display Main loudness under another source's
+name. The default Spectrum presentation is unchanged. Info, full and floating views share
+the same presentation, with weak document-owner bindings revoked before teardown. Prepared
+versus audio-adopted format identities suppress stale readings during a format change.
+An unavailable/unwarmed field is shown as `--`, without claiming that every negative-infinity
+reading is an unwarmed window. Freeze and Reset affect the local picture only; they never
+pause or reset the shared Main measurement. Closing the last view adds no meter DSP work.
+
+## Unregistered compressor component
+
+`mix::compressor::Core` supplies Clean compression at the input rate with zero latency. It is
+a framework-free component, not an available native Compressor function. The factory, channel
+catalog and existing processing paths are unchanged. Other styles, quality conversion,
+lookahead, hold, key EQ, audition and wet/dry mixing are not accepted component settings.
+
+Validated settings and complete pointer/context/layout checks precede each contiguous segment.
+Threshold, ratio, knee, range, attack/release and automatic controls retain running envelope
+history. Prepare/reset start a new stream; settings-only restore does not rewind it. Key
+source, link amount and M/S mode are fixed for that prepared stream; unsupported combinations
+are rejected explicitly. A temporarily absent external key means silence on the same route
+(`keyChannels=0`); partial/null planes are rejected. This is not a fabricated key source or
+arbitrary live route migration.
+
+The processing rate is rounded to float. Double I/O uses the same float engine and widens its
+output; it is not a double-precision engine. Finite audio within float range is a caller
+precondition, avoiding a redundant whole-buffer scan. Curve storage is prepared off audio,
+coefficients use a bounded per-instance cache, invariant control work is retained, and a fixed
+fully linked stream evaluates its identical detector envelope once. These are structural work
+properties, not a measured CPU or whole-product parity claim. The component remains unregistered
+until the complete controller/state/style/quality and real key-route paths are ready.
 
 ## Build and verification
 

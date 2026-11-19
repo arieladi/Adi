@@ -84,6 +84,18 @@ public:
     };
     [[nodiscard]] std::vector<Branch> branches() const;
 
+    /// Restore a retained whole-edit boundary in one transaction and one
+    /// applied delivery. NULL means the original pre-edit state (the stored
+    /// origin root after compaction). A transaction interior or ephemeral seq
+    /// refuses; an unchanged target writes/notifies nothing. Departing redo
+    /// tips remain reachable, with a system branch stamped by caller nowUtc
+    /// when necessary; zero is permitted when no timestamp is supplied.
+    /// Cross-baseline moves retain the same stop/fence/reload requirement as
+    /// switchToBranch. Result counts all inverse/forward operations; txnId is
+    /// zero because several original transactions may be traversed.
+    Result moveTo(std::optional<std::int64_t> seq, std::int64_t nowUtc = 0,
+                  StoredRestore = StoredRestore::Refuse);
+
     /// Move to another branch's head. The project is rewound to the common
     /// ancestor and replayed forward, so this is a real navigation, not a label
     /// change. The branch left keeps its head, so nothing becomes unreachable.

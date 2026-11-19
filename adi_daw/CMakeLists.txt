@@ -332,6 +332,7 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/project_files.cpp
     src/adi/ops.cpp
+    src/adi/ops_schema.cpp
     src/adi/row_capture.cpp
     src/adi/marker_ops.cpp
     src/adi/clip_property_ops.cpp
@@ -368,6 +369,7 @@ add_library(adi_core STATIC
     src/adi/controller_maps.cpp
     src/adi/gesture_session.cpp
     src/adi/gesture_producers.cpp
+    src/adi/quiet_gesture.cpp
     src/adi/op_transaction_resources.cpp
     src/adi/history.cpp
     src/adi/history_list.cpp
@@ -444,7 +446,7 @@ include(cmake/mix_cores.cmake)
 target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cpp src/adi/audio/transients.cpp src/adi/audio/auto_warp.cpp src/adi/engine/warp_projection.cpp)
 target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
-  src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
+  src/adi/row_ids.cpp src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/automation_splice.cpp src/adi/automation_splice_store.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
   src/adi/edit_placement.cpp src/adi/edit_plan.cpp
   src/adi/material_commands.cpp src/adi/sample_defaults.cpp src/adi/warp_commands.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -708,7 +710,7 @@ add_library(adi_changeset STATIC src/adi/changeset.cpp)
 target_link_libraries(adi_changeset PUBLIC adi_core PRIVATE adi_warnings)
 
 add_executable(adi_tool src/main.cpp)
-target_link_libraries(adi_tool PRIVATE adi_core adi_changeset adi_warnings)
+target_link_libraries(adi_tool PRIVATE adi_settings adi_core adi_changeset adi_warnings)
 
 # ---------------------------------------------------------------------------
 # Tests. No framework yet on purpose — a dependency we would have to justify,
@@ -745,6 +747,10 @@ add_test(NAME adi_ops_tests COMMAND adi_ops_tests)
 add_executable(adi_track_delete_tests tests/test_track_delete.cpp)
 target_link_libraries(adi_track_delete_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_track_delete_tests COMMAND adi_track_delete_tests)
+
+add_executable(adi_history_move_tests tests/test_history_move.cpp)
+target_link_libraries(adi_history_move_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_history_move_tests COMMAND adi_history_move_tests)
 
 add_executable(adi_history_tests tests/test_history.cpp)
 target_link_libraries(adi_history_tests PRIVATE adi_core adi_warnings)
@@ -825,6 +831,50 @@ add_test(NAME adi_settings_tests COMMAND adi_settings_tests)
 add_executable(adi_changeset_tests tests/test_changeset.cpp)
 target_link_libraries(adi_changeset_tests PRIVATE adi_changeset adi_core adi_warnings)
 add_test(NAME adi_changeset_tests COMMAND adi_changeset_tests)
+
+# CTL-02: the registry describes itself; AC-24, schema and boundary agree.
+add_executable(adi_ops_schema_tests tests/test_ops_schema.cpp)
+target_link_libraries(adi_ops_schema_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ops_schema_tests COMMAND adi_ops_schema_tests)
+
+# ---------------------------------------------------------------------------
+# The control stack (ADR-0232, ADR-0233; docs/CONTROL-MCP.md): one JUCE-free
+# dispatcher, its MCP projection, and adi-mcp, the stdio bridge (CTL-08).
+# No JUCE and no socket here: the loopback listener (CTL-04) and the app host
+# (CTL-09) are later PRs. Top-level scope on purpose, so adi_isolate_tests
+# gives these suites their ADI_HOME and test_all.sh finds them.
+# ---------------------------------------------------------------------------
+add_library(adi_control STATIC
+    src/adi/control/jsonrpc.cpp
+    src/adi/control/service.cpp
+    src/adi/control/telemetry.cpp
+    src/adi/control/project_access.cpp
+    src/adi/control/headless_project.cpp
+    src/adi/control/projection.cpp
+    src/adi/control/changeset_queue.cpp
+    src/adi/control/methods.cpp
+    src/adi/control/mcp.cpp
+    src/adi/control/stdio_server.cpp)
+target_link_libraries(adi_control PUBLIC adi_changeset adi_core PRIVATE adi_warnings)
+
+add_executable(adi_mcp tools/adi-mcp/main.cpp)
+target_link_libraries(adi_mcp PRIVATE adi_control adi_settings adi_changeset adi_core adi_warnings)
+set_target_properties(adi_mcp PROPERTIES OUTPUT_NAME adi-mcp)
+
+add_executable(adi_rpc_permissions_tests tests/test_rpc_permissions.cpp)
+target_link_libraries(adi_rpc_permissions_tests PRIVATE adi_control adi_core adi_warnings)
+add_test(NAME adi_rpc_permissions_tests COMMAND adi_rpc_permissions_tests)
+
+add_executable(adi_control_mcp_tests tests/test_control_mcp.cpp)
+target_link_libraries(adi_control_mcp_tests PRIVATE adi_control adi_changeset adi_core adi_warnings)
+add_dependencies(adi_control_mcp_tests adi_mcp)
+target_compile_definitions(adi_control_mcp_tests PRIVATE ADI_MCP_PATH="$<TARGET_FILE:adi_mcp>")
+add_test(NAME adi_control_mcp_tests COMMAND adi_control_mcp_tests)
+
+# The read levels on a seeded project, called directly (AGT-02; R5.6, R5.11).
+add_executable(adi_control_projection_tests tests/test_control_projection.cpp)
+target_link_libraries(adi_control_projection_tests PRIVATE adi_control adi_changeset adi_core adi_warnings)
+add_test(NAME adi_control_projection_tests COMMAND adi_control_projection_tests)
 
 add_executable(adi_migrate_tests tests/test_migrate.cpp)
 target_link_libraries(adi_migrate_tests PRIVATE adi_core adi_warnings)
@@ -1124,6 +1174,10 @@ add_test(NAME adi_gesture_graph_tests COMMAND adi_gesture_graph_tests)
 add_executable(adi_gesture_playback_tests tests/test_gesture_playback.cpp)
 target_link_libraries(adi_gesture_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_gesture_playback_tests COMMAND adi_gesture_playback_tests)
+
+add_executable(adi_quiet_gesture_tests tests/test_quiet_gesture.cpp)
+target_link_libraries(adi_quiet_gesture_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_quiet_gesture_tests COMMAND adi_quiet_gesture_tests)
 
 add_executable(adi_ui_param_capture_tests tests/test_ui_param_capture.cpp)
 target_link_libraries(adi_ui_param_capture_tests PRIVATE adi_core adi_warnings)
@@ -1891,6 +1945,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(adi_link_playback_tests PRIVATE ADI_TEST_LINK_WRAP_LOCKS=1)
     target_link_options(adi_link_playback_tests PRIVATE -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
 endif()
+add_executable(adi_automation_splice_store_tests tests/test_automation_splice_store.cpp)
+target_link_libraries(adi_automation_splice_store_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_splice_store_tests COMMAND adi_automation_splice_store_tests)
+
+add_executable(adi_automation_splice_tests tests/test_automation_splice.cpp)
+target_link_libraries(adi_automation_splice_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_splice_tests COMMAND adi_automation_splice_tests)
+
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
@@ -1954,6 +2016,7 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+include(cmake/triggered_scope.cmake)
 
 add_executable(adi_mp4_aac_tests tests/test_mp4_aac.cpp)
 target_link_libraries(adi_mp4_aac_tests PRIVATE adi_core adi_warnings)
@@ -2033,6 +2096,12 @@ add_executable(adi_history_stored_tests tests/test_history_stored.cpp)
 target_link_libraries(adi_history_stored_tests PRIVATE adi_core adi_warnings adi_miniz Threads::Threads)
 add_test(NAME adi_history_stored_tests COMMAND adi_history_stored_tests)
 
+add_executable(adi_history_retention_fuzz_tests tests/test_history_retention_fuzz.cpp)
+target_link_libraries(adi_history_retention_fuzz_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_history_retention_fuzz_tests COMMAND adi_history_retention_fuzz_tests)
+# Scheduling estimate for the long corpus; COST changes order, never its deadline.
+set_tests_properties(adi_history_retention_fuzz_tests PROPERTIES COST 180)
+
 add_executable(adi_midi_controllers_tests tests/test_midi_controllers.cpp)
 target_link_libraries(adi_midi_controllers_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_midi_controllers_tests COMMAND adi_midi_controllers_tests)
@@ -2040,6 +2109,10 @@ add_test(NAME adi_midi_controllers_tests COMMAND adi_midi_controllers_tests)
 add_executable(adi_automation_edits_tests tests/test_automation_edits.cpp)
 target_link_libraries(adi_automation_edits_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_automation_edits_tests COMMAND adi_automation_edits_tests)
+
+add_executable(adi_row_ids_tests tests/test_row_ids.cpp)
+target_link_libraries(adi_row_ids_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_row_ids_tests COMMAND adi_row_ids_tests)
 
 add_executable(adi_automation_lanes_tests tests/test_automation_lanes.cpp)
 target_link_libraries(adi_automation_lanes_tests PRIVATE adi_core adi_warnings)

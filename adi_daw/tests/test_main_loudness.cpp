@@ -96,6 +96,48 @@ void peaksAndWeights() {
     weighted.tone(0.5);
     check(std::isfinite(weighted.meter.readout().momentaryLufs.load()),"nonfinite device output does not poison future windows");
 }
+void formatIdentity() {
+    MainLoudness meter;
+    const auto& view=meter.readout();
+    check(meter.preparedFormatSequence()==0 && view.formatSequence.load(std::memory_order_acquire)==0,
+          "unprepared readouts have no accepted format identity");
+    check(meter.prepare(48000,2),"format identity fixture prepares");
+    const auto first=meter.preparedFormatSequence();
+    check(first!=0 && view.formatSequence.load(std::memory_order_acquire)==0,
+          "prepared format cannot label old or unconsumed readouts as current");
+    AudioIo empty;
+    meter.process(empty);
+    check(view.formatSequence.load(std::memory_order_acquire)==first &&
+              std::isinf(view.momentaryLufs.load()) && std::isinf(view.truePeakDb.load()),
+          "audio adoption publishes the format only after clearing its readouts");
+    check(meter.prepare(48000,2) && meter.preparedFormatSequence()==first &&
+              view.formatSequence.load(std::memory_order_acquire)==first,
+          "same-format preparation preserves measurement identity");
+    check(!meter.prepare(0,2) && meter.preparedFormatSequence()==first,
+          "rejected preparation cannot replace the public format identity");
+    std::array<float,64> audio{}; audio.fill(.25f);
+    float* outputs[]{audio.data(),audio.data()};
+    AudioIo io;io.out=outputs;io.numOut=2;io.frames=64;
+    meter.process(io);
+    const auto peak=view.truePeakDb.load();
+    check(std::isfinite(peak),"the old format has an actual held peak before replacement");
+    check(meter.prepare(96000,2),"a new format stages without touching audio-owned readouts");
+    const auto next=meter.preparedFormatSequence();
+    check(next!=first && view.formatSequence.load(std::memory_order_acquire)==first &&
+              view.truePeakDb.load()==peak,
+          "UI can reject a still-held old-format value by comparing prepared and published identities");
+    check(meter.prepare(44100,1),"a second replacement may supersede an unconsumed format");
+    const auto latest=meter.preparedFormatSequence();
+    check(latest!=next && latest!=first,"each actual replacement has a distinct prepared identity");
+    meter.process(empty);meter.collect();
+    check(view.formatSequence.load(std::memory_order_acquire)==latest &&
+              std::isinf(view.momentaryLufs.load()) && std::isinf(view.shortTermLufs.load()) &&
+              std::isinf(view.integratedLufs.load()) && std::isinf(view.truePeakDb.load()),
+          "latest audio adoption clears all values before accepting its format identity");
+    meter.requestReset();meter.process(empty);
+    check(view.formatSequence.load(std::memory_order_acquire)==latest,
+          "measurement reset retains its actual format identity");
+}
 void noAllocations() {
     MainLoudness meter;check(meter.prepare(8000,2),"allocation fixture prepares off-thread");
     std::array<float,256> audio{};audio.fill(0.1f);float* output[]{audio.data(),audio.data()};
@@ -127,5 +169,5 @@ void session() {
     check(std::isinf(engine.mainLoudness().readout().integratedLufs.load()),"device stop requests a meter reset");
 }
 }
-int main(){try{windows<float>();windows<double>();peaksAndWeights();noAllocations();session();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{windows<float>();windows<double>();peaksAndWeights();formatIdentity();noAllocations();session();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

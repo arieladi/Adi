@@ -74,7 +74,7 @@ void UndoHistoryPanel::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     if (!error_.empty()) {
         g.setColour(look::text);
-        g.setFont(look::font(11.5f));
+        g.setFont(look::font(look::fontBody));
         g.drawFittedText(juce::String::fromUTF8(error_.c_str()), getLocalBounds().reduced(8), juce::Justification::topLeft, 3);
     }
 }
@@ -91,13 +91,13 @@ void UndoHistoryPanel::paintListBoxItem(int index, juce::Graphics &g, int width,
     g.fillRect(0, height - 1, width, 1);
     // An undone step, or one on another branch, greyed, as Live greys the steps after the current one.
     g.setColour(row.applied ? look::text : look::textDim.withAlpha(0.7f));
-    g.setFont(look::font(11.5f, row.current));
+    g.setFont(look::font(look::fontBody, row.current));
     const int detailWidth = row.detail.empty() ? 0 : std::min(width / 2, 160);
     g.drawText(juce::String::fromUTF8(row.label.c_str()), 6, 0, width - 12 - detailWidth, height,
                juce::Justification::centredLeft, true);
     if (detailWidth > 0) {
         g.setColour(look::textDim);
-        g.setFont(look::font(10.5f));
+        g.setFont(look::font(look::fontCaption));
         g.drawText(juce::String::fromUTF8(row.detail.c_str()), width - detailWidth - 6, 0, detailWidth, height,
                    juce::Justification::centredRight, true);
     }

@@ -54,7 +54,7 @@ void AnalyserView::frame() noexcept {
     view_.present(model_->broker(), model_->track()); view_.frame();
 }
 void AnalyserView::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff101820));
+    g.fillAll(look::editorBack);
 }
 namespace {
 // An ADI view at its floating window's own interface zoom, as ZoomHost holds the main
@@ -88,7 +88,7 @@ struct FloatingHost::Entry {
     std::function<void(const SnapshotReader &)> onFrame;
     struct Window final : juce::DocumentWindow, juce::KeyListener {
         Window(FloatingHost &host, Entry &entry)
-            : DocumentWindow(entry.title.empty() ? entry.key : entry.title, juce::Colours::black,
+            : DocumentWindow(entry.title.empty() ? entry.key : entry.title, look::ink,
                              entry.scaled ? allButtons : (closeButton | minimiseButton), host.native_),
               h(host),
               e(entry), clock(this, [this](double) {
@@ -410,6 +410,10 @@ bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t
     pane->setSize(800, 420);
     pane->setMode(root.mixViewPanel.analysis.mode());
     pane->setPoint(root.mixViewPanel.analysis.point());
+    pane->view.setChannel(root.mixViewPanel.analysis.view.channel());
+    pane->channelBox.setSelectedId(static_cast<int>(pane->view.channel()) + 1, juce::dontSendNotification);
+    pane->setPalette(root.mixViewPanel.analysis.view.palette(), root.mixViewPanel.analysis.view.paletteReversed());
+    pane->setSpectrumSlope(root.mixViewPanel.analysis.view.spectrumSlope());
     pane->setSource(track == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
     pane->expandButton.setButtonText("Mix View");
     pane->onExpand = [&root](std::int64_t channel) {

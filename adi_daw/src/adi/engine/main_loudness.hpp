@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/engine/process.hpp"
 #include <atomic>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <span>
@@ -13,8 +14,12 @@ struct MainLoudnessReadout {
     std::atomic<float> shortTermLufs{-std::numeric_limits<float>::infinity()};
     std::atomic<float> integratedLufs{-std::numeric_limits<float>::infinity()};
     std::atomic<float> truePeakDb{-std::numeric_limits<float>::infinity()};
+    // Audio-published format identity after the new format's readouts clear.
+    // Zero is unprepared/in transition. The four values remain independent.
+    std::atomic<std::uint64_t> formatSequence{0};
 };
 static_assert(std::atomic<float>::is_always_lock_free);
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 class MainLoudness {
 public:
     MainLoudness();
@@ -35,6 +40,11 @@ public:
     /// windows, integrated gates and peak history. Not an op.
     void requestReset() const noexcept { reset_.store(true,std::memory_order_release); }
     [[nodiscard]] const MainLoudnessReadout& readout() const noexcept { return readout_; }
+    /// Main only, serialized with prepare/collect/destruction. A view compares
+    /// this prepared identity with readout.formatSequence before/after loading
+    /// values, rejecting pending/replaced formats without retaining a DSP pointer.
+    /// This is not a coherent timestamp or whole-field snapshot guarantee.
+    [[nodiscard]] std::uint64_t preparedFormatSequence() const noexcept;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
