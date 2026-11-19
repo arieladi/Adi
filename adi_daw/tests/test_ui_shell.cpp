@@ -10233,8 +10233,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 surface.model().focusItem(surface.model().chainRef(2, 31),
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 check(surface.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) &&
-                      value(document->store(), "SELECT count(*) FROM devices WHERE id=31") == 0 &&
-                      value(document->store(), "SELECT count(*) FROM devices WHERE id=30") == 1,
+                      value(document->store(), "SELECT count(*) FROM devices WHERE id=31") == "0" &&
+                      value(document->store(), "SELECT count(*) FROM devices WHERE id=30") == "1",
                       "Delete removes only the focused folded device");
                 check(document->ops().undo().ok && document->synchronise(), "one Undo restores the folded device");
                 if (actual.devices.folded(31)) actual.devices.fold(31);
@@ -10318,7 +10318,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 if (folded.pill) {
                     const auto geo = surface.model().row(*surface.model().shownIndex(2));
                     const auto p = surface.listArea().getPosition().toFloat() +
-                        juce::Point<float>(static_cast<float>(folded.x + folded.width / 2), static_cast<float>(geo.top + 6));
+                        juce::Point<float>(static_cast<float>(folded.x + folded.width / 2), static_cast<float>(geo.top + look::border) + look::radiusSmall + static_cast<float>(look::gap) * .5f);
                     surface.mouseDown(pressAt(surface, p));
                     surface.mouseUp(pressAt(surface, p));
                     document->tick(35); actual.frame();
@@ -10336,7 +10336,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     surface.model().scrollLane(surface.model().rowRef(2), 1, compactTime + 201);
                     surface.model().advance(compactTime + 208); // no new component presentation
                     const auto click = surface.listArea().getPosition().toFloat() + juce::Point<float>(
-                        static_cast<float>(secondPill.x + secondPill.width - 2), static_cast<float>(secondPill.top + 6));
+                        static_cast<float>(secondPill.x + secondPill.width * .5),
+                        static_cast<float>(secondPill.top + look::border) + look::radiusSmall + static_cast<float>(look::gap) * .5f);
                     surface.mouseDown(pressAt(surface, click)); surface.mouseUp(pressAt(surface, click));
                     document->tick(37); actual.frame();
                     check(secondPill.pill && value(document->store(), "SELECT enabled FROM devices WHERE id=31") == "0" &&
