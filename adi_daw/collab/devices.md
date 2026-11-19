@@ -69,6 +69,36 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DEV-22: Live's Compressor, the core only
+
+**PR requested:** head `devices/compressor-core` (0a1180a8, one commit on bedee5ab), base `main`.
+This is the default named in the question to win below. The queue's first new effect is built as
+a DSP core with its tests, so the device is ready when reading 17 arrives. It claims no parity and
+is in no catalogue; win may hold it until then. Files: `dsp/live_compressor.*`,
+`tests/test_live_compressor.cpp`, `cmake/devices/live_compressor.cmake`.
+- **The core.** Feed-forward in the log domain, stereo-linked on the louder channel.
+  - Detection: Peak, RMS, or Expand (downward, below the threshold).
+  - A quadratic soft knee.
+  - Log ballistics on the reduction in dB, or Lin ballistics on the level.
+  - Lookahead of 0, 1 or 10 ms delays the audio and the dry path, never the detector: 480 samples
+    at 48 kHz for 10 ms, the delay Live 12.4 reports.
+  - Makeup, Output and Dry/Wet.
+  - No allocation, and non-finite input is read as silence.
+- **Provisional until reading 17:** the defaults, Makeup's law (the curve's reduction at 0 dBFS, in
+  full), the RMS window (10 ms) and the Dry/Wet law (linear). Auto Release and the side-chain are
+  not in this step.
+- **Tests.** Each is checked against a number derived apart from the code:
+  - the static curve: 4:1, an infinite ratio, a 12 dB knee at and inside its edges, Expand 1:4 and
+    its knee;
+  - one time constant of Attack and of Release;
+  - 441, 480 and 960 samples of lookahead, an impulse at exactly 480, and a step that leaves the
+    delay already reduced;
+  - Makeup, Output, Dry/Wet 0 bit-exact, linked channels, a NaN block, a sine's RMS 3 dB under
+    its peak, and no allocation.
+- **Plants:** Expand's knee sign gives 2 failures (the first version of the test missed it; a check
+  inside the knee was added); the lookahead one sample early gives 3; Attack and Release swapped
+  give 3. `adi_live_compressor_tests` 35; CTest 247/247 (MSVC Debug, /W4 /WX).
+
 ## 2026-11-19 — for win: DEV-22's built devices are at Live's defaults where Live states them; new effects before 3 December?
 
 The lane's ADR-0248 d8 order is done as far as it can go today. (1) DF-E37 and (3) DF-E36 are in
