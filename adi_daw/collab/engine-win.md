@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — EX-07 output format, sample rate and index tokens
+
+**PR requested** — `engine-win/export-format-name-tokens`, `fa9534a672f6c5926387b4a46c82af08774335ae`, stacked on `engine-win/export-identity-replace`. `{format}` uses the delivery container label, `{rate}` uses integer output Hz, and `{index}` uses the stable enqueue/delivery ordinal shared with `{counter}`. The run manifest carries the resolved context. NI expands its final name at prepared Main using the NI profile before audio and includes the full compound suffix in its byte budget. Strict x64 MSVC passed 549 checks, including actual WAV and the prepared NI route. Full AAC encoding remains gated. Date/time tokens still need a shared run clock and timezone policy.
+
 ## 2026-11-19 — DEV-25 native Windows shortcuts
 
 **PR requested** — `engine-win/scanner-windows-shortcuts`, `cdb8f6846097ca1b0b059d5e698a57c3086fe1bd`, stacked on `engine-win/vst3-discovery-aliases`. VST3 and CLAP discovery can read bounded native Shell Link bytes, follow stored absolute file/folder targets and deduplicate their canonical paths. Chains have a 32-hop cap and cycles stop. The owner reads link data without shell execution or target recovery/search. Direct stored UNC paths retain ordinary filesystem behaviour. Strict x64 MSVC passed 176 checks over four suites, including 18 native shortcut checks and an actual junction cycle. The optional directory-symlink case needed privilege unavailable during this run. Finder aliases stay open.
