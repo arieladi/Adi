@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/audio_recording.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/history.hpp"
@@ -80,6 +81,88 @@ struct Fixture {
         session.process({out,nullptr,2,0,frames,0});return result;
     }
 };
+void liveInputMonitoring() {
+    for (const auto precision : {Precision::Float32, Precision::Float64}) {
+        Fixture f;
+        f.add(1, 17, 32);
+        f.store->db().exec("UPDATE tracks SET monitor_mode=2 WHERE id=1");
+        f.load(64);
+        if (!f.session.setPrecision(precision)) throw std::runtime_error(f.session.error());
+        const std::array stereo{RecordingTarget{1, {2, 0}}};
+        check(f.session.setAudioMonitorInputs(stereo), "bind a resolved stereo input pair to the audio track");
+        auto change = [&](const char* opType, const Payload& payload) {
+            OpRequest r;
+            r.opType=opType;
+            r.payload=payload;
+            if(!OpJournal(*f.store).commit(r).ok || !f.session.refresh(*f.store))
+                throw std::runtime_error("refreshing the track monitor controls failed");
+        };
+        auto render = [&](bool playing, bool haveRight = true, std::int64_t start = 0) {
+            f.session.transport().locate(start);
+            f.session.transport().play(playing);
+            if (playing && !f.session.clips()->prime())
+                throw std::runtime_error("could not prime the Arrangement clip");
+            std::array<float,64> a{}, b{}, c{};
+            a.fill(0.125f); b.fill(0.25f); c.fill(0.5f);
+            const float* in[]{haveRight ? a.data() : nullptr, b.data(), c.data()};
+            std::array<float,128> pcm{};
+            std::array<double,128> wide{};
+            float* out[]{pcm.data(),pcm.data()+64};
+            double* out64[]{wide.data(),wide.data()+64};
+            AudioIo io{precision == Precision::Float32 ? out : nullptr, in, 2, 3, 64, 0};
+            if (precision == Precision::Float64) io.out64 = out64;
+            { const audio::CallbackScope callback; f.session.process(io); }
+            if (precision == Precision::Float32) std::copy(pcm.begin(),pcm.end(),wide.begin());
+            return wide;
+        };
+        const auto unarmed = render(false);
+        check(std::all_of(unarmed.begin(),unarmed.end(),[](double sample){return sample==0;}),
+              "Auto monitoring is silent when the track is unarmed");
+        change("track.setArm", {{"id",1},{"armed",true}});
+        auto stopped = render(false);
+        check(stopped[0]==0.5 && stopped[63]==0.5 && stopped[64]==0.125 && stopped[127]==0.125,
+              "Auto monitors the selected stereo channels when stopped");
+        const auto playing = render(true);
+        bool exact = true;
+        for (std::size_t channel = 0; channel < 2; ++channel)
+            for (std::size_t frame = 0; frame < 64; ++frame) {
+                const double input = channel == 0 ? 0.5 : 0.125;
+                const double wanted = frame >= 17 && frame < 49 ? f.media[(frame - 17) * 2 + channel] : input;
+                exact = exact && playing[channel*64+frame] == wanted;
+            }
+        check(exact, "Auto returns to the live input at the exact Arrangement clip end");
+        f.session.transport().loop(5,41,true);
+        const auto looped = render(true,true,35);
+        bool loopExact = true;
+        for (std::size_t frame = 0; frame < 64; ++frame) {
+            const auto sample = frame < 6 ? 35 + frame : 5 + (frame - 6) % 36;
+            const double wanted = sample >= 17 ? f.media[(sample - 17) * 2] : 0.5;
+            loopExact = loopExact && looped[frame] == wanted;
+        }
+        check(loopExact, "Auto reopens hardware monitoring at each loop wrap inside the callback");
+        f.session.transport().loop(0,64,false);
+        change("track.setMonitorMode", {{"id",1},{"mode",1}});
+        change("track.setArm", {{"id",1},{"armed",false}});
+        const auto inputOnly = render(true, false);
+        check(inputOnly[0]==0.5 && inputOnly[17]==0.5 && inputOnly[48]==0.5 &&
+              inputOnly[64]==0 && inputOnly[64+17]==0 && inputOnly[127]==0,
+              "In monitors without Arm, suppresses clips and silences a missing channel");
+        const std::array bad{RecordingTarget{1, {0, 1, 2}}};
+        check(!f.session.setAudioMonitorInputs(bad) && render(false)[0]==0.5,
+              "refusing an invalid input preserves the current hardware binding");
+        const std::array mono{RecordingTarget{1, {1}}};
+        check(f.session.setAudioMonitorInputs(mono), "replace the pair with one driver channel");
+        const auto doubled = render(true);
+        check(doubled[0]==0.25 && doubled[64]==0.25 && doubled[64+17]==0.25,
+              "mono input reaches both outputs");
+        change("track.setMonitorMode", {{"id",1},{"mode",0}});
+        change("track.setArm", {{"id",1},{"armed",true}});
+        const auto off = render(true);
+        check(off[0]==0 && off[16]==0 && off[17]==f.media[0] && off[48]==f.media[62] &&
+              off[49]==0 && off[63]==0, "Off keeps Arrangement PCM and discards hardware even when armed");
+        check(f.session.setAudioMonitorInputs({}), "disconnect all runtime inputs");
+    }
+}
 void placement() {
     for(const int block:{64,128,256,512,1024,2048,4096,257}) {
         Fixture f;f.add(1,73,21001,11,25000);f.load(block);
@@ -884,6 +967,7 @@ int main(int argc,char** argv) {
     test::TempDirectory home{"clip_playback","home"};setHome(home.path());
     try {
         if(only=="all" || only=="placement")placement();
+        if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();
         if(only=="all" || only=="fades")editedFades();

@@ -80,6 +80,7 @@ struct Clip {
     fs::path pinned; // the decoded copy this clip holds in ADI's cache, if any (ADR-0156)
     std::shared_ptr<const audio::PreparedWarp> warped;
     std::shared_ptr<audio::ProgressiveFile> progressive;
+    bool monitorInputOnly = false;
     bool failed = false; // page worker only
     std::unique_ptr<audio::WavReader> reader; // touched ONLY by worker after construction
     // The pin goes back with the clip. Every rebuild builds new clips and pins
@@ -136,7 +137,7 @@ struct Clip {
     }
     std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames,bool lookAhead=true) const noexcept {
         std::array<std::int64_t,slots> out; out.fill(-1);
-        if (!t.playing()) return out;
+        if (monitorInputOnly || !t.playing()) return out;
         std::size_t used = 0;
         auto sourceRange = [&](std::int64_t from, std::int64_t count) {
             // sourceAt never reads at or past End, so no page there is wanted.
@@ -390,7 +391,7 @@ public:
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
-        if(!transport.playing()){
+        if(!transport.playing() || (!clips.empty() && clips.front()->monitorInputOnly)){
             for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex)clips[clipIndex]->releaseAdmission();
             return;
         }
@@ -639,6 +640,16 @@ std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
     for(auto& t:impl_->tracks) if(t->track==id) return {t.get()};
     return {};
 }
+std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int64_t id) const {
+    std::vector<SampleRange> ranges;
+    for (const auto& clip : impl_->clips)
+        if (clip->track == id) ranges.emplace_back(clip->start, clip->end);
+    return ranges;
+}
+void ClipPlayback::useMonitoredInput(std::int64_t id) noexcept {
+    for (auto& clip : impl_->clips)
+        if (clip->track == id) clip->monitorInputOnly = true;
+}
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
 void ClipPlayback::stallForTest(bool v) noexcept { impl_->stalled.store(v,std::memory_order_release); }
 void ClipPlayback::setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest* probe) noexcept {
@@ -676,6 +687,7 @@ ClipPlayback::Readiness ClipPlayback::readiness() const {
         }
         for(std::size_t i=0;i<held->clips.size();++i) {
             auto& clip=held->clips[i];
+            if(clip->monitorInputOnly)continue;
             if(clip->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
             for(const auto number:clip->wanted(target,frames,false)) {
                 if(number<0)continue;
@@ -716,7 +728,8 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
     for(auto& clip:impl_->clips){(void)wanted(*clip,pages);clip->request(pages);}
     do {
         bool ready=true;
-        for(const auto& c:impl_->clips)if(c->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
+        for(const auto& c:impl_->clips)
+            if(!c->monitorInputOnly && c->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
         for(auto& clip:impl_->clips) {
             (void)wanted(*clip,pages);
             for(const auto number:pages) {
