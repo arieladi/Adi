@@ -10,7 +10,6 @@
 #include "juce/mix_function_host.hpp"
 #include "juce/device_bridge.hpp"
 #include "adi/gesture_presentation.hpp"
-#include <array>
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "ui_fake_peer.hpp"
 #include <algorithm>
@@ -21,6 +20,7 @@
 #include <iostream>
 #include <memory>
 #include <numbers>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -85,10 +85,12 @@ struct Event {
 // Exercises the actual GUI callback/coordinator seam without opening hardware.
 struct SimulatedDevice final : juce::AudioIODevice {
     SimulatedDevice() : AudioIODevice("Owned callback fixture", "test") {}
+    double rate = 48000.;
+    int frames = 256;
     juce::StringArray getOutputChannelNames() override { return {"L", "R"}; }
     juce::StringArray getInputChannelNames() override { return {}; }
-    juce::Array<double> getAvailableSampleRates() override { return {48000.}; }
-    juce::Array<int> getAvailableBufferSizes() override { return {256}; }
+    juce::Array<double> getAvailableSampleRates() override { return {44100., 48000.}; }
+    juce::Array<int> getAvailableBufferSizes() override { return {256, 512}; }
     int getDefaultBufferSize() override { return 256; }
     juce::String open(const juce::BigInteger &, const juce::BigInteger &, double, int) override { return {}; }
     void close() override {}
@@ -97,8 +99,8 @@ struct SimulatedDevice final : juce::AudioIODevice {
     void stop() override {}
     bool isPlaying() override { return true; }
     juce::String getLastError() override { return {}; }
-    int getCurrentBufferSizeSamples() override { return 256; }
-    double getCurrentSampleRate() override { return 48000.; }
+    int getCurrentBufferSizeSamples() override { return frames; }
+    double getCurrentSampleRate() override { return rate; }
     int getCurrentBitDepth() override { return 32; }
     juce::BigInteger getActiveOutputChannels() const override { return juce::BigInteger(3); }
     juce::BigInteger getActiveInputChannels() const override { return {}; }
@@ -143,11 +145,13 @@ struct KeyProbe final : device::DeviceInstance {
             }
     }
 };
-struct KeyTone final : engine::Node {
+struct CallbackTone final : engine::Node {
+    std::array<float, 2> channels{.25f, .25f};
     void process(const engine::NodeIo &io) noexcept override {
-        for (int c = 0; c < io.channels; ++c)
-            if (io.out && io.out[c])
-                std::fill_n(io.out[c] + io.blockOffset, io.frames, .25f);
+        if (!io.out) return;
+        for (int c = 0; c < std::min(io.channels, 2); ++c)
+            if (io.out[c])
+                std::fill_n(io.out[c] + io.blockOffset, io.frames, channels[static_cast<std::size_t>(c)]);
     }
 };
 void callbackKeys(AppCommands &commands, const std::filesystem::path &directory) {
@@ -169,7 +173,7 @@ void callbackKeys(AppCommands &commands, const std::filesystem::path &directory)
     check(bool(doc), "callback key document opens");
     if (!doc)
         return;
-    KeyTone tone;
+    CallbackTone tone;
     doc->session().setSourcesFor([&](std::int64_t track) {
         return track == 2 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
     });
@@ -258,6 +262,137 @@ void callbackKeys(AppCommands &commands, const std::filesystem::path &directory)
         record = shown.parameters().front();
         control.present(record, 0);
     }
+    bridge.audioDeviceStopped();
+}
+void callbackAnalyzerRateChange(const std::filesystem::path &directory) {
+    constexpr std::int64_t mainTrack = 1;
+    constexpr std::int64_t programmeTrack = 2;
+    constexpr int fftSize = 1024;
+    StoreError status{};
+    const auto path = directory / "analyzer-rate.adi";
+    auto store = Store::create(path, status);
+    check(bool(store), "sample rate fixture creates a project");
+    if (!store) return;
+    store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'master','Main'),(2,'audio','Programme');"
+                     "INSERT INTO mixer_strip(track_id,volume_db) VALUES(1,0),(2,0);");
+    store.reset();
+
+    CallbackTone tone;
+    tone.channels = {.375f, .125f};
+    std::string error;
+    auto doc = ProjectDocument::open(path, false, {}, error);
+    check(bool(doc), "sample rate fixture opens through ProjectDocument");
+    if (!doc) return;
+    doc->session().setSourcesFor([&](std::int64_t track) {
+        return track == programmeTrack ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+    });
+    SimulatedDevice hardware;
+    device::DeviceBridge bridge(*doc);
+    doc->session().graph().setFadeFrames(0);
+    bridge.setRequestedBlockSize(hardware.frames);
+    bridge.audioDeviceAboutToStart(&hardware);
+    doc->session().transport().play();
+
+    const auto broker = doc->analysis();
+    SharedAnalysis::Request request{mainTrack, engine::ScopePoint::PostFader, fftSize};
+    request.outputs = SharedAnalysis::Scope;
+    auto scope = broker->acquire(request);
+    request.outputs = SharedAnalysis::Spectrogram;
+    auto spectrogram = broker->acquire(request);
+    auto meter = broker->acquireStereoMeter(mainTrack, {});
+    const auto leasesSurvive = [&] {
+        const auto stats = broker->stats();
+        return doc->analysis() == broker && scope.available() && spectrogram.available() && meter.available() &&
+               stats.consumers == 3 && stats.domains == 2 && stats.taps == 1;
+    };
+    check(bridge.lastOpen().opened && leasesSurvive(), "one project Main tap feeds both windows and the stereo meter");
+
+    std::array<std::array<float, 256>, 2> pcm{};
+    std::array<float *, 2> out{pcm[0].data(), pcm[1].data()};
+    const auto render = [&](int callbacks) {
+        for (int i = 0; i < callbacks; ++i)
+            bridge.audioDeviceIOCallbackWithContext(nullptr, 0, out.data(), 2, hardware.frames, {});
+        broker->pump(); // Direct bounded pass; no requestFrame or view refresh rebinds the tap.
+    };
+    const auto freshAnalysis = [&] {
+        const auto frame = scope.read();
+        const auto reading = meter.readStereoMeter();
+        if (!frame || frame != spectrogram.read() || !reading ||
+            frame->scopeLeft.size() != fftSize || frame->scopeRight.size() != fftSize ||
+            frame->columns.empty() || !frame->columns.back().binsDbfs) return false;
+        const auto allValue = [](const auto &samples, float value) {
+            return std::all_of(samples.begin(), samples.end(), [value](float sample) { return sample == value; });
+        };
+        return bridge.core().oversizeRefusals() == 0 &&
+               frame->request.track == mainTrack && frame->advancing &&
+               frame->sampleRate == hardware.rate && reading->sampleRate == hardware.rate &&
+               frame->generation == reading->generation &&
+               allValue(frame->scopeLeft, tone.channels[0]) && allValue(frame->scopeRight, tone.channels[1]) &&
+               allValue(std::span(pcm[0]).first(static_cast<std::size_t>(hardware.frames)), tone.channels[0]) &&
+               allValue(std::span(pcm[1]).first(static_cast<std::size_t>(hardware.frames)), tone.channels[1]) &&
+               reading->reading.maximumPeak == std::array<double, 2>{std::abs(tone.channels[0]), std::abs(tone.channels[1])};
+    };
+    render(4);
+    check(freshAnalysis(), "48 kHz/256 device audio drives Main scope, history and peak publication");
+    // Retain the snapshots a frozen reader would own throughout both changes.
+    const auto frozen = scope.read();
+    const auto frozenMeter = meter.readStereoMeter();
+    if (!frozen || !frozenMeter || frozen->columns.empty() || !frozen->columns.front().binsDbfs) {
+        bridge.audioDeviceStopped();
+        return;
+    }
+    const auto frozenLeft = frozen->scopeLeft;
+    const auto frozenRight = frozen->scopeRight;
+    const auto frozenColumnCount = frozen->columns.size();
+    const auto frozenBins = frozen->columns.front().binsDbfs;
+    const auto frozenBinsData = *frozenBins;
+    const auto frozenPeaks = frozenMeter->reading.maximumPeak;
+
+    const auto verifyReplacement = [&](const auto &previous, const auto &previousMeter) {
+        const auto position = scope.sourcePosition();
+        check(bridge.lastOpen().opened && leasesSurvive() && previous &&
+                  position.generation > previous->generation && position.written == 0 &&
+                  spectrogram.sourcePosition().generation == position.generation &&
+                  meter.sourcePosition().generation == position.generation &&
+                  !scope.read() && !spectrogram.read() && !meter.readStereoMeter(),
+              "device prepare invalidates old results and preserves the same three leases before any analyser frame");
+        render(1);
+        check(!scope.read() && !spectrogram.read(),
+              "a partial new window cannot resurrect samples or history from the former tap");
+        render(3);
+        check(freshAnalysis(), "current-rate PCM and metering reach the retained Main leases without reopening the project");
+        const auto next = scope.read();
+        const auto nextMeter = meter.readStereoMeter();
+        check(previous && previousMeter && next && nextMeter && next->generation > previous->generation &&
+                  next->sourceEpoch > previous->sourceEpoch && nextMeter->epoch > previousMeter->epoch &&
+                  next->generation == position.generation && !next->columns.empty() &&
+                  std::all_of(next->columns.begin(), next->columns.end(), [&](const auto &column) {
+                      return column.binsDbfs && std::none_of(previous->columns.begin(), previous->columns.end(),
+                          [&](const auto &old) { return old.binsDbfs == column.binsDbfs; });
+                  }),
+              "new source epochs publish only spectrogram columns acquired from the replacement tap");
+    };
+    const auto streamTime = bridge.core().streamTime();
+    hardware.rate = 44100.;
+    tone.channels = {-.25f, .0625f};
+    bridge.audioDeviceAboutToStart(&hardware);
+    check(bridge.core().reconfigurations() == 1 && bridge.core().streamTime() == streamTime,
+          "the open device changes only its sample rate, preserving block size and stream clock");
+    verifyReplacement(frozen, frozenMeter);
+
+    const auto beforeStop = scope.read();
+    const auto meterBeforeStop = meter.readStereoMeter();
+    bridge.audioDeviceStopped();
+    tone.channels = {.03125f, -.125f};
+    bridge.audioDeviceAboutToStart(&hardware);
+    check(bridge.core().reconfigurations() == 0 && bridge.core().streamTime() == 0,
+          "stopping and reopening at the same format exercises the DeviceBridge open path");
+    verifyReplacement(beforeStop, meterBeforeStop);
+    check(frozen->sampleRate == 48000. && frozen->scopeLeft == frozenLeft && frozen->scopeRight == frozenRight &&
+              frozen->columns.size() == frozenColumnCount && frozen->columns.front().binsDbfs == frozenBins &&
+              *frozenBins == frozenBinsData &&
+              frozenMeter->sampleRate == 48000. && frozenMeter->reading.maximumPeak == frozenPeaks,
+          "a retained frozen scope, spectrogram and meter snapshot stays immutable across both replacements");
     bridge.audioDeviceStopped();
 }
 void functions(AppCommands &commands, const std::filesystem::path &directory) {
@@ -1299,6 +1434,7 @@ int main() {
     settings::AppSettings settings(appdata::App::Daw, temporary.path() / "settings.json");
     AppCommands commands(settings);
     callbackKeys(commands, temporary.path());
+    callbackAnalyzerRateChange(temporary.path());
     functions(commands, temporary.path());
     parameterPages(commands, temporary.path());
     stackEqSpectrum(commands, temporary.path());
