@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Measure the existing full refresh on a refused key
+
+The same owned scenario now exercises the existing full Session refresh directly after one committed route change. It attempts key preparation once, reports the intended failure, keeps the prior graph and applied sequence, and calls the original recipient on the next block. The output is exactly the original programme. Retrying applies the same route without a second Undo entry. The single failing assertion out of 212 is that the realised Session model already exposes the new route after the failed rebuild.
+
+DF-M60 (b)'s full-refresh fallback must restore the prior realised route and key intent upon failure before retry. Capture the original SDK intent separately from declared width and keep the durable edit and receipt pending. This proof is specific to the owned refusal and does not establish rollback for arbitrary third-party SDK failures.
+
 ### 2026-11-19 — Reconcile the older Mix View register rows
 
 The cumulative branch contains the implementation and headless gates for DF-M4, M10, M19, M21, M22 and M24–M26. These cover changing audio format and resuming analysis in place, restored Stack settings, spectrum slope, native activators and add menus, Compare/Average/Classic Scope, the detached analyser return, and withdrawal of reserved slots. Live acceptance remains separate. The retained Ducking test fixture has no production producer or reserved slot.
