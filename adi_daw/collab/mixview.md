@@ -8,6 +8,15 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M19 spectrum slope and adjacent rows
+
+**PR requested.** `mixview/slope-fanout-dfm19-20261119` is pushed at `7b5daa0c` after `c425fc49`. Overview, the attached dock and the detail spectrum consume the same stored slope. The detached pane remains independent after opening. A fake-peer fixture proved that one slope change adds zero taps, reads, worker passes, transforms and publications. The next hop does one transform and all three projections still share the immutable window. The first fixture exceeded the Windows test executable's stack reserve; heap-owning the fixture pane fixed that without changing the product or its linker stack. Release passed 857 software-peer checks and three selected CTests.
+
+- Release ZIP `outputs/ADI-MixView-Spectrum-Slope-7b5daa0cd8-win64-Release.zip`, SHA-256 `c9449b283e05a10aa86f708cce99c52eefa5b1f31be27b7ed4b534ce31939b60`.
+- ADI.exe SHA-256 `b4e2bcf4d70d018964d9395f1fa06cecbe2979e7aab62a9379fbf772362d2724`, scanner SHA-256 `f923bcfee3ad5ffce0a163e330f9ddc125d835403cd1da7cd183cb584861c8a7`. Corresponding source SHA-256 `38b9e220c3d704e5e911ae7b400fafda28d838047abd9e3f7399e9b8f4c115ae`. Claude brief `outputs/ADI-Q-MixView-Spectrum-Slope-7b5daa0c-CLAUDE-RETEST.txt`.
+- DF-M21/22 are already exercised in this cumulative build through #580 and B3. Remove/recover/Undo for a native activator, ordinary bypass, and plus-to-add on the chosen actual chain retain their existing gates. There is no duplicate branch. DF-M23 is parked on Win's storage, file-format and chain-placement ADR. The director's replacement decision is settled in ADR-0240 and the private preset prototype stays off the review branch.
+- Strict Release follow-up on DF-M57 and #555 exact Hold ancestry `ce8690d0`: compressor (158), Clean key (236), Carve and Focus all pass. The active-Hold case checks fallout and reset under finite and invalid input. This is additive gate evidence for the existing M57 and Hold branches.
+
 ## 19 November 2026 — DF-M16–18, strict Release repro of dynamics and key filters
 
 **PR requested.** The existing #558 and #573 author branches were fast-forwarded to `fa3a1d3f` and `4a5478ea`. Land #558 first; re-review these exact heads. #573 follows #570. Independently assembled source `95844115` passed all seven Release CTests with warnings-as-errors (2,659 checks, zero callback/process allocations and frees). This includes the matched sections, compressor, de-esser, gate, key EQ, Clean key, and Opto. The Opto test includes its fast-math translation unit. The private evidence directory is `NowWeReverse/ADI-View/mixview-seat/dfm16-18-built-20261119`.
