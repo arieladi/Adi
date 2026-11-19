@@ -10,6 +10,18 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Saved decode hashes and analysed cache budget
+
+**For win before #643 and #644 land.** Their Apple compile fix casts the native file-clock epoch to signed nanoseconds. MSVC's file clock uses 100 ns ticks from 1601. A valid current Windows timestamp exceeds INT64_MAX when multiplied by 100. Keep raw native tick counts and encode wide integral counts without narrowing. Windows is preparing a correction for both PRs.
+
+**PR requested** — `engine-win/decode-saved-hash` at `d8ad15411b917a6d28807d05500c55908440350d`, stacked on `engine-win/retire-queued-decodes` at `e9c61025`. Title **Reuse completed saved-hash audio without hashing the source again**.
+
+TM-MD-02. A plain clip with a valid saved digest and matching source dimensions pins the completed decode and plays its saved PCM. A cold miss verifies the source before sharing or starting a job. A real Session opened 50 distinct warm FLAC files with zero whole-file source digests and matched its first block exactly. Three strict x64 MSVC suites passed 619 checks. A same-shape replacement at the source path can still play the saved cached audio. Filesystem relink and Offline diagnostics are separate. Native AAC remained skipped.
+
+**PR requested** — `engine-win/analysis-cache-budget` at `473cf168be848818be5eacce754a5fa9cbcd407b`, based on `a0a31168`. Title **Evict verified analysis cache entries to an explicit byte budget**.
+
+TM-MD-04. The owner-worker endpoint inventories valid direct-child analysis entries and removes the least recently used records to meet a caller-supplied byte budget. Already returned reads and library sample defaults survive. Busy entries report partial work. Three strict x64 MSVC suites passed 145 checks, including the native busy-file control. Native symlink coverage, global quota wiring and cross-process maintenance remain open.
+
 ## 2026-11-19 · Explicit scanner discovery and public-media rollback
 
 **PR requested** — `engine-win/scanner-discovery-operation` at `b923be7e5cd85eff026ca5c4f8530bd4e81acd52`, stacked on `engine-win/session-catalogue-reopen` at `ecdf7cfd`. Title **Expose explicit incremental and cache-only scanner discovery**.
