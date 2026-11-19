@@ -2175,9 +2175,9 @@ bool DeviceChainStrip::action(const std::string &op, Payload p) {
 bool DeviceChainStrip::setEnabledExpected(const DevicePanelData &expected, bool enabled) {
     const auto safe = SafePointer<DeviceChainStrip>(this);
     const auto id = expected.id;
-    const bool native = !expected.plugin && mix::functionForUid(expected.uid);
-    // Retain only identity across a callback that can replace the publication
-    // or destroy its panel. Do not copy a large parameter table for this action.
+    const bool removeNative = expected.enabled && !expected.plugin && mix::functionForUid(expected.uid);
+    // Retain the click's operation and identity before revalidation can
+    // replace the publication or destroy its panel.
     DevicePanelData identity;
     identity.id = id;
     identity.runtime = expected.runtime;
@@ -2187,7 +2187,7 @@ bool DeviceChainStrip::setEnabledExpected(const DevicePanelData &expected, bool 
     // Compatibility: older projects, control clients and Bounce can leave a
     // native function bypassed. Its first activation recovers it; deactivating
     // an active native function still means remove plus Undo.
-    if (native && expected.enabled)
+    if (removeNative)
         return safe->action("device.remove", {{"id", id}});
     return safe->action("device.setEnabled", {{"id", id}, {"enabled", enabled}});
 }
