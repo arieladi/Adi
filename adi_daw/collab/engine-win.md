@@ -12,6 +12,11 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Current scanner timing attempt, partial
+
+- **MEASURED.** The exact Refresh player and helper at `8adc7a92` built under strict native MSVC x64 Debug. The helper self-test and the owned VST3 positive control passed. Four accepted invocations in one paired repeat returned the same 96 ordered classes. Both warm arms made zero observed CLAP initializations and zero VST3 factory calls.
+- **NOT RUN.** The planned complete five-pair comparison. The next cold observation encountered a concurrent build and was excluded. No new confidence interval, worker-count ranking or comparison with the earlier branch is supported. The sealed binaries, input hashes and partial receipts are in the director's research.
+
 ## 2026-11-19 — Review order for the Windows engine seat
 
 - First, review `engine-win/sqlitecpp-wal-reset-fix` (`8a8f9a00`) independently. This changes the SQLite version actually linked by ADI. Run ADR-0024's full ABI matrix.
