@@ -180,7 +180,110 @@ void validationAndRaces(const fs::path& self) {
           next.plugins.front().version=="mutated during child","stable replacement succeeds on a later explicit probe");
     std::atomic<bool> cancel{false};f.config.process.cancel=&cancel;auto cancellable=f.scanner();late.cancel=&cancel;
     check(cancellable->probe("clap",path,Late::validate,&late).state==State::Cancelled &&
-          registry->scanBlocks(f.error)->empty(),"cancellation during cached format validation publishes nothing and abandons its ticket");
+          registry->scanBlocks(f.error)->empty(),"cancellation during cached format validation publishes nothing and leaves no pending ticket");
+}
+void readOnlyWarmSuccess(const fs::path& self) {
+    Fixture f(self);const auto path=f.candidate();auto scanner=f.scanner();
+    check(scanner->probe("clap",path).state==State::Ready && launches(path)==1,
+          "read-only warm fixture first populates success through a real child");
+    SQLite::Database db(utf8(f.config.registry),SQLite::OPEN_READWRITE);
+    db.exec("CREATE TRIGGER refuse_pending BEFORE INSERT ON plugin_scan_blocks "
+            "WHEN NEW.state='pending' BEGIN SELECT RAISE(ABORT,'pending write forbidden'); END");
+    const auto before=db.execAndGet("PRAGMA data_version").getInt64();
+    const auto sequence=db.execAndGet("SELECT seq FROM sqlite_sequence WHERE name='plugin_scan_blocks'").getInt64();
+    const auto warm=scanner->probe("clap",path);
+    check(warm.state==State::Ready && warm.cacheHit && launches(path)==1 &&
+          db.execAndGet("PRAGMA data_version").getInt64()==before &&
+          db.execAndGet("SELECT seq FROM sqlite_sequence WHERE name='plugin_scan_blocks'").getInt64()==sequence,
+          "warm success performs no registry write or child launch while pending INSERT is forbidden");
+    scanner.reset();scanner=f.scanner();const auto reopened=scanner->probe("clap",path);
+    check(reopened.state==State::Ready && reopened.cacheHit && launches(path)==1,
+          "read-only warm success survives Scanner reopen and still launches only the original child");
+    const auto cold=f.candidate("cold.clap");
+    check(scanner->probe("clap",cold).state==State::Quarantined && launches(cold)==0,
+          "positive control proves the INSERT trigger still refuses a cold admission before child launch");
+    db.exec("DROP TRIGGER refuse_pending");
+    auto registry=f.registry(),foreign=f.registry();
+    const auto canonical=utf8(fs::canonical(path));
+    const auto stamp=db.execAndGet("SELECT stamp FROM plugin_scan_cache").getString();
+    const auto read=registry->readScanSuccess("clap",canonical,stamp,f.error);
+    check(read && registry->confirmScanSuccess(*read,f.error) && !foreign->confirmScanSuccess(*read,f.error),
+          "a bounded warm receipt confirms only on the registry connection that read it");
+    db.exec("INSERT INTO plugin_scan_failures(format,path,stamp,kind,reason,strikes,block_id,updated_utc) "
+            "SELECT format,path,stamp,'rejected','late rejection',0,NULL,124 FROM plugin_scan_cache");
+    check(read && !registry->confirmScanSuccess(*read,f.error) &&
+          !registry->readScanSuccess("clap",canonical,stamp,f.error),
+          "typed negative result excludes an otherwise matching success from both read observations");
+    const auto negative=scanner->probe("clap",path);
+    check(negative.state==State::Failed && negative.failureCacheHit && !negative.cacheHit && launches(path)==1,
+          "ordinary typed-negative precedence remains authoritative over a stale positive without child launch");
+}
+void warmRowRecheck(const fs::path& self) {
+    for(const auto* mutation : {"DELETE FROM plugin_scan_cache",
+            "UPDATE plugin_scan_cache SET updated_utc=updated_utc+1",
+            "UPDATE plugin_scan_cache SET stamp='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+            "UPDATE plugin_scan_cache SET packet=replace(packet,'Cache fixture','Cache changed')"}) {
+        Fixture f(self);const auto path=f.candidate();auto scanner=f.scanner();
+        check(scanner->probe("clap",path).state==State::Ready,"row-recheck fixture is populated");
+        SQLite::Database db(utf8(f.config.registry),SQLite::OPEN_READWRITE);
+        db.exec("CREATE TRIGGER refuse_pending BEFORE INSERT ON plugin_scan_blocks "
+                "WHEN NEW.state='pending' BEGIN SELECT RAISE(ABORT,'pending write forbidden'); END");
+        struct Mutation {
+            SQLite::Database* db;const char* sql;bool called=false;
+            static bool validate(const std::vector<Plugin>&,const std::string&,void* raw,std::string&) {
+                auto& change=*static_cast<Mutation*>(raw);change.called=true;change.db->exec(change.sql);return true;
+            }
+        } change{&db,mutation};
+        const auto result=scanner->probe("clap",path,Mutation::validate,&change);
+        check(change.called && result.state==State::Quarantined && !result.cacheHit && result.plugins.empty() && launches(path)==1,
+              "cache deletion, update value, stamp or packet change during validation cannot publish the old receipt; ticket fallback is enforced");
+    }
+    Fixture f(self);const auto path=f.candidate();auto scanner=f.scanner();scanner->probe("clap",path);
+    auto registry=f.registry();
+    struct Pending {
+        PluginRegistry* registry;std::optional<ScanTicket> ticket;
+        static bool validate(const std::vector<Plugin>&,const std::string& path,void* raw,std::string& error) {
+            auto& race=*static_cast<Pending*>(raw);race.ticket=race.registry->beginScan("clap",path,124,error);
+            return race.ticket.has_value();
+        }
+    } pending{registry.get(),{}};
+    const auto result=scanner->probe("clap",path,Pending::validate,&pending);
+    const auto blocks=registry->scanBlocks(f.error);
+    check(pending.ticket && result.state==State::Quarantined && result.plugins.empty() && launches(path)==1 &&
+          blocks && blocks->size()==1 && blocks->front().state==ScanBlockState::Pending,
+          "a competing pending ticket inserted by the validator defeats warm publication and is never completed by this owner");
+    if(pending.ticket)registry->finishScan(*pending.ticket,ScanDisposition::Abandoned,"",125,f.error);
+    std::atomic<bool> cancel{false};f.config.process.cancel=&cancel;auto cancellable=f.scanner();
+    struct BlockCancel {
+        PluginRegistry* registry;std::atomic<bool>* cancel;
+        static bool validate(const std::vector<Plugin>&,const std::string& path,void* raw,std::string& error) {
+            auto& race=*static_cast<BlockCancel*>(raw);
+            const bool blocked=race.registry->blockScan("clap",path,"late manual block and cancel",126,error);
+            race.cancel->store(true);return blocked;
+        }
+    } blocked{registry.get(),&cancel};
+    const auto cancelled=cancellable->probe("clap",path,BlockCancel::validate,&blocked);
+    check(cancelled.state==State::Quarantined && cancelled.plugins.empty() && launches(path)==1,
+          "late manual quarantine remains authoritative when format validation also requests cancellation");
+    for(const bool manual : {false,true}) {
+        Fixture change(self);const auto module=change.candidate();auto owner=change.scanner();
+        owner->probe("clap",module);auto competing=change.registry();
+        struct BlockMutation {
+            PluginRegistry* registry;bool manual;
+            static bool validate(const std::vector<Plugin>&,const std::string& path,void* raw,std::string& error) {
+                auto& race=*static_cast<BlockMutation*>(raw);
+                const bool accepted=race.manual?race.registry->blockScan("clap",path,"late manual block",124,error):
+                    race.registry->beginScan("clap",path,124,error).has_value();
+                write(native(path),"changed while another owner blocks");return accepted;
+            }
+        } race{competing.get(),manual};
+        const auto changed=owner->probe("clap",module,BlockMutation::validate,&race);
+        const auto retained=competing->scanBlocks(change.error);
+        check(changed.state==State::Quarantined && changed.plugins.empty() && launches(module)==1 &&
+              retained && retained->size()==1 && retained->front().state==
+                  (manual?ScanBlockState::Blocked:ScanBlockState::Pending),
+              "late manual/pending state beats simultaneous candidate instability without completing another owner's row");
+    }
 }
 void stampsAndTransaction(const fs::path& self) {
     Fixture f(self);auto scanner=f.scanner();const auto bundle=f.temp.path()/"Bundle.vst3";
@@ -375,10 +478,14 @@ void strikesAndAbandonment(const fs::path& self) {
     SQLite::Statement failed(db,"SELECT count(*) FROM plugin_scan_failures WHERE path=?");failed.bind(1,utf8(fs::canonical(cancelled)));failed.executeStep();
     check(result.state==State::Cancelled && result.failureStrikes==0 && launches(cancelled)==1 && failed.getColumn(0).getInt()==0,
         "cancellation reaps the child without a cached result or crash strike");
+    const auto coldBusy=f.candidate("busy-cold.clap","healthy");
     const auto before=launches(crash);db.exec("BEGIN IMMEDIATE");
-    const auto busy=scanner->probe("clap",crash);db.exec("ROLLBACK");
-    check(busy.state==State::Quarantined && launches(crash)==before,
-        "busy registry admission launches no child and returns no success metadata");
+    const auto warm=scanner->probe("clap",crash);
+    const auto busy=scanner->probe("clap",coldBusy);db.exec("ROLLBACK");
+    check(warm.state==State::Ready && warm.cacheHit && launches(crash)==before,
+        "a committed matching success remains readable under an unrelated WAL writer without a ticket");
+    check(busy.state==State::Quarantined && busy.plugins.empty() && launches(coldBusy)==0,
+        "busy registry admission for a cache miss launches no child and returns no success metadata");
 }
 void retryAliases(const fs::path& self) {
     Fixture f(self);auto scanner=f.scanner();auto registry=f.registry();const auto path=f.candidate();
@@ -520,7 +627,7 @@ void parallelProbeGate(const fs::path& self) {
 
 int entry(const std::vector<std::string>& args) {
     if(args.size()==4 && args[1]=="--scan")return helper(args);
-    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
+    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);readOnlyWarmSuccess(self);warmRowRecheck(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
     catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

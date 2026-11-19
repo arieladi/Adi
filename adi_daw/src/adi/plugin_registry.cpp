@@ -392,6 +392,57 @@ bool PluginRegistry::blockScan(const std::string& format, const std::string& pat
     } catch(const std::exception& failure) {error=failure.what();return false;}
 }
 
+std::optional<ScanSuccessRead> PluginRegistry::readScanSuccess(const std::string& format,
+    const std::string& path,const std::string& stamp,std::string& error) const {
+    if(audio::onAudioThread)return std::nullopt;
+    error.clear();
+    try {
+        require(key(format,path) && cacheStamp(stamp),"invalid success-cache identity or stamp");
+        SQLite::Statement query(*db_,
+            "SELECT c.packet,length(CAST(c.packet AS BLOB)),c.updated_utc FROM plugin_scan_cache c "
+            "WHERE c.format=? AND c.path=? AND c.stamp=? "
+            "AND NOT EXISTS(SELECT 1 FROM plugin_scan_blocks b WHERE b.format=c.format AND b.path=c.path) "
+            "AND NOT EXISTS(SELECT 1 FROM plugin_scan_failures f WHERE f.format=c.format AND f.path=c.path)");
+        query.bind(1,format);query.bind(2,path);query.bind(3,stamp);
+        if(!query.executeStep())return std::nullopt;
+        require(query.getColumn(0).isText() && query.getColumn(1).isInteger() &&
+                query.getColumn(2).isInteger() && query.getColumn(2).getInt64()>=0,
+                "invalid stored scan cache types");
+        const auto bytes=query.getColumn(1).getInt64();
+        require(bytes>0 && bytes<=static_cast<std::int64_t>(kMaximumScanPacket),
+                "stored scan packet exceeds bounds");
+        ScanSuccessRead result;result.format_=format;result.path_=path;result.stamp_=stamp;
+        result.packet_=query.getColumn(0).getString();result.updatedUtc_=query.getColumn(2).getInt64();
+        result.owner_=scanOwner_;return result;
+    } catch(const std::exception& failure) {error=failure.what();return std::nullopt;}
+}
+std::optional<bool> PluginRegistry::hasScanBlock(const std::string& format,const std::string& path,
+    std::string& error) const {
+    if(audio::onAudioThread)return std::nullopt;
+    error.clear();
+    try {
+        require(key(format,path),"invalid scan block identity");
+        SQLite::Statement query(*db_,"SELECT 1 FROM plugin_scan_blocks WHERE format=? AND path=?");
+        query.bind(1,format);query.bind(2,path);return query.executeStep();
+    } catch(const std::exception& failure) {error=failure.what();return std::nullopt;}
+}
+bool PluginRegistry::confirmScanSuccess(const ScanSuccessRead& read,std::string& error) const {
+    if(audio::onAudioThread)return false;
+    error.clear();
+    try {
+        require(read.owner_.lock()==scanOwner_,"foreign or expired success-cache read");
+        SQLite::Statement query(*db_,
+            "SELECT 1 FROM plugin_scan_cache c WHERE c.format=? AND c.path=? AND c.stamp=? "
+            "AND typeof(c.packet)='text' AND c.packet=? COLLATE BINARY "
+            "AND typeof(c.updated_utc)='integer' AND c.updated_utc=? "
+            "AND NOT EXISTS(SELECT 1 FROM plugin_scan_blocks b WHERE b.format=c.format AND b.path=c.path) "
+            "AND NOT EXISTS(SELECT 1 FROM plugin_scan_failures f WHERE f.format=c.format AND f.path=c.path)");
+        query.bind(1,read.format_);query.bind(2,read.path_);query.bind(3,read.stamp_);
+        query.bind(4,read.packet_);query.bind(5,read.updatedUtc_);
+        return query.executeStep();
+    } catch(const std::exception& failure) {error=failure.what();return false;}
+}
+
 std::optional<std::string> PluginRegistry::cachedScan(const ScanTicket& ticket,
     const std::string& stamp, std::string& error) const {
     if(audio::onAudioThread)return std::nullopt;

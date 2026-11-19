@@ -285,12 +285,6 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         const auto stamp=candidateStamp(format,canonical,helperBuildHash_,result.error);
         if(!stamp){result.cacheWarning=result.error;result.error.clear();}
         std::optional<ScanTicket> ticket;
-        std::optional<ScanFailure> cachedFailure;
-        if(stamp) {
-            auto admission=registry_->beginStampedScan(format,result.path,*stamp,config_.clock(),result.error);
-            if(admission){ticket=std::move(admission->ticket);cachedFailure=std::move(admission->cachedFailure);}
-        } else ticket=registry_->beginScan(format,result.path,config_.clock(),result.error);
-        if(!ticket && !cachedFailure){result.state=State::Quarantined;return result;}
         auto stable=[&]() {
             const auto after=candidateStamp(format,canonical,helperBuildHash_,result.error);
             std::error_code sizeError,timeError;
@@ -304,6 +298,50 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
             } else {result.state=State::Unavailable;result.error="scan candidate or helper changed during probe; retry required";}
             return false;
         };
+        if(stamp) {
+            const auto read=registry_->readScanSuccess(format,result.path,*stamp,result.error);
+            if(read && read->packet().size()<=config_.process.maximumOutput) {
+                auto plugins=decodeMetadata(read->packet(),format,result.path,result.error);
+                if(plugins && plugins->empty())plugins.reset();
+                if(plugins && validate && !validate(*plugins,result.path,context,result.error))plugins.reset();
+                const bool cancelled=config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed);
+                if(cancelled) {
+                    // A late block/ticket remains authoritative even when the
+                    // validator also cancels. Let ordinary admission decide it.
+                    if(registry_->confirmScanSuccess(*read,result.error)) {
+                        result.state=State::Cancelled;result.error.clear();return result;
+                    }
+                } else if(plugins) {
+                    if(!stable()) {
+                        // Ticketed completion would refuse a late block even
+                        // when the candidate changed too. Preserve that priority
+                        // without inserting or completing a ticket on this path.
+                        std::string blockError;
+                        const auto blocked=registry_->hasScanBlock(format,result.path,blockError);
+                        if(!blocked || *blocked) {
+                            result.state=State::Quarantined;
+                            result.error=blocked ? "scan became blocked or pending during validation" : blockError;
+                        }
+                        return result;
+                    }
+                    if(registry_->confirmScanSuccess(*read,result.error)) {
+                        if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
+                            result.state=State::Cancelled;return result;
+                        }
+                        result.state=State::Ready;result.cacheHit=true;result.plugins=std::move(*plugins);return result;
+                    }
+                }
+            }
+            // Misses, blocked/changed rows and malformed metadata retain the
+            // original ticketed admission/repair path and its failure policy.
+            result.error.clear();
+        }
+        std::optional<ScanFailure> cachedFailure;
+        if(stamp) {
+            auto admission=registry_->beginStampedScan(format,result.path,*stamp,config_.clock(),result.error);
+            if(admission){ticket=std::move(admission->ticket);cachedFailure=std::move(admission->cachedFailure);}
+        } else ticket=registry_->beginScan(format,result.path,config_.clock(),result.error);
+        if(!ticket && !cachedFailure){result.state=State::Quarantined;return result;}
         if(cachedFailure) {
             if(!stable())return result;
             if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {

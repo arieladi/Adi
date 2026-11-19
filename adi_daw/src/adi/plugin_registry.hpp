@@ -61,6 +61,17 @@ struct ScanAdmission {
     std::optional<ScanTicket> ticket;
     std::optional<ScanFailure> cachedFailure;
 };
+// Untrusted success bytes read without taking a durable scan ticket. The owner
+// must validate the packet, then confirm it against a fresh registry snapshot.
+class ScanSuccessRead {
+public:
+    [[nodiscard]] const std::string& packet() const noexcept { return packet_; }
+private:
+    friend class PluginRegistry;
+    std::string format_, path_, stamp_, packet_;
+    std::int64_t updatedUtc_ = 0;
+    std::weak_ptr<const int> owner_;
+};
 
 class PluginRegistry {
 public:
@@ -122,6 +133,19 @@ public:
     /// completion against a newer ticket. Existing quarantine remains intact.
     bool finishScan(const ScanTicket&, ScanDisposition, const std::string& reason,
                     std::int64_t nowUtc, std::string& error);
+    /// Read-only warm-success path. Any pending/manual/automatic block or typed
+    /// failure makes it ineligible; normal ticket admission owns those cases.
+    /// A miss is nullopt with empty error. Bytes remain bounded and UNTRUSTED.
+    std::optional<ScanSuccessRead> readScanSuccess(const std::string& format,
+        const std::string& path, const std::string& stamp, std::string& error) const;
+    /// Fresh single-statement read: same stamp, exact packet and update value,
+    /// with no blockers. False (including a race) never authorizes publication.
+    /// Neither call retains a SQL snapshot across the owner's format validator.
+    bool confirmScanSuccess(const ScanSuccessRead&, std::string& error) const;
+    /// Point observation for a rejected warm read: a concurrently installed
+    /// block/pending ticket takes precedence over candidate/helper instability.
+    std::optional<bool> hasScanBlock(const std::string& format, const std::string& path,
+                                    std::string& error) const;
     /// Success-cache lookup under the still-pending admission ticket. A miss
     /// is nullopt with an empty error. Packet bytes are bounded but UNTRUSTED:
     /// the scanner must decode and format-validate them as a fresh child reply.

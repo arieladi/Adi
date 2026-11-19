@@ -63,13 +63,29 @@ invalidation contract; this is not a content-integrity or tamper-detection cache
 CLAP-declared invalidation sources and shortcut-folder discovery remain later
 DEV-25 work.
 
-A cache hit still takes a pending ScanTicket. This is the same cross-application
-admission as a child probe, so a pending or manually blocked candidate cannot
-bypass quarantine by using cached descriptors. The packet is untrusted: bounded
-SQL extraction, ordinary strict JSON decoding, and the VST3 format validator all
-run again. A malformed packet is replaced only through a fresh isolated probe;
-an oversized or invalid stored row reports unavailable. No ABI object bytes are
-serialized. A valid cache packet is not evidence of runtime instantiation,
+A matching successful cache entry can now return without a durable pending or
+completion write. A single SQL read requires the stamped success and absence of
+both block and typed-failure rows for that identity. The packet is untrusted:
+bounded extraction, strict JSON decoding and the format validator all run again.
+After candidate/helper stability checks, a new single SQL read requires the same
+stamp, exact packet bytes and update value, still without blockers. The opaque
+receipt belongs to its registry connection. No SQL snapshot is retained across
+format validation, so a late committed manual block, automatic failure or another
+owner's pending ticket is visible. Cancellation never publishes descriptors.
+
+Misses, changed rows and malformed metadata use the existing ticketed admission
+and repair path; pending/manual blocks and typed failure/strike policy remain
+authoritative there. A malformed packet is replaced only through a fresh isolated
+probe; an oversized or invalid stored row reports unavailable. A cancelled warm
+validator that also creates a block retains quarantine precedence. If candidate
+or helper stability fails, a read-only point check preserves the priority of a
+late block/pending ticket over the retry-required result. Neither the
+fast path nor its receipt is a reservation against a writer committing after the
+final observation, or an atomic filesystem/database snapshot. Registry opening
+and migration remain separate from this read-only probe path. An unrelated WAL
+writer does not prevent reading an unchanged committed success; cache misses
+still require admission's write lease before a child can run. No ABI object bytes
+are serialized. A valid cache packet is not evidence of runtime instantiation,
 restored state or processed audio.
 
 The candidate stamp is checked again after validation. If it changed, the
@@ -77,8 +93,9 @@ attempt is abandoned with no descriptors and no new quarantine; a subsequent
 explicit probe can retry the stable candidate. A new success replaces the
 whole module packet in the same transaction that completes its exact pending
 ticket. A late user block or stale/foreign ticket cannot publish it, and a
-failed SQL insert rolls the ticket deletion back. Warm hits complete their
-ticket without rewriting the cached packet. Explicit re-enable removes both
+failed SQL insert rolls the ticket deletion back. Successful unchanged warm hits
+do not take a ticket; a ticketed fallback retains its existing completion rules.
+Explicit re-enable removes both
 the block and cached success, so its next probe is fresh.
 
 Packets and stored-packet extraction cap at 8 MiB. Every reliably stamped success
