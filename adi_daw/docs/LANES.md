@@ -95,8 +95,8 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    the six tuning and key ops of #444 (`tuning.create`, `tuning.delete`, `tuning.replace`,
    `project.insertKeyEvent`, `project.removeKeyEvent`, `project.setKeyScale`) listed at P1
    (TU-01; ADR-0203 d7, ADR-0227 d1); OPS §9.7's rack ops marked as capturing their whole subtree
-   (parameters, state, panels, routes, macros and the mappings that target them; DEV-03, P2;
-   ADR-0110, ADR-0203 d10); SPEC §6.2 reworded to Live's model, one main lane plays, take lanes
+   (parameters, state, panels, routes, macros and the mappings that target them; DEV-03, R, right
+   after 3 December, ADR-0249 d3; ADR-0110, ADR-0203 d10); SPEC §6.2 reworded to Live's model, one main lane plays, take lanes
    are auditioned, a comp is copies on the main lane, a NULL `lane_id` is the main lane, ADR-0037's
    comping wording superseded (ADR-0225 d1, d2). SPEC §3.7's rewording rides with the window's
    N45, SPEC §8.3's with HI-02's PR (ADR-0213), SPEC §6.5's with TM-SV-02's minor and SPEC §12
@@ -108,6 +108,10 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    director's Q-A1 answer A: every named snapshot and every dead end kept once as a deduplicated
    stored state, so the cap of ADR-0203 d13 always holds; the daily snapshot as d13; `moveTo`);
    AU-01 and AU-05 (Lock Envelopes read by the planner); the one allocator function (XC-22).
+   Then **R, racks, macros and modulation (ADR-0249 d3)**, once ADR-0248 d6's list is done after
+   3 December and ahead of any other engine row of M2 to M7: DEV-01, DEV-03 with rack paste
+   (`src/adi/device_copy.*`), DEV-06, DEV-07's evaluator, routes and nodes, then DEV-32 (win's
+   placement); TM-SV-01 waits behind them.
 5. **M3, time, media, MIDI in and safe files:** the Link line (#454, #455, #456, each retargeted
    to main in that order), then the consumer with XC-25's continuity, then tempo ramps on the same
    effective-tempo path (TM-TT-01); Global Quantization (TM-SV-01); the media line (the
@@ -135,7 +139,7 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    answer (a): then one beat, tempo and key analyser for ADI and ADiJ, chosen by the numbers), warp
    analysis and the short-sample rule (TM-WT-05; the director's Q-E answer (a): every drop arrives
    clean, Live's short-sample result on Warp or from the import prompt, the setting offers Live's
-   four choices). M7: Graph threads and the CPU timings, the modulation nodes and routes, the Pd
+   four choices). M7: Graph threads and the CPU timings, the Pd
    user tier on his answers of 5 November (Q-K1 A: vanilla Pd's editor attached to the running
    device, edits heard at once; Q-K2 1: no added delay when the buffer is a multiple of 64, events
    on Pd's tick, one reported block otherwise; Q-K3 1: editing a built-in makes a copy "<Device>
@@ -268,7 +272,10 @@ Standing prompt: `collab/prompts/2026-11-05-devices-lane-codex.md` (it replaces
 5. Every Live device not yet built, in the manual's order, P1 before P2 (ADR-0169): the audio
    effects, then the instruments, then Live Suite's Max for Live devices as native devices; one PR
    per device with its measured-render test and its plants. Live's Limiter device is not built: #259 was a release-time fix in ADI's own limiter core (`src/adi/dsp/limiter`), so Limiter is queued after Gate (win's fix of 19 November); Auto Pan and Tuner,
-   missing from the queue until then, follow Align Delay.
+   missing from the queue until then, follow Align Delay. Live's Beat Repeat follows Limiter, then
+   Live Suite's LFO and Shaper modulator kernels (DEV-07's device side), before the rest of the
+   queue; the older device versions the director's rack presets name come behind the current
+   devices (ADR-0249 d2, d7, d8).
 6. The parity passes of the fifteen built effects against Live 12 renders as they arrive.
 7. **The limiter's true-peak path**, one change shared with export (EX4, LD5).
 8. The DJ Filter device (ADR-0203 d8) on Auto Filter's cores, a pure bypass at centre.
