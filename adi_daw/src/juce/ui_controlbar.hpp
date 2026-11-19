@@ -45,6 +45,7 @@ class BarItem final : public juce::Button {
     juce::String text;
     Glyph glyph;
     bool boxed, dropdown;
+    bool workspaceSegment = false;
     // Live's automation LED in a field's upper left corner (manual 6.5: the time signature fields
     // show one "when the Arrangement contains time signature changes").
     bool automationLed = false;
@@ -93,8 +94,7 @@ class TransportBar final : public juce::Component {
         punchOut{{}, BarItem::Glyph::PunchOut}, loopLength{"4.  0.  0"},
         draw{{}, BarItem::Glyph::Draw}, keyboard{{}, BarItem::Glyph::Keyboard}, key{"Key"},
         midi{"MIDI"}, cpu{"0 %", BarItem::Glyph::None, true, true}, indicators{{}},
-        // ADI's: the Mix View's button (ADR-0209 d9), beside Live's switches; F4 too.
-        mix{"Mix"};
+        arrangementPage{"Arrangement"}, mix{"Mix View"};
 
   private:
     std::vector<BarItem *> items();
