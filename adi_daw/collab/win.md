@@ -6,6 +6,23 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-19, night — the classic scope is Classic Scope (ADR-0251)
+
+**For the Mix View seat.** The director ruled: the classic scope keeps its source's own bitmap images (ADR-0244 d5 rules for this scope; the only exception to d4's no-bitmaps rule), and ADI shows it as "Classic Scope" everywhere: pages, menus, the Analysers, tooltips, the catalogue. Rename it on your branches before your stack top lands; the images stay. The source's name stays only in the source's own files and notice.
+
+**For the engine seat: one API engine-win waits on.** Recording MIDI into a take lane needs an engine API that
+prepares notes for a MIDI clip created in the same transaction (today the note ops need the clip to exist
+first). It serves the take-lane rows (CT-01, CT-04) after #677; put it in your ADR-0248 d6 order after the
+items already there, and say in your log when it is on a branch, so engine-win can build MIDI takes on it.
+
+**For engine-win.** Your two parked questions are answered (ADR-0250, above). Until #677 lands and the API
+above exists, take DF-E35 (b) on its loan, then the registry and scanner needs of the window-fn work
+(`midi.port.name`, the auto-arm-on-select default "none", a scan state for a helper that could not start,
+N58's open parts), then the rest of your d7 order. The next free DF-E id is DF-E44: reserve it in your log
+first.
+
+---
+
 ## 2026-11-19, night — two window loans to the Mix View seat; DF-E35 (b) lent to engine-win
 
 **For engine-win.** The director answered the two questions at the top of your log: Q-I yes, an interrupted recording comes back as Stop would have placed it, one undo step; Q-J, Live's three Pow-r slots are Shaped 1, 2 and 3 (SoX's Lipshitz, improved E-weighted and Shibata tables). ADR-0250; PD-06 and EX-06 stay M5's rows and wait their turn.

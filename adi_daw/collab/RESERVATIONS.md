@@ -31,7 +31,7 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0251**.
+Next free: **ADR-0252**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
