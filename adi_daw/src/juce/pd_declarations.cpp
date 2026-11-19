@@ -36,6 +36,14 @@ std::vector<Record> scan(std::string_view text) {
         if (atoms.size() >= 5 && atoms[0] == "#X" && atoms[1] == "obj") {
             ++boxes;
             out.push_back(Record{std::move(atoms), boxes});
+        } else if (atoms.size() >= 2 && atoms[0] == "#X" && atoms[1] == "declare") {
+            // DF-E36 (e): `#X declare ...` is the record Pd writes for a
+            // [declare] box at its canvas's top, and obeys as one; read it
+            // as that box (the number of the box before it), so the
+            // external-request check sees it. No declaration is read here.
+            std::vector<std::string> asBox{"#X", "obj", "0", "0", "declare"};
+            asBox.insert(asBox.end(), atoms.begin() + 2, atoms.end());
+            out.push_back(Record{std::move(asBox), boxes});
         }
     }
     return out;

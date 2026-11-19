@@ -17,6 +17,14 @@ struct FileIdentity {
     std::uint64_t volume = 0, file = 0;
     friend bool operator==(const FileIdentity&, const FileIdentity&) = default;
 };
+// Roll back one exposed publication only when a Windows DELETE handle proves
+// its expected identity. The handle denies concurrent opens/rename/delete and
+// never follows a final reparse point. Missing paths are already clean.
+// Other hosts conservatively retain the path: pathname unlink is not a
+// compare-and-remove operation. Errors require the owner to report retention.
+// This verifies object identity, not unchanged contents; owner/off-callback.
+[[nodiscard]] std::error_code removePublishedFile(const std::filesystem::path&,
+                                                  const FileIdentity&) noexcept;
 // Owner-only native protection for an open project, before SQLite opens and
 // until it closes. Shared leases permit existing SQLite reader/writer policy;
 // an authoritative replacement alone takes an exclusive lease. POSIX uses a
