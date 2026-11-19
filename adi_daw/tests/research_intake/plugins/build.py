@@ -10,7 +10,7 @@ def main():
   actual=subprocess.check_output(['git','-C',str(a.sdk/name),'rev-parse','HEAD'],text=True).strip()
   if actual!=commit:raise ValueError(f'Wrong {name} revision')
  def compile(name,source,include,dll=False):
-  args=['cl','/nologo','/std:c++17','/EHsc','/O2','/MT','/W4','/I'+str(include)]
+  args=['cl','/nologo','/std:c++17','/EHsc','/O2','/MT','/W4','/WX','/I'+str(include)]
   if dll:args+=['/LD']
   args+=[str(here/source),'/Fo:'+str(a.out/(name+'.obj')),'/Fe:'+str(a.out/name),'/link','/INCREMENTAL:NO']
   subprocess.run(args,cwd=a.out,check=True)

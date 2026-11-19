@@ -3,8 +3,9 @@
 Evidence-only test assets for `docs/RESEARCH-INTAKE.md` section 6.9 and ADR-0245 d8.
 These files are not production implementation or a new plan. No reference-application
 projects, renders, caches, screen captures, installed binaries or results are included.
-Authored specifications are **NOT RUN on ADI**. Passing generator and diagnostic self-tests
-does not establish host compatibility, timing correctness or CPU efficiency.
+The specifications need separate product acceptance. Passing generator and diagnostic self-tests
+does not establish host compatibility, timing correctness or CPU efficiency. The opt-in
+[DF-E21 host test](df_e21/README.md) records its pre-implementation baseline separately.
 
 | Asset | Existing plan rows | What is retained |
 |---|---|---|
@@ -30,6 +31,9 @@ python signals/generate_edges_latency.py --out generated/edges
 python midi/generate.py --out generated/midi
 python verify_assets.py --audio66 generated/audio66 --edges generated/edges --midi generated/midi
 ```
+
+Windows CI runs `python test_generated_assets.py` with the pinned requirements. It verifies
+the checked-in SHA-256 manifest and regenerates the input files in a temporary directory.
 
 The expected hashes identify file bytes, including historical WAV containers. The seven
 edge/latency files use a minimal IEEE-float RIFF container without a fact chunk; preserve

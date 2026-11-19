@@ -90,13 +90,13 @@ class Probe final: public IComponent,public IAudioProcessor,public IEditControll
 public:
   explicit Probe(int v):variant(v){trace.open();pcm.open();timetrace.open();if(auto get=adi_api()){rtfn=(bool(*)())get("IsInRealTimeAudio");heardfn=(double(*)())get("GetPlayPosition");decodefn=(double(*)())get("GetPlayPosition2");}event(1);}
   ~Probe(){if(handler)handler->release();trace.close();pcm.close();timetrace.close();}
-  tresult PLUGIN_API queryInterface(const TUID iid,void **out) override {
+  tresult PLUGIN_API queryInterface(const TUID requestedIid,void **out) override {
     if(!out)return kInvalidArgument;*out=nullptr;
-    if(eq(iid,FUnknown_iid)||eq(iid,IPluginBase_iid)||eq(iid,IComponent_iid))*out=(IComponent*)this;
-    else if(eq(iid,IAudioProcessor_iid))*out=(IAudioProcessor*)this;
-    else if(eq(iid,IEditController_iid))*out=(IEditController*)this;
-    else if(eq(iid,IProcessContextRequirements_iid))*out=(IProcessContextRequirements*)this;
-    else if(eq(iid,IPrefetchableSupport_iid)){event(7,variant);*out=(IPrefetchableSupport*)this;}
+    if(eq(requestedIid,FUnknown_iid)||eq(requestedIid,IPluginBase_iid)||eq(requestedIid,IComponent_iid))*out=(IComponent*)this;
+    else if(eq(requestedIid,IAudioProcessor_iid))*out=(IAudioProcessor*)this;
+    else if(eq(requestedIid,IEditController_iid))*out=(IEditController*)this;
+    else if(eq(requestedIid,IProcessContextRequirements_iid))*out=(IProcessContextRequirements*)this;
+    else if(eq(requestedIid,IPrefetchableSupport_iid)){event(7,variant);*out=(IPrefetchableSupport*)this;}
     if(!*out)return kNoInterface;addRef();return kResultOk;
   }
   uint32 PLUGIN_API addRef() override{return ++refs;}
@@ -169,14 +169,14 @@ public:
 class Factory final:public IPluginFactory2 {
   std::atomic<uint32> refs{1};
 public:
-  tresult PLUGIN_API queryInterface(const TUID iid,void **out) override{if(!out)return kInvalidArgument;*out=nullptr;if(eq(iid,FUnknown_iid)||eq(iid,IPluginFactory_iid)||eq(iid,IPluginFactory2_iid))*out=(IPluginFactory2*)this;if(!*out)return kNoInterface;addRef();return kResultOk;}
+  tresult PLUGIN_API queryInterface(const TUID requestedIid,void **out) override{if(!out)return kInvalidArgument;*out=nullptr;if(eq(requestedIid,FUnknown_iid)||eq(requestedIid,IPluginFactory_iid)||eq(requestedIid,IPluginFactory2_iid))*out=(IPluginFactory2*)this;if(!*out)return kNoInterface;addRef();return kResultOk;}
   uint32 PLUGIN_API addRef() override{return ++refs;}
   uint32 PLUGIN_API release() override{return --refs;}
   tresult PLUGIN_API getFactoryInfo(PFactoryInfo *p) override{if(!p)return kInvalidArgument;*p={};strcpy_s(p->vendor,"ADI Research");strcpy_s(p->url,"https://github.com/arieladi/Adi");strcpy_s(p->email,"research@localhost.invalid");p->flags=PFactoryInfo::kUnicode;return kResultOk;}
   int32 PLUGIN_API countClasses() override{return 3;}
   tresult PLUGIN_API getClassInfo(int32 ix,PClassInfo *p) override{if(ix<0||ix>=3||!p)return kInvalidArgument;*p={};memcpy(p->cid,CLASS_IDS[ix],16);p->cardinality=PClassInfo::kManyInstances;strcpy_s(p->category,kVstAudioEffectClass);strcpy_s(p->name,CLASS_NAMES[ix]);return kResultOk;}
   tresult PLUGIN_API getClassInfo2(int32 ix,PClassInfo2 *p) override{if(ix<0||ix>=3||!p)return kInvalidArgument;*p={};memcpy(p->cid,CLASS_IDS[ix],16);p->cardinality=PClassInfo::kManyInstances;strcpy_s(p->category,kVstAudioEffectClass);strcpy_s(p->name,CLASS_NAMES[ix]);strcpy_s(p->subCategories,"Fx|Tools");strcpy_s(p->vendor,"ADI Research");strcpy_s(p->version,"1.0.0");strcpy_s(p->sdkVersion,"VST 3.8.0");return kResultOk;}
-  tresult PLUGIN_API createInstance(FIDString cid,FIDString iid,void **out) override{if(!out)return kInvalidArgument;*out=nullptr;for(int i=0;i<3;++i)if(eq(cid,CLASS_IDS[i])){auto *p=new Probe(i);tresult r=p->queryInterface(iid,out);p->release();return r;}return kNoInterface;}
+  tresult PLUGIN_API createInstance(FIDString cid,FIDString requestedIid,void **out) override{if(!out)return kInvalidArgument;*out=nullptr;for(int i=0;i<3;++i)if(eq(cid,CLASS_IDS[i])){auto *p=new Probe(i);tresult r=p->queryInterface(requestedIid,out);p->release();return r;}return kNoInterface;}
 };
 extern "C" __declspec(dllexport) IPluginFactory *PLUGIN_API GetPluginFactory(){static Factory f;f.addRef();return &f;}
 extern "C" __declspec(dllexport) bool InitDll(){return true;}

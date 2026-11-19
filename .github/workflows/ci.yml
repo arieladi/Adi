@@ -141,6 +141,19 @@ jobs:
           print("strict=" + json.dumps(s))
           PY
 
+  research-assets:
+    name: Windows research acceptance fixtures
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install the pinned fixture generators
+        run: python -m pip install --only-binary=:all: -r adi_daw/tests/research_intake/requirements.txt
+      - name: Regenerate and verify original inputs
+        run: python adi_daw/tests/research_intake/test_generated_assets.py
+
   validators:
     name: validators (py${{ matrix.python }} · ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -820,6 +833,15 @@ jobs:
                 --target adi_play --parallel "$ADI_JOBS"
           cmake --build adi_daw/build-juce --config Debug \
                 --target adi_test_vst3 --parallel "$ADI_JOBS"
+
+      - name: Build and check research diagnostics and transport oracle
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          cmake --build adi_daw/build-juce --config Debug \
+                --target adi_research_probe_targets adi_df_e21_acceptance --parallel "$ADI_JOBS"
+          ctest --test-dir adi_daw/build-juce -C Debug --output-on-failure --no-tests=error \
+                -R '^(adi_research_(clap|vst3|time)_selftest|adi_df_e21_(oracle|host_acceptance))$'
 
       - name: Locate the probe
         run: |

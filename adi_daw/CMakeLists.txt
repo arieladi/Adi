@@ -2194,3 +2194,8 @@ add_test(NAME adi_midi_capture_input_tests COMMAND adi_midi_capture_input_tests)
 add_executable(adi_midi_capture_tests tests/test_midi_capture.cpp)
 target_link_libraries(adi_midi_capture_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_midi_capture_tests COMMAND adi_midi_capture_tests)
+# Test modules from the director's research are available on Windows hosting builds.
+if(ADI_WITH_JUCE)
+    include(tests/research_intake/plugins/targets.cmake)
+endif()
+include(tests/research_intake/df_e21/targets.cmake)
