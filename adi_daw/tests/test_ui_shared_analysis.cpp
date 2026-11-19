@@ -1020,7 +1020,7 @@ void mixAnalyserPages() {
     pages.setMainMeterSource(meter);
     pages.frame(f.broker, reader, main->id, first->id);
     const auto all = f.broker->stats();
-    check(pages.page() == Page::All && pages.pageBox.getNumItems() == 7 &&
+    check(pages.page() == Page::All && pages.pageBox.getNumItems() == static_cast<int>(Page::Compare) + 1 &&
               pages.sourceBox.getNumItems() == 4 && pages.sourceBox.getSelectedId() == 1,
           "analysers default to All and Main and offer each non-Main channel once");
     check(all.taps == 3 && all.domains == 3 && all.consumers == 8 && all.spectralPlans == 1,
