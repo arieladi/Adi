@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/app_audio_page.hpp"
+#include "../src/juce/app_midi_ports.hpp"
 #include "../src/juce/ui_controls.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
@@ -13806,6 +13807,63 @@ int main(int argc, char **argv) {
         check(!mixerView.isVisible() && !document->views().load("main").mixerView,
               "the Status Bar's corner toggle hides it again");
         document->release();
+    }
+    // SRF-05: the MIDI Ports table at the Tempo & MIDI page's head, in place of the record's own row, over
+    // the application's port host (on a machine with no MIDI, it lists none and says so).
+    {
+        MidiPortHost host([&settings] { return settings.get("midi.ports"); });
+        SettingsPanel panel(settings);
+        panel.setSize(560, 680);
+        panel.midiPorts = [&]() -> std::unique_ptr<juce::Component> { return std::make_unique<MidiPortsTable>(host, settings); };
+        panel.showPage("Tempo & MIDI");
+        auto *table = dynamic_cast<MidiPortsTable *>(panel.midiPortsTable());
+        const bool recordRow = std::any_of(panel.rows().begin(), panel.rows().end(),
+                                           [](const auto &row) { return row->setting.key == "midi.ports"; });
+        check(table != nullptr && table->isVisible() && !recordRow && table->rows().size() == host.ports().size(),
+              "Tempo & MIDI shows the MIDI Ports table, one row per port the system lists, not the record's text");
+        std::size_t inputs = 0;
+        for (const auto &p : host.ports())
+            inputs += p.input ? 1 : 0;
+        check(inputs == 0 || host.ports().front().input, "inputs are listed first");
+        panel.showPage("Audio");
+        check(table != nullptr && !table->isVisible(), "the table shows on its own page only");
+        check(host.drain({}) == 0 && host.dropped() == 0, "with nothing played, nothing to drain");
+    }
+    {
+        // Two ports, as a machine with a keyboard and a synth lists them: the switches write the record.
+        std::string why;
+        check(settings.set("midi.ports", settings::Value::object(), {}, why), "no port records");
+        MidiPortHost::Port keys, synth;
+        keys.id = "in-1";
+        keys.name = "Keystation 61";
+        keys.input = true;
+        synth.id = "out-1";
+        synth.name = "Synth";
+        synth.output = true;
+        MidiPortHost host([&settings] { return settings.get("midi.ports"); }, {synth, keys});
+        int changes = 0;
+        host.onChange = [&] { ++changes; };
+        MidiPortsTable table(host, settings);
+        std::vector<std::function<void()>> posted;
+        table.post = [&posted](std::function<void()> job) { posted.push_back(std::move(job)); };
+        table.setSize(520, 200);
+        check(table.rows().size() == 2 && table.rows()[0]->id == "in-1" && table.rows()[0]->input &&
+                  table.rows()[0]->name->getText() == "Input: Keystation 61" &&
+                  table.rows()[1]->name->getText() == "Output: Synth",
+              "a row per port and direction, inputs first, as Live's table");
+        auto &track = *table.rows()[0]->switches[0];
+        check(track.getToggleState() == midiPortDefault("track"), "Track shows the row's default");
+        track.setToggleState(!track.getToggleState(), juce::dontSendNotification);
+        track.onClick();
+        check(posted.size() == 1, "the write waits for the click to return");
+        for (auto &job : posted)
+            job();
+        check(midiPortSwitches(settings.get("midi.ports"), "in-1").track != midiPortDefault("track") && changes == 1 &&
+                  host.ports()[0].switches.track != midiPortDefault("track") && table.error().empty(),
+              "a click on Track writes the port's record at once, and the host follows");
+        table.rebuild();
+        check(table.rows()[0]->switches[0]->getToggleState() != midiPortDefault("track"), "the table shows what is kept");
+        check(settings.set("midi.ports", settings::Value::object(), {}, why), "the records cleared again");
     }
     // The Settings window in Live's shape (ADR-0203 d11, Master Reference V.1).
     {

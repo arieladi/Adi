@@ -19,11 +19,13 @@
 #include "adi/settings/store.hpp"
 #include "adi/ui/midi_ports.hpp"
 #include <juce_audio_devices/juce_audio_devices.h>
+#include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 namespace adi::ui {
@@ -31,6 +33,10 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
   public:
     // `ports` reads the `midi.ports` record as the Settings hold it now.
     explicit MidiPortHost(std::function<settings::Value()> ports);
+    struct Port;
+    // For tests: a host over a fixed list of ports, their switches read from the record as the system's
+    // are; it opens nothing and follows no hot-plug.
+    MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed);
     ~MidiPortHost() override;
     MidiPortHost(const MidiPortHost &) = delete;
     MidiPortHost &operator=(const MidiPortHost &) = delete;
@@ -63,7 +69,9 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     struct Input;
     void endpointsChanged() override;
     std::function<settings::Value()> read_;
-    juce::ump::Session session_;
+    bool fixed_ = false;
+    std::vector<Port> fixedPorts_;
+    std::optional<juce::ump::Session> session_; // none for a fixed list
     std::vector<Port> ports_;
     // Open inputs by slot; a slot's index is its events' `port`. A closed one stays null, so indexes hold.
     std::vector<std::unique_ptr<Input>> inputs_;
@@ -90,6 +98,11 @@ class MidiPortsTable final : public juce::Component {
         std::array<std::unique_ptr<juce::ToggleButton>, 4> switches;
     };
     const std::vector<std::unique_ptr<Row>> &rows() const noexcept { return rows_; }
+    // Runs a switch's write after its click has returned (it rebuilds the rows, the clicked button among
+    // them): the message loop's queue, or a test's.
+    std::function<void(std::function<void()>)> post = [](std::function<void()> job) {
+        juce::MessageManager::callAsync(std::move(job));
+    };
     // Why the last switch was not saved; empty when it was.
     const std::string &error() const noexcept { return error_; }
 

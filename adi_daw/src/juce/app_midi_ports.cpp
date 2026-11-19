@@ -4,6 +4,16 @@
 #include <utility>
 namespace adi::ui {
 namespace ump = juce::universal_midi_packets;
+namespace {
+// Inputs first, then outputs, each by name ignoring case, as Live's table lists them.
+void sortPorts(std::vector<MidiPortHost::Port> &ports) {
+    std::stable_sort(ports.begin(), ports.end(), [](const MidiPortHost::Port &a, const MidiPortHost::Port &b) {
+        if (a.input != b.input)
+            return a.input;
+        return juce::String(a.name).compareIgnoreCase(juce::String(b.name)) < 0;
+    });
+}
+} // namespace
 // One open input: its connection, its ring, and the consumer JUCE calls on the port's own thread.
 struct MidiPortHost::Input final : ump::Consumer {
     Input(MidiPortHost &h, std::uint32_t s, std::string i) : host(h), slot(s), id(std::move(i)) {}
@@ -27,11 +37,17 @@ struct MidiPortHost::Input final : ump::Consumer {
 };
 MidiPortHost::MidiPortHost(std::function<settings::Value()> ports)
     : read_(std::move(ports)), session_(ump::Endpoints::getInstance()->makeSession("ADI")) {
+    // The ports are listed and opened through one session, the application's.
     ump::Endpoints::getInstance()->addListener(*this);
     refresh();
 }
+MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed)
+    : read_(std::move(ports)), fixed_(true), fixedPorts_(std::move(fixed)) {
+    refresh();
+}
 MidiPortHost::~MidiPortHost() {
-    ump::Endpoints::getInstance()->removeListener(*this);
+    if (!fixed_)
+        ump::Endpoints::getInstance()->removeListener(*this);
     for (auto &input : inputs_)
         if (input && input->connection.isAlive())
             input->connection.removeConsumer(*input);
@@ -72,8 +88,22 @@ std::size_t MidiPortHost::drain(const std::function<void(const MidiPortEvent &)>
 }
 void MidiPortHost::endpointsChanged() { refresh(); }
 void MidiPortHost::refresh() {
-    auto *endpoints = ump::Endpoints::getInstance();
     const auto record = read_ ? read_() : settings::Value::object();
+    if (fixed_) {
+        auto listed = fixedPorts_;
+        for (auto &p : listed)
+            p.switches = midiPortSwitches(record, p.id);
+        sortPorts(listed);
+        const bool changed = listed.size() != ports_.size() ||
+                             !std::equal(listed.begin(), listed.end(), ports_.begin(), [](const Port &a, const Port &b) {
+                                 return a.id == b.id && a.switches == b.switches;
+                             });
+        ports_ = std::move(listed);
+        if (changed && onChange)
+            onChange();
+        return;
+    }
+    auto *endpoints = ump::Endpoints::getInstance();
     std::vector<Port> listed;
     std::vector<ump::EndpointId> sources;
     for (const auto &id : endpoints->getEndpoints()) {
@@ -101,12 +131,7 @@ void MidiPortHost::refresh() {
             listed.push_back(std::move(p));
         }
     }
-    // Inputs first, then outputs, each by name (ignoring case), as Live's table lists them.
-    std::stable_sort(listed.begin(), listed.end(), [](const Port &a, const Port &b) {
-        if (a.input != b.input)
-            return a.input;
-        return juce::String(a.name).compareIgnoreCase(juce::String(b.name)) < 0;
-    });
+    sortPorts(listed);
     bool changed = listed.size() != ports_.size();
     // Close every input that is gone or switched off; open those switched on that are not open.
     for (auto &input : inputs_) {
@@ -134,7 +159,7 @@ void MidiPortHost::refresh() {
         const auto source = std::find_if(sources.begin(), sources.end(), [&](const ump::EndpointId &id) {
             return id.src.toStdString() == p.id;
         });
-        auto connection = session_.connectInput(*source, ump::PacketProtocol::MIDI_1_0);
+        auto connection = session_->connectInput(*source, ump::PacketProtocol::MIDI_1_0);
         if (!connection.isAlive())
             continue;
         // A free slot keeps the open ones' indexes.
@@ -197,7 +222,7 @@ void MidiPortsTable::rebuild() {
                 // Deferred: `set` rebuilds the rows, this button among them.
                 const bool state = raw->getToggleState();
                 juce::Component::SafePointer<MidiPortsTable> self(this);
-                juce::MessageManager::callAsync([self, id, field, state] {
+                post([self, id, field, state] {
                     if (self != nullptr)
                         self->set(id, field, state);
                 });
