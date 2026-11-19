@@ -56,6 +56,19 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — the Sampler's loadability needs one decision on its sample path (for win)
+
+OneShot plays from a MIDI clip now (entry below). The Sampler is not a canvas: its zones (up to
+32, each a sample with key, velocity and select ranges and fades) live in its "component" state,
+and #414's slot ops validate a slot against a canvas's `[adi.sample]` declarations
+(`sample_slots.cpp`'s `checkedDevice`), so no product call can give it a sample today.
+**Two ways, recommendation first:** (1) the Sampler's catalogue entry declares N sample slots
+(say 32) through a small canonical declaration text, the slot ops fill them, and each filled slot
+is a zone with the full key/velocity range until a zone op (the engine's) edits its ranges —
+loadable and audible at once, ranges later; (2) a zone op from the start (engine), the slot ops
+untouched. Either way the native Sampler is dispatched directly by `makeBuiltinDevice`. This seat
+takes (1) on your word; until then DF-E36 goes first, as ADR-0248 d8's order allows.
+
 ## 2026-11-19 — DEV-21: OneShot is a loadable instrument, so a MIDI clip sounds
 
 **`devices/oneshot-instrument` (`0d309d4d`), stacked on #656 (`devices/oneshot-live-params`),
