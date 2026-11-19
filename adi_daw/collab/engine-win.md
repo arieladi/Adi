@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Combined project collection and archive safety
+
+**PR requested** `engine-win/collection-safety-integration` at `9b3307506a7aace483332c46cd6a69563c9e94fd`. This combines the exact CLI and collected-media tip `2e008d7c` with the desktop warning tip `d5a50adb`. It brings the external-copy and ZIP cancellation, owned rollback, directory-sync and checkpoint reporting and real CLI message together with the desktop warning relay.
+
+The full topic tree built and linked the Windows JUCE app under strict MSVC x64 Debug `/W4 /WX`. The only change from `2e008d7c` is the tested desktop source. The core, archive, project and CLI sources are identical to the preceding 323-check gate. No interactive app case ran.
+
 ## 2026-11-19 — Explicit scanner refresh for eligible candidates
 
 **PR requested** `engine-win/scanner-refresh` at `8adc7a924939a26f27a30f62e69f4d332eb673df`, stacked on the reconciled scanner `fe7dda00`. An explicit Refresh bypasses unchanged success packets and deterministic rejected negatives. It retains normal durable admission, manual/pending blocks, two-strike quarantine and owner tokens. Cancellation or infrastructure abandonment keeps the previous same-stamp record. Incremental remains the default, and CacheOnly needs no helper. The explicit diagnostic is `adi_play --list --refresh`. Root reconciliation, startup scheduling and Settings wiring remain open.
