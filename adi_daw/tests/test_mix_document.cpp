@@ -372,10 +372,10 @@ bool containsDevice(ui::ProjectDocument &doc, std::int64_t id) {
     return row.executeStep();
 }
 
-enum class DeviceCreation { Paste, Duplicate, Browser, LegacyId };
+enum class DeviceCreation { Paste, Duplicate, BrowserBuiltin, BrowserPlugin, LegacyId };
 
 void createAfterHighestRemoval(DeviceCreation creation, const char *caseName) {
-    if (creation == DeviceCreation::Browser) {
+    if (creation == DeviceCreation::BrowserBuiltin) {
         const auto *utility = findBuiltin(utilityUid);
         if (!utility || !utility->available) {
             std::printf("SKIP Browser identity on a build without the Utility host\n");
@@ -425,13 +425,20 @@ void createAfterHighestRemoval(DeviceCreation creation, const char *caseName) {
     }
     const auto afterRemoval = OpJournal(doc->store()).headSeq();
     const bool sameChain = creation == DeviceCreation::Duplicate;
-    const bool ordinary = sameChain || creation == DeviceCreation::LegacyId;
+    const bool ordinary = sameChain || creation == DeviceCreation::BrowserPlugin || creation == DeviceCreation::LegacyId;
     const auto sourceId = ordinary ? ordinarySource : limiter->id;
     const std::int64_t track = sameChain ? 2 : 3;
-    const auto expectedUid = ordinary ? ordinaryUid : creation == DeviceCreation::Browser ? utilityUid : limiterUid;
+    const auto expectedUid = ordinary ? ordinaryUid : creation == DeviceCreation::BrowserBuiltin ? utilityUid : limiterUid;
     bool created = false;
-    if (creation == DeviceCreation::Browser) {
+    if (creation == DeviceCreation::BrowserBuiltin) {
         created = doc->insertBuiltin(std::string(utilityUid), track, {});
+    } else if (creation == DeviceCreation::BrowserPlugin) {
+        rows::PluginRef reference;
+        reference.format = "vst3";
+        reference.uid = ordinaryUid;
+        reference.name = "Fixture gain";
+        reference.subtype = "effect";
+        created = doc->insertPlugin(reference, track);
     } else {
         DeviceCopy copy;
         if (!doc->copyDevice(sourceId, copy)) {
@@ -509,7 +516,8 @@ int main() {
     replaceRetainedDeviceFromPicker();
     createAfterHighestRemoval(DeviceCreation::Paste, "paste-after-removal");
     createAfterHighestRemoval(DeviceCreation::Duplicate, "duplicate-after-removal");
-    createAfterHighestRemoval(DeviceCreation::Browser, "browser-after-removal");
+    createAfterHighestRemoval(DeviceCreation::BrowserBuiltin, "browser-builtin-after-removal");
+    createAfterHighestRemoval(DeviceCreation::BrowserPlugin, "browser-plugin-after-removal");
     createAfterHighestRemoval(DeviceCreation::LegacyId, "legacy-device-identity");
     test::TempDirectory temp("mix_document","native-functions");std::string error;
     auto doc=ui::ProjectDocument::open(temp.path()/"project.adi",true,device::withBuiltinDevices(),error);
