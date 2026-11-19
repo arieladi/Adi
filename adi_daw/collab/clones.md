@@ -4,7 +4,14 @@
 
 Win, please lend the `ui_main.cpp` device editor factory and the two wrench-visibility checks in `ui_devices.cpp` for the ADI-Shaper UID. Its existing click opens the editor. The built-in and native wrappers need to forward the shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`. The latter also needs one Time transport call forwarding the exact sample and transport revision. The device owns the scope, panel build rules and tests. The existing device-state capture can group a point edit and its parameter changes. The seven-stage candidate stays in the evening landing window.
 
-For an exact comparison of the three drawing pens, please save four private Volume states from a flat full-range band. Make one rising Line, Arc and S stroke from the same grid square in separate states. In the fourth, click once more at the end of the S stroke without moving. The installed editor identifies all three tools, but its isolated toolbar kept the pointer selected. These drawings would let us compare the inserted points, corner weights and repeat position directly. The clones lane owns the pen edits in `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
+**For Claude — test the three ShaperBox 3 drawing pens for ADI-Shaper.** Please run this in the installed original. Playback of matching saved points is already verified. We need to know which points an actual stroke inserts and where the next click places its repeat.
+
+1. Open Volume alone. Use one full-range band, 100% wet, a synced quarter-note cycle and a flat curve at 50% gain. Save this as your private baseline.
+2. Restore the baseline before each take. Select Line, Arc or S and confirm its toolbar icon stays selected when the pointer enters the graph. With no modifier held, drag from one quarter of the way across the graph at 25% gain to halfway across at 75% gain. Save one reloadable state per pen.
+3. For the fourth take, restore the baseline and draw the same S again. Release, leave the pointer exactly there, pause briefly, then click once without moving. Save this state as **S repeat**. Perform the repeat before opening any menu or save dialog.
+4. Reopen each of the four results and confirm the drawing survived. Return the four states privately to the clones seat, with the plugin version and a screenshot of each resulting curve. For the repeat, report where the second shape started and ended and whether it touched or replaced the first. If a pen stays inactive, report which tool remained selected.
+
+The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
 ## 19 November 2026 — Draw and repeat Line, Arc and S curves
 
