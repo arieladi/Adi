@@ -1,5 +1,9 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER clock integration
+
+The device requests segment positions from the existing host clock. Additional file claims are the ADi-SHAPER-only opt-in in `src/juce/builtin_host.cpp` and the device's transport conversion in `src/adi/pd_builtins/adi_shaper_transport.hpp`. The graph and the Mix View remain with their owners. A full-band modulation sweep at 0, 25, 50, 75 and 100% showed unity-scaled gain and twice that scale for stereo side gain. Mid remained constant in the width sweep. A mute at half master and half band mix measured 0.75 times the dry input. This product-of-mixes law applies at each active stage.
+
 ## 2026-11-19 — ADi-SHAPER measurement contract and file reservation
 
 For the devices seat, the clones lane takes the ADi-SHAPER core under `src/adi/dsp/adi_shaper.*`, the compiled-in external `src/adi/pd_builtins/adi_shaper_tilde.cpp`, the canvas `pd/devices/ADi-SHAPER.pd`, device module `cmake/devices/adi_shaper.cmake` and dedicated shaper tests on `clones/adi-shaper`. Shared edits are the single device's embedding in `cmake/devices/pd_native.cmake`, native factory in `src/adi/pd_builtins/native_devices.cpp`, catalog in `src/adi/builtin_catalog.cpp`, and registration/fixtures in `tests/test_builtin_devices.cpp` and `tests/test_pd_native_devices.cpp`. The first implementation target is the measured gain, stereo width and pan behavior, a clocked editable curve and independent band settings. Additional module measurements follow.
