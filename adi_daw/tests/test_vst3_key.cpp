@@ -28,7 +28,9 @@ struct KeyProbe {
     int (*inPlace)();
 
     bool silent() const { return channels() == 0 && first() == 0. && last() == 0.; }
-    bool stereoKey() const { return channels() == 2 && first() == .5 && last() == .75; }
+    bool stereoKey(double left, double right) const {
+        return channels() == 2 && first() == left && last() == right;
+    }
 };
 
 class StereoConstant final : public engine::Node {
@@ -40,6 +42,25 @@ class StereoConstant final : public engine::Node {
     }
   private:
     std::array<float, 2> levels_;
+};
+
+class KeyHalfGain final : public device::DeviceInstance {
+  public:
+    static constexpr auto uid = "test.adidaw.key-half-gain";
+    const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+    bool loaded() const noexcept override { return true; }
+    void process(const engine::NodeIo &io) noexcept override {
+        for (std::int32_t channel = 0; channel < io.channels; ++channel) {
+            auto *output = io.out[channel] + io.blockOffset;
+            const auto *input = io.in && io.in[channel] ? io.in[channel] + io.blockOffset : nullptr;
+            if (input)
+                std::transform(input, input + io.frames, output, [](float sample) { return .5f * sample; });
+            else
+                std::fill_n(output, io.frames, 0.f);
+        }
+    }
+  private:
+    const device::DeviceIdentity identity_{"internal", uid, "Key Half Gain", "", ""};
 };
 
 void documentContract(device::Vst3Host &host, const juce::PluginDescription &description,
@@ -55,20 +76,26 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
         if (!store) throw std::runtime_error(toString(status));
         store->db().exec("INSERT INTO tracks(id,kind,name) VALUES "
                          "(1,'master','Main'),(2,'audio','Key'),(3,'audio','Programme');"
-                         "INSERT INTO device_chains(id,track_id,name) VALUES (3,3,'Devices');");
+                         "INSERT INTO device_chains(id,track_id,name) VALUES (2,2,'Key FX'),(3,3,'Devices');");
+        SQLite::Statement scale(store->db(),
+            "INSERT INTO plugin_refs(id,format,uid,name) VALUES (76,'internal',?,'Key Half Gain')");
+        scale.bind(1, KeyHalfGain::uid);
+        scale.exec();
         SQLite::Statement ref(store->db(),
             "INSERT INTO plugin_refs(id,format,uid,name) VALUES (77,'vst3',?,?)");
         ref.bind(1, identity.uid);
         ref.bind(2, identity.name);
         ref.exec();
         store->db().exec("INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) "
-                         "VALUES (30,3,0,77,'Dormant auxiliary');");
+                         "VALUES (20,2,0,76,'Key Half Gain'),(30,3,0,77,'Dormant auxiliary');");
     }
 
     // The real host adapter receives the discovered owned module via the
     // document's usual loader, without scanning other plug-ins.
     const engine::DeviceLoader loader = [&](const engine::DeviceRequest &request, std::string &error)
         -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && request.ref->format == "internal" && request.ref->uid == KeyHalfGain::uid)
+            return std::make_unique<KeyHalfGain>();
         if (!request.ref || request.ref->format != identity.format || request.ref->uid != identity.uid) {
             error = "Unexpected device in the dormant auxiliary fixture";
             return {};
@@ -128,15 +155,19 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
 
     check(document->setDeviceKey(presented(*document), keyTrack, "post_fx") && routed(*document, "post_fx"),
           "assigning the key through ProjectDocument commits the intended post-FX route");
-    (void)render(*document);
-    check(keyProbe.stereoKey(), "the first callback after assigning a dormant key receives both auxiliary channels");
+    const auto assigned = render(*document);
+    check(keyProbe.stereoKey(.25, .375) && assigned == baseline,
+          "the first callback after assigning a dormant key receives the post-FX samples and unchanged programme");
     const auto configuredActivations = device->activations();
     const auto *timelineReader = document->session().clips();
+    document->tick(2);
+    check(device->activations() == configuredActivations && document->session().clips() == timelineReader,
+          "the receipt drain does not activate or rebuild the just-configured key bus again");
 
     check(document->setDeviceKey(presented(*document), keyTrack, "pre_fx") && routed(*document, "pre_fx"),
           "a retap changes the stored source tap without changing bus width");
     const auto retapped = render(*document);
-    check(keyProbe.stereoKey() && retapped == baseline && device->activations() == configuredActivations &&
+    check(keyProbe.stereoKey(.5, .75) && retapped == baseline && device->activations() == configuredActivations &&
               document->session().clips() == timelineReader,
           "a retap with the same auxiliary shape preserves the SDK, timeline reader and programme");
 
@@ -147,7 +178,7 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
     check(document->ops().undo().ok && document->synchronise() && routed(*document, "pre_fx"),
           "one Undo restores the complete pre-FX key route");
     (void)render(*document);
-    check(keyProbe.stereoKey(), "Undo reopens the dormant bus and restores the key samples");
+    check(keyProbe.stereoKey(.5, .75), "Undo reopens the dormant bus and restores the pre-FX key samples");
     check(document->ops().redo().ok && document->synchronise() && document->session().model().routing.empty(),
           "one Redo removes the route again");
     (void)render(*document);
@@ -161,7 +192,7 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
     if (!reopened) throw std::runtime_error(error);
     check(routed(*reopened, "pre_fx") && prepare(*reopened), "the reopened project reads the stored route");
     (void)render(*reopened);
-    check(keyProbe.stereoKey(), "first reopened audio callback hears the stored key without a new edit");
+    check(keyProbe.stereoKey(.5, .75), "first reopened audio callback hears the stored pre-FX key without a new edit");
     reopened->release();
 }
 
