@@ -562,16 +562,22 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     if (stage.layout == 0) {
         if constexpr (kind == Stage::Time) {
             const auto& band = stage.bands[1];
-            if (primaryWaves[1].empty() && band.primary.constant && band.blend == 1.0f
-                && times_[1].processFixedBlock(inL, inR, outL, outR, frames, timeDistance(1, band.primary.points[0]))) return;
+            const auto& wave = primaryWaves[1];
+            if (band.blend == 1.0f && (wave.empty() ? band.primary.constant : wave.constant)) {
+                const float height = wave.empty() ? band.primary.points[0] : wave.nodes.front().y;
+                if (times_[1].processFixedBlock(inL, inR, outL, outR, frames, timeDistance(1, height))) return;
+            }
         }
         if constexpr (kind == Stage::Volume || kind == Stage::Pan) {
             const auto& band = stage.bands[1];
-            if (band.primary.constant && primaryWaves[1].empty()) {
+            const auto& wave = primaryWaves[1];
+            if (wave.empty() ? band.primary.constant : wave.constant) {
+                const Gain held = wave.empty() ? band.heldGains[0] : gain(kind,
+                    kind == Stage::Pan ? 2.f * wave.nodes.front().y - 1.f : wave.nodes.front().y, band.blend);
                 for (std::size_t i = 0; i < frames; ++i) {
                     const float l = inL[i], r = inR[i];
-                    outL[i] = l * band.heldGains[0].left;
-                    outR[i] = r * band.heldGains[0].right;
+                    outL[i] = l * held.left;
+                    outR[i] = r * held.right;
                 }
                 return;
             }
@@ -652,6 +658,9 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
         auto& stage = stages_[static_cast<std::size_t>(kind)];
         if constexpr (kind >= Stage::Filter) {
             if (!stage.enabled) return;
+        }
+        if constexpr (kind == Stage::Volume || kind == Stage::Width || kind == Stage::Pan) {
+            if (stage.layout == 0 && stage.bands[1].blend == 0.f) return;
         }
         if (!stage.active && stage.layout == 0 && !freeWaves_.hasStage(static_cast<int>(kind))) return;
         render<kind>(stage, inL, inR, outL, outR, frames);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi_shaper_panel.hpp"
 #include "adi/dsp/adi_shaper.hpp"
+#include "adi/dsp/adi_shaper_wave.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -32,7 +33,21 @@ juce::String percent(double v) { return juce::String(juce::roundToInt(100 * v)) 
 juce::String frequency(double hz) {
     return hz >= 1000 ? juce::String(hz / 1000, 2) + " kHz" : juce::String(hz, hz >= 10 ? 0 : 2) + " Hz";
 }
+struct SyncDivision {
+    double quarters;
+    const char *text;
+};
+constexpr std::array<SyncDivision, 23> divisions{
+    {{1. / 32, "1/128"}, {1. / 16, "1/64"}, {1. / 8, "1/32"}, {1. / 6, "1/16T"}, {1. / 4, "1/16"},
+     {3. / 8, "1/16D"},  {1. / 3, "1/8T"},  {1. / 2, "1/8"},  {3. / 4, "1/8D"},  {2. / 3, "1/4T"},
+     {1, "1/4"},         {3. / 2, "1/4D"},  {4. / 3, "1/2T"}, {2, "1/2"},        {3, "1/2D"},
+     {4, "1 bar"},       {6, "1.5 bars"},   {8, "2 bars"},    {12, "3 bars"},    {16, "4 bars"},
+     {32, "8 bars"},     {64, "16 bars"},   {128, "32 bars"}}};
+double divisionValue(double quarters) { return (std::log2(quarters) + 5.) / 12.; }
 juce::String cycle(double n) {
+    for (const auto &division : divisions)
+        if (std::abs(n - divisionValue(division.quarters)) < 1.e-6)
+            return division.text;
     const double bars = std::exp2(n * 12.0 - 7.0);
     if (bars < .999)
         return "1/" + juce::String(1.0 / bars, (std::abs(std::round(1.0 / bars) - 1.0 / bars) < .005) ? 0 : 2) +
@@ -102,7 +117,7 @@ void AdiShaperPanel::setPresetName(juce::String name) {
 }
 void AdiShaperPanel::refresh() {
     pointsDirty_ = true;
-    repaint();
+    invalidateDrawing();
 }
 void AdiShaperPanel::setTrace(Trace input, Trace output, float left, float right, float phase) {
     const std::array<std::span<const float>, 4> source{input.minimum, input.maximum, output.minimum,
@@ -126,7 +141,7 @@ void AdiShaperPanel::select(Key k) {
     pointsDirty_ = true;
     tabs_[static_cast<std::size_t>(k.stage)] = true;
     selected_ = -1;
-    repaint();
+    invalidateDrawing();
 }
 AdiShaperPanel::Map AdiShaperPanel::mapping() const {
     Map m;
@@ -185,18 +200,37 @@ const std::vector<Panel::Point> &AdiShaperPanel::points() const {
     }
     return cachedPoints_;
 }
-float AdiShaperPanel::average(const std::vector<Point> &nodes) {
-    if (nodes.empty())
-        return 0;
-    float area = 0;
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-        const auto &a = nodes[i];
-        const Point b =
-            i + 1 < nodes.size() ? nodes[i + 1] : Point{1 + nodes.front().x, nodes.front().y, 0, Shape::Line};
-        const float mid = a.shape == Shape::Hold ? 0.f : (.5f - (a.shape == Shape::Bend ? a.bend : 0.f) / 6.f);
-        area += (b.x - a.x) * (a.y + (b.y - a.y) * mid);
+std::vector<float> AdiShaperPanel::sampleCorners(const std::vector<Point> &nodes, int columns) {
+    if (std::none_of(nodes.begin(), nodes.end(), [](const Point &p) { return p.shape == Shape::SourceCorner; }))
+        return {};
+    using Bank = dsp::AdiShaperWaveBank;
+    Bank bank;
+    int id = Bank::firstId;
+    for (const auto &p : nodes) {
+        if (id > Bank::lastId)
+            break;
+        const Bank::Point packed{p.x, p.y, p.bend, static_cast<Bank::Shape>(p.shape)};
+        bank.set(id++, static_cast<float>(Bank::address(0, packed)));
+        bank.set(id++, static_cast<float>(Bank::value(packed)));
     }
-    return clamp01(area);
+    bank.prepareBlock();
+    const auto curve = bank.view(0);
+    std::vector<float> samples(static_cast<std::size_t>(columns) + 1);
+    for (int i = 0; i <= columns; ++i) {
+        const auto phase = i == columns
+                               ? std::numeric_limits<std::uint64_t>::max()
+                               : static_cast<std::uint64_t>(std::ldexp(static_cast<double>(i) / columns, 64));
+        samples[static_cast<std::size_t>(i)] = Bank::at(curve, phase);
+    }
+    return samples;
+}
+float AdiShaperPanel::average(const std::vector<Point> &points) {
+    if (points.empty())
+        return 0;
+    double sum = 0;
+    for (const auto &point : points)
+        sum += point.y;
+    return static_cast<float>(sum / static_cast<double>(points.size()));
 }
 AdiShaperPanel::Rect AdiShaperPanel::graph() const { return {52, 217, 935, 262}; }
 AdiShaperPanel::Rect AdiShaperPanel::curveBounds() const {
@@ -231,9 +265,10 @@ std::vector<AdiShaperPanel::Control> AdiShaperPanel::controls() const {
     v.push_back({{282, 491, 89, 27},
                  m.interpolation,
                  "",
-                 current == Shape::Hold   ? "Hold"
-                 : current == Shape::Bend ? "Bend"
-                                          : "Linear",
+                 current == Shape::Hold           ? "Hold"
+                 : current == Shape::SourceCorner ? "Corner"
+                 : current == Shape::Bend         ? "Bend"
+                                                  : "Linear",
                  3});
     if (m.on)
         v.push_back({{570, 97, 67, 35}, m.on, "", read(m.on) > .5 ? "Enabled" : "Disabled", 3});
@@ -309,9 +344,174 @@ void lfoIcon(juce::Graphics &g, Rect r, int stage, juce::Colour c) {
     g.strokePath(p, juce::PathStrokeType(1.8f));
 }
 } // namespace
+void AdiShaperPanel::invalidateDrawing() {
+    drawingDirty_ = true;
+    repaint();
+}
+void AdiShaperPanel::resized() {
+    background_ = {};
+    contour_ = {};
+    invalidateDrawing();
+}
+void AdiShaperPanel::lookAndFeelChanged() { invalidateDrawing(); }
 void AdiShaperPanel::paint(juce::Graphics &g) {
+    if (getWidth() <= 0 || getHeight() <= 0)
+        return;
+    prepareDrawing(g.getInternalContext().getPhysicalPixelScaleFactor());
+    g.drawImage(background_, getLocalBounds().toFloat());
+    {
+        juce::Graphics::ScopedSaveState save(g);
+        g.addTransform(juce::AffineTransform::scale(getWidth() / designWidth, getHeight() / designHeight));
+        drawLive(g);
+    }
+    const auto toPanel =
+        juce::AffineTransform::scale(static_cast<float>(getWidth()) / background_.getWidth(),
+                                     static_cast<float>(getHeight()) / background_.getHeight());
+    g.drawImage(contour_, contourPixels_.toFloat().transformedBy(toPanel));
+}
+void AdiShaperPanel::prepareDrawing(float density) {
+    const int w = std::max(1, juce::roundToInt(getWidth() * density));
+    const int h = std::max(1, juce::roundToInt(getHeight() * density));
+    const auto transform = juce::AffineTransform::scale(w / designWidth, h / designHeight);
+    if (background_.getWidth() != w || background_.getHeight() != h || density != density_) {
+        density_ = density;
+        background_ = juce::Image(juce::Image::RGB, w, h, false);
+        contourPixels_ = graph().expanded(5).transformedBy(transform).getSmallestIntegerContainer();
+        contour_ = juce::Image(juce::Image::ARGB, contourPixels_.getWidth(), contourPixels_.getHeight(), true);
+        drawingDirty_ = true;
+    }
+    if (!drawingDirty_)
+        return;
+    cornerSamples_ = sampleCorners(points(), std::max(2, contourPixels_.getWidth()));
+    {
+        juce::Graphics graphics(background_);
+        graphics.addTransform(transform);
+        drawStatic(graphics);
+    }
+    contour_.clear(contour_.getBounds());
+    {
+        juce::Graphics graphics(contour_);
+        graphics.addTransform(transform.translated(static_cast<float>(-contourPixels_.getX()),
+                                                   static_cast<float>(-contourPixels_.getY())));
+        drawContour(graphics);
+    }
+    drawingDirty_ = false;
+}
+void AdiShaperPanel::drawContour(juce::Graphics &g) const {
     const auto accent = colour(key_.stage);
-    g.addTransform(juce::AffineTransform::scale(getWidth() / designWidth, getHeight() / designHeight));
+    const auto plot = graph();
+    const auto &nodes = points();
+    auto dot = [&](float x, float y) {
+        return Pos{plot.getX() + plot.getWidth() * x, plot.getBottom() - plot.getHeight() * y};
+    };
+    if (!nodes.empty()) {
+        juce::Path curve;
+        auto segmentTo = [&](Point a, Point b) {
+            if (a.shape == Shape::Hold)
+                curve.lineTo(dot(b.x, a.y));
+            if (a.shape == Shape::Bend && b.x > a.x) {
+                const float controlY = a.y + .5f * (1.f - std::clamp(a.bend, -1.f, 1.f)) * (b.y - a.y);
+                curve.quadraticTo(dot(.5f * (a.x + b.x), controlY), dot(b.x, b.y));
+            } else
+                curve.lineTo(dot(b.x, b.y));
+        };
+        if (!cornerSamples_.empty()) {
+            curve.startNewSubPath(dot(0, cornerSamples_.front()));
+            for (std::size_t i = 1; i < cornerSamples_.size(); ++i)
+                curve.lineTo(dot(static_cast<float>(i) / static_cast<float>(cornerSamples_.size() - 1),
+                                 cornerSamples_[i]));
+        } else {
+            auto left = nodes.back();
+            left.x -= 1;
+            curve.startNewSubPath(dot(left.x, left.y));
+            for (const auto &right : nodes) {
+                segmentTo(left, right);
+                left = right;
+            }
+            auto repeat = nodes.front();
+            repeat.x += 1;
+            segmentTo(left, repeat);
+        }
+        {
+            juce::Graphics::ScopedSaveState save(g);
+            g.reduceClipRegion(plot.expanded(1, 1).toNearestInt());
+            g.setColour(accent);
+            g.strokePath(curve, juce::PathStrokeType(1.9f));
+        }
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            const auto &a = nodes[i];
+            const auto &prev = nodes[i ? i - 1 : nodes.size() - 1];
+            if (i > 0 && a.y == prev.y && a.shape == Shape::Hold && static_cast<int>(i) != selected_)
+                continue;
+            const auto xy = dot(a.x, a.y);
+            if (a.shape == Shape::Hold && a.y != prev.y) {
+                g.setColour(ink);
+                const auto p = dot(a.x, prev.y);
+                g.fillEllipse(p.x - 2.7f, p.y - 2.7f, 5.4f, 5.4f);
+            }
+            g.setColour(static_cast<int>(i) == selected_ ? accent : ink);
+            if (a.shape == Shape::SourceCorner && a.bend > .5f)
+                g.drawEllipse(xy.x - 2.5f, xy.y - 2.5f, 5, 5, 1);
+            else
+                g.fillEllipse(xy.x - 3, xy.y - 3, 6, 6);
+        }
+    }
+}
+void AdiShaperPanel::drawLive(juce::Graphics &g) {
+    const auto accent = colour(key_.stage);
+    const auto plot = graph();
+    if (spectrum_.size() > 1) {
+        juce::Path p;
+        for (std::size_t i = 0; i < spectrum_.size(); ++i) {
+            const float x = 10.f + 326.f * static_cast<float>(i) / static_cast<float>(spectrum_.size() - 1);
+            const float y = 167.f - 51.f * clamp01((spectrum_[i] + 72.f) / 72.f);
+            if (i == 0)
+                p.startNewSubPath(x, y);
+            else
+                p.lineTo(x, y);
+        }
+        g.setColour(ink.withAlpha(.65f));
+        g.strokePath(p, juce::PathStrokeType(1));
+    }
+    for (int i = 0; i < 2; ++i) {
+        const float v = peaks_[static_cast<std::size_t>(i)], y = 129.f + i * 20;
+
+        g.setColour(v > 1 ? juce::Colours::orangered : accent);
+        g.fillRect(459.f, y, 45.f * clamp01((v > 0 ? 20.f * std::log10(v) + 60.f : 0.f) / 60.f), 3.f);
+        label(g, db(v), {506, y - 8, 45, 16}, 10, ink);
+    }
+    auto envelope = [&](std::size_t slot, juce::Colour c) {
+        const auto count = std::min(traces_[slot].size(), traces_[slot + 1].size());
+        if (count < 2)
+            return;
+        juce::Graphics::ScopedSaveState save(g);
+        g.reduceClipRegion(plot.toNearestInt());
+        juce::Path wave;
+        auto pos = [&](std::size_t i, float v) {
+            return Pos{plot.getX() + plot.getWidth() * static_cast<float>(i) / static_cast<float>(count - 1),
+                       plot.getCentreY() - .47f * plot.getHeight() * std::clamp(v, -1.2f, 1.2f)};
+        };
+        wave.startNewSubPath(pos(0, traces_[slot + 1][0]));
+        for (std::size_t i = 1; i < count; ++i)
+            wave.lineTo(pos(i, traces_[slot + 1][i]));
+        for (auto i = count; i-- > 0;)
+            wave.lineTo(pos(i, traces_[slot][i]));
+        wave.closeSubPath();
+        g.setColour(c);
+        g.fillPath(wave);
+    };
+    if (showInput_)
+        envelope(0, ink.withAlpha(.19f));
+    if (showOutput_)
+        envelope(2, accent.withAlpha(.22f));
+    if (phase_ > 0 && phase_ < 1) {
+        const auto x = plot.getX() + phase_ * plot.getWidth();
+        g.setColour(accent.withAlpha(.3f));
+        g.drawLine(x, plot.getY(), x, plot.getBottom());
+    }
+}
+void AdiShaperPanel::drawStatic(juce::Graphics &g) {
+    const auto accent = colour(key_.stage);
     g.fillAll(juce::Colour(0xff202025));
     g.setColour(juce::Colour(0xff37373b));
     g.fillRect(Rect(0, 0, 1000, 42));
@@ -352,19 +552,6 @@ void AdiShaperPanel::paint(juce::Graphics &g) {
         g.setColour(b == key_.band ? accent : dim);
         g.fillRect(r.getX(), 169.f, r.getWidth(), 3.f);
     }
-    if (spectrum_.size() > 1) {
-        juce::Path p;
-        for (std::size_t i = 0; i < spectrum_.size(); ++i) {
-            const float x = 10.f + 326.f * static_cast<float>(i) / static_cast<float>(spectrum_.size() - 1);
-            const float y = 167.f - 51.f * clamp01((spectrum_[i] + 72.f) / 72.f);
-            if (i == 0)
-                p.startNewSubPath(x, y);
-            else
-                p.lineTo(x, y);
-        }
-        g.setColour(ink.withAlpha(.65f));
-        g.strokePath(p, juce::PathStrokeType(1));
-    }
     for (auto b : {0, 1})
         if (b == 0 ? hasLow : hasHigh) {
             const float x = 9 + 328 * (b == 0 ? lo : hi);
@@ -393,13 +580,10 @@ void AdiShaperPanel::paint(juce::Graphics &g) {
     box(g, {440, 96, 115, 96}, plate);
     label(g, "Output", {444, 98, 107, 21}, 12, dim);
     for (int i = 0; i < 2; ++i) {
-        const float v = peaks_[static_cast<std::size_t>(i)], y = 129.f + i * 20;
+        const float y = 129.f + i * 20;
         label(g, i ? "R" : "L", {443, y - 8, 12, 16}, 10, dim);
         g.setColour(rail);
         g.fillRect(459.f, y, 45.f, 3.f);
-        g.setColour(v > 1 ? juce::Colours::orangered : accent);
-        g.fillRect(459.f, y, 45.f * clamp01((v > 0 ? 20.f * std::log10(v) + 60.f : 0.f) / 60.f), 3.f);
-        label(g, db(v), {506, y - 8, 45, 16}, 10, ink);
     }
     if (key_.stage == 3 || key_.stage == 4 || key_.stage == 6) {
         const std::array<const char *, 2> text = key_.stage == 3   ? std::array{"Cutoff", "Resonance"}
@@ -418,87 +602,26 @@ void AdiShaperPanel::paint(juce::Graphics &g) {
         const float x = plot.getX() + plot.getWidth() * i / 64.f;
         g.setColour(juce::Colour(i % 16 == 0 ? 0xff3e3e43 : (i % 4 == 0 ? 0xff29292e : 0xff1b1b1e)));
         g.drawVerticalLine(juce::roundToInt(x), plot.getY(), plot.getBottom());
-        if (i % 16 == 0)
-            label(g, i == 0 ? "0" : juce::String(i / 16) + "/4", {x - 15, 203, 30, 14}, 10, dim);
+        if (i % 16 == 0) {
+            juce::String text = "0";
+            if (i && read(m.clock) > .5) {
+                const double ms = 1000. * i / (64. * .02 * std::pow(262000., read(m.rate)));
+                text = juce::String(ms, ms < 1 ? 2 : 0) + " ms";
+            } else if (i) {
+                const double quarters = std::exp2(read(m.cycle) * 12. - 5.);
+                const double denominator = (i == 64 ? 4. : 16.) / quarters;
+                text =
+                    std::abs(denominator - std::round(denominator)) < .001 && denominator >= 1
+                        ? juce::String(i == 64 ? 1 : i / 16) + "/" + juce::String(juce::roundToInt(denominator))
+                        : juce::String(quarters * i / 64., 2) + " QN";
+            }
+            label(g, text, {x - 19, 203, 38, 14}, 10, dim);
+        }
     }
     for (int i = 0; i <= 8; ++i) {
         const float y = plot.getY() + i * plot.getHeight() / 8;
         g.setColour(juce::Colour(i % 4 == 0 ? 0xff3d3d43 : 0xff242427));
         g.drawHorizontalLine(juce::roundToInt(y), plot.getX(), plot.getRight());
-    }
-    auto envelope = [&](std::size_t slot, juce::Colour c) {
-        const auto count = std::min(traces_[slot].size(), traces_[slot + 1].size());
-        if (count < 2)
-            return;
-        juce::Graphics::ScopedSaveState save(g);
-        g.reduceClipRegion(plot.toNearestInt());
-        juce::Path wave;
-        auto pos = [&](std::size_t i, float v) {
-            return Pos{plot.getX() + plot.getWidth() * static_cast<float>(i) / static_cast<float>(count - 1),
-                       plot.getCentreY() - .47f * plot.getHeight() * std::clamp(v, -1.2f, 1.2f)};
-        };
-        wave.startNewSubPath(pos(0, traces_[slot + 1][0]));
-        for (std::size_t i = 1; i < count; ++i)
-            wave.lineTo(pos(i, traces_[slot + 1][i]));
-        for (auto i = count; i-- > 0;)
-            wave.lineTo(pos(i, traces_[slot][i]));
-        wave.closeSubPath();
-        g.setColour(c);
-        g.fillPath(wave);
-    };
-    if (showInput_)
-        envelope(0, ink.withAlpha(.19f));
-    if (showOutput_)
-        envelope(2, accent.withAlpha(.22f));
-    if (phase_ > 0 && phase_ < 1) {
-        const auto x = plot.getX() + phase_ * plot.getWidth();
-        g.setColour(accent.withAlpha(.3f));
-        g.drawLine(x, plot.getY(), x, plot.getBottom());
-    }
-    auto dot = [&](float x, float y) {
-        return Pos{plot.getX() + plot.getWidth() * x, plot.getBottom() - plot.getHeight() * y};
-    };
-    if (!nodes.empty()) {
-        juce::Path curve;
-        auto segmentTo = [&](Point a, Point b) {
-            if (a.shape == Shape::Hold)
-                curve.lineTo(dot(b.x, a.y));
-            if (a.shape == Shape::Bend && b.x > a.x) {
-                const float controlY = a.y + .5f * (1.f - std::clamp(a.bend, -1.f, 1.f)) * (b.y - a.y);
-                curve.quadraticTo(dot(.5f * (a.x + b.x), controlY), dot(b.x, b.y));
-            } else
-                curve.lineTo(dot(b.x, b.y));
-        };
-        auto left = nodes.back();
-        left.x -= 1;
-        curve.startNewSubPath(dot(left.x, left.y));
-        for (const auto &right : nodes) {
-            segmentTo(left, right);
-            left = right;
-        }
-        auto repeat = nodes.front();
-        repeat.x += 1;
-        segmentTo(left, repeat);
-        {
-            juce::Graphics::ScopedSaveState save(g);
-            g.reduceClipRegion(plot.expanded(1, 1).toNearestInt());
-            g.setColour(accent);
-            g.strokePath(curve, juce::PathStrokeType(1.9f));
-        }
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            const auto &a = nodes[i];
-            const auto &prev = nodes[i ? i - 1 : nodes.size() - 1];
-            if (i > 0 && a.y == prev.y && a.shape == Shape::Hold && static_cast<int>(i) != selected_)
-                continue;
-            const auto xy = dot(a.x, a.y);
-            if (a.shape == Shape::Hold && a.y != prev.y) {
-                g.setColour(ink);
-                const auto p = dot(a.x, prev.y);
-                g.fillEllipse(p.x - 2.7f, p.y - 2.7f, 5.4f, 5.4f);
-            }
-            g.setColour(static_cast<int>(i) == selected_ ? accent : ink);
-            g.fillEllipse(xy.x - 3, xy.y - 3, 6, 6);
-        }
     }
     std::array<juce::String, 3> scale{"100%", "50%", "0%"};
     if (key_.stage == 0)
@@ -523,7 +646,8 @@ void AdiShaperPanel::paint(juce::Graphics &g) {
         scale = {"0", unit(extent * .5), unit(extent)};
     }
     label(g, scale[0], {1, plot.getY() - 7, 43, 14}, 10, dim, juce::Justification::centredRight);
-    label(g, scale[1], {23, plot.getCentreY() - 7, 20, 14}, 9, dim, juce::Justification::centredRight);
+    label(g, scale[1], {plot.getX() + 4, plot.getCentreY() - 15, 44, 14}, 9, dim,
+          juce::Justification::centredLeft);
     label(g, scale[2], {1, plot.getBottom() - 7, 43, 14}, 10, dim, juce::Justification::centredRight);
     const std::array<const char *, 5> tools{"", "", "#", "In", "Out"};
     for (int i = 0; i < 5; ++i) {
@@ -575,6 +699,15 @@ void AdiShaperPanel::paint(juce::Graphics &g) {
     if (freeCurve()) {
         box(g, {378, 491, 70, 27}, plate);
         label(g, "Bend", {378, 491, 70, 27}, 12, segmentShape_ == Shape::Bend ? accent : dim);
+        const auto &active =
+            nodes[static_cast<std::size_t>(std::clamp(selected_, 0, static_cast<int>(nodes.size()) - 1))];
+        for (int i = 0; i < 3; ++i) {
+            const Rect r(455.f + 70.f * i, 491, 66, 27);
+            const bool on = active.shape == Shape::SourceCorner && juce::roundToInt(active.bend) == i - 1;
+            box(g, r, plate);
+            label(g, std::array{"Hard", "Medium", "Soft"}[static_cast<std::size_t>(i)], r, 12,
+                  on ? accent : dim);
+        }
     }
     label(g, "Wave shapes", {10, 523, 140, 23}, 13, accent, juce::Justification::centredLeft);
     for (int i = 0; i < 5; ++i) {
@@ -669,7 +802,7 @@ void AdiShaperPanel::updateNodes(std::vector<Point> pts) {
         working_ = std::move(pts);
     else
         cancel();
-    repaint();
+    invalidateDrawing();
 }
 void AdiShaperPanel::finish(Phase phase) {
     const auto old = drag_;
@@ -690,8 +823,11 @@ void AdiShaperPanel::finish(Phase phase) {
 void AdiShaperPanel::cancel() { finish(Phase::Cancel); }
 void AdiShaperPanel::focusLost(FocusChangeType) { cancel(); }
 void AdiShaperPanel::visibilityChanged() {
-    if (!isShowing())
+    if (!isShowing()) {
         cancel();
+        background_ = {};
+        contour_ = {};
+    }
 }
 void AdiShaperPanel::enablementChanged() {
     if (!isEnabled())
@@ -733,7 +869,7 @@ void AdiShaperPanel::stroke(Pos p) {
         if (it != v.end() && std::abs(it->x - q) < .0001f)
             it->y = b.y;
         else if (v.size() < 512)
-            v.insert(it, {q, b.y, 0, segmentShape_});
+            v.insert(it, {q, b.y, cornerWeight_, segmentShape_});
     } else {
         const auto index = [](float x) { return std::clamp(juce::roundToInt(x * 8), 0, 7); };
         const int lo = std::min(index(a.x), index(b.x)), hi = std::max(index(a.x), index(b.x));
@@ -757,7 +893,7 @@ void AdiShaperPanel::controlDrag(Pos p) {
     edits_[0].value = std::clamp(value, 0.0, 1.0);
     if (!send(Phase::Change, edits_))
         cancel();
-    repaint();
+    invalidateDrawing();
 }
 void AdiShaperPanel::updatePointer(Pos p) {
     if (drag_ == Drag::Control) {
@@ -802,8 +938,9 @@ void AdiShaperPanel::updatePointer(Pos p) {
     }
     updateNodes(std::move(v));
 }
-void AdiShaperPanel::chooseShape(Shape shape) {
+void AdiShaperPanel::chooseShape(Shape shape, float weight) {
     segmentShape_ = shape;
+    cornerWeight_ = weight;
     if (!freeCurve()) {
         setOnce(mapping().interpolation, shape == Shape::Hold ? 0 : 1);
         return;
@@ -818,6 +955,8 @@ void AdiShaperPanel::chooseShape(Shape shape) {
     }
     auto &pt = v[static_cast<std::size_t>(std::clamp(selected_, 0, static_cast<int>(v.size()) - 1))];
     pt.shape = shape;
+    if (shape == Shape::SourceCorner)
+        pt.bend = weight;
     if (shape == Shape::Bend && pt.bend == 0)
         pt.bend = .5f;
     updateNodes(std::move(v));
@@ -848,6 +987,32 @@ void AdiShaperPanel::writeShape(int shape) {
         }
     updateNodes(std::move(v));
     finish(Phase::End);
+}
+void AdiShaperPanel::selectSyncDivision(int position) {
+    const auto m = mapping();
+    if (position >= 0 && position < static_cast<int>(divisions.size()) && read(m.clock) < .5)
+        setOnce(m.cycle, divisionValue(divisions[static_cast<std::size_t>(position)].quarters));
+}
+void AdiShaperPanel::showSyncDivisions() {
+    const auto m = mapping();
+    juce::PopupMenu menu;
+    for (std::size_t i = 0; i < divisions.size(); ++i) {
+        const auto &division = divisions[i];
+        juce::String label(division.text);
+        if (label.endsWithChar('T'))
+            label += " (triplet)";
+        if (label.endsWithChar('D'))
+            label += " (dotted)";
+        menu.addItem(static_cast<int>(i) + 1, label, true,
+                     std::abs(read(m.cycle) - divisionValue(division.quarters)) < 1.e-6);
+    }
+    juce::Component::SafePointer<AdiShaperPanel> safe(this);
+    const auto target = key_;
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition(),
+                       [safe, target](int choice) {
+                           if (safe && safe->key_ == target && choice > 0)
+                               safe->selectSyncDivision(choice - 1);
+                       });
 }
 void AdiShaperPanel::showStages(Pos) {
     juce::PopupMenu menu;
@@ -897,7 +1062,7 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
                 showInput_ = !showInput_;
             else
                 showOutput_ = !showOutput_;
-            repaint();
+            invalidateDrawing();
             return;
         }
     for (int i = 0; i < 5; ++i)
@@ -939,9 +1104,19 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
         chooseShape(Shape::Bend);
         return;
     }
+    if (freeCurve()) {
+        for (int i = 0; i < 3; ++i) {
+            if (inside({455.f + 70.f * i, 491, 66, 27}, p)) {
+                chooseShape(Shape::SourceCorner, static_cast<float>(i - 1));
+                return;
+            }
+        }
+    }
     for (const auto &c : controls())
         if (c.r.contains(p)) {
-            if (c.id == m.interpolation)
+            if (c.id == m.cycle && read(m.clock) < .5)
+                showSyncDivisions();
+            else if (c.id == m.interpolation)
                 chooseShape(c.text == "Hold" ? Shape::Line : Shape::Hold);
             else if (c.mode == 3)
                 setOnce(c.id, read(c.id) < .5 ? 1 : 0);
@@ -966,9 +1141,15 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     selected_ = nearestNode(p, freeCurve());
+    if (selected_ >= 0 && freeCurve() && e.mods.isShiftDown()) {
+        const auto &current = points()[static_cast<std::size_t>(selected_)];
+        const int weight = current.shape == Shape::SourceCorner ? juce::roundToInt(current.bend) : -1;
+        chooseShape(Shape::SourceCorner, static_cast<float>(weight >= 1 ? -1 : weight + 1));
+        return;
+    }
     if (selected_ >= 0)
         startNodes(Drag::Node);
-    repaint();
+    invalidateDrawing();
 }
 void AdiShaperPanel::mouseDrag(const juce::MouseEvent &e) {
     if (drag_ != Drag::None)
@@ -985,7 +1166,7 @@ void AdiShaperPanel::mouseDoubleClick(const juce::MouseEvent &e) {
     if (drag_ == Drag::None)
         return;
     auto v = working_;
-    if (nearest > 0 && v.size() > 1) {
+    if (nearest >= 0 && v.size() > 1) {
         v.erase(v.begin() + nearest);
         selected_ = -1;
     } else if (nearest < 0 && v.size() < 512) {
@@ -994,7 +1175,7 @@ void AdiShaperPanel::mouseDoubleClick(const juce::MouseEvent &e) {
             q.x = std::round(q.x * 32.f) / 32.f;
         auto it = std::upper_bound(v.begin(), v.end(), q.x, [](float x, const Point &a) { return x < a.x; });
         selected_ = static_cast<int>(it - v.begin());
-        v.insert(it, {q.x, q.y, 0, segmentShape_});
+        v.insert(it, {q.x, q.y, cornerWeight_, segmentShape_});
     } else {
         cancel();
         return;
@@ -1015,7 +1196,7 @@ bool AdiShaperPanel::keyPressed(const juce::KeyPress &key) {
     if (key == juce::KeyPress::leftKey || key == juce::KeyPress::rightKey) {
         selected_ = std::clamp(selected_ + (key == juce::KeyPress::rightKey ? 1 : -1), 0,
                                static_cast<int>(v.size()) - 1);
-        repaint();
+        invalidateDrawing();
         return true;
     }
     if (selected_ < 0 || selected_ >= static_cast<int>(v.size()))

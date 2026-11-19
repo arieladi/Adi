@@ -85,13 +85,14 @@ struct Fixture {
         return b;
     }
 };
-juce::MouseEvent event(Panel &p, float x, float y, int clicks = 1, bool alt = false) {
+juce::MouseEvent event(Panel &p, float x, float y, int clicks = 1, bool alt = false, bool shift = false) {
     juce::Point<float> pos{x, y};
     auto tick = juce::Time::getCurrentTime();
     return {juce::Desktop::getInstance().getMainMouseSource(),
             pos,
             juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier |
-                               (alt ? juce::ModifierKeys::altModifier : 0)),
+                               (alt ? juce::ModifierKeys::altModifier : 0) |
+                               (shift ? juce::ModifierKeys::shiftModifier : 0)),
             0,
             0,
             0,
@@ -182,6 +183,90 @@ void gestures() {
     p.mouseDrag(event(p, 675, 85));
     p.mouseUp(event(p, 675, 85));
     expect(f.values[trim] > .29 && f.values[trim] < .31, "Drive input trim targets its own band");
+    p.select({0, 1, 0});
+    for (int i = 0; i < 3; ++i) {
+        const int step = f.ends;
+        p.mouseDown(event(p, 470.f + 70.f * i, 505));
+        expect(f.ends == step + 1 && f.wave[0].shape == Panel::Shape::SourceCorner && f.wave[0].bend == i - 1,
+               "one undo group sets a hard, medium or soft corner");
+    }
+    p.mouseDown(event(p, 22, 250));
+    const auto corner = f.wave.front();
+    auto plot = p.curveBounds();
+    const int changes = f.ends;
+    p.mouseDown(event(p, plot.getX() + corner.x * plot.getWidth(),
+                      plot.getBottom() - corner.y * plot.getHeight(), 1, false, true));
+    expect(f.ends == changes + 1 && f.wave.front().bend == -1,
+           "shift-click cycles soft to hard in one gesture");
+}
+void cornerLevel() {
+    Fixture f;
+    f.wave = {{0, .1f, -1, Panel::Shape::SourceCorner},
+              {.125f, .4f, 1, Panel::Shape::SourceCorner},
+              {.25f, .9f, 0, Panel::Shape::SourceCorner},
+              {.75f, .9f, 1, Panel::Shape::SourceCorner}};
+    Panel p;
+    p.setSize(1000, 600);
+    p.bind(f.binding(true));
+    p.mouseDown(event(p, 380, 150));
+    p.mouseDrag(event(p, 380, 140.4f));
+    p.mouseUp(event(p, 380, 140.4f));
+    double sum = 0;
+    for (auto point : f.wave)
+        sum += point.y;
+    expect(std::abs(sum / static_cast<double>(f.wave.size()) - .675) < 1.e-5 && f.ends == 1,
+           "fader moves the arithmetic mean of the point heights for irregular spacing");
+}
+void syncDivisions() {
+    Fixture f;
+    Panel panel;
+    panel.bind(f.binding());
+    constexpr std::array<double, 23> quarters{1. / 32, 1. / 16, 1. / 8, 1. / 6, 1. / 4, 3. / 8, 1. / 3, 1. / 2,
+                                              3. / 4,  2. / 3,  1,      3. / 2, 4. / 3, 2,      3,      4,
+                                              6,       8,       12,     16,     32,     64,     128};
+    for (std::size_t i = 0; i < quarters.size(); ++i) {
+        const int before = f.ends;
+        panel.selectSyncDivision(static_cast<int>(i));
+        expect(std::abs(std::exp2(f.values[20] * 12 - 5) - quarters[i]) < 1e-6 && f.ends == before + 1,
+               "each clock setting, including triplet and dotted values, commits one parameter edit");
+    }
+    const auto count = f.ends;
+    f.values[19] = 1;
+    panel.selectSyncDivision(9);
+    expect(f.ends == count, "Hz mode keeps the continuous rate control");
+}
+void cachedDrawing() {
+    Fixture fixture;
+    Panel panel;
+    panel.setSize(1000, 600);
+    panel.bind(fixture.binding());
+    const auto render = [&](float scale) {
+        juce::Image image(juce::Image::RGB, juce::roundToInt(panel.getWidth() * scale),
+                          juce::roundToInt(panel.getHeight() * scale), true);
+        juce::Graphics graphics(image);
+        graphics.addTransform(juce::AffineTransform::scale(scale));
+        panel.paintEntireComponent(graphics, true);
+        return image;
+    };
+    const auto before = render(1);
+    std::array<float, 32> low{}, high{};
+    low.fill(-.5f);
+    high.fill(.5f);
+    panel.setTrace({low, high}, {low, high}, .5f, .25f, .5f);
+    const auto live = render(1);
+    expect(live.getPixelAt(621, 339) != before.getPixelAt(621, 339) &&
+               live.getPixelAt(210, 23) == before.getPixelAt(210, 23),
+           "live overlay updates without changing chrome");
+    for (int id = 23; id <= 30; ++id)
+        fixture.values[static_cast<std::size_t>(id)] = 1.;
+    panel.refresh();
+    const auto updated = render(1);
+    expect(updated.getPixelAt(211, 217) != live.getPixelAt(211, 217),
+           "external automation invalidates cached contour");
+    panel.setSize(500, 300);
+    const auto dense = render(2);
+    expect(dense.getPixelAt(211, 217) == updated.getPixelAt(211, 217),
+           "resized high-density contour follows plot coordinates");
 }
 std::vector<float> samples(const char *path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -227,7 +312,8 @@ void spectrumFrames() {
         const auto db = display.analyse(packet);
         const auto peak = std::max_element(db.begin(), db.end());
         const double expected = bin * rate / n;
-        const double actual = 20. * std::pow(1000., static_cast<double>(peak - db.begin()) / static_cast<double>(db.size() - 1));
+        const double actual =
+            20. * std::pow(1000., static_cast<double>(peak - db.begin()) / static_cast<double>(db.size() - 1));
         expect(std::abs(*peak + 6.0206f) < .005f && std::abs(std::log(expected / actual)) < .025,
                "FFT displays calibrated tone at its log frequency");
         for (int i = 0; i < n; ++i)
@@ -251,14 +337,30 @@ void spectrumFrames() {
     expect(!scope.readSpectrum(packet), "sample rate change restarts the window");
 }
 void capture(const char *program, const char *destination, bool time, const char *leftFile,
-             const char *rightFile, int startFrame) {
+             const char *rightFile, int startFrame, bool corner = false) {
     auto input = samples(program);
     constexpr int bar = 96000;
     expect(input.size() == 8u * 48000 * 2, "expected eight seconds of stereo input at 48 kHz");
     const int finalBar = static_cast<int>(input.size() / 2) - bar;
     Fixture f;
     Panel p;
-    auto binding = f.binding();
+    if (corner) {
+        using Bank = adi::dsp::AdiShaperWaveBank;
+        f.values[20] = 5. / 12;
+        f.dsp.set(Core::bandParam(Core::Stage::Volume, Core::Band::Mid, Core::Cycle), 1);
+        f.wave = {{0, .22f, -1, Panel::Shape::SourceCorner},
+                  {1531.f / 8192, .8f, 1, Panel::Shape::SourceCorner},
+                  {5099.f / 8192, .05f, 0, Panel::Shape::SourceCorner},
+                  {6878.f / 8192, .65f, 1, Panel::Shape::SourceCorner}};
+        int host = Bank::firstId;
+        for (auto point : f.wave) {
+            const Bank::Point packed{point.x, point.y, point.bend, Bank::Shape::SourceCorner};
+            f.dsp.set(static_cast<Core::Param>(host++ - 1),
+                      static_cast<float>(Bank::address(Bank::key(0, 1, 0), packed)));
+            f.dsp.set(static_cast<Core::Param>(host++ - 1), static_cast<float>(Bank::value(packed)));
+        }
+    }
+    auto binding = f.binding(corner);
     auto &scope = *f.dsp.shaperScope();
     const int key = (time ? 7 : 0) * 3 + 1;
     scope.select(time ? 7 : 0, 1);
@@ -334,9 +436,14 @@ void capture(const char *program, const char *destination, bool time, const char
 int main(int argc, char **argv) try {
     juce::ScopedJuceInitialiser_GUI gui;
     gestures();
+    cornerLevel();
+    syncDivisions();
+    cachedDrawing();
     spectrumFrames();
     if (argc == 3)
         capture(argv[1], argv[2], false, nullptr, nullptr, 0);
+    else if (argc == 4 && std::string_view(argv[3]) == "corner")
+        capture(argv[1], argv[2], false, nullptr, nullptr, 0, true);
     else if (argc == 7 && std::string_view(argv[3]) == "time")
         capture(argv[1], argv[2], true, argv[4], argv[5], std::stoi(argv[6]));
     else

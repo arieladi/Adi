@@ -13,7 +13,7 @@ namespace adi::ui {
 class AdiShaperPanel final : public juce::Component, public juce::SettableTooltipClient {
   public:
     enum class Phase { Begin, Change, End, Cancel };
-    enum class Shape { Hold, Line, Bend };
+    enum class Shape { Hold, Line, Bend, SourceCorner };
     struct Key {
         int stage = 0, band = 1, lane = 0;
         bool operator==(const Key &) const = default;
@@ -46,9 +46,12 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     void setTrace(Trace input, Trace output, float peakLeft, float peakRight, float phase);
     void setSpectrum(std::span<const float> logBandDb);
     void select(Key);
+    void selectSyncDivision(int position);
     Key selection() const noexcept { return key_; }
     juce::Rectangle<float> curveBounds() const;
     void paint(juce::Graphics &) override;
+    void resized() override;
+    void lookAndFeelChanged() override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
@@ -87,15 +90,28 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     void setOnce(int, double);
     void stroke(Pos);
     void controlDrag(Pos);
-    void chooseShape(Shape);
+    void chooseShape(Shape, float weight = 0);
     void writeShape(int);
     void showStages(Pos);
+    void showSyncDivisions();
     int nearestNode(Pos, bool nearOnly) const;
     int segment(Pos) const;
     Pos toPlot(Pos) const;
     Rect graph() const;
     Pos logical(Pos) const;
     void updatePointer(Pos);
+    void invalidateDrawing();
+    void drawStatic(juce::Graphics &);
+    void drawLive(juce::Graphics &);
+    void drawContour(juce::Graphics &) const;
+    void prepareDrawing(float scale);
+    static std::vector<float> sampleCorners(const std::vector<Point> &, int columns);
+    juce::Image background_, contour_;
+    juce::Rectangle<int> contourPixels_;
+    bool drawingDirty_ = true;
+    float density_{};
+    float cornerWeight_{};
+    std::vector<float> cornerSamples_;
     static constexpr float designWidth = 1000, designHeight = 600;
     Binding binding_;
     Key key_{};
