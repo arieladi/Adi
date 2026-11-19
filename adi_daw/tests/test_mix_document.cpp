@@ -10,6 +10,8 @@
 #include <array>
 #include <cstdio>
 #include <optional>
+#include <string_view>
+#include <utility>
 
 using namespace adi;
 namespace {
@@ -293,11 +295,222 @@ void replaceRetainedDeviceFromPicker() {
               "the built-in insertion uses the same runtime ID reservation");
     }
 }
+
+constexpr std::string_view ordinaryUid = "test.adidaw.device-identity";
+constexpr std::string_view compressorUid = "org.adidaw.mix.compressor";
+constexpr std::string_view limiterUid = "org.adidaw.mix.limiter";
+constexpr std::string_view utilityUid = "org.adidaw.builtin.utility";
+constexpr std::int64_t ordinarySource = 10, nextInChain = 11;
+
+class OrdinaryDevice final : public device::DeviceInstance {
+  public:
+    explicit OrdinaryDevice(const rows::PluginRef &ref)
+        : identity_{ref.format, ref.uid, ref.name, ref.vendor, ref.version} {
+        gain_.id = "420";
+        gain_.name = "Fixture Gain";
+    }
+    const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+    bool loaded() const noexcept override { return true; }
+    void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
+    std::int32_t paramCount() const noexcept override { return 1; }
+    const device::ParamDescriptor *paramAt(std::int32_t index) const noexcept override {
+        return index == 0 ? &gain_ : nullptr;
+    }
+    device::ParamValue getParam(const std::string &id) const noexcept override {
+        return id == gain_.id ? gainValue_ : device::ParamValue{};
+    }
+    bool setParam(const std::string &id, const device::ParamValue &value) override {
+        if (id != gain_.id)
+            return false;
+        gainValue_ = value;
+        return true;
+    }
+
+  private:
+    device::DeviceIdentity identity_;
+    device::ParamDescriptor gain_;
+    device::ParamValue gainValue_;
+};
+
+std::unique_ptr<ui::ProjectDocument> identityFixture(const std::filesystem::path &path) {
+    StoreError error{};
+    auto seed = Store::create(path, error);
+    if (!seed)
+        return {};
+    seed->db().exec("INSERT INTO tracks(id,kind,name) VALUES "
+                    "(1,'master','Main'),(2,'audio','Source'),(3,'audio','Destination');"
+                    "INSERT INTO device_chains(id,track_id,ord,name) VALUES"
+                    "(10,2,0,'Source devices'),(20,3,0,'Destination devices');"
+                    "INSERT INTO plugin_refs(id,format,uid,name) "
+                    "VALUES(90,'vst3','test.adidaw.device-identity','Fixture gain');"
+                    "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) "
+                    "VALUES(10,10,0,90,'Source gain'),(11,10,1,90,'Next gain');"
+                    "INSERT INTO plugin_params(device_id,param_id,name,normalized_value) "
+                    "VALUES(10,'420','Fixture Gain',0.375);");
+    seed.reset();
+    std::string documentError;
+    return ui::ProjectDocument::open(path, false, device::withBuiltinDevices(
+        [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.ref && request.ref->uid == ordinaryUid)
+                return std::make_unique<OrdinaryDevice>(*request.ref);
+            return {};
+        }), documentError);
+}
+
+std::optional<ui::DevicePanelData> matchingPanel(ui::ProjectDocument &doc, std::string_view uid,
+                                                std::int64_t track, std::int64_t id = 0) {
+    const auto publication = doc.parameterFeed().current();
+    const auto found = std::find_if(publication->begin(), publication->end(), [&](const auto &d) {
+        return d.uid == uid && d.track == track && (!id || d.id == id);
+    });
+    return found == publication->end() ? std::nullopt : std::optional{*found};
+}
+
+bool containsDevice(ui::ProjectDocument &doc, std::int64_t id) {
+    SQLite::Statement row(doc.store().db(), "SELECT 1 FROM devices WHERE id = ?");
+    row.bind(1, id);
+    return row.executeStep();
+}
+
+enum class DeviceCreation { Paste, Duplicate, Browser, LegacyId };
+
+void createAfterHighestRemoval(DeviceCreation creation, const char *caseName) {
+    if (creation == DeviceCreation::Browser) {
+        const auto *utility = findBuiltin(utilityUid);
+        if (!utility || !utility->available) {
+            std::printf("SKIP Browser identity on a build without the Utility host\n");
+            return;
+        }
+    }
+    std::printf("Device identity fixture %s\n", caseName);
+    test::TempDirectory temp("mix_document", caseName);
+    auto doc = identityFixture(temp.path() / "project.adi");
+    if (!doc || !doc->addMixFunction(mix::Function::Limiter, 2) ||
+        !doc->addMixFunction(mix::Function::Compressor, 3)) {
+        check(false, "fixture creates source Limiter and highest-ID Compressor");
+        return;
+    }
+    doc->tick(0);
+    const auto original = matchingPanel(*doc, compressorUid, 3);
+    const auto limiter = matchingPanel(*doc, limiterUid, 2);
+    if (!original || !limiter || !original->available || !limiter->available ||
+        original->id != doc->store().db().execAndGet("SELECT MAX(id) FROM devices").getInt64()) {
+        check(false, "the available native Compressor is the highest authored device");
+        return;
+    }
+    auto *oldInstance = doc->session().instanceFor(original->id);
+    if (!oldInstance) {
+        check(false, "highest ID has a realised native Compressor");
+        return;
+    }
+    using Kind = engine::ParamEventKind;
+    constexpr double threshold = .375;
+    const auto edit = [&](Kind kind, double value) {
+        return doc->parameterGestureExpected(original->id, "0", kind, value,
+                                             original->runtime, original->instance);
+    };
+    if (!(edit(Kind::Begin, oldInstance->getParam("0").normalized) &&
+          edit(Kind::Value, threshold) && edit(Kind::End, threshold))) {
+        check(false, "fixture authors nondefault Compressor state through one gesture");
+        return;
+    }
+    doc->tick(1);
+    const auto oldState = oldInstance->saveState("state");
+    check(!oldState.empty() && oldInstance->getParam("0").normalized == threshold,
+          "the nondefault Compressor state is captured before retirement");
+    const auto beforeRemoval = OpJournal(doc->store()).headSeq();
+    if (!doc->deviceAction("device.remove", {{"id", original->id}}) || containsDevice(*doc, original->id)) {
+        check(false, "removing the highest device retires its runtime and frees its stored ID");
+        return;
+    }
+    const auto afterRemoval = OpJournal(doc->store()).headSeq();
+    const bool sameChain = creation == DeviceCreation::Duplicate;
+    const bool ordinary = sameChain || creation == DeviceCreation::LegacyId;
+    const auto sourceId = ordinary ? ordinarySource : limiter->id;
+    const std::int64_t track = sameChain ? 2 : 3;
+    const auto expectedUid = ordinary ? ordinaryUid : creation == DeviceCreation::Browser ? utilityUid : limiterUid;
+    bool created = false;
+    if (creation == DeviceCreation::Browser) {
+        created = doc->insertBuiltin(std::string(utilityUid), track, {});
+    } else {
+        DeviceCopy copy;
+        if (!doc->copyDevice(sourceId, copy)) {
+            check(false, "fixture captures the source device through Copy");
+            return;
+        }
+        if (creation == DeviceCreation::LegacyId) {
+            // Explicitly model an older operation reusing a historic numeric ID.
+            // This bypasses only the UI allocator and still commits normally.
+            auto prepared = prepareDevicePasteForTrack(doc->store(), copy, original->id, track);
+            const auto commit = doc->ops().commitPrepared(
+                std::move(prepared), [](Store &store, PreparedDevicePaste &paste, Actor actor) {
+                    return commitDevicePaste(store, paste, actor);
+                });
+            created = commit.ok && doc->synchronise();
+        } else {
+            // Duplicate uses the same copy/paste commands in its source chain.
+            const auto before = sameChain ? std::optional{nextInChain} : std::nullopt;
+            created = doc->pasteDevice(copy, track, before);
+        }
+    }
+    if (!created) {
+        check(false, "the requested device insertion commits after removal");
+        return;
+    }
+    doc->tick(2);
+    // Resolve the written ID independently of how the device feed is ordered.
+    const auto id = doc->store().db().execAndGet("SELECT MAX(id) FROM devices").getInt64();
+    check(creation == DeviceCreation::LegacyId ? id == original->id : id > original->id,
+          "ordinary allocation advances past the retained ID, or the deliberate replay reuses it");
+    doc->setParameterDemand(doc.get(), {id});
+    const auto panel = matchingPanel(*doc, expectedUid, track, id);
+    auto *instance = doc->session().instanceFor(id);
+    check(panel && panel->id == id && panel->available && !panel->parameters().empty() &&
+              std::none_of(panel->parameters().begin(), panel->parameters().end(),
+                           [](const auto &control) { return control.missing; }) &&
+              instance && instance != oldInstance && instance->identity().uid == expectedUid &&
+              instance->identity().format == (ordinary ? "vst3" : "internal"),
+          "the new row has its own loaded instance and usable controls");
+    if (sameChain && instance) {
+        SQLite::Statement order(doc->store().db(),
+                                "SELECT id FROM devices WHERE id IN (?, ?) ORDER BY ord");
+        order.bind(1, id);
+        order.bind(2, nextInChain);
+        check(order.executeStep() && order.getColumn(0).getInt64() == id &&
+                  order.executeStep() && order.getColumn(0).getInt64() == nextInChain &&
+                  instance->getParam("420").normalized == .375,
+              "Duplicate preserves source controls and places the copy before its next neighbour");
+    }
+    check(!doc->deviceTargetCurrent(original->id, original->runtime, original->instance),
+          "the retired Compressor panel cannot write to the new device");
+
+    const auto undoNew = doc->ops().undo();
+    check(undoNew.ok && doc->synchronise() && OpJournal(doc->store()).headSeq() == afterRemoval &&
+              !containsDevice(*doc, id),
+          "one Undo removes the whole new device edit");
+    const auto undoRemoval = doc->ops().undo();
+    const bool restored = undoRemoval.ok && doc->synchronise();
+    doc->tick(3);
+    check(restored && OpJournal(doc->store()).headSeq() == beforeRemoval &&
+              containsDevice(*doc, original->id) && doc->session().instanceFor(original->id) == oldInstance &&
+              oldInstance->saveState("state") == oldState,
+          "Undo Remove revives the original Compressor instance and exact state");
+    const bool redone = doc->ops().redo().ok && doc->synchronise() &&
+                        doc->ops().redo().ok && doc->synchronise();
+    doc->tick(4);
+    check(redone && instance && instance != oldInstance && doc->session().instanceFor(id) == instance &&
+              instance->identity().uid == expectedUid,
+          "Redo restores the separately authored device instance");
+}
 }
 int main() {
     replaceHighestFunction();
     observeLimiterReduction();
     replaceRetainedDeviceFromPicker();
+    createAfterHighestRemoval(DeviceCreation::Paste, "paste-after-removal");
+    createAfterHighestRemoval(DeviceCreation::Duplicate, "duplicate-after-removal");
+    createAfterHighestRemoval(DeviceCreation::Browser, "browser-after-removal");
+    createAfterHighestRemoval(DeviceCreation::LegacyId, "legacy-device-identity");
     test::TempDirectory temp("mix_document","native-functions");std::string error;
     auto doc=ui::ProjectDocument::open(temp.path()/"project.adi",true,device::withBuiltinDevices(),error);
     check(doc!=nullptr,"native function document opens");if(!doc)return 2;
