@@ -9,6 +9,7 @@
 #include <array>
 #include <optional>
 #include <cmath>
+#include <utility>
 
 namespace adi::ui {
 dsp::TriggeredScope::Settings ClassicScopeControls::settings() const noexcept {
@@ -106,23 +107,31 @@ struct ClassicScopePanel::Face final : juce::Component {
     void updateTrace(const std::shared_ptr<const SharedAnalysis::CaptureResult> &next, std::int64_t fence) {
         if (picture == next && firstAllowed == fence && begun) return;
         begun = true; picture = next; firstAllowed = fence;
+        const bool synchronous = model.getParameter(Smexoscope::kSyncDraw) > .5f;
+        bool changed = false;
         for (size_t x = 0; x < OSC_WIDTH; ++x) {
             const Column *prev = nullptr, *now = nullptr;
             if (next && x < next->previous.size() && next->previous[x].firstSequence >= fence) prev = &next->previous[x];
             if (next && x < next->current.size()) {
                 if (next->current[x].firstSequence >= fence) now = &next->current[x];
             } else now = prev;
-            put(x, prev, model.previous, model.previousValid);
-            put(x, now, model.current, model.currentValid);
+            const bool previousChanged = put(x, prev, model.previous, model.previousValid);
+            const bool currentChanged = put(x, now, model.current, model.currentValid);
+            changed |= synchronous ? previousChanged : currentChanged;
         }
-        wave.repaint();
+        // Parked Free/Internal acquisition still advances sweep identity and
+        // sample ranges. Only a change in the painted projection needs a frame.
+        if (changed) wave.repaint();
     }
-    static void put(size_t x, const Column *value, Smexoscope::Trace &trace, std::array<bool, OSC_WIDTH> &valid) {
-        valid[x] = value != nullptr;
-        if (!value) return;
+    static bool put(size_t x, const Column *value, Smexoscope::Trace &trace, std::array<bool, OSC_WIDTH> &valid) {
+        if (!value) return std::exchange(valid[x], false);
         const auto coordinate = [](float y) { return static_cast<int>(OSC_CENTER - y * OSC_CENTER); };
-        trace[x * 2] = {static_cast<int>(x), coordinate(value->first)};
-        trace[x * 2 + 1] = {static_cast<int>(x), coordinate(value->second)};
+        const auto first = coordinate(value->first), second = coordinate(value->second);
+        if (valid[x] && trace[x * 2].y == first && trace[x * 2 + 1].y == second) return false;
+        valid[x] = true;
+        trace[x * 2] = {static_cast<int>(x), first};
+        trace[x * 2 + 1] = {static_cast<int>(x), second};
+        return true;
     }
     ClassicScopePanel &ownerPanel;
     Smexoscope model;

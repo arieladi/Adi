@@ -1580,6 +1580,69 @@ void classicScopeSurface() {
           "detaching and hiding the final views release the shared tap");
 }
 
+void classicScopeUnchangedTrace() {
+    using namespace adi::ui;
+    Fixture f;
+    Root root;
+    ClassicScopePanel face;
+    root.setSize(825, 300);
+    face.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(face);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    ClassicScopeControls controls;
+    controls.time = .3f;
+    const auto lease = f.broker->acquireCapture({{1, ScopePoint::PostFader}, SharedAnalysis::Channel::Left, controls.settings()});
+    std::array<float, 1024> monitored;
+    monitored.fill(.5f);
+    const auto feed = [&](std::int32_t frames, std::uint64_t revision, bool monitoring = false) {
+        const auto *lane = monitoring ? monitored.data() : nullptr;
+        f.tap->write(lane, lane, frames, 100, false, revision);
+        f.broker->pump();
+        const auto next = lease.read();
+        face.present(controls, false, next, 0);
+        return next;
+    };
+
+    const auto first = feed(1024, 5);
+    const auto progressivePaints = root.fake->repaints;
+    const auto second = feed(1024, 5);
+    const auto quiet = f.tap->lastParkedSilence();
+    check(first && second && first->currentSerial != second->currentSerial && quiet.begin == 0 && quiet.end == 2048 &&
+              root.fake->repaints == progressivePaints,
+          "progressive Classic keeps consuming parked sweeps without repainting the same flat trace");
+
+    controls.sync = true;
+    face.present(controls, false, second, 0);
+    const auto syncPaints = root.fake->repaints;
+    const auto third = feed(1024, 5);
+    check(third && second && third->previousSerial != second->previousSerial && root.fake->repaints == syncPaints,
+          "Sync also retains the same painted trace when a new completed sweep has identical extrema");
+
+    const auto live = feed(24, 5, true);
+    check(third && live && live->current.size() > third->current.size() &&
+              live->current.back().second == .5f && live->previous == third->previous &&
+              root.fake->repaints == syncPaints,
+          "a stopped monitored input advances the live sweep while Sync displays the unchanged completed sweep");
+
+    controls.sync = false;
+    face.present(controls, false, live, 0);
+    const auto livePaints = root.fake->repaints;
+    juce::Image raster(juce::Image::RGB, 825, 300, true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(raster);
+        face.paintEntireComponent(g, true);
+    }
+    const bool showsMonitor = live && live->current.size() >= 2 &&
+        raster.getPixelAt(38 + static_cast<int>(live->current.size()) - 2, 16 + 67) == juce::Colour(118, 118, 118);
+    check(livePaints > syncPaints && showsMonitor, "returning to progressive redraw shows the retained live sweep");
+    const auto afterSeek = feed(10, 6);
+    check(live && afterSeek && afterSeek->sourceEpoch > live->sourceEpoch && afterSeek->transportRevision == 6 &&
+              afterSeek->previous.empty() && root.fake->repaints > livePaints,
+          "a parked seek still clears the old trace and paints the new sweep");
+    root.removeFromDesktop();
+}
+
 void mixAnalyserPages() {
     using namespace adi::ui;
     using Page = MixAnalysers::Page;
@@ -1934,7 +1997,8 @@ int main() {
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
-          spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface(); mixAnalyserPages(); compareAndAveragePages(); }
+          spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
+          classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

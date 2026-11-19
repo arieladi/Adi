@@ -62,3 +62,9 @@ Mix View's Scope page and the detached analyser's s(M)exoscope mode use this
 publication. Freeze, hide and close release their leases. Live views on the
 same source, lane and settings share the capture. The compact All and Info
 projections still show the existing latest-window Scope.
+
+While parked with an open scope, even certified zero-valued samples advance
+the numerical sweep. Free and Internal triggers, sample ranges and the DC
+transition still determine how the next monitored signal appears. Incoming
+captures repaint only when the displayed sweep's validity or integer extrema
+change.
