@@ -1,5 +1,15 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER Time ready for review
+
+**PR requested** — `clones/adi-shaper-time` at `9ead5d66`. Title **Add transport-aware multiband Time to ADi-SHAPER**. Review after `clones/adi-shaper-drive-crush`. The eight-stage device preserves its first 415 parameters and appends 48. The zero-latency Time stage selects Follow or one of seven fixed ranges independently in each band, with beat/free clocks and mix. It retains recorded input over tempo changes and invalidates on a transport discontinuity. The native path uses the graph's segment sample position and revision. The editable patch has the existing 64-frame adapter latency and a coarser transport stamp.
+
+Additional independent full-wet impulse readings at contour settings requesting 48.125, 48.25, 48.5, 48.75 and 48.875 frames all returned one full-level tap at 48. A requested 3.5, 512.5 and 12,000.5 returned 3, 512 and 12,000. ADi uses integer reads on stationary and stepped contours, and interpolates moving linear ramps. The moving-ramp interpolation law is still a comparison target.
+
+Nine focused MSVC Release CTests passed with warnings-as-errors. Native and editable Pd paths were tested with independent stereo markers, interrupted blocks, partial blend and a seek. Core checks cover two clock modes, the range limits, continuous sample time through tempo ramps, transport revision, rejection of unavailable history, wraps, reprepare and three-band routing. The large Pd canvas is encoded without exceeding a source literal limit.
+
+The shipping resource policy prepares three 16 MiB histories per shaper instance so automation can enable all bands at a sample boundary. These 48 MiB are paid even while Time is off. Preparation acquires and touches the pages off the processing path, and reset invalidates history in constant time. The original showed a roughly 48 MiB increase on enabling Time. Off-thread lazy provisioning could save memory in projects with many instances that never enable it.
+
 ## 2026-11-19 — Seven-stage CPU results and Noise acoustic contract
 
 At `a3891a36`, the native shaper used 11.8–92.7% fewer processing-thread cycles than the reference in 24 matched cells (eight fixtures, each at 64, 256 and 1,024 frames, 48 kHz, nine warm trials of 8,192 callbacks each). Hard clip on kick and bass used 39.9%, 11.8% and 18.5% fewer cycles. Crush on the same input used 77.1%, 63.2% and 47.9% fewer. At 256 frames the respective median effect callback durations were 130.5/145.8 µs for Drive and 23.0/66.0 µs for Crush (ADi/reference). The three-band Volume render used 56.1% fewer cycles at 256. Processor-thread cycles include equally replenished input, while callback wall time excludes input preparation. Music captures use identical sample positions.
