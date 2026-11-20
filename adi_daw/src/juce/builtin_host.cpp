@@ -144,6 +144,9 @@ public:
             if(until<=position)return;
             feed(until);
             engine::NodeIo piece=io;piece.blockOffset=position;piece.frames=until-position;
+            // A position-synced core keeps its own clock after the segment's
+            // first piece: io's transport is the segment start's, not this piece's.
+            if(info_.usesTransportPosition && position>start){piece.deviceTransport=nullptr;piece.transport=nullptr;}
             native_->process(piece);position=until;
         };
         for(std::int32_t e=0;e<io.events.count;++e) {
@@ -214,9 +217,12 @@ public:
             if(!builtin_values::read(value,declarations_.params,pending))return false;
             std::optional<ReactivationGate::Hold> hold;
             if(info_.resetMissingParameters) {
-                const auto& saved=value.at("params");
+                // A parameter the state set (by its position or by its real
+                // value) keeps that value; only the ones it did not set reset.
+                std::vector<bool> restored(descriptors_.size(),false);
+                for(const auto& entry:pending)if(entry.first<restored.size())restored[entry.first]=true;
                 for(std::size_t i=0;i<descriptors_.size();++i)
-                    if(!saved.contains(descriptors_[i].id))
+                    if(!restored[i])
                         pending.emplace_back(i,static_cast<float>(descriptors_[i].defaultValue.normalized));
                 hold.emplace(gate_);
             }

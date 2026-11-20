@@ -362,7 +362,7 @@ class OneShotNative final : public NativePdDevice {
         }
     }
     // OneShot keeps its own transport for the tempo; the Pd fallback is not used.
-    void process(const engine::NodeIo& io, const PdTransport* = nullptr) noexcept override {
+    void process(const engine::NodeIo& io, const PdTransport*) noexcept override {
         const auto* buffer = PdSampleBlock::get(1);
         const auto* sample = dynamic_cast<const PdOneShotSample*>(buffer);
         auto child = io;
