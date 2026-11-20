@@ -474,6 +474,27 @@ void finiteDriveOverflow() {
     }
 }
 
+void driveDryOverflowAtBlockEdge() {
+    constexpr std::size_t frames = 64;
+    for (int layout : {0, 3}) {
+        Shaper rack;
+        rack.set(Shaper::DriveOn, 1);
+        rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 1), static_cast<float>(layout));
+        for (const auto band : {Band::Low, Band::Mid, Band::High})
+            rack.set(Shaper::driveParam(band, Shaper::DriveMix), 0);
+        flat(rack, Stage::Pan, Band::Mid, 100.f);
+        std::array<float, frames> input{}, left{}, right{};
+        input.fill(.25f);
+        input.back() = std::numeric_limits<float>::max();
+        rack.process(input.data(), right.data(), left.data(), right.data(), frames);
+        input.back() = .25f;
+        rack.process(input.data(), right.data(), left.data(), right.data(), frames);
+        check(std::ranges::all_of(left, [](float value) { return std::isfinite(value); }) &&
+                  near(left[32], .25 * std::numbers::sqrt2),
+              "an overflowing upstream stage cannot poison Drive's delayed dry path across a callback edge");
+    }
+}
+
 void clockLimitsAndAliases() {
     constexpr std::size_t count = 100003;
     std::vector<float> inL(count, 1.0f), inR(count, -0.25f), outL(count), outR(count);
@@ -758,6 +779,7 @@ int main() {
     bypassAndInvalid();
     nonfiniteAudio();
     finiteDriveOverflow();
+    driveDryOverflowAtBlockEdge();
     clockLimitsAndAliases();
     modulationStack();
     modulationBands();
