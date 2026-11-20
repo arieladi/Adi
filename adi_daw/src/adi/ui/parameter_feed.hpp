@@ -46,6 +46,9 @@ struct DevicePanelData {
     bool plugin = false;
     // Its plug-in reference's uid ("" for none): a built-in's panel draws its own parts by it.
     std::string uid;
+    // Its plug-in reference's format ("vst3", "clap", "internal"; "" for none): what names its
+    // parameters' automation lanes (`engine::automationParamRef`).
+    std::string format;
     panel::Resolved resolved;
     std::vector<panel::Declared> declared;
     std::vector<panel::Record> records;

@@ -35,6 +35,12 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     // Other keys go on to the device, so the left and right arrows still move between devices.
     bool keyPressed(const juce::KeyPress &) override;
     bool returnToDefault();
+    // Live's parameter context menu (manual 25.4; AU-04): Re-Enable Automation while the parameter's
+    // lane is overridden. A right-click on the knob or the control's labels opens it.
+    void mouseDown(const juce::MouseEvent &) override;
+    void showMenu();
+    // The device's plug-in format, which names its parameters' lanes (`engine::automationParamRef`).
+    std::string format;
     // Live's device column at 100 %: the name, a knob, the value under it.
     static constexpr int kWidth = 58, kHeight = 54;
     std::int64_t device;

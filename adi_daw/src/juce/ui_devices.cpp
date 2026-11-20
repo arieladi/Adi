@@ -2,6 +2,7 @@
 #include "ui_devices.hpp"
 #include "ui_shell.hpp"
 #include "ui_browser.hpp"
+#include "adi/ui/automation_override.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -28,6 +29,7 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     slider.onDragEnd = [this] { gesture(engine::ParamEventKind::End, slider.getValue()); };
     // The wheel only scrolls, as Live (lookfeel.wheelChangesParameters, ADR-0203 d11).
     slider.setScrollWheelEnabled(false);
+    slider.addMouseListener(this, false); // its right-click opens the parameter's menu (showMenu)
     // Shift while dragging is Live's finer resolution (manual 41.6). JUCE's way is its
     // velocity mode under the swap key: slow movement under Shift moves the value by a
     // fraction of the plain drag's pixel, speeding up as the mouse does; the plain drag stays
@@ -122,6 +124,19 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
         presentedMenuId_ = 1 + static_cast<int>(std::round(r.playing * std::max(1, r.stepCount - 1)));
         menu.setSelectedId(presentedMenuId_, juce::dontSendNotification);
     }
+}
+void ParameterControl::mouseDown(const juce::MouseEvent &e) {
+    if (e.mods.isPopupMenu() && (e.eventComponent == this || e.eventComponent == &slider))
+        showMenu();
+}
+void ParameterControl::showMenu() {
+    const auto current = strip.root.current();
+    if (!current)
+        return;
+    juce::PopupMenu m;
+    strip.root.addReenableAutomation(m, deviceLaneOf(*current, device, format, parameter));
+    if (m.getNumItems() > 0)
+        m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this));
 }
 void ParameterControl::resized() {
     // Live's knob column: the name, the knob, the value under it.
@@ -718,6 +733,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
             for (const auto &r : d.parameters())
                 if (r.id == e.id) {
                     auto c = std::make_unique<ParameterControl>(strip, id, r, defaultOf(r.id));
+                    c->format = d.format;
                     c->parameterGesture = [this, epoch](const std::string &param, engine::ParamEventKind kind, double v) {
                         if (epoch != controlsEpoch_) return false;
                         if (kind != engine::ParamEventKind::End && !parameterShown(param)) return false;
