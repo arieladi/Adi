@@ -35,7 +35,8 @@ public:
         if(!native_)throw std::runtime_error("canonical built-in factory did not create "+std::string(info.name));
         identity_={reference.format,reference.uid,reference.name,reference.vendor,reference.version};
         targets_=std::make_unique<std::atomic<float>[]>(declarations_.params.size());
-        applied_.assign(declarations_.params.size(),std::numeric_limits<float>::quiet_NaN());
+        edits_=std::make_unique<std::atomic<std::uint64_t>[]>(declarations_.params.size());
+        appliedEdits_.assign(declarations_.params.size(),0);
         descriptors_.reserve(declarations_.params.size());
         for(std::size_t i=0;i<declarations_.params.size();++i) {
             const auto& declaration=declarations_.params[i];
@@ -79,7 +80,7 @@ public:
         // is the true one (see builtin_values.hpp).
         const auto position=builtin_values::positionFor(declarations_.params[index],value);
         if(!position)return false;
-        targets_[index].store(static_cast<float>(*position),std::memory_order_release);
+        store(index,static_cast<float>(*position));
         parameterRevision_.fetch_add(1,std::memory_order_release);
         return true;
     }
@@ -102,7 +103,6 @@ public:
         for(const auto& [slot,state]:sampleStates_)preparedSamples.emplace_back(slot,restoreBuiltinSample(state,rate));
         native_->prepare(rate,frames);
         for(auto& [slot,sample]:preparedSamples)(void)samples_.publish(slot,std::move(sample));
-        std::fill(applied_.begin(),applied_.end(),std::numeric_limits<float>::quiet_NaN());
         applyParameters(true);publishLatency();
         router_.configure(desiredRoute(),engine::ExpressionCaps{},15);router_.reset();
         rate_=rate;frames_=frames;prepared_=true;
@@ -237,7 +237,7 @@ public:
                 hold.emplace(gate_);
             }
             extra_=std::move(value);
-            for(const auto& [index,target]:pending)targets_[index].store(target,std::memory_order_release);
+            for(const auto& [index,target]:pending)store(index,target);
             parameterRevision_.fetch_add(1,std::memory_order_release);
             return true;
         }catch(const std::exception&){return false;}
@@ -254,13 +254,24 @@ private:
         if(!force && revision==appliedRevision_)return;
         appliedRevision_=revision;
         for(std::size_t i=0;i<descriptors_.size();++i) {
-            const float target=targets_[i].load(std::memory_order_acquire);
-            if(target!=applied_[i]) {
+            // DF-E61: an edit is counted, not compared: a stored value that
+            // went A to B and back to A since the last scan is still an edit,
+            // though it ends where the last scan saw it. The count is read
+            // before the value, so an edit landing in between is applied
+            // again on the next scan, never lost.
+            const auto edits=edits_[i].load(std::memory_order_acquire);
+            if(force || edits!=appliedEdits_[i]) {
+                appliedEdits_[i]=edits;
                 // The stored value (the user's knob) changed: it is the value
                 // in force again until the lane's next event (DF-E50).
-                current_[i]=target;applied_[i]=target;send(i);
+                current_[i]=targets_[i].load(std::memory_order_acquire);send(i);
             }
         }
+    }
+    /// Message side: a new stored value. Only a change counts as an edit, so
+    /// a write of the value already stored leaves a lane's value in force.
+    void store(std::size_t i,float target)noexcept {
+        if(targets_[i].exchange(target,std::memory_order_acq_rel)!=target)edits_[i].fetch_add(1,std::memory_order_release);
     }
     /// The value in force plus any modulation offset, through the declaration's curve.
     void send(std::size_t i)noexcept {
@@ -280,7 +291,10 @@ private:
     engine::ExpressionRoute desiredRoute()const noexcept{return route_.load(std::memory_order_acquire);}
     const BuiltinInfo& info_;DeviceIdentity identity_;PdDeclarations declarations_;
     std::unique_ptr<NativePdDevice> native_;std::vector<ParamDescriptor> descriptors_;
-    std::unique_ptr<std::atomic<float>[]> targets_;std::vector<float> applied_;
+    std::unique_ptr<std::atomic<float>[]> targets_;
+    /// DF-E61: per parameter, how many times its stored value has changed
+    /// (message side), and the count the audio thread last applied.
+    std::unique_ptr<std::atomic<std::uint64_t>[]> edits_;std::vector<std::uint64_t> appliedEdits_;
     /// Audio thread (DF-E50): the normalized value in force, the stored target
     /// or the lane's latest, and the modulation offset on it, per parameter.
     std::vector<double> current_,offset_;

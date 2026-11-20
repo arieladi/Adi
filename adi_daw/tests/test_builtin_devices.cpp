@@ -300,6 +300,36 @@ void automationEvents() {
     check(instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"the knob moves to +3 dB");
     run(60);
     check(std::abs(output[0][63]-0.25f*std::pow(10.0f,3.0f/20))<2e-5f,"a knob change after automation is heard");
+    // DF-E61: the stored value goes A to B and back to A with no audio
+    // between (two edits in one period: two clicks, an Undo and a Redo). The
+    // value in force is the lane's +6 dB; the knob's A must be heard again.
+    const float knob=0.25f*std::pow(10.0f,3.0f/20);
+    const auto stateAtKnob=instance->saveState("state");
+    const auto automateUp=[&] {
+        events[0].frame=0;events[0].type=EventType::ParamValue;events[0].value=126.0/155;
+        io.events=EventSpan{events,1};run(1);io.events={};run(60);
+        return std::abs(output[0][63]-up)<2e-5f;
+    };
+    check(automateUp(),"the lane moves the gain to +6 dB again");
+    check(instance->setParam("11",ParamValue::fromNormalized(120.0/155)) &&
+              instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"the knob goes to 0 dB and back to +3 dB in one period");
+    run(60);
+    check(std::abs(output[0][63]-knob)<2e-5f,"the knob's +3 dB is heard, not the lane's +6 dB (DF-E61)");
+    check(automateUp(),"the lane moves the gain to +6 dB once more");
+    check(instance->setParam("11",ParamValue::fromNormalized(120.0/155)) && instance->loadState("state",stateAtKnob),
+          "the knob goes to 0 dB, then a state holding +3 dB loads, in one period");
+    run(60);
+    check(std::abs(output[0][63]-knob)<2e-5f,"the state's +3 dB is heard (DF-E61, through loadState)");
+    // A write that leaves the stored value as it was is no edit: the lane's
+    // value stays in force (a preset reload, a drag that ends where it began).
+    check(automateUp(),"the lane moves the gain to +6 dB a third time");
+    check(instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"the knob is set to the +3 dB it already holds");
+    run(60);
+    check(std::abs(output[0][63]-up)<2e-5f,"an unchanged stored value leaves the lane's +6 dB in force");
+    // A new format restarts the core from the stored values: the knob's +3 dB
+    // is in force again until the lane's next value, as before DF-E61.
+    instance->prepare(44100,64);run(60);
+    check(std::abs(output[0][63]-knob)<2e-5f,"after a new sample rate the stored +3 dB is in force again");
 #endif
 }
 #if ADI_WITH_PD
