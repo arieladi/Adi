@@ -31,7 +31,8 @@ Each PASS was checked by breaking its feature on purpose and seeing the step fai
 | 7c Export a WAV | PASS, equals the offline render and the live play | |
 | 7d Export with a VST3 on a track | NOT BUILT | the render worker's plug-in contract: N62, engine-win |
 
-So before 3 December: **engine** DF-E64 and #677; **window-fn** the MIDI drain (N60) and DF-W37; **engine-win** N62.
+So before 3 December: **engine** #677 (DF-E64 is lent to engine-win, which takes it now; the engine seat
+reviews it and does not start it); **window-fn** the MIDI drain (N60) and DF-W37; **engine-win** N62.
 
 ---
 

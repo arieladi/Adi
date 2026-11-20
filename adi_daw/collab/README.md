@@ -47,7 +47,9 @@ Freeze's extent loop (`src/adi/freeze_commands.cpp`) and Bounce in Place's exten
 (`src/adi/bounce_commands.cpp`) (win, 19 November); while the engine reconciles #677, it lends engine-win
 `src/adi/engine/mpe_input.*` and `mpe_output.cpp`'s `noteOff` for DF-E51 (a) and (b),
 `src/adi/midi_capture.cpp` and `TempoMap::secondsToTicks` in `src/adi/engine/snapshot.cpp` for DF-E45, and
-`src/adi/check.cpp` for DF-E54 (a) (win, 20 November); each owner reviews its part.
+`src/adi/check.cpp` for DF-E54 (a) (win, 20 November; withdrawn the same day, the engine had fixed them);
+for DF-E64 only, the engine lends engine-win `src/adi/engine/clip_playback.cpp`'s read-ahead and the hold on
+`RenderBlock::sourcesReadyAt` (win, 20 November); each owner reviews its part.
 
 Numbers (schema minors, ADRs, register ids, op names, the window's N rows) are reserved in
 `collab/RESERVATIONS.md` before a branch uses them.
