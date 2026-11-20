@@ -46,8 +46,8 @@ void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label,
     }
     controls::chooser(g, r, label, look::fontBody, enabled);
 }
-// Live's monitoring switch: In, Auto (lit) and Off, one of three (language.png part D) across the
-// span its three boxes took (16, 23 and 19 wide, `gap` apart).
+// Live's monitoring switch: In, Auto and Off, one of three (language.png part D) across the span its
+// three boxes took (16, 23 and 19 wide, `gap` apart), the track's choice lit (MX-09).
 const juce::StringArray &monitorLabels() {
     static const juce::StringArray labels{"In", "Auto", "Off"};
     return labels;
@@ -55,8 +55,17 @@ const juce::StringArray &monitorLabels() {
 juce::Rectangle<float> monitorBox(float x, float y, float gap) noexcept {
     return {x, y, 16.f + 23.f + 19.f + 2 * gap, 13.f};
 }
-void drawMonitor(juce::Graphics &g, float x, float y, float gap) {
-    controls::oneOf(g, monitorBox(x, y, gap), monitorLabels(), 1);
+int monitorIndex(Monitor m) noexcept { return m == Monitor::In ? 0 : m == Monitor::Auto ? 1 : 2; }
+void drawMonitor(juce::Graphics &g, float x, float y, float gap, Monitor lit) {
+    controls::oneOf(g, monitorBox(x, y, gap), monitorLabels(), monitorIndex(lit));
+}
+// The choice whose cell holds `at`, if any.
+std::optional<Monitor> monitorCellAt(float x, float y, float gap, juce::Point<int> at) {
+    const auto box = monitorBox(x, y, gap);
+    for (int i = 0; i < 3; ++i)
+        if (controls::oneOfCell(box, monitorLabels(), i).contains(at.toFloat()))
+            return i == 0 ? Monitor::In : i == 1 ? Monitor::Auto : Monitor::Off;
+    return std::nullopt;
 }
 // Where In and Auto are drawn, together: the cells the one-of gives them.
 bool onInOrAuto(float x, float y, float gap, juce::Point<int> at) {
@@ -247,7 +256,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
     // Its right-click menu: Solo in Place (manual 18.6).
     solo.onMenu = [this] { soloMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&solo)); };
-    arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
+    // Live's Arm (manual 21.1): Exclusive Arm unless Ctrl/Cmd is held; the selected tracks together.
+    arm.onClick = [this] { panel_.root.armTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
     // A return's Pre/Post (ADR-0203 d3), where a track has Arm: the return's own switch
     // (`TrackNode::returnSendTap`, #405), which every send into it follows, now and as each new one
     // connects. Shown on a return's row only.
@@ -308,6 +318,12 @@ void MixerStrip::frame(bool changed) noexcept {
                 repaint();
             }
         }
+    }
+    // The track's arm and monitoring as the session's rows hold them (MX-09): lit when they change.
+    if (const auto record = panel_.root.recordState(track_); record != record_) {
+        record_ = record;
+        arm.setToggleState(record.armed, juce::dontSendNotification);
+        repaint();
     }
     // The selected tracks' controls are lighter, as Live's, a selection across tracks lighting each.
     const bool selected = track_ != 0 && panel_.root.arrangement.geometry.inSelection(panel_.root.reader(), track_);
@@ -661,9 +677,19 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     chooser(0, midi_ ? "All Ins" : "Ext. In", true);
     chooser(1, midi_ ? "All Channels" : "1/2", midi_);
     if (rows > 2)
-        drawMonitor(g, static_cast<float>(x + 3), 37, 6);
+        drawMonitor(g, static_cast<float>(x + 3), 37, 6, record_.monitor);
     chooser(3, outputLabel(), true);
     chooser(4, "", false);
+}
+std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept {
+    // The same places as `onMonitorInOrAuto` below, every one of the three cells.
+    if (kind_ == "master" || kind_ == "return" || kind_ == "group")
+        return std::nullopt;
+    if (panel_.vertical())
+        return io_ > 0 ? monitorCellAt(4.f, static_cast<float>(kMixerTop + 59), 3, at) : std::nullopt;
+    if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
+        return std::nullopt;
+    return monitorCellAt(5.f, 37.f, 6, at);
 }
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
     // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut,
@@ -730,7 +756,7 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     chooser(15, midi_ ? "All Ins" : "Ext. In", true);
     chooser(31, midi_ ? "All Channels" : "1/2", midi_);
     label(46, "Monitor");
-    drawMonitor(g, 4.f, static_cast<float>(top + 59), 3);
+    drawMonitor(g, 4.f, static_cast<float>(top + 59), 3, record_.monitor);
     label(74, audio_ ? "Audio To" : "MIDI To");
     chooser(87, outputLabel(), true);
     chooser(103, "", false);
@@ -826,8 +852,14 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             panel_.root.say("This send is off. Right-click it for Enable Send.");
         return;
     }
-    if (!e.mods.isPopupMenu())
+    if (!e.mods.isPopupMenu()) {
+        // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks
+        // together when it is among them.
+        if (e.eventComponent == this)
+            if (const auto mode = monitorAt(e.getPosition()))
+                panel_.root.setMonitor(track_, *mode);
         return;
+    }
     if (e.eventComponent == this && onMonitorInOrAuto(e.getPosition())) {
         monitorMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
         return;
