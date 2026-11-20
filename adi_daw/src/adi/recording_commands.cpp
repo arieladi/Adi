@@ -151,6 +151,21 @@ RecoveryTake recoverInterrupted(Store& store,const fs::path& recordingRoot,const
     }
     return result;
 }
+std::vector<engine::recording_recovery::LaunchTake> discoverInterrupted() {
+    auto candidates=engine::recording_recovery::findLaunchTakes();
+    std::erase_if(candidates,[](const auto& candidate) {
+        try {
+            StoreError error{};
+            const auto project=Store::open(media::pathFromUtf8(candidate.sourceProject),error,true);
+            return !project || candidate.sourceProject!=identity(*project) ||
+                candidate.projectUuid!=projectUuid(project->db()) ||
+                hasReceipt(project->db(),candidate.recordingId);
+        } catch(const std::exception&) {
+            return true;
+        }
+    });
+    return candidates;
+}
 engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemorySnapshot& memory,
     std::int64_t track,std::int64_t timelineStartSample,const fs::path& workFolder) {
     try {

@@ -46,6 +46,7 @@ std::error_code AudioRecordingResult::discard() {
     fs::remove_all(files_->directory,removalError);
     if(!removalError) {
         files_->recordingOwner.reset();
+        if(files_->hasOriginalPlan)recording_recovery::forgetLaunchTake(recordingId_);
         if(files_->ephemeralStage)files_->directory.clear();
         files_.reset();
     }
@@ -331,6 +332,8 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
         if(!spec.recoveryProjectUuid.empty()) {
             job->recovery=recording_recovery::begin(spec,owned,spec.recoveryProjectUuid);
             job->recoveryWarning=job->recovery->warning;
+            auto launchWarning=recording_recovery::registerLaunchTake(owned,job->recovery->plan);
+            if(!launchWarning.empty())job->recoveryWarning=std::move(launchWarning);
         }
         job->worker=std::thread([raw=job.get()]{raw->run();});
         auto state=std::make_unique<State>();state->job=job;impl_->published->publish(std::move(state));impl_->job=std::move(job);impl_->stoppedSeq=0;error.clear();return true;

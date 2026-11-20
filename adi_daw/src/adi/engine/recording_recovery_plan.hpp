@@ -24,6 +24,17 @@ struct OwnedPlan {
     std::shared_ptr<media::ProjectFileLease> ownership;
     std::string warning; // publication succeeded; directory sync was advisory
 };
+struct LaunchTake {
+    std::filesystem::path directory;
+    std::string sourceProject,projectUuid,recordingId;
+    std::vector<std::int64_t> tracks;
+};
+
+// Register before any audio is accepted. The process shares a single native
+// session marker. A launch sweep only reads markers it can lease exclusively.
+[[nodiscard]] std::string registerLaunchTake(const std::filesystem::path&,const TakePlan&);
+void forgetLaunchTake(std::string_view recordingId) noexcept;
+[[nodiscard]] std::vector<LaunchTake> findLaunchTakes();
 
 // Owner/worker only, never the callback. Throw on invalid data or pre-publication
 // failure. directory must be a canonical, privately reserved ordinary directory

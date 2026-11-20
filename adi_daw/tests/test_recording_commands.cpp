@@ -806,6 +806,13 @@ void recoverAfterProcessExit(const std::filesystem::path& executable) {
     fixture.store=Store::open(project,error);
     if(!fixture.store)throw std::runtime_error(toString(error));
     const auto directory=fs::directory_iterator(root)->path();
+    const auto known=fs::canonical(directory);
+    const auto launched=recording::discoverInterrupted();
+    const auto candidate=std::find_if(launched.begin(),launched.end(),
+        [&](const auto& item){return item.directory==known;});
+    check(candidate!=launched.end() && candidate->tracks==std::vector<std::int64_t>{21} &&
+          !candidate->projectUuid.empty() && !candidate->recordingId.empty(),
+          "startup finds the unclosed process's recording without being given its directory");
     auto recovered=recording::recoverInterrupted(*fixture.store,root,directory);
     check(recovered.status==recording::RecoveryStatus::Ready && recovered.capture.frames==128 &&
           recovered.capture.startSample==512,
@@ -815,7 +822,12 @@ void recoverAfterProcessExit(const std::filesystem::path& executable) {
     auto edit=recording::prepareCommit(*fixture.store,recovered.capture,ids);
     const auto committed=recording::commit(*fixture.store,edit);
     check(committed.ok,committed.error.empty()?"place recovered live PCM through linear Stop":committed.error.c_str());
-    if(committed.ok)check(History(*fixture.store).undo().ok,"the recovered live take is one Undo step");
+    if(committed.ok) {
+        check(History(*fixture.store).undo().ok,"the recovered live take is one Undo step");
+        const auto after=recording::discoverInterrupted();
+        check(std::none_of(after.begin(),after.end(),[&](const auto& item){return item.directory==known;}),
+              "startup suppresses placed recording IDs even when their original files remain and the edit is undone");
+    }
 }
 }
 int main(int argc,char** argv){try{
