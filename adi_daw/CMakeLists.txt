@@ -1965,6 +1965,12 @@ add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
 # builds and runs on every ABI like the rest of the suite.
 add_executable(adi_ui_seams_tests tests/test_ui_seams.cpp)
 target_link_libraries(adi_ui_seams_tests PRIVATE adi_core adi_warnings)
+# A signed overflow in the window's pure edits (DF-W35 b: an id counted past INT64_MAX) traps here
+# instead of passing unseen; trap mode needs no sanitizer runtime.
+if(NOT MSVC)
+    target_compile_options(adi_ui_seams_tests PRIVATE -fsanitize=signed-integer-overflow
+                                                      -fsanitize-trap=signed-integer-overflow)
+endif()
 add_test(NAME adi_ui_seams_tests COMMAND adi_ui_seams_tests)
 # Step 7.2 (ADR-0080 via ADR-0180 2.3): MainSplit's panel->slot map. Pure
 # arithmetic, so it is tested without a window -- which is where a layout is

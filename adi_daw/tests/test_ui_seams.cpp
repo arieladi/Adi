@@ -1323,6 +1323,27 @@ void sendsAsBatches() {
     check(sub.undo().ok && sub.undo().ok && sub.undo().ok && view.current()->maxRoutingId == 702 &&
               view.current()->findTrack(12) == nullptr,
           "undo: the row, C Return and the sidechain");
+    // Two rows ending at INT64_MAX: consecutive ids, the last the maximum itself.
+    check(sidechain(lastId - 2) && view.current()->maxRoutingId == lastId - 2, "a routing row two below INT64_MAX");
+    {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 12}, {"kind", "return"}, {"name", "C Return"}, {"index", 2}};
+        r.label = "Create track";
+        check(sub.submit(std::move(r)).ok, "C Return, then");
+    }
+    check(ui::enableAllSends(*view.current(), 12, {10, 11, 12}).refusal == ui::kSendNoIdLeft,
+          "three new rows from two below INT64_MAX do not fit: refused whole");
+    auto twoRows = ui::enableAllSends(*view.current(), 12, {10, 12});
+    check(twoRows.refusal.empty() && sub.submit(std::move(twoRows.ops)).ok &&
+              ui::findSend(view.current()->sends, 12, 10) != nullptr &&
+              ui::findSend(view.current()->sends, 12, 10)->id == lastId - 1 &&
+              ui::findSend(view.current()->sends, 12, 12) != nullptr &&
+              ui::findSend(view.current()->sends, 12, 12)->id == lastId,
+          "two new rows: INT64_MAX - 1, then INT64_MAX itself, and they land");
+    check(sub.undo().ok && sub.undo().ok && sub.undo().ok && view.current()->maxRoutingId == 702 &&
+              view.current()->findTrack(12) == nullptr,
+          "undo: the rows, C Return and the sidechain");
     auto after = ui::setSend(*view.current(), 2, 11, -6);
     check(after.refusal.empty() && after.ops.size() == 2 && after.ops[0].payload["id"] == 703 && sub.submit(std::move(after.ops)).ok &&
               ui::findSend(view.current()->sends, 2, 11) != nullptr && ui::findSend(view.current()->sends, 2, 11)->id == 703,
