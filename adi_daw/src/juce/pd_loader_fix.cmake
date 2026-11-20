@@ -288,6 +288,18 @@ adi_pd_replace([=[void canvas_menuclose(t_canvas *x, t_floatarg fforce)
             "it is in, or quit", force);
         return;
     }]=])
+# DEV-09 PD2 (found by the seeded patch-text fuzz): `#X connect` on a canvas
+# with no objects walked off its empty list (src->g_next on NULL) and crashed
+# the process; a negative index is refused with it. Both now fail as Pd's own
+# bad connections do, by name on the console.
+adi_pd_replace([=[    if (THISED->paste_canvas == x) whoout += THISED->paste_onset,
+        whoin += THISED->paste_onset;
+]=] [=[    if (THISED->paste_canvas == x) whoout += THISED->paste_onset,
+        whoin += THISED->paste_onset;
+        /* ADI (DEV-09 PD2): no objects to connect, or no such index. */
+    if (!x->gl_list || whoout < 0 || whoin < 0)
+        goto bad;
+]=])
 file(WRITE "${adi_pd_overlay}/g_editor.c" "${adi_pd_text}")
 # DF-E36 (c): no help patch is opened for a patch. The canvas's and [array
 # define]'s `done-popup 2` reach glob_evalfile through open_via_helppath: the

@@ -13,9 +13,12 @@
 #include "juce/pd_object_walk.hpp"
 #if defined(ADI_WITH_PD)
 #include "juce/pd_engine.hpp"
+#include "temp_directory.hpp"
 #endif
 
+#include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -220,6 +223,184 @@ void testTheRunningBuildsVocabulary() {
         }
     check(walked >= 20, "every shipped patch walked: " + std::to_string(walked));
 }
+
+// PD2 (plugdata's test scenarios): a seeded patch-text fuzz. Every shipped
+// patch is mutated -- bytes cut, hostile tokens put in, lines duplicated,
+// swapped or cut short -- and each mutant goes through the walk, which must
+// return and name every refusal. Each mutant the walk allows is then opened
+// in Pd, prepared and run, as DEV-10's loader would: it must open and run, or
+// fail with a message; never crash. A fixed seed and a generator of our own
+// (not <random>'s distributions, which differ between libraries): the same
+// mutants on every platform, every run.
+struct FuzzRandom {
+    std::uint64_t state;
+    std::uint64_t next() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    }
+    std::size_t below(std::size_t n) { return n == 0 ? 0 : static_cast<std::size_t>(next() % n); }
+};
+
+std::vector<std::string> linesOf(const std::string& text) {
+    std::vector<std::string> lines;
+    std::size_t start = 0;
+    while (start < text.size()) {
+        const auto end = text.find('\n', start);
+        const auto stop = end == std::string::npos ? text.size() : end + 1;
+        lines.push_back(text.substr(start, stop - start));
+        start = stop;
+    }
+    return lines;
+}
+
+std::string mutate(std::string text, FuzzRandom& random) {
+    static const char* const kTokens[] = {
+        "#X obj 10 10 ", "#N canvas 0 0 100 100 12;\n", "#X restore 0 0 pd sub;\n", "$0", "$1-x", "\\;", ";",
+        "\\,", ",", "\n", "#X connect 0 0 999 0;\n", "#X connect 999 7 0 0;\n", "#X connect -1 0 0 0;\n",
+        "-1e+38", "nan", "inf", "99999999999999999999", "#A set 1 2 3;\n", "#X array a 100 float 0;\n",
+        "#X coords 0 1 100 -1 200 140 1;\n", "pd ", "clone 4 ", "../x ", "/abs ", "C:/x ", "#X msg 10 10 ",
+        "#X text 0 0 ", "#X floatatom 0 0 5 0 0 0 - - -;\n", "{", "}", "\\$0", "#X obj 0 0 f;\n",
+        "#X obj 0 0 adi.param \\$0 1 x 0 1 0 lin -;\n", "#X obj 0 0 osc~ 440;\n", "#X obj 0 0 dac~;\n"};
+    const std::size_t operations = 1 + random.below(4);
+    for (std::size_t op = 0; op < operations; ++op) {
+        const std::size_t at = random.below(text.size() + 1);
+        const std::size_t kind = random.below(6);
+        if (kind == 0) {
+            text.erase(at, 1 + random.below(16));
+        } else if (kind == 1) {
+            text.insert(at, kTokens[random.below(std::size(kTokens))]);
+        } else if (kind == 2) {
+            text.insert(at, std::string(1 + random.below(400), 'a'));
+        } else if (kind == 5) {
+            text.resize(at);
+        } else {
+            auto lines = linesOf(text);
+            if (lines.size() < 2) {
+                continue;
+            }
+            const std::size_t a = random.below(lines.size()), b = random.below(lines.size());
+            if (kind == 3) {
+                lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(b), lines[a]);
+            } else {
+                std::swap(lines[a], lines[b]);
+            }
+            text.clear();
+            for (const auto& line : lines) {
+                text += line;
+            }
+        }
+    }
+    return text;
+}
+
+// What the fuzz found first: `#X connect` on a canvas with no objects walked
+// off Pd's empty object list and crashed the process (canvas_connect).
+void testAConnectOnAnEmptyCanvasFailsByName() {
+    section("PD2 -- a connection on a canvas with no objects fails by name, no crash");
+    adi::test::TempDirectory tmp("pd_object_walk", "connect");
+    {
+        std::ofstream file(tmp.path() / "empty.pd", std::ios::binary | std::ios::trunc);
+        file << "#N canvas 0 0 100 100 12;\n#X connect 0 0 0 0;\n#X connect 8 0 1 0;\n#X connect -1 0 0 0;\n";
+    }
+    LibPdEngine eng(tmp.path().string(), "empty.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string error;
+    const bool opened = eng.open(latency, error);
+    std::string console;
+    for (const auto& line : eng.consoleLines()) {
+        console += line + "\n";
+    }
+    std::size_t failed = 0;
+    for (auto at = console.find("connection failed"); at != std::string::npos;
+         at = console.find("connection failed", at + 1)) {
+        ++failed;
+    }
+    check(opened && failed == 3, "the patch opens and its three connections fail on the console (" +
+                                     std::to_string(failed) + ")\n          console: " + console);
+}
+
+void testASeededFuzzOfPatchTextNeverCrashes() {
+    section("PD2 -- a seeded fuzz of patch text: the walk names every refusal, Pd opens or says why");
+    const std::filesystem::path dir = ADI_PD_PATCH_DIR;
+    PdAbstractions abs;
+    std::vector<std::string> corpus;
+    for (const auto& folder : {dir, dir / "devices"}) {
+        for (const auto& e : std::filesystem::directory_iterator(folder)) {
+            if (e.path().extension() != ".pd") {
+                continue;
+            }
+            const auto text = slurp(e.path());
+            if (e.path().filename().string().rfind("adi.", 0) == 0) {
+                abs.emplace(e.path().filename().string(), text);
+            }
+            corpus.push_back(text);
+        }
+    }
+    check(corpus.size() >= 20, "the corpus is every shipped patch: " + std::to_string(corpus.size()));
+    const PdVocabulary vocabulary(PdRuntime::creatableClasses());
+    adi::test::TempDirectory tmp("pd_object_walk", "fuzz");
+
+    constexpr int kMutants = 600, kMaxOpens = 150;
+    FuzzRandom random{20261120u};
+    int allowed = 0, refused = 0, unnamed = 0, opens = 0, ran = 0, failedWithMessage = 0, failedSilently = 0;
+    std::vector<std::vector<float>> in(2, std::vector<float>(64, 0.f)), out(2, std::vector<float>(64, 0.f));
+    const float* inPointers[2] = {in[0].data(), in[1].data()};
+    float* outPointers[2] = {out[0].data(), out[1].data()};
+    for (int m = 0; m < kMutants; ++m) {
+        const auto mutant = mutate(corpus[random.below(corpus.size())], random);
+        const auto walk = walkPdObjects(mutant, abs, vocabulary);
+        const auto lines = walk.describe();
+        bool named = lines.size() == walk.refused.size();
+        for (const auto& line : lines) {
+            named = named && !line.empty();
+        }
+        for (const auto& r : walk.refused) {
+            named = named && std::string(toString(r.reason)).size() > 0;
+        }
+        unnamed += named ? 0 : 1;
+        if (!walk.allowed()) {
+            ++refused;
+            continue;
+        }
+        ++allowed;
+        if (opens >= kMaxOpens) {
+            continue;
+        }
+        ++opens;
+        {
+            std::ofstream file(tmp.path() / "mutant.pd", std::ios::binary | std::ios::trunc);
+            file << mutant;
+        }
+        LibPdEngine eng(tmp.path().string(), "mutant.pd", 2, 2);
+        eng.addSearchPath(dir.string());
+        eng.addSearchPath((dir / "devices").string());
+        PdLatencyReceiver latency;
+        std::string error;
+        if (!eng.open(latency, error)) {
+            (error.empty() ? failedSilently : failedWithMessage) += 1;
+            continue;
+        }
+        eng.prepare(48000.0, 64);
+        adi::engine::NodeIo io;
+        io.in = inPointers;
+        io.out = outPointers;
+        io.channels = 2;
+        io.frames = 64;
+        for (int block = 0; block < 16; ++block) {
+            eng.process(io);
+        }
+        ++ran;
+    }
+    check(unnamed == 0, std::to_string(kMutants) + " mutants walked: " + std::to_string(allowed) + " allowed, " +
+                            std::to_string(refused) + " refused, every refusal named (" + std::to_string(unnamed) +
+                            " not)");
+    check(opens >= 50 && ran + failedWithMessage == opens && failedSilently == 0,
+          std::to_string(opens) + " allowed mutants opened in Pd: " + std::to_string(ran) + " ran 16 blocks, " +
+              std::to_string(failedWithMessage) + " failed with a message, " + std::to_string(failedSilently) +
+              " without one");
+}
 #endif
 
 }  // namespace
@@ -235,6 +416,8 @@ int main() {
     testTheTokeniserIsShared();
 #if defined(ADI_WITH_PD)
     testTheRunningBuildsVocabulary();
+    testAConnectOnAnEmptyCanvasFailsByName();
+    testASeededFuzzOfPatchTextNeverCrashes();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;
