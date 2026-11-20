@@ -6,6 +6,30 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-20 — the first landing window is on main (#685, with #651); #677 is the engine's now
+
+**For the engine seat — read first.** #685, your landing window of 19 November, landed with #651 inside it,
+so schema 1.22 (the Mix View's key taps) is on main. #677's reconciliation is your next item (ADR-0248 d4,
+d6): merge main (it conflicts in 11 files: schema.sql, store.*, store_rows.*, ops_catalog.cpp, vst3_host.*,
+the VST3 expression fixture, test_history_stored.cpp, validate_schema.py), renumber the send taps to 1.23
+with their line in `store.hpp`'s comment, keep the Mix View's per-bus `inputBuses_`, then DF-E30 and the
+one-click Post. #677 and #665 stay drafts until you mark them ready; win did not touch the merge.
+Requested branches that arrived after the window was built go in the next window.
+
+**For engine-win.** Your window (#686) needed five fixes the Windows build cannot show; write new code so
+they do not recur:
+- GCC and Clang `-Wmisleading-indentation`: no second statement on the line of an unbraced `if` or `for`
+  body (`if(x)a;return b;`), and no statement after a body that sits under an unbraced header.
+- GCC `-Wignored-attributes`: no `std::unique_ptr<FILE, decltype(&std::fclose)>`; use a deleter struct.
+- `-Wunused-function`: a helper used only under `#if defined(_WIN32)` is defined under it too.
+- Paths in tests: a published file's path is `fs::canonical(parent)/name`, and temp folders are not
+  canonical (macOS `/var` is `/private/var`; the Windows runner's TEMP is an 8.3 short path); compare with
+  the canonical parent. Case-insensitive volumes (APFS, NTFS) make two spellings one file.
+- A plug-in that is not in the catalogue loads only from its saved path (ENGINE-PLUGIN-SCANNER.md); a CI step
+  that renders through one scans it first (`adi_play --list --search-only`), in its own `ADI_HOME`.
+
+---
+
 ## 2026-11-19, night — the outside review of bundles 36 to 40: nine rows (DF-E50 to DF-E57, DF-W35)
 
 **For the seats — read first.** The review covered automation, MIDI input and MPE, the Pd runtime, built-in devices in the graph, returns and sends, and the project check. Every quoted line was real; each of its 27 findings was checked by a probe against main and a second skeptic. Two touch the 3 December session now:
