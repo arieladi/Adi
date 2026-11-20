@@ -44,7 +44,10 @@ window lends it `ProjectDocument::pasteDevice` and, for DF-M60 (a), the retiree 
 guard only, the window lends it the command-drain block of `src/adi/ui/window_state.hpp` and one
 pass-through accessor in `src/juce/ui_shell.hpp`; for DF-E35 (b) only, the engine lends engine-win
 Freeze's extent loop (`src/adi/freeze_commands.cpp`) and Bounce in Place's extent query
-(`src/adi/bounce_commands.cpp`) (win, 19 November); each owner reviews its part.
+(`src/adi/bounce_commands.cpp`) (win, 19 November); while the engine reconciles #677, it lends engine-win
+`src/adi/engine/mpe_input.*` and `mpe_output.cpp`'s `noteOff` for DF-E51 (a) and (b),
+`src/adi/midi_capture.cpp` and `TempoMap::secondsToTicks` in `src/adi/engine/snapshot.cpp` for DF-E45, and
+`src/adi/check.cpp` for DF-E54 (a) (win, 20 November); each owner reviews its part.
 
 Numbers (schema minors, ADRs, register ids, op names, the window's N rows) are reserved in
 `collab/RESERVATIONS.md` before a branch uses them.

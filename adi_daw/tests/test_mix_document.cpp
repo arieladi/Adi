@@ -611,6 +611,22 @@ void replaceIdentityInOneJournalStep() {
         check(false, "the current generation is published with its parameter capture attached");
         return;
     }
+    const auto edit = [&](engine::ParamEventKind kind, double value) {
+        return doc->parameterGestureExpected(id, "420", kind, value, active->runtime, active->instance);
+    };
+    using Kind = engine::ParamEventKind;
+    constexpr double seededGain = .375;
+    const bool seeded = edit(Kind::Begin, gain->getParam("420").normalized) && edit(Kind::Value, seededGain) &&
+                        edit(Kind::End, seededGain);
+    SQLite::Statement storedGain(doc->store().db(),
+        "SELECT normalized_value FROM plugin_params WHERE device_id = ? AND param_id = '420'");
+    storedGain.bind(1, id);
+    const bool authored = seeded && storedGain.executeStep() && storedGain.getColumn(0).getDouble() == seededGain &&
+                          gain->getParam("420").normalized == seededGain;
+    check(authored, "the replacement has an authored gain before testing a subsequent gesture");
+    if (!authored)
+        return;
+    storedGain.reset();
 
     OpRequest rename;
     rename.opType = "track.rename";
@@ -632,10 +648,6 @@ void replaceIdentityInOneJournalStep() {
     doc->tick(4);
     const auto beforeGesture = OpJournal(doc->store()).headSeq();
     const auto oldValue = gain->getParam("420").normalized;
-    const auto edit = [&](engine::ParamEventKind kind, double value) {
-        return doc->parameterGestureExpected(id, "420", kind, value, active->runtime, active->instance);
-    };
-    using Kind = engine::ParamEventKind;
     constexpr double newValue = .625;
     const bool began = edit(Kind::Begin, oldValue);
     const auto stale = [&](Kind kind) {
@@ -652,7 +664,10 @@ void replaceIdentityInOneJournalStep() {
     check(began && changed && ended && gain->getParam("420").normalized == newValue &&
               OpJournal(doc->store()).headSeq() > beforeGesture,
           "the current surface completes its gesture after unrelated publication and stale input");
-    check(doc->ops().undo().ok && doc->synchronise() && OpJournal(doc->store()).headSeq() == beforeGesture &&
+    const bool undoGesture = doc->ops().undo().ok && doc->synchronise();
+    // The document's owner tick delivers the committed value to the plug-in.
+    doc->tick(5);
+    check(undoGesture && OpJournal(doc->store()).headSeq() == beforeGesture &&
               gain->getParam("420").normalized == oldValue,
           "one Undo restores the current generation's gesture without undoing the unrelated edit");
 }
