@@ -92,6 +92,38 @@ adi_pd_replace("    class_loadsym = s;" [=[    t_symbol *previous_loadsym = clas
 adi_pd_replace("        tryingalready--;" [=[        tryingalready--;
         class_loadsym = previous_loadsym;]=])
 adi_pd_replace("    class_loadsym = 0;" "    class_loadsym = previous_loadsym;")
+# DEV-09 AR8: an object Pd does not know, made while audio runs (dynamic
+# patching from a clock or a parameter's message), took the process-wide write
+# lock below inside the tick -- the audio thread waited on every other Pd
+# device's tick and editor -- and looked for an abstraction on disk. ADI's
+# engine marks its own ticks; inside one, such an object is refused by name.
+adi_pd_replace([=[void new_anything(void *dummy, t_symbol *s, int argc, t_atom *argv)
+{
+    int fd;
+    char dirbuf[MAXPDSTRING], classslashclass[MAXPDSTRING], *nameptr;
+]=] [=[    /* ADI (DEV-09 AR8): set while ADI's engine holds an instance for a tick
+    on the audio thread (LibPdEngine::lockedTick). */
+static PERTHREAD int adi_pd_audio_tick;
+void adi_pd_set_audio_tick(int on);
+void adi_pd_set_audio_tick(int on)
+{
+    adi_pd_audio_tick = on;
+}
+
+void new_anything(void *dummy, t_symbol *s, int argc, t_atom *argv)
+{
+    int fd;
+    char dirbuf[MAXPDSTRING], classslashclass[MAXPDSTRING], *nameptr;
+        /* ADI (DEV-09 AR8): not inside a tick. The box stays broken, as for
+        any object Pd cannot create, and nothing stale is taken for it. */
+    if (adi_pd_audio_tick)
+    {
+        pd_this->pd_newest = 0;
+        pd_error(0, "ADI refused creating '%s' while audio runs (DEV-09 AR8: "
+            "an object Pd does not know would wait on every Pd device)", s->s_name);
+        return;
+    }
+]=])
 adi_pd_replace("    c->c_name = c->c_helpname = s;" [=[#ifdef PDINSTANCE
     c->c_name = c->c_helpname = s ? dogensym(s->s_name, 0, &pd_maininstance) : 0;
 #else

@@ -1979,6 +1979,156 @@ void testAShrunkPublishedTableDoesNotDeadlock() {
     watchdog.join();
 }
 
+// DEV-09 AR8: an object Pd does not know, made while audio runs (dynamic
+// patching, here from a [delay]), took Pd's process-wide write lock inside the
+// tick (new_anything), so the audio thread waited on every other Pd device's
+// tick and editor; it also looked for an abstraction on disk there.
+void testAnUnknownObjectMadeInsideATickWaitsOnNoOtherDevice() {
+    section("DEV-09 AR8 -- an unknown object made inside a tick is refused, never waited for");
+    TempDir tmp("dynamic");
+    tmp.write("dynamic.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 5;\n"
+                            "#X msg 10 70 \\; pd-dynamic.pd obj 10 150 adi-no-such-class;\n"
+                            "#X obj 200 10 adc~ 1 2;\n#X obj 200 60 dac~ 1 2;\n"
+                            "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 3 0 4 0;\n"
+                            "#X connect 3 1 4 1;\n");
+    LibPdEngine other(patchDir(), "adi-proof.pd", 2, 2);
+    LibPdEngine eng(tmp.str(), "dynamic.pd", 2, 2);
+    PdLatencyReceiver otherLatency, latency;
+    std::string err;
+    if (!other.open(otherLatency, err) || !eng.open(latency, err)) {
+        check(false, "open: " + err);
+        return;
+    }
+    other.prepare(48000.0, 64);
+    eng.prepare(48000.0, 64);
+    // Another Pd device's editor holds its instance, as an open patch window does.
+    std::atomic<int> stage{0};
+    std::atomic<bool> audioDone{false};
+    std::atomic<bool> releasedOnItsOwn{false};
+    std::thread editor([&] {
+        LibPdEngine::InstanceLock hold(other);
+        stage.store(1);
+        const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!audioDone.load()) {
+            if (std::chrono::steady_clock::now() >= limit) {
+                releasedOnItsOwn.store(true);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        stage.store(2);
+    });
+    while (stage.load() == 0) {
+        std::this_thread::yield();
+    }
+    const auto before = eng.counters();
+    std::vector<float> sig(64, 0.f);
+    constexpr int kSegments = 40;   // the [delay 5] fires in the fourth tick
+    int whileHeld = 0;
+    for (int i = 0; i < kSegments; ++i) {
+        (void)runSegmented(eng, sig, 0.f, {64});
+        if (stage.load() == 1) {
+            ++whileHeld;
+        }
+    }
+    audioDone.store(true);
+    editor.join();
+    check(whileHeld == kSegments && !releasedOnItsOwn.load(),
+          "every segment returned while the other device's editor held its instance (" +
+              std::to_string(whileHeld) + " of " + std::to_string(kSegments) + ")");
+    check(eng.counters().ticks - before.ticks == kSegments && eng.counters().skippedTicks == before.skippedTicks,
+          "and this device rendered every tick, none skipped");
+    const std::string console = joined(eng.consoleLines());
+    check(console.find("ADI refused creating 'adi-no-such-class' while audio runs") != std::string::npos,
+          "the object is refused by name\n          console: " + console);
+}
+
+// DEV-09 AR8, the cross-instance dropout, measured for win's ruling: opening
+// a patch holds Pd's process-wide write lock for the whole load
+// (libpd_openfile), so every other Pd device's ticks are skipped meanwhile.
+// Skipped, never waited for: this records how long.
+void testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits() {
+    section("DEV-09 AR8 -- another device opening a patch: this one's ticks skip, never wait (measured)");
+    TempDir tmp("large");
+    constexpr int kObjects = 1000, kOpens = 20;
+    std::string large = "#N canvas 0 0 600 400 12;\n";
+    for (int i = 0; i < kObjects; ++i) {
+        large += "#X obj 10 " + std::to_string(10 + i) + " + 1;\n";
+    }
+    tmp.write("large.pd", large);
+    LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) {
+        check(false, "open: " + err);
+        return;
+    }
+    eng.prepare(48000.0, 64);
+    std::vector<float> sig(64, 0.5f);
+    const auto skippedOver = [&](int segments) {
+        const auto before = eng.counters().skippedTicks;
+        for (int i = 0; i < segments; ++i) {
+            (void)runSegmented(eng, sig, 0.f, {64});
+        }
+        return eng.counters().skippedTicks - before;
+    };
+    check(skippedOver(50) == 0, "alone, no tick is skipped");
+
+    std::atomic<bool> openerDone{false};
+    std::atomic<int> opened{0};
+    double openMs = 0.0;
+    std::thread opener([&] {
+        for (int i = 0; i < kOpens; ++i) {
+            LibPdEngine other(tmp.str(), "large.pd", 2, 2);
+            PdLatencyReceiver otherLatency;
+            std::string otherError;
+            const auto start = std::chrono::steady_clock::now();
+            const bool ok = other.open(otherLatency, otherError);
+            openMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            if (ok) {
+                opened.fetch_add(1);
+            }
+        }
+        openerDone.store(true);
+    });
+    // This thread renders as fast as it can, so ticks counted overstate audio
+    // time: the silence a real-time callback would hear is the wall-clock
+    // length of a run of skipped ticks.
+    int segments = 0;
+    std::int64_t skipped = 0;
+    double longestMs = 0.0;
+    bool skipping = false;
+    auto runStart = std::chrono::steady_clock::now();
+    while (!openerDone.load()) {
+        const auto before = eng.counters().skippedTicks;
+        const auto start = std::chrono::steady_clock::now();
+        (void)runSegmented(eng, sig, 0.f, {64});
+        const auto now = eng.counters().skippedTicks - before;
+        skipped += now;
+        if (now > 0 && !skipping) {
+            skipping = true;
+            runStart = start;
+        } else if (now == 0 && skipping) {
+            skipping = false;
+            longestMs = std::max(longestMs, std::chrono::duration<double, std::milli>(start - runStart).count());
+        }
+        ++segments;
+    }
+    if (skipping) {
+        longestMs = std::max(longestMs,
+                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - runStart).count());
+    }
+    opener.join();
+    check(opened.load() == kOpens, "the other device opened its " + std::to_string(kObjects) + "-object patch " +
+                                       std::to_string(opened.load()) + " times");
+    check(segments > 0, "every one of this device's " + std::to_string(segments) +
+                            " segments returned while the other opened");
+    check(skippedOver(50) == 0, "and once the opens stop, no tick is skipped");
+    std::printf("    [measured] %d segments of 64 during %d opens of %d objects (%.2f ms each): %lld ticks "
+                "skipped; the longest unbroken run of skips lasted %.2f ms of wall time\n",
+                segments, kOpens, kObjects, openMs / kOpens, static_cast<long long>(skipped), longestMs);
+}
+
 // DEV-09 AR17: the Pd tier's precision is the build's. ADI_PD_FLOATSIZE_64
 // builds it with PD_FLOATSIZE=64 for the 64-bit Processing Precision mode
 // (ADR-0207 d2); every suite runs in both configurations.
@@ -2092,6 +2242,8 @@ int main() {
     testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait();
     testPrintingFromARunningPatchAllocatesNothingOnTheAudioThread();
     testAShrunkPublishedTableDoesNotDeadlock();
+    testAnUnknownObjectMadeInsideATickWaitsOnNoOtherDevice();
+    testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits();
     testAnAbstractionFreedLeavesNoDanglingHashA();
     testThePdTierHasTheBuildsPrecision();
     testASearchPathHoldingLoadableCodeIsRefusedToo();

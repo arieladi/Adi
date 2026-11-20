@@ -25,6 +25,9 @@ extern "C" {
 // directly.
 #include "s_stuff.h"
 #include "g_canvas.h"
+// DEV-09 AR8 (pd_loader_fix.cmake's m_class.c overlay): marks this thread's
+// ticks, inside which an object Pd does not know is refused, never waited for.
+void adi_pd_set_audio_tick(int on);
 }
 
 namespace adi::device {
@@ -649,6 +652,7 @@ bool LibPdEngine::lockedTick() noexcept {
     // sys_trylock does not mark the instance locked, as sys_lock does; Pd's
     // own pd_globallock checks the mark.
     pd_this->pd_islocked = 1;
+    adi_pd_set_audio_tick(1);
     deliverPendingLocked();
     // libpd_process_float's body for one tick, without its sys_lock (blocking)
     // and its sys_pollgui (sockets and GUI, never on the audio thread).
@@ -666,6 +670,7 @@ bool LibPdEngine::lockedTick() noexcept {
         for (int c = 0; c < outCh_; ++c)
             tickOut_[static_cast<std::size_t>(frame * outCh_ + c)] =
                 c < outChannels ? static_cast<float>(soundOut[c * DEFDACBLKSIZE + frame]) : 0.f;
+    adi_pd_set_audio_tick(0);
     sys_unlock();
     return true;
 }
