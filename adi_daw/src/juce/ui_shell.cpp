@@ -954,7 +954,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     namesBar.delay.onClick = [this] { command(AppCommands::ToggleTrackOptions); };
     namesBar.height.onClick = [this] { command(AppCommands::OptimizeHeight); };
     namesBar.width.onClick = [this] { command(AppCommands::OptimizeWidth); };
-    namesBar.automation.onClick = [this] { say(NamesBar::kAutomationWaits); };
+    namesBar.automation.onClick = [this] { setAutomationMode(!automationMode_); };
     namesBar.lock.onClick = [this] { say(NamesBar::kLockWaits); };
     // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
     addAndMakeVisible(arrangement.overview);
@@ -2813,6 +2813,41 @@ ExportChoices AdiRootComponent::exportDefaults() const {
     if (current && current->sampleRate > 0)
         c.sampleRate = static_cast<int>(current->sampleRate);
     return c;
+}
+void AdiRootComponent::setAutomationMode(bool on) {
+    automationMode_ = on;
+    namesBar.automation.setToggleState(on, juce::dontSendNotification);
+    say(on ? "Automation Mode: each track shows its Volume envelope; click a lane to add a breakpoint, drag one "
+             "to move it, double-click one to delete it."
+           : "");
+    arrangement.repaint();
+}
+bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value) {
+    const auto current = view_.current();
+    const auto *t = current ? current->findTrack(track) : nullptr;
+    if (t == nullptr)
+        return fail("That track is gone.");
+    auto &db = submitter_.store().db();
+    AutomationIds ids;
+    ids.lane = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes").getInt64();
+    ids.data = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data").getInt64();
+    ids.point = 1;
+    return submitEdits(::adi::ui::addAutomationPoint(trackEnvelope(*current, track), track, "volume", tick, value,
+                                                     t->volumeDb, ids));
+}
+bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value) {
+    const auto current = view_.current();
+    if (!current)
+        return false;
+    auto ops = ::adi::ui::moveAutomationPoint(trackEnvelope(*current, track), "volume", point, tick, value);
+    return !ops.empty() && submitEdits(std::move(ops));
+}
+bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t point) {
+    const auto current = view_.current();
+    if (!current)
+        return false;
+    auto ops = ::adi::ui::deleteAutomationPoint(trackEnvelope(*current, track), point);
+    return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::setSoloInPlace(bool on) {
     // Live's Solo in Place (manual 18.6): one project field for the Solo button's menu and the

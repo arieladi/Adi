@@ -748,17 +748,17 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                   root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
               "Alt+U unfolds every group");
     }
-    // On the bar over the names, Live's two automation toggles wait for the engine; a click on each
-    // says what for (the director's R6, 2 November). The locator buttons act since C3 (the `locators`
-    // scene).
+    // On the bar over the names: Automation Mode switches on and off (AU-01, its own test below); Lock
+    // Envelopes still waits for the engine, and a click says what for (the director's R6, 2 November).
     {
-        for (auto *button : {&root.namesBar.automation, &root.namesBar.lock}) {
-            const std::string words = button == &root.namesBar.automation ? "Automation Mode waits for the engine's automation"
-                                                                          : "Lock Envelopes waits for the engine's automation";
-            root.say({});
-            button->onClick();
-            check(root.error().rfind(words, 0) == 0, ("a click on it says: " + words).c_str());
-        }
+        root.say({});
+        root.namesBar.lock.onClick();
+        check(root.error().rfind("Lock Envelopes waits for the engine's automation", 0) == 0,
+              "a click on Lock Envelopes says what it waits for");
+        root.namesBar.automation.onClick();
+        check(root.automationMode(), "a click on Automation Mode turns it on");
+        root.namesBar.automation.onClick();
+        check(!root.automationMode(), "and off");
     }
     // Show says the whole project while no group is chosen.
     check(!root.namesBar.show.getToggleState() &&
@@ -10275,6 +10275,101 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     check(std::abs(volumeOf(4) + 12) < 1e-6, "without the live gesture the release commits the value");
     document->release();
 }
+// AU-01: Automation Mode in the Arrangement (Live 12 manual 25.2, 25.3): a track's Volume envelope on its
+// lane; a click adds a breakpoint (the lane made in the same step), a drag moves one, a double-click or
+// Delete removes one; each one undo step.
+void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-mode.adi", true, {}, error);
+    check(document != nullptr, "a project to automate");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automate");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    auto &canvas = root.arrangement.canvas;
+    check(!root.automationMode(), "Automation Mode is off in a new window");
+    root.namesBar.automation.onClick();
+    root.frame();
+    check(root.automationMode() && root.namesBar.automation.getToggleState(), "the bar's switch turns it on, lit");
+    const auto bodies = canvas.laneBodies();
+    const ArrangementCanvas::LaneBody *audio = nullptr;
+    for (const auto &b : bodies)
+        if (b.track->id == 4)
+            audio = &b;
+    check(audio != nullptr, "3 Audio's lane");
+    if (audio == nullptr) {
+        document->release();
+        return;
+    }
+    const auto laneOf = [&] { return trackEnvelope(*document->view().current(), 4); };
+    const float midY = (audio->top + audio->bottom) / 2;
+    const float barX = static_cast<float>(root.arrangement.geometry.x(textproj::kWhole));
+    canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, midY}));
+    root.frame();
+    auto env = laneOf();
+    check(env.lane != nullptr && env.data != nullptr && env.data->points.size() == 1 &&
+              env.data->points[0].time == textproj::kWhole && std::abs(env.data->points[0].value + 32) < 1.5 &&
+              root.undoTitle(false) == "Undo Add Automation Point",
+          "a click on the lane adds a breakpoint on the grid at the value there, the Volume lane with it, one step");
+    check(env.lane->paramRef == "volume" && env.lane->valueDomain == "real" && env.lane->ownerKind == "track",
+          "the lane is the track's Volume in dB, as the engine plays it");
+    check(env.data->points[0].curve == 1, "a new breakpoint is linear to the next, as the lane draws it");
+    // Drag it a bar later and up.
+    const auto pointAt = juce::Point<float>(barX, (audio->top + audio->bottom) / 2);
+    const auto hit = canvas.automationPointAt(pointAt);
+    check(hit && hit->track == 4, "the breakpoint is found where it is drawn");
+    const float twoBars = static_cast<float>(root.arrangement.geometry.x(2 * textproj::kWhole));
+    const float upper = audio->top + (audio->bottom - audio->top) * .25f;
+    canvas.mouseDown(pressAt(canvas, pointAt));
+    canvas.mouseDrag(dragAt(canvas, pointAt, {twoBars + 1, upper}));
+    check(laneOf().data->points[0].time == textproj::kWhole, "while it is dragged nothing is written");
+    canvas.mouseUp(dragAt(canvas, pointAt, {twoBars + 1, upper}));
+    root.frame();
+    env = laneOf();
+    check(env.data->points.size() == 1 && env.data->points[0].time == 2 * textproj::kWhole &&
+              env.data->points[0].value > -32 && root.undoTitle(false) == "Undo Move Automation Point",
+          "let go, it is a bar later and higher: one step");
+    check(root.command(AppCommands::Undo) && laneOf().data->points[0].time == textproj::kWhole, "Undo puts it back");
+    check(root.command(AppCommands::Redo), "and Redo moves it again");
+    root.frame();
+    // A double-click on it deletes it.
+    const auto moved = canvas.automationPointAt(
+        {twoBars, audio->bottom - static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)});
+    check(moved.has_value(), "the moved breakpoint is found where it is drawn now");
+    if (moved) {
+        canvas.mouseDoubleClick(pressAt(canvas, {twoBars, audio->bottom - static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)}));
+        root.frame();
+        check(laneOf().lane == nullptr && root.undoTitle(false) == "Undo Delete Automation Point",
+              "a double-click on the last breakpoint deletes it and its lane, so the fader plays again: one step");
+    }
+    // Chosen, Delete takes it away.
+    canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, midY}));
+    root.frame();
+    canvas.mouseDown(pressAt(canvas, {barX, midY}));
+    canvas.mouseUp(pressAt(canvas, {barX, midY}));
+    check(canvas.chosenAutomationPoint().has_value(), "a click on a breakpoint chooses it");
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && laneOf().lane == nullptr,
+          "Delete takes the chosen breakpoint away");
+    // The lane's foot is silence, as the fader's.
+    canvas.mouseDown(pressAt(canvas, {barX + 1, audio->scaleBottom}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, audio->scaleBottom}));
+    root.frame();
+    check(laneOf().data != nullptr && laneOf().data->points.size() == 1 && laneOf().data->points[0].value == -150,
+          "a breakpoint at the lane's foot is silence (-150 dB, as the fader writes it)");
+    root.namesBar.automation.onClick();
+    check(!root.automationMode(), "and the switch turns Automation Mode off");
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
@@ -14934,6 +15029,7 @@ int main(int argc, char **argv) {
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
+    trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });

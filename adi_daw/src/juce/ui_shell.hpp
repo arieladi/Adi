@@ -6,6 +6,7 @@
 #include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/export_choices.hpp"
+#include "adi/ui/automation_mode.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
@@ -596,6 +597,13 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         std::int64_t clip = 0, track = 0, position = 0;
     };
     bool placeClips(const std::vector<ClipPlace> &, const char *label);
+    // Live's Automation Mode (AU-01; manual 25.2): each track's Volume envelope drawn on its lane, and its
+    // breakpoints edited there, each edit one undo step. Off in a new window, as Live's.
+    bool automationMode() const noexcept { return automationMode_; }
+    void setAutomationMode(bool on);
+    bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
+    bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
+    bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
@@ -740,6 +748,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
+    bool automationMode_ = false;
     bool infoShown_ = true;
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs
