@@ -4,6 +4,7 @@
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/device_key_routes.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -245,11 +246,8 @@ bool ProjectDocument::synchronise() {
             return false;
         }
         realisedGeneration_ = view_.generation();
-        for (std::size_t i = 0; i < session_.entryCount(); ++i) {
-            const auto &entry = session_.entryAt(i);
-            if (entry.retired)
-                parameterOps_.detach(entry.deviceId);
-        }
+        // Reconcile the capture against the live instance. A retained retiree
+        // may share the persisted row ID with its current replacement.
         parameterOps_.attachSession(session_);
         analysis_->refreshSources();
         error_.clear();
@@ -613,41 +611,53 @@ std::string ProjectDocument::deviceCopyIdentity() const {
     return {};
 }
 bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before) {
-    if (copy.reference && mix::functionForReference(copy.reference->format, copy.reference->uid)) {
-        SQLite::Statement exists(store_->db(),
-            "WITH RECURSIVE chains(id) AS (SELECT id FROM device_chains WHERE track_id=? "
-            "UNION SELECT c.id FROM device_chains c JOIN devices owner ON owner.id=c.parent_device_id "
-            "JOIN chains parent ON parent.id=owner.chain_id) "
-            "SELECT 1 FROM devices d JOIN chains c ON c.id=d.chain_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
-            "WHERE p.format='internal' AND p.uid=? LIMIT 1");
-        exists.bind(1,track); exists.bind(2,copy.reference->uid);
-        if (exists.executeStep()) { error_ = "That function is already present on this channel."; return false; }
-    }
-    // The chain the device goes into: the one holding `before`, else the track's own (a rack's
-    // nested chains belong to a device, never to the track).
-    std::int64_t chain = 0;
-    if (before) {
-        SQLite::Statement q(store_->db(), "SELECT chain_id FROM devices WHERE id = ?");
-        q.bind(1, *before);
-        if (q.executeStep())
-            chain = q.getColumn(0).getInt64();
-    } else {
-        SQLite::Statement q(store_->db(), "SELECT id FROM device_chains WHERE track_id = ? AND parent_device_id IS NULL "
-                                          "ORDER BY ord, id LIMIT 1");
-        q.bind(1, track);
-        if (q.executeStep())
-            chain = q.getColumn(0).getInt64();
-    }
-    // The next free id, never the copy's own: a cut device's id is free again, and the engine
-    // refuses a paste that would take it ("device copy needs a new identity").
-    auto id = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM devices").getInt64();
-    if (copy.ok && copy.insert.contains("id") && copy.insert.at("id").is_number_integer() &&
-        id == copy.insert.at("id").get<std::int64_t>())
-        ++id;
-    // With no chain the engine still checks the copy first, so a copy from another project or a rack
-    // says so rather than that the track has no chain.
-    auto prepared = !before && chain == 0 ? prepareDevicePasteForTrack(*store_, copy, id, track)
+    PreparedDevicePaste prepared;
+    try {
+        auto &db = store_->db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        if (copy.reference && mix::functionForReference(copy.reference->format, copy.reference->uid)) {
+            SQLite::Statement exists(db,
+                "WITH RECURSIVE chains(id) AS (SELECT id FROM device_chains WHERE track_id=? "
+                "UNION SELECT c.id FROM device_chains c JOIN devices owner ON owner.id=c.parent_device_id "
+                "JOIN chains parent ON parent.id=owner.chain_id) "
+                "SELECT 1 FROM devices d JOIN chains c ON c.id=d.chain_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
+                "WHERE p.format='internal' AND p.uid=? LIMIT 1");
+            exists.bind(1, track);
+            exists.bind(2, copy.reference->uid);
+            if (exists.executeStep()) {
+                error_ = "That function is already present on this channel.";
+                return false;
+            }
+        }
+        // Windows can paste before a device in a nested chain or at the end of
+        // the track chain. The first paste can also create that track chain.
+        std::int64_t chain = 0;
+        if (before) {
+            SQLite::Statement q(db, "SELECT chain_id FROM devices WHERE id = ?");
+            q.bind(1, *before);
+            if (q.executeStep())
+                chain = q.getColumn(0).getInt64();
+        } else {
+            SQLite::Statement q(db, "SELECT id FROM device_chains WHERE track_id = ? AND parent_device_id IS NULL "
+                                    "ORDER BY ord, id LIMIT 1");
+            q.bind(1, track);
+            if (q.executeStep())
+                chain = q.getColumn(0).getInt64();
+        }
+        auto floor = retainedDeviceId();
+        if (copy.ok && copy.insert.contains("id") && copy.insert.at("id").is_number_integer())
+            floor = std::max(floor, copy.insert.at("id").get<std::int64_t>());
+        RowIds ids(db);
+        ids.reserve("devices", floor);
+        const auto id = ids.next("devices");
+        prepared = !before && chain == 0 ? prepareDevicePasteForTrack(*store_, copy, id, track)
                                          : prepareDevicePaste(*store_, copy, id, chain, before);
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
     if (!prepared.ok) {
         error_ = prepared.error == "destination chain is missing" ? "The track has no device chain to paste into."
                  : prepared.error.empty()                         ? "The device could not be pasted."
