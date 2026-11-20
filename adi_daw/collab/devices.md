@@ -83,6 +83,74 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-20 — EX4: the brickwall as an offline stage; non-finite input is silence; the 4x gap measured
+
+**PR requested:** head `devices/limiter-offline` (11f539f7, two commits on 7510acd2), base `main`.
+This is the devices half of EX4/LD5 that the gap audit left open. With it, the DSP half is done.
+The export half is engine-win's (below).
+
+- **`LookaheadLimiter::processOffline()`** runs a whole programme.
+  - The latency is trimmed from the front and silence is pushed through the back, so the output
+    has the input's length and lines up with it, sample for sample.
+  - Below the ceiling the output is the input, bit for bit, in float and double. It is exactly
+    `process()` over the input followed by `latencySamples()` of silence, with the first
+    `latencySamples()` outputs dropped.
+  - It works in place, and each programme starts from silence.
+  - It allocates one block of scratch, so it is for the export worker, not the audio thread.
+- **Non-finite input.** A NaN or an infinity is now read as silence, by the detector and in the
+  delayed audio alike. It cannot leave as a non-finite sample or poison the gain, and the output is
+  exactly that of the same programme with zeros there. Finite input is unchanged, bit for bit.
+- **Tests** (`adi_dsp_tests` 433; the tests did not compile before the code existed):
+  - offline length and alignment at lookahead 0, 64 and 288 in both modes, bit for bit against
+    streaming, including an over on the very last sample, which is flushed rather than cut;
+  - true peak in float, and at 32 kHz (6x) and 22.05 kHz (8x);
+  - in place, mono, and six linked channels;
+  - blocks of NaN and ±inf.
+  - Plants, each caught: no trim (26 failures), no flush (26), no reset (1), NaN let through (8), NaN
+    caught in detection only (8).
+  - CTest 267/267 at PD_FLOATSIZE 32 and 64 (MSVC Debug, /W4 /WX).
+  - **Reviewed** on five dimensions with three skeptics per finding: offline correctness, the audio
+    path, test validity, portability, and the contract. Every finding was refuted as a defect. The
+    five that were fair points on wording or coverage are fixed in the second commit:
+    - the header's allocation claim;
+    - the true-peak residue paragraph, which now says its numbers are the Annex's readings;
+    - a stale comment;
+    - the noise figure, now called a lower bound;
+    - the reference, which now also reads 6x and 8x.
+- **The independent reference, and what it found (FOR THE DIRECTOR, via win).** The audit noted
+  that the ceiling tests read the output with the limiter's own interpolator. The new test reads it
+  with one that shares nothing: a Kaiser-windowed sinc, ±48 samples, read at 32 points per interval,
+  and checked first to within 0.01 dB on sines whose crest is known.
+  - On the Annex's 4x reading, the limiter holds the ceiling: +0.0002 dB at most.
+  - On the reference, the same output reads higher:
+    - **+0.15 dB** on the quarter-rate sine at 45°. Its crest falls midway between the 4x
+      interpolator's points (the odd eighths of each interval), which is 4x's own analytic miss,
+      cos(π/16) = 0.168 dB.
+    - **+1.6 dB** on +12 dB white noise, near the Nyquist frequency, where the 16 taps roll off.
+    - +0.14 dB on full-scale doublets, and nothing on a 0.23 fs tone.
+    - At 32 kHz (6x) and 22.05 kHz (8x) the read points are finer, so the quarter-rate figure
+      shrinks to +0.06 and +0.04 dB. Noise stays at +1.6 dB, and doublets read +0.24 and +0.11 dB.
+  - The reference rolls off near the Nyquist frequency too, so the noise figure is a lower bound.
+  - The test bounds each case at its measured value, so the gap cannot grow unseen.
+  - **The question:** should the export's brickwall detect finer than BS.1770's 4x, for example 8x,
+    or 4x with points at the samples and the halves? Then an ideal reconstruction would also stay
+    under the ceiling, at some CPU cost and a measurement that no longer matches the meter. Or does
+    the −1 dBTP ceiling's own margin cover it, as delivery specs assume? This lane will not change
+    the shared interpolator without a ruling.
+- **For engine-win (the export half, all after 3 December):**
+  - **The brickwall stage.** Add `Normalization.brickwall` (default off) and call
+    `processOffline()` inside `finish()` on the gained double capture, before dither and quantize.
+    The existing length check then holds with the brickwall on.
+  - **The Peak-mode guard.** In Peak mode the brickwall never acts.
+  - **The refine loop.** At most 4 trials, steps clamped to ±3 dB, and a stop when LUFS changes by
+    under 0.02 LU. The encoded TP check stays the final gate.
+  - **Measurement.** Measure on `dsp::LoudnessMeter`, with `finish()` replacing the 16-zero
+    padding.
+  - **Tests and merge order.** Write a byte-identical test of brickwall on against off for a signal
+    under the ceiling, and land after or with 7a9fe563.
+- **Left for this lane:** the LD5/DEV-22 link (the Limiter device exposing `setTruePeak`) comes when
+  the Limiter device is built, after 3 December.
+
 ## 2026-11-20 — DEV-28: the loudness meter survives a NaN and reads the programme's last true peak
 
 **PR requested:** head `devices/loudness-robust` (cda11168, one commit on 7510acd2), base `main`.
@@ -114,7 +182,7 @@ because `export.normalize` defaults to off.
 - **Devices (this lane, in order):**
   - the "LRA not yet stable" flag in `Readings`, with its definition;
   - Tech 3341 cases 20 to 23 held to an independent reference. The reference is now in
-    `test_dsp.cpp`, and cases 13 and 14 can be tightened against it;
+    `test_dsp.cpp` (the EX4 entry above), and cases 13 and 14 can be tightened against it;
   - a loudness case in `tools/benchmark_blocks.cpp`;
   - the ffmpeg LRA oracle behind `ADI_REQUIRE_ORACLES`;
   - provenance comments: libebur128's K-weighting constants in `auto_gain.cpp`, and a statement on
