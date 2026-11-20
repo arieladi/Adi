@@ -74,17 +74,16 @@ void measurements() {
     c.set(C::Notches, 1);
     c.set(C::Amount, 0);
     c.set(C::Center, 1000);
-    c.set(C::Mix, 50);
+    c.set(C::Mix, 100);   // all wet: the classic phaser, (x + all-pass) / 2
     c.prepare(48000);
     auto x = tone(1000);
     auto notch = render(c, x);
     check(bin(notch, 7011) < 1e-7, "phaser floor first");
-    check(bin(notch, 1000) < 1e-6, "single allpass mixed dry creates exact center notch");
-    c.set(C::Mix, 100);
+    check(bin(notch, 1000) < 1e-6, "the classic phaser sum notches the center exactly at 100 % wet");
+    c.set(C::Mix, 50);
     c.prepare(48000);
-    auto ap = render(c, x);
-    check(std::abs(bin(ap, 1000) - .4) < 1e-6,
-          "allpass preserves magnitude while reversing phase at center");
+    auto half = render(c, x);
+    check(std::abs(bin(half, 1000) - .2) < 1e-6, "at 50 % the dry half fills the notch to half level");
     c.set(C::Mode, 1);
     c.set(C::Time, 2);
     c.set(C::Mix, 50);
@@ -178,7 +177,27 @@ void partitions() {
     check(allocations == 0, "no process allocations");
 }
 } // namespace
+// DEV-22: Live 12.4's Phaser-Flanger notches at its default 100 % wet: the
+// research's render has its 997 Hz tone 8.5 dB down, averaged over the LFO's
+// sweep (whose phase at capture is not known, so the depth is not compared).
+// ADI's wet used to be the bare all-pass chain, which cannot notch at all;
+// with the classic sum it does. Checked with the LFO held: at Live's default
+// otherwise, the response dips more than 20 dB between 200 and 800 Hz.
+void liveDefault() {
+    double lowest = 0;
+    for (double hz = 200; hz <= 800; hz += 10) {
+        C c;
+        c.set(C::Amount, 0);
+        c.prepare(48000);
+        const auto x = tone(hz, .1);
+        const auto y = render(c, x);
+        lowest = std::min(lowest, 20 * std::log10(bin(y, hz) / bin(x, hz)));
+    }
+    std::printf("Live default, LFO held: deepest point %.1f dB between 200 and 800 Hz\n", lowest);
+    check(lowest < -20, "Live default: the phaser notches at 100 % wet");
+}
 int main() {
+    liveDefault();
     measurements();
     partitions();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);

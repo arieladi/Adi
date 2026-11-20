@@ -238,6 +238,61 @@ void curves(const std::filesystem::path &directory) {
                   "durable packet cannot execute a second time");
         }
 }
+
+void exactBoundaries(const std::filesystem::path &directory) {
+    for (int base : {0, 1}) {
+        auto store = project(directory / ("exact-" + std::to_string(base) + ".adi"), base);
+        const std::int64_t unit = base ? 1000000 : 10000;
+        const auto begin = 100 * unit;
+        const auto end = 200 * unit;
+        const auto atEnd = engine::curveValue(0.0, 1.0, 0.2, 5, 0.6f);
+        const auto last = engine::curveValue(0.0, 1.0, 0.8, 5, 0.6f);
+        const std::vector original{
+            point(0, 0.1, 4, 21), point(begin, 0.4, 1, 22), point(end, 0.3, 1, 23),
+            point(end, atEnd, 5, 24), point(300 * unit, last, 1, 25)};
+        stream(*store, original, base);
+        auto &db = store->db();
+        db.exec("INSERT INTO automation_segment_ranges"
+                "(id,data_id,record_index,progress_begin,progress_end,source_first,source_last) "
+                "VALUES(11,4,3,0.2,0.8,0.0,1.0)");
+        const auto before = rows(*store);
+        const auto source = decoded(*store, base);
+        const std::vector incoming{point(begin, 0.7, 1, 23), point(end, 0.2, 1, 24)};
+        const auto prepared = prepareEnvelopeSplice(*store, 2, begin, end, incoming, 48000);
+        const bool committed = prepared.ok && OpJournal(*store).commit(prepared.requests).ok;
+        check(committed, "splice with existing points at both bounds commits");
+        if (!committed) continue;
+        const auto after = rows(*store);
+        const auto output = decoded(*store, base);
+        check(output.size() == 7 && output[0].point.point_id == 21 &&
+                  output[0].point.curve == 4 && !output[0].slice &&
+                  output[3].point.time == end && output[3].point.point_id != 23 &&
+                  output[3].point.point_id != 24 && output[4].point.point_id == 23 &&
+                  output[5].point.point_id == 24 && output[5].slice.has_value(),
+              "whole prefix stays unsliced and original End records follow the incoming terminal");
+        check(db.execAndGet("SELECT count(*) FROM automation_segment_ranges").getInt() == 1 &&
+                  db.execAndGet("SELECT record_index FROM automation_segment_ranges WHERE id=11")
+                          .getInt() == 5,
+              "the existing range keeps its identity and no whole-range row is inserted");
+        const auto beforeProgram = program(source);
+        const auto afterProgram = program(output);
+        const auto firstSample = source[1].sample;
+        const auto lastSample = source[2].sample;
+        bool exact = engine::valueAt(afterProgram, firstSample) == 0.7 &&
+                     engine::valueAt(afterProgram, lastSample) == atEnd;
+        for (std::int64_t sample = 0; sample < source.back().sample + 1; ++sample) {
+            if (sample < firstSample || sample >= lastSample)
+                exact = exact && std::abs(engine::valueAt(beforeProgram, sample) -
+                                          engine::valueAt(afterProgram, sample)) < 3e-12;
+        }
+        check(exact, "render preserves both outside curves and uses the last exact-End value");
+        History history(*store);
+        check(history.undo().ok && detail::sameSqlValue(rows(*store), before) &&
+                  history.redo().ok && detail::sameSqlValue(rows(*store), after),
+              "exact-boundary Undo and Redo restore identical native rows");
+    }
+}
+
 void guards(const std::filesystem::path &directory) {
     const std::vector<std::string> mutations{
         "UPDATE automation_lanes SET default_value=0.3 WHERE id=2",
@@ -484,6 +539,7 @@ int main() {
     try {
         adi::test::TempDirectory temp("automation", "splice-store");
         curves(temp.path());
+        exactBoundaries(temp.path());
         guards(temp.path());
         failuresAndAbsence(temp.path());
         layouts(temp.path());

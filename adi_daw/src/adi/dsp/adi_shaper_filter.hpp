@@ -15,6 +15,7 @@ class AdiShaperFilter {
     void reset() noexcept;
     void setMode(Mode mode) noexcept;
     void process(float& left, float& right, float cutoff, float resonance) noexcept;
+    bool finishBlock() noexcept;
 
   private:
     struct Channel {

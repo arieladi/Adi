@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ops.hpp"
+#include "adi/store_rows.hpp"
 #include <span>
 #include <string_view>
 namespace adi {
+namespace engine { enum class RouteChoice : std::uint8_t; }
 struct BuiltinInfo {
     std::string_view uid,name,category,group;
     int inputs=2;
     bool available=false,midi=false;
+    /// Consumes notes (EventFlow::Consume) and is registered as an instrument (DEV-21).
+    bool instrument=false;
     // Ask the graph for the exact musical position of each render segment.
     bool usesTransportPosition=false;
     // Parameters appended after an older state was saved reopen at their defaults.
@@ -27,6 +31,12 @@ struct PreparedBuiltinInsert {
 };
 [[nodiscard]] PreparedBuiltinInsert prepareBuiltinInsert(Store&,std::string_view uid,
     std::int64_t track,std::optional<std::int64_t> beforeDevice={});
+struct PluginInsertOptions {
+    bool replaceInstrument = false;
+    std::optional<engine::RouteChoice> expressionRoute;
+};
+[[nodiscard]] PreparedBuiltinInsert preparePluginInsert(Store&,const rows::PluginRef&,std::int64_t track,
+    std::optional<std::int64_t> beforeDevice={},const PluginInsertOptions& = {});
 [[nodiscard]] CommitResult commitBuiltinInsert(Store&,const PreparedBuiltinInsert&,Actor=Actor::User);
 std::span<const OpDescriptor> builtinReferenceOps();
 }

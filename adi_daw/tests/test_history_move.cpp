@@ -514,6 +514,74 @@ void stored() {
               h.readTimeline().error.empty(),
           "navigation across all stored baselines retains a valid forest and timeline");
 }
+
+void childlessRoots() {
+    Project p;
+    History h(*p.store);
+    const auto archived = p.names({"Archived"});
+    const auto snapshot = h.takeSnapshot("Pinned checkpoint", 1, 0);
+    require(snapshot.ok, snapshot.error);
+    std::int64_t last = 0;
+    for (int i = 2; i <= 6; ++i)
+        last = p.names({std::to_string(i)});
+    UndoRetentionPolicy policy;
+    policy.maxTransactions = 2;
+    const auto compacted = h.setUndoRetentionPolicy(policy);
+    require(compacted.ok && compacted.baseSeq > archived, compacted.error);
+    constexpr auto prepared = History::StoredRestore::SessionReloadPrepared;
+    require(h.moveTo(archived, 2, prepared).ok && p.name() == "Archived" &&
+                !h.canUndo() && !h.canRedo(),
+            "the snapshot owns an actual childless checkpoint");
+    const auto pinned = h.branches().size();
+    check(h.moveTo(last, 3, prepared).ok && h.branches().size() == pinned,
+          "leaving a childless root held by a named snapshot adds no branch");
+    require(h.revertToSnapshot(snapshot.id, 4, prepared).ok && h.removeSnapshot(snapshot.id).ok,
+            "remove the only named anchor while the archived root is current");
+
+    const auto unpinned = h.branches().size();
+    const auto left = h.moveTo(last, 5, prepared);
+    const auto branches = h.branches();
+    const auto held = std::find_if(branches.begin(), branches.end(), [&](const auto &branch) {
+        return !branch.isCurrent && branch.headSeq == archived && branch.storedStateHash &&
+               branch.name == "before history move" && branch.createdUtc == 5;
+    });
+    check(left.ok && branches.size() == unpinned + 1 && held != branches.end(),
+          "leaving the now-unheld root gives it one system branch");
+    (void)p.names({"7"});
+    (void)p.names({"8"});
+    check(held != branches.end() && h.switchToBranch(held->id, prepared).ok &&
+              h.head() == archived && p.name() == "Archived" && checkProject(*p.store).clean(),
+          "the saved childless root remains reachable after another compaction");
+}
+
+void legacyOrigin() {
+    Project p;
+    History h(*p.store);
+    const auto base = p.names({"Legacy base"});
+    const auto last = p.names({"After checkpoint"});
+    const auto checkpoint = encodePayload(history_detail::checkpointAt(*p.store, base));
+    auto &db = p.store->db();
+    SQLite::Statement forget(db, "UPDATE ops SET inverse=NULL WHERE seq=?");
+    forget.bind(1, base);
+    forget.exec();
+    SQLite::Statement store(db, "INSERT INTO history_checkpoint(id,base_seq,state) VALUES(1,?,?)");
+    store.bind(1, base);
+    store.bind(2, checkpoint.data(), static_cast<int>(checkpoint.size()));
+    store.exec();
+    require(!history_detail::hasStoredRoots(db), "legacy checkpoint has no stored roots");
+    const auto before = allRows(*p.store);
+    const auto sequence = appliedSource(*p.store).sequence();
+    const auto changes = db.getTotalChanges();
+    const auto refused = h.moveTo(std::nullopt);
+    check(!refused.ok && refused.error == "original history state is no longer retained" &&
+              refused.opsApplied == 0 && h.head() == last &&
+              db.getTotalChanges() == changes && detail::sameSqlValue(before, allRows(*p.store)) &&
+              appliedSource(*p.store).sequence() == sequence,
+          "an unavailable legacy origin is refused before any replay or receipt");
+    check(h.moveTo(base).ok && h.head() == base && p.name() == "Legacy base" &&
+              !h.canUndo() && h.redo().ok && p.name() == "After checkpoint",
+          "the legacy checkpoint and its retained suffix remain navigable");
+}
 } // namespace
 int main() {
     try {
@@ -522,6 +590,8 @@ int main() {
         undoneFuture();
         refusals();
         stored();
+        childlessRoots();
+        legacyOrigin();
         liveDelivery();
         forwardRollback();
         captureAdmission();

@@ -39,8 +39,8 @@ Next free: **ADR-0252**.
 |---|---|---|---|---|
 | DF-C | Control | the control seat, through win | DF-C5 | DF-C6 |
 | DF-M | Mix View | the Mix View seat, through win | DF-M61 | DF-M62 |
-| DF-W | Window | the window lane and win | DF-W35 | DF-W36 |
-| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E57 | DF-E58 |
+| DF-W | Window | the window lane and win | DF-W36 | DF-W37 |
+| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E62 | DF-E63 |
 | DF-R | Repository | win | DF-R1 | DF-R2 |
 
 Three seats share DF-E, so each DF-E id is reserved here first.

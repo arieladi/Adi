@@ -26,17 +26,21 @@ float panGain(double position) noexcept {
     return static_cast<float>(position * (c + position * (b + a * position)));
 }
 
-void copyStereo(const float* inL, const float* inR, float* outL, float* outR,
-                std::size_t frames) noexcept {
+float finiteOrZero(float sample) noexcept {
+    return std::isfinite(sample) ? sample : 0.0f;
+}
+
+void sanitizeStereo(const float* inL, const float* inR, float* outL, float* outR,
+                    std::size_t frames) noexcept {
     if (outL == inR || outR == inL) {
         for (std::size_t i = 0; i < frames; ++i) {
             const float l = inL[i], r = inR[i];
-            outL[i] = l;
-            outR[i] = r;
+            outL[i] = finiteOrZero(l);
+            outR[i] = finiteOrZero(r);
         }
     } else {
-        if (outL != inL) std::copy_n(inL, frames, outL);
-        if (outR != inR) std::copy_n(inR, frames, outR);
+        std::transform(inL, inL + frames, outL, finiteOrZero);
+        std::transform(inR, inR + frames, outR, finiteOrZero);
     }
 }
 } // namespace
@@ -156,19 +160,30 @@ float AdiShaper::Split::align(float input, std::size_t channel) noexcept {
     return static_cast<float>(all);
 }
 
-void AdiShaper::Split::quiet() noexcept {
-    const auto flush = [](double& x) { if (std::abs(x) < 1.0e-280) x = 0; };
-    for (auto& state : channels) {
+bool AdiShaper::Split::finishBlock() noexcept {
+    bool repaired = false;
+    for (std::size_t ch = 0; ch < channels.size(); ++ch) {
+        bool bad = false;
+        const auto flush = [&bad](double& x) {
+            bad |= !std::isfinite(x);
+            if (std::abs(x) < 1.0e-280) x = 0;
+        };
+        auto& state = channels[ch];
         for (auto& poleState : state.poles) flush(poleState);
         for (auto& pair : state.pairs) {
             flush(pair.band);
             flush(pair.low);
         }
-    }
-    for (auto& pair : compensation) {
+        auto& pair = compensation[ch];
         flush(pair.band);
         flush(pair.low);
+        if (bad) {
+            state = {};
+            pair = {};
+            repaired = true;
+        }
     }
+    return repaired;
 }
 
 void AdiShaper::updateSplits(StageData& stage) const noexcept {
@@ -491,8 +506,12 @@ float AdiShaper::Contour::at(std::uint64_t position) const noexcept {
 }
 
 void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
-    std::swap(l, samples[index][0]);
-    std::swap(r, samples[index][1]);
+    const auto previous = samples[index];
+    // A preceding stage can overflow even with finite rack input. Do not put
+    // that sample in the parallel dry delay where it could reach a later block.
+    samples[index] = {finiteOrZero(l), finiteOrZero(r)};
+    l = previous[0];
+    r = previous[1];
     index = (index + 1) % samples.size();
 }
 
@@ -639,23 +658,21 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         outL[i] = !flatPhase ? sumL : (sumL == 0.0f ? dryL : dryL + sumL);
         outR[i] = !flatPhase ? sumR : (sumR == 0.0f ? dryR : dryR + sumR);
     }
-    stage.low.quiet();
-    stage.high.quiet();
 }
 
 void AdiShaper::process(const float* inL, const float* inR, float* outL, float* outR,
                         std::size_t frames, AdiShaperScope* scope) noexcept {
     if (!frames) return;
+    // The scope and every stage receive the same sanitized rack input.
+    sanitizeStereo(inL, inR, outL, outR, frames);
     if (!scope) scope = &editorScope_;
     const int key = scope->selection();
     const bool capture = key >= 0 && static_cast<std::size_t>(key / 3) < stages_.size();
     if (capture) {
         const auto& band = stages_[key / 3].bands[key % 3];
-        scope->begin(key, inL, inR, frames, band.phase, band.step, sampleRate_);
+        scope->begin(key, outL, outR, frames, band.phase, band.step, sampleRate_);
     }
     freeWaves_.prepareBlock(audioWaveMemo_.get());
-    // A full-range neutral rack takes only a stereo copy. Configured split
-    // filters still follow the input while dry so automation reopens them warm.
     auto run = [&]<Stage kind>() {
         auto& stage = stages_[static_cast<std::size_t>(kind)];
         if constexpr (kind >= Stage::Filter) {
@@ -665,9 +682,24 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
             if (stage.layout == 0 && stage.bands[1].blend == 0.f) return;
         }
         if (!stage.active && stage.layout == 0 && !freeWaves_.hasStage(static_cast<int>(kind))) return;
-        render<kind>(stage, inL, inR, outL, outR, frames);
-        inL = outL;
-        inR = outR;
+        render<kind>(stage, outL, outR, outL, outR, frames);
+        bool repaired = false;
+        if (stage.layout != 0) {
+            repaired |= stage.low.finishBlock();
+            repaired |= stage.high.finishBlock();
+        }
+        if constexpr (kind >= Stage::Filter && kind != Stage::Time) {
+            const auto finish = [&](std::size_t index) {
+                if constexpr (kind == Stage::Filter) return filters_[index].finishBlock();
+                if constexpr (kind == Stage::Sweep) return sweeps_[index].finishBlock();
+                if constexpr (kind == Stage::Drive) return drives_[index].finishBlock();
+                if constexpr (kind == Stage::Crush) return crush_[index].finishBlock();
+            };
+            if (stage.layout == 0 || stage.bands[1].active) repaired |= finish(1);
+            if ((stage.layout & 1) && stage.bands[0].active) repaired |= finish(0);
+            if ((stage.layout & 2) && stage.bands[2].active) repaired |= finish(2);
+        }
+        if (repaired) sanitizeStereo(outL, outR, outL, outR, frames);
     };
     run.template operator()<Stage::Volume>();
     run.template operator()<Stage::Width>();
@@ -677,7 +709,6 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
     run.template operator()<Stage::Drive>();
     run.template operator()<Stage::Crush>();
     run.template operator()<Stage::Time>();
-    copyStereo(inL, inR, outL, outR, frames);
     if (capture) scope->end(outL, outR, frames);
     for (auto& stage : stages_) {
         if (!stage.enabled) continue;

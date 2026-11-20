@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/builtin_catalog.hpp"
 #include "adi/dsp/adi_shaper.hpp"
+#include "adi/engine/events.hpp"
 #include "adi/textproj.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/pd_engine.hpp"
@@ -293,6 +294,49 @@ void timePd() {
         }
     }
 }
+
+// The host splits a block at every lane event (DF-E50), and every piece of
+// the segment carries the transport of the segment's first sample. A synced
+// curve must keep its own clock after the first piece: lane values for an
+// unrelated parameter, at the value it already has, change nothing.
+void automationKeepsTheClock() {
+    constexpr int frames = 512;
+    using Block = std::array<std::array<float, frames>, 2>;
+    const auto render = [](bool lanes) {
+        auto device = open();
+        device->prepare(48000, frames);
+        set(*device, 20, 0);  // Volume Mid cycle: a 32nd of a quarter note
+        for (int j = 0; j < 8; ++j) set(*device, 23 + j, j / 7.0);
+        Block input{}, output{};
+        for (auto& channel : input) channel.fill(.5f);
+        const float* in[]{input[0].data(), input[1].data()};
+        float* out[]{output[0].data(), output[1].data()};
+        adi::engine::DeviceTransport position;
+        position.playing = true;
+        position.quarterNotes = .5;
+        adi::engine::NodeIo io;
+        io.deviceTransport = &position;
+        io.in = in;
+        io.out = out;
+        io.channels = 2;
+        io.frames = frames;
+        std::array<adi::engine::Event, 5> events{};
+        const double mix = device->getParam("1").normalized;
+        for (std::size_t i = 0; i < events.size(); ++i) {
+            events[i].frame = static_cast<std::int32_t>(96 * (i + 1));
+            events[i].type = adi::engine::EventType::ParamValue;
+            events[i].paramId = 1;
+            events[i].value = mix;
+        }
+        if (lanes) io.events = adi::engine::EventSpan{events.data(), static_cast<std::int32_t>(events.size())};
+        device->process(io);
+        return output;
+    };
+    const auto plain = render(false), automated = render(true);
+    check(plain[0][0] != plain[0][300], "the synced curve moves within the block");
+    check(plain == automated, "lane events split the block without rewinding a synced curve");
+}
+
 } // namespace
 
 int main() try {
@@ -307,7 +351,10 @@ int main() try {
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
     // Restore an actual earlier-format parameter map, with no Filter or Sweep keys.
     auto state = adi::Payload::from_cbor(device->saveState("state"));
-    for (int id = 134; id <= count; ++id) state.at("params").erase(std::to_string(id));
+    for (int id = 134; id <= count; ++id) {
+        state.at("params").erase(std::to_string(id));
+        state.at("real").erase(std::to_string(id));
+    }
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(state)), "restore earlier curve and width");
     check(device->getParam("134").real == 0 && device->getParam("209").real == 0,
@@ -376,7 +423,10 @@ int main() try {
     set(*device, 253, 0.72);
     set(*device, 285, 1);
     auto modState = adi::Payload::from_cbor(device->saveState("state"));
-    for (int id = 287; id <= count; ++id) modState.at("params").erase(std::to_string(id));
+    for (int id = 287; id <= count; ++id) {
+        modState.at("params").erase(std::to_string(id));
+        modState.at("real").erase(std::to_string(id));
+    }
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(modState)) && device->getParam("134").real == 1
           && device->getParam("209").real == 1 && std::abs(device->getParam("170").real - 37) < 1e-4
@@ -390,7 +440,10 @@ int main() try {
     device->process(io);
     check(device->latencySamples() == 16 && device->latencyEpoch() != firstEpoch, "catalogued host republishes Drive latency");
     auto sevenStageState = adi::Payload::from_cbor(device->saveState("state"));
-    for (int id = 416; id <= count; ++id) sevenStageState.at("params").erase(std::to_string(id));
+    for (int id = 416; id <= count; ++id) {
+        sevenStageState.at("params").erase(std::to_string(id));
+        sevenStageState.at("real").erase(std::to_string(id));
+    }
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(sevenStageState)), "restore seven-stage project state");
     device->process(io);
@@ -416,6 +469,15 @@ int main() try {
     check(device->latencySamples() == 0 && device->getParam("287").real == 0
           && device->getParam("341").real == 0 && device->getParam("209").real == 1,
           "missing stages regain defaults and release PDC while saved stages stay enabled");
+    // A value saved only in its unit (no position) is read, not reset to its default.
+    auto realOnly = sevenStageState;
+    realOnly.at("params").erase("170");
+    check(realOnly.at("real").contains("170") && std::abs(open()->getParam("170").real - 37) > 1,
+          "fixture: Filter value saved in its unit differs from the default");
+    device = open();
+    check(device->loadState("state", adi::Payload::to_cbor(realOnly))
+          && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
+    automationKeepsTheClock();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");
     const auto editedDir = edited.path().string();

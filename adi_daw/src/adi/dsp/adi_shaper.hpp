@@ -115,7 +115,7 @@ class AdiShaper {
         void butterworth(double x, Integrator&, double& low, double& high, double& all) const noexcept;
         [[nodiscard]] Bands split(float input, std::size_t channel) noexcept;
         [[nodiscard]] float align(float input, std::size_t channel) noexcept;
-        void quiet() noexcept;
+        bool finishBlock() noexcept;
     };
     struct StageData {
         std::array<CurveBand, 3> bands;

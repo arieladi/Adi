@@ -11,7 +11,7 @@ constexpr bool ready=true;
 #else
 constexpr bool ready=false;
 #endif
-constexpr std::array<BuiltinInfo,19> entries={{
+constexpr std::array<BuiltinInfo,20> entries={{
  {.uid="org.adidaw.builtin.adi-shaper",.name="ADI-Shaper",.category="ADI",.group="Audio Effects",
   .inputs=2,.available=ready,.usesTransportPosition=true,.resetMissingParameters=true},
  {"org.adidaw.builtin.auto-filter","Auto Filter","Audio Effects","EQ & Filters",4,ready,false},
@@ -31,7 +31,9 @@ constexpr std::array<BuiltinInfo,19> entries={{
  {"org.adidaw.builtin.saturator","Saturator","Audio Effects","Drive & Color",2,ready,false},
  {"org.adidaw.builtin.shifter","Shifter","Audio Effects","Pitch & Modulation",2,ready,true},
  {"org.adidaw.builtin.utility","Utility","Audio Effects","Utilities",2,ready,false},
- {"org.adidaw.builtin.vocoder","Vocoder","Audio Effects","Pitch & Modulation",4,ready,false}
+ {"org.adidaw.builtin.vocoder","Vocoder","Audio Effects","Pitch & Modulation",4,ready,false},
+ // DEV-21: the first of the two authorized instruments; no audio in, notes in.
+ {"org.adidaw.builtin.oneshot","OneShot","Instruments","Instruments",0,ready,true,true}
 }};
 }
 std::span<const BuiltinInfo> builtinCatalog() noexcept{return entries;}
@@ -42,8 +44,9 @@ const BuiltinInfo* findBuiltin(std::string_view uid) noexcept {
 std::string_view builtinCanvas(std::string_view uid) noexcept {
 #if ADI_WITH_PD
     using namespace device::canonical;
-    constexpr std::array<std::string_view,19> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
-        std::string_view{},multibandDynamics,overdrive,phaserFlanger,redux,resonators,reverb,saturator,shifter,utility,vocoder};
+    constexpr std::array<std::string_view,20> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
+        std::string_view{},multibandDynamics,overdrive,phaserFlanger,redux,resonators,reverb,saturator,shifter,utility,vocoder,
+        oneShot};
     for(std::size_t i=0;i<entries.size();++i)if(entries[i].uid==uid)return canvases[i];
 #else
     (void)uid;

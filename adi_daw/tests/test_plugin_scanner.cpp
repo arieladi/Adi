@@ -125,12 +125,12 @@ void protocolProcess(const fs::path& self) {
         const auto result=scanner->probe("clap",f.candidate(std::string(name)+".clap"));
         failed=failed && result.state==State::Failed && result.plugins.empty();
     }
-    check(failed && f.registry->scanBlocks(f.error)->size()==4,"bad identity/malformed/trailing/nonzero replies retain quarantine and no metadata");
+    check(failed && f.registry->scanBlocks(f.error)->empty(),"bad identity/malformed/trailing/nonzero replies are negative results, never quarantine");
     const auto unsupported=scanner->probe("clap",f.candidate("unsupported.clap"));
-    check(unsupported.state==State::Unavailable && f.registry->scanBlocks(f.error)->size()==4,"unsupported helper deployment abandons without blaming the candidate");
+    check(unsupported.state==State::Unavailable && f.registry->scanBlocks(f.error)->empty(),"unsupported helper deployment abandons without blaming the candidate");
     f.config.process.maximumOutput=4096;auto bounded=f.scanner();
     const auto flood=bounded->probe("clap",f.candidate("reply-flood.clap"));
-    check(flood.state==State::Failed && flood.plugins.empty() && f.registry->scanBlocks(f.error)->size()==5,"child output limit becomes a durable named scan failure");
+    check(flood.state==State::Failed && flood.plugins.empty() && f.registry->scanBlocks(f.error)->empty(),"child output limit becomes a durable named negative result without quarantine");
     struct Late {
         PluginRegistry* registry;bool cancel=false;std::atomic<bool>* cancellation=nullptr;
         static bool validate(const std::vector<Plugin>&,const std::string& path,void* raw,std::string& error) {
@@ -159,8 +159,20 @@ void realLibraries() {
     std::ifstream marker(native(utf8(good)+".pids"));long long pid=0;bool seen=false,foreign=true;
     while(marker>>pid){seen=true;foreign=foreign && pid!=static_cast<long long>(test::processId());}
     check(seen && foreign,"every actual plug-in init runs under a different PID");
+    const auto initBytes=fs::file_size(native(utf8(good)+".pids"));
+    const auto warm=scanner->probe("clap",good);scanner.reset();scanner=f.scanner();
+    const auto reopened=scanner->probe("clap",good);
+    check(warm.state==State::Ready && warm.cacheHit && reopened.state==State::Ready && reopened.cacheHit &&
+          fs::file_size(native(utf8(good)+".pids"))==initBytes,
+          "real CLAP module has no further init calls over three unchanged probes including Scanner reopen");
     const auto noisy=scanner->probe("clap",f.bundle("noisy"));
     check(noisy.state==State::Ready && noisy.plugins.size()==2,"plug-in stdout/stderr chatter cannot corrupt reserved metadata channel");
+    const auto empty=f.bundle("no-classes");const auto empty1=scanner->probe("clap",empty);
+    const auto emptyLog=native(utf8(empty)+".pids");const auto emptyBytes=fs::file_size(emptyLog);
+    const auto empty2=scanner->probe("clap",empty);
+    check(empty1.state==State::Failed && empty2.state==State::Failed && empty2.failureCacheHit &&
+        empty2.failureStrikes==0 && fs::file_size(emptyLog)==emptyBytes && f.registry->scanBlocks(f.error)->empty(),
+        "real CLAP factory with zero classes is negative-cached, not quarantined or initialized again");
     bool contained=true;for(const auto* mode:std::array{"init-crash","factory-crash","descriptor-crash","deinit-crash","unload-crash","duplicate","too-many","oversized","bad-utf8","null-descriptor"}) {
         const auto failure=scanner->probe("clap",f.bundle(mode));contained=contained && failure.state==State::Failed && failure.plugins.empty();
     }
@@ -169,6 +181,8 @@ void realLibraries() {
     f.config.process.timeout=std::chrono::milliseconds(80);auto shortScan=f.scanner();
     const auto hang=f.bundle("init-hang");const auto deinit=f.bundle("deinit-hang");
     check(shortScan->probe("clap",hang).state==State::Failed && shortScan->probe("clap",deinit).state==State::Failed,"actual init and deinit hangs hit the process deadline without parent hangs");
+    check(shortScan->probe("clap",hang).failureStrikes==2,
+        "second unchanged actual CLAP timeout reaches the two-strike threshold");
     const auto log=native(utf8(hang)+".pids");const bool existed=fs::exists(log);
     const auto before=existed?fs::file_size(log):0;
     check(shortScan->probe("clap",hang).state==State::Quarantined && fs::exists(log)==existed &&
@@ -178,6 +192,25 @@ void realLibraries() {
     check(scanner->probe("clap",alias).state==State::Quarantined,"native canonical path prevents dot-component aliases bypassing quarantine");
     f.registry->unblockScan("clap",utf8(fs::canonical(good)),f.error);
     check(scanner->probe("clap",good).state==State::Ready,"explicit re-enable allows a new isolated scan");
+}
+void reservedCandidateExits() {
+    Fixture f;device::ClapHost host;
+    const auto exit74=f.bundle("a-init-exit74"),exit75=f.bundle("b-init-exit75"),
+        healthy=f.bundle("z-healthy");
+    const auto first=host.scan({utf8(f.temp.path())},f.config);
+    check(first.complete && first.failures.size()==2 && host.plugins().size()==2 && host.libraryCount()==0,
+        "plug-in exits 74 and 75 do not stop discovery of a healthy sibling");
+    auto scanner=f.scanner();
+    for(const auto& module:{exit74,exit75}) {
+        const auto result=scanner->probe("clap",module);
+        const auto path=native(utf8(module)+".pids");
+        std::ifstream markers(path);long long pid=0,extra=0;
+        check(result.state==State::Failed && result.failureCacheHit && result.failureStrikes==0 &&
+            (markers>>pid) && pid!=static_cast<long long>(test::processId()) && !(markers>>extra),
+            "plug-in reserved exit is a stable rejected result with exactly one child init");
+    }
+    check(fs::exists(native(utf8(healthy)+".pids")) && f.registry->scanBlocks(f.error)->empty(),
+        "healthy sibling ran and candidate exits made no pending or manual block");
 }
 void hostAndFailurePolicy() {
     Fixture f;device::ClapHost host;
@@ -192,7 +225,7 @@ void hostAndFailurePolicy() {
     auto unavailable=f.config;unavailable.executable=f.temp.path()/"missing-helper";
     report=host.scan({utf8(f.temp.path())},unavailable);
     check(!report.complete && host.plugins().size()==2 && host.libraryCount()==0,"missing helper has no in-process fallback and retains previous complete catalogue");
-    auto blocked=f.registry->scanBlocks(f.error);check(blocked && blocked->size()==1,"missing helper abandonment creates no false plug-in block");
+    auto blocked=f.registry->scanBlocks(f.error);check(blocked && blocked->empty(),"missing helper creates no block and preserves a first crash's retry eligibility");
     f.registry->unblockScan("clap",utf8(fs::canonical(f.temp.path()/"init-crash.clap")),f.error);
     std::atomic<bool> cancel{false};auto cancelled=f.config;cancelled.process.cancel=&cancel;
     const auto hang=f.bundle("init-hang");(void)hang;
@@ -210,7 +243,7 @@ void hostAndFailurePolicy() {
     {audio::CallbackScope scope;
         const auto refused=scanner->probe(format,healthy);
         callback=refused.state==State::CallbackRefused && !decodeMetadata(packet,format,path,f.error) && !encodeMetadata(format,path,plugins,f.error) &&
-            !Scanner::open(f.config,f.error) && defaultScannerExecutable().empty() && !host.scan(none,f.config).complete &&
+            !Scanner::open(f.config,f.error) && !scanner->retry(format,healthy,f.error) && defaultScannerExecutable().empty() && !host.scan(none,f.config).complete &&
             device::ClapHost::findBundles(roots).empty() && device::ClapHost::defaultSearchPaths().empty();
     }
     check(callback && f.error==sentinel && allocations==baseline+cost && audio::callbackFileIo==0 && host.plugins().size()==2,"scanner/protocol/host callback guards precede copying, filesystem, SQL and catalogue mutation");
@@ -218,7 +251,7 @@ void hostAndFailurePolicy() {
 int entry(const std::vector<std::string>& arguments) {
     if(arguments.size()==4 && arguments[1]=="--scan")return fakeHelper(arguments);
     if(arguments.size()!=1)return 64;
-    try {protocol();protocolProcess(fs::absolute(native(arguments[0])));realLibraries();hostAndFailurePolicy();}
+    try {protocol();protocolProcess(fs::absolute(native(arguments[0])));realLibraries();reservedCandidateExits();hostAndFailurePolicy();}
     catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1021;          -- schema 1.21
+PRAGMA user_version   = 1022;          -- schema 1.22
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -1576,3 +1576,13 @@ and OPS.md for preparation, native validation and undo semantics.
 Schema 1.18 adds frozen_groups: a cached group root and CBOR descendant
 membership with pre-freeze arm switches. It adds no columns to schema 1.17.
 See ENGINE-FREEZE.md for the inactive-child audio routing tradeoff.
+
+### Device key taps (schema 1.22)
+
+`routing_key_taps(routing_id,tap)` belongs to its `routing` row (delete cascades).
+`tap` is `pre_fx`, `post_fx` or `post_mixer`; absent means Post Mixer. It is only
+used for a sidechain from a track into a leaf device. Post Mixer follows the
+source fader, pan, mute and solo; the two earlier taps do not. The key enters
+that device's sidechain bus and never its channel's main junction. Device and
+track removal capture the connection and tap together for one Undo. N-bus and
+arbitrary key channel remapping are outside this first device-key contract.

@@ -213,8 +213,9 @@ void inactiveAndDisabled() {
         b.samples = a.samples;
         bypassExact &= process(paused, a, &floatKey, 2, disabled) && same(a, b);
     }
-    check(bypassExact && paused.activity() == priorActivity,
-          "disabled calls preserve audio and activity while controls change");
+    check(bypassExact && priorActivity == carve::Activity::Active &&
+              paused.activity() == carve::Activity::Sleeping,
+          "disabling reports sleeping after an active block and preserves every sample");
     a.tone(12 * frames, 733, .2, 48000, true);
     b.samples = a.samples;
     floatKey.tone(12 * frames, 733, .6, 48000, true);
@@ -554,6 +555,17 @@ void bufferAliasingAndRejectedCalls() {
     b.samples = a.samples;
     check(!process(checked, a, &key, 2, bad) && same(a, b),
           "invalid live controls do not change audio");
+    {
+        AudioCall call;
+        const float *shiftedKey[]{a.keyPointers[0]+1};
+        check(!checked.process(a.pointers.data(), shiftedKey, 1, static_cast<int>(frames)-1, settings) &&
+                  same(a, b),
+              "partial main/key overlap is rejected before changing programme");
+        float *overlappingMain[]{a.pointers[0], a.pointers[0]+1};
+        check(!checked.process(overlappingMain, key.keyPointers.data(), 2, static_cast<int>(frames)-1, settings) &&
+                  same(a, b),
+              "overlapping writable programme planes are rejected before changing programme");
+    }
     auto disabled = settings;
     disabled.enabled = false;
     check(process(checked, a, static_cast<const Audio<float> *>(nullptr), 2, disabled) && same(a, b),
@@ -859,6 +871,41 @@ template <class Sample> void realCoefficientTails() {
               "a real cutoff change retains the immediate detector impulse tail with no new key input");
     }
 }
+template <class Sample>
+void nonFiniteInput() {
+    for (const bool audition : {false, true}) {
+        carve::Settings settings;
+        settings.amount = .6f;
+        settings.audition = audition;
+        carve::Core subject, zeros;
+        subject.prepare({48000, 256, 2}, settings);
+        zeros.prepare({48000, 256, 2}, settings);
+        Audio<Sample> a, b, key, cleanKey;
+        bool coincides = true;
+        for (std::size_t block = 0; block < 96; ++block) {
+            a.tone(block * frames, 900, .3, 48000, true);
+            key.tone(block * frames, 900, .7, 48000, true);
+            b.samples = a.samples;
+            cleanKey.samples = key.samples;
+            if (block == 6) {
+                a.samples[0][60] = std::numeric_limits<Sample>::quiet_NaN();
+                a.samples[1][61] = -std::numeric_limits<Sample>::infinity();
+                b.samples[0][60] = b.samples[1][61] = Sample{};
+                key.samples[1][63] = std::numeric_limits<Sample>::quiet_NaN();
+                key.samples[0].back() = std::numeric_limits<Sample>::infinity();
+                cleanKey.samples[1][63] = cleanKey.samples[0].back() = Sample{};
+            }
+            const bool hasKey = block < 8;
+            const bool accepted = process(subject, a, hasKey ? &key : nullptr, hasKey ? 2 : 0, settings);
+            const bool referenceAccepted = process(zeros, b, hasKey ? &cleanKey : nullptr, hasKey ? 2 : 0, settings);
+            coincides &= accepted && referenceAccepted && same(a, b) && a.finite() &&
+                         subject.activity() == zeros.activity();
+        }
+        check(coincides, audition ?
+              "Carve audition replaces a corrupt key with silence and recovers without reset" :
+              "Carve replaces corrupt programme and key samples with silence and recovers without reset");
+    }
+}
 } // namespace
 
 int main() {
@@ -876,6 +923,7 @@ int main() {
         amountZeroContinuity<float>(); amountZeroContinuity<double>();
         coefficientHistoryContinuity<float>(); coefficientHistoryContinuity<double>();
         realCoefficientTails<float>(); realCoefficientTails<double>();
+        nonFiniteInput<float>(); nonFiniteInput<double>();
         check(allocations == 0, "audio calls perform zero C++ allocations");
         check(deallocations == 0, "audio calls perform zero C++ deallocations");
     } catch (const std::exception &error) {

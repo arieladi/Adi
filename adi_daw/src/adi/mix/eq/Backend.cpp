@@ -31,7 +31,7 @@ public:
         (void)core_.process(main, key, keyChannels, frames, settings, block);
     }
     void pumpMainThread(const Settings&) override {
-        const auto pending = core_.pendingLatencyChange();
+        const auto pending = core_.promiseLatencyChange();
         latency_.store(pending.token ? pending.samples : core_.latencySamples(), std::memory_order_release);
     }
     std::int32_t advertisedLatency() const noexcept override {

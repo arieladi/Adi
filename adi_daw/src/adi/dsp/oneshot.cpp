@@ -20,11 +20,11 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        {"start", "Start", "%", 0, 100, 0, 0},
                        {"end", "End", "%", 0, 100, 100, 0},
                        {"length", "Length", "%", .01, 100, 100, 0},
-                       {"loop_on", "Loop", "", 0, 1, 0, 2},
+                       {"loop_on", "Loop", "", 0, 1, 1, 2},
                        {"loop_length", "Loop length", "%", .01, 100, 100, 0},
                        {"fade", "Loop fade", "%", 0, 100, 0, 0},
-                       {"snap", "Snap", "", 0, 1, 0, 2},
-                       {"voices", "Voices", "", 1, 32, 8, 32},
+                       {"snap", "Snap", "", 0, 1, 1, 2},
+                       {"voices", "Voices", "", 1, 32, 6, 32},
                        {"retrigger", "Retrigger", "", 0, 1, 1, 2},
                        {"gate", "Gate (off: Trigger)", "", 0, 1, 0, 2},
                        {"slice_by", "Slice by", "", 0, 3, 0, 4},
@@ -33,21 +33,21 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        {"slice_playback", "Slice playback", "", 0, 2, 0, 3},
                        {"sample_bpm", "Sample tempo", "BPM", 20, 999, 120, 0},
                        {"gain", "Sample gain", "dB", -48, 24, 0, 0},
-                       {"volume", "Volume", "dB", -90, 12, -12, 0},
+                       {"volume", "Volume", "dB", -36, 36, -12, 0},
                        {"transpose", "Transpose", "st", -48, 48, 0, 97},
                        {"detune", "Detune", "cents", -50, 50, 0, 0},
-                       {"attack", "Attack", "ms", 0, 20000, 1, 0},
-                       {"decay", "Decay", "ms", 0, 20000, 100, 0},
-                       {"sustain", "Sustain", "%", 0, 100, 100, 0},
-                       {"release", "Release", "ms", 0, 20000, 50, 0},
-                       {"fade_in", "Fade in", "ms", 0, 20000, 0, 0},
-                       {"fade_out", "Fade out", "ms", 0, 20000, 5, 0},
-                       {"filter_on", "Filter", "", 0, 1, 0, 2},
+                       {"attack", "Attack", "ms", .1, 20000, .1, 0},
+                       {"decay", "Decay", "ms", 1, 60000, 600, 0},
+                       {"sustain", "Sustain", "dB", -70, 0, 0, 0},
+                       {"release", "Release", "ms", 1, 60000, 50, 0},
+                       {"fade_in", "Fade in", "ms", 0, 2000, .1, 0},
+                       {"fade_out", "Fade out", "ms", 0, 2000, .1, 0},
+                       {"filter_on", "Filter", "", 0, 1, 1, 2},
                        {"filter_type", "Filter type", "", 0, 3, 0, 4},
-                       {"slope", "24 dB (off: 12 dB)", "", 0, 1, 0, 2},
-                       {"cutoff", "Frequency", "Hz", 20, 20000, 20000, 0},
-                       {"resonance", "Resonance", "Q", .5, 12, .7071067811865476, 0},
-                       {"lfo_on", "LFO", "", 0, 1, 0, 2},
+                       {"slope", "24 dB (off: 12 dB)", "", 0, 1, 1, 2},
+                       {"cutoff", "Frequency", "Hz", 30, 22000, 22000, 0},
+                       {"resonance", "Resonance", "%", 0, 125, 0, 0},
+                       {"lfo_on", "LFO", "", 0, 1, 1, 2},
                        {"lfo_shape", "LFO shape", "", 0, 5, 0, 6},
                        {"lfo_rate", "LFO rate", "Hz", .01, 30, 1, 0},
                        {"lfo_sync", "LFO sync", "", 0, 1, 0, 2},
@@ -55,7 +55,8 @@ constexpr Spec specs[]{{"mode", "Mode", "", 0, 2, 0, 3},
                        {"lfo_pitch", "LFO pitch", "st", 0, 24, 0, 0},
                        {"lfo_volume", "LFO volume", "%", 0, 100, 0, 0},
                        {"lfo_pan", "LFO pan", "%", 0, 100, 0, 0},
-                       {"lfo_filter", "LFO filter", "octaves", 0, 8, 0, 0}};
+                       {"lfo_filter", "LFO filter", "octaves", 0, 8, 0, 0},
+                       {"vel_to_vol", "Vel > Vol", "%", 0, 100, 35, 0}};
 static_assert(std::size(specs) == OneShot::Count);
 double real(int i, double n) {
     const auto &s = specs[i];
@@ -130,8 +131,16 @@ std::string OneShot::paramText(const std::string &id, double n) const {
         }
     return {};
 }
-void OneShot::prepare(double rate, std::int32_t) {
-    rate_ = std::isfinite(rate) && rate >= 1000 && rate <= 768000 ? rate : 48000;
+void OneShot::prepare(double rate, std::int32_t frames) {
+    const double accepted = std::isfinite(rate) && rate >= 1000 && rate <= 768000 ? rate : 48000;
+    // DF-E37 (f), ADR-0090 d5: an unchanged rate and block size changes
+    // nothing, so a graph rebuild does not cut sounding notes. release()
+    // makes the next prepare() a fresh start.
+    if (prepared_ && accepted == rate_ && frames == frames_)
+        return;
+    prepared_ = true;
+    frames_ = frames;
+    rate_ = accepted;
     voices_ = {};
     age_ = 0;
     sampleSeq_ = 0;
@@ -290,10 +299,63 @@ double OneShot::read(const Sample &s, double position, int channel) const noexce
     const double x = s.data[a * stride + ch];
     return x + (s.data[b * stride + ch] - x) * (position - static_cast<double>(a));
 }
+void OneShot::queueNoteGain(double gain) noexcept {
+    if (noteGainCount_ == noteGains_.size() || !std::isfinite(gain)) return;
+    noteGains_[(noteGainHead_ + noteGainCount_) % noteGains_.size()] = std::max(0., gain);
+    ++noteGainCount_;
+}
+
+// DF-E46: the source region a Slice-mode key plays, or false for a key with
+// no slice. Every Slice By mode refuses a slice that begins at or past End
+// and cuts one that runs past it, unless Slice Playback is Thru.
+bool OneShot::slice(int key, const Sample &s, const std::array<double, Count> &p, double &begin,
+                    double &end) noexcept {
+    if (key < 0)
+        return false;
+    const int by = static_cast<int>(p[SliceBy]);
+    double from = 0, to = end;
+    if (by < 2) {
+        const double size = by == 0 ? (end - begin) / p[Regions]
+                                    : s.rate * 60 / p[SampleBpm] * p[BeatDivision];
+        from = begin + key * size;
+        if (p[SlicePlayback] != 2)
+            to = std::min(end, from + size);
+    } else {
+        const auto &slices = by == 2 ? s.transients : s.manual;
+        auto first = std::lower_bound(slices.begin(), slices.end(), static_cast<std::size_t>(begin));
+        if (static_cast<std::size_t>(slices.end() - first) <= static_cast<std::size_t>(key))
+            return false;
+        const auto it = first + key;
+        from = static_cast<double>(*it);
+        if (p[SlicePlayback] != 2 && it + 1 != slices.end())
+            to = std::min(end, static_cast<double>(*(it + 1)));
+    }
+    if (from >= end)
+        return false;
+    begin = from;
+    end = to;
+    return true;
+}
 void OneShot::noteOn(const engine::Event &e, const Sample &s,
                      const std::array<double, Count> &p) noexcept {
     if(e.dim>127 || !std::isfinite(e.value) || e.value<=0)return;
     const int mode = static_cast<int>(p[Mode]);
+    // The region this note plays is decided BEFORE a voice is chosen (DF-E46
+    // a): in Slice mode a key with no slice plays nothing and steals nothing.
+    const double frames = static_cast<double>(s.frames());
+    double begin = std::min(frames - 1, frames * p[Start] / 100.);
+    double end = std::max(begin + 1, frames * p[End] / 100.);
+    if (mode == 0)
+        end = begin + (end - begin) * p[Length] / 100.;
+    if (mode == 2 && !slice(e.dim - 36, s, p, begin, end)) {
+        // The per-note gain queued for this note is its own: take it, so the
+        // next note gets the one queued for it.
+        if (noteGainCount_ > 0) {
+            noteGainHead_ = (noteGainHead_ + 1) % noteGains_.size();
+            --noteGainCount_;
+        }
+        return;
+    }
     const bool mono = mode == 1 || (mode == 2 && p[SlicePlayback] != 1);
     const int count = mono ? 1 : static_cast<int>(p[Voices]);
     Voice *selected = nullptr;
@@ -316,44 +378,15 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     v.key = e.dim;
     v.age = ++age_;
     v.velocity = std::clamp(e.value, 0., 1.);
-    v.rng = static_cast<std::uint32_t>(v.age) | 1u;
-    const double frames = static_cast<double>(s.frames());
-    v.begin = std::min(frames - 1, frames * p[Start] / 100.);
-    v.end = std::max(v.begin + 1, frames * p[End] / 100.);
-    if (mode == 0)
-        v.end = v.begin + (v.end - v.begin) * p[Length] / 100.;
-    if (mode == 2) {
-        const int key = v.key - 36;
-        if (key < 0) {
-            v.active = false;
-            return;
-        }
-        const int by = static_cast<int>(p[SliceBy]);
-        if (by < 2) {
-            const double size = by == 0 ? (v.end - v.begin) / p[Regions]
-                                        : s.rate * 60 / p[SampleBpm] * p[BeatDivision];
-            const auto begin = v.begin + key * size;
-            if (begin >= v.end) {
-                v.active = false;
-                return;
-            }
-            if (p[SlicePlayback] != 2)
-                v.end = std::min(v.end, begin + size);
-            v.begin = begin;
-        } else {
-            const auto &slices = by == 2 ? s.transients : s.manual;
-            auto first =
-                std::lower_bound(slices.begin(), slices.end(), static_cast<std::size_t>(v.begin));
-            if (static_cast<std::size_t>(slices.end() - first) <= static_cast<std::size_t>(key)) {
-                v.active = false;
-                return;
-            }
-            auto it = first + key;
-            v.begin = static_cast<double>(*it);
-            if (p[SlicePlayback] != 2 && it + 1 != slices.end())
-                v.end = static_cast<double>(*(it + 1));
-        }
+    v.gain = 1;
+    if (noteGainCount_ > 0) {
+        v.gain = noteGains_[noteGainHead_];
+        noteGainHead_ = (noteGainHead_ + 1) % noteGains_.size();
+        --noteGainCount_;
     }
+    v.rng = static_cast<std::uint32_t>(v.age) | 1u;
+    v.begin = begin;
+    v.end = end;
     v.loop = v.end - (v.end - v.begin) * p[LoopLength] / 100.;
     if (p[Snap] > 0) {
         auto snap = [&](double x) {
@@ -429,11 +462,20 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
             ++next;
         }
         double output[2]{};
+        // Live 12.4 shows Sustain in dB, -70 dB to 0 dB (its level runs
+        // 0.000316..1); Vel > Vol blends a fixed level with the velocity.
+        // Both laws are ADI's until a Live render measures them (DEV-21).
+        const double sustain = std::pow(10., p[Sustain] / 20.);
+        const double velocityAmount = p[VelToVol] / 100.;
         if (s)
             for (auto &v : voices_)
                 if (v.active) {
                     const bool classic = p[Mode] == 0;
-                    const bool looping = classic && p[LoopOn] > 0 && v.held;
+                    // DF-E37 (d): a Classic voice with Loop on keeps looping
+                    // through its release (Live's manual for Sampler; reading 3
+                    // in the devices log for Simpler) and ends when the release
+                    // reaches zero, not at the loop's end with a click.
+                    const bool looping = classic && p[LoopOn] > 0 && (v.held || v.stage == 3);
                     if (v.position >= v.end) {
                         if (looping) {
                             const double overlap = (v.end - v.loop) * p[Fade] / 200.;
@@ -457,13 +499,13 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                             if (v.env >= 1)
                                 v.stage = 1;
                         } else if (v.stage == 1) {
-                            v.env = std::max(p[Sustain] / 100.,
-                                             v.env - (1 - p[Sustain] / 100.) /
+                            v.env = std::max(sustain,
+                                             v.env - (1 - sustain) /
                                                          std::max(1., rate_ * p[Decay] * .001));
-                            if (v.env <= p[Sustain] / 100.)
+                            if (v.env <= sustain)
                                 v.stage = 2;
                         } else
-                            v.env = p[Sustain] / 100.;
+                            v.env = sustain;
                     } else
                         v.env = std::min(1., static_cast<double>(v.played + 1) /
                                                  std::max(1., rate_ * p[FadeIn] * .001));
@@ -490,7 +532,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     const double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
                                          p[Detune] / 100. + v.tuning + lfo * p[LfoPitch];
                     const double increment = s->rate / rate_ * std::exp2(pitch / 12.);
-                    double amplitude = v.env * v.velocity *
+                    double amplitude = v.gain * v.env * (1 - velocityAmount + velocityAmount * v.velocity) *
                                        std::pow(10., (p[Gain] + p[Volume]) / 20.) *
                                        (1 - p[LfoVolume] / 200. * (1 - lfo));
                     if (!classic)
@@ -509,10 +551,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                             const double hz = std::clamp(p[Cutoff] * std::exp2(lfo * p[LfoFilter]),
                                                          5., rate_ * .45);
                             const double g = std::tan(pi * hz / rate_);
-                            x = v.filters[c][0].run(x, g, p[Resonance],
+                            // Res 0..125 % (Live's 0..1.25) onto the state-variable
+                            // filter's Q from 1/sqrt(2) to 10: ADI's law, unmeasured.
+                            const double res = p[Resonance] / 125.;
+                            const double q = .7071067811865476 + res * res * 9.292893218813452;
+                            x = v.filters[c][0].run(x, g, q,
                                                     static_cast<int>(p[FilterType]));
                             if (p[Slope] > 0)
-                                x = v.filters[c][1].run(x, g, p[Resonance],
+                                x = v.filters[c][1].run(x, g, q,
                                                         static_cast<int>(p[FilterType]));
                         }
                         const double pan = lfo * p[LfoPan] / 100.;

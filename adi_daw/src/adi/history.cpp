@@ -11,6 +11,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <stdexcept>
 
@@ -165,8 +166,36 @@ bool chainOf(SQLite::Database& db, std::optional<std::int64_t> seq,
 /// redo and the fork-preservation in OpJournal::commit both follow.
 std::optional<std::int64_t> tipOf(SQLite::Database& db, std::optional<std::int64_t> from) {
     auto tip = from;
-    for (auto next = childOf(db, tip); next; next = childOf(db, tip)) tip = next;
+    auto next = childOf(db, tip);
+    if (!next) return tip;
+    auto remaining = db.execAndGet("SELECT COUNT(*) FROM ops").getInt64();
+    for (; next; next = childOf(db, tip)) {
+        if (remaining-- == 0) throw std::runtime_error("the redo chain loops");
+        tip = next;
+    }
     return tip;
+}
+
+void keepBranchTip(SQLite::Database& db, std::int64_t tip, const std::string& name,
+                   std::int64_t nowUtc) {
+    SQLite::Statement held(db, "SELECT 1 FROM op_branches WHERE is_current=0 AND head_seq=?");
+    held.bind(1, tip);
+    if (held.executeStep()) return;
+    SQLite::Statement keep(db,
+        "INSERT INTO op_branches(name,head_seq,created_utc,is_current,created_by) "
+        "VALUES(?,?,?,0,'system')");
+    keep.bind(1, name);
+    keep.bind(2, tip);
+    keep.bind(3, nowUtc);
+    keep.exec();
+}
+
+bool namedSnapshotHoldsRoot(SQLite::Database& db, std::int64_t seq) {
+    SQLite::Statement held(db,
+        "SELECT 1 FROM history_snapshots s JOIN history_roots r ON r.seq=s.op_seq "
+        "WHERE s.op_seq=? AND s.auto=0 LIMIT 1");
+    held.bind(1, seq);
+    return held.executeStep();
 }
 
 /// Rewinds from `from` to the common ancestor with `to`, then replays forward
@@ -360,7 +389,6 @@ History::Result History::undo() {
                 r.error = "undoing " + it->opType + ": " + err;
                 return r;
             }
-            ++r.opsApplied;
         }
 
         // The selection hint belongs to the transaction, so it is on its first
@@ -382,6 +410,7 @@ History::Result History::undo() {
         txn.commit();
         freeze::remember(store_);
         r.ok = true;
+        r.opsApplied = static_cast<int>(ops.size());
         r.txnId = step->txnId;
         delivery.publish();
         return r;
@@ -417,7 +446,6 @@ History::Result History::redo() {
                 r.error = "redoing " + o.opType + ": " + err;
                 return r;
             }
-            ++r.opsApplied;
         }
 
         if (!journal_.writeHeadSeq(ops.back().seq)) {
@@ -430,6 +458,7 @@ History::Result History::redo() {
         txn.commit();
         freeze::remember(store_);
         r.ok = true;
+        r.opsApplied = static_cast<int>(ops.size());
         r.txnId = step->txnId;
         delivery.publish();
         return r;
@@ -481,10 +510,15 @@ History::Result History::moveTo(std::optional<std::int64_t> target, std::int64_t
         SQLite::Transaction txn(db);
         // NULL is the original pre-edit state. Once roots are materialized its
         // native address is the origin root, never a new head below a checkpoint.
-        if (!target && history_detail::hasStoredRoots(db)) {
-            target = history_detail::originRoot(db);
-            if (!target)
+        if (!target) {
+            if (history_detail::hasStoredRoots(db)) {
+                target = history_detail::originRoot(db);
+                if (!target)
+                    throw std::runtime_error("original history state is no longer retained");
+            } else if (db.execAndGet("SELECT EXISTS(SELECT 1 FROM history_checkpoint WHERE id=1)")
+                           .getInt() != 0) {
                 throw std::runtime_error("original history state is no longer retained");
+            }
         }
         auto boundary = [&](std::optional<std::int64_t> seq) {
             if (!seq)
@@ -526,19 +560,11 @@ History::Result History::moveTo(std::optional<std::int64_t> target, std::int64_t
         // work. Following redo from the destination preserves the same line
         // without new metadata; otherwise keep an unheld departing tip once.
         const auto tip = tipOf(db, here);
-        if (tip && tip != tipOf(db, target)) {
-            SQLite::Statement held(db,
-                                   "SELECT 1 FROM op_branches WHERE is_current=0 AND head_seq=?");
-            held.bind(1, *tip);
-            if (!held.executeStep()) {
-                SQLite::Statement keep(
-                    db, "INSERT INTO op_branches(name,head_seq,created_utc,is_current,created_by) "
-                        "VALUES('before history move',?,?,0,'system')");
-                keep.bind(1, *tip);
-                keep.bind(2, nowUtc);
-                keep.exec();
-            }
-        }
+        // A named snapshot keeps a stored root addressable through compaction.
+        // An unheld childless root still needs a branch when its head moves.
+        if (tip && tip != tipOf(db, target) &&
+            (tip != here || !namedSnapshotHoldsRoot(db, *tip)))
+            keepBranchTip(db, *tip, "before history move", nowUtc);
         std::string error;
         if (!moveBetween(ctx, here, target, r.opsApplied, error, &applied))
             throw std::runtime_error(error);
@@ -597,11 +623,16 @@ History::Result History::switchToBranch(std::int64_t branchId, StoredRestore acc
             return r;
         }
 
-        // Rewind to the common ancestor, replay forward to the target's head.
-        // The branch we leave keeps its own head_seq, so its line stays
-        // reachable; switching back is the same move in the other direction.
+        // The current branch keeps its head. If an undo left a separate
+        // redo tip beyond that head, give the tip its own address.
         OpContext ctx{store_, db};
         SQLite::Transaction txn(db);
+        const auto tip = tipOf(db, here);
+        if (tip && tip != here && tip != tipOf(db, target)) {
+            using namespace std::chrono;
+            const auto nowUtc = duration_cast<microseconds>(system_clock::now().time_since_epoch());
+            keepBranchTip(db, *tip, "before branch switch", nowUtc.count());
+        }
         detail::AppliedBatchBuilder applied(
             store_, (reset ? AppliedBatchKind::ReplayBaseReset : AppliedBatchKind::BranchSwitch),
             here);
@@ -625,6 +656,7 @@ History::Result History::switchToBranch(std::int64_t branchId, StoredRestore acc
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
+        r.opsApplied = 0;
         return r;
     }
 }
@@ -797,20 +829,8 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
         // forks it off exactly as it would after an undo (SPEC 8.2). Otherwise
         // the current branch's head is about to leave it, so name it now.
         const auto tip = tipOf(db, here);
-        if (tip && tip != tipOf(db, target)) {
-            SQLite::Statement held(db,
-                "SELECT 1 FROM op_branches WHERE is_current = 0 AND head_seq = ?");
-            held.bind(1, *tip);
-            if (!held.executeStep()) {
-                SQLite::Statement mk(db,
-                    "INSERT INTO op_branches(name, head_seq, created_utc, is_current, "
-                    "created_by) VALUES (?,?,?,0,'system')");
-                mk.bind(1, "before revert to '" + name + "'");
-                mk.bind(2, *tip);
-                mk.bind(3, nowUtc);
-                mk.exec();
-            }
-        }
+        if (tip && tip != tipOf(db, target))
+            keepBranchTip(db, *tip, "before revert to '" + name + "'", nowUtc);
 
         std::string err;
         if (!moveBetween(ctx, here, target, r.opsApplied, err, &applied)) {

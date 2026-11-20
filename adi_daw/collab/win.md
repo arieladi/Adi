@@ -6,6 +6,69 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-20, evening — the outside review of bundles 41 to 45: five rows (DF-E59 to DF-E62, DF-W36)
+
+**For the seats — read first.** The review covered the code that landed on 20 November: the keyboard path, the built-in host, ADI-Shaper, the plug-in registry and the scanner. Every quoted line was real; each of its 10 findings was checked by a probe against main and a second skeptic.
+- **clones seat: DF-E59 first, then DF-E60, before the panel work.** One NaN or infinite sample from any plug-in before ADI-Shaper silences that channel for good (a probe: 239,871 NaN samples of 479,744); and Drive jumps about 3.3 dB the moment it leaves exactly 0 %.
+- **devices lane: DF-E61** with DF-E57 (a stored value skipped after automation moved it).
+- **engine-win: DF-E62** (the scan cache keeps stale rows in five edge cases), (a) and (d) before the Plug-Ins browser reads the catalogue.
+- **window (window-fn): DF-W36**, a comment that promises thread safety `dropped()` does not have.
+Not entered: the stuck note when an instrument stops processing (false: the route clears `armedTrack` then). The next free ids are DF-E63 and DF-W37.
+
+---
+
+## 2026-11-20, later — three engine rows lent to engine-win while the engine reconciles #677
+
+**For the engine seat and engine-win.** Engine-win finished DF-E44, PD-06 and EX-06 and its own queue; the
+engine seat's next item is #677. So the engine lends engine-win three of its rows (collab/README.md, loans);
+the engine seat reviews each hunk:
+- **DF-E51 (a) and (b), urgent:** the keyboard reaches the MIDI parser since window-fn's window landed; a
+  retriggered key leaves a stuck note, and a zone change orphans held notes. `engine/mpe_input.*`,
+  `mpe_output.cpp`'s `noteOff`.
+- **DF-E45:** MIDI capture refuses ordinary tempos through `secondsToTicks`' truncation.
+  `midi_capture.cpp`, `TempoMap::secondsToTicks`.
+- **DF-E54 (a):** `checkProject`'s false error on journal rows, which makes Collect and Export refuse.
+  `check.cpp`.
+Then engine-win's own #642 (`rankable()` out, ADR-0248 d7) and PD-05. The engine seat keeps DF-E51 (c) and
+(d), DF-E52, DF-E53, DF-E54 (b), DF-E55 and DF-E56.
+
+---
+
+## 2026-11-20 — the devices lane's four questions answered
+
+**For the devices lane — read first.** Your entries of 19 November asked win for four things:
+- **The Sampler's sample path: option 1, now.** Its catalogue entry declares 32 sample slots in a small canonical declaration; the slot ops fill them; a filled slot is a zone over the full key and velocity range until the engine's zone op edits it, as a sample dropped into Live's Sampler plays at once. The native Sampler is dispatched by `makeBuiltinDevice` on the existing loan. It goes ahead before 3 December: a keyboard into an instrument is the session's (ADR-0248 d2).
+- **The three gaps in the effects queue** (PLAN DEV-22, after 3 December like every new effect, ADR-0249): Auto Shift after Tuner, sharing one pitch detector; External Audio Effect is the engine's (routing, MX-24, DEV-05's compensation), this lane giving its canvas and panel contract; Spectrum is the Mix View's shared analyser as a device on a track, with this lane's canvas. Auto Pan's uid and browser name are Live 12.4's "Auto Pan-Tremolo".
+- **The double-precision fixes:** OneShot's outputs landed with your window #688; `devices/pd-param-float` goes into your next window, being built.
+- **New effects before 3 December: no** (ADR-0248 d2, ADR-0249 d7). The Compressor's core waits on its branch.
+Until 3 December, after the Sampler: DF-E57 once the clones window (#689) lands; your other DEFERRED rows; then the rows of your ADR-0248 d8 order that are not new effects (the Pd safety overlays, DEV-09; the loudness meter, DEV-28; the limiter's true-peak path, EX4 and LD5, with export). Live's readings 1 to 18 wait for the director's session.
+
+---
+
+## 2026-11-20 — the first landing window is on main (#685, with #651); #677 is the engine's now
+
+**For the engine seat — read first.** #685, your landing window of 19 November, landed with #651 inside it,
+so schema 1.22 (the Mix View's key taps) is on main. #677's reconciliation is your next item (ADR-0248 d4,
+d6): merge main (it conflicts in 11 files: schema.sql, store.*, store_rows.*, ops_catalog.cpp, vst3_host.*,
+the VST3 expression fixture, test_history_stored.cpp, validate_schema.py), renumber the send taps to 1.23
+with their line in `store.hpp`'s comment, keep the Mix View's per-bus `inputBuses_`, then DF-E30 and the
+one-click Post. #677 and #665 stay drafts until you mark them ready; win did not touch the merge.
+Requested branches that arrived after the window was built go in the next window.
+
+**For engine-win.** Your window (#686) needed five fixes the Windows build cannot show; write new code so
+they do not recur:
+- GCC and Clang `-Wmisleading-indentation`: no second statement on the line of an unbraced `if` or `for`
+  body (`if(x)a;return b;`), and no statement after a body that sits under an unbraced header.
+- GCC `-Wignored-attributes`: no `std::unique_ptr<FILE, decltype(&std::fclose)>`; use a deleter struct.
+- `-Wunused-function`: a helper used only under `#if defined(_WIN32)` is defined under it too.
+- Paths in tests: a published file's path is `fs::canonical(parent)/name`, and temp folders are not
+  canonical (macOS `/var` is `/private/var`; the Windows runner's TEMP is an 8.3 short path); compare with
+  the canonical parent. Case-insensitive volumes (APFS, NTFS) make two spellings one file.
+- A plug-in that is not in the catalogue loads only from its saved path (ENGINE-PLUGIN-SCANNER.md); a CI step
+  that renders through one scans it first (`adi_play --list --search-only`), in its own `ADI_HOME`.
+
+---
+
 ## 2026-11-19, night — the outside review of bundles 36 to 40: nine rows (DF-E50 to DF-E57, DF-W35)
 
 **For the seats — read first.** The review covered automation, MIDI input and MPE, the Pd runtime, built-in devices in the graph, returns and sends, and the project check. Every quoted line was real; each of its 27 findings was checked by a probe against main and a second skeptic. Two touch the 3 December session now:
