@@ -43,7 +43,10 @@ bool readText(const std::filesystem::path& p, std::string& out) {
 #else
     auto* file = std::fopen(p.c_str(), "rb");
 #endif
-    const std::unique_ptr<std::FILE, decltype(&std::fclose)> in(file, &std::fclose);
+    // A deleter type, not decltype(&std::fclose): glibc declares fclose with attributes that GCC
+    // drops from a template argument (-Wignored-attributes).
+    struct CloseFile { void operator()(std::FILE* f) const noexcept { std::fclose(f); } };
+    const std::unique_ptr<std::FILE, CloseFile> in(file);
     if (!in) return false;
     out.clear();
     std::array<char, 4096> block{};

@@ -263,7 +263,8 @@ void refreshSafety(const fs::path& self) {
           "refresh cannot retire a manual block even after a reliable file change");
     registry->unblockScan("clap",utf8(fs::canonical(path)),f.error);
     reuse->probe("clap",path);auto pending=registry->beginScan("clap",utf8(fs::canonical(path)),125,f.error);
-    if(!pending)throw std::runtime_error(f.error);const auto pendingCount=launches(path);
+    if(!pending)throw std::runtime_error(f.error);
+    const auto pendingCount=launches(path);
     check(refresh->probe("clap",path).state==State::Quarantined && launches(path)==pendingCount &&
           registry->finishScan(*pending,ScanDisposition::Abandoned,"",126,f.error),"refresh refuses a live pending owner and leaves its ticket completable");
     const auto stablePacket=packet();late={nullptr,nullptr,true};

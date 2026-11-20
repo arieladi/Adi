@@ -987,7 +987,8 @@ void identityBoundReplace() {
         const auto kept=job.directory/media::pathFromUtf8(job.nameTemplate+".kept");
         write(selected,"old bytes");bool changed=false;Control control;
         control.progress=[&](JobId,std::uint64_t done,std::uint64_t) {
-            if(!done || changed)return;changed=true;
+            if(!done || changed)return;
+            changed=true;
             if(job.nameTemplate=="rebound") {fs::rename(selected,kept);write(selected,"new writer");}
             else if(job.nameTemplate=="removed")fs::rename(selected,kept);
             else write(selected,"new bytes"); // Same native identity, same byte count.

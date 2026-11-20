@@ -1903,9 +1903,11 @@ ClapHost::ClapHost() = default;
 
 namespace {
 
+#if defined(_WIN32)
 std::string pathBytes(const std::filesystem::path& path) {
     const auto bytes=path.u8string();return {bytes.begin(),bytes.end()};
 }
+#endif
 // Environment paths are copied once on the owner, wide on Windows. No ANSI
 // profile-folder conversion and no process-global environment mutation.
 std::string pathEnvironment(const char* name) {

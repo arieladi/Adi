@@ -35,7 +35,8 @@ std::string packet(const std::string& format,const std::string& path,const std::
     Plugin plugin;plugin.id="org.adi.catalogue";plugin.name="Catalogue fixture";plugin.version=version;
     if(format=="vst3")plugin.data="<PLUGIN fixture='stored XML for the host validator'/>";
     std::string error;auto result=encodeMetadata(format,path,{plugin},error);
-    if(!result)throw std::runtime_error(error);return *result;
+    if(!result)throw std::runtime_error(error);
+    return *result;
 }
 int helper(const std::vector<std::string>& args) {
     const auto path=native(args[3]);std::ofstream(marker(path),std::ios::app)<<"launch\n";

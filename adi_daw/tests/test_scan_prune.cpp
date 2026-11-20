@@ -181,7 +181,8 @@ bool junction(const fs::path& link,const fs::path& target) {
     data.printBytes=static_cast<WORD>(print.size()*sizeof(wchar_t));data.bytes=static_cast<WORD>(8+data.printOffset+data.printBytes+sizeof(wchar_t));
     std::copy(substitute.begin(),substitute.end(),data.names);std::copy(print.begin(),print.end(),data.names+substitute.size()+1);
     fs::create_directory(link);const auto handle=CreateFileW(link.c_str(),GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,nullptr);
-    if(handle==INVALID_HANDLE_VALUE)return false;DWORD returned=0;
+    if(handle==INVALID_HANDLE_VALUE)return false;
+    DWORD returned=0;
     const bool ok=DeviceIoControl(handle,FSCTL_SET_REPARSE_POINT,&data,static_cast<DWORD>(8+data.bytes),nullptr,0,&returned,nullptr)!=FALSE;
     CloseHandle(handle);return ok;
 }
