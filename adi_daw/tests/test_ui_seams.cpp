@@ -38,6 +38,7 @@
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "adi/ui/automation_override.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
@@ -2327,8 +2328,40 @@ void recordingDefaultsRideTheBatch() {
     check(ui::insertTrack(none, 0, true).ops.size() == 1, "without defaults, the track alone, as before");
 }
 
+void reenableFindsThePlayedLane() {
+    section("Re-Enable Automation finds the lane the engine plays (AU-04)");
+    engine::Snapshot snap;
+    const auto lane = [&snap](std::int64_t id, const char *kind, std::int64_t owner, const char *param, const char *domain,
+                              bool enabled) {
+        auto l = std::make_shared<engine::AutomationLaneNode>();
+        l->id = id;
+        l->ownerKind = kind;
+        l->ownerId = owner;
+        l->paramRef = param;
+        l->valueDomain = domain;
+        l->enabled = enabled;
+        snap.automationLanes.push_back(std::move(l));
+    };
+    lane(5, "track", 3, "pan", "real", false);         // disabled: never played
+    lane(7, "track", 3, "pan", "normalized", true);    // the wrong domain for a track: never played
+    lane(9, "track", 3, "pan", "real", true);          // the one played
+    lane(11, "track", 3, "pan", "real", true);         // a second: the first plays
+    lane(12, "routing", 40, "gain_db", "real", true);
+    lane(13, "device", 8, "1", "real", true);           // a device lane in real units: never played
+    lane(14, "device", 8, "1", "normalized", true);
+    const auto *pan = ui::laneOf(snap, "track", 3, "pan");
+    check(pan != nullptr && pan->id == 9, "a track's pan: the first enabled lane in real units");
+    check(ui::laneOf(snap, "routing", 40, "gain_db") != nullptr && ui::laneOf(snap, "routing", 40, "gain_db")->id == 12,
+          "a send's level, owned by its routing row");
+    const auto *device = ui::deviceLaneOf(snap, 8, "clap", "00000001");
+    check(device != nullptr && device->id == 14, "a CLAP's parameter by its decimal id, in normalized units");
+    check(ui::laneOf(snap, "track", 4, "pan") == nullptr && ui::deviceLaneOf(snap, 8, "clap", "zz") == nullptr,
+          "no lane: none; an id a CLAP cannot spell: none");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
+    reenableFindsThePlayedLane();
     invalidReaderAnswersEmpty();
     readsTheModel();
     onePublicationIsCheckable();

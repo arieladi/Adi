@@ -21,6 +21,7 @@
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "adi/ui/automation_override.hpp"
 #include "knobs_device.hpp"
 #include "mix_seek_fixture.hpp"
 #include "temp_directory.hpp"
@@ -10213,6 +10214,50 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     arm.onClick();
     root.frame();
     check(arm.getToggleState() && document->automationArmed(), "and on again");
+    // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): the knob's context menu offers it
+    // while its lane is overridden, and it is no undo step.
+    root.reenableLane = [&](std::int64_t lane) {
+        const bool ok = document->reenableAutomation(lane);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    const auto reenableItem = [&](const ParameterControl &control, juce::PopupMenu &menu) -> const juce::PopupMenu::Item * {
+        root.addReenableAutomation(menu, deviceLaneOf(*root.current(), control.device, control.format, control.parameter));
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Re-Enable Automation")
+                return &it.getItem();
+        return nullptr;
+    };
+    {
+        auto &control = *root.devices.panels[0]->controls[0];
+        juce::PopupMenu following;
+        const auto *off = reenableItem(control, following);
+        check(off != nullptr && !off->isEnabled, "Cutoff follows its lane: the menu's Re-Enable Automation is unavailable");
+        cutoff.onDragStart();
+        cutoff.setValue(.6, juce::sendNotificationSync);
+        cutoff.onDragEnd();
+        document->tick(0);
+        root.frame();
+        const auto titleAgain = root.undoTitle(false);
+        juce::PopupMenu menu;
+        const auto *item = reenableItem(control, menu);
+        check(reEnable.getToggleState() && item != nullptr && item->isEnabled && item->action != nullptr,
+              "overridden again: the knob's menu offers Re-Enable Automation");
+        if (item != nullptr && item->action)
+            item->action();
+        root.frame();
+        check(!reEnable.getToggleState() && !document->session().automationOverridden() &&
+                  root.undoTitle(false) == titleAgain && root.error().empty(),
+              "chosen, Cutoff follows its lane again: the switch unlit, no undo step");
+        check(!document->reenableAutomation(root.current()->automationLanes.front()->id) &&
+                  !document->error().empty(),
+              "a lane that is not overridden is refused, with the reason");
+        root.say({});
+        juce::PopupMenu none;
+        root.addReenableAutomation(none, nullptr);
+        check(none.getNumItems() == 0, "a control with no lane gets no item");
+    }
     // A root with no session (the hooks unset) says so instead of toggling.
     root.reenableAutomation = nullptr;
     root.armAutomation = nullptr;

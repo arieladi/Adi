@@ -369,6 +369,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool()> endMixerDrag;
     std::function<void()> cancelMixerDrag;
     std::function<bool()> reenableAutomation;
+    // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
+    // envelope again; false with the reason said. Session state, no undo step, as the global switch.
+    std::function<bool(std::int64_t)> reenableLane;
+    // The item in a control's context menu while the control has a lane (`lane`, null for none):
+    // available while that lane is overridden, as Live's.
+    void addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane);
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;
     // Arm, monitoring and Arrangement Record (MX-09). The session's rows hold a track's arm and its

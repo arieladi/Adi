@@ -3,6 +3,7 @@
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/ui/automation_override.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -1090,6 +1091,10 @@ void MixerStrip::sendMenu(std::size_t index) {
     // A return's sends start off; Live's menu also switches them all on at once (§18.4).
     if (kind_ == "return")
         m.addItem("Enable All Sends", [this] { enableAllSends(); });
+    // Live's Re-Enable Automation for this send's level, owned by its routing row (AU-04).
+    if (const auto current = panel_.root.current())
+        if (const auto *send = findSend(current->sends, track_, returns_[index]))
+            panel_.root.addReenableAutomation(m, laneOf(*current, "routing", send->id, "gain_db"));
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
 }
 juce::PopupMenu MixerStrip::soloMenu() {
@@ -1123,6 +1128,9 @@ void MixerStrip::panMenu() {
     // Live's Split Stereo Pan Mode (ADR-0203 d9) needs a pan mode and two pans per
     // strip in the format and the mixer: the engine's (collab/window.md, N12).
     m.addItem(2, "Split Stereo Pan", false, false);
+    // Live's Re-Enable Automation for the pan (AU-04).
+    if (const auto current = panel_.root.current())
+        panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "pan"));
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
 }
 MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {}

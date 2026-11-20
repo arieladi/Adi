@@ -4143,4 +4143,19 @@ void AdiRootComponent::ImportPrompt::resized() {
     foot.removeFromRight(8);
     import.setBounds(foot.removeFromRight(80));
 }
+void AdiRootComponent::addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane) {
+    if (lane == nullptr)
+        return;
+    if (menu.getNumItems() > 0)
+        menu.addSeparator();
+    const auto id = lane->id;
+    menu.addItem("Re-Enable Automation", lane->overridden, false, [safe = SafePointer<AdiRootComponent>(this), id] {
+        if (!safe)
+            return;
+        if (!safe->reenableLane)
+            safe->say("Re-Enable Automation needs the project's session.");
+        else
+            safe->reenableLane(id); // a refusal says why
+    });
+}
 } // namespace adi::ui
