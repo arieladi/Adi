@@ -123,7 +123,7 @@ void validate(const Job& j) {
         throw std::invalid_argument("invalid direct stem source or tap");
     if (j.encoding.format != audio::WavFormat::Float32 && j.encoding.format != audio::WavFormat::Pcm16 && j.encoding.format != audio::WavFormat::Pcm24)
         throw std::invalid_argument("unsupported export WAV encoding");
-    if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
+    if (!audio::validDither(j.encoding.dither))
         throw std::invalid_argument("unsupported export dither");
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
@@ -710,6 +710,11 @@ std::string serializeRunManifest(const RunReport& run) {
                   {"journal_head", nullptr}, {"media_identities", nullptr}};
         if (member.job) {
             const auto& job = *member.job;
+            const auto sampleRate = job.session.sampleRate>=8000 && job.session.sampleRate<=768000
+                ? static_cast<std::uint32_t>(job.session.sampleRate) : 0U;
+            const auto effectiveDither = job.niStems || job.encoding.format==audio::WavFormat::Float32
+                ? audio::WavDither::None
+                : audio::effectiveDither(job.encoding.dither,sampleRate);
             Json profile{{"sample_rate", job.session.sampleRate}, {"channels", job.session.channels},
                 {"max_frames", job.session.maxFrames},
                 {"processing_precision", job.session.precision == engine::Precision::Float64 ? "float64" : "float32"},
@@ -718,8 +723,8 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"container", job.niStems ? "ni_stems_mp4" : "wav"},
                 {"wav_encoding", job.encoding.format == audio::WavFormat::Float32 ? "float32" :
                     (job.encoding.format == audio::WavFormat::Pcm16 ? "pcm16" : "pcm24")},
-                {"dither", job.encoding.dither == audio::WavDither::None ? "none" :
-                    (job.encoding.dither == audio::WavDither::Triangular ? "triangular" : "rectangular")},
+                {"dither", audio::ditherName(job.encoding.dither)},
+                {"effective_dither", audio::ditherName(effectiveDither)},
                 {"dither_seed", job.encoding.ditherSeed},
                 {"normalization", {{"mode", job.normalization.mode == NormalizeMode::Off ? "off" :
                     (job.normalization.mode == NormalizeMode::Peak ? "peak" : "loudness")},

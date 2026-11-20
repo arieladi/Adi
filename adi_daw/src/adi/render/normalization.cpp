@@ -87,7 +87,7 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
     worker();auto& state=*impl_;
     if(state.finished || state.frames==0)throw std::runtime_error("Normalization capture is empty or already finalized");
     if((format!=audio::WavFormat::Float32 && format!=audio::WavFormat::Pcm16 && format!=audio::WavFormat::Pcm24) ||
-       (dither!=audio::WavDither::None && dither!=audio::WavDither::Triangular && dither!=audio::WavDither::Rectangular))
+       !audio::validDither(dither))
         throw std::runtime_error("Unsupported normalization output encoding or dither");
     if(output==state.spool)throw std::runtime_error("Normalization output must differ from its capture");
     state.finished=true;state.raw.close();if(state.raw.fail())throw std::runtime_error("Cannot finalize normalization capture");
@@ -107,9 +107,11 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
     std::vector<float> encoded(values.size());
     for(unsigned pass=0;pass<4;++pass) {
         service(callback);
+        double quantizationGain=1.0;
         {
             std::ifstream sourceFile(state.spool,std::ios::binary);if(!sourceFile)throw std::runtime_error("Cannot reopen normalization capture");
             audio::WavWriter writer(output,state.rate,static_cast<std::uint16_t>(state.channels),format,nullptr,std::uint64_t{1}<<32,dither,seed);
+            quantizationGain=writer.quantizationGain();
             const double gain=state.options.mode==NormalizeMode::Loudness?std::pow(10,gainDb/20):1;
             for(std::uint64_t first=0;first<state.frames;) {
                 service(callback);const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,state.frames-first));
@@ -137,7 +139,8 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
             }
         }
         const auto measuredOutput=final.finish();report.outputLufs=measuredOutput.first;report.outputTruePeakDb=measuredOutput.second;
-        report.appliedGainDb=gainDb;report.encodingPasses=pass+1;
+        report.appliedGainDb=gainDb+20.0*std::log10(quantizationGain);
+        report.encodingPasses=pass+1;
         if(state.options.mode!=NormalizeMode::Loudness)return report;
         if(!measuredOutput.second)throw std::runtime_error("Normalized output has no measurable true peak");
         if(*measuredOutput.second<=state.options.truePeakCeilingDb) {

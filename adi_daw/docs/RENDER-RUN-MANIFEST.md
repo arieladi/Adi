@@ -95,7 +95,11 @@ Version 1 records:
 - Requested project/output directory/template, source track/tap, sample range
   and optional cycle-region ID; format, precision, rate, channels, block size,
   compensation, optional external tempo, dither/seed, normalization and NI
-  stem metadata. These are explicitly **requested** values. For example, NI
+  stem metadata. The `effective_dither` field reports which destination
+  quantizer the requested profile selects. Shaped 1, 2 and 3 use Lipshitz,
+  improved E-weighted and Shibata. Unsupported shaping rates select triangular
+  dither, and Float32 and NI select none. Other profile values are **requested**.
+  For example, NI
   uses Float32 intermediate WAVs, while its requested profile may still contain
   the ordinary job's WAV encoding. Float32 ignores requested dither.
 - The requested `job.collision` (`fail` or `increment`); `result.output` is the

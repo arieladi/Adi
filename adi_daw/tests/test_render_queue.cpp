@@ -574,6 +574,26 @@ void pcmExports() {
     Queue q;j.nameTemplate="queued-{counter}";q.add(j);q.add(j);q.run({});const auto entries=q.snapshot();
     check(read(entries[0].result,866,48000,audio::WavFormat::Pcm24)!=read(entries[1].result,866,48000,audio::WavFormat::Pcm24),
           "different queued jobs have different dither streams");
+    Queue shaped;
+    j.nameTemplate="shaped-{counter}";
+    j.encoding.dither=audio::WavDither::Shaped1;
+    shaped.add(j);
+    j.encoding.dither=audio::WavDither::Shaped3;
+    shaped.add(j);
+    j.encoding.format=audio::WavFormat::Float32;
+    shaped.add(j);
+    shaped.run({});
+    const auto shapedManifest=nlohmann::json::parse(serializeRunManifest(shaped.lastRun()));
+    const auto& shapedMembers=shapedManifest["members"];
+    const auto& shape1=shapedMembers[0]["job"]["requested_profile"];
+    const auto& shape3=shapedMembers[1]["job"]["requested_profile"];
+    const auto& floatProfile=shapedMembers[2]["job"]["requested_profile"];
+    check(shape1["dither"]=="shaped1" && shape1["effective_dither"]=="triangular" &&
+          shape3["dither"]=="shaped3" && shape3["effective_dither"]=="shaped3" &&
+          floatProfile["dither"]=="shaped3" && floatProfile["effective_dither"]=="none" &&
+          shapedMembers[0]["state"]=="completed" && shapedMembers[1]["state"]=="completed" &&
+          shapedMembers[2]["state"]=="completed",
+          "queue records requested shaping, rate fallback and Float32 bypass separately");
     f.effect();
     struct Constant final : Delay {
         double value=0;
