@@ -893,6 +893,42 @@ void testTruePeakFindsTheCrestBetweenSamples() {
     check(m.oversampling() == 2, "96 kHz: 2x");
     m.prepare(192000.0);
     check(m.oversampling() == 1, "192 kHz: none, already past 176.4 kHz");
+    // DF-E20 (d): the header promises at least 176.4 kHz after oversampling;
+    // at 32 kHz the old rule gave 4x, 128 kHz.
+    m.prepare(32000.0);
+    check(m.oversampling() == 6, "32 kHz: 6x, 192 kHz");
+    m.prepare(22050.0);
+    check(m.oversampling() == 8, "22.05 kHz: 8x, 176.4 kHz");
+    for (double fs : {22050.0, 32000.0, 44100.0, 48000.0, 88200.0, 96000.0, 176400.0}) {
+        m.prepare(fs);
+        check(fs * m.oversampling() >= 176400.0 - 1e-6, "every rate reaches 176.4 kHz");
+    }
+    {
+        // DEV-28: any channel count, and a double path. A crest only in the
+        // twelfth channel is found; float and double input read the same.
+        TruePeakMeter wide;
+        wide.prepare(48000.0, 12);
+        std::vector<std::vector<float>> f(12, std::vector<float>(4800, 0.f));
+        std::vector<std::vector<double>> d(12, std::vector<double>(4800, 0.0));
+        for (std::size_t i = 0; i < 4800; ++i) {
+            const double v = 0.5 * std::sin(2.0 * kPi * 12000.0 * static_cast<double>(i) / 48000.0 + kPi / 4.0);
+            f[11][i] = static_cast<float>(v);
+            d[11][i] = static_cast<double>(f[11][i]);
+        }
+        std::vector<const float*> fp;
+        std::vector<const double*> dp;
+        for (int c = 0; c < 12; ++c) {
+            fp.push_back(f[static_cast<std::size_t>(c)].data());
+            dp.push_back(d[static_cast<std::size_t>(c)].data());
+        }
+        wide.process(fp.data(), 12, 4800);
+        const double fromFloat = wide.peak();
+        check(wide.channels() == 12 && 20.0 * std::log10(fromFloat) > -6.42,
+              "a crest in the twelfth of twelve channels is found");
+        wide.reset();
+        wide.process(dp.data(), 12, 4800);
+        check(wide.peak() == fromFloat, "the double path reads exactly what the float path reads");
+    }
 
     // The classic case: a quarter of the rate, sampled 45 degrees off its crest.
     double sp = 0.0;
