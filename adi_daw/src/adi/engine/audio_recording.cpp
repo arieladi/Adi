@@ -19,10 +19,10 @@ const fs::path& AudioRecordingResult::directory()const noexcept {static const fs
 std::error_code AudioRecordingResult::discard() {
     if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
     if(!files_)return {};
-    std::error_code error;
-    fs::remove_all(files_->directory,error);
-    if(!error)files_.reset();
-    return error;
+    std::error_code removalError;
+    fs::remove_all(files_->directory,removalError);
+    if(!removalError)files_.reset();
+    return removalError;
 }
 namespace {
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free && std::atomic<std::int64_t>::is_always_lock_free);
