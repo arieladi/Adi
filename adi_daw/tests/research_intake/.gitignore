@@ -1,0 +1,10 @@
+generated/
+build/
+__pycache__/
+*.pyc
+*.obj
+*.pdb
+*.exe
+*.dll
+*.clap
+*.vst3/

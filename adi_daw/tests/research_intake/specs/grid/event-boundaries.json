@@ -1,0 +1,84 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "event-boundaries",
+  "kind": "notes",
+  "input": {
+    "sample_rate": 48000,
+    "host_blocks": [
+      64,
+      128,
+      256
+    ],
+    "events": [
+      {
+        "frame": 0,
+        "type": "note_on",
+        "note": 60,
+        "note_id": 0,
+        "channel": 1,
+        "velocity": 0.7
+      },
+      {
+        "frame": 1,
+        "type": "note_off",
+        "note": 60,
+        "note_id": 0,
+        "channel": 1,
+        "velocity": 0.7
+      },
+      {
+        "frame": 63,
+        "type": "note_on",
+        "note": 60,
+        "note_id": 1,
+        "channel": 1,
+        "velocity": 0.7
+      },
+      {
+        "frame": 64,
+        "type": "note_off",
+        "note": 60,
+        "note_id": 1,
+        "channel": 1,
+        "velocity": 0.7
+      },
+      {
+        "frame": 65,
+        "type": "note_on",
+        "note": 60,
+        "note_id": 2,
+        "channel": 1,
+        "velocity": 0.7
+      },
+      {
+        "frame": 127,
+        "type": "note_off",
+        "note": 60,
+        "note_id": 2,
+        "channel": 1,
+        "velocity": 0.7
+      },
+      {
+        "frame": 128,
+        "type": "note_on",
+        "note": 60,
+        "note_id": 3,
+        "channel": 1,
+        "velocity": 0.7
+      },
+      {
+        "frame": 129,
+        "type": "note_off",
+        "note": 60,
+        "note_id": 3,
+        "channel": 1,
+        "velocity": 0.7
+      }
+    ]
+  },
+  "question": "Preserve event sample offsets across host/Pd boundaries; report quantization separately from scheduling latency.",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result.",
+  "provenance": "The director's research."
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "adi.scanner-diagnostic-spec/1",
+  "provenance": "The director's research.",
+  "status": "SPECIFICATION ONLY; execute against an isolated registry and owned test plug-ins",
+  "plan_rows": ["DEV-25"],
+  "fixture": "ScanProbe.vst3",
+  "control": {
+    "ADI_SCAN_LOG": "caller-selected log file",
+    "ADI_SCAN_ONE_CLASS": "1 exposes one class; otherwise two",
+    "ADI_SCAN_VERSION_TWO": "1 reports version 2.0.0; otherwise 1.0.0",
+    "ADI_SCAN_FAIL": "0 normal; 1 null factory; 2 sleeps 15 seconds; 3 exits its own process with status 73"
+  },
+  "safety": "Failure modes run only in an owned disposable child with a caller timeout. Never load the fixture in the main application process. The fixture has no working audio component.",
+  "cases": [
+    "Cold discovery records both class identities and call counters",
+    "Warm unchanged scan makes no new factory call",
+    "Add one module and preserve existing catalog rows",
+    "Change timestamp only and record targeted reprobe",
+    "Change class count and timestamp; replace whole module record",
+    "Change version and timestamp; retain stable class identifiers",
+    "Change bytes/size while restoring timestamp; require fingerprint detection",
+    "Null factory records a negative result without damaging other entries",
+    "Warm unchanged negative result does not repeat the failed probe",
+    "New fingerprint permits a formerly blocked module to retry",
+    "Child abnormal exit preserves unrelated registry records",
+    "Caller timeout terminates only its owned child and preserves unrelated records",
+    "Explicit retry works for alternate slash spelling",
+    "Explicit retry resolves case-equivalent canonical path",
+    "Explicit retry through a directory link resolves the same module identity",
+    "Catalog success remains distinct from create-instance, restore-state and first-audio readiness"
+  ],
+  "record": ["build and dependency identities", "initial isolated registry", "each module fingerprint", "factory/createInstance call counts", "exit/timeout status", "changed and retained registry records", "cleanup"]
+}
