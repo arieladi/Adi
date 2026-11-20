@@ -36,6 +36,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
   private:
     friend struct MixFocusTestAccess;
     look::DensityId density_ = look::densityId();
+    enum class ScopeDisplay { Overlay = 1, Layers, Stack, Sum };
     struct Member {
         std::int64_t id{};
         juce::Colour colour;
@@ -76,6 +77,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     AdiRootComponent &root_;
     juce::Viewport scroll_;
     juce::Component strip_;
+    juce::ComboBox scopeDisplay_;
     juce::Rectangle<float> plot_;
     juce::Rectangle<int> sumLabel_;
     std::vector<const SharedAnalysis::Result *> scopeSources_;

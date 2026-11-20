@@ -58,6 +58,17 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         redraw_ = true;
         repaint();
     };
+    scopeDisplay_.setTitle("Focus Scope display");
+    scopeDisplay_.setTooltip("Choose how the Focus waveforms are arranged.");
+    scopeDisplay_.addItem("Overlay", static_cast<int>(ScopeDisplay::Overlay));
+    scopeDisplay_.addItem("Layers", static_cast<int>(ScopeDisplay::Layers));
+    scopeDisplay_.addItem("Stack", static_cast<int>(ScopeDisplay::Stack));
+    scopeDisplay_.addItem("Sum", static_cast<int>(ScopeDisplay::Sum));
+    scopeDisplay_.setSelectedId(static_cast<int>(ScopeDisplay::Overlay), juce::dontSendNotification);
+    scopeDisplay_.onChange = [this] {
+        repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
+    };
+    addChildComponent(scopeDisplay_);
     learnMatch.setTooltip("Capture the selected channel's spectrum difference toward the starred channel. Plays unchanged.");
     learnMatch.onClick = [this] { learnMatchPreview(); };
     clearMatch.onClick = [this] { clearMatchPreview(); updateMatchControls(); };
@@ -225,6 +236,7 @@ void MixFocus::updateMatchControls() {
             clearMatchPreview();
     }
     const bool together = !scope.getToggleState();
+    scopeDisplay_.setVisible(!together);
     learnMatch.setVisible(together);
     clearMatch.setVisible(together && match_.has_value());
     learnMatch.setEnabled(canLearnMatch(pair));
@@ -438,6 +450,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
         return;
     }
     const bool scopeShown = scope.getToggleState();
+    if (scopeShown != scopeDisplay_.isVisible()) updateMatchControls();
     if (scopeShown && !playing) {
         dropIfActive();
         if (!alive) return;
@@ -847,6 +860,7 @@ void MixFocus::resized() {
     scope.setBounds(actions.removeFromLeft(w).reduced(hairline));
     learnMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
     clearMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
+    scopeDisplay_.setBounds(learnMatch.getBounds().getUnion(clearMatch.getBounds()));
     plot_ = r.reduced(plotInset).toFloat();
     rebuildMatchPath();
     for (auto &m : members_)
@@ -860,10 +874,13 @@ void MixFocus::paint(juce::Graphics &g) {
     g.setFont(look::font(look::fontBody, true));
     const auto plot = plot_.toNearestInt();
     const bool scopeShown = scope.getToggleState();
-    const bool sumShown = scopeShown && (!scopeSumPaths_[0].isEmpty() || !scopeSumPaths_[1].isEmpty());
-    const bool sumOverRange = scopeShown && sum_ && (sum_->peak[0] > 1. || sum_->peak[1] > 1.);
+    const auto display = static_cast<ScopeDisplay>(scopeDisplay_.getSelectedId());
+    const bool sumOnly = display == ScopeDisplay::Sum;
+    const bool wantsSum = scopeShown && (display == ScopeDisplay::Overlay || sumOnly);
+    const bool sumShown = wantsSum && (!scopeSumPaths_[0].isEmpty() || !scopeSumPaths_[1].isEmpty());
+    const bool sumOverRange = wantsSum && sum_ && (sum_->peak[0] > 1. || sum_->peak[1] > 1.);
     juce::String title = scopeShown ? "Scope" : "Together";
-    if (scopeShown && alignment_ != Alignment::Ready)
+    if (scopeShown && alignment_ != Alignment::Ready && !sumOnly)
         title += "   Individual traces";
     else if (scopeShown && scopeRange_) {
         if (sumOverRange) {
@@ -872,7 +889,7 @@ void MixFocus::paint(juce::Graphics &g) {
         }
         title += shownBar_ ? "   1 bar" :
             "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
-        if (sumShown && !sumOverRange) title += "   Sum overlay";
+        if (sumShown && !sumOverRange && !sumOnly) title += "   Sum overlay";
     }
     if (!scopeShown && match_) title += matchCaption_;
     const int titleWidth = sumLabel_.isEmpty() ? plot.getWidth() : std::max(0, sumLabel_.getX() - plot.getX());
@@ -899,7 +916,8 @@ void MixFocus::paint(juce::Graphics &g) {
     }
     g.setColour(look::outline);
     if (scopeShown) {
-        g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
+        const bool stacked = display == ScopeDisplay::Stack && !plot_.isEmpty();
+        if (!stacked) g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
         if (sumShown) {
             juce::Graphics::ScopedSaveState saved(g);
             g.reduceClipRegion(plot);
@@ -908,16 +926,33 @@ void MixFocus::paint(juce::Graphics &g) {
             g.setColour(look::text);
             g.strokePath(scopeSumPaths_[0], juce::PathStrokeType(look::heavyLine));
         }
-        for (const auto &member : members_) {
+        const auto drawMember = [&g](const Member &member, const juce::AffineTransform &transform) {
             g.setColour(member.colour.withMultipliedAlpha(.6f));
-            g.strokePath(member.scopePaths[1], juce::PathStrokeType(look::hairline));
+            g.strokePath(member.scopePaths[1], juce::PathStrokeType(look::hairline), transform);
             g.setColour(member.colour);
-            g.strokePath(member.scopePaths[0], juce::PathStrokeType(look::line));
+            g.strokePath(member.scopePaths[0], juce::PathStrokeType(look::line), transform);
+        };
+        if (stacked) {
+            const auto scale = 1.f / static_cast<float>(members_.size());
+            const auto laneHeight = plot_.getHeight() * scale;
+            for (std::size_t i = 0; i < members_.size(); ++i) {
+                const auto y = plot_.getY() + static_cast<float>(i) * laneHeight;
+                const auto lane = juce::Rectangle<float>(plot_.getX(), y, plot_.getWidth(), laneHeight).toNearestInt();
+                juce::Graphics::ScopedSaveState saved(g);
+                g.reduceClipRegion(lane);
+                g.setColour(look::outline);
+                g.drawHorizontalLine(lane.getCentreY(), plot_.getX(), plot_.getRight());
+                const auto transform = juce::AffineTransform::scale(1.f, scale).translated(0.f, y - plot_.getY() * scale);
+                drawMember(members_[i], transform);
+            }
+        } else if (!sumOnly) {
+            for (const auto &member : members_) drawMember(member, {});
         }
-        if (!scopeHasTrace_) {
+        if (sumOnly ? !sumShown : !scopeHasTrace_) {
             g.setColour(look::textDim);
             g.setFont(look::font());
-            g.drawText(alignment_ == Alignment::Ready ? "Waiting for aligned playback" : "Waiting for playback",
+            const bool waitingForAlignment = sumOnly ? scopePlaying_ : alignment_ == Alignment::Ready;
+            g.drawText(waitingForAlignment ? "Waiting for aligned playback" : "Waiting for playback",
                        plot_, juce::Justification::centred);
         }
         return;
