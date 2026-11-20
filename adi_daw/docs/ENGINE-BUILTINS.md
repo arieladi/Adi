@@ -30,6 +30,18 @@ before changing any parameter. Standard plugin_state/state_blobs persist this
 role, and the Session's plugin_params mirror remains authoritative on restore.
 Sample-slot state and assignment are N28, a follow-up on this loader.
 
+**Values across a range change (DF-E37 c, ADR-0188 d3).** Since then the state also
+carries each parameter's value in its own unit (`real:{id:value}`) and that unit
+(`units:{id:unit}`), beside `params`. On load the real value is preferred while its unit
+is still the declaration's: clamped to the current range, rounded or snapped by the
+curve, and turned back into a position, so a project keeps what it plays when a
+range changes (`juce/builtin_values.*`). A value whose unit changed falls back to its
+position. **A state saved before these fields (positions only) keeps its positions under
+the new ranges; for pre-release projects that loss is accepted.** `setParam` honours a
+value's real part on lin, int, menu and toggle curves; on log and exponent curves it
+takes the position, because the mirror's `real` is a linear reading of the position
+(`param_ops.cpp`), which is not the value there.
+
 Seventeen existing native effects are available with ADI_WITH_PD. Hybrid Reverb
 is listed unavailable because it has no entry in the native factory; it is not
 silently replaced. Without that backend all catalogue entries remain readable

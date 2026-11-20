@@ -15,6 +15,11 @@
 namespace adi::ui {
 namespace {
 constexpr std::uint32_t allOutputs = 63;
+constexpr std::size_t maxHistoryColumns = 128;
+constexpr std::size_t pendingHistoryBytesPerDomain = 256 * 1024;
+// PFFFT squares its unnormalised float bins. Leave headroom for that sum
+// at the largest supported FFT as well as for the stereo and M/S projection.
+constexpr float spectralSampleLimit = 1.e12f;
 bool valid(const SharedAnalysis::Request &r) {
     if (r.track <= 0 || r.fftSize < 32 || r.fftSize > SharedAnalysis::kMaxFftSize || r.fftSize % 32 ||
         r.hopSize < 0 || r.hopSize > r.fftSize || !r.outputs || (r.outputs & ~allOutputs)) return false;
@@ -45,6 +50,10 @@ struct HistoryBudget {
     explicit HistoryBudget(std::size_t maximum) : limit(std::min(maximum, SharedAnalysis::kMaxHistoryBytes)) {}
     const std::size_t limit;
     std::atomic<std::size_t> bytes{0}, peak{0};
+    bool canClaim(std::size_t size) const noexcept {
+        return size <= limit && bytes.load(std::memory_order_acquire) <= limit - size &&
+               processHistoryBytes.load(std::memory_order_acquire) <= SharedAnalysis::kMaxHistoryBytes - size;
+    }
     bool claim(std::size_t size) noexcept {
         auto before = bytes.load(std::memory_order_relaxed);
         do { if (size > limit || before > limit - size) return false; }
@@ -75,14 +84,15 @@ struct HistoryCharge {
 struct HistoryStorage {
     HistoryCharge charge;
     std::vector<float> bins;
-    HistoryStorage(HistoryCharge c, const std::vector<float> &values) : charge(std::move(c)), bins(values) {}
+    HistoryStorage(HistoryCharge c, std::vector<float> values) : charge(std::move(c)), bins(std::move(values)) {}
 };
+template <typename Bins>
 std::shared_ptr<const std::vector<float>> historyBuffer(const std::shared_ptr<HistoryBudget> &budget,
-                                                       const std::vector<float> &values) {
+                                                       Bins &&values) {
     const auto bytes = values.size() * sizeof(float);
     if (!budget->claim(bytes)) return {};
     HistoryCharge charge(budget, bytes);
-    auto storage = std::make_shared<HistoryStorage>(std::move(charge), values);
+    auto storage = std::make_shared<HistoryStorage>(std::move(charge), std::forward<Bins>(values));
     return {storage, &storage->bins};
 }
 } // namespace
@@ -114,10 +124,14 @@ struct SharedAnalysis::Domain {
     std::atomic<std::uint64_t> droppedHistory{0};
     std::int64_t firstStamp = 0, firstSequence = 0;
     bool advancing = false, hasWindow = false, discontinuous = false;
-    bool pendingHistory = false, retiredForPending = false;
-    std::int64_t pendingStamp = 0;
-    std::vector<float> pendingColumn;
-    std::atomic<std::int64_t> consumedSequence{0};
+    struct PendingColumn {
+        std::uint64_t serial;
+        std::int64_t stamp;
+        std::vector<float> bins;
+    };
+    std::deque<PendingColumn> pendingHistory;
+    std::size_t retiredForPending = 0;
+    std::atomic<std::int64_t> consumedSequence{0}, completedWindowEnd{-1};
     std::atomic<bool> dirty{true}, historyBlocked{false};
     engine::ScopeTap::Cursor cursor;
     std::mutex mutex;
@@ -164,7 +178,9 @@ struct SharedAnalysis::Domain {
     }
     void resetWindow(bool epoch) {
         position = filled = sinceWindow = 0;
-        hasWindow = pendingHistory = retiredForPending = false; spectralWindow = historyWindow = 0;
+        completedWindowEnd.store(-1, std::memory_order_release);
+        hasWindow = false; spectralWindow = historyWindow = 0;
+        pendingHistory.clear(); retiredForPending = 0;
         historyBlocked.store(false, std::memory_order_release);
         columns.clear();
         if (epoch) { ++sourceEpoch; resetAverageForGap(); }
@@ -197,7 +213,7 @@ struct SharedAnalysis::Domain {
             std::vector<float> stereo(request.channel == Channel::StereoPower ? bins.size() : 0);
             spectrum = std::move(plan); scratch = std::move(time); linear = std::move(bins); second = std::move(stereo);
         }
-        if ((bits & Output::Spectrogram) && pendingColumn.size() != linear.size()) pendingColumn.resize(linear.size());
+        if ((bits & Spectrogram) && columns.capacity() < maxHistoryColumns) columns.reserve(maxHistoryColumns);
         return true;
     }
     void releaseUnused(std::uint32_t bits) {
@@ -208,8 +224,8 @@ struct SharedAnalysis::Domain {
             { std::lock_guard lock(resultMutex); averageResult.swap(retired); }
         }
         if (!(bits & Output::Spectrogram)) {
-            columns.clear(); pendingHistory = false; historyWindow = 0; historyBlocked.store(false, std::memory_order_release);
-            std::vector<float>().swap(pendingColumn);
+            columns.clear(); pendingHistory.clear(); retiredForPending = 0;
+            historyWindow = 0; historyBlocked.store(false, std::memory_order_release);
         }
         if (!spectralOutput(bits)) {
             spectrum.reset(); spectralWindow = 0;
@@ -217,10 +233,25 @@ struct SharedAnalysis::Domain {
         }
         updateAvailability();
     }
-    bool needsWork() const noexcept {
-        return active.load(std::memory_order_acquire) && available.load(std::memory_order_acquire) && tap &&
-               (dirty.load(std::memory_order_acquire) || historyBlocked.load(std::memory_order_acquire) ||
-                tap->written() != consumedSequence.load(std::memory_order_acquire));
+    bool settledParkedSilence(engine::ScopeTap::ParkedSilence quiet) const noexcept {
+        // Windowed readings settle once a complete quiet window has appeared.
+        // The one-second Average still has a sample-clock decay to run.
+        const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
+        return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
+               !(outputs.load(std::memory_order_acquire) & Average1s);
+    }
+    std::size_t historyColumnBytes() const noexcept {
+        return (static_cast<std::size_t>(request.fftSize) / 2 + 1) * sizeof(float);
+    }
+    bool needsWork(const HistoryBudget &budget) const noexcept {
+        if (!active.load(std::memory_order_acquire) || !available.load(std::memory_order_acquire) || !tap) return false;
+        if (dirty.load(std::memory_order_acquire) ||
+            (historyBlocked.load(std::memory_order_acquire) && budget.canClaim(historyColumnBytes()))) return true;
+        const auto end = tap->written();
+        const auto consumed = consumedSequence.load(std::memory_order_acquire);
+        if (end == consumed) return false;
+        const auto quiet = tap->lastParkedSilence();
+        return !(quiet.end >= end && settledParkedSilence(quiet));
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
@@ -238,21 +269,60 @@ struct SharedAnalysis::Domain {
         outputs.store(unionBits, std::memory_order_release);
         if (previous != unionBits) dirty.store(true, std::memory_order_release);
     }
-    bool appendPendingHistory(const std::shared_ptr<HistoryBudget> &budget) {
-        if (!pendingHistory) return false;
-        auto storage = historyBuffer(budget, pendingColumn);
-        if (!storage) {
-            // Retire at most one owned column for this hop. Publishing the reduced
-            // snapshot lets its old backing be released; frozen readers remain charged.
-            if (!retiredForPending && !columns.empty()) {
-                columns.erase(columns.begin()); retiredForPending = true;
-                droppedHistory.fetch_add(1, std::memory_order_relaxed);
+    void appendHistory(Column column) {
+        if (columns.size() == maxHistoryColumns) columns.erase(columns.begin());
+        columns.push_back(std::move(column));
+    }
+    void recordHistory(const std::shared_ptr<HistoryBudget> &budget, const std::vector<float> &bins) {
+        historyWindow = windowSerial;
+        ++columnSerial;
+        if (pendingHistory.empty())
+            if (auto storage = historyBuffer(budget, bins)) {
+                appendHistory({columnSerial, firstStamp, std::move(storage)});
+                return;
             }
-            historyBlocked.store(true, std::memory_order_release); return false;
+        // Stage up to a worker pass where practical, with a bounded scratch
+        // budget. Immutable backing remains charged until its last reader.
+        const auto bytes = historyColumnBytes();
+        const auto capacity = std::min({kMaxWindowsPerFrame, pendingHistoryBytesPerDomain / bytes,
+                                       std::max<std::size_t>(1, budget->limit / bytes)});
+        if (pendingHistory.size() == capacity) {
+            auto &oldest = pendingHistory.front();
+            oldest.serial = columnSerial;
+            oldest.stamp = firstStamp;
+            std::copy(bins.begin(), bins.end(), oldest.bins.begin());
+            std::rotate(pendingHistory.begin(), pendingHistory.begin() + 1, pendingHistory.end());
+            droppedHistory.fetch_add(1, std::memory_order_relaxed);
+        } else pendingHistory.push_back({columnSerial, firstStamp, bins});
+        historyBlocked.store(true, std::memory_order_release);
+    }
+    bool flushPendingHistory(const std::shared_ptr<HistoryBudget> &budget) {
+        if (pendingHistory.empty()) return false;
+        bool changed = false;
+        while (!pendingHistory.empty() && budget->canClaim(historyColumnBytes())) {
+            auto &column = pendingHistory.front();
+            auto storage = historyBuffer(budget, std::move(column.bins));
+            if (!storage) break;
+            appendHistory({column.serial, column.stamp, std::move(storage)});
+            pendingHistory.pop_front();
+            if (retiredForPending) --retiredForPending;
+            changed = true;
         }
-        if (columns.size() == 128) columns.erase(columns.begin());
-        columns.push_back({columnSerial, pendingStamp, std::move(storage)});
-        pendingHistory = retiredForPending = false; historyBlocked.store(false, std::memory_order_release);
+        if (pendingHistory.empty()) {
+            retiredForPending = 0;
+            historyBlocked.store(false, std::memory_order_release);
+        }
+        return changed;
+    }
+    bool retireForPending(const HistoryBudget &budget) {
+        if (pendingHistory.size() <= retiredForPending || budget.canClaim(historyColumnBytes())) return false;
+        // Retire only the slots requested by this pending batch. Older
+        // publications may hold those bins until the next paint or an unfreeze.
+        const auto count = std::min(columns.size(), pendingHistory.size() - retiredForPending);
+        if (!count) return false;
+        columns.erase(columns.begin(), columns.begin() + static_cast<std::ptrdiff_t>(count));
+        retiredForPending += count;
+        droppedHistory.fetch_add(count, std::memory_order_relaxed);
         return true;
     }
     void setHistory(Result &publication) const {
@@ -279,14 +349,16 @@ struct SharedAnalysis::Domain {
         latest->gapCount = gaps; latest->overrunCount = overruns; latest->discontinuity = discontinuous;
         if (!newWindow) if (const auto previous = readResult()) latest->nonFiniteSamples = previous->nonFiniteSamples;
         double sumL = 0, sumR = 0, cross = 0;
-        bool nonzero = false;
+        bool nonzero = false, clippedLeft = false, clippedRight = false;
         for (std::size_t i = 0; i < n; ++i) {
             const auto k = (position + i) % n;
             const float rawL = newWindow ? ringLeft[k] : left[i], rawR = newWindow ? ringRight[k] : right[i];
-            latest->nonFiniteSamples += static_cast<std::size_t>(!std::isfinite(rawL)) +
-                                        static_cast<std::size_t>(!std::isfinite(rawR));
-            const float l = left[i] = std::isfinite(rawL) ? rawL : 0.f;
-            const float r = right[i] = std::isfinite(rawR) ? rawR : 0.f;
+            const bool finiteL = std::isfinite(rawL), finiteR = std::isfinite(rawR);
+            latest->nonFiniteSamples += static_cast<std::size_t>(!finiteL) + static_cast<std::size_t>(!finiteR);
+            const float l = left[i] = finiteL ? std::clamp(rawL, -spectralSampleLimit, spectralSampleLimit) : 0.f;
+            const float r = right[i] = finiteR ? std::clamp(rawR, -spectralSampleLimit, spectralSampleLimit) : 0.f;
+            clippedLeft = clippedLeft || (finiteL && rawL != l);
+            clippedRight = clippedRight || (finiteR && rawR != r);
             sumL += static_cast<double>(l) * l; sumR += static_cast<double>(r) * r;
             cross += static_cast<double>(l) * r;
             latest->peak[0] = std::max(latest->peak[0], std::abs(l));
@@ -321,10 +393,12 @@ struct SharedAnalysis::Domain {
                 spectralWindow = windowSerial;
             }
             if (averageHopEligible) {
+                const bool clipped = (request.channel != Channel::Right && clippedLeft) ||
+                                     (request.channel != Channel::Left && clippedRight);
                 averageWindow = windowSerial;
-                if (average->processChecked(linear)) { ++averageWindows; averageStatus = AverageStatus::Ready; }
+                if (!clipped && average->processChecked(linear)) { ++averageWindows; averageStatus = AverageStatus::Ready; }
                 else {
-                    // Refuse overflowing FFT magnitudes; an explicit average-only
+                    // Refuse broken spectral input; an explicit average-only
                     // gap clears once, and subsequent valid hops recover from zero.
                     if (averageStatus != AverageStatus::InvalidInput) {
                         average->reset(); averageWindows = 0; ++averageEpoch; averageBins.reset(); averageBinsWindow = 0;
@@ -336,14 +410,8 @@ struct SharedAnalysis::Domain {
                 latest->binsDbfs.resize(linear.size());
                 std::transform(linear.begin(), linear.end(), latest->binsDbfs.begin(), dsp::toDbfs);
             }
-            if (bits & Output::Spectrogram) {
-                if (historyWindow != windowSerial) {
-                    if (pendingHistory) droppedHistory.fetch_add(1, std::memory_order_relaxed);
-                    historyWindow = windowSerial; ++columnSerial; pendingStamp = firstStamp;
-                    pendingColumn = latest->binsDbfs; pendingHistory = true; retiredForPending = false;
-                }
-                (void)appendPendingHistory(budget);
-            }
+            if ((bits & Output::Spectrogram) && historyWindow != windowSerial)
+                recordHistory(budget, latest->binsDbfs);
         }
         return latest;
     }
@@ -368,8 +436,7 @@ struct SharedAnalysis::Domain {
             return publication;
         } catch (...) { return {}; } // Raw still publishes; retry only at a genuine publication event.
     }
-    std::shared_ptr<Result> retryHistory(const std::shared_ptr<HistoryBudget> &budget) {
-        if (!pendingHistory || !appendPendingHistory(budget)) return {};
+    std::shared_ptr<Result> refreshHistoryPublication() {
         const auto previous = readResult();
         if (!previous) return {};
         auto latest = std::make_shared<Result>(*previous);
@@ -464,7 +531,7 @@ struct SharedAnalysis::State {
         if (detach && release) { try { release(key); } catch (...) {} }
     }
     bool workPending() const {
-        return std::any_of(domains.begin(), domains.end(), [](const auto &entry) { return entry.second->needsWork(); });
+        return std::any_of(domains.begin(), domains.end(), [this](const auto &entry) { return entry.second->needsWork(*historyBudget); });
     }
     std::size_t pump() {
         // Never audio-reachable. Shutdown waits before releasing owner callbacks.
@@ -483,14 +550,26 @@ struct SharedAnalysis::State {
         for (std::size_t j = 0; j < count && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame; ++j) {
             auto &d = *jobs[(start + j) % count];
             std::lock_guard lock(d.mutex);
-            if (!d.needsWork()) continue;
+            if (!d.needsWork(*historyBudget)) continue;
             const bool changed = d.dirty.exchange(false, std::memory_order_acq_rel);
             std::shared_ptr<Result> latest;
+            // Make space released since the preceding publication available to
+            // its staged columns before this pass can offer new ones.
+            const bool historyFlushed = d.flushPendingHistory(historyBudget);
             bool discontinuity = false;
             const auto n = d.left.size(), hop = static_cast<std::size_t>(d.request.hopSize);
-            while (d.tap->written() != d.cursor.next && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame) {
+            const auto end = d.tap->written();
+            const auto quiet = d.tap->lastParkedSilence();
+            // Resume at the end of a previously parked range. Its omitted samples
+            // are identical to those in the retained window. The regular cursor
+            // still detects a seek, playback start, or another stamp at the join.
+            if (quiet.end < end && quiet.end > d.cursor.next && d.settledParkedSilence(quiet))
+                d.cursor.next = quiet.end;
+            while (d.cursor.next < end && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame) {
+                if (quiet.end >= end && d.settledParkedSilence(quiet)) break;
                 const auto need = d.filled < n ? n - d.filled : hop - d.sinceWindow;
-                const auto length = std::min({need, kMaxSamplesPerFrame - samples, readLeft.size()});
+                const auto length = std::min({need, kMaxSamplesPerFrame - samples, readLeft.size(),
+                                               static_cast<std::size_t>(end - d.cursor.next)});
                 ++reads;
                 auto read = d.tap->read(d.cursor, std::span<float>(readLeft.data(), length),
                                        std::span<float>(readRight.data(), length));
@@ -520,17 +599,20 @@ struct SharedAnalysis::State {
                 d.firstStamp = read.firstStamp + (read.advancing ? read.frames - static_cast<std::int64_t>(n) : 0);
                 d.discontinuous = discontinuity;
                 latest = d.analyse(historyBudget, done);
+                if (latest) d.completedWindowEnd.store(d.cursor.next, std::memory_order_release);
             }
             d.consumedSequence.store(d.cursor.next, std::memory_order_release);
             // New output demand can reuse the retained completed window even at idle.
             // A partial hop never replaces that completed window's raw sample pair.
             if (!latest && changed && d.hasWindow) latest = d.analyse(historyBudget, done, false);
-            if (!latest && d.historyBlocked.load(std::memory_order_acquire)) latest = d.retryHistory(historyBudget);
+            const bool historyRetired = d.retireForPending(*historyBudget);
+            if (!latest && (historyFlushed || historyRetired)) latest = d.refreshHistoryPublication();
             if (latest) {
                 // Only the final publication needs the shallow history snapshot;
                 // intermediate hops update the domain, not duplicate metadata.
                 d.setHistory(*latest);
-                latest->pendingFrames = std::max<std::int64_t>(0, d.tap->written() - d.cursor.next);
+                latest->pendingFrames = quiet.end >= end && d.settledParkedSilence(quiet)
+                    ? 0 : std::max<std::int64_t>(0, d.tap->written() - d.cursor.next);
                 latest->budgetLimited = latest->pendingFrames > 0 &&
                     (windows == kMaxWindowsPerFrame || samples == kMaxSamplesPerFrame || reads == kMaxReadsPerFrame);
                 if (d.active.load(std::memory_order_acquire)) {

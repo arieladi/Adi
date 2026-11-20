@@ -247,6 +247,84 @@ void anchors() {
               checkProject(*fork.store).clean(),
           "switching to a stored dead end preserves cap and integrity");
 }
+
+UndoCompactionResult compactWith(History &history, Store &store, std::int64_t steps) {
+    // Stage the policy independently of the navigation and compaction calls.
+    SQLite::Transaction transaction(store.db());
+    history_detail::writeUndoPolicy(store.db(), budget(steps));
+    transaction.commit();
+    return history.compactUndo();
+}
+
+void undoneHead() {
+    constexpr auto prepared = History::StoredRestore::SessionReloadPrepared;
+    Project project;
+    History history(*project.store);
+    project.edits(1, 12);
+    for (int i = 0; i < 11; ++i)
+        if (!history.undo().ok)
+            throw std::runtime_error("rewind to first edit");
+    const auto capped = compactWith(history, *project.store, 8);
+    check(capped.ok && capped.baseSeq == 1 && capped.transactions == 7 &&
+              history.head() == 1 && project.name() == "1",
+          "compaction at an undone head preserves its exact stored state");
+    check(!history.canUndo() && history.redo().error == "nothing to redo",
+          "the pruned bridge offers neither Undo nor Redo at the stored head");
+    const auto branches = history.branches();
+    const auto saved = std::find_if(branches.begin(), branches.end(), [](const auto &branch) {
+        return !branch.isCurrent && branch.headSeq == 12 && branch.name == "before compaction at 12";
+    });
+    check(branches.size() == 2 && saved != branches.end(), "the severed redo tip gets one system branch");
+    if (saved == branches.end()) return;
+    const auto opened = history.switchToBranch(saved->id, prepared);
+    check(opened.ok && opened.sessionReloadRequired && project.name() == "12",
+          "opening the system branch restores the old redo tip");
+    int undone = 0;
+    while (history.canUndo() && undone < 12) {
+        if (!history.undo().ok) throw std::runtime_error("undo saved branch");
+        ++undone;
+    }
+    check(undone == 7 && project.name() == "5" && !history.canUndo(),
+          "the recovered line retains exactly seven undo steps");
+
+    const auto again = compactWith(history, *project.store, 2);
+    const auto later = history.branches();
+    const auto replacement = std::find_if(later.begin(), later.end(), [&](const auto &branch) {
+        return !branch.isCurrent && branch.headSeq == 12 && branch.name != saved->name;
+    });
+    check(again.ok && again.baseSeq == 5 && history.head() == 5 && later.size() == 3 &&
+              replacement != later.end(),
+          "a second severed bridge gets a distinct name while the previous branch keeps its head");
+    check(history.compactUndo().ok && history.branches().size() == later.size(),
+          "retrying compaction neither replaces nor duplicates its branches");
+    if (replacement != later.end())
+        check(history.switchToBranch(replacement->id, prepared).ok && project.name() == "12" &&
+                  history.undo().ok && project.name() == "11" && !history.canUndo() &&
+                  checkProject(*project.store).clean(),
+              "both compactions preserve their stored points and the surviving tip");
+}
+
+void connectedRedo() {
+    for (const std::int64_t head : {5, 6}) {
+        Project project;
+        History history(*project.store);
+        project.edits(1, 12);
+        for (auto i = head; i < 12; ++i)
+            if (!history.undo().ok) throw std::runtime_error("rewind into the retained line");
+        const auto capped = compactWith(history, *project.store, 8);
+        check(capped.ok && capped.baseSeq == 5 && history.head() == head &&
+                  history.branches().size() == 1,
+              "compaction leaves a reachable live redo tip without a system branch");
+        int redone = 0;
+        while (history.canRedo() && redone < 12) {
+            if (!history.redo().ok) throw std::runtime_error("redo retained step");
+            ++redone;
+        }
+        check(redone == 12 - head && project.name() == "12" && checkProject(*project.store).clean(),
+              "Redo reaches the original tip whether the head is at or above the cut");
+    }
+}
+
 void collaborationAndFailures() {
     Project p;
     History h(*p.store);
@@ -407,6 +485,8 @@ int main() {
         richCheckpoint();
         exactBytesAndLegacy();
         anchors();
+        undoneHead();
+        connectedRedo();
         collaborationAndFailures();
         contentAndBestEffort();
         bytesAndDefault();

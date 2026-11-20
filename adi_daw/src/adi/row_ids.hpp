@@ -16,6 +16,7 @@ enum class RowIdExhaustion { Refuse, FirstPositiveGap };
 /// One owner-side allocation context for a captured edit. Hold one database
 /// snapshot for its lifetime. Methods read schema/IDs but never write or reserve
 /// in SQL; captured before-images/absence and the journal head guard publication.
+/// Track, clip, and device IDs also skip IDs held by remarks in that snapshot.
 class RowIds {
   public:
     explicit RowIds(SQLite::Database &db) : db_(db) {}
@@ -29,6 +30,7 @@ class RowIds {
     struct State {
         std::int64_t high = 0;
         std::set<std::int64_t> reserved;
+        std::string_view remarkKind;
     };
     State &state(std::string_view);
     SQLite::Database &db_;

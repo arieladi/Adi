@@ -433,6 +433,16 @@ void SettingsPanel::showPage(const std::string &name) {
         if (audio_)
             content_.addChildComponent(*audio_);
     }
+    if (name == "Tempo & MIDI" && midiPorts && !midi_) {
+        midi_ = midiPorts();
+        if (midi_)
+            content_.addChildComponent(*midi_);
+    }
+    if (midi_) {
+        midi_->setVisible(name == "Tempo & MIDI");
+        if (name == "Tempo & MIDI")
+            order_.push_back(midi_.get());
+    }
     if (audio_) {
         audio_->setVisible(name == "Audio");
         if (name == "Audio")
@@ -447,6 +457,9 @@ void SettingsPanel::showPage(const std::string &name) {
             order_.push_back(headings_.back().get());
             for (const auto *s : group.settings) {
                 // What the device chooser shows is not listed twice under it.
+                // The MIDI Ports table stands for the record's own row.
+                if (midi_ && name == "Tempo & MIDI" && s->key.rfind("midi.port", 0) == 0) // the record and its rows
+                    continue;
                 if (audio_ && name == "Audio" &&
                     (s->key == "audio.driverType" || s->key == "audio.inputDevice" ||
                      s->key == "audio.outputDevice" || s->key == "audio.sampleRate" ||
@@ -502,6 +515,8 @@ void SettingsPanel::find(const juce::String &query) {
     }
     if (audio_)
         audio_->setVisible(false);
+    if (midi_)
+        midi_->setVisible(false);
     // Restoring defaults is a page's; the results are no page.
     defaults.setEnabled(false);
     rescanPlugins.setVisible(false);
@@ -516,7 +531,7 @@ void SettingsPanel::layoutRows() {
     const int width = std::max(0, scroll_.getWidth() - scroll_.getScrollBarThickness());
     int y = 0;
     for (auto *c : order_) {
-        const int height = c == audio_.get()                                   ? audio_->getHeight()
+        const int height = c == audio_.get() || c == midi_.get()               ? c->getHeight()
                            : dynamic_cast<SettingsHeading *>(c) != nullptr ? SettingsHeading::kHeight
                                                                             : SettingRow::kHeight;
         c->setBounds(0, y, width, height);

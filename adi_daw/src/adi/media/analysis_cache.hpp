@@ -36,7 +36,10 @@ struct AnalysisTrimResult {
     // Logical bytes of validated, directly owned ADIA files only. Unrecognised
     // entries are neither charged nor removed. Counts remain valid on partial
     // cancellation/failure; bytesBefore is complete only with inventoryComplete.
+    // Skipped entries have an I/O refusal, distinct from ignored foreign/invalid
+    // entries. Unreadable entries are uncharged and prevent proving budgetMet.
     std::uint64_t bytesBefore=0,bytesAfter=0,filesRemoved=0,ignoredEntries=0;
+    std::uint64_t skippedEntries=0;
     bool inventoryComplete=false,budgetMet=false;
     explicit operator bool()const noexcept{return problem==AnalysisCacheProblem::None && budgetMet;}
 };
@@ -60,6 +63,8 @@ public:
     // source/library deletion, global settings policy or physical-free-space
     // guarantee. This process's reads/updates finish before eviction; returned
     // analysis owns its bytes. External writers need separate coordination.
+    // Per-entry I/O refusals are skipped, with the first path/error retained;
+    // inventory still finishes before any deletion. None are counted reclaimed.
     [[nodiscard]] AnalysisTrimResult trimToBytes(std::uint64_t maximumBytes,std::string& error,
                                                std::stop_token={});
     [[nodiscard]] const std::filesystem::path& folder()const noexcept{return folder_;}

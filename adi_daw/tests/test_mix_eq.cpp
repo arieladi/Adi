@@ -1,3 +1,5 @@
+#include "adi/engine/graph.hpp"
+#include "adi/mix/eq/Backend.hpp"
 #include "adi/mix/eq/Core.hpp"
 #include <algorithm>
 #include <array>
@@ -385,6 +387,207 @@ void compoundAdmission() {
               core.latencySamples() == delayed.samples,
           "delayed EQ plan admits at the aggregate owner's next physical boundary");
 }
+void returnedSettingsWithdrawLatency() {
+    const eq::Settings active;
+    auto temporary = active;
+    temporary.lookaheadMs = 8;
+    eq::Core core;
+    core.prepare({48000, 256, 2}, active);
+    check(core.requestConfiguration(temporary) && core.pendingLatencyChange().samples == 384,
+          "temporary EQ lookahead offers 384 samples");
+    check(core.requestConfiguration(active) && core.pendingLatencyChange().token == 0 &&
+              core.latencySamples() == 0,
+          "return to the active EQ settings withdraws a superseded lookahead before adoption");
+
+    const auto onOldPath = core.beginBlock(1, 0, temporary);
+    check(onOldPath.generation && core.pendingLatencyChange().samples == 384,
+          "callback lookahead offers the new latency while staying on the old path");
+    const auto retired = core.beginBlock(2, 0, active);
+    check(retired.generation && core.pendingLatencyChange().token == 0 && core.latencySamples() == 0,
+          "old configured latency and restored settings keep EQ running without a stale offer");
+
+    (void)core.beginBlock(3, 0, temporary);
+    const auto retained = core.pendingLatencyChange();
+    check(core.beginBlock(3, 0, active, false).generation &&
+              core.pendingLatencyChange().token == retained.token,
+          "a parent holding admission protects its child offer across a reversal");
+    check(core.beginBlock(3, 0, active).generation && core.pendingLatencyChange().token == 0,
+          "standalone EQ withdrawal also works within the original physical block");
+}
+void sameLatencyReversion() {
+    eq::Settings base;
+    base.bands[0].status = eq::Status::On;
+    base.bands[0].frequencyHz = 750;
+    base.bands[0].gainDb = 12;
+    base.bands[0].q = 4;
+    auto temporary = base;
+    temporary.structure = eq::Structure::SVF;
+
+    const auto prime = [&](eq::Core &core, const eq::Settings &requested) {
+        core.prepare({48000, 256, 2}, base);
+        Audio impulse;
+        impulse.data[0].back() = .5f;
+        return run(core, impulse, 256, requested, begin(core, 1, 0, requested));
+    };
+    eq::Core reference, unread, promised;
+    check(prime(reference, base) && prime(unread, temporary) && prime(promised, temporary),
+          "warm three Minimum Phase filters with the same pulse at the callback boundary");
+    const auto offer = unread.pendingLatencyChange();
+    check(offer.token && offer.samples == 0, "an unread SVF request differs from Minimum Phase at the same PDC");
+
+    Audio steadyTail, unreadTail, promisedTail;
+    const bool renderedSteady = run(reference, steadyTail, 256, base, begin(reference, 2, 0, base));
+    check(renderedSteady && std::any_of(steadyTail.data[0].begin(), steadyTail.data[0].end(),
+                                       [](float sample) { return std::abs(sample) > 1.e-6f; }),
+          "Minimum Phase supplies a measurable filter tail in the next callback");
+    const auto reverted = begin(unread, 2, 0, base);
+    check(reverted.generation && !unread.pendingLatencyChange().token && unread.latencySamples() == 0,
+          "a reversion withdraws an unread offer even when configured PDC equals its latency");
+    check(run(unread, unreadTail, 256, base, reverted) && unreadTail.data == steadyTail.data,
+          "withdrawing an unread equal-PDC offer preserves the original filter tail");
+
+    const auto published = promised.promiseLatencyChange();
+    check(published.token && published.samples == 0, "the owner can promise a same-latency structural offer");
+    check(begin(promised, 1, 0, base).generation && promised.pendingLatencyChange().token == published.token,
+          "the promised plan survives a reversion inside the original physical block");
+    const auto admitted = begin(promised, 2, 0, base);
+    check(run(promised, promisedTail, 256, base, admitted) && promisedTail.data != steadyTail.data,
+          "the matching physical block processes the promised SVF plan and replaces the old filter tail");
+    const auto reversal = promised.promiseLatencyChange();
+    check(reversal.token && reversal.token != published.token && reversal.samples == 0,
+          "the reversal becomes a separate offer after the promised plan admits");
+    check(begin(promised, 2, 0, base).block == admitted.block &&
+              promised.pendingLatencyChange().token == reversal.token,
+          "the same physical block holds the promised reversal until the next boundary");
+    const auto restored = begin(promised, 3, 0, base);
+    check(restored.generation && !promised.pendingLatencyChange().token && promised.latencySamples() == 0,
+          "the next physical block admits the reversal at unchanged PDC");
+}
+void advertisedLookaheadSurvivesReversion() {
+    eq::Settings base, requested;
+    requested.lookaheadMs = 8;
+    auto backend = eq::makeBackend();
+    backend->prepare(48000, 256, 2, base);
+    Audio audio;
+    auto runBlock = [&](std::uint64_t block, int configured, const eq::Settings &settings) {
+        inAudio = true;
+        backend->process(audio.pointers.data(), nullptr, 0, 256, settings, block, configured);
+        inAudio = false;
+    };
+
+    runBlock(1, 0, requested);
+    backend->pumpMainThread(requested);
+    const auto promised = backend->advertisedLatency();
+    check(promised == 384, "standalone Backend advertises the 8 ms lookahead offer");
+    runBlock(2, 0, base);
+    backend->pumpMainThread(base);
+    check(backend->advertisedLatency() == promised, "reverting settings keeps advertised and unapplied latency");
+
+    // Feed the sole probe after the graph moves to the promised plan. Bypass
+    // due to an unmatched plan would leave the pulse at its original position.
+    audio.data = {};
+    audio.data[0][7] = .5f;
+    runBlock(3, promised, base);
+    check(std::abs(audio.data[0][7]) < 1.e-7f, "promised callback does not emit the undelayed dry pulse");
+    backend->pumpMainThread(base);
+    check(backend->advertisedLatency() == 0, "once the promised latency admits, the reversal can be advertised");
+    audio.data = {};
+    runBlock(4, promised, base);
+    check(std::abs(audio.data[0][135] - .5f) < 1.e-6f,
+          "still-pinned delayed callback emits the probe at its configured 384-sample offset");
+    audio.data = {};
+    audio.data[0][11] = .25f;
+    runBlock(5, 0, base);
+    check(std::abs(audio.data[0][11] - .25f) < 1.e-6f, "the next physical plan adopts the return to zero latency");
+}
+
+struct EqGrowthSource final : adi::engine::Node {
+    static constexpr float signal = .125f;
+    bool alwaysProcess() const noexcept override { return true; }
+    void process(const adi::engine::NodeIo &io) noexcept override {
+        std::fill_n(io.out[0] + io.blockOffset, io.frames, signal);
+    }
+};
+struct EqGrowthNode final : adi::engine::Node {
+    eq::Settings settings;
+    std::unique_ptr<adi::mix::EqProcessingBackend> backend = eq::makeBackend();
+    std::int32_t configured = -1;
+    bool dryOutput = false;
+
+    EqGrowthNode() { settings.outputGainDb = -6; }
+    bool alwaysProcess() const noexcept override { return true; }
+    bool hasBypass() const noexcept override { return true; }
+    std::int32_t latencySamples() const noexcept override { return backend->advertisedLatency(); }
+    void prepare(double rate, std::int32_t frames) override { backend->prepare(rate, frames, 1, settings); }
+    void process(const adi::engine::NodeIo &io) noexcept override {
+        configured = io.configuredLatency;
+        auto *out = io.out[0] + io.blockOffset;
+        if (const auto *in = io.in[0] + io.blockOffset; in != out)
+            std::copy_n(in, io.frames, out);
+        backend->process(&out, nullptr, 0, io.frames, settings, io.renderBlock, io.configuredLatency);
+        dryOutput = std::all_of(out, out + io.frames, [](float x) { return x == EqGrowthSource::signal; });
+    }
+};
+void undoDuringGraphRingPriming() {
+    using namespace adi::engine;
+    EqGrowthSource source, drySibling;
+    EqGrowthNode eqNode;
+    SumNode sum;
+    Graph graph;
+    graph.setChannels(1);
+    graph.setLatencyHeadroom(4);
+    const auto in = graph.addNode(source);
+    const auto equalized = graph.addNode(eqNode);
+    const auto sibling = graph.addNode(drySibling);
+    const auto out = graph.addNode(sum);
+    graph.connect(in, equalized);
+    graph.connect(equalized, out);
+    graph.connect(sibling, out);
+    graph.setOutput(out);
+    graph.prepare(48000, 256);
+    check(graph.ok(), "native backend PDC growth fixture prepares");
+    std::array<float, 256> audio{};
+    auto *output = audio.data();
+    auto runBlock = [&](std::uint64_t block) {
+        AudioIo io;
+        io.out = &output;
+        io.numOut = 1;
+        io.frames = 256;
+        io.renderBlock = block;
+        inAudio = true;
+        graph.process(io);
+        inAudio = false;
+    };
+
+    runBlock(1);
+    eqNode.settings.structure = eq::Structure::Zero;
+    eqNode.settings.lookaheadMs = 8;
+    runBlock(2);
+    eqNode.backend->pumpMainThread(eqNode.settings);
+    const auto promised = eqNode.latencySamples();
+    check(promised > 256 && !graph.retapLatency() && graph.escalateLatency() > 0,
+          "advertised native Zero Phase change grows real graph compensation rings");
+    runBlock(3);
+    check(graph.latencySamples() == 0 && eqNode.configured == 0,
+          "an incomplete ring exposes the original PDC");
+    eqNode.settings.structure = eq::Structure::Minimum;
+    eqNode.settings.lookaheadMs = 0;
+    runBlock(4);
+
+    bool hit = false;
+    for (std::uint64_t block = 5; block <= 128; ++block) {
+        runBlock(block);
+        if (graph.latencySamples() != promised) continue;
+        hit = eqNode.configured == promised;
+        break;
+    }
+    check(hit, "graph eventually supplies the originally advertised PDC after Undo during priming");
+    check(hit && !eqNode.dryOutput, "Undo during priming cannot drop EQ when the originally promised graph plan arrives");
+    eqNode.backend->pumpMainThread(eqNode.settings);
+    check(eqNode.latencySamples() == 0 && graph.retapLatency(),
+          "after its promised callback the native backend offers the Undo through the graph");
+}
+
 void pinCompoundControls() {
     eq::Settings plan, controls;
     plan.structure = eq::Structure::Matched;
@@ -428,6 +631,10 @@ int main() {
         lifecycle();
         latencyCapacity();
         compoundAdmission();
+        returnedSettingsWithdrawLatency();
+        sameLatencyReversion();
+        advertisedLookaheadSurvivesReversion();
+        undoDuringGraphRingPriming();
         pinCompoundControls();
         check(allocations == 0, "zero callback C++ allocations");
         check(deallocations == 0, "zero callback C++ deallocations");

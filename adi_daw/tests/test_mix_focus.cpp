@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -79,6 +80,13 @@ void coreConcurrency() {
     f::Core core;f::Settings initial;initial.nodes[0].enabled=true;initial.nodes[0].q=1.;
     core.prepare({48000,64,2},initial);
     std::atomic<bool> done{false};std::atomic<int> bad{0};f::Settings finalDesired=initial;
+    // The owner must plan WHILE audio runs. Left to the scheduler, a loaded
+    // runner can park the owner thread for the producer's whole run and
+    // nothing was planned concurrently (macOS CI, ctest --parallel on three
+    // cores). So audio waits at its midpoint until the owner has planned at
+    // least once, then processes the rest against that live plan. The wait is
+    // bounded: an owner that never plans still fails below, it cannot hang.
+    std::atomic<std::uint64_t> services{0};std::atomic<bool> overlapped{false};
     std::thread producer([&]{
         f::Settings requested=initial;
         std::array<std::array<double,64>,2> x{},key{};
@@ -95,16 +103,23 @@ void coreConcurrency() {
             {AudioScope scope;const auto context=core.beginBlock(block,0,requested);
              if(!core.process(main.data(),keys.data(),2,64,requested,context))bad.fetch_add(1);}
             for(const auto &channel:x)for(double valueOut:channel)if(!std::isfinite(valueOut))bad.fetch_add(1);
+            if(block==500) {
+                const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+                while(services.load(std::memory_order_acquire)==0&&std::chrono::steady_clock::now()<limit)std::this_thread::yield();
+                overlapped.store(services.load(std::memory_order_acquire)>0,std::memory_order_release);
+            }
         }
         finalDesired=requested;done.store(true,std::memory_order_release);
     });
-    std::uint64_t services=0;
-    while(!done.load(std::memory_order_acquire)){if(core.serviceConfiguration())++services;else std::this_thread::yield();}
+    while(!done.load(std::memory_order_acquire)){if(core.serviceConfiguration())services.fetch_add(1,std::memory_order_acq_rel);else std::this_thread::yield();}
     producer.join();
     for(std::uint64_t i=0;i<4;++i){core.serviceConfiguration();static_cast<void>(core.beginBlock(1001+i,0,finalDesired));}
     core.serviceConfiguration();static_cast<void>(core.beginBlock(1005,0,finalDesired));
     const auto status=core.configurationStatus();
-    check(bad.load()==0&&services>0,"concurrent owner planning and audio processing stay valid");
+    if(bad.load()!=0||!overlapped.load())
+        std::printf("  invalid audio blocks %d, owner plans %llu, owner planned before audio's midpoint %d\n",bad.load(),
+            static_cast<unsigned long long>(services.load()),overlapped.load()?1:0);
+    check(bad.load()==0&&overlapped.load(),"concurrent owner planning and audio processing stay valid");
     check(status.requested==status.ready&&status.ready==status.applied&&core.pendingLatencyChange().token==0,"black-box latest request drains, applies and clears its offer");
 }
 void defaultsAndReadiness() {
@@ -448,6 +463,46 @@ void immutableOfferConsumption() {
     }
     check(held,"every immutable ready offer remains unconsumed across false-admission physical contexts");
     check(consumed,"every final-token ready offer consumes on true admission under valid cached PDC");
+}
+void withdrawnLatencyOffer() {
+    f::Settings iir;
+    auto fir=iir; fir.engine=f::Engine::Fir;
+    for (const bool parentHolds : {false, true}) {
+        f::Core core;
+        core.prepare({48000,64,2},iir);
+        const auto active=core.beginBlock(1,0,iir);
+        check(core.requestConfiguration(fir)&&core.serviceConfiguration(),
+              "owner offers a different-latency Focus plan before a reversion");
+        const auto offer=core.pendingLatencyChange();
+        const auto split=core.beginBlock(1,0,iir,!parentHolds);
+        check(split.generation==active.generation&&core.pendingLatencyChange().token==offer.token,
+              "returning controls on a split cannot withdraw an offer within the physical block");
+        const auto next=core.beginBlock(2,0,iir,!parentHolds);
+        check(next.generation==active.generation&&core.latencySamples()==0,
+              "the existing IIR callback stays valid after the user returns to IIR");
+        if (parentHolds) {
+            check(core.pendingLatencyChange().token==offer.token&&!core.serviceConfiguration(),
+                  "a parent-held Focus offer remains immutable through unrelated control changes");
+            check(core.beginBlock(3,offer.samples,iir).generation!=active.generation &&
+                  core.latencySamples()==offer.samples,
+                  "host-promised latency admits the exact retained Focus plan");
+        } else {
+            check(core.pendingLatencyChange().token==0&&core.serviceConfiguration(),
+                  "return to active settings withdraws an unused Focus offer and releases the owner");
+            const auto replacement=core.pendingLatencyChange();
+            check(replacement.token>offer.token&&replacement.samples==0&&
+                  core.beginBlock(3,0,iir).generation!=0&&core.latencySamples()==0,
+                  "the owner admits the latest IIR generation without requiring the discarded PDC");
+        }
+    }
+    f::Core promised;
+    promised.prepare({48000,64,2},iir);
+    check(promised.requestConfiguration(fir)&&promised.serviceConfiguration(),
+          "a latency offer is ready before the host adopts it");
+    const auto exact=promised.pendingLatencyChange();
+    check(promised.beginBlock(1,exact.samples,iir).generation!=0&&
+          promised.configurationStatus().applied==exact.token&&promised.latencySamples()==exact.samples,
+          "a matching new host PDC wins if it arrived before withdrawal");
 }
 void configurationIdentityHelpers() {
     f::Settings a,b=a;
@@ -917,6 +972,44 @@ void sourceTaggedFirOracle() {
     check(okay&&maximum<1.e-10,"captured A/B/C blocks retain their actual kernels through both arithmetic partitions");
 }
 
+template<class T> void nonfiniteInputs() {
+    for (const auto engine : {f::Engine::Iir, f::Engine::Fir}) {
+        for (const auto detector : {f::Detector::SideChain, f::Detector::Difference}) {
+            f::Settings settings;
+            settings.engine = engine;
+            settings.detector = detector;
+            settings.externalKey = true;
+            settings.nodes[0].enabled = true;
+            settings.nodes[0].thresholdDb = -36.;
+            settings.nodes[0].differenceDb = -8.;
+            f::Core poisoned, sanitized;
+            poisoned.prepare({48000, 256, 2}, settings);
+            sanitized.prepare({48000, 256, 2}, settings);
+            const auto length = static_cast<std::size_t>(poisoned.latencySamples()) + 4096;
+            std::vector<T> l(length), r(length), kl(length), kr(length);
+            for (std::size_t sample = 0; sample < length; ++sample) {
+                const double angle = static_cast<double>(sample) * 6.283185307179586 / 48.;
+                l[sample] = static_cast<T>(.43 * std::sin(angle));
+                r[sample] = static_cast<T>(.31 * std::cos(angle));
+                kl[sample] = static_cast<T>(.37 * std::sin(angle));
+                kr[sample] = static_cast<T>(.39 * std::cos(angle));
+            }
+            auto badL = l, badR = r, badKl = kl, badKr = kr;
+            const auto damage = [](auto &bad, auto &clean, std::size_t sample, T value) {
+                bad[sample] = value;
+                clean[sample] = T{};
+            };
+            damage(badL, l, 63, std::numeric_limits<T>::quiet_NaN());
+            damage(badR, r, 257, -std::numeric_limits<T>::infinity());
+            damage(badKl, kl, 1022, std::numeric_limits<T>::infinity());
+            damage(badKr, kr, 1025, std::numeric_limits<T>::quiet_NaN());
+            const auto accepted = render(poisoned, badL, badR, badKl, badKr, settings, 2, 193);
+            const auto reference = render(sanitized, l, r, kl, kr, settings, 2, 193);
+            check(accepted && reference && badL == l && badR == r,
+                  "Focus substitutes silence for a poisoned sample without poisoning the following windows");
+        }
+    }
+}
 void latencyAndSafety() {
     const std::size_t count=32768;
     std::vector<double> left(count,0.),right(count,0.),key(count,0.);
@@ -957,4 +1050,46 @@ int main(){
     _CrtSetReportMode(_CRT_ERROR,_CRTDBG_MODE_FILE);_CrtSetReportFile(_CRT_ERROR,_CRTDBG_FILE_STDERR);
     _set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
 #endif
-    try {sourceTaggedFirOracle();phaseRateOracles();firRateOracles();stagedTransformBudget();firSampleBudget();causalFirGenerations();firCallbackPartitions();fftChecks();mailboxConcurrency();defaultsAndReadiness();coreConcurrency();coherentFirPolicy();pinnedFrequencyCalibration();invalidCachedLatency();noStaleReactivation();alternatingBankConcurrency();contextOwnership();heldCompositionOffer<float>();heldCompositionOffer<double>();immutableOfferConsumption();configurationIdentityHelpers();scalarOnlyRequests();pinnedCandidateWithMovingScalars();latencyAndSafety();check(allocations==0,"zero C++ callback allocations");check(deallocations==0,"zero C++ callback deallocations");std::printf("{\"checks\":%d,\"failures\":%d,\"callback_allocations\":%llu,\"callback_deallocations\":%llu,\"compared_samples\":%llu}\n",checks,failures,static_cast<unsigned long long>(allocations),static_cast<unsigned long long>(deallocations),static_cast<unsigned long long>(comparedSamples));return failures?1:0;} catch(const std::exception &error){std::fprintf(stderr,"Focus exception: %s\n",error.what());return 2;} catch(...){std::fprintf(stderr,"Focus unknown exception\n");return 2;}}
+    try {
+        nonfiniteInputs<float>();
+        nonfiniteInputs<double>();
+        sourceTaggedFirOracle();
+        phaseRateOracles();
+        firRateOracles();
+        stagedTransformBudget();
+        firSampleBudget();
+        causalFirGenerations();
+        firCallbackPartitions();
+        fftChecks();
+        mailboxConcurrency();
+        defaultsAndReadiness();
+        coreConcurrency();
+        coherentFirPolicy();
+        pinnedFrequencyCalibration();
+        invalidCachedLatency();
+        noStaleReactivation();
+        alternatingBankConcurrency();
+        contextOwnership();
+        heldCompositionOffer<float>();
+        heldCompositionOffer<double>();
+        immutableOfferConsumption();
+        withdrawnLatencyOffer();
+        configurationIdentityHelpers();
+        scalarOnlyRequests();
+        pinnedCandidateWithMovingScalars();
+        latencyAndSafety();
+        check(allocations == 0, "zero C++ callback allocations");
+        check(deallocations == 0, "zero C++ callback deallocations");
+        std::printf("{\"checks\":%d,\"failures\":%d,\"callback_allocations\":%llu,"
+                    "\"callback_deallocations\":%llu,\"compared_samples\":%llu}\n",
+                    checks, failures, static_cast<unsigned long long>(allocations),
+                    static_cast<unsigned long long>(deallocations), static_cast<unsigned long long>(comparedSamples));
+        return failures ? 1 : 0;
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "Focus exception: %s\n", error.what());
+        return 2;
+    } catch (...) {
+        std::fprintf(stderr, "Focus unknown exception\n");
+        return 2;
+    }
+}

@@ -1,40 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// The plug-in scan off the message thread (DF-W34): one worker at a time scans with the app's one loader
-// while the owner (the message thread) waits for nothing. Live indexes plug-ins in the background
-// (Live 12 manual 4.6) and rescans from the Plug-Ins page of its Settings (Rescan); so does ADI.
+// The plug-in scan through engine-win's catalogue API (N58; DF-W34). The loader runs each discovery job
+// on a worker of its own; `PluginCatalogueService`, on the owner (the message thread), starts the jobs,
+// reads their progress, adopts each one that has finished, and lists what the catalogue holds. It never
+// scans and never waits. Live indexes plug-ins in the background (Live 12 manual 4.6) and rescans from
+// the Plug-Ins page of its Settings (Rescan); so does ADI.
 //
-// The scan itself is handed in (`Scan`): the app's scans the loader's VST3 and CLAP folders through the
-// dedicated helper and reads back what the loader holds; a test hands in one it drives. The worker posts
-// its end to the owner (`Post`, the app's `MessageManager::callAsync`), where the result is adopted.
+// The jobs, as engine-win's handoff names them: an Incremental discovery once the window is open (the
+// catalogue stored by earlier runs is read first, with the project, by the loader's read-only
+// hydration), a Refresh for Rescan, and an Incremental again when the Settings' plug-in folders change
+// (which leaves a running job stale). One job at a time: a job asked for while one runs follows it, and
+// a Refresh asked for during an Incremental stops that one first, since it covers it.
 //
-// While a scan runs the worker owns the loader. Anything else that needs the loader on the owner thread
-// (a project open, an Undo that brings a plug-in back) holds the service for the whole use (`Hold`): the
-// hold waits for the scan to end and adopts its result there and then, and no scan begins until it is
-// released, so the loader never runs two scans at once and never scans on two threads (a second scanner would meet the registry's refusal of a pending key and
-// quarantine good plug-ins). Quit cancels the scan through the helper's cancel flag and waits for it.
+// A project opened while a job runs would meet the loader's "needs discovery" for every plug-in the
+// catalogue lacks. So an open asks the service to settle first (`settleThen`): a running job is stopped,
+// the open runs between jobs, and the stopped job starts again (its finished probes are cached, so it
+// loses little). A plug-in the project holds that the catalogue already lists loads at once.
 //
-// Until engine-win's catalogue API (N58) is on main this is the window's interim: N58 brings per-file
-// progress, a VST3's kind, a startup cache and an adopt step, and this service then wraps that instead.
+// No JUCE: the app's `DiscoveryPort` is the loader's job API (`JuceDeviceLoader::startDiscovery` and
+// the rest, adapted in `ui_main.cpp`); a test's drives it by hand.
 #pragma once
 #include "adi/ui/plugin_listing.hpp"
-#include <atomic>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <functional>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <utility>
+#include <vector>
 namespace adi::ui {
 // What the Browser shows of the scan: whether one is running, how many files it probes, and the list.
 struct PluginScan {
     enum class Phase { NotStarted, Scanning, Done };
     Phase phase = Phase::NotStarted;
     std::size_t candidates = 0; // the files and bundles the running scan probes; 0 until counted
+    std::size_t completed = 0;  // of those, the ones probed so far
     PluginListing listing;      // what is listed: the last scan's, the previous list while one runs
 };
 // The Status Bar's line for the scan's state (DF-W34 a and b). A scan that stopped early is named with
@@ -44,9 +45,11 @@ inline std::string pluginScanStatus(const PluginScan &scan) {
     if (scan.phase == PluginScan::Phase::NotStarted)
         return "The plug-ins have not been scanned yet.";
     if (scan.phase == PluginScan::Phase::Scanning)
-        return scan.candidates > 0 ? "Scanning plug-ins: " + std::to_string(scan.candidates) +
-                                         (scan.candidates == 1 ? " file…" : " files…")
-                                   : std::string("Scanning plug-ins…");
+        return scan.candidates == 0 ? std::string("Scanning plug-ins…")
+               : scan.completed > 0
+                   ? "Scanning plug-ins: " + std::to_string(std::min(scan.completed, scan.candidates)) + " of " +
+                         std::to_string(scan.candidates) + (scan.candidates == 1 ? " file…" : " files…")
+                   : "Scanning plug-ins: " + std::to_string(scan.candidates) + (scan.candidates == 1 ? " file…" : " files…");
     if (!l.complete)
         return "The plug-in scan stopped early: " + l.stopped + ". " +
                (l.plugins.empty() ? std::string("Nothing could be listed.") : std::string("The list may be incomplete.")) +
@@ -60,180 +63,212 @@ inline std::string pluginScanStatus(const PluginScan &scan) {
                " could not be scanned; the rest are listed.";
     return {};
 }
-class PluginScanService {
+// The loader's job API as the service drives it, in its own words (`juce_device_loader.hpp`).
+enum class DiscoveryMode { CacheOnly, Incremental, Refresh };
+struct DiscoveryAdmission {
+    std::uint64_t job = 0;   // 0: refused
+    std::string refusal;     // why, a sentence's middle ("the plug-in scanner could not run (...)")
+};
+struct DiscoveryProgressRead {
+    std::uint64_t job = 0;
+    bool hasTotal = false;
+    std::size_t completed = 0, total = 0;
+};
+struct DiscoveryEnd {
+    enum class Outcome { Published, Missing, Legacy, Failed, Cancelled, Stale };
+    Outcome outcome = Outcome::Failed;
+    scan::Report report;
+    std::string error;
+};
+struct DiscoveryPort {
+    std::function<DiscoveryAdmission(DiscoveryMode)> start;
+    std::function<DiscoveryProgressRead()> progress;
+    std::function<std::optional<DiscoveryEnd>(std::uint64_t)> adopt; // nothing until the job has finished
+    std::function<bool(std::uint64_t)> cancel;
+    std::function<PluginListing()> listing; // what the catalogue holds now, as the Browser lists it
+};
+
+class PluginCatalogueService {
   public:
-    // Runs on the worker: scans, calls `counted` once the files to probe are known, and returns what the
-    // loader holds afterwards with the report's state (`applyReport`). It stops early when `cancel` is set.
-    using Scan = std::function<PluginListing(const std::atomic<bool> &cancel, const std::function<void(std::size_t)> &counted)>;
-    // Runs `job` on the owner thread later; the job may find the service gone and does nothing then.
-    using Post = std::function<void(std::function<void()>)>;
-    PluginScanService(Scan scan, Post post) : scan_(std::move(scan)), post_(std::move(post)) {}
-    PluginScanService(const PluginScanService &) = delete;
-    PluginScanService &operator=(const PluginScanService &) = delete;
-    ~PluginScanService() {
-        shared_->alive = false;
-        stop();
-    }
-    // Called on the owner after each change of `state()`: a scan begun, its files counted, its end.
+    explicit PluginCatalogueService(DiscoveryPort port) : port_(std::move(port)) {}
+    PluginCatalogueService(const PluginCatalogueService &) = delete;
+    PluginCatalogueService &operator=(const PluginCatalogueService &) = delete;
+    ~PluginCatalogueService() { stop(); }
+
+    // Called on the owner after each change of `state()`: a job begun, its progress, its end.
     std::function<void()> onChange;
     const PluginScan &state() const noexcept { return state_; }
-    bool running() const noexcept { return thread_.joinable(); }
-    // Begins a scan on the worker. One already running is let finish and another follows it (the folders
-    // changed, or Rescan was asked twice); the list stays on screen meanwhile.
-    void start() {
-        if (running() || held_ > 0) {
-            again_ = true;
+    bool running() const noexcept { return job_ != 0; }
+    std::uint64_t job() const noexcept { return job_; }
+
+    // The catalogue's list as it stands, with no job: at startup, once the loader has read the stored
+    // catalogue for the first project. Ignored while a job runs: its end lists afresh.
+    void showCatalogue() {
+        if (running() || !port_.listing)
             return;
-        }
-        again_ = false;
-        auto shared = shared_;
-        shared->cancel = false;
-        {
-            std::lock_guard lock(shared->mutex);
-            shared->result.reset();
-            shared->counted = 0;
-        }
-        const auto generation = ++generation_;
-        state_.phase = PluginScan::Phase::Scanning;
-        state_.candidates = 0;
-        shared->owner = this;
-        thread_ = std::thread([shared, generation, scan = scan_, post = post_] {
-            PluginListing found;
-            try {
-                found = scan(shared->cancel, [&shared, generation, &post](std::size_t n) {
-                    {
-                        std::lock_guard lock(shared->mutex);
-                        shared->counted = n;
-                    }
-                    post([shared, generation] {
-                        if (shared->alive && shared->owner != nullptr)
-                            shared->owner->counted(generation);
-                    });
-                });
-            } catch (const std::exception &e) {
-                found.complete = false;
-                found.stopped = std::string("the scan failed (") + e.what() + ")";
-            }
-            {
-                std::lock_guard lock(shared->mutex);
-                shared->result = std::move(found);
-            }
-            post([shared, generation] {
-                if (shared->alive && shared->owner != nullptr)
-                    shared->owner->finished(generation);
-            });
-        });
+        auto listing = port_.listing();
+        listing.complete = state_.listing.complete;
+        listing.stopped = state_.listing.stopped;
+        listing.failed = state_.listing.failed;
+        state_.listing = std::move(listing);
+        if (state_.phase == PluginScan::Phase::NotStarted)
+            state_.phase = PluginScan::Phase::Done;
         changed();
     }
-    // The gate in front of the loader: `hold()` waits for a running scan to end and adopts its result
-    // there and then; until the matching `release()` no scan begins (one asked for meanwhile, by Rescan,
-    // a folder change or a choice of Plug-Ins, only marks itself), so the owner has the loader to itself
-    // for the whole load, even if a plug-in runs a message loop of its own while it is made. Held twice
-    // (a load inside a load), it is released twice. The scan asked for begins from the owner's queue
-    // after the last release.
-    void hold() {
-        ++held_;
-        if (running()) {
-            thread_.join();
-            adopt(false);
-        }
-    }
-    void release() {
-        if (held_ == 0 || --held_ != 0 || !again_)
+    // Asks for a job: now when none runs, else after the running one. A Refresh asked for during an
+    // Incremental or a CacheOnly stops that one first.
+    void request(DiscoveryMode mode) {
+        if (stopped_)
             return;
-        post_([shared = shared_] {
-            if (shared->alive && shared->owner != nullptr)
-                shared->owner->resume();
-        });
+        queue(mode);
+        if (!running()) {
+            startQueued();
+            return;
+        }
+        if (rank(mode) > rank(mode_))
+            cancelRunning();
     }
-    bool held() const noexcept { return held_ > 0; }
-    // The RAII form for one load.
-    struct Hold {
-        explicit Hold(PluginScanService &s) : service(s) { service.hold(); }
-        ~Hold() { service.release(); }
-        Hold(const Hold &) = delete;
-        Hold &operator=(const Hold &) = delete;
-        PluginScanService &service;
-    };
-    // Quit: cancels a running scan and waits for it; its result is dropped and the list stays as it was.
-    void stop() {
+    // Runs `open` with no job running: now when none runs; else the running job is stopped, `open` runs
+    // once it has ended, and the job starts again afterwards.
+    void settleThen(std::function<void()> open) {
+        if (stopped_)
+            return;
+        if (!running()) {
+            open();
+            return;
+        }
+        settled_.push_back(std::move(open));
+        queue(mode_);
+        cancelRunning();
+    }
+    // Reads the running job's progress and adopts it once it has finished. The app's timer calls this.
+    void poll() {
         if (!running())
             return;
-        shared_->cancel = true;
-        thread_.join();
-        again_ = false;
-        ++generation_;
-        state_.phase = PluginScan::Phase::Done;
-        state_.candidates = 0;
+        if (port_.progress) {
+            const auto p = port_.progress();
+            if (p.job == job_) {
+                const auto total = p.hasTotal ? p.total : 0;
+                if (total != state_.candidates || p.completed != state_.completed) {
+                    state_.candidates = total;
+                    state_.completed = p.completed;
+                    changed();
+                }
+            }
+        }
+        if (auto end = port_.adopt(job_))
+            finish(*end);
     }
-    // A listing read on the owner while no scan runs: the loader scanned on its own, for a project.
-    // Offered while a scan runs, it is ignored: the scan's own result follows.
-    void adoptListing(PluginListing listing) {
-        if (running())
-            return;
-        state_.listing = std::move(listing);
-        state_.phase = PluginScan::Phase::Done;
-        changed();
+    // Quit: the running job is cancelled and nothing more starts; the loader's own teardown ends its
+    // worker. Opens waiting for the job are dropped with it.
+    void stop() {
+        stopped_ = true;
+        if (running() && port_.cancel)
+            port_.cancel(job_);
+        job_ = 0;
+        pending_.reset();
+        settled_.clear();
     }
 
   private:
-    struct Shared {
-        std::atomic<bool> cancel{false};
-        std::mutex mutex;
-        std::optional<PluginListing> result;
-        std::size_t counted = 0;
-        bool alive = true;                   // owner thread only
-        PluginScanService *owner = nullptr;  // owner thread only
-    };
-    void counted(std::uint64_t generation) {
-        if (generation != generation_ || !running())
+    static int rank(DiscoveryMode m) noexcept { return m == DiscoveryMode::Refresh ? 2 : m == DiscoveryMode::Incremental ? 1 : 0; }
+    void queue(DiscoveryMode mode) {
+        if (!pending_ || rank(mode) > rank(*pending_))
+            pending_ = mode;
+    }
+    void cancelRunning() {
+        if (!running() || quietCancel_)
             return;
-        std::size_t n = 0;
-        {
-            std::lock_guard lock(shared_->mutex);
-            n = shared_->counted;
+        quietCancel_ = true;
+        if (port_.cancel)
+            port_.cancel(job_);
+    }
+    void startQueued() {
+        if (stopped_ || running() || !pending_)
+            return;
+        const auto mode = *pending_;
+        pending_.reset();
+        const auto admission = port_.start(mode);
+        if (admission.job == 0) {
+            // Nothing runs; the list stays, named as stopped, and no job is tried again until something
+            // asks anew (Rescan, a folder change).
+            pending_.reset();
+            state_.phase = PluginScan::Phase::Done;
+            state_.candidates = state_.completed = 0;
+            state_.listing.complete = false;
+            state_.listing.failed = 0;
+            state_.listing.stopped =
+                admission.refusal.empty() ? std::string("the plug-in scan could not start") : admission.refusal;
+            changed();
+            return;
         }
-        state_.candidates = n;
+        job_ = admission.job;
+        mode_ = mode;
+        quietCancel_ = false;
+        state_.phase = PluginScan::Phase::Scanning;
+        state_.candidates = state_.completed = 0;
         changed();
     }
-    void finished(std::uint64_t generation) {
-        if (generation != generation_ || !running())
-            return;
-        thread_.join();
-        adopt(true);
-    }
-    void adopt(bool restart) {
-        std::optional<PluginListing> result;
-        {
-            std::lock_guard lock(shared_->mutex);
-            result = std::move(shared_->result);
-            shared_->result.reset();
+    void finish(const DiscoveryEnd &end) {
+        job_ = 0;
+        const bool quiet = quietCancel_;
+        quietCancel_ = false;
+        using O = DiscoveryEnd::Outcome;
+        auto listing = port_.listing ? port_.listing() : state_.listing;
+        switch (end.outcome) {
+        case O::Published:
+        case O::Missing: // nothing stored yet: what the catalogue holds, with no failure to name
+        case O::Legacy:
+            applyReport(listing, end.report);
+            state_.listing = std::move(listing);
+            break;
+        case O::Stale:
+            // The Settings' folders changed under it: the catalogue stays, and the job runs again on them.
+            queue(mode_);
+            break;
+        case O::Cancelled:
+            if (quiet)
+                break; // stopped for an open or a Refresh: not the person's stop, nothing to name
+            [[fallthrough]];
+        case O::Failed:
+            // What was accepted before stays listed; why this job stopped is named.
+            applyReport(listing, end.report);
+            listing.complete = false;
+            listing.failed = 0;
+            if (listing.stopped.empty() || listing.stopped == "the scan did not finish")
+                listing.stopped = end.outcome == O::Cancelled ? std::string("the scan was stopped before it finished")
+                                  : end.error.empty()           ? std::string("the scan did not finish")
+                                                                : "the scan failed (" + end.error + ")";
+            state_.listing = std::move(listing);
+            break;
         }
-        ++generation_;
+        state_.candidates = state_.completed = 0;
+        // Between jobs: the opens that waited run now, with no job beside them.
+        auto opens = std::move(settled_);
+        settled_.clear();
+        for (auto &open : opens)
+            if (!stopped_)
+                open();
+        if (pending_ && !stopped_) {
+            startQueued();
+            if (running() || state_.phase == PluginScan::Phase::Done)
+                return;
+        }
         state_.phase = PluginScan::Phase::Done;
-        state_.candidates = 0;
-        if (result)
-            state_.listing = std::move(*result);
         changed();
-        if (restart && again_)
-            start();
-    }
-    // The scan asked for while the loader was held, once the hold is gone.
-    void resume() {
-        if (!running() && held_ == 0 && again_)
-            start();
     }
     void changed() {
         if (onChange)
             onChange();
     }
-    Scan scan_;
-    Post post_;
-    std::shared_ptr<Shared> shared_ = std::make_shared<Shared>();
-    std::thread thread_;
-    std::uint64_t generation_ = 0;
-    bool again_ = false;
-    int held_ = 0;
+
+    DiscoveryPort port_;
+    std::uint64_t job_ = 0;
+    DiscoveryMode mode_ = DiscoveryMode::Incremental;
+    std::optional<DiscoveryMode> pending_;
+    bool quietCancel_ = false;
+    bool stopped_ = false;
+    std::vector<std::function<void()>> settled_;
     PluginScan state_;
 };
 } // namespace adi::ui

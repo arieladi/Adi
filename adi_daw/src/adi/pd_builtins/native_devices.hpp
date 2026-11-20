@@ -10,6 +10,18 @@ struct MpeOut;
 }
 
 namespace adi::device {
+// ADR-0188 d3. Bar and beat are one-based. The tick field is the absolute
+// musical tick modulo the ticks per quarter, independent of the meter.
+struct PdTransport {
+    bool playing = false;
+    double bpm = 120.0;
+    int timeSigNumerator = 4;
+    int timeSigDenominator = 4;
+    double bar = 1.0;
+    double beat = 1.0;
+    double ticksInQuarter = 0.0;
+};
+
 // ADR-0203 d4: a shipped canvas can use the same native core as its compiled
 // Pd external, without introducing a second 64-sample scheduler. Construction
 // and prepare are off-thread; every other method is serialized on the audio
@@ -18,9 +30,10 @@ class NativePdDevice {
   public:
     virtual ~NativePdDevice() = default;
     virtual void prepare(double sampleRate, int maxFrames) = 0;
-    virtual void process(const engine::NodeIo&) noexcept = 0;
+    virtual void process(const engine::NodeIo&, const PdTransport* fallback = nullptr) noexcept = 0;
     virtual bool sendParameter(int id, float value) noexcept = 0;
     [[nodiscard]] virtual int latencySamples() const noexcept = 0;
+    [[nodiscard]] virtual bool usesTransportPosition() const noexcept { return false; }
     virtual void tempo(double) noexcept {}
     virtual void midi(const engine::MpeOut&) noexcept {}
 };

@@ -209,9 +209,97 @@ void pd_free(t_pd *x)
             pd_unbind(x, a);
     }]=])
 file(WRITE "${adi_pd_overlay}/m_pd.c" "${adi_pd_text}")
+# DF-E36 (a), (b): a patch cannot close the patch ADI opened, nor quit. In
+# canvas_menuclose, force 0 or 1 to a top-level canvas and force 2 to any
+# canvas free the root under the engine (a use after free and a double free
+# in LibPdEngine::close); force 3 calls glob_verifyquit directly, past the
+# glob fence, and with no dirty canvas sets the process-wide sys_quit that
+# libpd never clears -- every instance's scheduler then skips its DSP. Each
+# is refused by name. Force 0 or 1 to a subpatch, which headless only hides
+# it, stays.
+file(READ "${adi_pd_source}/g_editor.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[void canvas_menuclose(t_canvas *x, t_floatarg fforce)
+{
+    int force = fforce;]=] [=[void canvas_menuclose(t_canvas *x, t_floatarg fforce)
+{
+    int force = fforce;
+    if (force == 3 || force == 2 || !x->gl_owner)
+    {
+        pd_error(0, "ADI refused [menuclose %d] (DEV-09): a patch cannot close the patch "
+            "it is in, or quit", force);
+        return;
+    }]=])
+file(WRITE "${adi_pd_overlay}/g_editor.c" "${adi_pd_text}")
+# DF-E36 (c): no help patch is opened for a patch. The canvas's and [array
+# define]'s `done-popup 2` reach glob_evalfile through open_via_helppath: the
+# same effect the glob fence refuses for `open` and `menunew`. ADI calls it
+# from nowhere; libpd_openfile and abstraction loading do not pass here.
+file(READ "${adi_pd_source}/s_path.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[void open_via_helppath(const char *name, const char *dir)
+{]=] [=[void open_via_helppath(const char *name, const char *dir)
+{
+    if (name)
+    {
+        pd_error(0, "ADI refused a help patch: %s (DEV-09)", name);
+        return;
+    }]=])
+file(WRITE "${adi_pd_overlay}/s_path.c" "${adi_pd_text}")
+# DF-E36 (e): a patch cannot change where Pd looks for code. canvas_declare
+# serves the [declare] box, the file's `#X declare` record and a run-time
+# `declare` message alike; its -path, -stdpath, -lib and -stdlib are refused
+# by name. The engine's own libpd_add_to_search_path is untouched.
+file(READ "${adi_pd_source}/g_canvas.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+foreach(adi_pd_call IN ITEMS "canvas_path(x, e, item);" "canvas_stdpath(e, item);"
+                             "canvas_lib(x, e, item);" "canvas_stdlib(e, item);")
+    adi_pd_replace("            ${adi_pd_call}"
+        "            pd_error(0, \"ADI refused [declare %s %s] (DEV-09): a patch cannot change where Pd looks for code\", flag, item);")
+endforeach()
+file(WRITE "${adi_pd_overlay}/g_canvas.c" "${adi_pd_text}")
+# DF-E36 (a)'s "menusave and menusaveas, which write files": a patch cannot
+# write files through its canvas. `savetofile` writes the patch's text to any
+# name in any folder, `menusave` overwrites the patch's own file with what the
+# patch made of itself at run time, `write` writes the canvas's data; each is
+# a message any patch can send, past the PD4 walk, and each is refused by
+# name. ADI saves no patch through Pd. menusaveas only asks a GUI (none here).
+file(READ "${adi_pd_source}/g_readwrite.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[static void canvas_savetofile(t_canvas *x, t_symbol *filename, t_symbol *dir,
+    float fdestroy)
+{]=] [=[static void canvas_savetofile(t_canvas *x, t_symbol *filename, t_symbol *dir,
+    float fdestroy)
+{
+    if (filename)
+    {
+        pd_error(0, "ADI refused [savetofile %s] (DEV-09): a patch cannot write files",
+            filename->s_name);
+        return;
+    }]=])
+adi_pd_replace([=[static void canvas_menusave(t_canvas *x, t_float fdestroy)
+{]=] [=[static void canvas_menusave(t_canvas *x, t_float fdestroy)
+{
+    if (x)
+    {
+        pd_error(0, "ADI refused [menusave] (DEV-09): a patch cannot write files");
+        return;
+    }]=])
+adi_pd_replace([=[static void glist_write(t_glist *x, t_symbol *filename, t_symbol *format)
+{]=] [=[static void glist_write(t_glist *x, t_symbol *filename, t_symbol *format)
+{
+    if (filename)
+    {
+        pd_error(0, "ADI refused [write %s] (DEV-09): a patch cannot write files",
+            filename->s_name);
+        return;
+    }]=])
+file(WRITE "${adi_pd_overlay}/g_readwrite.c" "${adi_pd_text}")
 get_target_property(adi_pd_sources libpd_static SOURCES)
-list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd)\\.c$")
+list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd|g_editor|s_path|g_canvas|g_readwrite)\\.c$")
 set_property(TARGET libpd_static PROPERTY SOURCES "${adi_pd_sources}")
 target_sources(libpd_static PRIVATE "${adi_pd_overlay}/s_loader.c" "${adi_pd_overlay}/m_class.c"
                                     "${adi_pd_overlay}/g_io.c" "${adi_pd_overlay}/m_glob.c"
-                                    "${adi_pd_overlay}/m_pd.c")
+                                    "${adi_pd_overlay}/m_pd.c" "${adi_pd_overlay}/g_editor.c"
+                                    "${adi_pd_overlay}/s_path.c" "${adi_pd_overlay}/g_canvas.c"
+                                    "${adi_pd_overlay}/g_readwrite.c")

@@ -71,6 +71,42 @@ void band(C &c, int which, int type, double freq, double db = 0, double q = .707
     c.set(static_cast<C::Param>(i + 3), db);
     c.set(static_cast<C::Param>(i + 4), q);
 }
+// DEV-22: Live 12.4's EQ Eight browser default, per curve (A, B) and band:
+// on, type (the menu's order, Live's own), frequency. Every gain 0 dB, every
+// Q 0.7071; Stereo, Edit A, Adaptive Q on, Scale 100 %, Output 0 dB, HQ off.
+struct LiveBand { int on, type; double hz; };
+constexpr LiveBand kLiveDefault[2][8] = {
+    {{1, 2, 30}, {1, 3, 200}, {1, 3, 1000}, {1, 5, 5000},
+     {0, 3, 100}, {0, 3, 10000}, {0, 3, 5000}, {0, 6, 18000}},
+    {{0, 1, 40}, {0, 2, 200}, {1, 3, 100}, {1, 3, 500},
+     {1, 3, 2000}, {1, 3, 10000}, {0, 5, 5000}, {0, 6, 18000}},
+};
+constexpr double kLiveGlobal[7] = {0, 0, 1, 100, 0, 0, 0};
+double liveDefault(int id) {
+    if (id >= 80) return kLiveGlobal[id - 80];
+    const auto& b = kLiveDefault[id / 40][(id % 40) / 5];
+    switch (id % 5) {
+    case 0: return b.on;
+    case 1: return b.type;
+    case 2: return b.hz;
+    case 3: return 0;
+    default: return .70710678;
+    }
+}
+void liveDefaults() {
+    C eq;
+    int wrong = 0;
+    for (int id = 0; id < C::Count; ++id)
+        if (std::abs(eq.value(static_cast<std::size_t>(id)) - liveDefault(id)) > 1e-6) {
+            std::printf("  parameter %d: %g, Live %g\n", id, eq.value(static_cast<std::size_t>(id)), liveDefault(id));
+            ++wrong;
+        }
+    check(wrong == 0, "every native default is Live 12.4's (DEV-22)");
+    auto x = tone(1000, .1);
+    C fresh;
+    fresh.prepare(48000);
+    check(render(fresh, x) == x, "Live's default curve (all gains 0 dB) is bit-exact unity");
+}
 void measurements() {
     auto x = tone(1000, .1);
     C flat;
@@ -183,6 +219,7 @@ void measurements() {
 }
 } // namespace
 int main() {
+    liveDefaults();
     measurements();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

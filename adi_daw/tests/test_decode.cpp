@@ -277,7 +277,9 @@ void pinned(const fs::path& root) {
     const auto a = decodedSize(root, "tone24.flac");
     Clock clock;
     const auto folder = root / "pinned";
-    DecodeCache cache(folder, {a, 0}, clock.hooks());
+    // Each individual estimate must fit, including its 4 KiB allowance. The
+    // two actual files together still exceed this cap while A remains pinned.
+    DecodeCache cache(folder, {a + 4096, 0}, clock.hooks());
     const auto pa = cache.playable(fixture("tone24.flac")); clock.now += 10;   // in use: never released
     const auto pb = cache.playable(fixture("rate8k.flac"));
     check(fs::exists(pa), "a file a live session is reading is never evicted, even over the size limit");

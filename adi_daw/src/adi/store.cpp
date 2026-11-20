@@ -105,6 +105,7 @@ const std::vector<MigrationStep>& migrationSteps() {
         {19, {"history_checkpoint"}},
         {20, {"history_state_rows", "history_state_manifests", "history_checkpoint_content"}},
         {21, {"history_roots", "history_origin_root"}},
+        {22, {"routing_key_taps"}},
     };
     return steps;
 }

@@ -53,6 +53,49 @@ struct Fixture {
         [this](std::int64_t, ScopePoint) { ++acquireCalls; return tap; },
         [this](std::int64_t, ScopePoint) { ++releaseCalls; }, SharedAnalysis::Mode::Manual};
 };
+void parkedSilence() {
+    Fixture f;
+    auto request = SharedAnalysis::Request{1};
+    request.outputs = SharedAnalysis::Spectrogram;
+    const auto view = f.broker.acquire(request);
+    const auto quiet = [&](std::uint64_t revision) {
+        f.tap->write(static_cast<const float *>(nullptr), nullptr, 480, 0, false, revision);
+        f.broker.pump();
+    };
+    tone(*f.tap);
+    f.broker.pump();
+    const auto playing = view.read();
+    check(playing && playing->advancing, "playing signal seeds the spectrogram");
+    quiet(1); quiet(1); quiet(1);
+    const auto parked = view.read();
+    const auto stable = f.broker.stats();
+    check(parked && !parked->advancing && parked->peak[0] == 0 && parked->sourceEpoch > playing->sourceEpoch,
+          "a complete quiet window replaces the playing picture after Stop");
+    // Silence extends beyond the entire ring to also test resuming without a false overrun.
+    for (int block = 0; block < 1100; ++block) quiet(1);
+    const auto idle = f.broker.stats();
+    check(idle.workerPasses == stable.workerPasses && idle.cursorReads == stable.cursorReads &&
+              idle.publications == stable.publications && view.read() == parked,
+          "unchanged stopped silence has no analysis work or scrolling publications");
+    const std::vector<float> monitor(1024, .25f);
+    f.tap->write(monitor.data(), monitor.data(), 1024, 0, false, 1);
+    f.broker.pump();
+    const auto audible = view.read();
+    check(audible && audible->peak[0] == .25f && !audible->advancing &&
+              audible->sourceEpoch == parked->sourceEpoch && audible->overrunCount == parked->overrunCount,
+          "input monitoring wakes while parked, without misreporting a skipped silent interval as an overrun");
+    quiet(1); quiet(1); quiet(1);
+    const auto beforeSeek = view.read();
+    quiet(2); quiet(2); quiet(2);
+    const auto afterSeek = view.read();
+    check(beforeSeek && afterSeek && !afterSeek->advancing && afterSeek->peak[0] == 0 &&
+              afterSeek->sourceEpoch > beforeSeek->sourceEpoch,
+          "an idle same-stamp seek invalidates the old parked publication");
+    tone(*f.tap, 1024, .5f, 1.f, 0);
+    f.broker.pump();
+    check(view.read() && view.read()->advancing && view.read()->peak[0] == .5f,
+          "playback resumes with the first complete window");
+}
 void sharing() {
     Fixture f;
     f.broker.requestFrame();
@@ -870,17 +913,19 @@ void boundedImmutableHistory() {
           broker.stats().historyBytes == 3 * columnBytes && frozen->columns.size() == 3 &&
           frozen->columns.back().serial == 4, "frozen snapshots remain immutable and fully charged while new history is capped");
     const auto held = broker.stats();
-    broker.pump();
-    check(broker.stats().publications == held.publications && broker.stats().analysisWindows == held.analysisWindows &&
-          broker.stats().transforms == held.transforms, "a still-held cap retries without redundant FFT, aggregation or publication");
+    for (int i = 0; i < 100; ++i) broker.pump();
+    check(broker.stats().workerPasses == held.workerPasses && broker.stats().publications == held.publications &&
+          broker.stats().analysisWindows == held.analysisWindows && broker.stats().transforms == held.transforms,
+          "a frozen allocation cap does not start any worker passes before bytes are released");
     frozen.reset();
     broker.pump();
     check(!lease.read()->historyLimited && lease.read()->columns.back().serial == 6 &&
-          lease.read()->columns.front().serial == 4 && lease.read()->columns.size() == 2 &&
-          lease.read()->droppedHistoryColumns == 4 && broker.stats().historyBytes == 2 * columnBytes,
-          "releasing frozen backing resumes the newest pending hop with the missing hop left explicit");
+          lease.read()->columns.front().serial == 4 && lease.read()->columns.size() == 3 &&
+          lease.read()->columns[1].serial == 5 &&
+          lease.read()->droppedHistoryColumns == 3 && broker.stats().historyBytes == 3 * columnBytes,
+          "releasing frozen backing publishes all staged hops in order");
     auto retained = lease.read(); lease.reset();
-    check(broker.stats().historyBytes == 2 * columnBytes && broker.stats().spectralPlans == 0,
+    check(broker.stats().historyBytes == 3 * columnBytes && broker.stats().spectralPlans == 0,
           "closed demand releases FFT resources while client-held history stays charged");
     retained.reset();
     check(broker.stats().historyBytes == 0, "last frozen buffer release returns all scoped history payload bytes");
@@ -894,6 +939,74 @@ void boundedImmutableHistory() {
           "ordinary default history keeps all 128 unchanged-hop columns without resource drops");
     check(normal.broker.stats().historyBytes == 128 * columnBytes,
           "ordinary current publication shares the domain's 128 bin buffers without duplicate payload copies");
+}
+void fullHistoryBursts() {
+    const auto tap = std::make_shared<ScopeTap>(48000, 1.);
+    constexpr std::size_t columnBytes = 513 * sizeof(float), capacity = 8 * columnBytes;
+    SharedAnalysis broker([&](std::int64_t, ScopePoint) { return tap; }, [](std::int64_t, ScopePoint) {},
+                          SharedAnalysis::Mode::Manual, capacity);
+    SharedAnalysis::Request request{1};
+    request.outputs = SharedAnalysis::Spectrogram | SharedAnalysis::Average1s;
+    const auto lease = broker.acquire(request);
+    tone(*tap, 1024 + 7 * 256);
+    broker.pump();
+    auto displayed = lease.read();
+    check(displayed && displayed->columns.size() == 8 && broker.stats().historyBytes == capacity,
+          "eight hops occupy the immutable budget");
+    tone(*tap, 4 * 256, .4f, 1.f, tap->written());
+    broker.pump();
+    check(displayed && displayed->columns.size() == 8 && displayed->columns.front().serial == 1,
+          "a view that still owns the preceding frame keeps its immutable history");
+    displayed = lease.read();
+    tone(*tap, 4 * 256, .3f, 1.f, tap->written());
+    broker.pump();
+    displayed = lease.read();
+    broker.pump();
+    auto newest = lease.read();
+    bool continuous = newest && newest->columns.size() == 8 && newest->historySerial == 16;
+    if (continuous)
+        for (std::size_t i = 0; i < 8; ++i)
+            continuous = continuous && newest->columns[i].serial == 9 + i &&
+                         newest->columns[i].firstStamp == static_cast<std::int64_t>((8 + i) * 256);
+    check(continuous && !newest->historyLimited && newest->droppedHistoryColumns == 8 &&
+              broker.stats().historyPeakBytes == capacity && lease.readAverage()->processedWindows == 16,
+          "successive four-hop bursts survive an exact full cap, in order and within the immutable limit");
+    displayed.reset();
+    tone(*tap, 1024, .2f, 1.f, tap->written() + 48000);
+    broker.pump();
+    const auto located = lease.read();
+    check(located && located->sourceEpoch != newest->sourceEpoch && located->gapCount == newest->gapCount + 1,
+          "a locate explicitly separates the two history epochs");
+    newest.reset();
+    broker.pump();
+    check(lease.read() && !lease.read()->columns.empty() && lease.read()->columns.front().firstStamp >= 48000,
+          "staged history cannot cross a real discontinuity");
+}
+void finiteExtremeSpectrum() {
+    using Channel = SharedAnalysis::Channel;
+    for (const auto channel : {Channel::Mid, Channel::Side, Channel::Left, Channel::StereoPower}) {
+        const auto size = channel == Channel::StereoPower ? SharedAnalysis::kMaxFftSize : 1024;
+        Fixture f;
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, size, channel};
+        request.outputs = SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s;
+        const auto lease = f.broker.acquire(request);
+        auto peak = channel == Channel::Mid || channel == Channel::Side ? std::numeric_limits<float>::max() : 1.e20f;
+        std::vector<float> left(static_cast<std::size_t>(size)), right(left.size());
+        for (int i = 0; i < size; ++i) {
+            const auto at = static_cast<std::size_t>(i);
+            left[at] = peak * static_cast<float>(std::cos(2 * std::numbers::pi * 16 * i / size));
+            right[at] = channel == Channel::Side ? -left[at] : left[at];
+        }
+        f.tap->write(left.data(), right.data(), size, 0, true);
+        f.broker.pump();
+        const auto result = lease.read();
+        const auto finite = [](const auto &bins) { return !bins.empty() &&
+            std::all_of(bins.begin(), bins.end(), [](float bin) { return std::isfinite(bin); }); };
+        check(result && finite(result->binsDbfs) && !result->columns.empty() &&
+                  finite(*result->columns.back().binsDbfs) && result->nonFiniteSamples == 0 &&
+                  lease.readAverage()->status == SharedAnalysis::AverageStatus::InvalidInput,
+              "finite extreme input cannot overflow any published spectrum or accepted average");
+    }
 }
 void actualRateHistory() {
     for (const double rate : {44100., 96000., 192000.}) {
@@ -972,8 +1085,8 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); actualRateHistory(); lateRateAndFailedNegotiation(); }
+    try { parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
