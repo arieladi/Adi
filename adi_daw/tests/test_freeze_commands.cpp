@@ -466,6 +466,32 @@ void refusals() {
               !freeze::prepareFreeze(*p.store, captured, 0, 100).ready(),
           "changed history head refuses old document capture");
 }
+
+void mutedMidiDoesNotForward() {
+    Project p;
+    auto& db=p.store->db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(3,'midi','Muted MIDI');"
+            "INSERT INTO mixer_strip(track_id) VALUES(3);"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,muted) "
+            "VALUES(3,3,'midi',0,240240,1)");
+    if(!OpJournal(*p.store).commit(op("note.insert",
+          {{"clip",3},{"note",1},{"start",0},{"dur",120120},{"key",60}})).ok)
+        throw std::runtime_error("write forwarded MIDI fixture note");
+    auto spec=p.spec();
+    spec.tracks={3};
+    Counts counts;
+    const auto muted=render::captureFreezeAudio(*p.store,spec,p.loader(counts));
+    const auto prepared=freeze::prepareFreeze(*p.store,muted,0,100);
+    check(muted.ready() && prepared.ready(),
+          "single-track Freeze accepts muted MIDI without an instrument");
+
+    db.exec("UPDATE clips SET muted=0 WHERE id=3");
+    const auto audible=render::captureFreezeAudio(*p.store,spec,p.loader(counts));
+    const auto refused=freeze::prepareFreeze(*p.store,audible,0,100);
+    check(audible.ready() && !refused.ready() &&
+          refused.error().find("forwarded MIDI stream")!=std::string::npos,
+          "a playable forwarded note still refuses single-track Freeze");
+}
 } // namespace
 int main() {
     try {
@@ -473,6 +499,7 @@ int main() {
         lifecycle();
         recovery();
         refusals();
+        mutedMidiDoesNotForward();
         warmSession();
         integrity();
         schemaInvalidation();

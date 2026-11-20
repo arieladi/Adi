@@ -110,8 +110,9 @@ FreezeEdit prepareFreeze(Store &store, render::FreezeAudioCapture capture, std::
                     throw std::runtime_error("freeze is unavailable while the track receives audio or "
                                              "sidechain input from another track");
             if (!stream.wholeGroup && stream.source.prefixDevices.empty() &&
-                std::any_of(model.clips.begin(), model.clips.end(),
-                            [id](const auto &clip) { return clip.trackId == id && clip.kind == "midi"; }))
+                std::ranges::any_of(engine::timelineClips(model), [id](const auto &clip) {
+                    return clip.trackId == id && clip.kind == "midi" && !clip.muted;
+                }))
                 throw std::runtime_error(
                     "freeze cannot discard a forwarded MIDI stream; add its instrument to the track");
             FingerprintSpec spec;

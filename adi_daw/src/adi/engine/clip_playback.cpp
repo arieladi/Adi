@@ -489,7 +489,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(!project->rows.audioClips.empty() && std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
     for(const auto& row:timelineClips(project->rows)) {
-        if(row.kind!="audio") continue;
+        // Muted clips do not need a reader or a playable media source.
+        if(row.kind!="audio" || row.muted) continue;
         const auto label="clips#"+std::to_string(row.id)+": ";
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
@@ -506,10 +507,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");
-            // A muted clip opens no media. Its decode job would be cancelled
-            // when it is dropped here, yet stay queued against the decoder's
-            // job and space budgets ahead of the clips that do play.
-            if(row.muted) continue;
             // Direct WAV remains unchanged. Plain compressed clips consume a
             // shared worker's flushed prefixes; Warp still needs its complete
             // offline render and unknown-length sources retain the full path.
