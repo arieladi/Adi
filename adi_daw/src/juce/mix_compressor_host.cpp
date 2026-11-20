@@ -135,7 +135,12 @@ class CompressorDevice final : public DeviceInstance {
         tail_.store(engine::kInfiniteTail, std::memory_order_release);
     }
     std::int32_t latencySamples() const noexcept override { return 0; }
-    std::int64_t tailSamples() const noexcept override { return tail_.load(std::memory_order_acquire); }
+    void setOffline(bool offline) noexcept override { offline_.store(offline, std::memory_order_release); }
+    std::int64_t tailSamples() const noexcept override {
+        if (offline_.load(std::memory_order_acquire))
+            return engine::kInfiniteTail;
+        return tail_.load(std::memory_order_acquire);
+    }
     void didSuspend() noexcept override { wakeReset_ = true; }
     void process(const engine::NodeIo &io) noexcept override {
         [[maybe_unused]] const ScopedFlushDenormals denormals;
@@ -325,6 +330,7 @@ class CompressorDevice final : public DeviceInstance {
     bool prepared_ = false;
     bool wakeReset_ = false; // only the audio owner, including graph suspension
     std::atomic<std::int64_t> tail_{engine::kInfiniteTail};
+    std::atomic<bool> offline_{false};
     DeviceIdentity identity_;
     ReactivationGate gate_;
     c::Core core_;

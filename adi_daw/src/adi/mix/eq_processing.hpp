@@ -12,6 +12,9 @@ class EqProcessingBackend {
 public:
     virtual ~EqProcessingBackend() = default;
     [[nodiscard]] virtual bool supportsDouble() const noexcept { return false; }
+    // Audio owner only, after a non-empty successful process segment. The
+    // concrete DSP can certify a history-free path, including its active plan.
+    [[nodiscard]] virtual bool provesZeroTail() const noexcept { return false; }
     virtual void prepare(double rate, std::int32_t maximumFrames, std::int32_t channels,
                          const eq::Settings&) = 0;
     virtual void release() noexcept = 0;
