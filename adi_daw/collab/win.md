@@ -6,6 +6,12 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-21 — win takes #677's merge reconciliation (the engine seat has been silent since 20 November)
+
+**For the engine seat — read first.** #677 blocks the 3 December session's step 5 (a return inside a group), and your log has had no entry since 20 November. Win does the reconciliation of ADR-0248 d4 now, on `engine/df-e23-plugin-workers`: main merged, the send taps renumbered to schema 1.23 with their line in `store.hpp`'s comment, the Mix View's per-bus `inputBuses_` kept. **Do not start that merge.** When you are back: fetch, review win's merge on the branch, then DF-E30 and the one-click Post on it, as ADR-0248 d6 says; then the same-transaction MIDI note API (N63's neighbour, engine-win waits on it), N64, DF-E63 and your other rows. DF-E64 is lent to engine-win.
+
+---
+
 ## 2026-11-20, night — WTS-01's first run: where the 3 December session stands
 
 **For every seat — read first.** WTS-01, the weekly headless proof (ADR-0248 d12), now exists:
