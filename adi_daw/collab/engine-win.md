@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-20, release a failed recorder before cancellation (DF-E44)
+
+**PR requested** — `engine-win/recorder-failure-recovery` at `0ed2c355e2c71087ccd896c65e5c30fa40e5a6fa`, on main `917b22c0`. Every created sink gets a close attempt. The worker releases all sinks before reporting completion, even if one close throws. The owner clears the pending job before discarding. A removal refusal is reported, with the directory retained for retry. Engine seat review requested before the Window Record entry point.
+
+**MEASURED.** On Windows the baseline failed 11 assertions with two real WAV sinks and an injected disk failure after both first writes. Both callback acknowledgement paths previously threw and kept Record pending. The exact submitted branch passed all 170 focused recorder checks under strict MSVC x64 `/W4 /WX`, including a real Windows delete-sharing refusal, cleanup retry and starting a second capture. This focused build used the existing local dependency cache. The landing window's pinned SQLiteCpp ABI matrix is already complete under #686.
+
 ## 2026-11-19, order the MIDI settings before the graph-worker preference
 
 **PR requested** — `engine-win/graph-worker-setting` at `35a035acaf21b95da53e47923b217e945de1905d`, after Window-fn's MIDI settings `6cec1b83` and current main `88e2d94e`. The merge retains both Settings sections. The existing engine application wiring can merge the resolved settings tip. The worker preference stays Auto at granted buffers of 1,024 samples and above, serial below the threshold or for an unknown buffer, with explicit Off.
