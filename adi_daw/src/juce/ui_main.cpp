@@ -2,6 +2,7 @@
 #include "adi/appdata.hpp"
 #include "adi/render/queue.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
@@ -22,6 +23,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stop_token>
 #include <thread>
 #include <future>
@@ -93,6 +95,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 settings::AppSettings::forApp(appdata::App::Daw));
         commands_ = std::make_unique<AppCommands>(*settings_);
         configurePluginSources();
+        pluginSourcesKey_ = pluginSourcesKey();
+        // The plug-in catalogue's service (DF-W34, N58); its first job starts once the window is open.
+        if (smokeOutput_ == juce::File{})
+            startPluginCatalogue();
         manager_.addChangeListener(this);
         if (project == juce::File{}) {
             // ADI has no unsaved state: every op is committed to a file, so a new
@@ -109,6 +115,12 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         startLibrary();
+        // The catalogue the first project read is listed at once; an Incremental discovery then finds
+        // what was installed or removed since, in the background (engine-win's N58 handoff).
+        if (catalogue_) {
+            catalogue_->showCatalogue();
+            catalogue_->request(DiscoveryMode::Incremental);
+        }
         // The MIDI ports (SRF-05): listed and opened by the Settings' MIDI Ports; never in a smoke run.
         if (smokeOutput_ == juce::File{}) {
             midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); });
@@ -392,6 +404,119 @@ class AdiApplication final : public juce::JUCEApplication,
             render_.join();
         renderAlive_ = std::make_shared<std::atomic<bool>>(true);
     }
+    // The plug-in catalogue's service (DF-W34): engine-win's discovery jobs (N58), started, read and
+    // adopted on the message thread; the loader runs each on its own worker. Never in a smoke run.
+    void startPluginCatalogue() {
+        catalogue_ = std::make_unique<PluginCatalogueService>(discoveryPort());
+        catalogue_->onChange = [this] {
+            if (root_ && catalogue_)
+                root_->browser.setPluginScan(catalogue_->state());
+        };
+    }
+    // The loader's job API (N58) in the service's words.
+    DiscoveryPort discoveryPort() {
+        DiscoveryPort p;
+        p.start = [this](DiscoveryMode mode) {
+            const auto admission = loader_.startDiscovery(mode == DiscoveryMode::Refresh       ? device::DiscoveryMode::Refresh
+                                                          : mode == DiscoveryMode::Incremental ? device::DiscoveryMode::Incremental
+                                                                                               : device::DiscoveryMode::CacheOnly);
+            DiscoveryAdmission out;
+            if (admission.status == device::DiscoveryStart::Started) {
+                out.job = admission.job;
+                return out;
+            }
+            const auto why = admission.error.empty() ? std::string("no reason given") : admission.error;
+            out.refusal = admission.status == device::DiscoveryStart::Unavailable
+                              ? "the plug-in scanner could not run (" + why + ")"
+                              : "the plug-in scan could not start (" + why + ")";
+            return out;
+        };
+        p.progress = [this] {
+            const auto progress = loader_.discoveryProgress();
+            return DiscoveryProgressRead{progress.job, progress.hasCandidateTotal, progress.completed, progress.total};
+        };
+        p.adopt = [this](std::uint64_t job) -> std::optional<DiscoveryEnd> {
+            const auto result = loader_.adoptDiscovery(job);
+            if (!result)
+                return std::nullopt;
+            using O = device::DiscoveryOutcome;
+            using E = DiscoveryEnd::Outcome;
+            DiscoveryEnd end;
+            switch (result->outcome) {
+            case O::Published: end.outcome = E::Published; break;
+            case O::Missing: end.outcome = E::Missing; break;
+            case O::Legacy: end.outcome = E::Legacy; break;
+            case O::Failed: end.outcome = E::Failed; break;
+            case O::Cancelled: end.outcome = E::Cancelled; break;
+            case O::Stale: end.outcome = E::Stale; break;
+            }
+            end.report = result->report;
+            end.error = result->error;
+            return end;
+        };
+        p.cancel = [this](std::uint64_t job) { return loader_.cancelDiscovery(job); };
+        p.listing = [this] { return listingOf(loader_.catalogue().get()); };
+        return p;
+    }
+    // The Browser's list from the loader's catalogue: each VST3 with its kind from the catalogue's
+    // instrument flag (N58), named as the loader names it (`device::identityOf`), and each CLAP from its
+    // descriptor.
+    static PluginListing listingOf(const device::DiscoveryCatalogue *catalogue) {
+        PluginListing out;
+        if (catalogue == nullptr)
+            return out;
+        for (const auto &d : catalogue->vst3) {
+            const auto id = device::identityOf(d);
+            out.plugins.push_back({"vst3", id.uid, id.name, id.vendor, id.version, d.fileOrIdentifier.toStdString(),
+                                   d.isInstrument ? PluginEntry::Kind::Instrument : PluginEntry::Kind::Effect});
+        }
+        for (const auto &c : catalogue->clap)
+            out.plugins.push_back({"clap", c.id, c.name, c.vendor, c.version, c.bundlePath, clapKind(c.isInstrument, c.features)});
+        return out;
+    }
+    // The Settings changed: the loader takes the plug-in folders they name (a running discovery is left
+    // stale and runs again); when they differ from before, an Incremental discovery searches them.
+    void pluginSourcesChanged() {
+        configurePluginSources();
+        const auto key = pluginSourcesKey();
+        if (key == pluginSourcesKey_)
+            return;
+        pluginSourcesKey_ = key;
+        if (catalogue_)
+            catalogue_->request(DiscoveryMode::Incremental);
+    }
+    // The folders the Settings name for both formats, as one string to compare.
+    std::string pluginSourcesKey() const {
+        std::string error;
+        const auto paths = device::pluginSearchPathsFromSettings(*settings_, loader_.defaultSearchPaths(),
+                                                                 juce::File::getCurrentWorkingDirectory(), error);
+        if (!paths)
+            return "error: " + error;
+        auto key = paths->vst3.toString().toStdString();
+        for (const auto &c : paths->clap)
+            key += '\n' + c;
+        return key;
+    }
+    // A project opened while a discovery runs waits for its adoption, so the plug-ins it finds load
+    // (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits.
+    void openSettled(const juce::File &file, bool create) {
+        if (!catalogue_ || !catalogue_->running()) {
+            install(file, create);
+            return;
+        }
+        if (root_)
+            root_->say("Opening " + file.getFileName().toStdString() + " once the plug-in scan has finished…");
+        catalogue_->settleThen([this, file, create] {
+            // A refused open leaves the project as it was; its alert says why, and the waiting line goes.
+            if (!install(file, create) && root_)
+                root_->say({});
+        });
+    }
+    void stopPluginCatalogue() {
+        if (catalogue_)
+            catalogue_->stop();
+        catalogue_.reset();
+    }
     void stopLibrary() {
         if (!libraryThread_.joinable())
             return;
@@ -416,6 +541,7 @@ class AdiApplication final : public juce::JUCEApplication,
             import_.join();
         stopRender();
         stopLibrary();
+        stopPluginCatalogue();
         midiPorts_.reset();
         stopTimer();
         chooser_.reset();
@@ -440,7 +566,7 @@ class AdiApplication final : public juce::JUCEApplication,
     void anotherInstanceStarted(const juce::String &commandLine) override {
         auto file = juce::File(commandLine.unquoted());
         if (file.existsAsFile())
-            install(file, false);
+            openSettled(file, false);
     }
 
   private:
@@ -613,6 +739,15 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // The Browser's Plug-Ins (DF-W9): the catalogue of the app's one loader, kept by its discovery
+        // service (DF-W34, N58); the projects load from the same loader. A smoke run scans nothing.
+        if (catalogue_) {
+            root->browser.scanPlugins = [this] {
+                if (catalogue_)
+                    catalogue_->request(DiscoveryMode::Incremental);
+            };
+            root->browser.setPluginScan(catalogue_->state());
+        }
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
             const bool ok = document_->insertBuiltin(uid, track, before);
@@ -1025,6 +1160,17 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
                 // settings, and every open window follows at its next frame.
+                // Live's Rescan on the Plug-Ins page (DF-W34): a Refresh discovery, in the background.
+                if (catalogue_)
+                    settingsWindow_->panel().onRescanPlugins = [this] {
+                        if (!catalogue_)
+                            return std::string();
+                        catalogue_->request(DiscoveryMode::Refresh);
+                        // Started, queued behind the running job, or refused (said, with why).
+                        return catalogue_->state().phase == PluginScan::Phase::Scanning
+                                   ? std::string()
+                                   : pluginScanStatus(catalogue_->state());
+                    };
                 // Live's MIDI Ports table on the Tempo & MIDI page (SRF-05).
                 if (midiPorts_)
                     settingsWindow_->panel().midiPorts = [this]() -> std::unique_ptr<juce::Component> {
@@ -1032,7 +1178,7 @@ class AdiApplication final : public juce::JUCEApplication,
                     };
                 settingsWindow_->panel().onChange = [this] {
                     commands_->reload();
-                    configurePluginSources();
+                    pluginSourcesChanged();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {
                         if (juce::JUCEApplicationBase::getInstance() == this && midiPorts_)
@@ -1059,7 +1205,7 @@ class AdiApplication final : public juce::JUCEApplication,
             if (file != juce::File{}) {
                 if (create)
                     file = withAdiExtension(file);
-                install(file, create);
+                openSettled(file, create);
             }
             // Do not destroy the chooser while its completion callback is on the stack.
             juce::MessageManager::callAsync([this] {
@@ -1094,6 +1240,9 @@ class AdiApplication final : public juce::JUCEApplication,
             settingsWindow_->panel().refreshValues();
     }
     void timerCallback() override {
+        // The plug-in catalogue's running discovery: its progress, and its result once it has finished.
+        if (catalogue_)
+            catalogue_->poll();
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
@@ -1150,6 +1299,10 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
+    // The plug-in catalogue's service (DF-W34, N58), declared after the loader it drives so it goes
+    // first, and the Settings' plug-in folders the last discovery searched.
+    std::unique_ptr<PluginCatalogueService> catalogue_;
+    std::string pluginSourcesKey_;
     // The MIDI port host (SRF-05) and until when the MIDI Indicators stay lit.
     std::unique_ptr<MidiPortHost> midiPorts_;
     juce::uint32 midiLitUntil_ = 0;

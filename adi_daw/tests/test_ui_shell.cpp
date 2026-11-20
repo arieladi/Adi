@@ -29,12 +29,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <set>
@@ -2584,8 +2586,371 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.rows().size() == 3 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr &&
               browser.rows()[2].device != nullptr,
           "Pd Devices lists ADI's own: ADI-Shaper, Chord Comb and Color Cab");
+    // Plug-Ins (DF-W9): outside the app nothing scans, and it says where they list.
     browser.choose(plugIns);
-    check(root.error().find("#438") != std::string::npos, "Plug-Ins says it waits for the scanner");
+    check(root.error().find("list in the application") != std::string::npos && browser.rows().empty(),
+          "Plug-Ins outside the app says the plug-ins list in the application");
+    {
+        // The loader's VST3 lines as `knownPlugins` writes them, and a line of another format.
+        const auto echo = parseKnownVst3("vst3  VST3-Echo-1a2b-3c4d  Echo -- Zeta Audio 1.2.0  (/x/Echo.vst3)");
+        const auto bare = parseKnownVst3("vst3  VST3-Hiss-1  Hiss --  0.9  (/x/Hiss.vst3)");
+        check(echo && echo->uid == "VST3-Echo-1a2b-3c4d" && echo->name == "Echo" && echo->vendor == "Zeta Audio" &&
+                  echo->version == "1.2.0" && echo->path == "/x/Echo.vst3" &&
+                  echo->kind == PluginEntry::Kind::Unknown && bare && bare->name == "Hiss" && bare->vendor.empty() &&
+                  !parseKnownVst3("clap  org.x  X -- Y 1  (/x.clap)") && !parseKnownVst3("vst3  broken"),
+              "a VST3 line of the loader reads as its uid, name, vendor, version and file");
+        check(clapKind(true, "instrument synthesizer") == PluginEntry::Kind::Instrument &&
+                  clapKind(false, "note-effect utility") == PluginEntry::Kind::MidiEffect &&
+                  clapKind(false, "audio-effect delay") == PluginEntry::Kind::Effect,
+              "a CLAP is an instrument, a MIDI effect (a note effect) or an audio effect");
+        PluginListing found;
+        found.plugins = {*echo,
+                         {"clap", "org.adi.glass", "Glass Piano", "Northwind Audio", "1.0", "/x/glass.clap",
+                          PluginEntry::Kind::Instrument},
+                         {"clap", "org.adi.arp", "Arpeggiate", "Northwind Audio", "1.0", "/x/arp.clap",
+                          PluginEntry::Kind::MidiEffect},
+                         *bare};
+        found.failed = 1;
+        // The app's scan as the Browser sees it (DF-W34): choosing Plug-Ins asks for a scan and returns at
+        // once; the list fills when the scan's state arrives.
+        int asked = 0;
+        PluginScan scan;
+        browser.scanPlugins = [&] {
+            ++asked;
+            scan.phase = PluginScan::Phase::Scanning;
+            browser.setPluginScan(scan);
+        };
+        root.say({});
+        browser.choose(plugIns);
+        check(asked == 1 && browser.rows().size() == 1 && browser.rows()[0].heading == "Scanning plug-ins…" &&
+                  root.error() == "Scanning plug-ins…",
+              "choosing Plug-Ins asks for a scan and returns at once; the list and the Status Bar say it scans");
+        scan.candidates = 150;
+        browser.setPluginScan(scan);
+        check(browser.rows().size() == 1 && browser.rows()[0].heading == "Scanning plug-ins: 150 files…",
+              "the files the scan probes are counted on the list's line");
+        scan.phase = PluginScan::Phase::Done;
+        scan.candidates = 0;
+        scan.listing = found;
+        browser.setPluginScan(scan);
+        std::vector<std::pair<juce::String, int>> layout;
+        for (const auto &r : browser.rows())
+            layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
+        const std::vector<std::pair<juce::String, int>> expected{
+            {"CLAP", 0}, {"Northwind Audio", 1}, {"Arpeggiate", 2}, {"Glass Piano", 2},
+            {"VST3", 0}, {"Other", 1},           {"Hiss", 2},       {"Zeta Audio", 1}, {"Echo", 2}};
+        check(layout == expected,
+              "Plug-Ins lists a folder per format, then per vendor, the plug-ins by name; no vendor goes in Other");
+        check(root.error() == "1 plug-in file could not be scanned; the rest are listed.",
+              "a file a complete scan could not read is counted; the rest are listed");
+        browser.choose(plugIns);
+        check(asked == 1 && browser.rows().size() == expected.size(),
+              "choosing Plug-Ins again lists what was found and scans nothing");
+        // A scan running over a listed catalogue: its line heads the list, and a count during it changes
+        // only that line, so the selection stays (DF-W34 on N58).
+        scan.phase = PluginScan::Phase::Scanning;
+        scan.candidates = 150;
+        scan.completed = 0;
+        ++scan.listed;
+        browser.setPluginScan(scan);
+        check(browser.rows().size() == expected.size() + 1 && browser.rows()[0].heading == "Scanning plug-ins: 150 files…" &&
+                  browser.rows()[1].heading == "CLAP",
+              "while a scan runs its line heads what was listed before");
+        browser.list.selectRow(3);
+        scan.completed = 12;
+        browser.setPluginScan(scan);
+        check(browser.list.getSelectedRow() == 3 && browser.rows()[0].heading == "Scanning plug-ins: 12 of 150 files…",
+              "a count changes the line only; the selected plug-in stays selected");
+        scan.phase = PluginScan::Phase::Done;
+        scan.candidates = scan.completed = 0;
+        ++scan.listed;
+        browser.setPluginScan(scan);
+        check(browser.rows().size() == expected.size(), "the scan ended, its line goes");
+        const auto rowNamed = [&browser](const char *name) {
+            for (std::size_t i = 0; i < browser.rows().size(); ++i)
+                if (browser.rows()[i].plugin != nullptr && browser.rows()[i].plugin->name == name)
+                    return static_cast<int>(i);
+            return -1;
+        };
+        const int glass = rowNamed("Glass Piano");
+        check(glass >= 0 && !browser.load(glass) && root.error().find("waits for the engine's insert") != std::string::npos &&
+                  root.error().find("N57") != std::string::npos,
+              "a double-click on a plug-in says its load waits for the engine's insert (N57)");
+        browser.search.setText("zeta", false);
+        browser.search.onTextChange();
+        layout.clear();
+        for (const auto &r : browser.rows())
+            layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
+        check(asked == 1 && layout == std::vector<std::pair<juce::String, int>>{{"VST3", 0}, {"Zeta Audio", 1}, {"Echo", 2}},
+              "the search keeps a plug-in by its vendor too, and asks for no scan");
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
+        // DF-W34 (c): one folder per vendor ignoring case, spelled as the first in sort order; no vendor
+        // and "other" share one folder.
+        PluginScan spelled;
+        spelled.phase = PluginScan::Phase::Done;
+        spelled.listing.plugins = {{"vst3", "a", "Pro-C 2", "FabFilter", "1", "/a.vst3"},
+                                   {"vst3", "b", "Pro-L 2", "Fabfilter", "1", "/b.vst3"},
+                                   {"vst3", "c", "Pro-Q 4", "FabFilter", "1", "/c.vst3"},
+                                   {"vst3", "d", "Hum", "", "1", "/d.vst3"},
+                                   {"vst3", "e", "Fizz", "other", "1", "/e.vst3"}};
+        browser.setPluginScan(spelled);
+        layout.clear();
+        for (const auto &r : browser.rows())
+            layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
+        check(layout == std::vector<std::pair<juce::String, int>>{{"VST3", 0},    {"FabFilter", 1}, {"Pro-C 2", 2},
+                                                                    {"Pro-L 2", 2}, {"Pro-Q 4", 2},   {"other", 1},
+                                                                    {"Fizz", 2},    {"Hum", 2}},
+              "one vendor spelled two ways is one folder, and no vendor goes in with one named other");
+        scan.listing = {};
+        browser.setPluginScan(scan);
+        browser.choose(plugIns);
+        check(browser.rows().empty() && root.error().rfind("No VST3 or CLAP plug-ins were found", 0) == 0,
+              "with none found by a complete scan, it says where to add their folders");
+        // DF-W34 (b): a scan that stopped early is named, with why, and never worded as "the rest".
+        scan.listing.complete = false;
+        scan::Report missing;
+        missing.complete = false;
+        missing.failures.push_back({"/x/Foo.vst3", std::string(kHelperUnavailable), scan::State::Unavailable});
+        applyReport(scan.listing, missing);
+        browser.setPluginScan(scan);
+        browser.choose(plugIns);
+        check(root.error() == "The plug-in scan stopped early: the plug-in scanner could not run (its helper, "
+                              "adi_plugin_scanner, is missing or could not start). Nothing could be listed. Rescan "
+                              "from the Settings' Plug-Ins page." &&
+                  asked == 1,
+              "a scan that stopped early says why and where to rescan, and choosing Plug-Ins does not rescan");
+        scan.listing.plugins = found.plugins;
+        browser.setPluginScan(scan);
+        browser.choose(plugIns);
+        check(root.error().find("The list may be incomplete.") != std::string::npos &&
+                  root.error().find("the rest are listed") == std::string::npos,
+              "with plug-ins kept from before, a stopped scan says the list may be incomplete");
+        browser.scanPlugins = nullptr;
+        browser.setPluginScan({});
+    }
+    {
+        // The loader's report read into the listing (DF-W34 b).
+        scan::Report service;
+        service.complete = false;
+        service.failures.push_back({"", "the registry could not be opened", scan::State::Unavailable});
+        PluginListing l;
+        applyReport(l, service);
+        check(!l.complete && l.failed == 0 && l.stopped == "the plug-in scanner could not run (the registry could not be opened)",
+              "a failure with no file is the scanner's own, not a plug-in's");
+        scan::Report helper; // the helper missing or blocked: the probe names the file it was asked to read
+        helper.complete = false;
+        helper.failures.push_back({"/x/Foo.vst3", std::string(kHelperUnavailable), scan::State::Unavailable});
+        applyReport(l, helper);
+        check(!l.complete && l.stopped.find("the plug-in scanner could not run") == 0 &&
+                  l.stopped.find("Foo.vst3") == std::string::npos,
+              "a helper that could not start is the scanner's failure, not the file's");
+        scan::Report file;
+        file.complete = false;
+        file.failures.push_back({"/x/A.vst3", "quarantined", scan::State::Quarantined});
+        file.failures.push_back({"/x/B.vst3", "bad metadata", scan::State::Invalid});
+        applyReport(l, file);
+        check(!l.complete && l.failed == 0 && l.stopped == "/x/B.vst3 stopped the scan (bad metadata)",
+              "the file whose failure ended the scan is named");
+        scan::Report cancelled;
+        cancelled.complete = false;
+        cancelled.cancelled = true;
+        applyReport(l, cancelled);
+        check(!l.complete && l.stopped == "the scan was stopped before it finished", "a cancelled scan says it was stopped");
+        scan::Report done;
+        done.failures.push_back({"/x/A.vst3", "crashed", scan::State::Failed});
+        done.failures.push_back({"/x/C.clap", "quarantined", scan::State::Quarantined});
+        applyReport(l, done);
+        check(l.complete && l.stopped.empty() && l.failed == 2, "a complete scan counts the files it could not read");
+    }
+    {
+        // The catalogue's service (DF-W34 on N58): it starts the loader's discovery jobs, reads their
+        // progress and adopts each that has finished, on the owner; a stand-in for the loader's job API.
+        using Outcome = DiscoveryEnd::Outcome;
+        std::uint64_t nextJob = 1, cancelled = 0;
+        std::vector<DiscoveryMode> started;
+        DiscoveryProgressRead progress;
+        std::optional<DiscoveryEnd> result;
+        PluginListing catalogue;
+        catalogue.plugins = {{"vst3", "VST3-Glass-1", "Glass Synth", "Northwind Audio", "1.0", "/x/Glass.vst3",
+                              PluginEntry::Kind::Instrument},
+                             {"clap", "org.zeta.echo", "Echo", "Zeta Audio", "2", "/x/Echo.clap", PluginEntry::Kind::Effect}};
+        std::string refusal;
+        DiscoveryPort port;
+        port.start = [&](DiscoveryMode mode) {
+            DiscoveryAdmission a;
+            if (!refusal.empty()) {
+                a.refusal = refusal;
+                return a;
+            }
+            a.job = nextJob++;
+            started.push_back(mode);
+            return a;
+        };
+        port.progress = [&] { return progress; };
+        port.adopt = [&](std::uint64_t job) {
+            return job + 1 == nextJob ? std::exchange(result, std::nullopt) : std::nullopt;
+        };
+        port.cancel = [&](std::uint64_t job) {
+            cancelled = job;
+            return true;
+        };
+        port.listing = [&] { return catalogue; };
+        const auto finish = [&](Outcome outcome, scan::Report report = {}) {
+            DiscoveryEnd e;
+            e.outcome = outcome;
+            e.report = std::move(report);
+            result = std::move(e);
+        };
+        PluginCatalogueService service(port);
+        int changes = 0;
+        service.onChange = [&] { ++changes; };
+        service.showCatalogue();
+        check(service.state().listing.plugins.size() == 2 && service.state().phase == PluginScan::Phase::Done &&
+                  service.state().listing.plugins[0].kind == PluginEntry::Kind::Instrument && started.empty(),
+              "the stored catalogue is listed at once, a VST3 with its kind from the catalogue (N58), no job yet");
+        service.request(DiscoveryMode::Incremental);
+        check(service.running() && started == std::vector{DiscoveryMode::Incremental} &&
+                  service.state().phase == PluginScan::Phase::Scanning && service.state().listing.plugins.size() == 2,
+              "an Incremental discovery starts and returns at once; the list stays meanwhile");
+        progress.job = service.job();
+        progress.hasTotal = true;
+        progress.total = 150;
+        progress.completed = 12;
+        service.poll();
+        check(service.running() && pluginScanStatus(service.state()) == "Scanning plug-ins: 12 of 150 files…",
+              "its progress is read on the owner and said");
+        catalogue.plugins.pop_back();
+        finish(Outcome::Published);
+        service.poll();
+        check(!service.running() && service.state().phase == PluginScan::Phase::Done &&
+                  service.state().listing.plugins.size() == 1 && service.state().listing.complete,
+              "once finished it is adopted, and the catalogue it published is listed");
+        // Rescan during an Incremental: the Incremental stops quietly, and the Refresh follows.
+        service.request(DiscoveryMode::Incremental);
+        const auto first = service.job();
+        service.request(DiscoveryMode::Refresh);
+        check(cancelled == first && service.job() == first, "Rescan stops a running Incremental first");
+        finish(Outcome::Cancelled);
+        service.poll();
+        check(service.running() && started.back() == DiscoveryMode::Refresh && service.state().listing.complete &&
+                  service.state().phase == PluginScan::Phase::Scanning,
+              "then the Refresh starts; a stop the app made is not named as the scan stopping early");
+        service.request(DiscoveryMode::Incremental);
+        check(cancelled == first, "an Incremental asked for during a Refresh waits for it; nothing is stopped");
+        finish(Outcome::Published);
+        service.poll();
+        check(service.running() && started.back() == DiscoveryMode::Incremental, "and follows it");
+        // A project opened while a job runs waits for the job's adoption, so it finds what the job found;
+        // nothing is stopped for it. A folder change leaving the job stale makes it wait for the rerun.
+        int opened = 0;
+        bool jobBesideOpen = true;
+        std::uint64_t listedAtOpen = 0;
+        const auto running = service.job();
+        const auto cancelledBefore = cancelled;
+        service.settleThen([&] {
+            ++opened;
+            jobBesideOpen = service.running();
+            listedAtOpen = service.state().listed;
+        });
+        check(opened == 0 && cancelled == cancelledBefore && service.job() == running,
+              "an open during a job waits for it, and stops nothing");
+        finish(Outcome::Stale);
+        service.poll();
+        check(opened == 0 && service.running() && started.back() == DiscoveryMode::Incremental && started.size() == 5,
+              "a stale job runs again on the new folders, and the open waits for that run");
+        const auto listedBefore = service.state().listed;
+        catalogue.plugins.push_back({"clap", "org.new.one", "New One", "New", "1", "/x/New.clap", PluginEntry::Kind::Effect});
+        finish(Outcome::Published);
+        service.poll();
+        check(opened == 1 && !jobBesideOpen && listedAtOpen > listedBefore && !service.running() &&
+                  service.state().listing.plugins.size() == 2,
+              "it opens once the job is adopted, with no job beside it, the plug-in the job found listed");
+        service.settleThen([&] { ++opened; });
+        check(opened == 2, "with no job running, an open runs at once");
+        // The open runs between jobs: after the running job's adoption, before the job queued behind it.
+        service.request(DiscoveryMode::Incremental);
+        jobBesideOpen = true;
+        service.settleThen([&] {
+            ++opened;
+            jobBesideOpen = service.running();
+        });
+        service.request(DiscoveryMode::Incremental); // queued behind the running one, which goes on
+        finish(Outcome::Published);
+        service.poll();
+        check(opened == 3 && !jobBesideOpen && service.running(), "the open runs before the queued job starts");
+        finish(Outcome::Published);
+        service.poll();
+        // An open waiting on a job that a Rescan stops waits for the Refresh, which publishes what it finds.
+        service.request(DiscoveryMode::Incremental);
+        service.settleThen([&] { ++opened; });
+        service.request(DiscoveryMode::Refresh);
+        finish(Outcome::Cancelled);
+        service.poll();
+        check(opened == 3 && service.running() && started.back() == DiscoveryMode::Refresh,
+              "the stopped job published nothing: the open waits for the Refresh");
+        finish(Outcome::Published);
+        service.poll();
+        check(opened == 4 && !service.running(), "and runs once the Refresh is adopted");
+        // A Rescan whose stop comes too late (the Incremental had already finished): the Incremental is
+        // adopted as it ended, and the Refresh follows once, not twice.
+        bool acceptCancel = false;
+        port.cancel = [&](std::uint64_t job) {
+            cancelled = job;
+            return acceptCancel;
+        };
+        PluginCatalogueService late(port);
+        late.request(DiscoveryMode::Incremental);
+        late.request(DiscoveryMode::Refresh);
+        const auto startedBefore = started.size();
+        finish(Outcome::Published);
+        late.poll();
+        check(late.running() && started.size() == startedBefore + 1 && started.back() == DiscoveryMode::Refresh &&
+                  late.state().listing.complete,
+              "a refused stop: the finished job is adopted, then the Refresh runs");
+        finish(Outcome::Published);
+        late.poll();
+        check(!late.running() && started.size() == startedBefore + 1, "and nothing runs twice");
+        late.stop();
+        // A count during a job changes no list: the Browser keeps its rows and selection.
+        service.request(DiscoveryMode::Incremental);
+        const auto listedDuring = service.state().listed;
+        progress.job = service.job();
+        progress.completed = 40;
+        service.poll();
+        check(service.state().listed == listedDuring && service.state().completed == 40,
+              "a progress count leaves the list's count as it was");
+        finish(Outcome::Published);
+        service.poll();
+        // A job that failed: what was listed stays, and why it stopped is named.
+        service.request(DiscoveryMode::Refresh);
+        scan::Report helper;
+        helper.complete = false;
+        helper.failures.push_back({"", "the helper could not start", scan::State::Unavailable});
+        finish(Outcome::Failed, helper);
+        service.poll();
+        check(!service.running() && !service.state().listing.complete && service.state().listing.plugins.size() == 2 &&
+                  service.state().listing.stopped == "the plug-in scanner could not run (the helper could not start)",
+              "a failed job keeps the list and names why it stopped");
+        // The person's own cancel (none here yet) and a job that could not start.
+        refusal = "the plug-in scanner could not run (helper missing)";
+        service.request(DiscoveryMode::Refresh);
+        check(!service.running() && service.state().phase == PluginScan::Phase::Done &&
+                  service.state().listing.stopped == "the plug-in scanner could not run (helper missing)",
+              "a job that could not start is named, and nothing runs");
+        refusal.clear();
+        // Quit: the running job is cancelled, nothing more starts, and the waiting opens are dropped.
+        service.request(DiscoveryMode::Incremental);
+        const auto last = service.job();
+        service.settleThen([&] { ++opened; });
+        service.stop();
+        finish(Outcome::Cancelled);
+        service.poll();
+        service.request(DiscoveryMode::Refresh);
+        check(cancelled == last && !service.running() && opened == 4 && started.back() == DiscoveryMode::Incremental,
+              "Quit cancels the job; nothing starts after it and no waiting open runs");
+        check(changes > 0, "the owner was told of each change");
+    }
     browser.choose(audioEffects);
     const auto chainOf = [&](std::int64_t track) {
         std::vector<std::string> out;
@@ -8540,6 +8905,42 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
         root.paintEntireComponent(g, true);
     }
     save(grouped, "adi-arrangement.png");
+    // The Browser's Plug-Ins (DF-W9), as the app lists what its loader found: two formats, their vendors,
+    // instruments, effects and a MIDI effect (invented names), with Melody selected and a synth chosen.
+    {
+        using K = PluginEntry::Kind;
+        PluginListing found;
+        found.plugins = {
+            {"clap", "com.northwind.glass", "Glass Piano", "Northwind Audio", "1.4.2", "/p/Glass Piano.clap", K::Instrument},
+            {"clap", "com.northwind.arc", "Arc Synth", "Northwind Audio", "2.0.1", "/p/Arc Synth.clap", K::Instrument},
+            {"clap", "com.northwind.chordz", "Chord Weaver", "Northwind Audio", "1.1.0", "/p/Chord Weaver.clap", K::MidiEffect},
+            {"clap", "org.tidewater.plate", "Plate Room", "Tidewater DSP", "3.2.0", "/p/Plate Room.clap", K::Effect},
+            {"clap", "org.tidewater.tape", "Tape Echo", "Tidewater DSP", "3.2.0", "/p/Tape Echo.clap", K::Effect},
+            {"vst3", "VST3-Saturator X-5a1c", "Saturator X", "Copperline", "1.8", "/p/Saturator X.vst3", K::Unknown},
+            {"vst3", "VST3-Bus Glue-77e0", "Bus Glue", "Copperline", "1.8", "/p/Bus Glue.vst3", K::Unknown},
+            {"vst3", "VST3-Strings 1-0b3d", "Chamber Strings", "Harbor Instruments", "4.0.3", "/p/Chamber Strings.vst3",
+             K::Unknown},
+            {"vst3", "VST3-Low End-91aa", "Low End", "Harbor Instruments", "4.0.3", "/p/Low End.vst3", K::Unknown}};
+        PluginScan scanned;
+        scanned.phase = PluginScan::Phase::Done;
+        scanned.listing = found;
+        root.browser.setPluginScan(scanned);
+        for (std::size_t i = 0; i < root.browser.sidebar().size(); ++i)
+            if (root.browser.sidebar()[i].name == "Plug-Ins")
+                root.browser.choose(static_cast<int>(i));
+        for (std::size_t i = 0; i < root.browser.rows().size(); ++i)
+            if (root.browser.rows()[i].plugin != nullptr && root.browser.rows()[i].plugin->name == "Arc Synth")
+                root.browser.list.selectRow(static_cast<int>(i));
+        check(root.browser.rows().size() == 15, "the showcase's Plug-Ins: two formats, four vendors, nine plug-ins");
+        root.frame();
+        root.frame();
+        juce::Image plugIns(juce::Image::ARGB, 1920, 1080, true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(plugIns);
+            root.paintEntireComponent(g, true);
+        }
+        save(plugIns, "adi-plugins.png");
+    }
     commands.detach(root);
     document->release();
 }

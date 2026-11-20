@@ -277,6 +277,21 @@ void BrowserPanel::refill() {
         for (const auto &d : builtinCatalog())
             if (d.category == "ADI" && matches(d))
                 rows_.push_back({nullptr, &d, {}});
+    } else if (!chosen.heading && chosen.name == "Plug-Ins") {
+        // Live's Plug-Ins: a folder per format, in it a folder per vendor, in that its plug-ins by name.
+        std::string format;
+        // While a scan runs its line heads the list, above what was listed before it.
+        if (pluginScan_.phase == PluginScan::Phase::Scanning)
+            rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str()), nullptr, 0});
+        for (const auto &group : pluginGroups(pluginScan_.listing, query.toStdString())) {
+            if (group.format != format) {
+                format = group.format;
+                rows_.push_back({nullptr, nullptr, juce::String(formatFolder(format)), nullptr, 0});
+            }
+            rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(group.vendor.c_str()), nullptr, 1});
+            for (const auto *p : group.entries)
+                rows_.push_back({nullptr, nullptr, {}, p, 2});
+        }
     }
     list.updateContent();
     list.deselectAllRows();
@@ -291,10 +306,25 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     if (selected && r.heading.isEmpty())
         g.fillAll(look::selection);
     if (r.heading.isNotEmpty()) {
-        // A folder of Live's, as its heading.
+        // A folder of Live's, as its heading, set in by its depth.
         g.setColour(look::textDim);
         g.setFont(look::font(look::fontField, true));
-        g.drawText(r.heading, 6, 0, width - 10, height, juce::Justification::centredLeft, true);
+        const int in = 6 + 12 * r.depth;
+        g.drawText(r.heading, in, 0, width - in - 4, height, juce::Justification::centredLeft, true);
+        return;
+    }
+    if (r.plugin != nullptr) {
+        // A plug-in, under its vendor: its kind's icon (a VST3's is not known yet: the plug-in icon), its
+        // name dimmed until it can load (N57).
+        const int in = 12 * r.depth;
+        using K = PluginEntry::Kind;
+        const auto kind = r.plugin->kind;
+        icon(g, kind == K::Instrument ? Instruments : kind == K::Effect ? AudioFx : kind == K::MidiEffect ? MidiFx : PlugIns,
+             juce::Rectangle<float>(6.f + static_cast<float>(in), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
+        g.setColour(look::textDim);
+        g.setFont(look::font(look::fontHeading));
+        g.drawText(juce::String::fromUTF8(r.plugin->name.c_str()), 24 + in, 0, width - 28 - in, height,
+                   juce::Justification::centredLeft, true);
         return;
     }
     const bool device = r.device != nullptr;
@@ -312,6 +342,9 @@ juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &row
     for (int i = 0; i < rows.size(); ++i)
         if (const int r = rows[i]; r >= 0 && r < static_cast<int>(rows_.size())) {
             const auto &row = rows_[static_cast<std::size_t>(r)];
+            // A plug-in cannot load yet (N57): it drags nothing.
+            if (row.plugin != nullptr)
+                return {};
             // A device drags alone, the first one chosen; one this build cannot load drags nothing.
             if (row.device != nullptr)
                 return unavailable(*row.device).empty() ? juce::var(deviceDescription(*row.device)) : juce::var();
@@ -337,7 +370,43 @@ std::string BrowserPanel::droppedDevice(const juce::var &description) {
     const auto uid = text.fromFirstOccurrenceOf("adi-device:", false, false).toStdString();
     return findBuiltin(uid) != nullptr ? uid : std::string();
 }
+std::string BrowserPanel::pluginWaits(const PluginEntry &p) {
+    return "Loading " + p.name + " waits for the engine's insert of a plug-in (N57).";
+}
+bool BrowserPanel::pluginsShown() const {
+    return selected_ >= 0 && selected_ < static_cast<int>(sidebar_.size()) &&
+           !sidebar_[static_cast<std::size_t>(selected_)].heading &&
+           sidebar_[static_cast<std::size_t>(selected_)].name == "Plug-Ins";
+}
+void BrowserPanel::setPluginScan(const PluginScan &scan) {
+    const bool began = scan.phase == PluginScan::Phase::Scanning && pluginScan_.phase != PluginScan::Phase::Scanning;
+    const bool ended = scan.phase == PluginScan::Phase::Done && pluginScan_.phase == PluginScan::Phase::Scanning;
+    // A count during a job, with the same list: only the list's first line changes, so the rows, the
+    // selection and the scroll stay as they are.
+    const bool countOnly = !began && !ended && scan.phase == PluginScan::Phase::Scanning &&
+                           pluginScan_.phase == PluginScan::Phase::Scanning && scan.listed == pluginScan_.listed;
+    pluginScan_ = scan;
+    if (!pluginsShown())
+        return;
+    if (countOnly) {
+        if (!rows_.empty() && rows_.front().plugin == nullptr && rows_.front().device == nullptr) {
+            rows_.front().heading = juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str());
+            repaint();
+        }
+        return;
+    }
+    refill();
+    // The Status Bar says the scan's start and its end while Plug-Ins shows; a count arriving between
+    // them only redraws the list's line.
+    if (began || ended)
+        root_.say(pluginScanStatus(pluginScan_));
+}
 bool BrowserPanel::load(int row) {
+    if (row >= 0 && row < static_cast<int>(rows_.size()))
+        if (const auto *p = rows_[static_cast<std::size_t>(row)].plugin) {
+            root_.say(pluginWaits(*p));
+            return false;
+        }
     if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].device == nullptr)
         return false;
     const auto &d = *rows_[static_cast<std::size_t>(row)].device;
@@ -442,9 +511,14 @@ void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
 void BrowserPanel::choose(int i) {
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         selected_ = i;
+        const auto &entry = sidebar_[static_cast<std::size_t>(i)];
+        // Plug-Ins lists what the app's scan found; the first time, it asks the app to scan, which runs on
+        // a worker and fills the list when it ends (DF-W9, DF-W34): choosing never waits on a scan.
+        const bool plugIns = entry.name == "Plug-Ins";
+        if (plugIns && scanPlugins && pluginScan_.phase == PluginScan::Phase::NotStarted)
+            scanPlugins();
         repaint();
         refill();
-        const auto &entry = sidebar_[static_cast<std::size_t>(i)];
         const bool library = entry.samples || entry.name == "User Library" || !entry.place.empty();
         if (entry.name == "Audio Effects" || entry.name == "Pd Devices") {
             // The catalogue's (D4): with Pd off, every entry is dimmed and the Status Bar says why.
@@ -452,11 +526,14 @@ void BrowserPanel::choose(int i) {
                     return r.device != nullptr && unavailable(*r.device).empty();
                 }))
                 root_.say("ADI's built-in devices run on its Pd devices, which this build leaves out.");
+        } else if (plugIns) {
+            if (!scanPlugins)
+                root_.say("Plug-ins list in the application, from its plug-in scan.");
+            else
+                root_.say(pluginScanStatus(pluginScan_));
         } else if (!library)
             // The other categories say what they wait for (D4; N15).
-            root_.say(entry.name == "Plug-Ins"
-                          ? "Plug-Ins list once the plug-in scanner is in (#438 to #440)."
-                      : entry.name == "Instruments" || entry.name == "MIDI Effects" || entry.name == "Sounds" ||
+            root_.say(entry.name == "Instruments" || entry.name == "MIDI Effects" || entry.name == "Sounds" ||
                               entry.name == "Drums"
                           ? (entry.name + " wait for the devices lane's instruments and MIDI effects.").toStdString()
                           : (entry.name + " is not listed yet.").toStdString());
