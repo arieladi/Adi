@@ -531,13 +531,25 @@ void neutralEqGraphSuspension() {
     const auto asleep = graph.stats().nodesSuspended;
     check(asleep == beforeSleep + 1 && output == Block{}, "the neutral EQ suspends on silence and emits exact zeros");
 
+    eq->setOffline(true);
+    render();
+    check(eq->tailSamples() == engine::kInfiniteTail && graph.stats().nodesSuspended == asleep &&
+              output == Block{},
+          "offline intent disables suspension even with the same previously certified EQ and graph");
+    eq->setOffline(false);
+    render();
+    const auto resumedSleep = graph.stats().nodesSuspended;
+    check(resumedSleep == asleep + 1 && output == Block{},
+          "the unchanged neutral EQ can suspend again on returning to realtime");
+
     check(set(*eq, 3, .7), "an owner Output Gain edit is accepted while the EQ is asleep");
     render();
-    check(graph.stats().nodesSuspended == asleep && output == Block{},
+    check(graph.stats().nodesSuspended == resumedSleep && output == Block{},
           "the gain edit wakes the EQ during silence before any new programme");
     programme.level = .25f;
     render();
-    check(graph.stats().nodesSuspended == asleep && output[0].front() > 0.f && output[0].front() != input[0].front(),
+    check(graph.stats().nodesSuspended == resumedSleep &&
+              output[0].front() > 0.f && output[0].front() != input[0].front(),
           "gain is applied from the first sample of the next nonzero block");
 }
 }
