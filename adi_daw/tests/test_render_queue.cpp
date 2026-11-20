@@ -965,9 +965,13 @@ void identityBoundReplace() {
     write(target,"old complete delivery");
     std::error_code error;const auto oldIdentity=media::readFileIdentity(target,error);
     const auto oldHash=media::blake3File(target).hex;
+    // Replace freezes the delivery under its canonical parent (prepareOutput).
+    // The fixture's temp parent need not be canonical: macOS TMPDIR lives under
+    // /var, a symlink to /private/var. The filename stays exactly as requested.
+    const auto delivered=fs::canonical(job.directory)/target.filename();
     Queue queue;queue.add(job);queue.run();const auto complete=queue.snapshot().front().result;
     check(complete.state==JobState::Completed && complete.publication && !complete.publication->usedFallback &&
-          complete.output==target && complete.replacement && complete.replacement->existing==oldIdentity &&
+          complete.output==delivered && complete.replacement && complete.replacement->existing==oldIdentity &&
           complete.replacement->blake3==oldHash && matches(read(complete,866),137) && f.noStage(),
           "explicit Replace binds old identity and bytes, then publishes real rendered PCM at the same name");
     check(media::readFileIdentity(target,error)!=oldIdentity,
@@ -1006,21 +1010,48 @@ void identityBoundReplace() {
     job.nameTemplate="Stra\xC3\x9F" "e-replace";
     const auto selected=job.directory/media::pathFromUtf8(job.nameTemplate+".wav");
     const auto folded=job.directory/"STRASSE-REPLACE.WAV";
-    write(selected,"old folded bytes");bool introduced=false;Control foldedRace;
+    write(selected,"old folded bytes");
+    // A volume that folds names natively (macOS APFS/HFS+ case-insensitive, the
+    // Mac default, folds even the Strasse expansion) has ONE file under both
+    // spellings: a second fold-only file cannot exist there. Each check below
+    // asserts the outcome for the volume the test actually runs on.
+    const bool foldAliases=fs::exists(folded);
+    std::printf("Export names: Replace fold spellings alias natively %s\n",foldAliases?"yes":"no");
+    bool introduced=false;Control foldedRace;
     foldedRace.progress=[&](JobId,std::uint64_t done,std::uint64_t) {
         if(done && !introduced){introduced=true;write(folded,"new folded occupant");}
     };
     const auto collision=renderWav(job,{},foldedRace);
-    check(introduced && collision.state==JobState::Failed && !collision.publication &&
-          text(selected)=="old folded bytes" && text(folded)=="new folded occupant" && f.noStage(),
-          "a new portable-fold collision during render preserves both files");
+    if(!foldAliases)
+        check(introduced && collision.state==JobState::Failed && !collision.publication &&
+              text(selected)=="old folded bytes" && text(folded)=="new folded occupant" && f.noStage(),
+              "a new portable-fold collision during render preserves both files");
+    else // The late write through the folded spelling edits the bound file in place.
+        check(introduced && collision.state==JobState::Failed && !collision.publication &&
+              text(selected)=="new folded occupant" && f.noStage(),
+              "a native-alias write during render is an in-place edit that Replace refuses, keeping its bytes");
     const auto ambiguous=renderWav(job,{});
-    check(ambiguous.state==JobState::Failed && ambiguous.framesWritten==0 && !ambiguous.publication,
-          "Replace refuses an ambiguous preflight collision set before audio processing");
-    fs::remove(folded);job.nameTemplate="STRASSE-REPLACE";
-    const auto foldOnly=renderWav(job,{});
-    check(foldOnly.state==JobState::Failed && foldOnly.framesWritten==0 && text(selected)=="old folded bytes",
-          "Replace does not silently select a different fold-only spelling");
+    if(!foldAliases)
+        check(ambiguous.state==JobState::Failed && ambiguous.framesWritten==0 && !ambiguous.publication,
+              "Replace refuses an ambiguous preflight collision set before audio processing");
+    else // One directory entry, the bound file itself: nothing is ambiguous.
+        check(ambiguous.state==JobState::Completed && matches(read(ambiguous,866),137) && f.noStage(),
+              "on a natively folding volume the folded spelling is the selected file, so Replace proceeds");
+    if(!foldAliases) {
+        fs::remove(folded);job.nameTemplate="STRASSE-REPLACE";
+        const auto foldOnly=renderWav(job,{});
+        check(foldOnly.state==JobState::Failed && foldOnly.framesWritten==0 && text(selected)=="old folded bytes",
+              "Replace does not silently select a different fold-only spelling");
+    } else {
+        // Removing `folded` would remove the selected file. The other spelling
+        // names that same file natively, so (as with replace-native-case below)
+        // native identity proves it is the requested file and Replace proceeds.
+        job.nameTemplate="STRASSE-REPLACE";
+        const auto foldOnly=renderWav(job,{});
+        check(foldOnly.state==JobState::Completed && matches(read(foldOnly,866),137) && f.noStage(),
+              "a fold spelling the volume resolves natively to the same file is replaceable, as a case spelling is");
+        write(selected,"old folded bytes"); // The hardlink check below starts from these bytes.
+    }
     job.nameTemplate="directory-replace";fs::create_directory(job.directory/"directory-replace.wav");
     const auto directory=renderWav(job,{});
     check(directory.state==JobState::Failed && directory.framesWritten==0 &&

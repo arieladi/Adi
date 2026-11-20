@@ -225,8 +225,9 @@ void collisionPublication() {
     render::detail::prepareOutput(replacement,render::Collision::Replace,".stem.mp4","NI destination exists");
     const auto replacingHash=media::blake3File(stage).hex;
     render::detail::publishOutput(stage,replacement,{},"NI destination exists");
+    // Replace freezes the canonical parent; macOS TMPDIR /var is a symlink to /private/var.
     check(replacement.state==render::JobState::Completed && replacement.replacement && replacement.replacement->existing &&
-          replacement.output==original && media::blake3File(original).hex==replacingHash,
+          replacement.output==fs::canonical(dir.path())/original.filename() && media::blake3File(original).hex==replacingHash,
           "NI shared publisher uses identity-bound native Replace for the complete compound filename");
     write(stage,"refused NI bytes");
     render::Result changed;changed.output=original;
@@ -587,8 +588,9 @@ void integration() {
     const auto replacedPath=dir.path()/"NI Replaced.stem.mp4";
     {std::ofstream existing(replacedPath,std::ios::binary);existing<<"old NI delivery";}
     const auto replaced=render::renderNiStems(replacedJob,{});
+    // Replace reports the delivery under its canonical parent (macOS /var -> /private/var).
     check(replaced.state==render::JobState::Completed && replaced.replacement && replaced.replacement->existing &&
-          replaced.output==replacedPath && audio::readAacMovie(replaced.output).tracks.at(0).frames==10876 && clean(dir.path()),
+          replaced.output==fs::canonical(replacedPath.parent_path())/replacedPath.filename() && audio::readAacMovie(replaced.output).tracks.at(0).frames==10876 && clean(dir.path()),
           "actual NI encoder replaces the bound old delivery with the requested five-stream container");
     bool changedDuringMain=false;render::Control duringMain;
     duringMain.progress=[&](render::JobId,std::uint64_t done,std::uint64_t total) {
