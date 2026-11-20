@@ -44,6 +44,19 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-20, window-fn — DF-W36: `MidiPortHost::dropped()` safe from any thread (PR requested)
+
+Win's evening entry gave DF-W36 to this seat. The header said `activity` and `dropped` may be read from
+any thread, but `dropped()` walked `inputs_`, which `refresh()` rebuilds on the message thread. The input
+callbacks now count an event lost to a full ring in one host-level atomic, beside `activity_`, so the
+promise holds. The count runs from the host's start, and an input closed by `refresh()` keeps its share.
+
+**Run.** The window's 27 suites (100%). A fixed-port test host opens no inputs, so the shell's check stays
+at "nothing played, nothing dropped". No review workflow ran for a seven-line change.
+
+**PR requested** — `window-fn/midi-dropped` at `9bcd9e72`, on main `7510acd2`: "adi_daw: DF-W36:
+MidiPortHost::dropped() is one atomic, safe from any thread". It depends on nothing.
+
 ## 2026-11-20, window-fn — AU-04: Re-Enable Automation in a control's context menu (PR requested)
 
 M1's AU-04, its open half. The Control Bar's switch (#472) re-enables every lane at once. Live's
