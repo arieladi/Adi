@@ -105,7 +105,8 @@ struct ContinuousTone final : Node {
 
 struct RefusingKeyInstance final : device::DeviceInstance {
     const device::DeviceIdentity id{"internal", "owned-refusing-key", "Refusing key", "ADI", "1"};
-    bool requested = false, preparedKey = false, refuseNext = true;
+    bool requested = false, preparedKey = false, refuseNext;
+    explicit RefusingKeyInstance(bool refuse = true) : refuseNext(refuse) {}
     unsigned keyPrepares = 0, processes = 0;
     float lastKey = 0;
 
@@ -167,17 +168,17 @@ void resumeRefusedKeyPreparation() {
     if (!instance || !publication || publication->size() != 1) return;
 
     using Audio = std::array<std::array<float, frames>, 2>;
-    const auto render = [&] {
+    const auto render = [](ui::ProjectDocument& project) {
         Audio audio{};
         std::array<float*, 2> output{audio[0].data(), audio[1].data()};
         AudioIo io;
         io.out = output.data();
         io.numOut = 2;
         io.frames = frames;
-        document->process(io);
+        project.process(io);
         return audio;
     };
-    const auto baseline = render();
+    const auto baseline = render(*document);
     const auto before = OpJournal(document->store()).headSeq();
     const auto oldSequence = session.realisedAppliedSequence();
     const auto* oldGraph = session.graph().currentGraph();
@@ -200,21 +201,45 @@ void resumeRefusedKeyPreparation() {
     check(session.graph().currentGraph() == oldGraph && session.realisedAppliedSequence() == oldSequence &&
               session.model().routing.empty(), "the refused candidate leaves the prior route and receipt running");
     auto processed = instance->processes;
-    const auto afterRefusal = render();
-    check(afterRefusal == baseline && instance->processes > processed && !instance->preparedKey && instance->lastKey == 0.f,
-          "the first callback after refusal still runs the old unkeyed DSP");
+    const auto afterRefusal = render(*document);
+    check(afterRefusal == baseline && instance->processes > processed && !instance->requested &&
+              !instance->preparedKey && instance->lastKey == 0.f,
+          "the failed candidate restores inactive intent and the old unkeyed DSP");
 
     const bool resumed = document->synchronise();
     check(session.instanceFor(30) == instance, "the retried key keeps the same recipient instance");
     if (session.instanceFor(30) != instance) return;
     processed = instance->processes;
-    const auto afterRetry = render();
+    const auto afterRetry = render(*document);
     check(resumed && instance->keyPrepares == 2 && instance->preparedKey && instance->processes > processed &&
               afterRetry == baseline && instance->lastKey == .25f && session.realisedAppliedSequence() == authoredSequence,
           "retrying the same receipt admits the intended key on the next callback");
     const auto afterStep = History(document->store()).nextUndo();
     check(OpJournal(document->store()).headSeq() == authored && afterStep && step && afterStep->txnId == step->txnId,
           "successful retry does not add another history entry");
+
+    document->release();
+    document.reset();
+    auto reopened = ui::ProjectDocument::open(fixture.temp.path() / "keys.adi", false,
+        [](const DeviceRequest&, std::string&) { return std::make_unique<RefusingKeyInstance>(false); }, error);
+    check(reopened != nullptr, "reopen the project with its stored key");
+    if (!reopened) return;
+    auto& reopenedSession = reopened->session();
+    auto* reopenedInstance = dynamic_cast<RefusingKeyInstance*>(reopenedSession.instanceFor(30));
+    check(reopenedInstance && reopenedInstance->requested && reopenedInstance->preparedKey &&
+              !reopenedSession.model().routing.empty(),
+          "stored intent configures the recipient before the initial graph prepares");
+    reopenedSession.setSourcesFor([&](std::int64_t track) {
+        if (track == 2) return std::vector<Node*>{&key};
+        if (track == 3) return std::vector<Node*>{&programme};
+        return std::vector<Node*>{};
+    });
+    reopened->prepare(48000, frames);
+    reopenedSession.graph().setFadeFrames(0);
+    reopenedSession.transport().play();
+    const auto afterReopen = render(*reopened);
+    check(reopenedInstance && afterReopen == baseline && reopenedInstance->lastKey == .25f,
+          "the first reopened block uses the stored key and unchanged programme");
 }
 
 void preparedAndDocument(){
