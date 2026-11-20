@@ -506,6 +506,42 @@ void testAClosedEngineStillPassesAudio() {
           "load must not silence the track");
 }
 
+// DF-E20 (e), confirmed as built: a patch DEVICE whose patch failed to open is
+// a wire (ADR-0011, ADR-0095). It passes every channel through sample for
+// sample, at once, and so reports no latency -- which is the truth: zero is
+// what the wire delays, and a nonzero figure would shift every other track
+// against a delay that is not there. It says why it failed (`openError`), and
+// a prepare at another rate changes none of it.
+void testAFailedPatchDeviceIsAWireWithNoDelay() {
+    section("DF-E20 (e) -- a patch device whose patch failed to open passes audio and reports no latency");
+    adi::device::DeviceIdentity id;
+    id.format = "pd"; id.uid = "no-such-patch"; id.name = "no-such-patch";
+    adi::device::PdDevice dev(std::make_unique<LibPdEngine>(patchDir(), "no-such-patch.pd", 2, 2), id);
+    check(!dev.loaded() && !dev.openError().empty(), "it is not loaded and says why: " + dev.openError());
+    eqi(dev.latencySamples(), 0, "it reports no latency before prepare");
+    const int total = 1000;
+    for (const double rate : {48000.0, 44100.0}) {
+        dev.prepare(rate, 512);
+        eqi(dev.latencySamples(), 0, "nor after prepare at " + std::to_string(static_cast<int>(rate)) + " Hz");
+        Buffers b(2, total);
+        for (int f = 0; f < total; ++f) {
+            b.in[0][static_cast<std::size_t>(f)] = static_cast<float>(f) / total - .5f;
+            b.in[1][static_cast<std::size_t>(f)] = .25f - static_cast<float>(f % 7) / 13.f;
+        }
+        const std::vector<int> awkward{100, 37, 411, 64, 7, 250};
+        int at = 0;
+        std::size_t s = 0;
+        while (at < total) {
+            const int n = std::min(awkward[s++ % awkward.size()], total - at);
+            auto io = b.io(2, total, at, n);
+            dev.process(io);
+            at += n;
+        }
+        check(b.out[0] == b.in[0] && b.out[1] == b.in[1],
+              "and passes both channels through sample for sample, with no delay, in awkward blocks");
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // ADR-0188 d8 -- no Pd external is ever loaded from disk
@@ -2027,6 +2063,7 @@ int main() {
     testAPublishedArrayReachesTheReader();
     testTheBufferIsAtomicPerArray();
     testAClosedEngineStillPassesAudio();
+    testAFailedPatchDeviceIsAWireWithNoDelay();
     testTheEngineRefusesADirectoryHoldingLoadableCode();
     testNativeCodeIsRefusedWhateverNamesIt();
     testAPatchCannotQuitOrReconfigurePd();
