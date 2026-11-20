@@ -2,6 +2,7 @@
 #include "adi/pd_builtins/oneshot_midi.hpp"
 #include "adi/pd_builtins/oneshot_sample.hpp"
 #include "adi/pd_builtins/sample_bridge.hpp"
+#include "adi/pd_builtins/float_signals.hpp"
 #include "juce/pd_builtins.hpp"
 extern "C" {
 #include "m_pd.h"
@@ -21,10 +22,12 @@ struct Object {
     State* state;
     std::int32_t slot;
     t_outlet* dropped;
+    adi::device::FloatSignals* signals;
 };
 void* create(t_symbol*, int argc, t_atom* argv) {
     auto* x = reinterpret_cast<Object*>(pd_new(klass));
     x->state = new State;
+    x->signals = new adi::device::FloatSignals;
     x->state->transport.bpm = 120;
     const float slot = argc ? atom_getfloat(argv) : 1;
     x->slot = std::isfinite(slot) && slot >= 1 && slot < 2147483648.f &&
@@ -34,7 +37,10 @@ void* create(t_symbol*, int argc, t_atom* argv) {
     x->dropped = outlet_new(&x->object, &s_float);
     return x;
 }
-void destroy(Object* x) { delete x->state; }
+void destroy(Object* x) {
+    delete x->state;
+    delete x->signals;
+}
 t_int* perform(t_int* w) {
     auto* x = reinterpret_cast<Object*>(w[1]);
     auto& state = *x->state;
@@ -56,9 +62,14 @@ t_int* perform(t_int* w) {
 void dsp(Object* x, t_signal** signal) {
     x->state->core.prepare(signal[0]->s_sr, signal[0]->s_n);
     x->state->midi.reset();
-    t_int args[]{reinterpret_cast<t_int>(x), reinterpret_cast<t_int>(signal[0]->s_vec),
-                 reinterpret_cast<t_int>(signal[1]->s_vec), static_cast<t_int>(signal[0]->s_n)};
+    // No signal inlet: signal[0] and signal[1] are the two outlets. At
+    // PD_FLOATSIZE=64 they are double, so the core writes float scratch that
+    // FloatSignals converts back after perform (DEV-09).
+    x->signals->begin(signal, 0, 2);
+    t_int args[]{reinterpret_cast<t_int>(x), x->signals->at(0), x->signals->at(1),
+                 static_cast<t_int>(signal[0]->s_n)};
     dsp_addv(perform, 4, args);
+    x->signals->end();
 }
 void parameter(Object* x, t_symbol*, int count, t_atom* atoms) {
     if (count != 2) return;
