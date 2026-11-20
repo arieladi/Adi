@@ -12,12 +12,17 @@
 #include <cstdint>
 #include <string_view>
 namespace adi::ui {
-// The lane of `ownerKind` #`ownerId`'s `paramRef`, or null: a track's "volume", "pan", "panLeft" or
-// "panRight"; a send's "gain_db", owned by its routing row; a device's parameter id.
+// The lane of `ownerKind` #`ownerId`'s `paramRef` that the engine plays, or null: a track's "volume",
+// "pan", "panLeft" or "panRight" and a send's "gain_db" (owned by its routing row) in real units, a
+// device's parameter in normalized units. As the engine's binders (`bindStripAutomation`,
+// `bindDeviceAutomation`), a disabled lane or one in another domain is skipped, and of two that remain
+// the first plays: that is the lane a manual change overrides.
 inline const engine::AutomationLaneNode *laneOf(const engine::Snapshot &snapshot, std::string_view ownerKind,
                                                 std::int64_t ownerId, std::string_view paramRef) noexcept {
+    const std::string_view domain = ownerKind == "device" ? "normalized" : "real";
     for (const auto &lane : snapshot.automationLanes)
-        if (lane && lane->ownerKind == ownerKind && lane->ownerId == ownerId && lane->paramRef == paramRef)
+        if (lane && lane->enabled && lane->valueDomain == domain && lane->ownerKind == ownerKind &&
+            lane->ownerId == ownerId && lane->paramRef == paramRef)
             return lane.get();
     return nullptr;
 }
