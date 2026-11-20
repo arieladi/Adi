@@ -93,6 +93,31 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-20 — DEV-28: the one loudness meter's cost per callback, measured by the block benchmark
+
+**PR requested:** head `devices/loudness-bench` (82397f06, two commits on f45c6f4a), base `main`.
+One file, `tools/benchmark_blocks.cpp`, which is built only with `ADI_BUILD_BENCHMARKS=ON`.
+
+- **What it adds.** `adi_block_benchmark --loudness` times the one meter, `dsp::LoudnessMeter`, at
+  steady state, per `process()` call:
+  - true peak on, at every block size from 32 to 4096, in stereo and in 5.1 with BS.1770's weights;
+  - p50, p99 and max, plus p99 as a percentage of the callback's deadline.
+  - It is the meter Main reads once N13 is rewired; until then Main runs its own.
+  - 3.1 s of tone run untimed first, so every window, the maxima and the range histogram are
+    already working.
+  - A row is published only if the tone reads as itself: momentary, short-term and true peak
+    correct, and the range histogram in use.
+  - It takes only `--iterations`.
+- **A local Debug reading, not the measurement.** p99 is about 3.5–5 % of the deadline in stereo and
+  10–12 % in 5.1.
+- **Reviewed** on two dimensions with three skeptics per finding. One defect was confirmed: the
+  first version timed a fresh meter, so the short-term window and LRA never ran in the small-block
+  rows. It is fixed in the second commit, along with two points from refuted findings: the meter's
+  name, and the option guard.
+- **For the director's session (an ADI reading, nothing of Live's).** In a Release build with
+  `-DADI_BUILD_BENCHMARKS=ON`, run `adi_block_benchmark --loudness` and bring back its CSV. That is
+  ADR-0203 d7's "measured" figure for the always-on meter.
+
 ## 2026-11-20 — DEV-28 provenance: libebur128 credited for the K-weighting; what the meter was written from (LD1)
 
 **PR requested:** head `devices/dsp-provenance` (ba851798, one commit on f45c6f4a), base `main`.
@@ -162,7 +187,7 @@ only; no product code changes.
 **DEV-28's devices items left:**
 - the "LRA not yet stable" flag. **For win:** its definition needs a ruling. One option is fewer
   than N gated short-term values; another is less than T seconds since reset.
-- a loudness case in the block benchmark;
+- a loudness case in the block benchmark: done (the entry above);
 - the ffmpeg LRA oracle;
 - the provenance comments: done (the entry above).
 
