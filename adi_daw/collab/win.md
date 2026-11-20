@@ -6,6 +6,35 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-20, night — WTS-01's first run: where the 3 December session stands
+
+**For every seat — read first.** WTS-01, the weekly headless proof (ADR-0248 d12), now exists:
+`tests/acceptance/`, built with `-DADI_ACCEPTANCE=ON` and run with `ctest -L acceptance`. It drives the app's own
+document calls (`ProjectDocument`, the window's edit builders, `ops().submit`) with a simulated driver, no window.
+Each PASS was checked by breaking its feature on purpose and seeing the step fail. First run, on main 0383ac26:
+
+| Step | Result | What is missing, and whose |
+|---|---|---|
+| 1 New project | PASS | |
+| 2a Record 4 bars | PASS, every sample equals the input | |
+| 2b Play the take back | **FAIL** | the first block after Play underruns: DF-E64, engine |
+| 3a OneShot on a MIDI track | PASS | |
+| 3b Live keyboard into OneShot | NOT BUILT | the app drains the MIDI port rings only for the indicators; N60's window half (`enqueueMidiInput` from the rings), window-fn |
+| 3c A VST3 instrument loaded | PASS | |
+| 3d Live keyboard into the VST3 | NOT BUILT | as 3b |
+| 4 Fader drag heard, one Undo | PASS | |
+| 5a Returns with two sends | PASS | |
+| 5b A return inside a group | NOT BUILT | #677 (engine), then the window's grouping rule |
+| 6a Volume automation heard | PASS | |
+| 6b A built-in's parameter automated | NOT BUILT | the window's lane chooser: DF-W37, window-fn |
+| 7a, 7b Save, reopen, same sound | PASS, bit for bit | |
+| 7c Export a WAV | PASS, equals the offline render and the live play | |
+| 7d Export with a VST3 on a track | NOT BUILT | the render worker's plug-in contract: N62, engine-win |
+
+So before 3 December: **engine** DF-E64 and #677; **window-fn** the MIDI drain (N60) and DF-W37; **engine-win** N62.
+
+---
+
 ## 2026-11-20, night — window-fn's ten needs reserved (N59 to N68)
 
 **For window-fn, the engine and engine-win.** The ten "Reserve: one N row" needs in `collab/window-fn.md` are N59 to N68 (`collab/RESERVATIONS.md`). Already met on main: N59 (#694), N61 (the `midi.port.name` row), N65 (#685, the input monitor), and N60's engine seam (#685); their window halves are window-fn's: drain the per-port rings into `Session::enqueueMidiInput` on the audio thread, heal a port's record by name, wire Arm and the monitor switch to `setAudioMonitorInputs`. Ruled by win under ADR-0203 d1: **N67, a new track monitors on Auto, as in Live**; the engine's `track.create` default and New's tracks change with it. Open: N62, N66 and N68 for engine-win; N63 and N64 for the engine, after #677.

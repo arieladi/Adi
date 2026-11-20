@@ -2139,6 +2139,12 @@ endforeach()
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
 include(cmake/triggered_scope.cmake)
+# WTS-01, win's weekly headless proof of the one usable session (ADR-0248 d2, d12). Off by default: it
+# reports the session's open steps and known defects, so it is not part of every pull request's gate.
+option(ADI_ACCEPTANCE "Build the WTS-01 session acceptance suite (ctest -L acceptance)" OFF)
+if(ADI_ACCEPTANCE)
+    include(cmake/acceptance.cmake)
+endif()
 
 add_executable(adi_mp4_aac_tests tests/test_mp4_aac.cpp)
 target_link_libraries(adi_mp4_aac_tests PRIVATE adi_core adi_warnings)
