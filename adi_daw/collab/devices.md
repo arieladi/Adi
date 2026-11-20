@@ -93,6 +93,64 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-20, late — for win: the twelve requested branches together on main, and where the queue stands
+
+**Together.** On 9b35613a (after #697 and #699), all 12 open requests merge cleanly onto main and
+with one another, in this log's order:
+1. `sampler-loadable`
+2. `df-e57` (with DF-E61)
+3. `pd-exact-position`
+4. `dev09-gaps`
+5. `loudness-robust`
+6. `limiter-offline`
+7. `loudness-reference`
+8. `dsp-provenance`
+9. `loudness-bench`
+10. `pd-ar8`
+11. `pd-fuzz`
+12. `loudness-ffmpeg`
+
+The local union, built and never pushed, passes:
+- CTest 268/268 at PD_FLOATSIZE 32 and 64 (MSVC Debug, /W4 /WX);
+- under ASan: Pd engine 702, object walk 97, DSP 433, loudness 87, built-in devices 244.
+
+**The five cross-platform patterns** (win.md, 20 November). There is no GCC or Clang compiler on
+this machine, so every changed C++ file on all 12 branches went through Clang's own front end
+instead:
+- clang-tidy 19 at 64 bit, with `-Wmost -Wextra -Wconversion -Wsign-conversion -Wshadow
+  -Wmisleading-indentation -Wunused-function`;
+- plus a textual check for a second statement after an unbraced if/for body and for
+  `decltype(&fclose)`.
+All clean. The one textual hit was a single statement after a `for` header.
+
+**The queue (your order of 20 November).** Done, as far as this lane can take it before rulings or
+readings:
+- the Sampler (option 1);
+- DF-E57, with DF-E61;
+- the song-position field;
+- this lane's DEFERRED rows;
+- the non-new-effect rows of ADR-0248 d8:
+  - DEV-09: gaps, AR8, the PD2 fuzz;
+  - DEV-28: robustness, the Tech 3341 reference, the benchmark, provenance, LD6;
+  - EX4/LD5: the devices half.
+
+What waits:
+- **On win's rulings:**
+  - the AR8 cross-instance dropout, now measured at about 10 ms per large open;
+  - runaway loops;
+  - the definition of "LRA not yet stable";
+  - whether the export brickwall should read finer than 4x (also under FOR THE DIRECTOR).
+- **On win (.github):**
+  - an ASan leg;
+  - libebur128's pin and leg;
+  - an ffmpeg leg with `ADI_REQUIRE_ORACLES=1`.
+- **On engine-win:** the export half of EX4/LD5.
+- **On the director's session:**
+  - readings 1–18;
+  - the Release run of `adi_block_benchmark --loudness`.
+- **After 3 December:** the new effects (the Compressor core waits on its branch), Auto Shift after
+  Tuner, External Audio Effect, Spectrum, Auto Pan-Tremolo, and the LD5/DEV-22 Limiter link.
+
 ## 2026-11-20 — DEV-28 / LD6: the one loudness meter against ffmpeg's ebur128 filter, the outside check on its 10 Hz range
 
 **PR requested:** head `devices/loudness-ffmpeg` (a718db94, two commits on d0af0e15), base `main`.
