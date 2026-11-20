@@ -346,6 +346,7 @@ add_library(adi_core STATIC
     src/adi/builtin_insert.cpp
     src/adi/row_capture.cpp
     src/juce/builtin_host.cpp
+    src/juce/builtin_values.cpp
     src/adi/track_recording.cpp
     src/adi/row_capture.cpp
     src/adi/row_capture.cpp
@@ -1074,6 +1075,10 @@ add_test(NAME adi_sample_slots_tests COMMAND adi_sample_slots_tests)
 add_executable(adi_builtin_devices_tests tests/test_builtin_devices.cpp)
 target_link_libraries(adi_builtin_devices_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_builtin_devices_tests COMMAND adi_builtin_devices_tests)
+# DF-E37 (c): a built-in's saved values survive a range change.
+add_executable(adi_builtin_value_tests tests/test_builtin_values.cpp)
+target_link_libraries(adi_builtin_value_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_builtin_value_tests COMMAND adi_builtin_value_tests)
 
 add_executable(adi_device_ops_tests tests/test_device_ops.cpp)
 target_link_libraries(adi_device_ops_tests PRIVATE adi_core adi_warnings)

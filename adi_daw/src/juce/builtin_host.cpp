@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/builtin_host.hpp"
+#include "juce/builtin_values.hpp"
 #include "juce/mix_function_host.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/ops.hpp"
@@ -21,23 +22,10 @@
 namespace adi::device {
 namespace {
 #if ADI_WITH_PD
-double natural(const PdParamDecl& declaration,double normalized) noexcept {
-    normalized=std::clamp(normalized,0.0,1.0);
-    double value=declaration.min+(declaration.max-declaration.min)*normalized;
-    if(declaration.curve==PdCurve::Log)value=declaration.min*std::pow(declaration.max/declaration.min,normalized);
-    else if(declaration.curve==PdCurve::Exponent)value=declaration.min+(declaration.max-declaration.min)*std::pow(normalized,declaration.exponent);
-    else if(declaration.curve==PdCurve::Toggle)value=normalized>=0.5?declaration.max:declaration.min;
-    if(declaration.curve==PdCurve::Int || declaration.curve==PdCurve::Menu)value=std::round(value);
-    return std::clamp(value,declaration.min,declaration.max);
-}
-double normalized(const PdParamDecl& declaration,double value) noexcept {
-    value=std::clamp(value,declaration.min,declaration.max);
-    if(declaration.max<=declaration.min)return 0;
-    if(declaration.curve==PdCurve::Log)return std::log(value/declaration.min)/std::log(declaration.max/declaration.min);
-    const double fraction=(value-declaration.min)/(declaration.max-declaration.min);
-    if(declaration.curve==PdCurve::Exponent)return std::pow(fraction,1.0/declaration.exponent);
-    return fraction;
-}
+// The value mapping lives in builtin_values (DF-E37 c), where it is tested
+// under two declarations.
+using builtin_values::natural;
+using builtin_values::normalized;
 class BuiltinDevice final:public DeviceInstance {
 public:
     BuiltinDevice(const BuiltinInfo& info,const rows::PluginRef& reference)
@@ -79,9 +67,12 @@ public:
     }
     bool setParam(const std::string& id,const ParamValue& value) override {
         const auto index=findIndex(id);
-        if(index==descriptors_.size() || !std::isfinite(value.normalized) || value.normalized<0 || value.normalized>1)return false;
-        const double canonical=normalized(declarations_.params[index],natural(declarations_.params[index],value.normalized));
-        targets_[index].store(static_cast<float>(canonical),std::memory_order_release);return true;
+        if(index==descriptors_.size())return false;
+        // DF-E37 (c): a value's real part is honoured where the engine's real
+        // is the true one (see builtin_values.hpp).
+        const auto position=builtin_values::positionFor(declarations_.params[index],value);
+        if(!position)return false;
+        targets_[index].store(static_cast<float>(*position),std::memory_order_release);return true;
     }
     std::string paramText(const std::string& id,double value)const override {
         const auto index=findIndex(id);if(index==descriptors_.size() || !std::isfinite(value))return {};
@@ -141,9 +132,12 @@ public:
             }
             return {};
         }
-        auto value=extra_;value["version"]=1;value["uid"]=info_.uid;auto& params=value["params"];
-        if(!params.is_object())params=Payload::object();
-        for(std::size_t i=0;i<descriptors_.size();++i)params[descriptors_[i].id]=static_cast<double>(targets_[i].load(std::memory_order_relaxed));
+        auto value=extra_;value["version"]=1;value["uid"]=info_.uid;
+        // DF-E37 (c): each value in its unit beside its position, so a range
+        // change keeps what the project plays (ADR-0188 d3).
+        std::vector<float> positions(descriptors_.size());
+        for(std::size_t i=0;i<descriptors_.size();++i)positions[i]=targets_[i].load(std::memory_order_relaxed);
+        builtin_values::write(value,declarations_.params,positions.data());
         return Payload::to_cbor(value);
     }
     bool loadState(const std::string& role,const std::vector<std::uint8_t>& bytes)override {
@@ -167,12 +161,9 @@ public:
             const auto& uid=value.at("uid");
             if(value.at("version")!=1 || !uid.is_string() || uid.get_ref<const std::string&>()!=info_.uid || !value.at("params").is_object())return false;
             std::vector<std::pair<std::size_t,float>> pending;
-            for(auto parameter=value.at("params").begin();parameter!=value.at("params").end();++parameter) {
-                if(!parameter->is_number())return false;
-                const double target=parameter->get<double>();if(!std::isfinite(target) || target<0 || target>1)return false;
-                const auto index=findIndex(parameter.key());
-                if(index!=descriptors_.size())pending.emplace_back(index,static_cast<float>(normalized(declarations_.params[index],natural(declarations_.params[index],target))));
-            }
+            // DF-E37 (c): the real value is preferred, clamped and turned back
+            // into a position; a bad known value refuses the whole state.
+            if(!builtin_values::read(value,declarations_.params,pending))return false;
             extra_=std::move(value);
             for(const auto& [index,target]:pending)targets_[index].store(target,std::memory_order_release);
             return true;
