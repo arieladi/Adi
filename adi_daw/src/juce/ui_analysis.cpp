@@ -250,15 +250,25 @@ std::optional<MainMeterSnapshot> readMainMeterSnapshot(const engine::MainLoudnes
     if (readout.formatSequence.load(std::memory_order_acquire) != before) return {};
     return result;
 }
-SharedSpectrumView::SharedSpectrumView() {
-    (void)analysisPaletteColour(palettes::defaultIndex, 0); // no lazy LUT initialization in paint
-    setTitle("Channel spectrum");
-    setTooltip("The channel after its mixer. Full and boxed views share one Hann-window spectrum. "
+namespace {
+void describeAnalysisView(SharedSpectrumView &view, bool classic) {
+    if (classic) {
+        view.setTitle("Classic Scope");
+        view.setTooltip("Classic Scope shows the waveform using the selected channel and trigger.");
+        return;
+    }
+    view.setTitle("Channel spectrum");
+    view.setTooltip("The channel after its mixer. Full and boxed views share one Hann-window spectrum. "
                "Sine-calibrated dBFS; sample peak and RMS refer to the same contiguous window. "
                "Phase is L/R correlation, not a loudness measurement. Meters on Main/Post Mixer "
                "also show the existing programme loudness before cue/metronome: momentary, "
                "short-term and integrated LUFS, plus the held aggregate Main true peak. "
                "Freeze/Reset affect this view only, never the shared Main measurement.");
+}
+}
+SharedSpectrumView::SharedSpectrumView() {
+    (void)analysisPaletteColour(palettes::defaultIndex, 0); // no lazy LUT initialization in paint
+    describeAnalysisView(*this, false);
     setInterceptsMouseClicks(false, false);
 }
 void SharedSpectrumView::setMode(Mode mode) {
@@ -276,6 +286,8 @@ void SharedSpectrumView::setMode(Mode mode) {
         };
         addChildComponent(*classicPanel_);
     }
+    if ((mode_ == Mode::ClassicScope) != (mode == Mode::ClassicScope))
+        describeAnalysisView(*this, mode == Mode::ClassicScope);
     mode_ = mode;
     if (classicPanel_) {
         resetClassic(false);
