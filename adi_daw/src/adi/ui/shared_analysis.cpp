@@ -1143,6 +1143,9 @@ std::shared_ptr<const SharedAnalysis::AverageResult> SharedAnalysis::Lease::read
     const auto publication = (outputs_ & Average1s) && available() ? domain_->readAverageResult() : nullptr;
     return publication && publication->window && (publication->window->outputs & outputs_) == outputs_ ? publication : nullptr;
 }
+std::shared_ptr<const SharedAnalysis::MaximumResult> SharedAnalysis::Lease::readMaximum() const noexcept {
+    return {};
+}
 std::shared_ptr<const SharedAnalysis::StereoMeterResult> SharedAnalysis::Lease::readStereoMeter() const noexcept {
     return available() && domain_->meter ? domain_->readMeterResult() : nullptr;
 }

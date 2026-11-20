@@ -56,6 +56,82 @@ struct Fixture {
         [this](std::int64_t, ScopePoint) { ++acquireCalls; return tap; },
         [this](std::int64_t, ScopePoint) { ++releaseCalls; }, SharedAnalysis::Mode::Manual};
 };
+void realtimeMaximumSpectrum() {
+    constexpr int window = 480;
+    constexpr int rate = 48000;
+    std::array<float, window> first{}, quiet{}, loud{};
+    first.front() = .5f;
+    loud.fill(.5f);
+    for (const int hop : {480, 240, 120}) {
+        Fixture f;
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.window = adi::dsp::Window::Rectangular;
+        request.hopSize = hop;
+        auto raw = f.broker.acquire(request);
+        request.outputs = SharedAnalysis::RealtimeMaximum;
+        auto maximum = f.broker.acquire(request);
+        auto sibling = f.broker.acquire(request);
+        check(raw.available() && maximum.available() && sibling.available() && f.acquireCalls == 1 &&
+                  f.broker.stats().spectralPlans == 1 && f.broker.stats().domains == 1,
+              "visible realtime maximum readers share the raw Spectrum tap, window and FFT plan");
+        if (!maximum.available())
+            continue;
+        f.tap->write(first.data(), first.data(), window, 0, true, 1);
+        f.broker.pump();
+        const auto initial = maximum.readMaximum();
+        const auto input = raw.read();
+        check(initial && sibling.readMaximum() == initial && input && initial->window == input &&
+                  exactBins(initial->binsDbfs, input->binsDbfs) && f.broker.stats().transforms == 1,
+              "the first maximum takes the calibrated raw bins in the same hop without another FFT");
+        if (!initial || initial->binsDbfs.empty())
+            continue;
+        const auto startDb = initial->binsDbfs.front();
+        const auto before = f.broker.stats();
+        f.broker.pump();
+        check(maximum.readMaximum() == initial && before.analysisWindows == f.broker.stats().analysisWindows &&
+                  before.publications == f.broker.stats().publications,
+              "a repaint or redundant pump advances no maximum without a completed physical hop");
+
+        for (int i = 0; i < rate / hop; ++i) {
+            f.tap->write(quiet.data(), quiet.data(), hop, window + i * hop, true, 1);
+            if (i % 4 == 3)
+                f.broker.pump();
+        }
+        f.broker.pump();
+        const auto decayed = maximum.readMaximum();
+        check(decayed && near(decayed->binsDbfs.front(), startDb - 20., .002) &&
+                  f.broker.stats().transforms == 1 && initial->binsDbfs.front() == startDb,
+              "one second of physical hops decays by 20 dB and leaves the held picture immutable");
+        f.tap->write(loud.data(), loud.data(), hop, window + rate, true, 1);
+        f.broker.pump();
+        const auto rising = maximum.readMaximum();
+        const auto current = raw.read();
+        check(rising && current && rising->binsDbfs.front() == current->binsDbfs.front() &&
+                  rising->binsDbfs.front() > startDb && f.broker.stats().transforms == 2,
+              "a louder calibrated bin rises on the next hop without waiting for a redraw");
+
+        f.tap->write(quiet.data(), quiet.data(), window, 2200, true, 2);
+        f.broker.pump();
+        const auto afterSeek = maximum.readMaximum();
+        check(afterSeek && afterSeek->window->transportRevision == 2 &&
+                  afterSeek->window->sourceEpoch > initial->window->sourceEpoch &&
+                  afterSeek->binsDbfs.front() == adi::dsp::kDbFloor,
+              "a seek begins a fresh maximum without reusing an old peak");
+
+        maximum.reset();
+        check(sibling.readMaximum() == afterSeek && f.releaseCalls == 0,
+              "hiding one maximum view leaves the other view's history intact");
+        sibling.reset();
+        raw.reset();
+        const auto hidden = f.broker.stats();
+        f.tap->write(loud.data(), loud.data(), window, 2200 + window, true, 2);
+        f.broker.pump();
+        const auto idle = f.broker.stats();
+        check(hidden.consumers == 0 && hidden.spectralPlans == 0 && f.releaseCalls == 1 &&
+                  hidden.cursorReads == idle.cursorReads && hidden.transforms == idle.transforms,
+              "hiding the final view leaves no maximum plan, capture or FFT work");
+    }
+}
 void focusScopeBarTiming() {
     constexpr auto quarter = adi::textproj::kPPQ;
     const adi::engine::TempoMap constant{{{0, 120., 0}}};
@@ -2004,7 +2080,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
