@@ -83,6 +83,63 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-20 — [adi.transport] gives each Pd tick its exact position (the "editable Pd timing cases")
+
+**PR requested:** head `devices/pd-exact-position` (0e8cd8a3, one commit on dccb6a55), base `main`.
+It is the branch this log promised the clones seat once its rollup landed. **For the clones seat's
+review:** two small hunks in its files, `adi_shaper_tilde.cpp` and `adi_shaper_transport.hpp`.
+
+- **The problem.** From the seven fields a patch cannot tell where it is. QN 0 and QN 1 in 2/2 send
+  the same seven fields, and after a 4/4 bar then a 3/4 bar a reconstruction from the meter is a
+  quarter off.
+- **What changed.**
+  - A patch device whose patch has `[adi.transport]` now asks the graph for its exact position per
+    segment (`wantsDeviceTransport`), as does a native core that keeps the graph's position. That
+    second case was dead code until the review found it.
+  - Before every Pd tick, inside the tick lock and without allocating, `LibPdEngine` sends that
+    tick's own position: the position of its first input sample. It is reckoned from the segment's
+    `quarterNotes` plus the frames since. A tick that spans calls keeps the position latched when
+    it began, so a seek or stop inside a tick does not move it.
+- **Two fields, not one.** The position goes out as **whole quarter notes** and the **fraction** of
+  the quarter.
+  - One absolute position in a 32-bit `t_float` would lose a sample within minutes, about 12
+    samples an hour in at 120 BPM. Split, both parts stay exact. This is the same reasoning the
+    abstraction already gives for having no absolute tick count.
+  - With a position, playing and BPM are also the tick's own, so everything a patch reads about the
+    tick agrees. Meter, bar, beat and ticks still describe the host block's start, and the help
+    text says so.
+  - Without a position, the seven fields go once per change, as before. A patch that unpacks seven
+    drops the extra two, with no error.
+  - `pd/adi.transport.pd` now has nine outlets. The edited ADI-Shaper takes nine atoms and rebuilds
+    the position in double.
+- **Tests,** `adi_pd_engine_tests` 692. Expected values come from a per-frame model built in the
+  test.
+  - Every tick's position, stopped and playing, in awkward segments: tick 375 is QN 1.
+  - A tick spanning a cut in its host block, a seek and a stop inside ticks (tick 15 = 3.04 before
+    the seek; tick 26 = 10.0276667 before the stop), and engine tiling.
+  - What a patch receives, read from the proof patch:
+    - in 2/2, QN 0 and QN 1 send the same seven fields but different positions;
+    - in bar 2 after 4/4 then 3/4, the position is 4 where the seven fields give 3;
+    - QN 7200.37 arrives exact;
+    - playing and BPM are the tick's own.
+  - A seven-field patch keeps working, and both the patch and the native core opt in.
+  - Plants: no latch (5 failures), segment-start position (9), once per change (11), one absolute
+    float (1), the block's playing and BPM (1), no native opt-in (1).
+  - CTest 267/267 at PD_FLOATSIZE 32 and at 64 (MSVC Debug, /W4 /WX).
+- **Reviewed first.** Five reviewers covered timing, delivery, graph integration, portability and
+  tests, with three skeptics per finding. The confirmed findings, all fixed here, were:
+  - the 32-bit precision loss;
+  - playing and BPM taken from the block while the position came from the tick;
+  - the dead native branch;
+  - two meter tests that compared constants and could not fail.
+- **What it does not do.**
+  - It reaches the app only once DEV-10's user-patch loader exists; production built-ins run
+    natively.
+  - Upstream latency comes from the graph's own arrival term, which is not re-tested here through a
+    full Graph.
+  - The ADR-0188 d3 field list says "exactly" seven, so **win** owns the amendment that records the
+    two added fields.
+
 ## 2026-11-20 — DEV-21: the Sampler is a loadable instrument with 32 sample slots (win's option 1)
 
 **PR requested:** head `devices/sampler-loadable` (205c6bf9, one commit), stacked on
