@@ -1,0 +1,25 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "pitch-units",
+  "kind": "signal",
+  "input": {
+    "grid_pitch_values": [
+      -0.1,
+      0,
+      0.1,
+      1
+    ],
+    "candidate_pd_midi_values": [
+      48,
+      60,
+      72,
+      180
+    ],
+    "candidate_reference": "Grid C3 naming versus MIDI number must be verified; no universal octave label assumed"
+  },
+  "question": "Measure calibrated Hz output and validate unit conversion, tuning authority and out-of-range policy.",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result.",
+  "provenance": "The director's research."
+}

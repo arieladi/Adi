@@ -1,0 +1,20 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "stereo-modulation-boundary",
+  "kind": "signal",
+  "input": {
+    "left": "997 Hz sine, amplitude .1",
+    "right": "negated left",
+    "targets": [
+      "internal stereo signal inlet",
+      "external mono modulator",
+      "Pd scalar parameter",
+      "proposed signal-rate adapter"
+    ]
+  },
+  "question": "Does reduction cancel or select a channel, and what rate/aliasing/latency remains? Do not infer all targets share one adapter.",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result.",
+  "provenance": "The director's research."
+}

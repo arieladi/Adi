@@ -1,0 +1,18 @@
+! Original ADI research diagnostic fixture; not measured in Live
+Original diagnostic shifted reference
+12
+100.0
+200.0
+300.0
+400.0
+500.0
+600.0
+700.0
+800.0
+900.0
+1000.0
+1100.0
+1200.0
+! @ABL REFERENCE_PITCH 3 9 432.0
+! @ABL NOTE_NAMES "Degree 0" "Degree 1" "Degree 2" "Degree 3" "Degree 4" "Degree 5" "Degree 6" "Degree 7" "Degree 8" "Degree 9" "Degree 10" "Degree 11"
+! @ABL NOTE_RANGE_BY_INDEX -2 0 8 7
