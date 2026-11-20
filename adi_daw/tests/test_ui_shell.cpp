@@ -2629,6 +2629,26 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         browser.choose(plugIns);
         check(asked == 1 && browser.rows().size() == expected.size(),
               "choosing Plug-Ins again lists what was found and scans nothing");
+        // A scan running over a listed catalogue: its line heads the list, and a count during it changes
+        // only that line, so the selection stays (DF-W34 on N58).
+        scan.phase = PluginScan::Phase::Scanning;
+        scan.candidates = 150;
+        scan.completed = 0;
+        ++scan.listed;
+        browser.setPluginScan(scan);
+        check(browser.rows().size() == expected.size() + 1 && browser.rows()[0].heading == "Scanning plug-ins: 150 files…" &&
+                  browser.rows()[1].heading == "CLAP",
+              "while a scan runs its line heads what was listed before");
+        browser.list.selectRow(3);
+        scan.completed = 12;
+        browser.setPluginScan(scan);
+        check(browser.list.getSelectedRow() == 3 && browser.rows()[0].heading == "Scanning plug-ins: 12 of 150 files…",
+              "a count changes the line only; the selected plug-in stays selected");
+        scan.phase = PluginScan::Phase::Done;
+        scan.candidates = scan.completed = 0;
+        ++scan.listed;
+        browser.setPluginScan(scan);
+        check(browser.rows().size() == expected.size(), "the scan ended, its line goes");
         const auto rowNamed = [&browser](const char *name) {
             for (std::size_t i = 0; i < browser.rows().size(); ++i)
                 if (browser.rows()[i].plugin != nullptr && browser.rows()[i].plugin->name == name)
@@ -2804,34 +2824,63 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         finish(Outcome::Published);
         service.poll();
         check(service.running() && started.back() == DiscoveryMode::Incremental, "and follows it");
-        // A folder change leaves the running job stale: it runs again on the new folders.
-        finish(Outcome::Stale);
-        service.poll();
-        check(service.running() && started.back() == DiscoveryMode::Incremental && started.size() == 5,
-              "a stale job runs again");
-        // A project opened while a job runs: the job stops, the open runs between jobs, the job resumes.
+        // A project opened while a job runs waits for the job's adoption, so it finds what the job found;
+        // nothing is stopped for it. A folder change leaving the job stale makes it wait for the rerun.
         int opened = 0;
         bool jobBesideOpen = true;
+        std::uint64_t listedAtOpen = 0;
         const auto running = service.job();
+        const auto cancelledBefore = cancelled;
         service.settleThen([&] {
             ++opened;
             jobBesideOpen = service.running();
+            listedAtOpen = service.state().listed;
         });
-        check(opened == 0 && cancelled == running, "an open during a job stops it and waits");
-        finish(Outcome::Cancelled);
+        check(opened == 0 && cancelled == cancelledBefore && service.job() == running,
+              "an open during a job waits for it, and stops nothing");
+        finish(Outcome::Stale);
         service.poll();
-        check(opened == 1 && !jobBesideOpen && service.running() && started.back() == DiscoveryMode::Incremental &&
-                  service.state().listing.complete,
-              "it opens with no job beside it, and the job starts again after");
-        service.settleThen([&] { ++opened; });
-        finish(Outcome::Published);
-        service.poll(); // the stop was asked; the job finished first all the same
-        check(opened == 2 && service.running(), "a job that finished before its stop took effect lets the open run too");
+        check(opened == 0 && service.running() && started.back() == DiscoveryMode::Incremental && started.size() == 5,
+              "a stale job runs again on the new folders, and the open waits for that run");
+        const auto listedBefore = service.state().listed;
+        catalogue.plugins.push_back({"clap", "org.new.one", "New One", "New", "1", "/x/New.clap", PluginEntry::Kind::Effect});
         finish(Outcome::Published);
         service.poll();
-        check(!service.running(), "and the restarted job ends");
+        check(opened == 1 && !jobBesideOpen && listedAtOpen > listedBefore && !service.running() &&
+                  service.state().listing.plugins.size() == 2,
+              "it opens once the job is adopted, with no job beside it, the plug-in the job found listed");
         service.settleThen([&] { ++opened; });
-        check(opened == 3, "with no job running, an open runs at once");
+        check(opened == 2, "with no job running, an open runs at once");
+        // A Rescan whose stop comes too late (the Incremental had already finished): the Incremental is
+        // adopted as it ended, and the Refresh follows once, not twice.
+        bool acceptCancel = false;
+        port.cancel = [&](std::uint64_t job) {
+            cancelled = job;
+            return acceptCancel;
+        };
+        PluginCatalogueService late(port);
+        late.request(DiscoveryMode::Incremental);
+        late.request(DiscoveryMode::Refresh);
+        const auto startedBefore = started.size();
+        finish(Outcome::Published);
+        late.poll();
+        check(late.running() && started.size() == startedBefore + 1 && started.back() == DiscoveryMode::Refresh &&
+                  late.state().listing.complete,
+              "a refused stop: the finished job is adopted, then the Refresh runs");
+        finish(Outcome::Published);
+        late.poll();
+        check(!late.running() && started.size() == startedBefore + 1, "and nothing runs twice");
+        late.stop();
+        // A count during a job changes no list: the Browser keeps its rows and selection.
+        service.request(DiscoveryMode::Incremental);
+        const auto listedDuring = service.state().listed;
+        progress.job = service.job();
+        progress.completed = 40;
+        service.poll();
+        check(service.state().listed == listedDuring && service.state().completed == 40,
+              "a progress count leaves the list's count as it was");
+        finish(Outcome::Published);
+        service.poll();
         // A job that failed: what was listed stays, and why it stopped is named.
         service.request(DiscoveryMode::Refresh);
         scan::Report helper;
@@ -2839,7 +2888,7 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         helper.failures.push_back({"", "the helper could not start", scan::State::Unavailable});
         finish(Outcome::Failed, helper);
         service.poll();
-        check(!service.running() && !service.state().listing.complete && service.state().listing.plugins.size() == 1 &&
+        check(!service.running() && !service.state().listing.complete && service.state().listing.plugins.size() == 2 &&
                   service.state().listing.stopped == "the plug-in scanner could not run (the helper could not start)",
               "a failed job keeps the list and names why it stopped");
         // The person's own cancel (none here yet) and a job that could not start.
@@ -2857,7 +2906,7 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         finish(Outcome::Cancelled);
         service.poll();
         service.request(DiscoveryMode::Refresh);
-        check(cancelled == last && !service.running() && opened == 3 && started.back() == DiscoveryMode::Incremental,
+        check(cancelled == last && !service.running() && opened == 2 && started.back() == DiscoveryMode::Incremental,
               "Quit cancels the job; nothing starts after it and no waiting open runs");
         check(changes > 0, "the owner was told of each change");
     }

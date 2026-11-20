@@ -118,7 +118,8 @@ class SettingsPanel final : public juce::Component {
     // Live's Rescan on the Plug-Ins page (DF-W34): scans the plug-in folders again in the background.
     // Shown on that page only, and only where the application can scan (`onRescanPlugins` set).
     juce::TextButton rescanPlugins{"Rescan"};
-    std::function<void()> onRescanPlugins;
+    // Returns why the scan did not start; empty when it runs.
+    std::function<std::string()> onRescanPlugins;
     // The Tempo & MIDI page's MIDI Ports table (SRF-05), where the application has ports to list: made
     // the first time the page shows, at the page's head, in place of the `midi.ports` record's row.
     std::function<std::unique_ptr<juce::Component>()> midiPorts;

@@ -280,7 +280,8 @@ void BrowserPanel::refill() {
     } else if (!chosen.heading && chosen.name == "Plug-Ins") {
         // Live's Plug-Ins: a folder per format, in it a folder per vendor, in that its plug-ins by name.
         std::string format;
-        if (pluginScan_.phase == PluginScan::Phase::Scanning && pluginScan_.listing.plugins.empty())
+        // While a scan runs its line heads the list, above what was listed before it.
+        if (pluginScan_.phase == PluginScan::Phase::Scanning)
             rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str()), nullptr, 0});
         for (const auto &group : pluginGroups(pluginScan_.listing, query.toStdString())) {
             if (group.format != format) {
@@ -380,9 +381,20 @@ bool BrowserPanel::pluginsShown() const {
 void BrowserPanel::setPluginScan(const PluginScan &scan) {
     const bool began = scan.phase == PluginScan::Phase::Scanning && pluginScan_.phase != PluginScan::Phase::Scanning;
     const bool ended = scan.phase == PluginScan::Phase::Done && pluginScan_.phase == PluginScan::Phase::Scanning;
+    // A count during a job, with the same list: only the list's first line changes, so the rows, the
+    // selection and the scroll stay as they are.
+    const bool countOnly = !began && !ended && scan.phase == PluginScan::Phase::Scanning &&
+                           pluginScan_.phase == PluginScan::Phase::Scanning && scan.listed == pluginScan_.listed;
     pluginScan_ = scan;
     if (!pluginsShown())
         return;
+    if (countOnly) {
+        if (!rows_.empty() && rows_.front().plugin == nullptr && rows_.front().device == nullptr) {
+            rows_.front().heading = juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str());
+            repaint();
+        }
+        return;
+    }
     refill();
     // The Status Bar says the scan's start and its end while Plug-Ins shows; a count arriving between
     // them only redraws the list's line.

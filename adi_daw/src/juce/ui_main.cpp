@@ -301,16 +301,20 @@ class AdiApplication final : public juce::JUCEApplication,
             key += '\n' + c;
         return key;
     }
-    // A project opened with no discovery beside it: a running one is stopped, the project opens, and it
-    // starts again (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits.
+    // A project opened while a discovery runs waits for its adoption, so the plug-ins it finds load
+    // (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits.
     void openSettled(const juce::File &file, bool create) {
         if (!catalogue_ || !catalogue_->running()) {
             install(file, create);
             return;
         }
         if (root_)
-            root_->say("Opening " + file.getFileName().toStdString() + " once the plug-in scan has paused…");
-        catalogue_->settleThen([this, file, create] { install(file, create); });
+            root_->say("Opening " + file.getFileName().toStdString() + " once the plug-in scan has finished…");
+        catalogue_->settleThen([this, file, create] {
+            // A refused open leaves the project as it was; its alert says why, and the waiting line goes.
+            if (!install(file, create) && root_)
+                root_->say({});
+        });
     }
     void stopPluginCatalogue() {
         if (catalogue_)
@@ -941,8 +945,13 @@ class AdiApplication final : public juce::JUCEApplication,
                 // Live's Rescan on the Plug-Ins page (DF-W34): a Refresh discovery, in the background.
                 if (catalogue_)
                     settingsWindow_->panel().onRescanPlugins = [this] {
-                        if (catalogue_)
-                            catalogue_->request(DiscoveryMode::Refresh);
+                        if (!catalogue_)
+                            return std::string();
+                        catalogue_->request(DiscoveryMode::Refresh);
+                        // Started, queued behind the running job, or refused (said, with why).
+                        return catalogue_->state().phase == PluginScan::Phase::Scanning
+                                   ? std::string()
+                                   : pluginScanStatus(catalogue_->state());
                     };
                 // Live's MIDI Ports table on the Tempo & MIDI page (SRF-05).
                 if (midiPorts_)

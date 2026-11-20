@@ -407,8 +407,9 @@ SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
     rescanPlugins.setColour(juce::TextButton::buttonColourId, look::button);
     rescanPlugins.onClick = [this] {
         if (onRescanPlugins) {
-            onRescanPlugins();
-            setHelp("Scanning the plug-ins again; the Browser's Plug-Ins lists them when it is done.");
+            const auto why = onRescanPlugins();
+            setHelp(why.empty() ? juce::String("Scanning the plug-ins again; the Browser's Plug-Ins lists them when it is done.")
+                                : juce::String::fromUTF8(why.c_str()));
         }
     };
     scroll_.setViewedComponent(&content_, false);

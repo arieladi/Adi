@@ -12,10 +12,11 @@
 // (which leaves a running job stale). One job at a time: a job asked for while one runs follows it, and
 // a Refresh asked for during an Incremental stops that one first, since it covers it.
 //
-// A project opened while a job runs would meet the loader's "needs discovery" for every plug-in the
-// catalogue lacks. So an open asks the service to settle first (`settleThen`): a running job is stopped,
-// the open runs between jobs, and the stopped job starts again (its finished probes are cached, so it
-// loses little). A plug-in the project holds that the catalogue already lists loads at once.
+// Once the loader has run a discovery job it resolves a plug-in from the catalogue alone: one the
+// catalogue lacks is "needs discovery", whether a job runs or not (it no longer probes a project's saved
+// path). So a project opened while a job runs waits for that job's adoption (`settleThen`), as
+// engine-win's handoff asks, and then finds what the job found; nothing is stopped for it. A project
+// opened with no job running opens at once against the catalogue as it stands.
 //
 // No JUCE: the app's `DiscoveryPort` is the loader's job API (`JuceDeviceLoader::startDiscovery` and
 // the rest, adapted in `ui_main.cpp`); a test's drives it by hand.
@@ -36,6 +37,7 @@ struct PluginScan {
     Phase phase = Phase::NotStarted;
     std::size_t candidates = 0; // the files and bundles the running scan probes; 0 until counted
     std::size_t completed = 0;  // of those, the ones probed so far
+    std::uint64_t listed = 0;   // counts each change of `listing`: a state with the same count lists the same
     PluginListing listing;      // what is listed: the last scan's, the previous list while one runs
 };
 // The Status Bar's line for the scan's state (DF-W34 a and b). A scan that stopped early is named with
@@ -111,6 +113,7 @@ class PluginCatalogueService {
         listing.stopped = state_.listing.stopped;
         listing.failed = state_.listing.failed;
         state_.listing = std::move(listing);
+        ++state_.listed;
         if (state_.phase == PluginScan::Phase::NotStarted)
             state_.phase = PluginScan::Phase::Done;
         changed();
@@ -128,8 +131,8 @@ class PluginCatalogueService {
         if (rank(mode) > rank(mode_))
             cancelRunning();
     }
-    // Runs `open` with no job running: now when none runs; else the running job is stopped, `open` runs
-    // once it has ended, and the job starts again afterwards.
+    // Runs `open` once no job runs: now when none does; else after the running job's adoption, before
+    // any job queued behind it starts, so the open finds what the job found.
     void settleThen(std::function<void()> open) {
         if (stopped_)
             return;
@@ -138,8 +141,6 @@ class PluginCatalogueService {
             return;
         }
         settled_.push_back(std::move(open));
-        queue(mode_);
-        cancelRunning();
     }
     // Reads the running job's progress and adopts it once it has finished. The app's timer calls this.
     void poll() {
@@ -176,12 +177,13 @@ class PluginCatalogueService {
         if (!pending_ || rank(mode) > rank(*pending_))
             pending_ = mode;
     }
+    // Stops the running job for one that covers it. A job that has already finished refuses the stop:
+    // it is adopted as it ended, and the job queued behind it follows all the same.
     void cancelRunning() {
         if (!running() || quietCancel_)
             return;
-        quietCancel_ = true;
-        if (port_.cancel)
-            port_.cancel(job_);
+        if (port_.cancel && port_.cancel(job_))
+            quietCancel_ = true;
     }
     void startQueued() {
         if (stopped_ || running() || !pending_)
@@ -199,6 +201,7 @@ class PluginCatalogueService {
             state_.listing.failed = 0;
             state_.listing.stopped =
                 admission.refusal.empty() ? std::string("the plug-in scan could not start") : admission.refusal;
+            ++state_.listed;
             changed();
             return;
         }
@@ -221,6 +224,7 @@ class PluginCatalogueService {
         case O::Legacy:
             applyReport(listing, end.report);
             state_.listing = std::move(listing);
+            ++state_.listed;
             break;
         case O::Stale:
             // The Settings' folders changed under it: the catalogue stays, and the job runs again on them.
@@ -228,7 +232,7 @@ class PluginCatalogueService {
             break;
         case O::Cancelled:
             if (quiet)
-                break; // stopped for an open or a Refresh: not the person's stop, nothing to name
+                break; // stopped for a Refresh that covers it: not the person's stop, nothing to name
             [[fallthrough]];
         case O::Failed:
             // What was accepted before stays listed; why this job stopped is named.
@@ -240,22 +244,31 @@ class PluginCatalogueService {
                                   : end.error.empty()           ? std::string("the scan did not finish")
                                                                 : "the scan failed (" + end.error + ")";
             state_.listing = std::move(listing);
+            ++state_.listed;
             break;
         }
         state_.candidates = state_.completed = 0;
-        // Between jobs: the opens that waited run now, with no job beside them.
+        // Between jobs: the opens that waited run now, with no job beside them, before the next job
+        // starts. A stale job's opens wait for its run on the new folders instead.
+        if (end.outcome != O::Stale)
+            runOpens();
+        if (pending_ && !stopped_) {
+            startQueued();
+            if (running())
+                return;
+        }
+        if (state_.phase != PluginScan::Phase::Done) {
+            state_.phase = PluginScan::Phase::Done;
+            changed();
+        }
+        runOpens(); // a stale job that could not run again: its opens go ahead on what is listed
+    }
+    void runOpens() {
         auto opens = std::move(settled_);
         settled_.clear();
         for (auto &open : opens)
             if (!stopped_)
                 open();
-        if (pending_ && !stopped_) {
-            startQueued();
-            if (running() || state_.phase == PluginScan::Phase::Done)
-                return;
-        }
-        state_.phase = PluginScan::Phase::Done;
-        changed();
     }
     void changed() {
         if (onChange)
