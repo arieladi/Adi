@@ -148,7 +148,8 @@ file(WRITE "${adi_pd_overlay}/g_io.c" "${adi_pd_text}")
 # make patches nobody asked for; the path, startup and preference messages
 # change where Pd looks for code or write files; the audio and MIDI dialogs
 # reconfigure devices Pd does not own here; `fast-forward` runs the scheduler
-# for as long as it is told, on whichever thread sent it. Each becomes one
+# for as long as it is told, on whichever thread sent it; `compatibility` sets
+# one process-wide level every Pd instance in the session reads. Each becomes one
 # refusal naming the message. ADI never sends any of them: it opens patches with
 # libpd_openfile (glob_evalfile), not `open`.
 file(READ "${adi_pd_source}/m_glob.c" adi_pd_text)
@@ -179,7 +180,8 @@ foreach(adi_pd_fenced IN ITEMS
         "glob_loadpreferences,\n        gensym(\"load-preferences\"), A_DEFSYM, 0"
         "glob_savepreferences,\n        gensym(\"save-preferences\"), A_DEFSYM, 0"
         "glob_forgetpreferences,\n        gensym(\"forget-preferences\"), A_DEFSYM, 0"
-        "glob_fastforward,\n         gensym(\"fast-forward\"), A_FLOAT, 0")
+        "glob_fastforward,\n         gensym(\"fast-forward\"), A_FLOAT, 0"
+        "glob_compatibility,\n        gensym(\"compatibility\"), A_FLOAT, 0")
     string(REGEX MATCH "gensym\\(\"[a-z-]+\"\\)" adi_pd_name "${adi_pd_fenced}")
     adi_pd_replace("(t_method)${adi_pd_fenced});" "(t_method)adi_glob_refused, ${adi_pd_name}, A_GIMME, 0);")
 endforeach()
