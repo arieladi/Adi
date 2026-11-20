@@ -62,6 +62,8 @@ t_int* perform(t_int* w) {
 }
 void dsp(Object* x, t_signal** signal) {
     x->state->core.prepare(signal[0]->s_sr, signal[0]->s_n);
+    // prepare() is idempotent now (DF-E37 f); a DSP restart still starts clean.
+    x->state->core.resetVoices();
     x->state->midi.reset();
     // No signal inputs; the two outputs are float views of Pd's vectors (at
     // PD_FLOATSIZE=64 those are double, and writing float into them is garbage).

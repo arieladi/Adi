@@ -68,6 +68,7 @@ class OneShot final : public DeviceInstance {
         LfoVolume,
         LfoPan,
         LfoFilter,
+        VelToVol,
         Count
     };
     OneShot();
@@ -76,6 +77,12 @@ class OneShot final : public DeviceInstance {
     engine::EventFlow eventFlow() const noexcept override { return engine::EventFlow::Consume; }
     void prepare(double, std::int32_t) override;
     void process(const engine::NodeIo &) noexcept override;
+    /// Audio thread, before process(): the gain the NEXT note-on in this
+    /// call's events takes, latched for its voice (DF-E37 e). Gains queue in
+    /// order, one per note-on; a note-on with none queued plays at 1. The
+    /// Sampler sends each zone's crossfade weight this way, so Vel > Vol acts
+    /// on the played velocity only.
+    void queueNoteGain(double gain) noexcept;
     // Audio thread. The caller owns sample for the whole call; no ownership is
     // retained. Use a single publication source per instance until prepare().
     // A changed nonzero generation resets voices. Null or generation zero
@@ -83,6 +90,8 @@ class OneShot final : public DeviceInstance {
     void processPrepared(const engine::NodeIo&, const PreparedSample*,
                          std::uint64_t generation) noexcept;
     void resetVoices() noexcept { voices_ = {}; }
+    /// The next prepare() starts fresh (DF-E37 f).
+    void release() override { prepared_ = false; }
     void pumpMainThread() override;
     std::int32_t paramCount() const noexcept override { return Count; }
     const ParamDescriptor *paramAt(std::int32_t) const noexcept override;
@@ -117,11 +126,14 @@ class OneShot final : public DeviceInstance {
         std::uint64_t id = 0, age = 0;
         int key = 60, stage = 0;
         double position = 0, begin = 0, end = 0, loop = 0, env = 0, releaseStep = 0, velocity = 1,
-               phase = 0, random = 0, tuning = 0;
+               phase = 0, random = 0, tuning = 0, gain = 1;
         std::uint32_t rng = 1;
         std::uint64_t played = 0;
         Filter filters[2][2];
     };
+    /// Gains for the next note-ons, in order (a zone weight from the Sampler).
+    std::array<double, 256> noteGains_{};
+    std::size_t noteGainHead_ = 0, noteGainCount_ = 0;
     void event(const engine::Event &, const Sample *, std::array<double, Count> &) noexcept;
     void noteOn(const engine::Event &, const Sample &, const std::array<double, Count> &) noexcept;
     double read(const Sample &, double, int) const noexcept;
@@ -137,6 +149,8 @@ class OneShot final : public DeviceInstance {
     int rootKey_ = 60;
     bool borrowed_ = false;
     double rate_ = 48000;
+    std::int32_t frames_ = 0;
+    bool prepared_ = false;
     DeviceIdentity identity_{"internal", "adi.oneshot", "OneShot", "ADI", "1"};
 };
 } // namespace adi::device
