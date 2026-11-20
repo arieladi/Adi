@@ -577,6 +577,10 @@ void recoverInterruptedLoop() {
         check(recording::recoverInterrupted(*f.store,root,original).status==recording::RecoveryStatus::Refused,
               "a finishing take still owns the original plan");
     }
+    const auto duringSession=recording::discoverInterrupted();
+    check(std::none_of(duringSession.begin(),duringSession.end(),
+          [&](const auto& item){return item.directory==original;}),
+          "startup ignores an unplaced take when its process still holds the session lock");
     const auto damaged=original/"take-0.wav";
     {
         std::fstream file(damaged,std::ios::in|std::ios::out|std::ios::binary);
@@ -746,7 +750,7 @@ void ordinaryStopUsesTheSameRecordingReceipt() {
           !std::filesystem::exists(original),
           "ordinary Stop writes the same transaction receipt before discarding its private plan");
 }
-int crashRecordingChild(const std::filesystem::path& project,const std::filesystem::path& root) {
+int crashRecordingChild(const std::filesystem::path& project,const std::filesystem::path& root,bool beforeAudio) {
     namespace fs=std::filesystem;
     StoreError openError{};
     auto store=Store::open(project,openError);
@@ -761,6 +765,7 @@ int crashRecordingChild(const std::filesystem::path& project,const std::filesyst
     std::string error;
     if(!recording::configureRecovery(*store,spec,error) || !session.startRecording(spec,error))
         throw std::runtime_error(error);
+    if(beforeAudio)std::_Exit(37);
     session.transport().locate(512);
     session.transport().play();
     std::array<float,128> samples{};
@@ -828,11 +833,25 @@ void recoverAfterProcessExit(const std::filesystem::path& executable) {
         check(std::none_of(after.begin(),after.end(),[&](const auto& item){return item.directory==known;}),
               "startup suppresses placed recording IDs even when their original files remain and the edit is undone");
     }
+    const auto emptyRoot=fixture.temporary.path()/"unstarted-recording";
+    fixture.store.reset();
+    const auto unstarted=scan::runProcess(fs::canonical(executable),
+        {"--crash-before-audio",media::pathUtf8(project),media::pathUtf8(emptyRoot)});
+    check(unstarted.status==scan::ProcessStatus::Exited && unstarted.exitCode==37 && fs::is_directory(emptyRoot),
+          "another process exits after registration and before its first audio");
+    const auto afterward=recording::discoverInterrupted();
+    check(std::none_of(afterward.begin(),afterward.end(),[&](const auto& item) {
+        return fs::exists(emptyRoot) && item.directory.parent_path()==fs::canonical(emptyRoot);
+    }),"startup skips an interrupted session that accepted no audio");
 }
 }
 int main(int argc,char** argv){try{
-    if(argc==4 && std::string_view(argv[1])=="--crash-recording")
-        return crashRecordingChild(media::pathFromUtf8(argv[2]),media::pathFromUtf8(argv[3]));
+    if(argc==4) {
+        const std::string_view command=argv[1];
+        if(command=="--crash-recording" || command=="--crash-before-audio")
+            return crashRecordingChild(media::pathFromUtf8(argv[2]),media::pathFromUtf8(argv[3]),
+                                       command=="--crash-before-audio");
+    }
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
