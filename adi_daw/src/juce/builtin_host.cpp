@@ -50,6 +50,7 @@ public:
             targets_[i].store(static_cast<float>(descriptor.defaultValue.normalized),std::memory_order_relaxed);
             descriptors_.push_back(std::move(descriptor));
         }
+        current_.assign(descriptors_.size(),0.0);offset_.assign(descriptors_.size(),0.0);
         samples_.declare(declarations_.samples);sampleBlock_.declare(declarations_.samples);
         if(info_.midi)midi_.resize(4096);
     }
@@ -108,13 +109,52 @@ public:
         if(!pass || !prepared_){passThrough(io);return;}
         applyParameters();
         if(io.transport)native_->tempo(io.transport->bpm);
+        engine::MpeOutList messages(midi_.data(),static_cast<std::int32_t>(midi_.size()));
         if(info_.midi) {
-            engine::MpeOutList messages(midi_.data(),static_cast<std::int32_t>(midi_.size()));
             const auto desired=desiredRoute();if(router_.current()!=desired)router_.switchTo(desired,io.blockOffset,messages);
             router_.route(io.events.first,io.events.count,io.blockOffset,messages);
-            for(std::int32_t i=0;i<messages.size();++i)native_->midi(messages.at(i));
         }
-        const PdSampleBlock::Read read(sampleBlock_,samples_);native_->process(io);publishLatency();
+        const PdSampleBlock::Read read(sampleBlock_,samples_);
+        bool automated=false;
+        for(std::int32_t e=0;e<io.events.count && !automated;++e) {
+            const auto& event=io.events.first[e];
+            automated=(event.type==engine::EventType::ParamValue || event.type==engine::EventType::ParamMod) &&
+                      indexOfWireId(event.paramId)!=descriptors_.size();
+        }
+        if(!automated) {
+            // No lane moves this device in this block: exactly as before.
+            for(std::int32_t i=0;i<messages.size();++i)native_->midi(messages.at(i));
+            native_->process(io);publishLatency();return;
+        }
+        // DF-E50: a lane's ParamValue (and a modulator's ParamMod) addressed to
+        // this device is applied AT ITS FRAME: the native process is split
+        // there, and the notes routed for the block reach the core before the
+        // piece they fall in. Frames count from the block's start; one before
+        // this segment applies at its start, one past it at its end.
+        const std::int32_t start=io.blockOffset,end=io.blockOffset+std::max(0,io.frames);
+        std::int32_t position=start,message=0;
+        const auto feed=[&](std::int32_t before) {
+            for(;message<messages.size() && messages.at(message).frame<before;++message)native_->midi(messages.at(message));
+        };
+        const auto run=[&](std::int32_t until) {
+            if(until<=position)return;
+            feed(until);
+            engine::NodeIo piece=io;piece.blockOffset=position;piece.frames=until-position;
+            native_->process(piece);position=until;
+        };
+        for(std::int32_t e=0;e<io.events.count;++e) {
+            const auto& event=io.events.first[e];
+            if(event.type!=engine::EventType::ParamValue && event.type!=engine::EventType::ParamMod)continue;
+            const auto index=indexOfWireId(event.paramId);
+            if(index==descriptors_.size() || !std::isfinite(event.value))continue;
+            run(std::clamp(event.frame,start,end));
+            if(event.type==engine::EventType::ParamValue)current_[index]=std::clamp(event.value,0.0,1.0);
+            else offset_[index]=event.value;
+            send(index);
+        }
+        run(end);
+        feed(std::numeric_limits<std::int32_t>::max());
+        publishLatency();
     }
     std::int32_t latencySamples()const noexcept override{return latency_.load(std::memory_order_relaxed);}
     std::uint64_t latencyEpoch()const noexcept override{return epoch_.load(std::memory_order_relaxed);}
@@ -182,10 +222,22 @@ private:
         for(std::size_t i=0;i<descriptors_.size();++i) {
             const float target=targets_[i].load(std::memory_order_acquire);
             if(target!=applied_[i]) {
-                (void)native_->sendParameter(declarations_.params[i].id,static_cast<float>(natural(declarations_.params[i],target)));
-                applied_[i]=target;
+                // The stored value (the user's knob) changed: it is the value
+                // in force again until the lane's next event (DF-E50).
+                current_[i]=target;applied_[i]=target;send(i);
             }
         }
+    }
+    /// The value in force plus any modulation offset, through the declaration's curve.
+    void send(std::size_t i)noexcept {
+        const double value=std::clamp(current_[i]+offset_[i],0.0,1.0);
+        (void)native_->sendParameter(declarations_.params[i].id,static_cast<float>(natural(declarations_.params[i],value)));
+    }
+    /// An event's paramId is the declaration's id (the lane's param_ref, parsed).
+    std::size_t indexOfWireId(std::uint32_t id)const noexcept {
+        for(std::size_t i=0;i<declarations_.params.size();++i)
+            if(declarations_.params[i].id>=0 && static_cast<std::uint32_t>(declarations_.params[i].id)==id)return i;
+        return descriptors_.size();
     }
     void publishLatency()noexcept {
         const auto latency=native_->latencySamples();
@@ -195,6 +247,9 @@ private:
     const BuiltinInfo& info_;DeviceIdentity identity_;PdDeclarations declarations_;
     std::unique_ptr<NativePdDevice> native_;std::vector<ParamDescriptor> descriptors_;
     std::unique_ptr<std::atomic<float>[]> targets_;std::vector<float> applied_;
+    /// Audio thread (DF-E50): the normalized value in force, the stored target
+    /// or the lane's latest, and the modulation offset on it, per parameter.
+    std::vector<double> current_,offset_;
     ReactivationGate gate_;bool prepared_=false;double rate_=0;std::int32_t frames_=0;
     std::atomic<std::int32_t> latency_{0};std::atomic<std::uint64_t> epoch_{0};
     std::atomic<engine::ExpressionRoute> route_{engine::ExpressionRoute::MpeMidi};
