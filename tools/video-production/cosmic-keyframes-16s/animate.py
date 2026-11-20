@@ -12,7 +12,7 @@ import requests
 from PIL import Image
 
 API = "http://127.0.0.1:8192"
-C = Path("D:/AvasthaAI/VideoEditFour-20261025")
+C = Path("F:/AvasthaAI/VideoEditFour-20261025")
 ROOT = Path(sys.argv[1])
 anim = json.loads((ROOT / (sys.argv[2] if len(sys.argv) > 2 else "anim.json")).read_text(encoding="utf-8"))
 NEG = ("text, watermark, subtitles, collage, split screen, inset pictures, random duplicates, strobe, flicker, "

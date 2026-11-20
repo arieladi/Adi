@@ -16,11 +16,11 @@ It's the real Deforum extension, not a custom recursive script and not Wan. Note
 
 **Setup**
 - **Service:** A1111 webui with the Deforum API, on ADI-PC port 7865.
-  - Install: `D:\AvasthaAI\ActualDeforum`.
+  - Install: `F:\AvasthaAI\ActualDeforum`.
   - Launcher: `launch_actual.py`.
   - It runs on the A2000.
 - **Model:** SD1.5 `DreamShaper_8_pruned.safetensors`.
-- **Base settings:** `D:\AvasthaAI\ActualDeforum\settings-8s.json`. These are approved, so keep them unchanged.
+- **Base settings:** `F:\AvasthaAI\ActualDeforum\settings-8s.json`. These are approved, so keep them unchanged.
 
 | Setting | Value |
 |---|---|
@@ -46,8 +46,8 @@ It's the real Deforum extension, not a custom recursive script and not Wan. Note
 - No beat-synced motion was used: "Repeat the approved strength envelope without any beat-synced motion".
 
 **Finishing**
-1. **Colour:** the approved LUT `color-grading-test/generated-lut-16.npy`, sha256 `847229a3…c48a`. It's applied on the GPU, checked against PIL, to Deforum frames only. Never grade other footage, and never grade twice. The same file is on ADI-PC as `D:\AvasthaAI\CosmicRain-20261025\approved-lut.npy`.
-2. **Upscale:** RealESRGAN_x4plus, then RIFE 4.26 (`D:\AvasthaAI\EnhancerV2\renderer.py`) to 1280×720 24 fps.
+1. **Colour:** the approved LUT `color-grading-test/generated-lut-16.npy`, sha256 `847229a3…c48a`. It's applied on the GPU, checked against PIL, to Deforum frames only. Never grade other footage, and never grade twice. The same file is on ADI-PC as `F:\AvasthaAI\CosmicRain-20261025\approved-lut.npy`.
+2. **Upscale:** RealESRGAN_x4plus, then RIFE 4.26 (`F:\AvasthaAI\EnhancerV2\renderer.py`) to 1280×720 24 fps.
 3. **4K60:** for the final master, the same tools go to 3840×2160 60.
 
 **Rules from Adi**

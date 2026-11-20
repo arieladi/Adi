@@ -1,6 +1,6 @@
 """Generate keyframe stills for the Cosmic Rain 16s test through the A2000 ComfyUI (port 8192).
 
-Runs on the studio box with D:/AvasthaAI/venv python. Idempotent: an existing PNG is never
+Runs on the studio box with F:/AvasthaAI/venv python. Idempotent: an existing PNG is never
 regenerated. The A1111 webui on 7865 returned HTTP 500 for every txt2img on 2026-10-27, so it is
 not used. Checkpoints are hard links in ComfyUI/models/checkpoints to the existing webui files.
 """

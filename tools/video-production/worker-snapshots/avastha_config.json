@@ -1,8 +1,8 @@
 {
-  "input": "D:/AvasthaAI/ActualDeforum/webui/outputs/img2img-images/Avastha_ActualDeforum_8s/20261023184226.mp4",
-  "output": "D:/AvasthaAI/EnhancerV2/Avastha-Deforum-New-Renderer-4K60.mp4",
-  "model": "D:/AvasthaAI/Temp/wan30-models/RealESRGAN_x4plus.pth",
-  "rife_root": "D:/AvasthaAI/Tools/RIFE426",
+  "input": "F:/AvasthaAI/ActualDeforum/webui/outputs/img2img-images/Avastha_ActualDeforum_8s/20261023184226.mp4",
+  "output": "F:/AvasthaAI/EnhancerV2/Avastha-Deforum-New-Renderer-4K60.mp4",
+  "model": "F:/AvasthaAI/Temp/wan30-models/RealESRGAN_x4plus.pth",
+  "rife_root": "F:/AvasthaAI/Tools/RIFE426",
   "order": "upscale-first",
   "upscale_device": "GPU-5e287f99-46c5-350a-0c85-50e9588f1795",
   "rife_device": "GPU-5e287f99-46c5-350a-0c85-50e9588f1795",

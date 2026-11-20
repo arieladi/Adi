@@ -80,7 +80,7 @@ for i, (sid, land, start, action) in enumerate(SHOTS):
     slots.append({"id": sid, "key": f"{sid}s", "end_key": f"{sid}e", "length": 85, "step": 1, "frames": [F(a) - F(A), F(b) - F(A)],
                   "bars": [a, b], "composite": "none", "prompt": action, "seed": 171200000 + i})
 plan = {"title": "Cosmic Rain - one-minute start+landing test (bars 30-66)", "fps": FPS, "style": STYLE,
-        "audio": {"track": "D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav", "start": PHASE + A * BAR}, "slots": slots}
+        "audio": {"track": "F:/AvasthaAI/CosmicRain-20261025/inputs/track.wav", "start": PHASE + A * BAR}, "slots": slots}
 (R / "stills.json").write_text(json.dumps(stills, indent=1), encoding="utf-8")
 (R / "plan.json").write_text(json.dumps(plan, indent=1), encoding="utf-8")
 print(len(slots), "shots,", slots[-1]["frames"][1] / FPS, "s")

@@ -1,6 +1,6 @@
 from pathlib import Path
 import json,os,time,urllib.request,subprocess,hashlib,shutil,traceback
-R=Path('D:/AvasthaAI/DeforumEnding184-20261023'); R.mkdir(exist_ok=True)
+R=Path('F:/AvasthaAI/DeforumEnding184-20261023'); R.mkdir(exist_ok=True)
 BASE='http://127.0.0.1:7865'; N=2760
 
 def save(name,obj):
@@ -17,7 +17,7 @@ def main():
   receipt=json.loads((R/'submission-receipt.json').read_text())
  else:
   if (R/'submission-marker.json').exists():raise RuntimeError('Submission outcome uncertain; inspect API before retrying')
-  settings=json.loads(Path('D:/AvasthaAI/ActualDeforum/settings-8s.json').read_text())
+  settings=json.loads(Path('F:/AvasthaAI/ActualDeforum/settings-8s.json').read_text())
   settings.update(max_frames=N,batch_name='Avastha_SD15_Ending184_20261023',init_image=str(R/'start.png'))
   # Same approved camera, sampler, noise and per-frame settings. Longer evolving themes.
   themes=[
@@ -101,12 +101,12 @@ def main():
  with av.open(str(raw)) as c:
   s=c.streams.video[0];assert s.average_rate==15;assert sum(1 for _ in c.decode(s))==N
  status('upscaling-and-interpolating',job_id=job_id,raw_frames=N,target_frames=4416)
- cfg=json.loads(Path('D:/AvasthaAI/EnhancerV2/Avastha-Deforum-New-Renderer-4K60.receipt.json').read_text())['config']
+ cfg=json.loads(Path('F:/AvasthaAI/EnhancerV2/Avastha-Deforum-New-Renderer-4K60.receipt.json').read_text())['config']
  final=R/'Avastha - Deforum ending 650-954 - graded - 720p24.mp4'
  cfg.update(input=str(raw),output=str(final),width=1280,height=720,fps='24',flow_scale=1.0,upscale_device='cuda:0',rife_device='cuda:0',queue_depth=2,pinned_gb=.5)
  save('enhance-config.json',cfg)
  with (R/'enhance.log').open('wb') as log:
-  subprocess.run(['D:/AvasthaAI/venv/Scripts/python.exe','-u','D:/AvasthaAI/EnhancerV2/renderer.py','--config',str(R/'enhance-config.json')],env=os.environ.copy(),stdout=log,stderr=subprocess.STDOUT,check=True)
+  subprocess.run(['F:/AvasthaAI/venv/Scripts/python.exe','-u','F:/AvasthaAI/EnhancerV2/renderer.py','--config',str(R/'enhance-config.json')],env=os.environ.copy(),stdout=log,stderr=subprocess.STDOUT,check=True)
  with av.open(str(final)) as c:
   s=c.streams.video[0];assert s.average_rate==24 and (s.width,s.height)==(1280,720);assert sum(1 for _ in c.decode(s))==4416
  archive=Path(r'\\orc-vst\Avastha-AI\Outputs\DeforumEnding184-20261023');archive.mkdir(parents=True,exist_ok=True)

@@ -3,7 +3,7 @@
   "real_subject_motion": true,
   "continuity_passed": true,
   "selected_take": 1,
-  "continuation_frame": "D:\\AvasthaAI\\VideoEditFour-20261025\\output\\cosmic-rebuild-20261030\\s01-t01\\f_00090_.png",
+  "continuation_frame": "F:\\AvasthaAI\\VideoEditFour-20261025\\output\\cosmic-rebuild-20261030\\s01-t01\\f_00090_.png",
   "delivered_frames": 90,
   "reviewevidence": [
     "Inspected12 temporal frames spanning0-3.71s against opening frame191: same central dark sphere, gold disk, blue/silver inflows and background. No abrupt replacement at entry.",

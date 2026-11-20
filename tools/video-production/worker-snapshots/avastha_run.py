@@ -2,8 +2,8 @@ from pathlib import Path
 import os,json,time,subprocess,hashlib,traceback,math
 import av,imageio_ffmpeg
 R=Path(__file__).parent
-P=Path('D:/AvasthaAI/CosmicRainPilot120-20261026')
-SOURCE=Path('D:/AvasthaAI/AcidRework-20261025/Avastha - DRAFT 9m54 - Acid rework and Aleph boom - with music.mp4')
+P=Path('F:/AvasthaAI/CosmicRainPilot120-20261026')
+SOURCE=Path('F:/AvasthaAI/AcidRework-20261025/Avastha - DRAFT 9m54 - Acid rework and Aleph boom - with music.mp4')
 FF=imageio_ffmpeg.get_ffmpeg_exe()
 def write(p,v):
     t=p.with_suffix('.tmp');t.write_text(json.dumps(v,indent=2));t.replace(p)
@@ -28,7 +28,7 @@ def main():
             if silent.exists() or silent.with_name('enhanced-silent.partial.mp4').exists():raise RuntimeError('Unreceipted output exists; inspect before resuming')
             status('enhancing-4k60')
             with (R/'enhance.log').open('ab') as log:
-                subprocess.run(['D:/AvasthaAI/venv/Scripts/python.exe','-u','D:/AvasthaAI/EnhancerV2/renderer.py','--config',str(R/'effective-config.json')],stdout=log,stderr=subprocess.STDOUT,check=True)
+                subprocess.run(['F:/AvasthaAI/venv/Scripts/python.exe','-u','F:/AvasthaAI/EnhancerV2/renderer.py','--config',str(R/'effective-config.json')],stdout=log,stderr=subprocess.STDOUT,check=True)
         status('attaching-original-audio')
         out=R/'Avastha - Acid rework and Aleph boom - 4K60 - with music.mp4'
         subprocess.run([FF,'-v','error','-y','-i',str(silent),'-i',str(SOURCE),'-map','0:v:0','-map','1:a:0','-c','copy','-movflags','+faststart',str(out)],check=True)

@@ -1,6 +1,6 @@
 """Any song, approved Deforum style C ("ending"): one picture deforming continuously through text themes.
 
-usage: deforum_video.py <root>        (reads <root>/video.json; resumable; D:/AvasthaAI/venv python; Deforum on 7865)
+usage: deforum_video.py <root>        (reads <root>/video.json; resumable; F:/AvasthaAI/venv python; Deforum on 7865)
 video.json:
   {"title": "...", "start_image": "<rich, dark, colourful still>", "seconds": 60, "bpm": 142,
    "themes": [[<bar>, "<world or scene>"], ...],          bar 0 = first frame; a theme takes over on its bar line
@@ -29,7 +29,7 @@ from PIL import Image, ImageOps
 
 FF = imageio_ffmpeg.get_ffmpeg_exe()
 API = "http://127.0.0.1:7865"
-LUT = Path("D:/AvasthaAI/CosmicRain-20261025/approved-lut.npy")
+LUT = Path("F:/AvasthaAI/CosmicRain-20261025/approved-lut.npy")
 LUT_SHA = "847229a33fca2012b0a69f453cab6e906d55a343e77287cd1cac3a588586c48a"
 V = json.loads((R / "video.json").read_text(encoding="utf-8"))
 SUFFIX = V.get("suffix", ", visionary psychedelic painting, rich intricate detail, continuous organic transformation")
@@ -106,7 +106,7 @@ def prepare():
                                       "width": 848, "height": 480, "steps": 28, "cfg_scale": 6, "sampler_name": "DPM++ 2M",
                                       "seed": 271828}, timeout=600)
         (R / "start.png").write_bytes(base64.b64decode(r["images"][0]))
-    s = json.loads(Path("D:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
+    s = json.loads(Path("F:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
     s.update(max_frames=N, batch_name=BATCH, init_image=str(R / "start.png"))
     bar = 240 / V["bpm"]
     s["prompts"] = {str(min(N - 1, round(b * bar * FPS))): t + SUFFIX for b, t in V["themes"]}
@@ -209,12 +209,12 @@ def finish(frames):
     enh = R / "enhanced.mp4"
     if not enh.exists():
         status("upscaling")
-        cfg = json.loads(Path("D:/AvasthaAI/EnhancerV2/Avastha-Deforum-New-Renderer-4K60.receipt.json").read_text())["config"]
+        cfg = json.loads(Path("F:/AvasthaAI/EnhancerV2/Avastha-Deforum-New-Renderer-4K60.receipt.json").read_text())["config"]
         cfg.update(input=str(graded), output=str(enh), width=1280, height=720, fps="24", quality=0, flow_scale=1.0,
                    upscale_device="cuda:0", rife_device="cuda:0", queue_depth=2, pinned_gb=.5)
         save("enhance-config.json", cfg)
         with (R / "enhance.log").open("wb") as log:
-            subprocess.run(["D:/AvasthaAI/venv/Scripts/python.exe", "-u", "D:/AvasthaAI/EnhancerV2/renderer.py", "--config", str(R / "enhance-config.json")],
+            subprocess.run(["F:/AvasthaAI/venv/Scripts/python.exe", "-u", "F:/AvasthaAI/EnhancerV2/renderer.py", "--config", str(R / "enhance-config.json")],
                            stdout=log, stderr=subprocess.STDOUT, check=True, env=os.environ.copy())
     status("assembling")
     n24 = N * 8 // 5

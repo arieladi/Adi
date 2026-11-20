@@ -1,7 +1,7 @@
 """Animate every new slot of the full-track plan with Wan2.2 TI2V 5B on a ComfyUI instance.
 
 usage: animate_full.py <root> [comfy url, default http://127.0.0.1:8192] [worker name, default a2000]
-                       [comfy data dir holding input/ and output/, default D:/AvasthaAI/VideoEditFour-20261025]
+                       [comfy data dir holding input/ and output/, default F:/AvasthaAI/VideoEditFour-20261025]
                        [slot file, default plan.json]
 A slot with "replaces": <old slot id> is a re-render; when free space is low, the old take's PNG frames are
 removed after the new take exists (its latent is kept, so it can be decoded again).
@@ -30,7 +30,7 @@ from motion_check import content, motion
 ROOT = Path(sys.argv[1])
 API = sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:8192"
 WORKER = sys.argv[3] if len(sys.argv) > 3 else "a2000"
-C = Path(sys.argv[4] if len(sys.argv) > 4 else "D:/AvasthaAI/VideoEditFour-20261025")
+C = Path(sys.argv[4] if len(sys.argv) > 4 else "F:/AvasthaAI/VideoEditFour-20261025")
 plan = json.loads((ROOT / (sys.argv[5] if len(sys.argv) > 5 else "plan.json")).read_text(encoding="utf-8"))
 picks = json.loads((ROOT / "picks.json").read_text(encoding="utf-8"))
 NEG = ("text, watermark, subtitles, collage, split screen, inset pictures, random duplicates, strobe, flicker, "

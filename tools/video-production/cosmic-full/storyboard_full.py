@@ -338,7 +338,7 @@ def build():
                 slots[first][k] = s[k]
     # Insert the approved test's goddess slot (bars 28-30); the rest of the test window is the user's story.
     if test:
-        tslots = [dict(t, id="T" + t["id"], take_root="D:/AvasthaAI/CosmicKeyframes16-20261027",
+        tslots = [dict(t, id="T" + t["id"], take_root="F:/AvasthaAI/CosmicKeyframes16-20261027",
                        take=t.get("take", t["id"]), reused=True) for t in test["slots"] if t["frames"][1] <= F(30)]
         at = next(i for i, s in enumerate(slots) if s["frames"][0] >= F(30))
         slots[at:at] = tslots
@@ -355,8 +355,8 @@ def build():
     assert pos == END_FRAME, pos
     gens = [s for s in slots if not s.get("reused")]
     plan = {"title": "Cosmic Rain - full track, keyframe method", "fps": FPS, "bpm": BPM, "phase": PHASE,
-            "opening": {"source": "D:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4", "frames": [0, 192]},
-            "audio": {"track": "D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav", "start_frame": 0, "end_frame": END_FRAME},
+            "opening": {"source": "F:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4", "frames": [0, 192]},
+            "audio": {"track": "F:/AvasthaAI/CosmicRain-20261025/inputs/track.wav", "start_frame": 0, "end_frame": END_FRAME},
             "style": STYLE, "scenes": scenes, "slots": slots,
             "stats": {"scenes": len(scenes), "user_story_scenes": sum(sc["user_story"] for sc in scenes),
                       "slots": len(slots), "wan_jobs": len(gens),

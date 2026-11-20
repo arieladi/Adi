@@ -13,23 +13,23 @@ These are the two Deforum styles Adi approved for **Cosmic Rain on 2026-11-13**:
 
 ## 1. What runs where
 
-All of this runs on ADI-PC, the studio PC. Everything AI-related is on `F:\AvasthaAI`, and `D:\AvasthaAI` is a junction to it.
+All of this runs on ADI-PC, the studio PC. Everything AI-related is on `F:\AvasthaAI`, and `F:\AvasthaAI` is a junction to it.
 
 | Part | Where | Notes |
 |---|---|---|
-| Deforum service | `D:\AvasthaAI\ActualDeforum` | A1111 webui `82a973c` with the `deforum/sd-webui-deforum` extension `5d63a33`. Python 3.10 venv, torch 2.1.2+cu121. API only, on port **7865**, on the **RTX A2000**. |
+| Deforum service | `F:\AvasthaAI\ActualDeforum` | A1111 webui `82a973c` with the `deforum/sd-webui-deforum` extension `5d63a33`. Python 3.10 venv, torch 2.1.2+cu121. API only, on port **7865**, on the **RTX A2000**. |
 | Model | `webui\models\Stable-diffusion\DreamShaper_8_pruned.safetensors` | 2,132,625,894 bytes, sha256 `879db523…abd7fd`. From Hugging Face `Lykon/DreamShaper`. |
-| Approved base settings | `D:\AvasthaAI\ActualDeforum\settings-8s.json` | A copy is in `approved/settings-8s.json`. Never change it; change copies. |
-| Colour grade | `approved/approved-lut-16.npy` | sha256 `847229a3…c48a`. This is Adi's approved Avastha LUT. On ADI-PC it is `D:\AvasthaAI\CosmicRain-20261025\approved-lut.npy`. |
-| Upscale + smooth | `D:\AvasthaAI\EnhancerV2\renderer.py` and `models.py` | Copies are in `approved/enhancer_*.py`. RealESRGAN_x4plus is at `D:\AvasthaAI\Temp\wan30-models\RealESRGAN_x4plus.pth`. RIFE 4.26 is at `D:\AvasthaAI\Tools\RIFE426`. They run in the `D:\AvasthaAI\venv` Python. |
+| Approved base settings | `F:\AvasthaAI\ActualDeforum\settings-8s.json` | A copy is in `approved/settings-8s.json`. Never change it; change copies. |
+| Colour grade | `approved/approved-lut-16.npy` | sha256 `847229a3…c48a`. This is Adi's approved Avastha LUT. On ADI-PC it is `F:\AvasthaAI\CosmicRain-20261025\approved-lut.npy`. |
+| Upscale + smooth | `F:\AvasthaAI\EnhancerV2\renderer.py` and `models.py` | Copies are in `approved/enhancer_*.py`. RealESRGAN_x4plus is at `F:\AvasthaAI\Temp\wan30-models\RealESRGAN_x4plus.pth`. RIFE 4.26 is at `F:\AvasthaAI\Tools\RIFE426`. They run in the `F:\AvasthaAI\venv` Python. |
 | Runner | `run_deforum.py` (this folder) | Submits the job and waits. Then it grades, upscales, adds the opening and muxes the music. |
 | Stop / Continue | `../adi-pc/control/` | The desktop buttons. Jobs launched as below are paused and resumed safely. |
 
 ## 2. Install (new machine, or rebuild)
 
-You need Windows, an NVIDIA GPU with 12 GB or more, about 30 GB free, and `uv.exe` somewhere under `D:\AvasthaAI`.
+You need Windows, an NVIDIA GPU with 12 GB or more, about 30 GB free, and `uv.exe` somewhere under `F:\AvasthaAI`.
 
-1. **Base install.** Run `approved/setup_actual_deforum.py` with any Python 3. It installs, under `D:\AvasthaAI\ActualDeforum`:
+1. **Base install.** Run `approved/setup_actual_deforum.py` with any Python 3. It installs, under `F:\AvasthaAI\ActualDeforum`:
    - portable MinGit
    - Python 3.10 via uv
    - a clone of the A1111 webui and the Deforum extension into `webui\extensions\deforum`
@@ -39,9 +39,9 @@ You need Windows, an NVIDIA GPU with 12 GB or more, about 30 GB free, and `uv.ex
 
 2. **Model.** Put `DreamShaper_8_pruned.safetensors` (Lykon/DreamShaper on Hugging Face) in `webui\models\Stable-diffusion\`. Check its sha256 against the one above.
 
-3. **Approved settings.** Copy `approved/settings-8s.json` to `D:\AvasthaAI\ActualDeforum\settings-8s.json`.
+3. **Approved settings.** Copy `approved/settings-8s.json` to `F:\AvasthaAI\ActualDeforum\settings-8s.json`.
 
-4. **Start the service.** Run `approved/launch_actual.py` with the `D:\AvasthaAI\venv` Python.
+4. **Start the service.** Run `approved/launch_actual.py` with the `F:\AvasthaAI\venv` Python.
    - It pins the A2000 by UUID. Change `CUDA_VISIBLE_DEVICES` on another PC.
    - It installs CLIP and numpy 1.26.2 into the webui venv.
    - It starts the webui with `--api --deforum-api --nowebui --port 7865 --opt-sdp-attention --no-half-vae --ckpt DreamShaper_8_pruned`.
@@ -51,10 +51,10 @@ You need Windows, an NVIDIA GPU with 12 GB or more, about 30 GB free, and `uv.ex
    Check it's up: `http://127.0.0.1:7865/deforum_api/jobs` answers `{}`.
 
 5. **Finishing tools.**
-   - Put `approved/enhancer_renderer.py` and `approved/enhancer_models.py` in `D:\AvasthaAI\EnhancerV2\` (as `renderer.py` and `models.py`).
+   - Put `approved/enhancer_renderer.py` and `approved/enhancer_models.py` in `F:\AvasthaAI\EnhancerV2\` (as `renderer.py` and `models.py`).
    - Add RealESRGAN_x4plus.pth and RIFE 4.26.
-   - Install these into `D:\AvasthaAI\venv`: torch, spandrel, av, opencv-python and imageio-ffmpeg.
-   - The runner reads the approved enhancer config from `D:\AvasthaAI\EnhancerV2\Avastha-Deforum-New-Renderer-4K60.receipt.json`. A copy is in `approved/enhancer-receipt-config.json`. It overrides the size to 1280×720 at 24 fps.
+   - Install these into `F:\AvasthaAI\venv`: torch, spandrel, av, opencv-python and imageio-ffmpeg.
+   - The runner reads the approved enhancer config from `F:\AvasthaAI\EnhancerV2\Avastha-Deforum-New-Renderer-4K60.receipt.json`. A copy is in `approved/enhancer-receipt-config.json`. It overrides the size to 1280×720 at 24 fps.
 
 ## 3. Make a video
 
@@ -66,9 +66,9 @@ The runner does four things:
 
 ```powershell
 # on ADI-PC, only while F:\AvasthaAI\control\state.json says "running"
-$R = 'D:\AvasthaAI\<NewFolder>'          # one new folder per run; never reuse one
+$R = 'F:\AvasthaAI\<NewFolder>'          # one new folder per run; never reuse one
 mkdir $R; copy run_deforum.py $R\
-$c = "cmd /c D:\AvasthaAI\venv\Scripts\python.exe -u $R\run_deforum.py $R ending >> $R\run.log 2>&1"
+$c = "cmd /c F:\AvasthaAI\venv\Scripts\python.exe -u $R\run_deforum.py $R ending >> $R\run.log 2>&1"
 Invoke-CimMethod Win32_Process -MethodName Create -Arguments @{ CommandLine = $c; CurrentDirectory = $R }
 ```
 

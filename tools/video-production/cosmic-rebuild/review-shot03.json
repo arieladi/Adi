@@ -3,7 +3,7 @@
   "real_subject_motion": true,
   "continuity_passed": true,
   "selected_take": "reuse-original-K003",
-  "continuation_frame": "D:\\AvasthaAI\\VideoEditFour-20261025\\output\\cosmicfull-anim\\K003\\f_00081_.png",
+  "continuation_frame": "F:\\AvasthaAI\\VideoEditFour-20261025\\output\\cosmicfull-anim\\K003\\f_00081_.png",
   "rendered_output": "portal-review-with-music.mp4",
   "transition_recipe": "shot03/reuse-original-K003/transition.json",
   "reviewevidence": [

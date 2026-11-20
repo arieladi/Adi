@@ -12,9 +12,9 @@ $Q = "$C\requests"
 $Comfy = 'http://127.0.0.1:8192'
 $Services = @(
     @{ name = 'comfy'; match = 'VideoEditFour-20261025/launch_server\.py'; port = 8192
-       start = 'D:\AvasthaAI\venv\Scripts\python.exe -u D:/AvasthaAI/VideoEditFour-20261025/launch_server.py'; cwd = 'D:\AvasthaAI\VideoEditFour-20261025' },
+       start = 'F:\AvasthaAI\venv\Scripts\python.exe -u F:/AvasthaAI/VideoEditFour-20261025/launch_server.py'; cwd = 'F:\AvasthaAI\VideoEditFour-20261025' },
     @{ name = 'deforum'; match = 'ActualDeforum/launch_actual\.py'; port = 7865
-       start = 'D:\AvasthaAI\venv\Scripts\python.exe -u D:/AvasthaAI/ActualDeforum/launch_actual.py'; cwd = 'D:\AvasthaAI\ActualDeforum' }
+       start = 'F:\AvasthaAI\venv\Scripts\python.exe -u F:/AvasthaAI/ActualDeforum/launch_actual.py'; cwd = 'F:\AvasthaAI\ActualDeforum' }
 )
 
 function Log($m) { Add-Content "$C\events.log" ("{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $m) }
@@ -115,7 +115,7 @@ function Park($ids) {
         foreach ($f in 'receipt.json', 'submitting.json', 'workflow.json') {
             if (Test-Path "$($d.FullName)\$f") { Move-Item "$($d.FullName)\$f" $dst.FullName }
         }
-        foreach ($o in Get-ChildItem 'D:\AvasthaAI\VideoEditFour-20261025\output' -Recurse -Depth 1 -Directory -Filter $d.Name -ErrorAction SilentlyContinue) {
+        foreach ($o in Get-ChildItem 'F:\AvasthaAI\VideoEditFour-20261025\output' -Recurse -Depth 1 -Directory -Filter $d.Name -ErrorAction SilentlyContinue) {
             Rename-Item $o.FullName "$($o.Name).interrupted-$ts"
         }
         Log "parked interrupted take $($d.Name) ($pid_)"

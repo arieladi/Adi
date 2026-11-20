@@ -11,7 +11,7 @@ import json, shutil, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
 API = "http://127.0.0.1:8192"
-INPUT = Path("D:/AvasthaAI/VideoEditFour-20261025/input")
+INPUT = Path("F:/AvasthaAI/VideoEditFour-20261025/input")
 R = Path(sys.argv[1])
 (R / "raw").mkdir(exist_ok=True)
 spec = json.loads((R / "stills.json").read_text(encoding="utf-8"))

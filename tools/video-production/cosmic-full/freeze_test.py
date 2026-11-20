@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from motion_check import motion
 
 API = "http://127.0.0.1:8192"
-C = Path("D:/AvasthaAI/VideoEditFour-20261025")
+C = Path("F:/AvasthaAI/VideoEditFour-20261025")
 ROOT, LABEL = Path(sys.argv[1]), sys.argv[2]
 plan = {s["id"]: s for s in json.loads((ROOT / "plan_v2.json").read_text(encoding="utf-8"))["slots"]}
 log_path = ROOT / "freeze-test.json"

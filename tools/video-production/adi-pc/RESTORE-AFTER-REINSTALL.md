@@ -15,15 +15,13 @@ Written 2026-11-20, before Adi reinstalls ADI-PC with Windows 11 LTSC and Ableto
 
 **Not needed after the reinstall:** the uv download cache on C: (4.8 GB) and the pip cache. They are only caches; the venvs on F: carry their own packages.
 
-**Every script uses `D:\AvasthaAI\...` paths.** `D:\AvasthaAI` is only a junction (shortcut folder) to `F:\AvasthaAI`, so it must be re-created (step 3).
+**Everything runs from F: only (since 2026-11-20).** The old `D:\AvasthaAI` shortcut folder was removed. Every script, setting, venv and Python launcher now points at `F:\AvasthaAI` (1,206 text files and 151 launcher .exe files rewritten). Originals are in `_before-reinstall-20261120\d-to-f-*.zip`. Tested with D:\AvasthaAI gone: ComfyUI and Deforum started from F:, and the one-picture style rendered 8 frames matching the approved run. **Do not re-create `D:\AvasthaAI`.**
 
 ## Steps
 
 1. **Unplug the F: USB drive before installing Windows.** Then the installer can't touch it. Plug it back in after setup.
 2. **Give the drive back the letter F:.** Disk Management → right-click the `verbatim` volume → Change Drive Letter → F.
-3. **Re-create the junction** (in an admin cmd):
-   `mklink /J D:\AvasthaAI F:\AvasthaAI`
-   This needs a D: drive. If the D: data disk was also formatted, just make sure it is called D: again.
+3. (Nothing to do for D:. The video AI doesn't use it.)
 4. **Install the NVIDIA driver** `597.16-quadro-rtx-...exe` from `_before-reinstall-20261120\drivers`. Both GPUs, the Quadro RTX 4000 and the RTX A2000 12GB, must show in `nvidia-smi`. The scripts select the GPUs by UUID; the UUIDs belong to the cards, so they stay the same.
 5. **Turn on long paths** (admin PowerShell):
    `Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled 1`
@@ -46,4 +44,4 @@ Written 2026-11-20, before Adi reinstalls ADI-PC with Windows 11 LTSC and Ableto
 
 ## Nothing else lives on C:
 
-Checked 2026-11-20: no AI videos, models or scripts outside F:. The AI venvs point only at `D:\AvasthaAI\...`, which is the junction to F:.
+Checked 2026-11-20: no AI videos, models or scripts outside F:, and nothing in F:\AvasthaAI points at D: any more.

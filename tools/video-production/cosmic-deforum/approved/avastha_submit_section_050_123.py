@@ -1,12 +1,12 @@
 from pathlib import Path
 import json, urllib.request, time
 
-ROOT=Path('D:/AvasthaAI/DeforumSection050-123')
+ROOT=Path('F:/AvasthaAI/DeforumSection050-123')
 receipt=ROOT/'job.json'
 marker=ROOT/'submission-started.json'
 if receipt.exists() or marker.exists():
     raise SystemExit('Existing submission marker/receipt: inspect before any repeat submission')
-s=json.loads(Path('D:/AvasthaAI/ActualDeforum/settings-8s.json').read_text())
+s=json.loads(Path('F:/AvasthaAI/ActualDeforum/settings-8s.json').read_text())
 s.update(batch_name='Avastha_Deforum_050_123',max_frames=495,
          video_init_path=str(ROOT/'source-480p15.mp4'),
          hybrid_generate_inputframes=True,hybrid_use_first_frame_as_init_image=True,

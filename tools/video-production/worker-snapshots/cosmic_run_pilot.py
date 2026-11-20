@@ -1,6 +1,6 @@
 from pathlib import Path
 import json,os,time,requests,shutil,subprocess,traceback
-R=Path(__file__).parent; C=Path('D:/AvasthaAI/VideoEditFour-20261025');API='http://127.0.0.1:8192'
+R=Path(__file__).parent; C=Path('F:/AvasthaAI/VideoEditFour-20261025');API='http://127.0.0.1:8192'
 def save(p,v):
  q=p.with_suffix('.tmp');q.write_text(json.dumps(v,indent=2),encoding='utf-8');q.replace(p)
 def status(stage,**kw):save(R/'generation-status.json',dict(stage=stage,time=time.time(),**kw))

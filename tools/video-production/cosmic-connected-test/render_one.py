@@ -3,7 +3,7 @@ from pathlib import Path
 import requests
 from PIL import Image
 import imageio_ffmpeg
-ROOT=Path('D:/AvasthaAI/CosmicConnectedTest-20261030'); C=Path('D:/AvasthaAI/VideoEditFour-20261025'); API='http://127.0.0.1:8192'
+ROOT=Path('F:/AvasthaAI/CosmicConnectedTest-20261030'); C=Path('F:/AvasthaAI/VideoEditFour-20261025'); API='http://127.0.0.1:8192'
 shot=int(sys.argv[1]);take=int(sys.argv[2]);assert 1<=shot<=3 and 1<=take<=20
 plan=json.loads((ROOT/'plan.json').read_text());d=ROOT/f'shot{shot:02d}'/f'take{take:02d}';d.mkdir(parents=True,exist_ok=True)
 def save(p,v):p.write_text(json.dumps(v,indent=2),encoding='utf8')

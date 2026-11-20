@@ -1,6 +1,6 @@
 from pathlib import Path
 import urllib.request,json,zipfile,subprocess,os
-R=Path('D:/AvasthaAI/ActualDeforum');R.mkdir(exist_ok=True)
+R=Path('F:/AvasthaAI/ActualDeforum');R.mkdir(exist_ok=True)
 def get(url):
  with urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'Avastha-local-setup'}),timeout=90) as f:return json.load(f)
 def download(url,p):
@@ -12,7 +12,7 @@ if not (gitdir/'cmd/git.exe').exists():
  p=R/'mingit.zip';download(asset['browser_download_url'],p)
  with zipfile.ZipFile(p) as z:z.extractall(gitdir)
 env=os.environ.copy();env['PATH']=str(gitdir/'cmd')+';'+env['PATH'];env['UV_PYTHON_INSTALL_DIR']=str(R/'python');env['UV_CACHE_DIR']=str(R/'uv-cache');env['PIP_CACHE_DIR']=str(R/'pip-cache')
-uv=next(Path('D:/AvasthaAI').rglob('uv.exe'));subprocess.run([str(uv),'python','install','3.10'],env=env,check=True)
+uv=next(Path('F:/AvasthaAI').rglob('uv.exe'));subprocess.run([str(uv),'python','install','3.10'],env=env,check=True)
 web=R/'webui';git=str(gitdir/'cmd/git.exe')
 for url,p in [('https://github.com/AUTOMATIC1111/stable-diffusion-webui',web),('https://github.com/deforum/sd-webui-deforum',web/'extensions/deforum')]:
  if not p.exists():subprocess.run([git,'clone','--depth','1',url,str(p)],env=env,check=True)

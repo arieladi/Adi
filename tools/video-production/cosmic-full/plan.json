@@ -4,14 +4,14 @@
  "bpm": 143,
  "phase": 0.0215,
  "opening": {
-  "source": "D:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4",
+  "source": "F:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4",
   "frames": [
    0,
    192
   ]
  },
  "audio": {
-  "track": "D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav",
+  "track": "F:/AvasthaAI/CosmicRain-20261025/inputs/track.wav",
   "start_frame": 0,
   "end_frame": 11119
  },
@@ -1411,7 +1411,7 @@
     1.0,
     1.15
    ],
-   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "take_root": "F:/AvasthaAI/CosmicKeyframes16-20261027",
    "reused": true
   },
   {

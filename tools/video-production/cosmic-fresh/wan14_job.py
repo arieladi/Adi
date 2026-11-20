@@ -1,7 +1,7 @@
 """Wan 2.2 I2V A14B (Q8 GGUF, high-noise + low-noise) clips on the A2000 ComfyUI, quality first (Adi 2026-11-13:
 "I need a better end result, it can take longer").
 
-usage: wan14_job.py <root>        (reads <root>/jobs.json; resumable; D:/AvasthaAI/venv python)
+usage: wan14_job.py <root>        (reads <root>/jobs.json; resumable; F:/AvasthaAI/venv python)
 jobs.json: [{"id": ..., "start": <png or "@prev" = last frame of the previous job>, "end": <png or null>, "prompt": ..., "length": 81, "seed": n,
              "width": 1280, "height": 720}]
 With "end", WanFirstLastFrameToVideo pins the last frame (a loop when end == start); without it, WanImageToVideo.
@@ -17,7 +17,7 @@ from PIL import Image, ImageOps
 
 R = Path(sys.argv[1])
 API = "http://127.0.0.1:8192"
-C = Path("D:/AvasthaAI/VideoEditFour-20261025")
+C = Path("F:/AvasthaAI/VideoEditFour-20261025")
 STEPS, SPLIT, CFG, SHIFT = 30, 15, 3.5, 8
 DONOR = "cuda:1,3.5gb;cpu,*"  # per half: 2 x 3.5 GB on the 8 GB RTX4000 (it also drives the display)
 NEG = ("text, watermark, subtitles, collage, split screen, static image, frozen, blurry, muddy detail, deformed geometry, "

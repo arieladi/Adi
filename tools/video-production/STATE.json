@@ -4,8 +4,8 @@
   "ownership_note": "User directed Claude on 2026-10-27 to make keyframe stills for a 16s Cosmic test. Claude uses only the idle A2000 webui (port 7865) and does not touch the Avastha renderer, run.py or Comfy queue. Codex review-cosmic-rain-120-second-pilot monitor is obsolete (pilot rejected). Codex deleted both the completed Avastha monitor and obsolete rejected Cosmic120 pilot monitor on 2026-10-29; Claude Cosmic work untouched.",
   "cosmic_rain": {
     "scope": "User approved the 16s test on 2026-10-27 and asked for the ENTIRE track to be rendered with the same method.",
-    "remote_root": "D:/AvasthaAI/CosmicRainPilot120-20261026",
-    "local_root": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s",
+    "remote_root": "F:/AvasthaAI/CosmicRainPilot120-20261026",
+    "local_root": "F:/AvasthaAI/Projects/Cosmic Rain/pilot-120s",
     "status": "REJECTED by user 2026-10-27 after viewing: weird, not symmetrical, not interesting, develops far too slowly. Not flickering and continuous, but the chained Wan last-frame approach is the wrong method for the Ayana target. Keep the file as a reference only; do not extend, upscale or re-finish it.",
     "rejection_diagnosis": "Ayana reference (sampled 20-340s): bold illustrated psytrance poster style, one readable subject per scene, centred or bilaterally symmetric compositions (spiral tunnel, eye, mushroom forest, rows of identical jellyfish/characters/dancing skeletons), constant camera motion from the start, clean scene changes every few seconds. Pilot: photoreal cosmic look, ~30s of near-still frames, chained morph drift turning subjects into odd things, symmetry only as 3 brief accents.",
     "proposed_next": "Keyframe-first: storyboard ~20 scenes of 2-4 bars, generate stills on the idle A2000 with existing local models (mirror-symmetric where the scene calls for it), user approves stills, then animate each from its own keyframe (not chained) with cuts/portals on bar lines. Awaiting user go-ahead and style decision.",
@@ -19,28 +19,28 @@
       "Tunnel portal 53.7s and ocean portal 77.2s joins read cleanly; tunnel shot 8 is a fast coherent fly-through, not strobing.",
       "Shots 21-22 (97-104s) show a long-necked creature rising from a splash, not clearly the planned serpent/mandala; subject readability worth a user look."
     ],
-    "review_images": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s/review-claude-20261027",
+    "review_images": "F:/AvasthaAI/Projects/Cosmic Rain/pilot-120s/review-claude-20261027",
     "gemini_ayana_analysis": "User gave Codex a Gemini breakdown of Ayana before the pilot: modular 1-bar/2-bar I2V clips, hard cuts on bar 1, eye/circle portal match-zooms, 2D mirror/radial/clone compositing, reverse-timed impacts, acts. The pilot applied the cut grid but not the compositing, fresh-keyframe-per-clip or portals, and chained last frames (the drift Gemini warned against). Gemini's '40 frames per bar at 24fps' drifts (bar is 40.28 frames); use absolute timestamps. Its timestamps are partly wrong against sampled frames; its waveform brightness pulses conflict with the no-strobe preference; Flow/Veo are paid and excluded.",
     "next": "Monitor animate_full (do not start a second a2000 worker). Run assemble_full.py --preview periodically and review takes; re-render bad slots by deleting nothing: give a fixed slot a new id/take. RTX4000 second worker only after Avastha is verified and Codex agrees.",
     "keyframe_test": {
       "status": "16s test take 2 DELIVERED to user for review (not yet approved). Take 1 rejected by Claude review and kept as \"...take1 REJECTED by Claude review.mp4\".",
       "window": "47.01-63.80s, bars 28-37 at 143 BPM, drop at 53.73s",
-      "remote": "D:/AvasthaAI/CosmicKeyframes16-20261027 (raw/, receipt.json, status.json)",
-      "local": "D:/AvasthaAI/Projects/Cosmic Rain/keyframes-16s-test (raw/, comp/, sheets/, storyboard-picks-v1.jpg)",
+      "remote": "F:/AvasthaAI/CosmicKeyframes16-20261027 (raw/, receipt.json, status.json)",
+      "local": "F:/AvasthaAI/Projects/Cosmic Rain/keyframes-16s-test (raw/, comp/, sheets/, storyboard-picks-v1.jpg)",
       "code": "tools/video-production/cosmic-keyframes-16s (storyboard.json, gen_keyframes.py, composite.py, picks_sheet.py)",
       "method": "ComfyUI 8192 on A2000, DreamShaperXL_Turbo_v2 1360x768, 8 steps, cfg 2, dpmpp_sde/karras, seeds 11/22/33/44; DreamShaper8 912x512 comparison on S01/S06/S07 (clearly weaker). 46 images. Symmetry by deterministic mirror/radial8 compositing, not by the model.",
-      "server_notes": "A1111 webui 7865 (A2000) returns HTTP 500 for every txt2img, even DreamShaper8 512px; not restarted (shared). Added hard links DreamShaperXL_Turbo_v2 and DreamShaper_8_pruned in D:/AvasthaAI/ComfyUI/models/checkpoints pointing to the webui files; removable, no copies or downloads.",
+      "server_notes": "A1111 webui 7865 (A2000) returns HTTP 500 for every txt2img, even DreamShaper8 512px; not restarted (shared). Added hard links DreamShaperXL_Turbo_v2 and DreamShaper_8_pruned in F:/AvasthaAI/ComfyUI/models/checkpoints pointing to the webui files; removable, no copies or downloads.",
       "known_weak": "S04 iris is a normal eye, not a black hole; S05 tunnel is flat rings without rain; S03 profiles have no hands for the touch impact; goddess in S01 and S10 is not the same identity (anchor needs consistency before animation). Mirroring front faces/eyes melts the centre line, so S01/S04/S10 stay raw.",
       "v2_v3": "v2 (redo_v2.json): S05 rain tunnel fixed; S10 img2img from S01 v1 keeps the same face; S01/S03 v2 drifted to realistic painting, v1 kept. v3 (redo_v3.json): S04 black hole painted by blackhole_iris.py then img2img 0.45.",
-      "output": "D:/AvasthaAI/Projects/Cosmic Rain/keyframes-16s-test/Cosmic Rain - TEST 16s keyframe edit - with music.mp4 (remote copy in D:/AvasthaAI/CosmicKeyframes16-20261027)",
+      "output": "F:/AvasthaAI/Projects/Cosmic Rain/keyframes-16s-test/Cosmic Rain - TEST 16s keyframe edit - with music.mp4 (remote copy in F:/AvasthaAI/CosmicKeyframes16-20261027)",
       "verified": "403 frames counted by decode, 1280x720, 24 fps, 16.7917s, AAC 16.791s, full -xerror decode clean. Music = original track 47.000-63.792s, not retimed, 15 ms edge fades. Hard cuts on rounded absolute bar frames; circle portal S04->S05 on the drop at 53.708s. Every slot moving (mean frame change 2.4-18, 0% near-static).",
       "take2": "anim.json: S01 take S01b + push 1.0-1.15; S03 take S03c (no hands; the hands-touch idea produced floating praying hands so it was dropped); S04 push into pupil 1.0-1.4; S07 push 1.12; S09 push 1.1; S10 take S10b at normal speed + pull-back 1.12-1.0. Re-renders from anim_redo1.json.",
       "not_done": "No RIFE/60fps or 4K upscale yet (24 fps 720p like the pilot). Hands touching dropped. Beat-locked actions inside shots are not guaranteed; only the cuts are on the grid."
     },
     "full_track": {
       "status": "USER REJECTED REWORK 2: digital zooms make it feel like photos in a slideshow, worse than draft 1. User values this keyframe-first illustrated style as highest visual quality so far, but rejects static subjects and unrelated scene changes.",
-      "remote_root": "D:/AvasthaAI/CosmicRainFull-20261027",
-      "local_root": "D:/AvasthaAI/Projects/Cosmic Rain/full-track (to be created on delivery)",
+      "remote_root": "F:/AvasthaAI/CosmicRainFull-20261027",
+      "local_root": "F:/AvasthaAI/Projects/Cosmic Rain/full-track (to be created on delivery)",
       "code": "tools/video-production/cosmic-full (analyse_track.py, storyboard_full.py -> plan.json, gen_stills_full.py, stills_sheets.py, animate_full.py, assemble_full.py)",
       "track": "463.285s, 276 bars at 143 BPM; drops at bars 32, 64, 96, 208, 224; breaks 62-63, 90-95, 189-207, 215-223; ending 268+ (track-bars.json)",
       "plan": "v2 with the user story (2026-10-27): 147 scenes (32 user story), 245 slots, 244 Wan jobs, 18,960 frames. Only the test goddess slot (bars 28-30) is reused; 30-38 is now the user story. plan-v1.json = pre-story version; its stills were renamed to stable subject keys.",
@@ -50,7 +50,7 @@
       "user_story": "0:50 elders drum (bar 30), 0:53 women+children join on the drop (32), 0:56 everything turns into a clock (33.5, crossfade) and relaxes (34.5), 0:59 brain/neurons (35), 1:03 fast clock (37.5); 1:45 elders in the break (62); 1:47 aliens with impossible synths + elders (64-76); 2:34 the clock finds us (92) and pulls us to the drummers at the 2:41 drop (96) with new synths/speakers and dancing, 2:44 fast clock (97.5), 2:45 heaven couple -> gold statues -> elements (98-102); 3:18 brain free your mind, rooftop leap, flying free, dissolving into falling code symbols (118-126); 6:15 drummers at full power in rain/snow/lightning, aliens shield them and play the lightning (224-232). Scenes flagged user_story in plan.json.",
       "picks": "picks.json chosen by Claude from sheets/stills-01..10.jpg (2 seeds each); weak but acceptable: K051 shows a clock not the drummers below, K053 shows an alien figure more than speaker towers, K124 has no visible dome shield.",
       "render_time": "First pass: 244 clips, avg 639 s each = 43.3 h GPU time, 2026-10-27 ~19:45 to 2026-10-29 ~14:05 studio time.",
-      "output": "D:/AvasthaAI/Projects/Cosmic Rain/full-track/Cosmic Rain - REWORK 2 - full track keyframe edit - with music.mp4",
+      "output": "F:/AvasthaAI/Projects/Cosmic Rain/full-track/Cosmic Rain - REWORK 2 - full track keyframe edit - with music.mp4",
       "verified": "11119 frames, 1280x720, 24fps, 463.291667s; remote full -xerror decode clean; local and remote SHA256 b7b1cdd68eb5672aa113e3e40be022dd54ece7f5e4f6b8f23e757aa815548f5e. Original music normal speed, AAC320k; no added 15ms edge fade. All source PNGs checked before assembly.",
       "review": "Inspected temporal samples across opening, story beats and ending. Illustrated subjects are readable; deliberate cuts remain abrupt, opening switches style at 8s, and some local distortions remain (brain at 59s, face at390s). Not a claim that all frozen passages or visual defects are solved. rework2-review.jpg and rework2-motion-samples.json saved locally.",
       "next": "Superseded by user-authorized sequential rebuild from opening; reuse reviewed good shots, preserve existing drafts. See rebuild.",
@@ -76,16 +76,16 @@
     },
     "connected_test": {
       "status": "Firstshot allowed to finish; no continuation. Rebuild from beginning now primary task; optional candidate to reuse later.",
-      "root": "D:/AvasthaAI/CosmicConnectedTest-20261030",
-      "local": "D:/AvasthaAI/Projects/Cosmic Rain/connected-test-20261030",
+      "root": "F:/AvasthaAI/CosmicConnectedTest-20261030",
+      "local": "F:/AvasthaAI/Projects/Cosmic Rain/connected-test-20261030",
       "scope": "Optional single-shot candidate only; main task original fulltrack quality audit and targeted repairs with same approved technique.",
       "worker": "render_one.py SHOT TAKE; never duplicate; inspect status, receipts and Comfy8192 first. generated.json is NOT approval. Next scene reads previous shot accepted.json, visual_review_passed, real_subject_motion, continuity_passed, continuation_frame. Use last delivered frame index79 for continuity; output80frames from81 raw.",
       "policy": "Review raw sequential frames/clip and neighbours. Reject static subjects/camera-only change/noise/anatomy drift. Retry with failure-specific prompt/settings adjustments in new take directories, up to20 before reassessing method. Never automatically approve based on frame differences alone. Preserve existing full-track good scenes and both drafts. No paid calls/downloads."
     },
     "rebuild": {
       "status": "STOPPED by user: mission transferred to Claude. Codex automation deleted; do not resume or launch jobs.",
-      "root": "D:/AvasthaAI/CosmicRebuild-20261030",
-      "local": "D:/AvasthaAI/Projects/Cosmic Rain/rebuild-20261030",
+      "root": "F:/AvasthaAI/CosmicRebuild-20261030",
+      "local": "F:/AvasthaAI/Projects/Cosmic Rain/rebuild-20261030",
       "code": "tools/video-production/cosmic-rebuild",
       "scope": "Preserve original0-8sec; same illustrated style/story; recurring RainKeeper, elders, silverrain, goldring/clock. More real internal movement; coherent action/identity/environment across psychedelic scenes. Original plan245slots is timing/story scaffold, NOT approved shots.",
       "next": "Claude handoff: seven accepted shots. Shot08/take03 and local transition candidate remain unaccepted pending detailed review. Preserve all assets and reviews. Codex must not advance without new user authorization.",
@@ -101,7 +101,7 @@
         "active_take": 3,
         "review": "Shot8take2 twelve temporal samples, clear weak-motion rejection saved. Bounded per-take settings.json support added (CFG4-7,20-32steps), defaults unchanged for other shots."
       },
-      "review_preview": "D:/AvasthaAI/Projects/Cosmic Rain/rebuild-20261030/Cosmic Rain - Rebuild first 30 seconds - REVIEW - with music.mp4"
+      "review_preview": "F:/AvasthaAI/Projects/Cosmic Rain/rebuild-20261030/Cosmic Rain - Rebuild first 30 seconds - REVIEW - with music.mp4"
     },
     "decision_20261101": "User: keep the approved keyframe-first technique and the 43 h single-A2000 pace; find why ~30% of Draft 1 froze, add checks and re-render only failures. No RTX4000, no half-size render, no technique change. Codex rebuild slowness was mostly its usage limit. User rates rebuild 0-30 s good from 15 s on; 16 s test approved; Draft 1 had too many stills; rework 2 looked like a bugged PowerPoint.",
     "freeze_diagnosis": {
@@ -135,7 +135,7 @@
     "decision_20261101_followup": "Draft 2 = Draft 1 timing (plan_v2.json, its 32 gentle calm pushes kept), only failing slots replaced. Reuse a redo1 take only if it passes the new gate AND an eye review.",
     "draft2": {
       "status": "DRAFT 2 DELIVERED to the user 2026-11-03 ~19:45 studio time; awaiting their review. Bar fixes (plan_d2_fix2.json) rendering on the A2000 for a DRAFT 3 swap-in.",
-      "output": "D:/AvasthaAI/CosmicRainFull-20261027/Cosmic Rain - DRAFT 2 - full track keyframe edit - with music.mp4",
+      "output": "F:/AvasthaAI/CosmicRainFull-20261027/Cosmic Rain - DRAFT 2 - full track keyframe edit - with music.mp4",
       "verified_by_claude": "ffmpeg probe: h264 1280x720 24fps + aac stereo 44.1k, 7:43.29, 11119 frames full decode, no errors; 12-frame contact sheet checked by eye; receipt full-draft2-receipt.json (245/245 slots, music not retimed)",
       "phone_copy": "Cosmic Rain - DRAFT 2 - phone.mp4 (640x360, 29 MB), sent in chat; both files also at ORC-VST C:/DroneBay/media-out/Cosmic-Rain",
       "assembly_plan": "plan_draft2b.json from make_d2_assembly.py (broken bars lose to any non-broken pair): moves 103, weak 97, still 41, broken 3 (K038b, K050, K130b)",
@@ -145,7 +145,7 @@
     },
     "draft3": {
       "status": "DRAFT 3 DELIVERED 2026-11-04 ~00:07 studio time; awaiting the user's review.",
-      "output": "D:/AvasthaAI/CosmicRainFull-20261027/Cosmic Rain - DRAFT 3 - full track keyframe edit - with music.mp4",
+      "output": "F:/AvasthaAI/CosmicRainFull-20261027/Cosmic Rain - DRAFT 3 - full track keyframe edit - with music.mp4",
       "verified_by_claude": "receipt full-draft3-receipt.json 245/245 slots, music not retimed; ffmpeg probe h264 1280x720 24fps + aac stereo, 7:43.29, 11119 frames full decode with no errors",
       "phone_copy": "Cosmic Rain - DRAFT 3 - phone.mp4 (29 MB) sent in chat; both at ORC-VST C:/DroneBay/media-out/Cosmic-Rain",
       "assembly_plan": "plan_draft3.json: moves 104, weak 101, still 39, broken 0, every chained pair consistent",
@@ -155,7 +155,7 @@
     },
     "storage_20261104": {
       "request": "Adi 2026-11-04: move the drafts off D to F, move all AI to F so D is left alone",
-      "done": "D:/AvasthaAI robocopied to F:/AvasthaAI (F: = 'verbatim' USB 3 SSD), list-only verify 259,932 files / 261.6e9 bytes, 0 to copy, 0 mismatch, 0 failed; source removed; D:/AvasthaAI is now a junction to F:/AvasthaAI so every existing path keeps working. Free after: D: 247 GB, F: 237 GB",
+      "done": "F:/AvasthaAI robocopied to F:/AvasthaAI (F: = 'verbatim' USB 3 SSD), list-only verify 259,932 files / 261.6e9 bytes, 0 to copy, 0 mismatch, 0 failed; source removed; F:/AvasthaAI is now a junction to F:/AvasthaAI so every existing path keeps working. Free after: D: 247 GB, F: 237 GB",
       "fix_needed": "robocopy /XJ skipped uv's cpython-3.12 / cpython-3.10 junctions; recreated with mklink /J; all four venvs run torch with CUDA",
       "services": "ComfyUI 8192 and Deforum 7865 restarted with their original commands. Forge 7866 (launch_neo.py) not restarted: its launcher waits for an old Deforum job that no longer exists and it is pinned to the A2000 that is rendering; F:/AvasthaAI-move/start_neo.ps1 starts it without that wait once the A2000 is free",
       "log": "F:/AvasthaAI-move (move.log, verify.txt, robocopy.log, restart.first.json)"
@@ -175,7 +175,7 @@
     "draft4": {
       "date": "2026-11-08",
       "plan": "plan_draft4.json",
-      "file": "D:/AvasthaAI/CosmicRainFull-20261027/Cosmic Rain - DRAFT 4 - full track keyframe edit - with music.mp4",
+      "file": "F:/AvasthaAI/CosmicRainFull-20261027/Cosmic Rain - DRAFT 4 - full track keyframe edit - with music.mp4",
       "phone": "Cosmic Rain - DRAFT 4 - phone.mp4",
       "changed_from_draft3": 63,
       "weak_redo": "160/160 slots complete 2026-11-06, 248 takes; eye verdicts moves 45, weak 68, still 42, broken 5",
@@ -184,7 +184,7 @@
       "status": "sent to Adi, awaiting verdict; drum test and pilot not started"
     },
     "flf_minute_20261111": {
-      "root": "D:/AvasthaAI/FLFMinute-20261111",
+      "root": "F:/AvasthaAI/FLFMinute-20261111",
       "bars": [
         30,
         66
@@ -198,21 +198,21 @@
     },
     "deforum_tests_20261112": {
       "recipe": "AVASTHA-DEFORUM-RECIPE.md",
-      "A_stills": "D:/AvasthaAI/CosmicDeforum-20261112 - 0:50-2:03 method with 6 Cosmic stills on the hybrid layer; Adi: terrible, a mess",
+      "A_stills": "F:/AvasthaAI/CosmicDeforum-20261112 - 0:50-2:03 method with 6 Cosmic stills on the hybrid layer; Adi: terrible, a mess",
       "B_continuous_stills_themes": "stopped by Claude after Adi asked for no Cosmic photos",
-      "C_ending": "D:/AvasthaAI/CosmicDeforumEnding-20261112 - exactly the Avastha ending recipe from the opening's 7 s frame, 4 world themes; sent 2026-11-12 12:58, stays deep blue, no wash-out",
-      "D_remake": "D:/AvasthaAI/CosmicDeforumRemake-20261112 - 0:50-2:03 way, Draft 1 0:07-1:04 under at alpha 0.05, same 4 themes; sent 2026-11-12 ~14:40",
+      "C_ending": "F:/AvasthaAI/CosmicDeforumEnding-20261112 - exactly the Avastha ending recipe from the opening's 7 s frame, 4 world themes; sent 2026-11-12 12:58, stays deep blue, no wash-out",
+      "D_remake": "F:/AvasthaAI/CosmicDeforumRemake-20261112 - 0:50-2:03 way, Draft 1 0:07-1:04 under at alpha 0.05, same 4 themes; sent 2026-11-12 ~14:40",
       "timing": "Deforum ~4.3 s/frame on A2000 at 848x480 (855 frames ~62 min) + ~10 min LUT/ESRGAN/RIFE",
       "status": "C and D awaiting Adi's verdict"
     }
   },
   "avastha": {
-    "remote_root": "D:/AvasthaAI/Avastha4K60-20261026",
-    "local_root": "D:/AvasthaAI/Projects/Avastha - Quantum Ascent/FINAL",
+    "remote_root": "F:/AvasthaAI/Avastha4K60-20261026",
+    "local_root": "F:/AvasthaAI/Projects/Avastha - Quantum Ascent/FINAL",
     "status": "APPROVED final 4K60 MOV with exact copied 48kHz 24bit PCM audio. NAS final backup SHA256 verified. Authorized local and ADI-PC cleanup complete and reviewed 2026-10-30; all manifest source paths removed.",
     "live_processes": "Completed; historical PIDs must not be used.",
     "rate_and_eta": "Complete; no remaining ETA.",
-    "output": "D:/AvasthaAI/Projects/Avastha - Quantum Ascent/FINAL/Avastha - Quantum Ascent - FINAL 4K60 - 48kHz 24bit.mov",
+    "output": "F:/AvasthaAI/Projects/Avastha - Quantum Ascent/FINAL/Avastha - Quantum Ascent - FINAL 4K60 - 48kHz 24bit.mov",
     "next": "No remaining Quantum work. Final available locally and on NAS; cleanup monitor retired. Do not restart old renders. Cosmic Rain remains owned by Claude and was untouched.",
     "cleanup": {
       "local_files": 3415,
@@ -223,7 +223,7 @@
       "archived_source_bytes": 52421614089,
       "deleted_test_intermediate_bytes": 36307415782,
       "archive": "//orc-vst/D/Avastha-AI/Outputs/QuantumAscent-Archive-20261030",
-      "receipts": "D:/AvasthaAI/cleanup-quantum-20261030",
+      "receipts": "F:/AvasthaAI/cleanup-quantum-20261030",
       "note": "Archived-source byte count includes deduplicated source copies, not unique NAS storage. Reusable data checksum-verified before source deletion; FINAL preserved; shared runtimes/models and Cosmic excluded."
     }
   },
@@ -238,5 +238,5 @@
     "ADI-MOBILE stays free"
   ],
   "naming": "Avastha = the artist duo (Adi and Valentin). Tracks: Quantum Ascent and Cosmic Rain.",
-  "handover": "2026-11-01: taken over on orc-vst. orc-vst reaches avastha-remote@192.168.1.54 with its own key (already authorised; no access.txt copy needed). Earlier local deliveries (D:/AvasthaAI/Projects/Cosmic Rain) are on SALON-TV, not adi-pc (adi-pc has no Projects folder). The before-restart freeze test was left to finish (all 3 froze again)."
+  "handover": "2026-11-01: taken over on orc-vst. orc-vst reaches avastha-remote@192.168.1.54 with its own key (already authorised; no access.txt copy needed). Earlier local deliveries (F:/AvasthaAI/Projects/Cosmic Rain) are on SALON-TV, not adi-pc (adi-pc has no Projects folder). The before-restart freeze test was left to finish (all 3 froze again)."
 }

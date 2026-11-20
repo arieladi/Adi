@@ -16,8 +16,8 @@ $chain | Sort-Object ProcessId -Descending | ForEach-Object { Stop-Process -Id $
 $deadline = (Get-Date).AddSeconds(60)
 while ((Get-NetTCPConnection -LocalPort 8192 -State Listen -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
 if (Get-NetTCPConnection -LocalPort 8192 -State Listen -ErrorAction SilentlyContinue) { throw 'port 8192 still listening' }
-$cmd = 'D:\AvasthaAI\venv\Scripts\python.exe -u D:/AvasthaAI/VideoEditFour-20261025/launch_server.py'
-$r = Invoke-CimMethod Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = 'D:\AvasthaAI\VideoEditFour-20261025' }
+$cmd = 'F:\AvasthaAI\venv\Scripts\python.exe -u F:/AvasthaAI/VideoEditFour-20261025/launch_server.py'
+$r = Invoke-CimMethod Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = 'F:\AvasthaAI\VideoEditFour-20261025' }
 "launched pid $($r.ProcessId) (return $($r.ReturnValue))"
 $deadline = (Get-Date).AddSeconds(240)
 while ((Get-Date) -lt $deadline) {

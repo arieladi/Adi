@@ -2,7 +2,7 @@
   "note": "Final keyframes chosen 2026-10-27 (user asked Claude to pick and deliver the finished 16s). Slot frames come from round(24 * (phase + bar * 240/143)); 'step' 2 means every second generated frame (double speed) for drop energy. Music is never retimed.",
   "fps": 24,
   "audio": {
-    "track": "D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav",
+    "track": "F:/AvasthaAI/CosmicRain-20261025/inputs/track.wav",
     "start_frame": 1128,
     "end_frame": 1531
   },

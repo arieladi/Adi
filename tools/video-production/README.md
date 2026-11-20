@@ -16,8 +16,8 @@ This folder is the durable handoff for Cosmic Rain and Avastha — Quantum Ascen
 
 ### Cosmic Rain: 120-second draft awaiting review
 
-Remote: D:/AvasthaAI/CosmicRainPilot120-20261026
-Local: D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s
+Remote: F:/AvasthaAI/CosmicRainPilot120-20261026
+Local: F:/AvasthaAI/Projects/Cosmic Rain/pilot-120s
 Output: Cosmic Rain - DRAFT first 120 seconds - musical edit - with music.mp4
 
 Remote finish-status.json reports complete. Review final-receipt.json and actual output, then copy to local D and deliver. Verify 2880 frames, 1280x720, 24 fps, 120 seconds, complete audio/video decode. Inspect first8seconds, musical changes, reference-switch joins and ending. Do not claim exact visual beat synchronization based on settings alone. No continuation past120seconds until the user approves.
@@ -30,14 +30,14 @@ Finisher was fixed during this run: RGB frame-change reduction must use mean(axi
 
 ### Avastha: smoothing/upscaling ONLY
 
-Remote: D:/AvasthaAI/Avastha4K60-20261026
-Local: D:/AvasthaAI/Projects/Avastha - Quantum Ascent/final-4k60
-Existing source: D:/AvasthaAI/AcidRework-20261025/Avastha - DRAFT 9m54 - Acid rework and Aleph boom - with music.mp4
+Remote: F:/AvasthaAI/Avastha4K60-20261026
+Local: F:/AvasthaAI/Projects/Avastha - Quantum Ascent/final-4k60
+Existing source: F:/AvasthaAI/AcidRework-20261025/Avastha - DRAFT 9m54 - Acid rework and Aleph boom - with music.mp4
 Source SHA256: 85ac4ac704e167bb52defe3fde0dcadeb038fb90e242a70c249f3515629d9339
 
 The words “Acid rework and Aleph boom” are the EXISTING FILE NAME, not authorization for new generative edits. User explicitly wants only higher resolution and smoother motion. No new Aleph, diffusion, morphing, color grade or scene changes.
 
-run.py waited for Cosmic finishing, then automatically started. Status now enhancing-4k60. Read status.json, worker.lock, enhance.log, effective-config.json and receipts. Uses D:/AvasthaAI/EnhancerV2/renderer.py and models.py, proven RealESRGAN_x4plus followed by RIFE4.26 on RTX4000 alone. FP16 safe warp, tile384/padding32/min64 OOM fallback, flow_scale0.5, libx264CRF17,3840x2160,60fps. Existing model D:/AvasthaAI/Temp/wan30-models/RealESRGAN_x4plus.pth; RIFE D:/AvasthaAI/Tools/RIFE426.
+run.py waited for Cosmic finishing, then automatically started. Status now enhancing-4k60. Read status.json, worker.lock, enhance.log, effective-config.json and receipts. Uses F:/AvasthaAI/EnhancerV2/renderer.py and models.py, proven RealESRGAN_x4plus followed by RIFE4.26 on RTX4000 alone. FP16 safe warp, tile384/padding32/min64 OOM fallback, flow_scale0.5, libx264CRF17,3840x2160,60fps. Existing model F:/AvasthaAI/Temp/wan30-models/RealESRGAN_x4plus.pth; RIFE F:/AvasthaAI/Tools/RIFE426.
 
 Input14259frames24fps594.125seconds. Expected35648frames60fps594.1333seconds (frame-grid rounding). Copy original AAC stream unchanged; do not re-encode/retime music. No extra sharpening/LUT. Original preserved; distinct output. On completion verify full decode/framecount/geometry/audio and sample detail/motion/joins. Output audio can be about7milliseconds shorter than video from frame-grid rounding.
 

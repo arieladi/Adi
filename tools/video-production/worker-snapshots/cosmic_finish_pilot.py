@@ -4,7 +4,7 @@ os.environ['CUDA_VISIBLE_DEVICES']='GPU-5e287f99-46c5-350a-0c85-50e9588f1795'
 import cv2,numpy as np,torch,imageio_ffmpeg
 from scipy.interpolate import PchipInterpolator
 R=Path(__file__).parent;P=json.loads((R/'plan.json').read_text());FF=imageio_ffmpeg.get_ffmpeg_exe()
-sys.path.insert(0,'D:/AvasthaAI/EnhancerV2')
+sys.path.insert(0,'F:/AvasthaAI/EnhancerV2')
 from models import Interpolator
 def save(p,v):
  q=p.with_suffix('.tmp');q.write_text(json.dumps(v,indent=2),encoding='utf-8');q.replace(p)
@@ -23,7 +23,7 @@ def main():
    while not (d/'generated.json').exists():
     if (R/'generation-status.json').exists() and json.loads((R/'generation-status.json').read_text()).get('stage')=='failed':raise RuntimeError('Generation failed; inspect existing receipts')
     time.sleep(20)
-   if rife is None:rife=Interpolator(Path('D:/AvasthaAI/Tools/RIFE426'),torch.device('cuda:0'),False,False,1.0)
+   if rife is None:rife=Interpolator(Path('F:/AvasthaAI/Tools/RIFE426'),torch.device('cuda:0'),False,False,1.0)
    g=json.loads((d/'generated.json').read_text());paths=sorted(Path(g['raw']).glob('*.png'));assert len(paths)==121
    thumbs=np.array([cv2.resize(read(p),(160,90)).astype(np.float32) for p in paths]);changes=np.abs(np.diff(thumbs,axis=0)).mean(axis=(1,2,3))
    peak=int(np.argmax(changes[30:90])+31);n=s['end_frame']-s['start_frame']
@@ -50,7 +50,7 @@ def main():
    save(d/'finished.json',{'frames':n,'path':str(out),'rife':'4.26 FP32 RTX4000','color_grading':False})
   status('assembling')
   # Read the original opening, preserving its first192 frames at24fps.
-  opening=Path('D:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4');op=R/'opening-8s.mp4'
+  opening=Path('F:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4');op=R/'opening-8s.mp4'
   subprocess.run([FF,'-v','error','-y','-i',str(opening),'-t','8','-vf','scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=24','-an','-c:v','libx264','-crf','15','-threads','3',str(op)],check=True)
   silent=R/'pilot-silent.mp4';enc=encoder(silent);previous=[];total=0
   yy,xx=np.mgrid[:720,:1280].astype(np.float32);radius=np.sqrt(((xx-640)/735)**2+((yy-360)/735)**2)
@@ -71,7 +71,7 @@ def main():
    cap.release();previous=recent
   enc.stdin.close();assert enc.wait()==0;assert total==2880,total
   out=R/'Cosmic Rain - DRAFT first 120 seconds - musical edit - with music.mp4'
-  subprocess.run([FF,'-v','error','-y','-i',str(silent),'-i','D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav','-map','0:v','-map','1:a','-c:v','copy','-c:a','aac','-b:a','320k','-t','120','-movflags','+faststart',str(out)],check=True)
+  subprocess.run([FF,'-v','error','-y','-i',str(silent),'-i','F:/AvasthaAI/CosmicRain-20261025/inputs/track.wav','-map','0:v','-map','1:a','-c:v','copy','-c:a','aac','-b:a','320k','-t','120','-movflags','+faststart',str(out)],check=True)
   subprocess.run([FF,'-v','error','-i',str(out),'-f','null','-'],check=True)
   save(R/'final-receipt.json',{'output':str(out),'frames':2880,'fps':24,'size':[1280,720],'duration':120,'full_decode':True,'music_original_speed':True,'pending_user_review':True,'first8seconds':'Original opening reencoded to delivery settings','timing':'Motion landmarks, no semantic beat guarantee'})
   status('complete',output=str(out))

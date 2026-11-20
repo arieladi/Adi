@@ -2,9 +2,9 @@
 actually worked ... use the images from cosmic rain some of them once in a while to drive the changes but mostly let
 deforum just run freely").
 
-usage: run_deforum.py <root> [stills|continuous|ending|remake]     (resumable; D:/AvasthaAI/venv python; the Deforum service on 7865 must be up)
+usage: run_deforum.py <root> [stills|continuous|ending|remake]     (resumable; F:/AvasthaAI/venv python; the Deforum service on 7865 must be up)
 Method, from the archived Avastha project (QuantumAscent-Archive-20261030, deforum-section-050-123 + ending-184s):
-  - the actual Deforum extension, SD1.5 DreamShaper8, A2000, D:/AvasthaAI/ActualDeforum/settings-8s.json unchanged
+  - the actual Deforum extension, SD1.5 DreamShaper8, A2000, F:/AvasthaAI/ActualDeforum/settings-8s.json unchanged
     (848x480 15 fps, DPM++ 2M 28 steps, cfg 6, 2D camera zoom 1.005 / angle 0.06 / x 0.12 / y -0.05, noise 0.02,
     LAB colour coherence, the approved strength envelope 0.62/0.55/0.48/0.55/0.60 every 120 frames)
   - entry exactly as section 050-123: hybrid video compositing of the source with alpha 1.0 -> 0.05 over 45 frames
@@ -28,11 +28,11 @@ from PIL import Image, ImageOps
 
 FF = imageio_ffmpeg.get_ffmpeg_exe()
 API = "http://127.0.0.1:7865"
-OPENING = Path("D:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4")
-TRACK = Path("D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav")
-LUT = Path("D:/AvasthaAI/CosmicRain-20261025/approved-lut.npy")
+OPENING = Path("F:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4")
+TRACK = Path("F:/AvasthaAI/CosmicRain-20261025/inputs/track.wav")
+LUT = Path("F:/AvasthaAI/CosmicRain-20261025/approved-lut.npy")
 LUT_SHA = "847229a33fca2012b0a69f453cab6e906d55a343e77287cd1cac3a588586c48a"
-FULL = Path("D:/AvasthaAI/CosmicRainFull-20261027")
+FULL = Path("F:/AvasthaAI/CosmicRainFull-20261027")
 DRAFT1 = FULL / "Cosmic Rain - full track keyframe edit - with music.mp4"
 END, START, FPS = 64.0, 7.0, 15
 N = round((END - START) * FPS)
@@ -87,7 +87,7 @@ def prepare():
     if MODE == "ending":
         # Exactly the Avastha ending (deforum-ending-184s/worker.py): approved settings unchanged, one init image,
         # the approved strength envelope repeated from frame 0, slowly evolving world themes. No photos, no hybrid.
-        s = json.loads(Path("D:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
+        s = json.loads(Path("F:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
         s.update(max_frames=N, batch_name=BATCH, init_image=str(R / "start.png"))
         step = N // len(THEMES) + 1
         s["prompts"] = {str(i * step): t + SUFFIX for i, t in enumerate(THEMES)}
@@ -120,7 +120,7 @@ def prepare():
     if p:
         p.stdin.close(); assert p.wait() == 0
 
-    s = json.loads(Path("D:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
+    s = json.loads(Path("F:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
     alpha = {0: 1.0, 15: 0.70, 30: 0.25, 45: 0.05}
     for x in stills if MODE == "stills" else []:
         k = x["frame"]
@@ -152,7 +152,7 @@ def prepare():
 
 
 def frames_dir(job):
-    return Path(job["outdir"]) if job.get("outdir") else Path("D:/AvasthaAI/ActualDeforum/webui/outputs/img2img-images") / BATCH
+    return Path(job["outdir"]) if job.get("outdir") else Path("F:/AvasthaAI/ActualDeforum/webui/outputs/img2img-images") / BATCH
 
 
 def generate():
@@ -224,12 +224,12 @@ def finish(frames):
     enh = R / "enhanced.mp4"
     if not enh.exists():
         status("upscaling")
-        cfg = json.loads(Path("D:/AvasthaAI/EnhancerV2/Avastha-Deforum-New-Renderer-4K60.receipt.json").read_text())["config"]
+        cfg = json.loads(Path("F:/AvasthaAI/EnhancerV2/Avastha-Deforum-New-Renderer-4K60.receipt.json").read_text())["config"]
         cfg.update(input=str(graded), output=str(enh), width=1280, height=720, fps="24", quality=0, flow_scale=1.0,
                    upscale_device="cuda:0", rife_device="cuda:0", queue_depth=2, pinned_gb=.5)
         save("enhance-config.json", cfg)
         with (R / "enhance.log").open("wb") as log:
-            subprocess.run(["D:/AvasthaAI/venv/Scripts/python.exe", "-u", "D:/AvasthaAI/EnhancerV2/renderer.py", "--config", str(R / "enhance-config.json")],
+            subprocess.run(["F:/AvasthaAI/venv/Scripts/python.exe", "-u", "F:/AvasthaAI/EnhancerV2/renderer.py", "--config", str(R / "enhance-config.json")],
                            stdout=log, stderr=subprocess.STDOUT, check=True, env=os.environ.copy())
     status("assembling")
     enc = lambda *a: [*a, "-an", "-c:v", "libx264", "-crf", "15", "-pix_fmt", "yuv420p"]

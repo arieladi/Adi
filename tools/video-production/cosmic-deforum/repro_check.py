@@ -1,7 +1,7 @@
 """Proof that the two approved Deforum styles (one-picture and hybrid, Cosmic Rain tests 2026-11-13) can be reproduced (Adi 2026-11-18: "I truly hope we can reproduce
 them at any time").
 
-usage: repro_check.py <out.json> <run root> [<run root> ...] [--frames 45]     (D:/AvasthaAI/venv python; Deforum on 7865)
+usage: repro_check.py <out.json> <run root> [<run root> ...] [--frames 45]     (F:/AvasthaAI/venv python; Deforum on 7865)
 For each run root (a finished deforum run with settings.json + last-job.json) the first N frames are drawn again from
 the saved settings on DreamShaper8, then compared with the original frames: mean absolute difference per frame on
 0-255 pixels (0 = identical).

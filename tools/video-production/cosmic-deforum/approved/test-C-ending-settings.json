@@ -15,7 +15,7 @@
   "use_init": true,
   "strength": 0.62,
   "strength_0_no_init": true,
-  "init_image": "D:\\AvasthaAI\\CosmicDeforumEnding-20261112\\start.png",
+  "init_image": "F:\\AvasthaAI\\CosmicDeforumEnding-20261112\\start.png",
   "use_mask": false,
   "use_alpha_as_mask": false,
   "mask_file": "https://deforum.github.io/a1/M1.jpg",
