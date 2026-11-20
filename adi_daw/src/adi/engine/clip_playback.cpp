@@ -8,6 +8,7 @@
 #include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <samplerate.h>
@@ -52,6 +53,15 @@ std::int64_t samples(double seconds, double rate) {
     const double n = seconds * rate;
     if (!std::isfinite(n) || n < 0 || n > static_cast<double>(limit)) throw std::runtime_error("time outside supported sample range");
     return static_cast<std::int64_t>(std::llround(n));
+}
+std::int64_t samplesAtNs(std::int64_t ns, std::int64_t rate) {
+    if (ns < 0) throw std::runtime_error("negative nanosecond clock");
+    // ClipPlayback admits only bounded integer sample rates. Separate whole
+    // seconds from the fraction so the products fit and half-sample ties are exact.
+    constexpr std::int64_t second = 1000000000;
+    const auto value = (ns / second) * rate + ((ns % second) * rate + second / 2) / second;
+    if (value > limit) throw std::runtime_error("time outside supported sample range");
+    return value;
 }
 struct Page {
     // 0 empty, 1 worker-owned, 2 ready, 3 reader-owned. Both sides must
@@ -526,13 +536,14 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
-            const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.secondsToTicks(static_cast<double>(row.posNs.value_or(0))*1e-9);
+            const auto beginNs = row.posNs.value_or(0);
+            const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.secondsToTicks(static_cast<double>(beginNs)*1e-9);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
-            const double startSeconds=row.timeBase==0?tempo.ticksToSeconds(origin):static_cast<double>(row.posNs.value_or(0))*1e-9;
-            auto duration=[&](std::int64_t ticks){
+            auto tickSpanSeconds=[&](std::int64_t ticks){
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
-                return samples(tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin),rate);
+                return tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin);
             };
+            auto duration=[&](std::int64_t ticks){return samples(tickSpanSeconds(ticks),rate);};
             if(row.contentOffsetTicks<0 && (a->warpEnabled || !row.contentOffsetNs))
                 throw std::runtime_error("negative clip content offset needs an unwarped source clock");
             const auto sourceOrigin=a->warpEnabled?origin-row.contentOffsetTicks:origin;
@@ -556,31 +567,23 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
                 clip->length=static_cast<std::int64_t>(clip->warped->frames);
             }
-            clip->start=samples(startSeconds,rate);
             std::int64_t endTicks=origin;
-            double endSeconds=startSeconds;
             if(row.timeBase==0) {
                 const auto ticks=row.lengthTicks.value_or(0);
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid clip duration");
                 endTicks+=ticks;
-                endSeconds=tempo.ticksToSeconds(endTicks);
+                clip->start=samples(tempo.ticksToSeconds(origin),rate);
+                clip->end=samples(tempo.ticksToSeconds(endTicks),rate);
             } else {
                 const auto nanos=row.lengthNs.value_or(0);
-                const auto begin=row.posNs.value_or(0);
-                if(begin<0 || nanos<0 || begin>std::numeric_limits<std::int64_t>::max()-nanos)
+                if(beginNs<0 || nanos<0 || beginNs>std::numeric_limits<std::int64_t>::max()-nanos)
                     throw std::runtime_error("invalid clip duration");
-                // Preserve the stored absolute endpoint before conversion: a
-                // separately converted begin + duration can miss a sample tie.
-                endSeconds=static_cast<double>(begin+nanos)*1e-9;
-                endTicks=tempo.secondsToTicks(endSeconds);
+                const auto endNs = beginNs + nanos;
+                endTicks=tempo.secondsToTicks(static_cast<double>(endNs)*1e-9);
+                clip->start=samplesAtNs(beginNs,clip->rate);
+                clip->end=samplesAtNs(endNs,clip->rate);
             }
-            // Quantise both absolute endpoints once. Rounding a duration and
-            // adding it to a rounded start can lose or add a sample.
-            clip->end=samples(endSeconds,rate);
-            auto fixedTime=[&](std::int64_t nanos) {
-                if(nanos<0)throw std::runtime_error("negative source clock");
-                return samples(static_cast<double>(nanos)*1e-9,rate);
-            };
+            auto fixedTime=[&](std::int64_t nanos) {return samplesAtNs(nanos,clip->rate);};
             clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
             if(!row.loopEnabled) {
                 // A physical pin survives placement and tempo edits. Warp and
@@ -588,11 +591,22 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if (!a->warpEnabled && row.sourceEndNs) {
                     clip->length = std::min(clip->length, fixedTime(*row.sourceEndNs));
                 } else if (row.endMarkerTicks) {
-                    const auto end = sourceDuration(*row.endMarkerTicks);
-                    const bool reversed = !a->warpEnabled && row.contentOffsetNs
-                        ? end <= clip->offset
-                        : *row.endMarkerTicks <= row.contentOffsetTicks;
-                    if (reversed) throw std::runtime_error("invalid audio clip End marker");
+                    const auto marker = *row.endMarkerTicks;
+                    if ((a->warpEnabled || !row.contentOffsetNs) && marker <= row.contentOffsetTicks)
+                        throw std::runtime_error("invalid audio clip End marker");
+                    std::int64_t end;
+                    if (a->warpEnabled || row.timeBase == 0) {
+                        end = sourceDuration(marker);
+                    } else if (!row.contentOffsetNs && marker - row.contentOffsetTicks == endTicks - origin) {
+                        // A legacy marker mirroring the visible End retains
+                        // the stored absolute endpoint, including sub-tick time.
+                        end = clip->offset + (clip->end - clip->start);
+                    } else {
+                        const auto absolute = edit::addTime(beginNs, edit::nanosFromSeconds(tickSpanSeconds(marker)));
+                        end = samplesAtNs(absolute, clip->rate) - clip->start;
+                    }
+                    if (!a->warpEnabled && row.contentOffsetNs && end <= clip->offset)
+                        throw std::runtime_error("invalid audio clip End marker");
                     clip->length = std::min(clip->length, end);
                 }
             }

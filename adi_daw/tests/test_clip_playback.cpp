@@ -750,6 +750,46 @@ void endSourceClocks() {
     check(std::abs(retimed[0]) > 0.1f && std::abs(retimed[149]) > 0.1f && retimed[150] == 0.0f,
           "Warp End retains the 150-frame tail projected across its source tempo boundary");
 }
+
+void absoluteLinearEndSamples() {
+    const auto checkEnd = [](std::int64_t lengthNs, std::int64_t startTicks, std::int64_t endTicks,
+                            std::optional<std::int64_t> physicalEnd, int offset, int frames,
+                            const char* message) {
+        Fixture fixture(48000, 2, 4000);
+        fixture.add(1, 0, 1000, 0, 2000);
+        auto& db = fixture.store->db();
+        SQLite::Statement placement(db,
+            "UPDATE clips SET pos_ns=108333,length_ns=?,content_offset_ticks=? WHERE id=1");
+        placement.bind(1, lengthNs);
+        placement.bind(2, startTicks);
+        placement.exec();
+        SQLite::Statement marker(db, "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,?)");
+        marker.bind(1, endTicks);
+        marker.exec();
+        if (physicalEnd) {
+            SQLite::Statement pin(db, "INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,?)");
+            pin.bind(1, *physicalEnd);
+            pin.exec();
+        }
+        fixture.load(1024);
+        if (!fixture.session.setPrecision(Precision::Float64)) throw std::runtime_error("wide End fixture");
+        const auto heard = fixture.render(1024);
+        const auto begin = std::size_t{5};
+        const auto count = static_cast<std::size_t>(frames);
+        const auto source = static_cast<std::size_t>(offset);
+        check(heard[begin - 1] == 0 && heard[begin] == fixture.media[source * 2] &&
+                  heard[begin + count - 1] == fixture.media[(source + count - 1) * 2] &&
+                  heard[begin + count] == 0,
+              message);
+    };
+    checkEnd(6250000, 0, 48144, std::nullopt, 0, 201,
+             "an early linear End marker counts from the two absolute sample positions");
+    checkEnd(10360417, 24024, 143495, std::nullopt, 100, 498,
+             "a marker mirroring a linear clip's stored End keeps its exact half-sample endpoint");
+    checkEnd(6250000, 0, 48144, 4175000, 0, 200,
+             "a physical source End keeps its source sample count at a fractional placement");
+}
+
 void seeksAndStalls() {
     Fixture f;f.add(1,0,90000,0,90000);f.load(4096);(void)f.render(4096);
     f.session.transport().locate(70003);
@@ -1229,7 +1269,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
-        if(only=="all" || only=="markers"){sourceMarkers();editPinnedSourceMarkers();endSourceClocks();}
+        if(only=="all" || only=="markers"){sourceMarkers();editPinnedSourceMarkers();endSourceClocks();absoluteLinearEndSamples();}
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
         if(only=="all" || only=="segments")segmentsAndCrop();
