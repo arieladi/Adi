@@ -2,6 +2,8 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/audio_memory.hpp"
 #include "adi/engine/publisher.hpp"
+#include "adi/engine/recording_recovery_plan.hpp"
+#include "adi/engine/recording_recovery_wave.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <algorithm>
@@ -14,15 +16,40 @@
 #include <thread>
 namespace adi::engine {
 namespace fs=std::filesystem;
-struct AudioRecordingResult::Files {fs::path directory;};
+struct AudioRecordingResult::Files {
+    fs::path directory;
+    std::shared_ptr<media::ProjectFileLease> recordingOwner;
+    bool hasOriginalPlan=false;
+    bool ephemeralStage=false;
+    ~Files() {
+        if(ephemeralStage && !directory.empty()) {
+            try {
+                std::error_code ignored;
+                fs::remove_all(directory,ignored);
+            } catch(...) {
+                // A discarded recovery preview cannot affect the original.
+            }
+        }
+    }
+};
 const fs::path& AudioRecordingResult::directory()const noexcept {static const fs::path empty;return files_?files_->directory:empty;}
 std::error_code AudioRecordingResult::discard() {
     if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
     if(!files_)return {};
-    std::error_code error;
-    fs::remove_all(files_->directory,error);
-    if(!error)files_.reset();
-    return error;
+    std::error_code removalError;
+    // If removal of the audio is refused, do not offer a take the owner
+    // already discarded. Deleting a link here only removes the link.
+    if(files_->hasOriginalPlan) {
+        fs::remove(files_->directory/"start.json",removalError);
+        if(removalError)return removalError;
+    }
+    fs::remove_all(files_->directory,removalError);
+    if(!removalError) {
+        files_->recordingOwner.reset();
+        if(files_->ephemeralStage)files_->directory.clear();
+        files_.reset();
+    }
+    return removalError;
 }
 namespace {
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free && std::atomic<std::int64_t>::is_always_lock_free);
@@ -58,6 +85,8 @@ struct Job {
     std::atomic<bool> stopWriter{false},done{false},transportEnded{false};
     std::thread worker;
     std::exception_ptr writerError;
+    std::optional<recording_recovery::OwnedPlan> recovery;
+    std::string recoveryWarning;
     bool discardRequested=false; // owner only; cancellation also discards failed takes
     // Callback-owned continuity state; observed only after its quiescence.
     bool begun=false;
@@ -102,6 +131,11 @@ struct Job {
                     if(head==tail)break;
                 }
                 const auto frames=static_cast<std::uint32_t>(std::min<std::uint64_t>(4096,head-tail));
+                if(tail==0 && recovery) {
+                    auto warning=recording_recovery::writeStart(
+                        directory,recovery->plan.recordingId,firstSample.load(std::memory_order_relaxed));
+                    if(!warning.empty())recoveryWarning=std::move(warning);
+                }
                 for(std::uint32_t frame=0;frame<frames;++frame)for(std::size_t channel=0;channel<inputChannels.size();++channel)
                     readBuffer[static_cast<std::size_t>(frame)*inputChannels.size()+channel]=ring[static_cast<std::size_t>((tail+frame)%spec.ringFrames)*inputChannels.size()+channel];
                 read.store(tail+frames,std::memory_order_release);
@@ -193,6 +227,63 @@ AudioRecordingResult AudioRecordingResult::fromMemory(const AudioMemorySnapshot&
     }
     return result;
 }
+AudioRecordingResult AudioRecordingResult::fromInterrupted(recording_recovery::OwnedPlan owned,
+    const fs::path& directory,std::string sourceProject) {
+    if(audio::onAudioThread)throw std::runtime_error("recover recording off callback");
+    AudioRecordingResult result;
+    const auto& plan=owned.plan;
+    result.recordingId_=plan.recordingId;
+    result.recoveryProjectUuid_=plan.projectUuid;
+    result.recoveryWarning_=owned.warning;
+    result.recovered_=true;
+    result.sourceProject_=std::move(sourceProject);
+    result.startSample=recording_recovery::readStart(directory,plan.recordingId);
+    result.sampleRate=plan.sampleRate;
+    result.loop_=plan.loop;
+    std::uint64_t frames=std::numeric_limits<std::uint64_t>::max();
+    for(std::size_t i=0;i<plan.targets.size();++i) {
+        const auto source=directory/("take-"+std::to_string(i)+".wav");
+        const auto channels=static_cast<std::uint16_t>(plan.targets[i].channels.size());
+        const auto wave=recording_recovery::inspectWave(source,plan.identities.at(i),
+                                                         {plan.sampleRate,channels,plan.format});
+        frames=std::min(frames,wave.frames);
+    }
+    if(result.startSample<0 || result.startSample>(std::int64_t{1}<<50) || frames==0 ||
+       frames>static_cast<std::uint64_t>((std::int64_t{1}<<50)-result.startSample))
+        throw std::runtime_error("No complete, representable recording to recover");
+    result.frames=frames;
+    if(plan.loop) {
+        auto timeline=result.startSample;
+        for(std::uint64_t offset=0;offset<frames;) {
+            if(timeline>=plan.loop->endSample || result.passes_.size()>=plan.loop->maxPasses)
+                throw std::runtime_error("Interrupted recording exceeds its frozen loop plan");
+            const auto length=std::min(frames-offset,static_cast<std::uint64_t>(plan.loop->endSample-timeline));
+            const auto end=timeline+static_cast<std::int64_t>(length);
+            result.passes_.push_back({offset,length,timeline,end});
+            offset+=length;
+            timeline=plan.loop->beginSample;
+        }
+    }
+    const auto scratch=reserve(directory.parent_path());
+    try {
+        for(std::size_t i=0;i<plan.targets.size();++i) {
+            const auto file="take-"+std::to_string(i)+".wav";
+            const auto channels=static_cast<std::uint16_t>(plan.targets[i].channels.size());
+            recording_recovery::copyRepaired(directory/file,plan.identities.at(i),
+                {plan.sampleRate,channels,plan.format},scratch/file,frames);
+            result.tracks.push_back({plan.targets[i].trackId,channels,scratch/file});
+        }
+        result.files_=std::make_shared<Files>();
+        result.files_->directory=scratch;
+        result.files_->recordingOwner=std::move(owned.ownership);
+        result.files_->ephemeralStage=true;
+    } catch(...) {
+        std::error_code ignored;
+        fs::remove_all(scratch,ignored);
+        throw;
+    }
+    return result;
+}
 struct AudioInputRecorder::Impl {
     std::unique_ptr<SnapshotPublisher<State>> published=std::make_unique<SnapshotPublisher<State>>();
     std::shared_ptr<Job> job;
@@ -207,6 +298,8 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
     try {
         if(audio::onAudioThread)throw std::runtime_error("start recording off callback");
         if(impl_->job)throw std::runtime_error("a recording is still pending");
+        if(!spec.recoveryProjectUuid.empty() && (spec.sourceProject.empty() || factory))
+            throw std::runtime_error("recoverable recording needs a project and the built-in WAV writer");
         if(spec.workFolder.empty() || spec.sampleRate<8000 || spec.sampleRate>768000 || spec.maxFrames==0 || spec.maxFrames>16384 ||
            spec.ringFrames<spec.maxFrames || spec.targets.empty() || spec.targets.size()>256)throw std::runtime_error("invalid recording format or buffer bounds");
         if(spec.format!=audio::WavFormat::Float32 && spec.format!=audio::WavFormat::Pcm16 && spec.format!=audio::WavFormat::Pcm24)throw std::runtime_error("invalid recording encoding");
@@ -222,7 +315,9 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
         }
         if(static_cast<std::uint64_t>(spec.ringFrames)*channels.size()*sizeof(float)>256ULL*1024*1024)throw std::runtime_error("recording ring exceeds memory bound");
         job->inputChannels.assign(channels.begin(),channels.end());job->ring.resize(static_cast<std::size_t>(spec.ringFrames)*channels.size());job->readBuffer.resize(4096*channels.size());
-        owned=reserve(spec.workFolder);job->directory=owned;
+        owned=reserve(spec.workFolder);
+        if(!spec.recoveryProjectUuid.empty())owned=fs::canonical(owned);
+        job->directory=owned;
         for(std::size_t index=0;index<spec.targets.size();++index) {
             const auto& target=spec.targets[index];const auto file=owned/("take-"+std::to_string(index)+".wav");
             const auto width=static_cast<std::uint16_t>(target.channels.size());
@@ -232,6 +327,10 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
             auto writer=factory?factory(file,spec.sampleRate,width,spec.format):std::make_unique<WaveSink>(file,spec.sampleRate,width,spec.format);
             if(!writer)throw std::runtime_error("recording writer was not created");
             job->writers.push_back(std::move(writer));
+        }
+        if(!spec.recoveryProjectUuid.empty()) {
+            job->recovery=recording_recovery::begin(spec,owned,spec.recoveryProjectUuid);
+            job->recoveryWarning=job->recovery->warning;
         }
         job->worker=std::thread([raw=job.get()]{raw->run();});
         auto state=std::make_unique<State>();state->job=job;impl_->published->publish(std::move(state));impl_->job=std::move(job);impl_->stoppedSeq=0;error.clear();return true;
@@ -279,6 +378,13 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
         case RecordingFailure::PassLimit:result.error="Recording loop pass capacity exhausted";break;
     }
     result.files_=std::make_shared<AudioRecordingResult::Files>();result.files_->directory=job->directory;
+    if(job->recovery) {
+        result.recordingId_=job->recovery->plan.recordingId;
+        result.recoveryProjectUuid_=job->recovery->plan.projectUuid;
+        result.recoveryWarning_=std::move(job->recoveryWarning);
+        result.files_->recordingOwner=std::move(job->recovery->ownership);
+        result.files_->hasOriginalPlan=true;
+    }
     job.reset();
     if(deviceStopped)impl_->published=std::make_unique<SnapshotPublisher<State>>();
     else impl_->published->collect();

@@ -432,6 +432,8 @@ add_library(adi_core STATIC
     src/adi/engine/gesture_preview.cpp
     src/adi/engine/main_loudness.cpp
     src/adi/engine/audio_recording.cpp
+    src/adi/engine/recording_recovery_plan.cpp
+    src/adi/engine/recording_recovery_wave.cpp
     src/adi/recording_commands.cpp
     src/adi/engine/gain_stage.cpp
     src/adi/engine/cue_monitor.cpp
