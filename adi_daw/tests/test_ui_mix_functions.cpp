@@ -1537,7 +1537,47 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     focus.clearMatch.onClick();
     check(!MixFocusTestAccess::match(focus) && !MixFocusTestAccess::hasMatchPath(focus),
           "Clear Match only removes the held preview");
+
+    const auto positionBeforeLocate = driver.position();
+    check(doc->mailbox().post(TransportMailbox::Command::Locate, positionBeforeLocate),
+          "queue a same-position Locate while the old spectra are visible");
     focus.learnMatch.onClick();
+    check(!MixFocusTestAccess::match(focus),
+          "Learn rejects a queued Locate even before an intervening UI frame");
+    if (MixFocusTestAccess::match(focus))
+        focus.clearMatch.onClick();
+    root.frame();
+    check(!focus.learnMatch.isEnabled(), "pending Locate disables the Learn control with no new spectrum");
+
+    doc->mailbox().drain(driver);
+    root.frame();
+    focus.learnMatch.onClick();
+    check(!focus.learnMatch.isEnabled() && !MixFocusTestAccess::match(focus),
+          "acknowledging a same-position Locate still rejects the retained old spectra");
+    if (MixFocusTestAccess::match(focus))
+        focus.clearMatch.onClick();
+
+    const auto locateRevision = driver.revision();
+    check(doc->mailbox().post(TransportMailbox::Command::Stop) &&
+              doc->mailbox().post(TransportMailbox::Command::Play),
+          "queue a playback restart after acknowledging the Locate");
+    doc->mailbox().drain(driver);
+    check(driver.revision() > locateRevision, "playback restarts at a later capture epoch");
+    const auto freshStamp = driver.position();
+    writeMatch(2.f, false);
+    focus.learnMatch.onClick();
+    check(!focus.learnMatch.isEnabled() && !MixFocusTestAccess::match(focus),
+          "reaching the new epoch on only one channel is insufficient for Match");
+    secondTap->write(target.data(), target.data(), static_cast<std::int32_t>(target.size()), freshStamp, true,
+                     driver.revision());
+    broker->pump();
+    root.frame();
+    focus.learnMatch.onClick();
+    const auto afterLocate = MixFocusTestAccess::match(focus);
+    check(focus.learnMatch.isEnabled() && afterLocate && afterLocate->deltaDb[16] &&
+              std::abs(*afterLocate->deltaDb[16] + 6.0206f) < .02f,
+          "both channels can Learn from identical audible windows in a later epoch than the Locate");
+
     focus.select(first);
     check(!MixFocusTestAccess::match(focus) && !focus.learnMatch.isEnabled(),
           "choosing Main as the target drops the old proposal");
