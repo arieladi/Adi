@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, morning — Classic Scope and the reunited Mix View stack
+
+**PR requested.** `mixview/cumulative-20261120` at `08381edb`, based on main `b56b1348`. Take this as the cumulative successor to #674 and include the exact #548 ancestry. #579, #580 and #651 are already in the base. Keep the device-identity and Locate fixes as separately reviewed children.
+
+The staged Classic Scope name covers the picker, panel, accessibility title and tooltip. Its upstream bitmaps and notice match the previously reviewed tree byte for byte. The Windows x64 Release component gates passed 430 shared view checks, 906 Mix View, 324 Arrangement, seven Appearance, and 269 function checks on the joined source. Schema and operation validation passed. The base's catalogue now comes from the landed scanner worker. The managed loader can require discovery for an old project identity outside the configured search roots. Include that case in the live retest.
+
+The raw Open Undo replay for an untouched first parameter is still an Engine issue. The joined document fixture reproduced it separately while the device-identity and retained-capture checks passed. The next document check stages an authored replacement parameter, so it can assert that one Undo restores the actual audible value and keeps the earlier edit.
+
 ## 2026-11-20, morning — reconcile the landed catalogue and record the exact red gates
 
 Main at `917b22c0` includes #579, #580 and #651. The current review stack uses the landed catalogue discovery worker. It projects both formats from the accepted catalogue and publishes the same catalogue to the loader that serves inserts. The legacy local scan thread and loader wrapper are removed. The Classic Scope plug-in assets and notice are unchanged.
