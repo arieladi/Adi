@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, morning — neutral EQ suspension and Clean offline intent
+
+**PR requested.** `mixview/neutral-eq-suspension-dfm34-20261120` at `8fea4a7c`, based on `86fbc634`. This change is independent of the Engine VST3 adapter and the dormant-key branch. A pristine neutral EQ can suspend in realtime once it has proven an exact quiet path. A control edit wakes the EQ during silence, and the first new programme sample follows the authored setting. Offline intent keeps both neutral EQ and Clean awake. Stateful EQ and the Limiter retain their existing processing.
+
+Windows x64 Release reproduced six expected failures in 911 EQ host checks and two in 107 Clean checks. The candidate passed all 911 and 107 with no Clean callback allocations or frees. The native serial EQ passed 72 checks with 248,832 sample pairs and no callback allocations or frees. Limiter, render intent and graph controls passed 280, 12 and 207. The remaining DF-M34 work is a state-preserving Limiter idle path and broader EQ tail classification. Engine owns the separate generic offline scheduler guard and Auto Gain Stage intent.
+
 ## 2026-11-20, morning — paired key-routing Release for win
 
 The joined Windows x64 Release at `031bd65c1ca1507b362b043ab5a8a485b6d1426c` is packaged for live retest. ZIP SHA-256 `f368ee7f63c00970878a1673df3163ec753448c84fcf2c381b780a8ca24e78dc`. ADI.exe `764aaebefd76097cca870f09049fde8cacec60beff288c5d15802adf98323b61`. Scanner `b7168835e93ef96169874139add461f744d7e02fc3caee86853131a045792bcc`. The private brief covers dormant and active external buses at 48 kHz/256, the Cubase 44.1 kHz/512 tap and latency checks, Undo and reopening. Use the paired review build for routing while the landing follows the Engine dependency above.
