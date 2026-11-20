@@ -1615,6 +1615,13 @@ void classicScopeSurface() {
               pages.pageBox.getText() == "Classic Scope" && pane.modeBox.getText() == "Classic Scope" &&
               face.getTitle() == "Classic Scope" && !pane.channelBox.isVisible() && !pane.freezeButton.isVisible(),
           "the full and detached Scope views use the original controls");
+    check(pages.detail.view.getTitle() == "Classic Scope" && pane.view.getTitle() == "Classic Scope" &&
+              pane.view.getTooltip().startsWith("Classic Scope"),
+          "the full and detached scope wrapper expose Classic Scope to accessibility and tooltips");
+    pane.view.setMode(SharedSpectrumView::Mode::Spectrum);
+    check(pane.view.getTitle() == "Channel spectrum" && !pane.view.getTooltip().startsWith("Classic Scope"),
+          "switching back restores the spectrum's accessibility description");
+    pane.view.setMode(SharedSpectrumView::Mode::ClassicScope);
     f.write(); f.broker->pump(); pages.detail.view.frame(); pane.view.frame();
     const auto capture = [](const SharedSpectrumView &v) { return SharedSpectrumViewTestAccess::capture(v); };
     const auto first = capture(pane.view);
