@@ -9,7 +9,7 @@
 // of the rate (tests/test_dsp.cpp checks this before it judges the limiter).
 // From about 0.47 of the rate its response rolls off, so for content there a
 // reading is a lower bound. Between its 32 points it can miss a crest by at
-// most a 64th of a sample: 0.006 dB at 0.41 of the rate.
+// most a 64th of a sample: 0.007 dB at 0.41 of the rate.
 //
 // Slow: 31 x 97 multiply-adds per sample and channel. Read a window around
 // what matters, not a whole programme.

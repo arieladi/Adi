@@ -339,16 +339,27 @@ Signal taperedSine(double rate, double frequency, double amplitude, double phase
 /// sample, in dBTP.
 double referenceTruePeakDb(const Signal& x) {
     std::size_t at = 0;
-    for (std::size_t i = 0; i < x[0].size(); ++i) if (std::abs(x[0][i]) > std::abs(x[0][at])) at = i;
+    for (std::size_t i = 0; i < x[0].size(); ++i) {
+        if (std::abs(x[0][i]) > std::abs(x[0][at])) {
+            at = i;
+        }
+    }
     const std::size_t from = at > 256 ? at - 256 : 0;
     return 20 * std::log10(adi::test::independentTruePeak(x, from, at + 256));
 }
 
-/// How far below a crest the meter's 4x interpolator may read for content up
-/// to `cycles` per sample: its points (the samples and the odd eighths of each
-/// interval) are never more than an eighth of a sample from a crest, so a
-/// sine of that frequency can read cos(2 pi cycles / 8) low.
-double gridMissDb(double cycles) { return -20 * std::log10(std::cos(2 * pi * cycles / 8)); }
+/// How far below its crest the meter's 4x interpolator reads a sine of
+/// `cycles` per sample whose crests fall `crestOffset` (0 to 1) into a sample
+/// interval: its points are the samples and the odd eighths of each interval,
+/// so the crest is d from the nearest (never more than an eighth) and the
+/// reading is cos(2 pi cycles d) low.
+double gridMissDb(double cycles, double crestOffset) {
+    double d = 1.0;
+    for (double point : {0.0, 0.125, 0.375, 0.625, 0.875, 1.0}) {
+        d = std::min(d, std::abs(crestOffset - point));
+    }
+    return -20 * std::log10(std::cos(2 * pi * cycles * d));
+}
 
 void truePeakCases() {
     const double rate = 48000;
@@ -366,13 +377,19 @@ void truePeakCases() {
               "Tech 3341 case " + std::to_string(c.number) + ": the independent reference reads the crest, " +
                   std::to_string(ref) + " dBTP");
         // Then the meter, held to that crest: never above it, and below it by
-        // no more than its 4x grid can miss at this frequency.
-        const double miss = gridMissDb(1 / c.divisor);
-        std::printf("    [measured] Tech 3341 case %d: meter %+.4f, reference %+.4f dBTP (4x may miss %.4f)\n",
+        // no more than its 4x grid misses this sine. Its crests fall at
+        // (90 - phase) / 360 periods, and every half period after: the same
+        // offset into a sample interval each time (each divisor is even). Case
+        // 15's are on samples (no miss); 16 to 19's at the half (an eighth
+        // from a point).
+        double crest = (90 - c.phase) / 360 * c.divisor;
+        crest -= std::floor(crest);
+        const double miss = gridMissDb(1 / c.divisor, crest);
+        std::printf("    [measured] Tech 3341 case %d: meter %+.4f, reference %+.4f dBTP (the bound: %.4f below)\n",
                     c.number, tp, ref, miss);
         check(tp <= ref + 0.01 && tp >= ref - miss - 0.01,
               "Tech 3341 case " + std::to_string(c.number) + ": the meter's " + std::to_string(tp) +
-                  " dBTP is the reference's " + std::to_string(ref) + " less at most the 4x grid's " +
+                  " dBTP is the reference's " + std::to_string(ref) + " less at most its bound of " +
                   std::to_string(miss) + " dB");
     }
     // 20-23: at 4 fs, a sine at fs/6 of 0.5 holding one period of fs/4 at 1.0,
@@ -416,12 +433,14 @@ void truePeakCases() {
         check(tp <= 0.2 && tp >= -0.4, "Tech 3341 case " + std::to_string(20 + offset) +
                                            ": true peak 0.0 +0.2/-0.4 dBTP (" + std::to_string(tp) + ")");
         // The decimated signal's own crest, read independently: the EBU's
-        // 0.0 is its design, this is what the synthesis here made. Its
-        // highest component is the fs/4 period, so 4x may read up to
-        // gridMissDb(1/4) low (offsets 0 to 3 put the crest at every phase).
+        // 0.0 is its design, this is what the synthesis here made. No sine's
+        // bound applies: the joins at the burst's ends put content up to the
+        // low-pass's edge, where the meter's phases roll off. So the bound is
+        // the measured miss rounded up: 0.013, 0.052, 0.013 and 0.073 dB at
+        // offsets 0 to 3, held to 0.1, which a meter reading 0.15 dB low fails.
         const double ref = referenceTruePeakDb(x);
-        const double miss = gridMissDb(0.25);
-        std::printf("    [measured] Tech 3341 case %d: meter %+.4f, reference %+.4f dBTP (4x may miss %.4f)\n",
+        const double miss = 0.09;
+        std::printf("    [measured] Tech 3341 case %d: meter %+.4f, reference %+.4f dBTP (the bound: %.4f below)\n",
                     20 + offset, tp, ref, miss);
         // Measured: -0.077 dBTP, what the 511-tap low-pass leaves of the
         // burst's 1.0 (the EBU's 0.0 is the design value, +0.2/-0.4).
@@ -430,7 +449,7 @@ void truePeakCases() {
                                        std::to_string(ref) + ")");
         check(tp <= ref + 0.01 && tp >= ref - miss - 0.01,
               "Tech 3341 case " + std::to_string(20 + offset) + ": the meter's " + std::to_string(tp) +
-                  " dBTP is the reference's " + std::to_string(ref) + " less at most the 4x grid's " +
+                  " dBTP is the reference's " + std::to_string(ref) + " less at most its bound of " +
                   std::to_string(miss) + " dB");
     }
 }
