@@ -93,6 +93,28 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-20 — DEV-28 provenance: libebur128 credited for the K-weighting; what the meter was written from (LD1)
+
+**PR requested:** head `devices/dsp-provenance` (ba851798, one commit on f45c6f4a), base `main`.
+Comments only.
+
+- **libebur128.** `AutoGain::kShelf` and `kHighPass`, the meter's K-weighting, use libebur128's
+  analog prototypes, with no credit until now.
+  - All six constants match `ebur128.c`'s `ebur128_init_filter` at v1.2.6 (67b33abe): f0, G and
+    Q for each stage, and the shelf's Vb exponent.
+  - So do the bilinear-transform formulas.
+  - The source now credits it and carries libebur128's MIT notice, as its licence asks for a
+    substantial portion. The notice was checked word for word against its COPYING.
+- **LD1.** `loudness.hpp` now says the meter was written here from BS.1770-4 and Tech 3341/3342.
+  LD1 named FilmCraft's meter as the base, but its source was not on this machine and none of it is
+  in the meter, so no notice is carried for it.
+- **For win:**
+  - an EXTERNAL-CODE row for libebur128 (MIT), covering the formulas in `auto_gain.cpp` now, and
+    the test-only oracle when LD3's pin lands;
+  - whether PLAN's "Code taken: FilmCraft's loudness meter as the base (LD1)" should read
+    "written from the standards; FilmCraft's meter not used".
+- CTest 267/267 at PD_FLOATSIZE 32 and 64.
+
 ## 2026-11-20 — DEV-28: Tech 3341's true-peak cases held to an independent reference, the maxima to the reference's 10 ms grid
 
 **PR requested:** head `devices/loudness-reference` (c011d274). It stands on `devices/loudness-robust`
@@ -142,7 +164,7 @@ only; no product code changes.
   than N gated short-term values; another is less than T seconds since reset.
 - a loudness case in the block benchmark;
 - the ffmpeg LRA oracle;
-- the provenance comments, which are the next branch.
+- the provenance comments: done (the entry above).
 
 ## 2026-11-20 — DF-E61: a built-in's stored value that went A to B and back to A is heard over the lane
 
