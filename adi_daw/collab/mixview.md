@@ -2,13 +2,23 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, morning — device identity and Focus Locate ready for Window review
+
+**PR requested.** `mixview/device-identity-dfm60a-20261120` at `3f6b08b7`, after `mixview/cumulative-20261120`. Engine and Window review the existing loans. Paste, Duplicate and Browser insertion keep new IDs above retained devices. A legacy same-ID replacement checks the reference, format and UID. Undo and Redo restore the appropriate instance. A historical retiree cannot detach a current parameter capture. The exact Windows x64 Release baseline had 14 expected failures in 122 document checks. The corrected owner-tick fixture passed 129 document checks and the parameter replay suite passed 970 checks.
+
+**PR requested.** `mixview/focus-match-locate-20261120` at `86fbc634`, after `3f6b08b7`. Window reviews the command drain and root accessor. The Locate guard waits for the driver's applied revision and two aligned captures, including same-position Locate. Record dispatch remains covered. The standalone mailbox failed eight of 14 checks before the fix and passed all 14 after it. Windows Release also passed 129 window-state, 458 shared-analysis and 269 function component checks. Main's two new collaboration files came in through #693 with identical compiled sources.
+
+Joined Windows x64 Release source `86fbc6347e6ee62d0eaf495231d9ca33d5e42cc9`. ZIP SHA-256 `b6b9d99af00d84ae74e0d29be6ea4b8afbac4137099058051eaca1af5000b83f`. ADI.exe `85c4f4f6c7ca6632a9a772fa212c89b1c74ad8c3565ec7f8d59f385cfa04d2d3`. Scanner `daccd712cb5d7731223b7469d2c6ca651098200cd1ce974aee0f99eb06ac89a0`. The private release brief includes the install, catalogue, identity, Match and idle regressions. Live verification stays with win.
+
+Keep #548 in the cumulative branch rather than landing the dirty standalone head. #558 and its three core families have successful hosted checks at their existing heads. Review after #558 in the established order, #560 → #562, #561 → #564 → #567, and #566 → #572. #555 remains a core-only draft with successful checks and precedes #570 along with #567. #573 stays after #570 and needs a hosted rerun because its latest jobs were cancelled. The six earlier analyser heads are already represented on main.
+
 ## 2026-11-20, morning — Classic Scope and the reunited Mix View stack
 
 **PR requested.** `mixview/cumulative-20261120` at `08381edb`, based on main `b56b1348`. Take this as the cumulative successor to #674 and include the exact #548 ancestry. #579, #580 and #651 are already in the base. Keep the device-identity and Locate fixes as separately reviewed children.
 
 The staged Classic Scope name covers the picker, panel, accessibility title and tooltip. Its upstream bitmaps and notice match the previously reviewed tree byte for byte. The Windows x64 Release component gates passed 430 shared view checks, 906 Mix View, 324 Arrangement, seven Appearance, and 269 function checks on the joined source. Schema and operation validation passed. The base's catalogue now comes from the landed scanner worker. The managed loader can require discovery for an old project identity outside the configured search roots. Include that case in the live retest.
 
-The raw Open Undo replay for an untouched first parameter is still an Engine issue. The joined document fixture reproduced it separately while the device-identity and retained-capture checks passed. The next document check stages an authored replacement parameter, so it can assert that one Undo restores the actual audible value and keeps the earlier edit.
+The initial document fixture read the live parameter before the document owner tick delivered the Undo receipt. The corrected timing check showed the journal returning to the earlier edit and the live gain restoring on the regular tick. The separate same-journal replacement receipt reproduction remains with Engine.
 
 ## 2026-11-20, morning — reconcile the landed catalogue and record the exact red gates
 
