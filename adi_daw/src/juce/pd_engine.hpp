@@ -71,6 +71,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <memory>
@@ -121,6 +122,11 @@ public:
     static void forgetInstance(void* instance) noexcept;
     /// Pd's fixed internal block, 64. Read from libpd rather than assumed.
     [[nodiscard]] static std::int32_t blockSize() noexcept;
+    /// PD4: every class name this build can create -- vanilla's and ADI's
+    /// compiled-in externals -- read from Pd's own creator table
+    /// (pd_vocabulary.cpp). Initialises the runtime; empty if that fails.
+    /// Message thread. Feeds `walkPdObjects` (pd_object_walk.hpp).
+    [[nodiscard]] static std::set<std::string, std::less<>> creatableClasses();
 };
 
 /// One patch, in its own Pd instance.
@@ -174,6 +180,9 @@ public:
     /// opened whole. **Message thread only** -- Pd prints while opening and
     /// while sending, never from `process`.
     [[nodiscard]] std::vector<std::string> consoleLines() const;
+    /// Message thread, on a schedule (PdDevice::pumpMainThread): moves what Pd
+    /// printed out of the audio-safe queue, so the queue does not fill (DF-E36 d).
+    void pumpConsole() override;
 
     bool open(PdLatencyReceiver& latency, std::string& error) override;
     void close() noexcept override;
@@ -439,6 +448,18 @@ private:
         char text[240] = {};
     };
     static constexpr std::uint64_t kPrintSlots = 512;
+    /// DF-E36 (d): refusals ("ADI refused ...") have their own queue, which
+    /// ordinary printing cannot fill; consoleLines() always shows them.
+    struct RefusalSlot {
+        std::atomic<std::uint64_t> sequence{0};
+        char text[256] = {};
+    };
+    static constexpr std::uint64_t kRefusalSlots = 16;
+    mutable std::array<RefusalSlot, kRefusalSlots> refusalSlots_{};
+    std::atomic<std::uint64_t> refusalHead_{0};
+    mutable std::uint64_t refusalTail_ = 0;
+    std::atomic<std::int64_t> refusalsDropped_{0};
+    mutable std::int64_t droppedShown_ = 0;
     std::unique_ptr<PrintSlot[]> printSlots_;
     std::atomic<std::uint64_t> printHead_{0};
     mutable std::uint64_t printTail_ = 0;   ///< consumer side, under consoleMutex_

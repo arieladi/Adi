@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/sample_slots.hpp"
+#include "adi/blob.hpp"
+#include <cstring>
 #include "temp_directory.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "juce/builtin_host.hpp"
@@ -15,6 +18,7 @@
 #include <new>
 #include <set>
 #include <stdexcept>
+#include <vector>
 namespace {
 std::atomic<int> allocations{0};thread_local bool counting=false;
 }
@@ -48,7 +52,7 @@ struct Project {
     }
 };
 void catalogueAndHost() {
-    check(builtinCatalog().size()==18 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
+    check(builtinCatalog().size()==19 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
     std::set<std::string_view> identities;int available=0;
     for(const auto& info:builtinCatalog()) {
         check(identities.insert(info.uid).second && !info.name.empty() && !info.category.empty() && !info.group.empty(),"catalogue identities are unique and labels/category/folder are present");
@@ -68,7 +72,7 @@ void catalogueAndHost() {
         check(allocations.load(std::memory_order_relaxed)==0,"canonical built-in processing allocates nothing");
     }
 #if ADI_WITH_PD
-    check(available==17,"all registered native canonical factories are available");
+    check(available==18,"all registered native canonical factories are available");
 #else
     check(available==0,"PD-disabled build advertises no unavailable backend as loadable");
 #endif
@@ -236,6 +240,85 @@ void thirdPartyPlacement() {
           !preparePluginInsert(store,replacement,1,rack,replace).ok,
           "instrument racks bound audio placement while a replacement protects their nested devices");
 }
+// DF-E50: automation on a built-in device is applied, at its frame. Utility's
+// Gain is "11", -120..35 dB on a linear curve, so 0 dB is 120/155 and +6 dB
+// 126/155; its core ramps a gain change over 5 ms.
+void automationEvents() {
+#if ADI_WITH_PD
+    auto instance=load("org.adidaw.builtin.utility");
+    check(instance->setParam("11",ParamValue::fromNormalized(120.0/155)),"stored gain 0 dB");
+    instance->prepare(48000,64);
+    std::array<std::array<float,64>,2> input{},output{};
+    for(auto& channel:input)channel.fill(0.25f);
+    float* in[]={input[0].data(),input[1].data()};float* out[]={output[0].data(),output[1].data()};
+    NodeIo io;io.in=in;io.out=out;io.channels=2;io.frames=64;
+    const auto run=[&](int blocks){for(int block=0;block<blocks;++block)instance->process(io);};
+    run(1);
+    const float before=output[0][63];
+    check(std::abs(before-0.25f)<1e-6f,"the stored 0 dB plays");
+    Event events[2]{};
+    events[0].frame=32;events[0].type=EventType::ParamValue;events[0].paramId=11;events[0].value=126.0/155;
+    events[1].frame=40;events[1].type=EventType::ParamValue;events[1].paramId=999;events[1].value=0;
+    io.events=EventSpan{events,2};
+    allocations.store(0,std::memory_order_relaxed);counting=true;
+    {audio::CallbackScope callback;instance->process(io);}
+    counting=false;
+    check(output[0][31]==before && output[0][32]>before+1e-6f,"a ParamValue applies at its frame: untouched before 32, rising from 32");
+    check(allocations.load(std::memory_order_relaxed)==0,"applying automation allocates nothing");
+    check(std::abs(instance->getParam("11").real)<1e-4,"automation leaves the stored value as it was");
+    io.events={};run(60);
+    const float up=0.25f*std::pow(10.0f,6.0f/20);
+    check(std::abs(output[0][63]-up)<2e-5f,"the automated +6 dB holds into later blocks (an unknown id did nothing)");
+    // ParamMod: an offset on the value in force, held until the next one.
+    events[0].frame=0;events[0].type=EventType::ParamMod;events[0].value=-6.0/155;
+    io.events=EventSpan{events,1};run(1);io.events={};run(60);
+    check(std::abs(output[0][63]-0.25f)<2e-5f,"a ParamMod of -6 dB on the automated +6 dB plays 0 dB, and holds");
+    events[0].value=0;io.events=EventSpan{events,1};run(1);io.events={};run(60);
+    check(std::abs(output[0][63]-up)<2e-5f,"a ParamMod of 0 takes the offset away");
+    // A setParam (the user's knob) is heard again: it overrides the lane until its next value.
+    check(instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"the knob moves to +3 dB");
+    run(60);
+    check(std::abs(output[0][63]-0.25f*std::pow(10.0f,3.0f/20))<2e-5f,"a knob change after automation is heard");
+#endif
+}
+#if ADI_WITH_PD
+std::vector<std::byte> constantLane(double normalized) {
+    AutomationPoint point{};point.time=0;point.value=normalized;point.curve=1;point.point_id=1;
+    return writeStream<AutomationPoint>(FourCC::Automation,std::vector<AutomationPoint>{point},1,
+                                        StreamFlags::SortedByTime|StreamFlags::TimeIsNanos);
+}
+#endif
+// DF-E50 through the product: a lane on Utility's Gain at 0 dB, over a stored
+// +6 dB, in an ordinary Session (live) and in an offline export (a render).
+void automatedSession() {
+#if ADI_WITH_PD
+    for(const bool render:{false,true}) {
+        Project project;auto& store=*project.store;auto& db=store.db();
+        const auto prepared=prepareBuiltinInsert(store,"org.adidaw.builtin.utility",1);check(commitBuiltinInsert(store,prepared).ok,"automation fixture inserts Utility");
+        std::vector<float> samples(8192,0.25f);audio::WavWriter writer(project.temporary.path()/"audio.wav",48000,2,audio::WavFormat::Float32);writer.write(samples.data(),4096);writer.close();
+        db.exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'test','audio.wav','wav')");
+        db.exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,1000000000)");
+        db.exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,4096)");
+        OpRequest gain;gain.opType="device.setParam";gain.payload={{"dev",prepared.deviceId},{"param","11"},{"norm",126.0/155}};
+        check(OpJournal(store).commit(gain).ok,"stored gain +6 dB");
+        {
+            SQLite::Statement lane(db,"INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,value_domain) VALUES(1,'device',?,'11',1,'normalized')");
+            lane.bind(1,prepared.deviceId);lane.exec();
+        }
+        check(store.putAutomationData(1,std::nullopt,constantLane(120.0/155)),"a lane on Gain at 0 dB");
+        SessionSpec spec{2,48000,render?512:64};spec.offline=render;spec.exporting=render;
+        Session session;session.graph().setFadeFrames(0);
+        check(session.load(store,withBuiltinDevices(),spec),render?"the render loads":"the live session loads");
+        if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
+        session.transport().play();
+        std::vector<float> left(static_cast<std::size_t>(spec.maxFrames)),right(left.size());float* out[]={left.data(),right.data()};
+        bool primed=true;
+        for(int block=0;block<(render?6:40);++block){primed=primed && session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=spec.maxFrames;session.process(io);}
+        std::printf("METRIC Utility automated to 0 dB over a stored +6 dB (%s): %.6f\n",render?"render":"live",left.back());
+        check(primed && std::abs(left.back()-0.25f)<2e-5f,render?"the render plays the lane's 0 dB, not the stored +6 dB":"live, the lane's 0 dB plays, not the stored +6 dB");
+    }
+#endif
+}
 void playingSession() {
 #if ADI_WITH_PD
     Project project;auto& store=*project.store;auto& db=store.db();
@@ -254,6 +337,63 @@ void playingSession() {
     for(int block=0;block<20;++block) {primed=primed && session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=64;session.process(io);}
     check(primed && std::abs(output[0][63]-0.25f*std::pow(10.0f,6.0f/20))<2e-5f,"stored built-in gain processes real clip audio through the complete graph");
 #endif
+    automationEvents();automatedSession();  // DF-E50
 }
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+// DEV-21: OneShot is a loadable instrument, so a MIDI clip sounds. Through
+// the product's own calls: the browser insert (registered as an instrument),
+// the sample slot assignment (#414), an ordinary Session with a MIDI clip.
+void instrumentSession() {
+#if ADI_WITH_PD
+    const auto* info=findBuiltin("org.adidaw.builtin.oneshot");
+    check(info && info->instrument && info->midi && info->inputs==0 && info->available,"OneShot is in the catalogue as an instrument");
+    auto instance=load("org.adidaw.builtin.oneshot");
+    check(instance->eventFlow()==EventFlow::Consume,"and consumes the notes it is given");
+    Project project;auto& store=*project.store;auto& db=store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(2,'midi','Keys')");
+    const auto inserted=prepareBuiltinInsert(store,"org.adidaw.builtin.oneshot",2);
+    check(inserted.ok && commitBuiltinInsert(store,inserted).ok,"the browser inserts OneShot on a MIDI track");
+    check(db.execAndGet("SELECT subtype FROM plugin_refs WHERE uid='org.adidaw.builtin.oneshot'").getString()=="instrument",
+          "registered with subtype instrument");
+    // A 1 kHz sine at 0.5, 1 s, stereo.
+    const auto file=project.temporary.path()/"tone.wav";
+    {
+        std::vector<float> tone(96000);
+        for(std::size_t i=0;i<48000;++i)tone[2*i]=tone[2*i+1]=static_cast<float>(.5*std::sin(2*3.141592653589793*1000*static_cast<double>(i)/48000));
+        audio::WavWriter writer(file,48000,2,audio::WavFormat::Float32);writer.write(tone.data(),48000);writer.close();
+    }
+    const auto assigned=prepareSampleAssignment(store,inserted.deviceId,1,file,48000,7);
+    if(!assigned.ok)std::printf("assign: %s\n",assigned.error.c_str());
+    check(assigned.ok && commitSampleAssignment(store,assigned).ok,"the sample is assigned to OneShot's slot as one undo step");
+    // One note: C3 (60, OneShot's root) from the start, one quarter, full velocity.
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(5,2,'midi',0,23063040)");
+    {
+        StreamHeader header{static_cast<std::uint32_t>(FourCC::Notes),1,40,1,0};
+        NoteRecord note{};note.start_ticks=0;note.dur_ticks=5765760;note.note_id=1;note.key=60;note.vel_on=127;
+        note.vel_off=64;note.probability=10000;
+        std::vector<std::uint8_t> bytes(sizeof header+sizeof note);
+        std::memcpy(bytes.data(),&header,sizeof header);std::memcpy(bytes.data()+sizeof header,&note,sizeof note);
+        SQLite::Statement statement(db,"INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(50,5,'notes',?)");
+        statement.bind(1,bytes.data(),static_cast<int>(bytes.size()));statement.exec();
+    }
+    Session session;session.graph().setFadeFrames(0);
+    const bool loaded=session.load(store,withBuiltinDevices(),{2,48000,64});
+    if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
+    check(loaded,"the project with OneShot loads in an ordinary Session");
+    session.transport().play();
+    std::array<std::array<float,64>,2> output{};float* out[]={output[0].data(),output[1].data()};
+    double peak=0;int firstSound=-1;
+    for(int block=0;block<200;++block) {
+        (void)session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=64;session.process(io);
+        for(int i=0;i<64;++i) {
+            const double v=std::abs(static_cast<double>(output[0][static_cast<std::size_t>(i)]));
+            if(v>1e-4 && firstSound<0)firstSound=block*64+i;
+            peak=std::max(peak,v);
+        }
+    }
+    std::printf("METRIC OneShot in a Session: first sound at frame %d, peak %.4f\n",firstSound,peak);
+    // At full velocity, OneShot's default Volume (Live's -12 dB) on the 0.5 sine.
+    check(firstSound>=0 && firstSound<256 && std::abs(peak-.5*std::pow(10.,-12./20))<2e-3,"the MIDI clip's note plays the sample through OneShot, at its default -12 dB");
+#endif
+}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -239,6 +239,21 @@ int main() {
     }
     check(refused, "invalid impulse refused before audio");
     testDenseConvolution();
+    {
+        // DEV-22: Live 12.4's Hybrid Reverb at its default Dry/Wet 50 % puts the
+        // dry impulse out at 0.7071 (the research's default render): sin/cos.
+        // An IR that is silent at its start keeps the wet out of that sample.
+        std::vector<float> late(600);
+        late[500] = .5f;
+        const auto lateIr = prepareHybridImpulse(late, 1, 48000);
+        HybridReverb live;
+        live.set(HybridReverb::Route, 3);
+        std::vector<float> one(2048);
+        one[0] = 1;
+        const auto y = render(live, &lateIr, 64, one);
+        check(std::abs(y[HybridReverb::latency] - 0.7071078420) < 2e-6,
+              "Live default: the dry impulse comes out at 0.7071 (equal-power 50 %)");
+    }
     check(allocations == 0, "zero allocations in convolution plus Surge processing");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

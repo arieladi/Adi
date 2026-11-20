@@ -10,6 +10,8 @@ struct BuiltinInfo {
     std::string_view uid,name,category,group;
     int inputs=2;
     bool available=false,midi=false;
+    /// Consumes notes (EventFlow::Consume) and is registered as an instrument (DEV-21).
+    bool instrument=false;
 };
 [[nodiscard]] std::span<const BuiltinInfo> builtinCatalog() noexcept;
 [[nodiscard]] const BuiltinInfo* findBuiltin(std::string_view uid) noexcept;

@@ -70,6 +70,7 @@ extern "C" {
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -503,6 +504,42 @@ void testAClosedEngineStillPassesAudio() {
     check(through,
           "and passes its input straight through -- a device that failed to "
           "load must not silence the track");
+}
+
+// DF-E20 (e), confirmed as built: a patch DEVICE whose patch failed to open is
+// a wire (ADR-0011, ADR-0095). It passes every channel through sample for
+// sample, at once, and so reports no latency -- which is the truth: zero is
+// what the wire delays, and a nonzero figure would shift every other track
+// against a delay that is not there. It says why it failed (`openError`), and
+// a prepare at another rate changes none of it.
+void testAFailedPatchDeviceIsAWireWithNoDelay() {
+    section("DF-E20 (e) -- a patch device whose patch failed to open passes audio and reports no latency");
+    adi::device::DeviceIdentity id;
+    id.format = "pd"; id.uid = "no-such-patch"; id.name = "no-such-patch";
+    adi::device::PdDevice dev(std::make_unique<LibPdEngine>(patchDir(), "no-such-patch.pd", 2, 2), id);
+    check(!dev.loaded() && !dev.openError().empty(), "it is not loaded and says why: " + dev.openError());
+    eqi(dev.latencySamples(), 0, "it reports no latency before prepare");
+    const int total = 1000;
+    for (const double rate : {48000.0, 44100.0}) {
+        dev.prepare(rate, 512);
+        eqi(dev.latencySamples(), 0, "nor after prepare at " + std::to_string(static_cast<int>(rate)) + " Hz");
+        Buffers b(2, total);
+        for (int f = 0; f < total; ++f) {
+            b.in[0][static_cast<std::size_t>(f)] = static_cast<float>(f) / total - .5f;
+            b.in[1][static_cast<std::size_t>(f)] = .25f - static_cast<float>(f % 7) / 13.f;
+        }
+        const std::vector<int> awkward{100, 37, 411, 64, 7, 250};
+        int at = 0;
+        std::size_t s = 0;
+        while (at < total) {
+            const int n = std::min(awkward[s++ % awkward.size()], total - at);
+            auto io = b.io(2, total, at, n);
+            dev.process(io);
+            at += n;
+        }
+        check(b.out[0] == b.in[0] && b.out[1] == b.in[1],
+              "and passes both channels through sample for sample, with no delay, in awkward blocks");
+    }
 }
 
 
@@ -1548,6 +1585,230 @@ void testAPatchCannotQuitOrReconfigurePd() {
     check(true, "and the process is still here after `quit 7` and `exit 7`");
 }
 
+// DF-E36: four holes the review of 19 November found in the DEV-09 fence, and
+// the print queue's drops. Each smallest case is planted here as a patch.
+
+/// Blocks of 64 through an open engine; the left output's peak.
+double runBlocks(LibPdEngine& eng, int blocks) {
+    std::array<float, 64> inL{}, inR{}, outL{}, outR{};
+    const float* in[2] = {inL.data(), inR.data()};
+    float* out[2] = {outL.data(), outR.data()};
+    double peak = 0;
+    for (int b = 0; b < blocks; ++b) {
+        engine::NodeIo io;
+        io.in = in;
+        io.out = out;
+        io.channels = 2;
+        io.frames = 64;
+        eng.process(io);
+        for (float v : outL) peak = std::max(peak, static_cast<double>(std::abs(v)));
+    }
+    return peak;
+}
+
+std::string joined(const std::vector<std::string>& lines) {
+    std::string all;
+    for (const auto& l : lines) all += l + "\n";
+    return all;
+}
+
+const char* kTone = "#X obj 10 200 osc~ 440;\n#X obj 10 230 dac~;\n";
+
+void testAPatchCannotCloseItselfOrQuit() {
+    section("DF-E36 (a), (b) -- a patch cannot close the patch ADI opened, nor quit every instance");
+    TempDir tmp("menuclose");
+    struct Case { const char* file; std::string text; const char* what; };
+    const std::vector<Case> cases{
+        {"x.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 0;\n"
+                             "#X msg 10 70 \\; pd-x.pd menuclose 1;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 3 0 4 0;\n#X connect 3 0 4 1;\n",
+         "menuclose 1 to the top level, after a delay"},
+        {"y.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                             "#X msg 10 70 \\; pd-y.pd menuclose 1;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 2 0 3 0;\n#X connect 2 0 3 1;\n",
+         "menuclose 1 inside libpd_openfile (loadbang only)"},
+        {"z.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 0;\n"
+                             "#X msg 10 70 \\; pd-z.pd menuclose;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 3 0 4 0;\n#X connect 3 0 4 1;\n",
+         "menuclose with no argument on a clean patch"},
+        {"w.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 0;\n"
+                             "#X msg 10 70 \\; pd-sub menuclose 2;\n#N canvas 0 0 100 100 sub 0;\n"
+                             "#X restore 200 10 pd sub;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 4 0 5 0;\n#X connect 4 0 5 1;\n",
+         "menuclose 2 to a subpatch (it frees the root)"},
+        {"v.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 0;\n"
+                             "#X msg 10 70 \\; myname menuclose 1;\n#X obj 200 10 namecanvas myname;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 4 0 5 0;\n#X connect 4 0 5 1;\n",
+         "menuclose 1 through a [namecanvas] alias"},
+    };
+    for (const auto& c : cases) {
+        tmp.write(c.file, c.text.c_str());
+        std::string error;
+        double peak = 0;
+        std::string console;
+        {
+            LibPdEngine eng(tmp.str(), c.file, 2, 2);
+            PdLatencyReceiver latency;
+            if (!eng.open(latency, error)) { check(false, std::string(c.what) + ": open: " + error); continue; }
+            eng.prepare(48000.0, 64);
+            peak = runBlocks(eng, 20);
+            console = joined(eng.consoleLines());
+        }   // close(): a freed canvas would be freed again here
+        check(console.find("ADI refused [menuclose") != std::string::npos && peak > 0.5,
+              std::string(c.what) + ": refused by name, the patch still plays\n          console: " + console);
+    }
+    // A subpatch close only hides it, headless: still allowed.
+    tmp.write("u.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                   "#X msg 10 70 \\; pd-sub menuclose 1;\n#N canvas 0 0 100 100 sub 0;\n"
+                                   "#X restore 200 10 pd sub;\n") + kTone +
+                       "#X connect 0 0 1 0;\n#X connect 3 0 4 0;\n#X connect 3 0 4 1;\n").c_str());
+    {
+        LibPdEngine eng(tmp.str(), "u.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        check(eng.open(latency, error), "u.pd opens: " + error);
+        eng.prepare(48000.0, 64);
+        (void)runBlocks(eng, 4);
+        check(joined(eng.consoleLines()).find("ADI refused") == std::string::npos,
+              "menuclose 1 to a subpatch (which only hides it) is not refused");
+    }
+
+    // (b) Force 3 set sys_quit for the whole process: every instance then
+    // skipped its DSP. A second engine must keep playing.
+    for (const char* target : {"pd-A.pd", "pd-sub"}) {
+        tmp.write("A.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X msg 10 40 \\; ") +
+                           target + " menuclose 3;\n#N canvas 0 0 100 100 sub 0;\n#X restore 200 10 pd sub;\n"
+                           "#X connect 0 0 1 0;\n").c_str());
+        tmp.write("B.pd", (std::string("#N canvas 0 0 200 100 12;\n") + "#X obj 10 10 osc~ 440;\n#X obj 10 40 dac~;\n"
+                           "#X connect 0 0 1 0;\n#X connect 0 0 1 1;\n").c_str());
+        LibPdEngine b(tmp.str(), "B.pd", 2, 2);
+        PdLatencyReceiver lb;
+        std::string error;
+        check(b.open(lb, error), "B opens: " + error);
+        b.prepare(48000.0, 64);
+        std::string consoleA;
+        {
+            LibPdEngine a(tmp.str(), "A.pd", 2, 2);
+            PdLatencyReceiver la;
+            check(a.open(la, error), "A opens: " + error);
+            a.prepare(48000.0, 64);
+            (void)runBlocks(a, 4);
+            consoleA = joined(a.consoleLines());
+        }
+        const double after = runBlocks(b, 50);
+        check(consoleA.find("ADI refused [menuclose 3]") != std::string::npos && after > 0.5,
+              std::string("menuclose 3 to ") + target + " is refused and another instance keeps playing\n          console: " + consoleA);
+    }
+}
+
+void testAPatchCannotOpenAHelpPatch() {
+    section("DF-E36 (c) -- a patch cannot open a help patch, which would then run");
+    TempDir tmp("helppatch");
+    tmp.write("intro-help.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 print leaked;\n#X connect 0 0 1 0;\n");
+    tmp.write("intro.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 print leaked;\n#X connect 0 0 1 0;\n");
+    tmp.write("fence.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                          "#X msg 10 40 \\; pd-fence.pd done-popup 2 -9999 -9999;\n#X connect 0 0 1 0;\n");
+    bool opened = false;
+    const std::string console = consoleOf(tmp, "fence.pd", &opened);
+    check(opened && console.find("leaked") == std::string::npos &&
+              console.find("ADI refused a help patch") != std::string::npos,
+          "done-popup 2 is refused by name, and the planted help patch never runs\n          console: " + console);
+}
+
+void testRefusalsSurviveAFullConsole() {
+    section("DF-E36 (d) -- a full console queue keeps its refusals and marks its gap");
+    TempDir tmp("flood");
+    tmp.write("flood.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 metro 1;\n"
+                          "#X obj 10 70 print tick;\n#X obj 100 10 loadbang;\n#X obj 100 40 delay 700;\n"
+                          "#X msg 100 70 \\; pd quit;\n#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n"
+                          "#X connect 3 0 4 0;\n#X connect 4 0 5 0;\n");
+    {
+        LibPdEngine eng(tmp.str(), "flood.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        check(eng.open(latency, error), "flood.pd opens: " + error);
+        eng.prepare(48000.0, 64);
+        (void)runBlocks(eng, 600);   // 800 ms, nobody reading the console
+        const auto counters = eng.counters();
+        const std::string console = joined(eng.consoleLines());
+        check(counters.consoleDropped > 0, "the flood overfills the queue (a precondition)");
+        check(console.find("ADI refused [; pd quit]") != std::string::npos,
+              "the refusal after the flood is still on the console");
+        check(console.find("pieces dropped]") != std::string::npos, "and the gap is marked where it is");
+    }
+    {
+        // Drained on the message thread on a schedule, nothing is dropped.
+        LibPdEngine eng(tmp.str(), "flood.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        check(eng.open(latency, error), "flood.pd opens again: " + error);
+        eng.prepare(48000.0, 64);
+        for (int i = 0; i < 60; ++i) {
+            (void)runBlocks(eng, 10);
+            eng.pumpConsole();
+        }
+        check(eng.counters().consoleDropped == 0, "pumped every 10 blocks, nothing is dropped");
+    }
+}
+
+void testAPatchCannotChangeItsOwnSearchPath() {
+    section("DF-E36 (e) -- a patch cannot change where Pd looks for code, in its file or at run time");
+    TempDir tmp("declarepath");
+    TempDir elsewhere("declarepath-elsewhere");
+    elsewhere.write("foo.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 inlet;\n");
+    tmp.write("file.pd", (std::string("#N canvas 0 0 200 100 12;\n#X declare -path ") + elsewhere.str() +
+                          ";\n#X obj 10 10 foo;\n").c_str());
+    bool opened = true;
+    const std::string fileConsole = consoleOf(tmp, "file.pd", &opened);
+    check(!opened && fileConsole.find("declare") != std::string::npos,
+          "a file line `#X declare -path` is refused before the patch opens\n          console: " + fileConsole);
+    tmp.write("live.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X msg 10 40 \\; pd-live.pd declare -path ") +
+                          elsewhere.str() + " \\; pd-live.pd obj 10 100 foo;\n#X connect 0 0 1 0;\n").c_str());
+    const std::string liveConsole = consoleOf(tmp, "live.pd", &opened);
+    check(opened && liveConsole.find("ADI refused [declare -path") != std::string::npos &&
+              liveConsole.find("couldn't create") != std::string::npos,
+          "[; pd-x.pd declare -path dir( is refused, and an object from dir is not made\n          console: " + liveConsole);
+}
+
+// DF-E36 (a), "consider menusave and menusaveas, which write files": the
+// canvas's save methods are a file write any patch can reach by message,
+// past the PD4 walk. `savetofile` writes the patch's text to any name in any
+// folder, `menusave` overwrites the patch's own file with what the patch has
+// made of itself at run time, `write` writes its data. menusaveas only asks
+// a GUI there is none of.
+void testAPatchCannotWriteFiles() {
+    section("DF-E36 (a) -- a patch cannot write files through its canvas's save methods");
+    TempDir tmp("savefence");
+    TempDir elsewhere("savefence-elsewhere");
+    const std::string elsewhereDir = elsewhere.path.generic_string();
+    tmp.write("saveto.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                        "#X msg 10 40 \\; pd-saveto.pd savetofile leaked.pd ") +
+                            elsewhereDir + ";\n#X connect 0 0 1 0;\n").c_str());
+    bool opened = false;
+    const std::string savetoConsole = consoleOf(tmp, "saveto.pd", &opened);
+    check(opened && !std::filesystem::exists(elsewhere.path / "leaked.pd") &&
+              savetoConsole.find("ADI refused [savetofile") != std::string::npos,
+          "savetofile to another folder is refused by name and writes nothing\n          console: " + savetoConsole);
+
+    const std::string original = "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                 "#X msg 10 40 \\; pd-menusave.pd obj 10 100 print added \\; pd-menusave.pd menusave;\n"
+                                 "#X connect 0 0 1 0;\n";
+    tmp.write("menusave.pd", original.c_str());
+    const std::string menusaveConsole = consoleOf(tmp, "menusave.pd", &opened);
+    std::ifstream saved(tmp.path / "menusave.pd", std::ios::binary);
+    const std::string after((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+    check(opened && after == original && menusaveConsole.find("ADI refused [menusave]") != std::string::npos,
+          "menusave is refused by name and the patch's own file is unchanged\n          console: " + menusaveConsole);
+
+    tmp.write("data.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                      "#X msg 10 40 \\; pd-data.pd write ") +
+                          elsewhereDir + "/written.txt;\n#X connect 0 0 1 0;\n").c_str());
+    const std::string writeConsole = consoleOf(tmp, "data.pd", &opened);
+    check(opened && !std::filesystem::exists(elsewhere.path / "written.txt") &&
+              writeConsole.find("ADI refused [write") != std::string::npos,
+          "the canvas's write is refused by name and writes nothing\n          console: " + writeConsole);
+}
+
 // DEV-09 AR8: the audio thread never waits for Pd. A message-thread holder of
 // the instance's lock (an editor, later: DEV-11) makes the audio thread skip
 // its ticks, silent and counted. libpd_process_float took sys_lock and waited
@@ -1814,9 +2075,15 @@ int main() {
     testAPublishedArrayReachesTheReader();
     testTheBufferIsAtomicPerArray();
     testAClosedEngineStillPassesAudio();
+    testAFailedPatchDeviceIsAWireWithNoDelay();
     testTheEngineRefusesADirectoryHoldingLoadableCode();
     testNativeCodeIsRefusedWhateverNamesIt();
     testAPatchCannotQuitOrReconfigurePd();
+    testAPatchCannotCloseItselfOrQuit();
+    testAPatchCannotOpenAHelpPatch();
+    testRefusalsSurviveAFullConsole();
+    testAPatchCannotChangeItsOwnSearchPath();
+    testAPatchCannotWriteFiles();
     testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait();
     testPrintingFromARunningPatchAllocatesNothingOnTheAudioThread();
     testAShrunkPublishedTableDoesNotDeadlock();

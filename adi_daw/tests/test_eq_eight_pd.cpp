@@ -18,6 +18,29 @@
 #if defined(_MSC_VER) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
+
+// DEV-22: Live 12.4's EQ Eight browser default, per curve (A, B) and band:
+// on, type (the menu's order, Live's own), frequency. Every gain 0 dB, every
+// Q 0.7071; Stereo, Edit A, Adaptive Q on, Scale 100 %, Output 0 dB, HQ off.
+struct LiveBand { int on, type; double hz; };
+constexpr LiveBand kLiveDefault[2][8] = {
+    {{1, 2, 30}, {1, 3, 200}, {1, 3, 1000}, {1, 5, 5000},
+     {0, 3, 100}, {0, 3, 10000}, {0, 3, 5000}, {0, 6, 18000}},
+    {{0, 1, 40}, {0, 2, 200}, {1, 3, 100}, {1, 3, 500},
+     {1, 3, 2000}, {1, 3, 10000}, {0, 5, 5000}, {0, 6, 18000}},
+};
+constexpr double kLiveGlobal[7] = {0, 0, 1, 100, 0, 0, 0};
+double liveDefault(int id) {
+    if (id >= 80) return kLiveGlobal[id - 80];
+    const auto& b = kLiveDefault[id / 40][(id % 40) / 5];
+    switch (id % 5) {
+    case 0: return b.on;
+    case 1: return b.type;
+    case 2: return b.hz;
+    case 3: return 0;
+    default: return .70710678;
+    }
+}
 namespace {
 thread_local bool countAllocations = false;
 thread_local std::size_t allocations = 0;
@@ -102,10 +125,21 @@ void run() {
     text << f.rdbuf();
     const auto declarations = device::parsePdDeclarations(text.str());
     check(declarations.problems.empty(), "parameters parse cleanly");
+    {
+        int wrong = 0;
+        for (const auto& p : declarations.params)
+            if (std::abs(p.def - liveDefault(p.id - 1)) > 1e-6) {
+                std::printf("  canvas parameter %d %s: %g, Live %g\n", p.id, p.name.c_str(), p.def, liveDefault(p.id - 1));
+                ++wrong;
+            }
+        check(declarations.params.size() == 87 && wrong == 0, "every canvas default is Live 12.4's (DEV-22)");
+    }
     engine.prepare(48000, 64);
     engine.bindParameters(declarations);
     engine.requestLatencyReport();
     check(latency.latencySamples() == 0, "zero intrinsic latency");
+    // Band 1 is a low shelf in Live's default: make it the peak this measures.
+    check(engine.sendParameter(2, 3), "band type routes");
     check(engine.sendParameter(3, 1000), "band frequency routes");
     engine.sendParameter(4, 6);
     engine.sendParameter(83, 0);

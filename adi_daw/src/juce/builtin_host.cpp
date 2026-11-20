@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/builtin_host.hpp"
+#include "juce/builtin_values.hpp"
 #include "juce/mix_function_host.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/ops.hpp"
@@ -21,23 +22,10 @@
 namespace adi::device {
 namespace {
 #if ADI_WITH_PD
-double natural(const PdParamDecl& declaration,double normalized) noexcept {
-    normalized=std::clamp(normalized,0.0,1.0);
-    double value=declaration.min+(declaration.max-declaration.min)*normalized;
-    if(declaration.curve==PdCurve::Log)value=declaration.min*std::pow(declaration.max/declaration.min,normalized);
-    else if(declaration.curve==PdCurve::Exponent)value=declaration.min+(declaration.max-declaration.min)*std::pow(normalized,declaration.exponent);
-    else if(declaration.curve==PdCurve::Toggle)value=normalized>=0.5?declaration.max:declaration.min;
-    if(declaration.curve==PdCurve::Int || declaration.curve==PdCurve::Menu)value=std::round(value);
-    return std::clamp(value,declaration.min,declaration.max);
-}
-double normalized(const PdParamDecl& declaration,double value) noexcept {
-    value=std::clamp(value,declaration.min,declaration.max);
-    if(declaration.max<=declaration.min)return 0;
-    if(declaration.curve==PdCurve::Log)return std::log(value/declaration.min)/std::log(declaration.max/declaration.min);
-    const double fraction=(value-declaration.min)/(declaration.max-declaration.min);
-    if(declaration.curve==PdCurve::Exponent)return std::pow(fraction,1.0/declaration.exponent);
-    return fraction;
-}
+// The value mapping lives in builtin_values (DF-E37 c), where it is tested
+// under two declarations.
+using builtin_values::natural;
+using builtin_values::normalized;
 class BuiltinDevice final:public DeviceInstance {
 public:
     BuiltinDevice(const BuiltinInfo& info,const rows::PluginRef& reference)
@@ -62,10 +50,15 @@ public:
             targets_[i].store(static_cast<float>(descriptor.defaultValue.normalized),std::memory_order_relaxed);
             descriptors_.push_back(std::move(descriptor));
         }
+        current_.assign(descriptors_.size(),0.0);offset_.assign(descriptors_.size(),0.0);
         samples_.declare(declarations_.samples);sampleBlock_.declare(declarations_.samples);
         if(info_.midi)midi_.resize(4096);
     }
     const DeviceIdentity& identity()const noexcept override{return identity_;}
+    // DEV-21: an instrument consumes the notes it is given; an effect passes them.
+    engine::EventFlow eventFlow()const noexcept override{
+        return info_.instrument?engine::EventFlow::Consume:engine::EventFlow::Through;
+    }
     bool loaded()const noexcept override{return native_!=nullptr;}
     std::int32_t paramCount()const noexcept override{return static_cast<std::int32_t>(descriptors_.size());}
     const ParamDescriptor* paramAt(std::int32_t index)const noexcept override {
@@ -79,9 +72,12 @@ public:
     }
     bool setParam(const std::string& id,const ParamValue& value) override {
         const auto index=findIndex(id);
-        if(index==descriptors_.size() || !std::isfinite(value.normalized) || value.normalized<0 || value.normalized>1)return false;
-        const double canonical=normalized(declarations_.params[index],natural(declarations_.params[index],value.normalized));
-        targets_[index].store(static_cast<float>(canonical),std::memory_order_release);return true;
+        if(index==descriptors_.size())return false;
+        // DF-E37 (c): a value's real part is honoured where the engine's real
+        // is the true one (see builtin_values.hpp).
+        const auto position=builtin_values::positionFor(declarations_.params[index],value);
+        if(!position)return false;
+        targets_[index].store(static_cast<float>(*position),std::memory_order_release);return true;
     }
     std::string paramText(const std::string& id,double value)const override {
         const auto index=findIndex(id);if(index==descriptors_.size() || !std::isfinite(value))return {};
@@ -113,13 +109,52 @@ public:
         if(!pass || !prepared_){passThrough(io);return;}
         applyParameters();
         if(io.transport)native_->tempo(io.transport->bpm);
+        engine::MpeOutList messages(midi_.data(),static_cast<std::int32_t>(midi_.size()));
         if(info_.midi) {
-            engine::MpeOutList messages(midi_.data(),static_cast<std::int32_t>(midi_.size()));
             const auto desired=desiredRoute();if(router_.current()!=desired)router_.switchTo(desired,io.blockOffset,messages);
             router_.route(io.events.first,io.events.count,io.blockOffset,messages);
-            for(std::int32_t i=0;i<messages.size();++i)native_->midi(messages.at(i));
         }
-        const PdSampleBlock::Read read(sampleBlock_,samples_);native_->process(io);publishLatency();
+        const PdSampleBlock::Read read(sampleBlock_,samples_);
+        bool automated=false;
+        for(std::int32_t e=0;e<io.events.count && !automated;++e) {
+            const auto& event=io.events.first[e];
+            automated=(event.type==engine::EventType::ParamValue || event.type==engine::EventType::ParamMod) &&
+                      indexOfWireId(event.paramId)!=descriptors_.size();
+        }
+        if(!automated) {
+            // No lane moves this device in this block: exactly as before.
+            for(std::int32_t i=0;i<messages.size();++i)native_->midi(messages.at(i));
+            native_->process(io);publishLatency();return;
+        }
+        // DF-E50: a lane's ParamValue (and a modulator's ParamMod) addressed to
+        // this device is applied AT ITS FRAME: the native process is split
+        // there, and the notes routed for the block reach the core before the
+        // piece they fall in. Frames count from the block's start; one before
+        // this segment applies at its start, one past it at its end.
+        const std::int32_t start=io.blockOffset,end=io.blockOffset+std::max(0,io.frames);
+        std::int32_t position=start,message=0;
+        const auto feed=[&](std::int32_t before) {
+            for(;message<messages.size() && messages.at(message).frame<before;++message)native_->midi(messages.at(message));
+        };
+        const auto run=[&](std::int32_t until) {
+            if(until<=position)return;
+            feed(until);
+            engine::NodeIo piece=io;piece.blockOffset=position;piece.frames=until-position;
+            native_->process(piece);position=until;
+        };
+        for(std::int32_t e=0;e<io.events.count;++e) {
+            const auto& event=io.events.first[e];
+            if(event.type!=engine::EventType::ParamValue && event.type!=engine::EventType::ParamMod)continue;
+            const auto index=indexOfWireId(event.paramId);
+            if(index==descriptors_.size() || !std::isfinite(event.value))continue;
+            run(std::clamp(event.frame,start,end));
+            if(event.type==engine::EventType::ParamValue)current_[index]=std::clamp(event.value,0.0,1.0);
+            else offset_[index]=event.value;
+            send(index);
+        }
+        run(end);
+        feed(std::numeric_limits<std::int32_t>::max());
+        publishLatency();
     }
     std::int32_t latencySamples()const noexcept override{return latency_.load(std::memory_order_relaxed);}
     std::uint64_t latencyEpoch()const noexcept override{return epoch_.load(std::memory_order_relaxed);}
@@ -141,9 +176,12 @@ public:
             }
             return {};
         }
-        auto value=extra_;value["version"]=1;value["uid"]=info_.uid;auto& params=value["params"];
-        if(!params.is_object())params=Payload::object();
-        for(std::size_t i=0;i<descriptors_.size();++i)params[descriptors_[i].id]=static_cast<double>(targets_[i].load(std::memory_order_relaxed));
+        auto value=extra_;value["version"]=1;value["uid"]=info_.uid;
+        // DF-E37 (c): each value in its unit beside its position, so a range
+        // change keeps what the project plays (ADR-0188 d3).
+        std::vector<float> positions(descriptors_.size());
+        for(std::size_t i=0;i<descriptors_.size();++i)positions[i]=targets_[i].load(std::memory_order_relaxed);
+        builtin_values::write(value,declarations_.params,positions.data());
         return Payload::to_cbor(value);
     }
     bool loadState(const std::string& role,const std::vector<std::uint8_t>& bytes)override {
@@ -152,7 +190,7 @@ public:
                 if(bytes.size()>40u*1024u*1024u)return false;
                 const auto value=Payload::from_cbor(bytes);const auto metadata=inspectBuiltinSample(value);
                 if(metadata.uid!=info_.uid || role!="sample:"+std::to_string(metadata.slot) || !samples_.has(metadata.slot))return false;
-                const double rate=prepared_?rate_:(metadata.empty?48000:value.at("derived").at("rate").get<double>());
+                const double rate=prepared_?rate_:(metadata.empty || !value.contains("derived")?48000:value.at("derived").at("rate").get<double>());
                 auto prepared=restoreBuiltinSample(value,rate);
                 // Allocate/copy before publication; a failed state never half-applies.
                 auto pending=sampleStates_;pending[metadata.slot]=value;
@@ -167,12 +205,9 @@ public:
             const auto& uid=value.at("uid");
             if(value.at("version")!=1 || !uid.is_string() || uid.get_ref<const std::string&>()!=info_.uid || !value.at("params").is_object())return false;
             std::vector<std::pair<std::size_t,float>> pending;
-            for(auto parameter=value.at("params").begin();parameter!=value.at("params").end();++parameter) {
-                if(!parameter->is_number())return false;
-                const double target=parameter->get<double>();if(!std::isfinite(target) || target<0 || target>1)return false;
-                const auto index=findIndex(parameter.key());
-                if(index!=descriptors_.size())pending.emplace_back(index,static_cast<float>(normalized(declarations_.params[index],natural(declarations_.params[index],target))));
-            }
+            // DF-E37 (c): the real value is preferred, clamped and turned back
+            // into a position; a bad known value refuses the whole state.
+            if(!builtin_values::read(value,declarations_.params,pending))return false;
             extra_=std::move(value);
             for(const auto& [index,target]:pending)targets_[index].store(target,std::memory_order_release);
             return true;
@@ -187,10 +222,22 @@ private:
         for(std::size_t i=0;i<descriptors_.size();++i) {
             const float target=targets_[i].load(std::memory_order_acquire);
             if(target!=applied_[i]) {
-                (void)native_->sendParameter(declarations_.params[i].id,static_cast<float>(natural(declarations_.params[i],target)));
-                applied_[i]=target;
+                // The stored value (the user's knob) changed: it is the value
+                // in force again until the lane's next event (DF-E50).
+                current_[i]=target;applied_[i]=target;send(i);
             }
         }
+    }
+    /// The value in force plus any modulation offset, through the declaration's curve.
+    void send(std::size_t i)noexcept {
+        const double value=std::clamp(current_[i]+offset_[i],0.0,1.0);
+        (void)native_->sendParameter(declarations_.params[i].id,static_cast<float>(natural(declarations_.params[i],value)));
+    }
+    /// An event's paramId is the declaration's id (the lane's param_ref, parsed).
+    std::size_t indexOfWireId(std::uint32_t id)const noexcept {
+        for(std::size_t i=0;i<declarations_.params.size();++i)
+            if(declarations_.params[i].id>=0 && static_cast<std::uint32_t>(declarations_.params[i].id)==id)return i;
+        return descriptors_.size();
     }
     void publishLatency()noexcept {
         const auto latency=native_->latencySamples();
@@ -200,6 +247,9 @@ private:
     const BuiltinInfo& info_;DeviceIdentity identity_;PdDeclarations declarations_;
     std::unique_ptr<NativePdDevice> native_;std::vector<ParamDescriptor> descriptors_;
     std::unique_ptr<std::atomic<float>[]> targets_;std::vector<float> applied_;
+    /// Audio thread (DF-E50): the normalized value in force, the stored target
+    /// or the lane's latest, and the modulation offset on it, per parameter.
+    std::vector<double> current_,offset_;
     ReactivationGate gate_;bool prepared_=false;double rate_=0;std::int32_t frames_=0;
     std::atomic<std::int32_t> latency_{0};std::atomic<std::uint64_t> epoch_{0};
     std::atomic<engine::ExpressionRoute> route_{engine::ExpressionRoute::MpeMidi};

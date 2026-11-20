@@ -330,6 +330,10 @@ add_library(adi_core STATIC
     # which is also why it is built on every ABI including the ones where the
     # runtime below is not.
     src/juce/pd_declarations.cpp
+    # PD4: the allowed-object walk, static like the parse above.
+    src/juce/pd_object_walk.cpp
+    # DEV-16 step 1: the .amxd reader and translator, static too.
+    src/juce/pd_amxd.cpp
     src/adi/cue_settings.cpp
     src/adi/transport_settings.cpp
     src/adi/store.cpp
@@ -346,6 +350,7 @@ add_library(adi_core STATIC
     src/adi/builtin_insert.cpp
     src/adi/row_capture.cpp
     src/juce/builtin_host.cpp
+    src/juce/builtin_values.cpp
     src/adi/track_recording.cpp
     src/adi/row_capture.cpp
     src/adi/row_capture.cpp
@@ -669,8 +674,9 @@ endif()
 # because a mismatch is not a link error -- it is a silent layout disagreement.
 target_compile_definitions(adi_core PUBLIC PDINSTANCE=1 PDTHREADS=1)
 # The libpd side of PdPatchEngine (ADR-0183), added to adi_core here rather than
-# in its source list, because it is the one Pd source that includes z_libpd.h.
-target_sources(adi_core PRIVATE src/juce/pd_engine.cpp)
+# in its source list, because these are the Pd sources that include z_libpd.h
+# (pd_vocabulary.cpp reads the creator table for PD4's walk).
+target_sources(adi_core PRIVATE src/juce/pd_engine.cpp src/juce/pd_vocabulary.cpp)
 target_compile_definitions(adi_core PUBLIC ADI_WITH_PD=1)
 
 # Compiled-in externals stay in an OBJECT library so registration constructors
@@ -1006,6 +1012,19 @@ add_executable(adi_pd_declaration_tests tests/test_pd_declarations.cpp)
 target_link_libraries(adi_pd_declaration_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pd_declaration_tests COMMAND adi_pd_declaration_tests)
 
+# PD4: the allowed-object walk; with Pd, also the vocabulary read from the build
+# and every shipped patch walked against it.
+add_executable(adi_pd_object_walk_tests tests/test_pd_object_walk.cpp)
+target_link_libraries(adi_pd_object_walk_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pd_object_walk_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd")
+add_test(NAME adi_pd_object_walk_tests COMMAND adi_pd_object_walk_tests)
+
+# DEV-16 step 1: .amxd devices written by the test, translated, walked and played.
+add_executable(adi_pd_amxd_tests tests/test_pd_amxd.cpp)
+target_link_libraries(adi_pd_amxd_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pd_amxd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd")
+add_test(NAME adi_pd_amxd_tests COMMAND adi_pd_amxd_tests)
+
 # libpd actually running, as against test_pd.cpp's contract-with-a-fake. The
 # patch directory is compiled in rather than found from the working directory,
 # which differs between a local run and CI.
@@ -1019,6 +1038,12 @@ if(ADI_WITH_PD)
         ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd"
         ADI_PD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/pd")
     add_test(NAME adi_pd_engine_tests COMMAND adi_pd_engine_tests)
+
+    # DEV-10: the three starter templates parse, walk clean, open and play.
+    add_executable(adi_pd_template_tests tests/test_pd_templates.cpp)
+    target_link_libraries(adi_pd_template_tests PRIVATE adi_core adi_warnings)
+    target_compile_definitions(adi_pd_template_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd")
+    add_test(NAME adi_pd_template_tests COMMAND adi_pd_template_tests)
 
 
 endif()
@@ -1074,6 +1099,10 @@ add_test(NAME adi_sample_slots_tests COMMAND adi_sample_slots_tests)
 add_executable(adi_builtin_devices_tests tests/test_builtin_devices.cpp)
 target_link_libraries(adi_builtin_devices_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_builtin_devices_tests COMMAND adi_builtin_devices_tests)
+# DF-E37 (c): a built-in's saved values survive a range change.
+add_executable(adi_builtin_value_tests tests/test_builtin_values.cpp)
+target_link_libraries(adi_builtin_value_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_builtin_value_tests COMMAND adi_builtin_value_tests)
 
 add_executable(adi_device_ops_tests tests/test_device_ops.cpp)
 target_link_libraries(adi_device_ops_tests PRIVATE adi_core adi_warnings)
