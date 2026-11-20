@@ -93,6 +93,47 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-20 — DEV-09 PD2: a seeded patch-text fuzz, and the two Pd faults it and its review found
+
+**PR requested:** head `devices/pd-fuzz` (56148ce7, two commits), stacked on `devices/pd-ar8`, base
+`main`.
+
+- **The fuzz** (plugdata's PD2 scenarios), in `adi_pd_object_walk_tests`.
+  - Every shipped patch is mutated: bytes cut, hostile tokens put in, lines duplicated, swapped or
+    cut short.
+  - It uses a seeded generator of our own over a sorted, LF-normalised corpus, so the mutants are
+    the same on every platform.
+  - Each mutant goes through the walk, which must return and name every refusal by class and box.
+  - Each mutant the walk allows is opened in Pd, prepared and run for 16 blocks, as DEV-10's loader
+    would. It must run, or fail with a message; never crash or hang.
+- **Found by the fuzz: a crash.**
+  - The 12th mutant put `#X connect 8 0 1 0` on a canvas with no objects.
+  - Pd's `canvas_connect` walked off its empty object list (NULL `src->g_next`, in g_editor.c) and
+    took the process down.
+- **Found by the review: a hang.**
+  - A box that failed to create (`[osc~ foo]`) is given dummy ports up to a connection's port
+    number, and that number comes from the patch unbounded.
+  - `#X connect 0 100000000 1 0` made Pd build 1e8 outlets, walking the list for each one. That
+    hangs, and once memory runs out it writes through NULL.
+- **Both are now fenced** in the g_editor.c overlay, and fail as Pd's own bad connections do, by
+  name on the console:
+  - an empty canvas;
+  - a negative index;
+  - a port past 1024 on a box that failed to create.
+- **Tests:** `adi_pd_object_walk_tests` 97.
+  - The crash case fails before the fix (0xC0000005). The port case has a watchdog: with the bound
+    removed, the open hangs.
+  - The fuzz: 600 mutants walked, 150 opened. Everything is clean under ASan, here and on two more
+    seeds at 4000 mutants and 1500 opens each.
+  - CTest 267/267 at PD_FLOATSIZE 32 and 64.
+- **Reviewed** on three dimensions with three skeptics per finding. All four confirmed findings
+  are fixed in the second commit: the hang, the corpus order, line endings, and a check that could
+  not fail.
+- **For win.** The walk does not read `#X connect` records or object arguments. Both are Pd's to
+  survive, and the fuzz now holds Pd to that.
+- **Left on PD2:** the state round-trip scenario. It comes with DEV-10's user patches, which are
+  what would carry a patch's state.
+
 ## 2026-11-20 — DEV-09 AR8: nothing made inside a tick waits on another Pd device; the cross-instance dropout measured
 
 **PR requested:** head `devices/pd-ar8` (bc48d53f, two commits), stacked on `devices/dev09-gaps`
@@ -133,7 +174,7 @@ method); Live's files and renders stay in the director's research.
   - the registered-abstraction path, so whether a creation is refused no longer depends on what
     any device loaded before;
   - an actual check of "never waits".
-- **Left on DEV-09 for this lane:** the PD2 fuzz and round trip, after 3 December.
+- **Left on DEV-09 for this lane:** the PD2 fuzz, now done (the entry above); its round trip comes with DEV-10.
 - **Still awaiting win:** the runaway-loop ruling, and the ASan CI leg.
 
 ## 2026-11-20 — DEV-28: the one loudness meter's cost per callback, measured by the block benchmark
