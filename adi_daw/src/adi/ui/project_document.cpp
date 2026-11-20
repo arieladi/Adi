@@ -286,6 +286,15 @@ bool ProjectDocument::reenableAutomation() {
     error_ = refusal;
     return ok;
 }
+bool ProjectDocument::reenableAutomation(std::int64_t laneId) {
+    const bool ok = session_.reenableAutomation(laneId);
+    const std::string refusal =
+        ok ? std::string{} : (session_.error().empty() ? std::string("That automation is not overridden.") : session_.error());
+    followOverrides();
+    feed_.publish(session_, realisedGeneration_);
+    error_ = refusal;
+    return ok;
+}
 void ProjectDocument::setAutomationArmed(bool armed) noexcept {
     session_.setAutomationWriteState(armed, false);
 }

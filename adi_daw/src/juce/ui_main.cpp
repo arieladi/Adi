@@ -428,6 +428,12 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        root->reenableLane = [this](std::int64_t lane) {
+            const bool ok = document_->reenableAutomation(lane);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.

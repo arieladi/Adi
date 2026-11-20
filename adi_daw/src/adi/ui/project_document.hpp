@@ -123,6 +123,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     // not an undo step: the override is session state (ADR-0162), and so is its end. True with
     // nothing overridden too; false with `error()` when the session's rebuild failed.
     bool reenableAutomation();
+    // The parameter's context menu in Live (manual 25.4): one overridden lane follows its envelope
+    // again; the others stay overridden. Session state as above, no undo step. False with `error()`
+    // when the lane was not overridden or the rebuild failed.
+    bool reenableAutomation(std::int64_t laneId);
     // Live's Automation Arm (manual 25.1): whether a control moved while the Arrangement Record
     // button is on becomes automation. The session's switch, on in a new Set as Live's. Automation
     // recording is not wired yet (AU-03), so the session is never told that recording is on.
