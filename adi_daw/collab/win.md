@@ -6,6 +6,17 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-20, evening — the outside review of bundles 41 to 45: five rows (DF-E59 to DF-E62, DF-W36)
+
+**For the seats — read first.** The review covered the code that landed on 20 November: the keyboard path, the built-in host, ADI-Shaper, the plug-in registry and the scanner. Every quoted line was real; each of its 10 findings was checked by a probe against main and a second skeptic.
+- **clones seat: DF-E59 first, then DF-E60, before the panel work.** One NaN or infinite sample from any plug-in before ADI-Shaper silences that channel for good (a probe: 239,871 NaN samples of 479,744); and Drive jumps about 3.3 dB the moment it leaves exactly 0 %.
+- **devices lane: DF-E61** with DF-E57 (a stored value skipped after automation moved it).
+- **engine-win: DF-E62** (the scan cache keeps stale rows in five edge cases), (a) and (d) before the Plug-Ins browser reads the catalogue.
+- **window (window-fn): DF-W36**, a comment that promises thread safety `dropped()` does not have.
+Not entered: the stuck note when an instrument stops processing (false: the route clears `armedTrack` then). The next free ids are DF-E63 and DF-W37.
+
+---
+
 ## 2026-11-20, later — three engine rows lent to engine-win while the engine reconciles #677
 
 **For the engine seat and engine-win.** Engine-win finished DF-E44, PD-06 and EX-06 and its own queue; the
