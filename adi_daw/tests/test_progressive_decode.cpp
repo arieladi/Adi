@@ -282,7 +282,8 @@ void cancellationAndFailure() {
     bool count=false;try{ProgressiveDecoder invalid(cache,{},0);}catch(const std::invalid_argument&){count=true;}check(count,"worker count is bounded");
 }
 void poolBounds() {
-    test::TempDirectory temp{"progressive","pool"};DecodeCache cache(temp.path()/"cache",{1ULL<<30,0},cacheHooks());
+    test::TempDirectory temp{"progressive","pool"};
+    DecodeCache cache(temp.path()/"cache",{32*(64*4+4096),0},cacheHooks());
     std::atomic<unsigned> entered{0},active{0},maximum{0},stops{0};std::atomic<bool> release{false};
     ProgressiveHooks hooks{[&](std::uint64_t,std::stop_token stop){
         const auto count=active.fetch_add(1)+1;auto old=maximum.load();while(old<count && !maximum.compare_exchange_weak(old,count)){}
@@ -317,6 +318,21 @@ void poolBounds() {
     files.push_back(decoder.open(temp.path() / "source-32.wav"));
     check(active == 2 && files.back()->snapshot().readyFrames == 0,
           "retired queued job gives its admission slot back without waiting for a worker");
+    // source-32 now holds the last slot and source-31 was retired above, so
+    // source-31 is the fresh admission for the lease-count checks below.
+    auto lastLease=files.back();
+    files.back().reset();
+    bool stillFull=false;
+    try {(void)decoder.open(temp.path()/"source-31.wav");}
+    catch(const DecodeError& e){stillFull=e.problem()==DecodeProblem::Unsupported;}
+    check(stillFull,"a queued job keeps its admission while any public lease remains");
+    lastLease.reset();
+    try {files.back()=decoder.open(temp.path()/"source-31.wav");}
+    catch(const DecodeError& e) {
+        if(e.problem()!=DecodeProblem::Unsupported && e.problem()!=DecodeProblem::NoSpace)throw;
+    }
+    check(files.back() && entered==2,
+          "dropping the final queued lease immediately frees job and byte admission while workers remain blocked");
     files.clear();
     const bool initiallyStopped=wait([&]{return stops==2;});
     // Release only after the actual token acknowledgments. On a failed wait it
@@ -327,6 +343,22 @@ void poolBounds() {
     std::shared_ptr<ProgressiveFile> retry;check(wait([&]{try{retry=decoder.open(temp.path()/"source-32.wav");return true;}catch(const DecodeError& e){if(e.problem()!=DecodeProblem::Unsupported)throw;return false;}}),"cancelled jobs release their admission slots");
     check(wait([&]{return retry->snapshot().status!=ProgressiveStatus::Pending;}) && retry->snapshot().status==ProgressiveStatus::Complete,"cancelled queue drains and admits fresh work without restarting the pool");
     check(maximum<=2,"worker count stays bounded through cancellation and queue recovery");
+
+    std::shared_ptr<ProgressiveFile> queued;
+    std::atomic<bool> installed{false}, dropped{false};
+    ProgressiveHooks shutdownHooks{[&](std::uint64_t,std::stop_token stop) {
+        std::stop_callback lastLeaseDrop(stop,[&]{queued.reset();dropped=true;});
+        installed=true;
+        while(!stop.stop_requested())std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }};
+    auto shutdownDecoder=std::make_unique<ProgressiveDecoder>(cache,shutdownHooks,1);
+    auto running=shutdownDecoder->open(temp.path()/"source-0.wav");
+    check(wait([&]{return installed.load();}),"a running decode installs its shutdown callback");
+    queued=shutdownDecoder->open(temp.path()/"source-1.wav");
+    shutdownDecoder.reset();
+    check(dropped && !queued && running->snapshot().status==ProgressiveStatus::Cancelled,
+          "decoder shutdown can release a queued lease inside a stop callback");
+    running.reset();
 }
 void session(const fs::path& source,const char* label) {
     for(const auto precision:{engine::Precision::Float32,engine::Precision::Float64}) {
