@@ -44,6 +44,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 **PR requested, existing #642** — verified `engine-win/acceptance-ci` at `68c92bbcb60c1c0da9b3267a0c8d616be3aefd8a`. Its stats file has no `rankable()` and its per-app statistics self-test passed all eight checks. A dry merge on `b56b1348` leaves the evidence and statistics files byte-identical to that head. The historical JSON key is a within-app frequency gate. No cross-DAW ranking or CPU measurement was made, and no additional source change is needed for this condition.
 
+## 2026-11-20, startup recording discovery (PD-05)
+
+**PR requested** — `engine-win/recording-launch-discovery` at `879a5d15dfb5abed5b7560d2fd126ac07c9c30d1`, after PD-06 `db039e65`, based on main `b56b1348`. Before accepting audio for an opted-in recording, the engine registers it under a native per-process session lock in application data. The startup worker can call `recording::discoverInterrupted()` without any project or take path. It ignores live sessions, incomplete metadata, takes without complete audio, and IDs with placement receipts. It verifies the recorded project and returns the target IDs for the reopen question. Discovery leaves the original files intact.
+
+**MEASURED.** The exact branch passed 434 strict Windows checks across the recorder, recorded placement and take-lane suites. One real process exited during recording and its take was found without the source directory being furnished to the finder. An additional process exited after registration but before the first input and was skipped. Tests also exclude a live session and a committed take whose original remains after Undo. Schema and ops validators passed.
+
+**For Window and engine.** The startup consumer calls the finder on a worker and skips that call when Alt is down. The chosen project and directory then go to the existing PD-06 prepare/commit flow. The desktop startup hook and named question remain Window work. This is the recording-discovery slice of PD-05. Project-wide session_lock heartbeats, stale-owner handling, OpenReport and clean-close or backup metadata still need the Store lifecycle work. No new deferred ID was used.
+
 ## 2026-11-19, order the MIDI settings before the graph-worker preference
 
 **PR requested** — `engine-win/graph-worker-setting` at `35a035acaf21b95da53e47923b217e945de1905d`, after Window-fn's MIDI settings `6cec1b83` and current main `88e2d94e`. The merge retains both Settings sections. The existing engine application wiring can merge the resolved settings tip. The worker preference stays Auto at granted buffers of 1,024 samples and above, serial below the threshold or for an unknown buffer, with explicit Off.
