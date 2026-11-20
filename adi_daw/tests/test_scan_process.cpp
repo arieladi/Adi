@@ -46,6 +46,19 @@ namespace fs = std::filesystem;
 fs::path fromUtf8(const std::string& value) {return fs::path(std::u8string(value.begin(),value.end()));}
 int checks = 0, failures = 0;
 void check(bool ok, const char* label) {++checks;if(!ok){++failures;std::printf("FAIL: %s\n",label);}}
+// A descendant that outlived its runner writes its marker once the test says
+// so, never on a timer: the test releases every grandchild only after its
+// runProcess call has returned, so a marker means the runner left it alive,
+// however slowly a loaded machine schedules either process. Still alive 20 s
+// on with no release, its runner never returned (it waited for this
+// descendant's inherited pipe to close): that is an escape too, and the
+// marker it writes then fails the check rather than letting it pass.
+void markWhenReleased(const fs::path& marker,const fs::path& release) {
+    const auto limit=std::chrono::steady_clock::now()+20s;
+    std::error_code ignored;
+    while(std::chrono::steady_clock::now()<limit && !fs::exists(release,ignored))std::this_thread::sleep_for(5ms);
+    std::ofstream(marker)<<"escaped";
+}
 int fixture(int argc, char** argv) {
     const std::string mode = argc > 2 ? argv[2] : "";
     if(mode=="echo") {for(int i=3;i<argc;++i)std::printf("%zu:%s\n",std::strlen(argv[i]),argv[i]);return 0;}
@@ -76,20 +89,22 @@ int fixture(int argc, char** argv) {
     if(mode=="flood") {const std::string bytes(4096,'x');for(;;)if(std::fwrite(bytes.data(),1,bytes.size(),stdout)!=bytes.size())return 1;}
     if(mode=="stderr") {const std::string bytes(4096,'!');for(int i=0;i<512;++i)std::fwrite(bytes.data(),1,bytes.size(),stderr);std::printf("ok");return 0;}
     if(mode=="sleep") {std::this_thread::sleep_for(10s);return 0;}
-    if(mode=="delayed-marker") {std::this_thread::sleep_for(400ms);std::ofstream(fromUtf8(argv[3]))<<"escaped";return 0;}
+    if(mode=="delayed-marker") {if(argc<5)return 91;markWhenReleased(fromUtf8(argv[3]),fromUtf8(argv[4]));return 0;}
     if(mode=="tree" || mode=="exit-tree") {
+        if(argc<5)return 91;
 #if defined(_WIN32)
         // Intentionally bypass the runner in this controlled child so the
         // grandchild inherits its job, as a plug-in's helper normally does.
         const auto self=fs::absolute(fromUtf8(argv[0])).wstring();
         const auto marker=fromUtf8(argv[3]).wstring();
-        std::wstring command=L"\""+self+L"\" --fixture delayed-marker \""+marker+L"\"";
+        const auto release=fromUtf8(argv[4]).wstring();
+        std::wstring command=L"\""+self+L"\" --fixture delayed-marker \""+marker+L"\" \""+release+L"\"";
         STARTUPINFOW startup{};startup.cb=sizeof startup;PROCESS_INFORMATION info{};
         if(!CreateProcessW(self.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&startup,&info))return 90;
         CloseHandle(info.hThread);CloseHandle(info.hProcess);
 #else
         const pid_t child=fork();if(child<0)return 90;
-        if(child==0){std::this_thread::sleep_for(400ms);std::ofstream(fromUtf8(argv[3]))<<"escaped";_exit(0);}
+        if(child==0){markWhenReleased(fromUtf8(argv[3]),fromUtf8(argv[4]));_exit(0);}
 #endif
         std::printf("ready");std::fflush(stdout);
         if(mode=="tree") std::this_thread::sleep_for(10s);
@@ -148,13 +163,29 @@ void contract(const fs::path& self) {
     check(runProcess(self,{"--fixture","binary"},options).succeeded(),"output exactly at its byte limit remains valid");
     options.maximumOutput=4;
     check(runProcess(self,{"--fixture","binary"},options).status==ProcessStatus::OutputLimit,"one byte over the output boundary refuses whole success");
-    const auto deadlineMarker=temp.path()/"timeout marker";
-    const auto exitMarker=temp.path()/"exit marker";
-    options={};options.timeout=80ms;
-    const auto tree=runProcess(self,{"--fixture","tree",utf8(deadlineMarker)},options);
-    const auto exitTree=runProcess(self,{"--fixture","exit-tree",utf8(exitMarker)});
-    std::this_thread::sleep_for(600ms);
-    check(tree.status==ProcessStatus::TimedOut && tree.output=="ready" && !fs::exists(deadlineMarker),"timeout terminates child descendants as well as their inherited output writer");
+    // The deadline proves something only if the child had already started its
+    // grandchild and said "ready" before it: a child killed before that has no
+    // descendant to leave behind. A loaded runner can take longer than 80 ms to
+    // get that far (macOS CI, ctest --parallel), so a run that timed out with
+    // nothing said is discarded and repeated with a longer deadline. Every
+    // grandchild, discarded runs' too, is released only after its runner has
+    // returned, and must not have survived to write its marker.
+    std::vector<fs::path> markers,releases;
+    ProcessResult tree;
+    for(const auto timeout:std::array{80ms,500ms,3000ms}) {
+        const auto attempt=std::to_string(markers.size());
+        markers.push_back(temp.path()/("timeout marker "+attempt));releases.push_back(temp.path()/("timeout release "+attempt));
+        options={};options.timeout=timeout;
+        tree=runProcess(self,{"--fixture","tree",utf8(markers.back()),utf8(releases.back())},options);
+        if(!(tree.status==ProcessStatus::TimedOut && tree.output.empty()))break;
+    }
+    const auto exitMarker=temp.path()/"exit marker",exitRelease=temp.path()/"exit release";
+    const auto exitTree=runProcess(self,{"--fixture","exit-tree",utf8(exitMarker),utf8(exitRelease)});
+    for(const auto& release:releases)std::ofstream(release)<<"go";
+    std::ofstream(exitRelease)<<"go";
+    std::this_thread::sleep_for(500ms);
+    bool treeEscaped=false;for(const auto& marker:markers)treeEscaped=treeEscaped||fs::exists(marker);
+    check(tree.status==ProcessStatus::TimedOut && tree.output=="ready" && !treeEscaped,"timeout terminates child descendants as well as their inherited output writer");
     check(exitTree.succeeded() && exitTree.output=="ready" && !fs::exists(exitMarker),"normal exit terminates remaining descendants without waiting for inherited-pipe EOF");
 #if defined(_WIN32)
     DWORD handlesBefore=0;GetProcessHandleCount(GetCurrentProcess(),&handlesBefore);
