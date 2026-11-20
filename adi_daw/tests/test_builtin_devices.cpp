@@ -320,6 +320,15 @@ void automationEvents() {
           "the knob goes to 0 dB, then a state holding +3 dB loads, in one period");
     run(60);
     check(std::abs(output[0][63]-knob)<2e-5f,"the state's +3 dB is heard (DF-E61, through loadState)");
+    // Both edits by states alone: 0 dB, then +3 dB, in one period.
+    check(instance->setParam("11",ParamValue::fromNormalized(120.0/155)),"the knob goes to 0 dB, to save a state there");
+    const auto stateAtZero=instance->saveState("state");
+    check(instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"and back to +3 dB");
+    check(automateUp(),"the lane moves the gain to +6 dB again, over the stored +3 dB");
+    check(instance->loadState("state",stateAtZero) && instance->loadState("state",stateAtKnob),
+          "a state at 0 dB, then one at +3 dB, load in one period");
+    run(60);
+    check(std::abs(output[0][63]-knob)<2e-5f,"the second state's +3 dB is heard (DF-E61, states alone)");
     // A write that leaves the stored value as it was is no edit: the lane's
     // value stays in force (a preset reload, a drag that ends where it began).
     check(automateUp(),"the lane moves the gain to +6 dB a third time");
