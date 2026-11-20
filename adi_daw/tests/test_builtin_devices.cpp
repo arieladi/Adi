@@ -7,7 +7,6 @@
 #include "juce/builtin_host.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
-#include "adi/blob.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -386,8 +385,11 @@ void instrumentSession() {
     double peak=0;int firstSound=-1;
     for(int block=0;block<200;++block) {
         (void)session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=64;session.process(io);
-        for(int i=0;i<64;++i){const double v=std::abs(static_cast<double>(output[0][static_cast<std::size_t>(i)]));
-            if(v>1e-4 && firstSound<0)firstSound=block*64+i;peak=std::max(peak,v);}
+        for(int i=0;i<64;++i) {
+            const double v=std::abs(static_cast<double>(output[0][static_cast<std::size_t>(i)]));
+            if(v>1e-4 && firstSound<0)firstSound=block*64+i;
+            peak=std::max(peak,v);
+        }
     }
     std::printf("METRIC OneShot in a Session: first sound at frame %d, peak %.4f\n",firstSound,peak);
     // At full velocity, OneShot's default Volume (Live's -12 dB) on the 0.5 sine.
