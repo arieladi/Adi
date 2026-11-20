@@ -210,4 +210,24 @@ void AdiShaperDrive::process(float& left, float& right, float driveNormalized) n
     right=static_cast<float>(base[1]);
 }
 
+bool AdiShaperDrive::finishBlock() noexcept {
+    bool repaired = false;
+    const auto head = static_cast<std::size_t>(wetHead_);
+    for (std::size_t ch = 0; ch < channels_.size(); ++ch) {
+        auto& state = channels_[ch];
+        bool bad = !std::isfinite(state.lastZ) || !std::isfinite(state.dc);
+        // The decimator has seen everything except phases after the last
+        // base-rate sample. Check those too before moving to the next block.
+        for (int phase = 1; phase < factor_; ++phase)
+            bad |= !std::isfinite(wet_[head + static_cast<std::size_t>(phase - 1)][ch]);
+        if (bad) {
+            state = {};
+            for (auto& sample : input_) sample[ch] = 0.0f;
+            for (auto& sample : wet_) sample[ch] = 0.0f;
+            repaired = true;
+        }
+    }
+    return repaired;
+}
+
 } // namespace adi::dsp
