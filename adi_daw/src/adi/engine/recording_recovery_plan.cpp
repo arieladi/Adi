@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/recording_recovery_plan.hpp"
+#include "adi/engine/recording_recovery_wave.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/appdata.hpp"
+#include "adi/media/media_ops.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <limits>
 #include <random>
 #include <set>
@@ -27,6 +31,8 @@ using Json = nlohmann::json;
 constexpr std::size_t maxJsonBytes = 256U * 1024U;
 constexpr std::size_t maxTargets = 256;
 constexpr std::string_view stagePrefix = ".adi-take-stage-";
+constexpr std::string_view sessionPrefix = "session-";
+constexpr std::string_view registrationPrefix = "recording-";
 
 [[noreturn]] void refuse(std::string message) {
     throw std::runtime_error("recording recovery plan: " + message);
@@ -441,6 +447,121 @@ std::int64_t decodeStart(const Json& value, std::string_view recordingId) {
         refuse("start metadata does not belong to this recording");
     return sampleInteger(value.at("startSample"));
 }
+fs::path sessionRoot() {
+    const auto data=appdata::pathsFor(appdata::App::Daw).data;
+    return data.empty()?fs::path{}:data/"recording-sessions";
+}
+struct LaunchSession {
+    fs::path directory;
+    std::shared_ptr<media::ProjectFileLease> lease;
+};
+LaunchSession& launchSession() {
+    static LaunchSession session=[] {
+        const auto root=sessionRoot();
+        if(root.empty())refuse("no application data directory for launch recovery");
+        fs::create_directories(root);
+        const auto directory=fs::canonical(root)/(std::string(sessionPrefix)+newId());
+        if(!fs::create_directory(directory))refuse("cannot reserve launch session directory");
+        const auto path=directory/"owner.lock";
+        std::error_code error;
+        const auto marker=media::ProjectFileLease::createShared(path,error);
+        if(!marker)refuse("cannot create launch owner marker: "+error.message());
+        // The shared lease excludes the scanner's exclusive lease. The
+        // app never replaces this file, even as recordings come and go.
+#if defined(_WIN32)
+        const auto pid=static_cast<std::uint64_t>(GetCurrentProcessId());
+#else
+        const auto pid=static_cast<std::uint64_t>(::getpid());
+#endif
+        const auto started=std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        (void)publish(directory,"session.json",{{"schema",1},{"pid",pid},{"started",started}});
+        return LaunchSession{directory,marker};
+    }();
+    return session;
+}
+std::string registrationName(std::string_view id) {
+    return std::string(registrationPrefix)+std::string(id)+".json";
+}
+}
+
+std::string registerLaunchTake(const fs::path& directory,const TakePlan& plan) {
+    ownerOnly();
+    if(!hexId(plan.recordingId))refuse("invalid launch recording ID");
+    const auto capture=checkedDirectory(directory);
+    const auto name=registrationName(plan.recordingId);
+    return publish(launchSession().directory,name.c_str(),{{"schema",1},{"recordingId",plan.recordingId},
+        {"directory",media::pathUtf8(capture)}});
+}
+void forgetLaunchTake(std::string_view id) noexcept {
+    if(audio::onAudioThread || !hexId(id))return;
+    try {
+        std::error_code error;
+        fs::remove(launchSession().directory/registrationName(id),error);
+    } catch(...) {
+        // A stale registration cannot restore a missing take.
+    }
+}
+std::vector<LaunchTake> findLaunchTakes() {
+    ownerOnly();
+    std::vector<LaunchTake> result;
+    auto root=sessionRoot();
+    if(root.empty() || absent(root))return result;
+    root=checkedDirectory(fs::canonical(root));
+    std::set<std::string> seen;
+    for(const auto& session:fs::directory_iterator(root)) {
+        const auto name=session.path().filename().generic_string();
+        if(!name.starts_with(sessionPrefix) || !hexId(std::string_view(name).substr(sessionPrefix.size())))
+            continue;
+        try {
+            const auto directory=checkedDirectory(session.path());
+            ordinary(directory/"owner.lock",false);
+            std::error_code error;
+            auto lease=media::ProjectFileLease::openExclusive(directory/"owner.lock",error);
+            if(!lease)continue;
+            const auto header=parse(readText(directory/"session.json"));
+            fields(header,{"schema","pid","started"});
+            if(unsignedInteger(header.at("schema"))!=1 || unsignedInteger(header.at("pid"))==0)
+                continue;
+            (void)unsignedInteger(header.at("started"));
+            for(const auto& registration:fs::directory_iterator(directory)) {
+                const auto leaf=registration.path().filename().generic_string();
+                if(!leaf.starts_with(registrationPrefix) || !leaf.ends_with(".json"))
+                    continue;
+                try {
+                    const auto record=parse(readText(registration.path()));
+                    fields(record,{"schema","recordingId","directory"});
+                    const auto id=textField(record.at("recordingId"));
+                    if(unsignedInteger(record.at("schema"))!=1 || !hexId(id) ||
+                       leaf!=registrationName(id) || seen.contains(id))
+                        continue;
+                    const auto target=media::pathFromUtf8(textField(record.at("directory"),65536));
+                    auto take=openInactive(target);
+                    if(take.plan.recordingId!=id || absent(target/"start.json"))
+                        continue;
+                    bool hasAudio=true;
+                    for(std::size_t i=0;i<take.plan.targets.size();++i) {
+                        const auto channels=static_cast<std::uint16_t>(take.plan.targets[i].channels.size());
+                        if(inspectWave(target/takeName(i),take.plan.identities[i],
+                                       {take.plan.sampleRate,channels,take.plan.format}).frames==0) {
+                            hasAudio=false;
+                            break;
+                        }
+                    }
+                    if(!hasAudio)continue;
+                    auto& item=result.emplace_back(LaunchTake{target,take.plan.sourceProject,take.plan.projectUuid,id,{}});
+                    for(const auto& track:take.plan.targets)item.tracks.push_back(track.trackId);
+                    seen.insert(id);
+                } catch(const std::exception&) {
+                    // A replaced, malformed or incomplete take is neither
+                    // repaired nor exposed as a launch candidate.
+                }
+            }
+        } catch(const std::exception&) {
+            // One incomplete marker does not hide other interrupted sessions.
+        }
+    }
+    return result;
 }
 
 OwnedPlan begin(const AudioRecordingSpec& spec, const fs::path& directory, std::string_view projectUuid) {

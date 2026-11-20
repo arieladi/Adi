@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/engine/audio_recording.hpp"
+#include "adi/engine/recording_recovery_plan.hpp"
 #include "adi/ops.hpp"
 namespace adi::recording {
 struct ClipIds {std::int64_t clip=0,media=0;std::string name;};
@@ -24,6 +25,10 @@ struct RecoveryTake {
 // A Ready take is prepared by the existing linear or loop Stop command.
 [[nodiscard]] RecoveryTake recoverInterrupted(Store&,const std::filesystem::path& recordingRoot,
     const std::filesystem::path& directory);
+// Startup worker API for PD-05. Skips live sessions, incomplete takes and
+// receipts already placed in the matching project. Holding Alt can skip this
+// call entirely. The caller presents the candidates and revalidates on reopen.
+[[nodiscard]] std::vector<engine::recording_recovery::LaunchTake> discoverInterrupted();
 struct RecordingEdit {
     bool ok=false;
     std::string error,sourceProject;

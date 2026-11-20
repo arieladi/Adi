@@ -170,7 +170,13 @@ store a `recording.placed.<id>` receipt in `adi_meta` in the transaction that
 places the audio. A later reopen skips a placed ID even if the original folder
 remains or the edit was undone. Failed placement leaves the original available.
 
-The engine entry points can recover from a process exit. Discovering candidates
-at launch and showing the reopen question belong to PD-05 and the Window.
+The PD-05 startup worker can call `recording::discoverInterrupted` before
+opening a project. Each process holds one native session lock in application
+data and publishes an immutable reference to each opted-in recording before
+accepting audio. Discovery reads only inactive sessions. It checks the take
+identity, requires a complete frame on every target, and skips receipts
+already placed in the matching project. The Window owns calling this worker
+at launch, holding Alt to skip it and presenting the reopen question. Candidate
+inspection leaves markers and original takes intact.
 The current background writer flushes its stream and can still have queued
 frames. This does not establish ADR-0250's one-block power-cut bound.
