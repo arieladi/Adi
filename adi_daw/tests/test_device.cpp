@@ -301,7 +301,7 @@ struct DenormalProbe final : adi::engine::BlockProcessor {
 
 void testCallbackFlushesDenormals() {
     using Control = adi::audio::FloatingPointControl;
-    if (Control::denormalMask == 0) return;
+    if constexpr (Control::denormalMask == 0) return;
     section("ADR-0042 decision 6: driver and render worker floating-point modes");
     DenormalProbe probe;
     DeviceCore core;
