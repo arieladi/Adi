@@ -52,6 +52,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 **For Window and engine.** The startup consumer calls the finder on a worker and skips that call when Alt is down. The chosen project and directory then go to the existing PD-06 prepare/commit flow. The desktop startup hook and named question remain Window work. This is the recording-discovery slice of PD-05. Project-wide session_lock heartbeats, stale-owner handling, OpenReport and clean-close or backup metadata still need the Store lifecycle work. No new deferred ID was used.
 
+## 2026-11-20, integration check for the three loans and startup discovery
+
+**MEASURED.** The exact requested tips `fc2d0a7b`, `f26730fb`, `55f20c8c` and `879a5d15` merge cleanly on `b56b1348`. Their combined tree passed 593 checks in five strict MSVC x64 `/W4 /WX` suites with the SQLiteCpp 3.4.0 pin. The gate exercised live MIDI parsing, Capture MIDI, actual archive publication, audio recording and process-exit recording discovery. The review and landing requests stay on the four original branch tips.
+
 ## 2026-11-19, order the MIDI settings before the graph-worker preference
 
 **PR requested** — `engine-win/graph-worker-setting` at `35a035acaf21b95da53e47923b217e945de1905d`, after Window-fn's MIDI settings `6cec1b83` and current main `88e2d94e`. The merge retains both Settings sections. The existing engine application wiring can merge the resolved settings tip. The worker preference stays Auto at granted buffers of 1,024 samples and above, serial below the threshold or for an unknown buffer, with explicit Off.
