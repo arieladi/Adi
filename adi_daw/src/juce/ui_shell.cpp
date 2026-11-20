@@ -61,6 +61,7 @@ void AppCommands::reload() {
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
+    exclusiveArm_ = flag(settings_, "record.exclusiveArm", true);
     if (const auto quantize = settings_.get("record.quantize"); quantize.is_string())
         recordingDefaults_.quantize = quantize.get<std::string>();
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
@@ -209,7 +210,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Delete Fades/Crossfades", "Invert Selection", "Quantize", "Quantize Settings...",
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
-                                  "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range"};
+                                  "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
+                                  "Arrangement Record"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -651,6 +653,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case FitToTimeRange: // manual 10.5.5: the editor's, in the Edit menu too
         info.addDefaultKeypress('j', cmd | alt);
         info.setActive(false);
+        break;
+    case ArrangementRecord: // manual 21.1 and §41.6: F9
+        info.addDefaultKeypress(juce::KeyPress::F9Key, 0);
+        info.setTicked(active_ != nullptr && active_->isRecording());
         break;
     case ExpandClipView: // manual 10.2; Live 12's View menu: Expand Clip View, Ctrl/Cmd+Alt+E
         info.addDefaultKeypress('e', cmd | alt);
@@ -2658,6 +2664,75 @@ bool AdiRootComponent::soloTrack(std::int64_t id, bool add) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+void AdiRootComponent::selectClip(std::int64_t clip) {
+    // As a click on it selects it: its track, and its time.
+    const auto now = view_.current();
+    if (!now)
+        return;
+    for (const auto &t : now->tracks)
+        if (t)
+            for (const auto &c : t->clips)
+                if (c->id == clip) {
+                    auto &sel = arrangement.geometry.selection;
+                    sel.track = t->id;
+                    sel.toTrack = 0;
+                    sel.picked.clear();
+                    sel.clip = clip;
+                    sel.pickedClips.clear();
+                    sel.start = c->posTicks;
+                    sel.end = c->posTicks + c->lengthTicks;
+                    publishSelection();
+                    return;
+                }
+}
+TrackRecordState AdiRootComponent::recordState(std::int64_t track) const {
+    return ::adi::ui::recordState(recordStates_, track);
+}
+bool AdiRootComponent::armTrack(std::int64_t id, bool add) {
+    // From the CURRENT cell (ADR-0201) and the rows the application hands over; one batch.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Arming needs an open project.");
+    auto edit = armTracks(current->tracks, freshRecordStates(), id, arrangement.geometry.selectedTracks(reader()),
+                          commands_.exclusiveArm(), add);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Monitoring needs an open project.");
+    auto edit = ::adi::ui::setMonitor(current->tracks, freshRecordStates(), id, arrangement.geometry.selectedTracks(reader()), mode);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::toggleRecord() {
+    if (!startRecording || !stopRecording || !recording)
+        return fail("Recording runs in the application, with an audio device.");
+    if (recording()) {
+        // Live's Record button again: recording stops, playback goes on.
+        stopRecording();
+        mark(DirtySet::Transport);
+        return true;
+    }
+    const bool rolling = mailbox_.desiredPlaying();
+    if (!rolling && !mailbox_.hasRoom(1))
+        return fail("Transport command queue is full");
+    if (!startRecording(arrangement.geometry.selection.insert, rolling))
+        return false; // the application said why
+    // A recording start plays the transport: the same op Play writes, so the history's transport state
+    // agrees.
+    if (!rolling) {
+        OpRequest request;
+        request.opType = "transport.play";
+        request.payload = Payload::object();
+        (void)submitter_.submit(std::move(request));
+    }
+    mark(DirtySet::Transport);
+    return true;
+}
 bool AdiRootComponent::setSoloInPlace(bool on) {
     // Live's Solo in Place (manual 18.6): one project field for the Solo button's menu and the
     // Options menu's entry (#412, N23), from the CURRENT cell (ADR-0201). The op is outside undo, as
@@ -3255,6 +3330,9 @@ bool AdiRootComponent::command(int id) {
         // Space plays from the insert marker, Shift+Space from where it stopped.
         const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();
         const bool fromMarker = play && id == AppCommands::PlayStop;
+        // Stopping the transport ends a recording (manual 21.1); its take lands on the next frames.
+        if (!play && recording && recording() && stopRecording)
+            stopRecording();
         if (!mailbox_.hasRoom(fromMarker ? 2 : 1))
             return fail("Transport command queue is full");
         OpRequest request;
@@ -3268,6 +3346,10 @@ bool AdiRootComponent::command(int id) {
         mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
         break;
     }
+    case AppCommands::ArrangementRecord:
+        if (!toggleRecord())
+            return false;
+        break;
     case AppCommands::Undo:
     case AppCommands::Redo: {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
