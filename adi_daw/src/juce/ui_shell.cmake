@@ -76,7 +76,10 @@ if(ADI_WITH_JUCE)
     endif()
     add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_controls.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp)
     target_link_libraries(adi_ui_shell PUBLIC adi_settings juce::juce_gui_basics)
-    target_compile_definitions(adi_ui_shell PUBLIC JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
+    # SRF-05: the MIDI ports stay on the Win32 backend; Windows MIDI Services and WinRT MIDI are pinned off so
+    # every target that compiles juce_audio_devices through the shell agrees on the backend.
+    target_compile_definitions(adi_ui_shell PUBLIC JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
+                                                  JUCE_USE_WINDOWS_MIDI_SERVICES=0 JUCE_USE_WINRT_MIDI=0)
     juce_add_console_app(adi_ui_shell_tests PRODUCT_NAME "adi_ui_shell_tests")
     # The Settings window's Audio page drives a device manager; the tests build it over an unopened one.
     target_sources(adi_ui_shell_tests PRIVATE tests/test_ui_shell.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp)
