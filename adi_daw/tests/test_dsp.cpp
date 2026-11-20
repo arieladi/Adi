@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -677,6 +678,485 @@ void testTheTruePeakLimiterAllocatesNothing() {
     for (int b = 0; b < 50; ++b) lim.process(ip, op, 256);
     g_counting.store(false);
     check(g_allocs.load() == 0, "fifty loud double blocks in true peak, no allocation");
+}
+
+
+// ---------------------------------------------------------------------------
+// EX4 -- the brickwall as an offline stage, and the true-peak mode's edges
+// ---------------------------------------------------------------------------
+
+/// Planar channels of doubles.
+using Planar = std::vector<std::vector<double>>;
+
+/// Through the limiter in 256-frame blocks, any channel count, float or
+/// double, optionally in place. Returns what came out, as doubles.
+template <class Sample>
+Planar streamAs(LookaheadLimiter& lim, const Planar& x, bool inPlace = false) {
+    const std::size_t C = x.size(), n = x[0].size();
+    std::vector<std::vector<Sample>> in(C, std::vector<Sample>(n)), out(C, std::vector<Sample>(n));
+    for (std::size_t c = 0; c < C; ++c) {
+        for (std::size_t i = 0; i < n; ++i) {
+            in[c][i] = static_cast<Sample>(x[c][i]);
+        }
+    }
+    std::vector<const Sample*> ip(C);
+    std::vector<Sample*> op(C);
+    for (std::size_t off = 0; off < n; off += 256) {
+        const int k = static_cast<int>(std::min<std::size_t>(256, n - off));
+        for (std::size_t c = 0; c < C; ++c) {
+            ip[c] = in[c].data() + off;
+            op[c] = (inPlace ? in[c].data() : out[c].data()) + off;
+        }
+        lim.process(ip.data(), op.data(), k);
+    }
+    const auto& result = inPlace ? in : out;
+    Planar y(C);
+    for (std::size_t c = 0; c < C; ++c) {
+        y[c].assign(result[c].begin(), result[c].end());
+    }
+    return y;
+}
+
+/// processOffline over the whole programme, float or double, optionally in
+/// place. Returns what came out, as doubles.
+template <class Sample>
+Planar offlineAs(LookaheadLimiter& lim, const Planar& x, bool inPlace = false) {
+    const std::size_t C = x.size(), n = x.empty() ? 0 : x[0].size();
+    std::vector<std::vector<Sample>> in(C, std::vector<Sample>(n)), out(C, std::vector<Sample>(n, Sample(7)));
+    for (std::size_t c = 0; c < C; ++c) {
+        for (std::size_t i = 0; i < n; ++i) {
+            in[c][i] = static_cast<Sample>(x[c][i]);
+        }
+    }
+    std::vector<const Sample*> ip(C);
+    std::vector<Sample*> op(C);
+    for (std::size_t c = 0; c < C; ++c) {
+        ip[c] = in[c].data();
+        op[c] = inPlace ? in[c].data() : out[c].data();
+    }
+    lim.processOffline(ip.data(), op.data(), static_cast<std::int64_t>(n));
+    const auto& result = inPlace ? in : out;
+    Planar y(C);
+    for (std::size_t c = 0; c < C; ++c) {
+        y[c].assign(result[c].begin(), result[c].end());
+    }
+    return y;
+}
+
+double truePeakOfPlanar(double fs, const Planar& y) {
+    TruePeakMeter m;
+    m.prepare(fs, static_cast<int>(y.size()));
+    std::vector<const double*> p;
+    for (const auto& ch : y) {
+        p.push_back(ch.data());
+    }
+    m.process(p.data(), static_cast<int>(y.size()), static_cast<int>(y[0].size()));
+    return m.peak();
+}
+
+double samplePeakOf(const Planar& y) {
+    double peak = 0.0;
+    for (const auto& ch : y) {
+        for (double v : ch) {
+            peak = std::max(peak, std::fabs(v));
+        }
+    }
+    return peak;
+}
+
+/// AN INDEPENDENT TRUE PEAK, sharing nothing with TruePeakMeter::design: a
+/// Kaiser-windowed sinc of +-48 samples (beta 9), read at 32 points in every
+/// sample interval from `from` to `to`, each read with its whole kernel (48
+/// samples either side). Slow, and only for tests. Its own accuracy is
+/// checked against sines whose crest is known, before it judges the limiter.
+double independentTruePeak(const Planar& y, std::size_t from, std::size_t to) {
+    constexpr int kHalf = 48, kPoints = 32;
+    constexpr double kBeta = 9.0;
+    const auto besselI0 = [](double v) {
+        double sum = 1.0, term = 1.0;
+        for (int k = 1; k < 64; ++k) {
+            term *= (v / (2.0 * k)) * (v / (2.0 * k));
+            sum += term;
+        }
+        return sum;
+    };
+    // kernel[j][m + kHalf] weighs x[n + m] for the point n + j / kPoints.
+    std::vector<double> kernel(static_cast<std::size_t>(kPoints) * (2 * kHalf + 1));
+    for (int j = 0; j < kPoints; ++j) {
+        const double frac = static_cast<double>(j) / kPoints;
+        for (int m = -kHalf; m <= kHalf; ++m) {
+            const double t = frac - static_cast<double>(m);   // distance from x[n + m]
+            const double sinc = std::fabs(t) < 1e-12 ? 1.0 : std::sin(kPi * t) / (kPi * t);
+            const double r = t / (kHalf + 1.0);
+            const double w = std::fabs(r) >= 1.0 ? 0.0 : besselI0(kBeta * std::sqrt(1.0 - r * r)) / besselI0(kBeta);
+            kernel[static_cast<std::size_t>(j * (2 * kHalf + 1) + m + kHalf)] = sinc * w;
+        }
+    }
+    double peak = 0.0;
+    for (const auto& ch : y) {
+        const auto first = static_cast<int>(std::max<std::size_t>(from, kHalf));
+        const auto last = static_cast<int>(std::min<std::size_t>(to, ch.size() - kHalf));
+        for (int i = first; i < last; ++i) {
+            peak = std::max(peak, std::fabs(ch[static_cast<std::size_t>(i)]));
+            for (int j = 1; j < kPoints; ++j) {
+                const double* k = kernel.data() + static_cast<std::size_t>(j * (2 * kHalf + 1));
+                double v = 0.0;
+                for (int m = -kHalf; m <= kHalf; ++m) {
+                    v += k[m + kHalf] * ch[static_cast<std::size_t>(i + m)];
+                }
+                peak = std::max(peak, std::fabs(v));
+            }
+        }
+    }
+    return peak;
+}
+
+/// The fixtures the over-ceiling checks share: every one builds overs
+/// between the samples.
+struct Programme {
+    std::string name;
+    Planar x;
+};
+
+std::vector<Programme> overProgrammes(double rate, std::size_t n) {
+    std::vector<Programme> out;
+    {
+        auto x = quarterRateAt45(n, 2.0);
+        out.push_back({"quarter-rate sine at 45 degrees, +6 dBTP", {x, x}});
+    }
+    {
+        Planar x(2, std::vector<double>(n));
+        for (std::size_t i = 0; i < n; ++i) {
+            x[0][i] = 3.0 * std::sin(2.0 * kPi * 0.2297 * static_cast<double>(i) + 0.3);
+            x[1][i] = 2.0 * std::sin(2.0 * kPi * 997.0 * static_cast<double>(i) / rate);
+        }
+        out.push_back({"0.23 fs on the left (+9.5 dB), 997 Hz on the right", x});
+    }
+    {
+        Planar x(2, std::vector<double>(n));
+        std::uint32_t s = 2024u;
+        for (std::size_t i = 0; i < n; ++i) {
+            for (int c = 0; c < 2; ++c) {
+                s = s * 1664525u + 1013904223u;
+                x[static_cast<std::size_t>(c)][i] = 8.0 * ((s >> 8) / 16777216.0 - 0.5);
+            }
+        }
+        out.push_back({"white noise at +12 dB", x});
+    }
+    {
+        Planar x(2, std::vector<double>(n, 0.0));
+        for (std::size_t i = n / 8; i + 1 < n; i += n / 4) {
+            x[0][i] = 4.0;
+            x[0][i + 1] = -4.0;
+        }
+        out.push_back({"+12 dB doublets", x});
+    }
+    return out;
+}
+
+void testTheOfflineBrickwallKeepsLengthAndAlignment() {
+    section("EX4 -- offline, the latency is trimmed and the tail flushed: same length, aligned");
+
+    const double ceiling = std::pow(10.0, -1.0 / 20.0);
+    // N is prime, so no block size divides it.
+    const std::size_t N = 10007;
+    Planar under(2, std::vector<double>(N));
+    {
+        const auto l = quarterRateAt45(N, std::pow(10.0, -1.5 / 20.0));
+        for (std::size_t i = 0; i < N; ++i) {
+            under[0][i] = l[i];
+            under[1][i] = 0.8 * std::sin(2.0 * kPi * 440.0 * static_cast<double>(i) / kFs);
+        }
+    }
+    Planar over = overProgrammes(kFs, N)[2].x;
+    over[0][N - 1] = 6.0;   // an over on the very last sample: only the flush reaches it
+
+    for (bool tp : {false, true}) {
+        for (int L : {0, 64, 288}) {
+            const std::string at = std::string(tp ? "true peak" : "sample peak") + ", lookahead " + std::to_string(L);
+            auto fresh = [&] {
+                LookaheadLimiter lim;
+                lim.prepare(kFs, 2, 1024);
+                lim.setLookahead(L);
+                lim.setCeiling(ceiling);
+                lim.setTruePeak(tp);
+                return lim;
+            };
+            // Below the ceiling: the input itself, the same length, not one
+            // sample late -- bit for bit, in double and in float.
+            {
+                auto lim = fresh();
+                const Planar y = offlineAs<double>(lim, under);
+                check(y[0].size() == N && y[0] == under[0] && y[1] == under[1],
+                      at + ", double: below the ceiling the output IS the input, aligned and the same length");
+                auto limF = fresh();
+                const Planar yf = offlineAs<float>(limF, under);
+                bool same = yf[0].size() == N;
+                for (std::size_t i = 0; i < N && same; ++i) {
+                    same = yf[0][i] == static_cast<double>(static_cast<float>(under[0][i])) &&
+                           yf[1][i] == static_cast<double>(static_cast<float>(under[1][i]));
+                }
+                check(same, at + ", float: the same");
+            }
+            // Over it: exactly what streaming gives once the latency is
+            // dropped from the front and silence pushed through the back.
+            {
+                auto offline = fresh();
+                const Planar y = offlineAs<double>(offline, over);
+                auto streaming = fresh();
+                const int d = streaming.latencySamples();
+                Planar padded = over;
+                for (auto& ch : padded) {
+                    ch.resize(N + static_cast<std::size_t>(d), 0.0);
+                }
+                const Planar s = streamAs<double>(streaming, padded);
+                bool same = y[0].size() == N && y[1].size() == N;
+                for (std::size_t c = 0; c < 2 && same; ++c) {
+                    same = std::equal(y[c].begin(), y[c].end(), s[c].begin() + d);
+                }
+                check(same, at + ": over the ceiling, the streamed output with its first " + std::to_string(d) +
+                                " samples dropped and its tail flushed, bit for bit");
+                check(samplePeakOf(y) <= ceiling * (1.0 + 1e-12) && std::fabs(y[0][N - 1]) > 0.5 * ceiling,
+                      at + ": the last sample's over is limited, not cut off: " + std::to_string(y[0][N - 1]));
+                auto inPlace = fresh();
+                check(offlineAs<double>(inPlace, over, true) == y, at + ": in place, the same bit for bit");
+            }
+        }
+    }
+
+    // Edges: nothing, one sample, and a second programme on the same limiter
+    // starting from silence rather than from the first one's tail.
+    LookaheadLimiter lim;
+    lim.prepare(kFs, 2, 1024);
+    lim.setLookahead(64);
+    lim.setCeiling(ceiling);
+    lim.setTruePeak(true);
+    std::vector<double> l0{7.0}, r0{7.0};
+    double* op[2] = {l0.data(), r0.data()};
+    lim.processOffline(static_cast<const double* const*>(op), op, 0);
+    check(l0[0] == 7.0 && r0[0] == 7.0, "zero frames: nothing is written");
+    const Planar one = offlineAs<double>(lim, Planar{{0.25}, {-0.5}});
+    check(one[0][0] == 0.25 && one[1][0] == -0.5, "one frame below the ceiling: itself");
+    const Planar first = offlineAs<double>(lim, over);
+    const Planar second = offlineAs<double>(lim, over);
+    check(first == second, "each programme starts from silence: the same programme twice, the same output");
+}
+
+void testTheTruePeakLimiterInFloatAndAtLowRates() {
+    section("EX4 -- true peak in float, and at 32 and 22.05 kHz (6x and 8x)");
+
+    const double ceilingDb = -1.0;
+    const double ceiling = std::pow(10.0, ceilingDb / 20.0);
+    const auto db = [](double v) { return 20.0 * std::log10(v); };
+    // A float output is the double product rounded once: at most half an
+    // ulp above it.
+    const double floatCeiling = ceiling * (1.0 + std::ldexp(1.0, -24));
+
+    for (double rate : {22050.0, 32000.0, 44100.0, 48000.0}) {
+        for (int L : {0, 64}) {
+            LookaheadLimiter probe;
+            probe.prepare(rate, 2, 1024);
+            probe.setLookahead(L);
+            probe.setTruePeak(true);
+            const std::string at = " at " + std::to_string(static_cast<int>(rate)) + " Hz, lookahead " + std::to_string(L);
+            if (rate < 40000.0) {
+                check(probe.latencySamples() == L + 10, "latency" + at + " is the lookahead + 10: " +
+                                                            std::to_string(probe.latencySamples()));
+            }
+            for (const auto& f : overProgrammes(rate, 16384)) {
+                for (bool asFloat : {false, true}) {
+                    if (!asFloat && rate > 40000.0) {
+                        continue;   // double at 44.1 and 48 kHz is the test above
+                    }
+                    LookaheadLimiter lim;
+                    lim.prepare(rate, 2, 1024);
+                    lim.setLookahead(L);
+                    lim.setCeiling(ceiling);
+                    lim.setTruePeak(true);
+                    const Planar y = asFloat ? streamAs<float>(lim, f.x) : streamAs<double>(lim, f.x);
+                    const std::string what = f.name + at + (asFloat ? ", float" : ", double");
+                    check(samplePeakOf(y) <= (asFloat ? floatCeiling : ceiling * (1.0 + 1e-12)),
+                          what + ": every sample at or under the ceiling");
+                    const double over = db(truePeakOfPlanar(rate, y)) - ceilingDb;
+                    const double allowed = L > 0 ? 0.001 : 0.05;
+                    check(over <= allowed, what + ": true peak " + std::to_string(over) +
+                                               " dB against the ceiling (allowed " + std::to_string(allowed) + ")");
+                }
+            }
+        }
+    }
+}
+
+void testTheTruePeakLimiterInPlaceMonoAndSixChannels() {
+    section("EX4 -- true peak in place, in mono, and on six linked channels");
+
+    const double ceilingDb = -1.0;
+    const double ceiling = std::pow(10.0, ceilingDb / 20.0);
+    const auto db = [](double v) { return 20.0 * std::log10(v); };
+    auto make = [&](int channels) {
+        LookaheadLimiter lim;
+        lim.prepare(kFs, channels, 1024);
+        lim.setLookahead(64);
+        lim.setCeiling(ceiling);
+        lim.setTruePeak(true);
+        return lim;
+    };
+    const Planar noise = overProgrammes(kFs, 8192)[2].x;
+    {
+        auto a = make(2), b = make(2), c = make(2), d = make(2);
+        check(streamAs<double>(a, noise, true) == streamAs<double>(b, noise),
+              "double, in place: the same as into other buffers, bit for bit");
+        check(streamAs<float>(c, noise, true) == streamAs<float>(d, noise), "float, in place: the same");
+    }
+    {
+        auto lim = make(1);
+        const Planar y = streamAs<double>(lim, Planar{quarterRateAt45(8192, 2.0)});
+        const double over = db(truePeakOfPlanar(kFs, y)) - ceilingDb;
+        check(over <= 0.001, "mono: the quarter-rate sine's true peak " + std::to_string(over) + " dB against the ceiling");
+    }
+    {
+        // Five quiet channels and one with the over: one gain for all six.
+        Planar x(6, std::vector<double>(8192));
+        for (std::size_t c = 0; c < 6; ++c) {
+            for (std::size_t i = 0; i < 8192; ++i) {
+                x[c][i] = 0.3 * std::sin(2.0 * kPi * (300.0 + 200.0 * static_cast<double>(c)) *
+                                         static_cast<double>(i) / kFs);
+            }
+        }
+        x[4] = quarterRateAt45(8192, 2.0);
+        auto lim = make(6);
+        const int d = lim.latencySamples();
+        const Planar y = streamAs<double>(lim, x);
+        const double over = db(truePeakOfPlanar(kFs, y)) - ceilingDb;
+        check(over <= 0.001, "six channels: true peak " + std::to_string(over) + " dB against the ceiling");
+        bool linked = true;
+        double ducked = 1.0;
+        for (std::size_t i = static_cast<std::size_t>(d); i < 8192 && linked; ++i) {
+            const double in4 = x[4][i - static_cast<std::size_t>(d)];
+            if (std::fabs(in4) < 0.1) {
+                continue;
+            }
+            const double g = y[4][i] / in4;
+            for (std::size_t c = 0; c < 6 && linked; ++c) {
+                const double inC = x[c][i - static_cast<std::size_t>(d)];
+                if (c != 4 && std::fabs(inC) > 0.05) {
+                    linked = std::fabs(y[c][i] / inC - g) < 1e-9;
+                    ducked = std::min(ducked, y[c][i] / inC);
+                }
+            }
+        }
+        check(linked && ducked < 0.6, "and the gain is linked: every quiet channel ducks with the loud one (to " +
+                                          std::to_string(ducked) + ")");
+    }
+}
+
+void testNonFiniteInputIsSilenceToTheLimiter() {
+    section("EX4 -- a NaN or an infinity reads as silence, in detection and in the audio");
+
+    const double ceiling = std::pow(10.0, -1.0 / 20.0);
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const Planar base = overProgrammes(kFs, 8192)[2].x;
+    Planar poisoned = base, silenced = base;
+    for (std::size_t i = 3000; i < 3300; ++i) {
+        poisoned[0][i] = i % 2 == 1 ? nan : inf;
+        poisoned[1][i] = i % 3 != 0 ? -inf : nan;
+        silenced[0][i] = silenced[1][i] = 0.0;
+    }
+    poisoned[0][5000] = nan;   // and one alone
+    silenced[0][5000] = 0.0;
+    for (bool tp : {false, true}) {
+        for (bool asFloat : {false, true}) {
+            auto run = [&](const Planar& x) {
+                LookaheadLimiter lim;
+                lim.prepare(kFs, 2, 1024);
+                lim.setLookahead(64);
+                lim.setCeiling(ceiling);
+                lim.setTruePeak(tp);
+                return asFloat ? streamAs<float>(lim, x) : streamAs<double>(lim, x);
+            };
+            const Planar y = run(poisoned);
+            bool finite = true;
+            for (const auto& ch : y) {
+                for (double v : ch) {
+                    finite = finite && std::isfinite(v);
+                }
+            }
+            const std::string what = std::string(tp ? "true peak" : "sample peak") + (asFloat ? ", float" : ", double");
+            check(finite && samplePeakOf(y) <= ceiling * (1.0 + 1e-6),
+                  what + ": every sample out is finite and under the ceiling");
+            check(y == run(silenced), what + ": exactly the output of the same programme with silence there");
+        }
+    }
+}
+
+void testTheTruePeakLimiterAgainstAnIndependentReference() {
+    section("EX4 -- the ceiling measured by an interpolator the limiter does not share");
+
+    const double ceilingDb = -1.0;
+    const double ceiling = std::pow(10.0, ceilingDb / 20.0);
+    const auto db = [](double v) { return 20.0 * std::log10(v); };
+
+    // The reference first: sines whose crest is 1, at awkward phases, up to
+    // 0.41 of the rate.
+    double worst = 0.0;
+    for (double rate : {44100.0, 48000.0}) {
+        for (double f : {997.0, 6000.0, 11025.0 * 1.003, 15000.0, 18000.0}) {
+            for (double phase : {0.1, 0.77, 2.3}) {
+                std::vector<double> x(1024);
+                for (std::size_t i = 0; i < x.size(); ++i) {
+                    x[i] = std::sin(2.0 * kPi * f * static_cast<double>(i) / rate + phase);
+                }
+                worst = std::max(worst, std::fabs(db(independentTruePeak(Planar{x}, 128, 896))));
+            }
+        }
+    }
+    check(worst < 0.01, "the reference reads known crests within " + std::to_string(worst) + " dB");
+
+    // THE LIMITER IS HELD TO THE ANNEX'S READING, AND THE ANNEX READS 4x. The
+    // tests above prove the output at the ceiling on that reading; this one
+    // states how far an ideal reconstruction of the same output goes past
+    // it. Two causes, both the 4x method's, not the gain's:
+    //  - between its points. At 4x the interpolator reads at the odd eighths
+    //    of each interval (TruePeakMeter::design), and the quarter-rate sine
+    //    at 45 degrees has its crest at the half, an eighth from the nearest
+    //    point: cos(pi / 16) is 0.168 dB low.
+    //  - near the Nyquist frequency, where its 16 taps roll off: broadband
+    //    noise at +12 dB, limited, reads 1.6 dB higher on the reference.
+    // The bounds are the measured values rounded up, so the gap is on the
+    // record and cannot grow unseen. Whether the brickwall should read finer
+    // than the meter is a decision for the director (the devices log).
+    struct Gap {
+        const char* name;
+        double bound;   // dB over the ceiling, on the reference
+    };
+    const Gap gaps[] = {{"quarter-rate", 0.17}, {"0.23 fs", 0.02}, {"noise", 1.7}, {"doublets", 0.2}};
+    for (double rate : {44100.0, 48000.0}) {
+        for (const auto& f : overProgrammes(rate, 4096)) {
+            LookaheadLimiter lim;
+            lim.prepare(rate, 2, 1024);
+            lim.setLookahead(64);
+            lim.setCeiling(ceiling);
+            lim.setTruePeak(true);
+            const Planar y = streamAs<double>(lim, f.x);
+            // Past the latency, with the kernel's whole span either side.
+            const double over =
+                db(independentTruePeak(y, static_cast<std::size_t>(lim.latencySamples()) + 64, y[0].size() - 64)) -
+                ceilingDb;
+            const double annex = db(truePeakOfPlanar(rate, y)) - ceilingDb;
+            double bound = 0.0;
+            for (const auto& g : gaps) {
+                if (f.name.find(g.name) != std::string::npos) {
+                    bound = g.bound;
+                }
+            }
+            std::printf("    [measured] %s at %d Hz: %+.4f dB on the Annex's 4x reading, %+.4f dB on the reference\n",
+                        f.name.c_str(), static_cast<int>(rate), annex, over);
+            check(bound > 0.0 && over <= bound,
+                  f.name + " at " + std::to_string(static_cast<int>(rate)) + " Hz: on the reference " +
+                      std::to_string(over) + " dB over the ceiling (bound " + std::to_string(bound) + ")");
+        }
+    }
 }
 
 // ===========================================================================
@@ -1469,6 +1949,11 @@ int main() {
     testTheTruePeakLimiterIsAPureDelayBelowTheCeiling();
     testTheTruePeakLimiterHoldsTheCeilingBetweenTheSamples();
     testTheTruePeakLimiterAllocatesNothing();
+    testTheOfflineBrickwallKeepsLengthAndAlignment();
+    testTheTruePeakLimiterInFloatAndAtLowRates();
+    testTheTruePeakLimiterInPlaceMonoAndSixChannels();
+    testNonFiniteInputIsSilenceToTheLimiter();
+    testTheTruePeakLimiterAgainstAnIndependentReference();
     testRmscIsInstantAndDepthZeroIsBypass();
     testAHotKeyNeverInvertsTheMusic();
     testTheSidebandsAreACharacterYouCanTurnOff();

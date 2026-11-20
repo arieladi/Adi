@@ -49,6 +49,16 @@
 // input, delayed, bit for bit. From 176.4 kHz the Annex oversamples by 1 and
 // the mode is the sample-peak limiter with no added delay.
 //
+// NON-FINITE INPUT (EX4). A NaN or an infinity is read as silence, by the
+// detector and in the delayed audio alike: it cannot leave as a non-finite
+// sample or poison the gain, and the output is exactly that of the same
+// programme with silence there.
+//
+// OFFLINE (EX4). processOffline() runs a whole programme: the latency is
+// dropped from the front and silence pushed through the back, so the output
+// has the input's length and lines up with it, sample for sample -- below the
+// ceiling it is the input, bit for bit. That is the export's stage.
+//
 // float or double audio; the delay line is double either way.
 
 #pragma once
@@ -97,14 +107,24 @@ public:
     void process(const float* const* in, float* const* out, int frames) noexcept;
     void process(const double* const* in, double* const* out, int frames) noexcept;
 
+    /// OFFLINE, an export worker's call (it allocates a block of scratch): a
+    /// whole programme of `frames` on the prepared channels, from silence. The
+    /// latency is trimmed and the tail flushed, so out[c][i] is the limited
+    /// in[c][i] and the length is the input's. `in` and `out` may be the same
+    /// buffers. Exactly process() over the input then latencySamples() of
+    /// silence, with the first latencySamples() outputs dropped.
+    void processOffline(const float* const* in, float* const* out, std::int64_t frames);
+    void processOffline(const double* const* in, double* const* out, std::int64_t frames);
+
 private:
     void reset() noexcept;
     template <class Sample>
     void run(const Sample* const* in, Sample* const* out, int frames) noexcept;
     /// True-peak mode: takes input frame i, returns the target gain for the
     /// sample truePeakDelay() behind it.
+    double truePeakTarget() noexcept;
     template <class Sample>
-    double truePeakTarget(const Sample* const* in, int i) noexcept;
+    void runOffline(const Sample* const* in, Sample* const* out, std::int64_t frames);
 
     double sr_ = 48000.0;
     int channels_ = 0;
@@ -124,6 +144,9 @@ private:
     int historyHead_ = 0;
     double segments_[2 * kTruePeakSpread + 1] = {};
     int segmentHead_ = 0;
+
+    // The frame being processed, each sample finite (non-finite read as 0).
+    std::vector<double> frame_;
 
     // The delayed audio: one ring per channel, maxLookahead + truePeakDelay
     // + 1 long.
