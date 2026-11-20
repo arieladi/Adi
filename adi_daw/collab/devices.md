@@ -93,6 +93,33 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-20 — DEV-28 / LD6: the one loudness meter against ffmpeg's ebur128 filter, the outside check on its 10 Hz range
+
+**PR requested:** head `devices/loudness-ffmpeg` (a718db94, two commits on d0af0e15), base `main`.
+It adds one test, `adi_loudness_ffmpeg_tests`, and its lines in `cmake/devices/loudness.cmake`.
+
+- **Why ffmpeg, beside libebur128.** libebur128 (LD3) hops the short-term window at 1 Hz, so its
+  loudness range is not Tech 3342's. ffmpeg's `ebur128` filter hops it at 10 Hz, as ADI's meter
+  does. It is the outside check on the 10 Hz LRA.
+- **How it measures.**
+  - Each signal is written as a 32-bit float WAV, with byte order fixed.
+  - The ffmpeg program on PATH runs `ebur128=metadata=1`. It is test-only; nothing of it is linked.
+  - ADI's I and LRA are held to the filter's last `lavfi.r128.I` and `.LRA`.
+  - Only at 48 kHz, because the filter resamples anything else.
+  - Signals: Tech 3342 cases 1–4, a speech-like noise programme with pauses, and a tone between
+    silences.
+- **Measured.** The range agrees to 0.001 LU on every case, and I to between 0.005 and 0.007 LU.
+  The suite holds them to 0.01 and 0.02 LU; the plan asks for 0.1.
+- **Plant:** a 94th percentile in ADI's range fails the speech-like case.
+- **Without ffmpeg.** The suite exits 77, which CTest reports as Skipped, not Passed.
+  `ADI_REQUIRE_ORACLES=1` turns that into a failure. Both paths were checked.
+- **Reviewed** on three dimensions with three skeptics per finding. One defect was confirmed: ffmpeg
+  ran without `-nostdin`. It is fixed in the second commit, along with the skip code, a guard
+  against a throw, and comments that no longer imply a CI leg exists.
+- CTest 268/268 at PD_FLOATSIZE 32 and 64. The new suite takes about 15 s.
+- **For win (.github):** no runner image ships ffmpeg, so today the check is skipped everywhere.
+  One Linux leg needs `apt-get install -y ffmpeg` and `ADI_REQUIRE_ORACLES=1` on its ctest step.
+
 ## 2026-11-20 — DEV-09 PD2: a seeded patch-text fuzz, and the two Pd faults it and its review found
 
 **PR requested:** head `devices/pd-fuzz` (56148ce7, two commits), stacked on `devices/pd-ar8`, base
@@ -272,7 +299,7 @@ only; no product code changes.
 - the "LRA not yet stable" flag. **For win:** its definition needs a ruling. One option is fewer
   than N gated short-term values; another is less than T seconds since reset.
 - a loudness case in the block benchmark: done (the entry above);
-- the ffmpeg LRA oracle;
+- the ffmpeg LRA oracle: done (LD6, the entry above);
 - the provenance comments: done (the entry above).
 
 ## 2026-11-20 — DF-E61: a built-in's stored value that went A to B and back to A is heard over the lane
