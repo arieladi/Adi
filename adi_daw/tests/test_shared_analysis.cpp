@@ -150,11 +150,11 @@ void realtimeMaximumSpectrum() {
               fresh->binsDbfs.front() == adi::dsp::kDbFloor && f.acquireCalls == 1,
           "a new maximum starts at its first complete fresh window on the existing tap");
 
-    f.tap->write(quiet.data(), quiet.data(), window, 2000, false, 2);
+    f.tap->write(static_cast<const float *>(nullptr), nullptr, window, 2000, false, 2);
     f.broker.pump();
     const auto settled = f.broker.stats();
     for (int i = 0; i < 12; ++i) {
-        f.tap->write(quiet.data(), quiet.data(), window, 2000, false, 2);
+        f.tap->write(static_cast<const float *>(nullptr), nullptr, window, 2000, false, 2);
         f.broker.pump();
     }
     const auto parked = f.broker.stats();
