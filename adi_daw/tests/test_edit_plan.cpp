@@ -305,6 +305,33 @@ void trimWarpFadeDomains() {
               tableRows(store,"clip_playback_details")==oldPhysical,
           "warped source-zero extension uses ticks and preserves its ignored obsolete physical pins");
 }
+void clipEditBoundaries() {
+    Project project;
+    auto& store = *project.store;
+    addClip(store, 7, 22, 0, q, 4*q);
+    store.db().exec("INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(7,11531520)");
+    const ReadGuard before(store);
+    check(!prepareResizeEnd(store, scope(), {7,{0,q}}, locked()).ok && before.unchanged(store),
+          "resizing End onto Start refuses a zero-length clip before writing");
+    check(!clip_edit::prepareSplit(store, 7, 8, {0,3*q}, 48000).ok && before.unchanged(store),
+          "a split on an unlooped MIDI End refuses an empty right source window");
+    check(clip_edit::prepareSplit(store, 7, 8, {0,2*q}, 48000).ok && before.unchanged(store),
+          "a split before End still prepares without writing");
+    store.db().exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=23063040 WHERE id=7");
+    check(clip_edit::prepareSplit(store, 7, 8, {0,3*q}, 48000).ok,
+          "an enabled source loop can split past its inactive End marker");
+
+    addClip(store, 9, 21, 0, q, 4*q, "audio");
+    store.db().exec("INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'pinned-split-end','wav');"
+                    "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(9,300,0,100000);"
+                    "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(9,23063040);"
+                    "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(9,0,1000000000)");
+    const ReadGuard audioBefore(store);
+    check(!clip_edit::prepareSplit(store, 9, 10, {0,3*q}, 48000).ok && audioBefore.unchanged(store),
+          "an unwarped split checks the physical End when its display tick is stale");
+    check(clip_edit::prepareSplit(store, 9, 10, {0,2*q}, 48000).ok && audioBefore.unchanged(store),
+          "an unwarped split before the physical End still prepares");
+}
 void relationsAndSurvivors() {
     // Victim [2,6): disjoint, both touches, whole, prefix, suffix and middle.
     const std::array<std::pair<int,int>,8> masks={{{0,1},{0,2},{6,7},{2,6},{1,3},{5,7},{3,5},{2,3}}};
@@ -1005,7 +1032,7 @@ void seededTransactions() {
 
 int main() {
     try {
-        anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();roundedPhysicalBoundaries();
+        clipEditBoundaries();anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();roundedPhysicalBoundaries();
         signedIdentitiesAndKinds();preparationAndTransactions();descriptionBinding();automationAdmissionAndPolicy();
         irrelevantRowsAndAliasDeletion();placementAdapters();seededTransactions();
     } catch(const std::exception& error) {check(false,error.what());}
