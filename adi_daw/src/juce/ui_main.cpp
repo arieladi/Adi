@@ -212,37 +212,37 @@ class AdiApplication final : public juce::JUCEApplication,
             libraryThread_.detach();
     }
     void discoverRowPlugins() {
-        if (scanRunning_) { if (root_) root_->say("Plug-in scan in progress."); return; }
-        if (pluginScan_.joinable()) pluginScan_.join();
-        scanRunning_ = true;
-        if (root_) root_->say("Scanning VST3 and CLAP plug-ins...");
-        auto cancel = cancelScan_;
-        pluginScan_ = std::thread([this, cancel] {
-            std::vector<rows::PluginRef> result;
-            std::string detail;
-            try {
-                device::JuceDeviceLoader discovery;
-                scan::Config config;
-                config.process.cancel = cancel.get();
-                discovery.setScanConfig(config);
-                discovery.scan();
-                result = discovery.knownPluginReferences();
-                const auto &report = discovery.lastScanReport();
-                if (!report.failures.empty()) detail = report.failures.front().error;
-                else if (!report.complete) detail = "Scan incomplete.";
-            } catch (const std::exception& error) { detail = error.what(); }
-            if (!cancel->load()) juce::MessageManager::callAsync([this, cancel, found = std::move(result), detail] () mutable {
-                if (cancel->load()) return;
-                scanRunning_ = false;
-                scannedPlugins_ = std::move(found);
-                if (root_) root_->say("Found " + std::to_string(scannedPlugins_.size()) +
-                    " plug-ins. Open + on a channel to choose one." + (detail.empty() ? "" : " " + detail));
-            });
-        });
+        if (!root_)
+            return;
+        const auto admission = loader_.startDiscovery(device::DiscoveryMode::Incremental);
+        if (admission.status == device::DiscoveryStart::Started) {
+            rowPluginScan_ = admission.job;
+            root_->say("Scanning VST3 and CLAP plug-ins...");
+        } else if (admission.status == device::DiscoveryStart::Busy) {
+            root_->say("Plug-in scan in progress.");
+        } else {
+            root_->say(admission.error.empty() ? "Plug-in scanning is unavailable." : admission.error);
+        }
+    }
+    void updateRowPluginScan() {
+        if (rowPluginScan_ == 0)
+            return;
+        const auto result = loader_.adoptDiscovery(rowPluginScan_);
+        if (!result)
+            return;
+        rowPluginScan_ = 0;
+        if (!root_)
+            return;
+        if (result->outcome != device::DiscoveryOutcome::Published || !result->catalogue) {
+            root_->say(result->error.empty() ? "Plug-in scan did not finish." : result->error);
+            return;
+        }
+        const auto count = result->catalogue->vst3.size() + result->catalogue->clap.size();
+        root_->say("Found " + std::to_string(count) + " plug-ins. Open + on a channel to choose one.");
     }
     void shutdown() override {
-        cancelScan_->store(true);
-        if (pluginScan_.joinable()) pluginScan_.join();
+        if (rowPluginScan_ != 0)
+            loader_.cancelDiscovery(rowPluginScan_);
         // A Collect and Export still running finishes first: its ZIP is not left half written.
         if (export_.joinable())
             export_.join();
@@ -477,9 +477,33 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->catalogPlugins = [this] {
             auto refs = document_->session().model().pluginRefs;
-            const auto known = loader_.knownPluginReferences();
-            refs.insert(refs.end(), scannedPlugins_.begin(), scannedPlugins_.end());
-            refs.insert(refs.end(), known.begin(), known.end());
+            const auto catalogue = loader_.catalogue();
+            if (!catalogue)
+                return refs;
+            refs.reserve(refs.size() + catalogue->vst3.size() + catalogue->clap.size());
+            for (const auto &description : catalogue->vst3) {
+                const auto identity = device::identityOf(description);
+                rows::PluginRef ref;
+                ref.format = identity.format;
+                ref.uid = identity.uid;
+                ref.vendor = identity.vendor;
+                ref.name = identity.name;
+                ref.version = identity.version;
+                ref.subtype = description.isInstrument ? "instrument" : "effect";
+                ref.pathHint = description.fileOrIdentifier.toStdString();
+                refs.push_back(std::move(ref));
+            }
+            for (const auto &plugin : catalogue->clap) {
+                rows::PluginRef ref;
+                ref.format = "clap";
+                ref.uid = plugin.id;
+                ref.vendor = plugin.vendor;
+                ref.name = plugin.name;
+                ref.version = plugin.version;
+                ref.subtype = plugin.isInstrument ? "instrument" : "effect";
+                ref.pathHint = plugin.bundlePath;
+                refs.push_back(std::move(ref));
+            }
             return refs;
         };
         root->scanPlugins = [this] { discoverRowPlugins(); };
@@ -939,6 +963,7 @@ class AdiApplication final : public juce::JUCEApplication,
             settingsWindow_->panel().refreshValues();
     }
     void timerCallback() override {
+        updateRowPluginScan();
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
@@ -995,10 +1020,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
-    std::thread pluginScan_;
-    std::shared_ptr<std::atomic<bool>> cancelScan_ = std::make_shared<std::atomic<bool>>(false);
-    std::vector<rows::PluginRef> scannedPlugins_;
-    bool scanRunning_ = false;
+    std::uint64_t rowPluginScan_ = 0;
     // The MIDI port host (SRF-05) and until when the MIDI Indicators stay lit.
     std::unique_ptr<MidiPortHost> midiPorts_;
     juce::uint32 midiLitUntil_ = 0;
