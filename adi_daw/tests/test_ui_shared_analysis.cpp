@@ -2187,7 +2187,8 @@ void compareAndAveragePages() {
     raw.reset(); publishedAverage.reset();
 
     using Mode = SharedSpectrumView::Mode;
-    pages.setMode(Mode::SpectrumMaximum);
+    pages.setPage(Page::Spectrum);
+    pages.spectrumTraceBox.setSelectedId(static_cast<int>(Mode::SpectrumMaximum) + 1, juce::sendNotificationSync);
     pages.frame(broker, original, main, guitar);
     SharedAnalysis::Request maximumRequest{main};
     maximumRequest.outputs = SharedAnalysis::RealtimeMaximum;
@@ -2197,7 +2198,8 @@ void compareAndAveragePages() {
     broker->pump();
     pages.frame(broker, original, main, guitar);
     const auto peak = retainedMaximum.readMaximum();
-    check(pages.page() == Page::Maximum && pages.pageBox.getText() == "Realtime Maximum" &&
+    check(pages.page() == Page::Spectrum && pages.pageBox.getText() == "Spectrum" &&
+              pages.spectrumTraceBox.getText() == "Realtime Maximum" && pages.spectrumTraceBox.isShowing() &&
               pages.detail.view.mode() == Mode::SpectrumMaximum &&
               pages.detail.view.getTitle() == "Realtime Maximum" && pages.detail.scaleBox.isShowing(),
           "Realtime Maximum is selectable with the existing Spectrum controls and an accessible label");
@@ -2209,6 +2211,14 @@ void compareAndAveragePages() {
     pages.frame(broker, original, main, guitar);
     check(pages.detail.view.spectrumBins().empty() && retainedMaximum.readMaximum() == peak,
           "clearing the maximum display leaves a sibling's numerical history intact");
+    pages.setPage(Page::Analysis);
+    check(!pages.spectrumTraceBox.isShowing() && broker->stats().consumers == 1 &&
+              retainedMaximum.readMaximum() == peak,
+          "leaving Spectrum hides its trace selector and releases the pane's maximum lease");
+    pages.setPage(Page::Spectrum);
+    pages.frame(broker, original, main, guitar);
+    check(pages.detail.view.mode() == Mode::SpectrumMaximum && broker->stats().consumers == 2,
+          "returning to Spectrum restores the chosen trace");
     pages.setVisible(false);
     check(broker->stats().consumers == 1 && retainedMaximum.readMaximum() == peak,
           "hiding the maximum page drops only its own lease");

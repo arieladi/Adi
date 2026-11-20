@@ -11,7 +11,7 @@ class SnapshotReader;
 
 class MixAnalysers final : public juce::Component {
   public:
-    enum class Page { All, Spectrogram, Spectrum, Scope, Phase, Loudness, Analysis, Average, Compare, Maximum };
+    enum class Page { All, Spectrogram, Spectrum, Scope, Phase, Loudness, Analysis, Average, Compare };
     MixAnalysers();
     ~MixAnalysers() override;
     void setPage(Page);
@@ -27,7 +27,7 @@ class MixAnalysers final : public juce::Component {
     void resized() override;
 
     AnalysisPane detail;
-    juce::ComboBox pageBox, sourceBox;
+    juce::ComboBox pageBox, sourceBox, spectrumTraceBox;
     juce::ComboBox compareA, compareB, compareScale;
     juce::TextButton holdB{"Hold B"}, clearCompare{"Clear"};
 

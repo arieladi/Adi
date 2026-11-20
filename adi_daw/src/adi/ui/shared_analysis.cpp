@@ -124,7 +124,7 @@ struct SharedAnalysis::Domain {
     std::unique_ptr<dsp::LinearMagnitudeAverage> average;
     struct MaximumHistory {
         std::vector<float> bins;
-        float fallPerHop = 0.f, magnitudeFloor = 0.f;
+        float decayStep = 0.f, magnitudeFloor = 0.f;
         std::int64_t afterSequence = 0;
         std::uint64_t lastWindow = 0;
     };
@@ -217,7 +217,9 @@ struct SharedAnalysis::Domain {
             std::fill(maximum->bins.begin(), maximum->bins.end(), 0.f);
             maximum->lastWindow = 0;
         }
-        neutralMaximum.store(true, std::memory_order_release);
+        // A requested history must publish one new quiet window before the
+        // parked-silence fast path can skip more samples.
+        neutralMaximum.store(!maximum, std::memory_order_release);
     }
     // The worker sees only fully prepared history. It never allocates storage
     // for an inactive mode or changes the mode's hop rate.
@@ -231,7 +233,8 @@ struct SharedAnalysis::Domain {
                     next->bins.resize(linear.size());
                     maximum = std::move(next);
                 }
-                maximum->fallPerHop = static_cast<float>(std::pow(.1, request.hopSize / tap->sampleRate()));
+                const double hopSeconds = request.hopSize / tap->sampleRate();
+                maximum->decayStep = static_cast<float>(-std::expm1(std::log(.1) * hopSeconds));
                 maximum->magnitudeFloor = std::pow(10.f, dsp::kDbFloor / 20.f);
                 maximum->afterSequence = sequence;
             }
@@ -249,10 +252,9 @@ struct SharedAnalysis::Domain {
         if (epoch) {
             ++sourceEpoch;
             resetAverageForGap();
-            if (maximum) {
-                maximum->afterSequence = std::min(maximum->afterSequence, cursor.next);
-                resetMaximum();
-            }
+            // A discontinuity clears the history but cannot admit older
+            // samples from the same tap. A replacement tap uses startAt().
+            resetMaximum();
         }
         publishResult({});
     }
@@ -504,7 +506,9 @@ struct SharedAnalysis::Domain {
             if (maximumHopEligible) {
                 bool quiet = true;
                 for (std::size_t i = 0; i < linear.size(); ++i) {
-                    const auto level = std::max(linear[i], maximum->bins[i] * maximum->fallPerHop);
+                    const float input = linear[i];
+                    const float previous = maximum->bins[i];
+                    const float level = std::max(input, previous + (input - previous) * maximum->decayStep);
                     maximum->bins[i] = level > maximum->magnitudeFloor ? level : 0.f;
                     quiet = quiet && maximum->bins[i] == 0.f;
                 }
@@ -543,7 +547,8 @@ struct SharedAnalysis::Domain {
     }
     std::shared_ptr<const MaximumResult> makeMaximumResult(const std::shared_ptr<const Result> &window) noexcept {
         if (!maximum || maximum->lastWindow == 0 || !(window->outputs & RealtimeMaximum)) return {};
-        if (auto previous = readMaximumResult(); previous && previous->window->windowSerial == maximum->lastWindow)
+        if (auto previous = readMaximumResult(); previous && previous->window->windowSerial == maximum->lastWindow &&
+            previous->window->outputs == window->outputs)
             return previous;
         try {
             auto publication = std::make_shared<MaximumResult>();
@@ -1230,7 +1235,8 @@ std::shared_ptr<const SharedAnalysis::AverageResult> SharedAnalysis::Lease::read
     return publication && publication->window && (publication->window->outputs & outputs_) == outputs_ ? publication : nullptr;
 }
 std::shared_ptr<const SharedAnalysis::MaximumResult> SharedAnalysis::Lease::readMaximum() const noexcept {
-    return (outputs_ & RealtimeMaximum) && available() ? domain_->readMaximumResult() : nullptr;
+    const auto publication = (outputs_ & RealtimeMaximum) && available() ? domain_->readMaximumResult() : nullptr;
+    return publication && publication->window && (publication->window->outputs & outputs_) == outputs_ ? publication : nullptr;
 }
 std::shared_ptr<const SharedAnalysis::StereoMeterResult> SharedAnalysis::Lease::readStereoMeter() const noexcept {
     return available() && domain_->meter ? domain_->readMeterResult() : nullptr;
