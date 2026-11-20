@@ -6,6 +6,7 @@
 #include "juce/juce_device_loader.hpp"
 #include "juce/plugin_search_settings.hpp"
 #include "app_audio_page.hpp"
+#include "app_midi_ports.hpp"
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
@@ -104,6 +105,24 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         startLibrary();
+        // The MIDI ports (SRF-05): listed and opened by the Settings' MIDI Ports; never in a smoke run.
+        if (smokeOutput_ == juce::File{}) {
+            midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); });
+            // A port plugged in or out, or a switch thrown: the Settings' table follows.
+            // Posted: a refresh can run inside a Settings row's own commit, which the page must outlive.
+            midiPorts_->onChange = [this] {
+                juce::MessageManager::callAsync([this] {
+                    if (juce::JUCEApplicationBase::getInstance() != this || !settingsWindow_)
+                        return;
+                    auto &panel = settingsWindow_->panel();
+                    if (auto *table = dynamic_cast<MidiPortsTable *>(panel.midiPortsTable())) {
+                        table->rebuild();
+                        if (panel.page() == "Tempo & MIDI" && !panel.finding())
+                            panel.relayout(); // its height may have changed; its rows and scroll stay
+                    }
+                });
+            };
+        }
         startTimer(20);
     }
     // The browser's Samples and Places (D1): the library index (#102) at its app-data file, on one
@@ -200,6 +219,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (import_.joinable())
             import_.join();
         stopLibrary();
+        midiPorts_.reset();
         stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
@@ -787,9 +807,19 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
                 // settings, and every open window follows at its next frame.
+                // Live's MIDI Ports table on the Tempo & MIDI page (SRF-05).
+                if (midiPorts_)
+                    settingsWindow_->panel().midiPorts = [this]() -> std::unique_ptr<juce::Component> {
+                        return std::make_unique<MidiPortsTable>(*midiPorts_, *settings_);
+                    };
                 settingsWindow_->panel().onChange = [this] {
                     commands_->reload();
                     configurePluginSources();
+                    // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
+                    juce::MessageManager::callAsync([this] {
+                        if (juce::JUCEApplicationBase::getInstance() == this && midiPorts_)
+                            midiPorts_->refresh();
+                    });
                 };
             }
             settingsWindow_->setVisible(true);
@@ -858,6 +888,14 @@ class AdiApplication final : public juce::JUCEApplication,
                     root_->selectClip(landed->clips.front());
             }
         }
+        if (midiPorts_ && root_) {
+            // The ports' events go to the engine's live MIDI input once it is on main (ADR-0248 d6 item
+            // 4); until then they light the MIDI Indicators for 150 ms and are let go.
+            const auto now = juce::Time::getMillisecondCounter();
+            if (midiPorts_->drain({}) > 0)
+                midiLitUntil_ = now + 150;
+            root_->setMidiIn(now < midiLitUntil_);
+        }
         if (floating_) {
             floating_->collect();
             syncMixView(*floating_, *root_);
@@ -894,6 +932,9 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
+    // The MIDI port host (SRF-05) and until when the MIDI Indicators stay lit.
+    std::unique_ptr<MidiPortHost> midiPorts_;
+    juce::uint32 midiLitUntil_ = 0;
     std::unique_ptr<ProjectDocument> document_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;

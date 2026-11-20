@@ -279,10 +279,13 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     for (auto *item : items())
         if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo &&
             item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
-            item != &loop && item != &loopStart && item != &loopLength && item != &record && item != &overdub)
+            item != &loop && item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
+            item != &indicators)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
+    // The MIDI Indicators show what comes in; a click on them does nothing, as Live's.
+    indicators.onClick = [this] { indicators.setToggleState(root_.midiIn(), juce::dontSendNotification); };
     automationArm.setToggleState(true, juce::dontSendNotification); // on in Live's new Set
 }
 std::vector<BarItem *> TransportBar::items() {
@@ -376,6 +379,7 @@ void TransportBar::refresh() {
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     record.setToggleState(root_.isRecording(), juce::dontSendNotification);
     overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);
+    indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
     // Re-Enable Automation lights from the frame's snapshot (manual 25.4); Automation Arm from the
     // session, on without one as Live's new Set (manual 25.1).
