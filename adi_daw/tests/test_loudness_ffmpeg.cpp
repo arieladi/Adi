@@ -14,8 +14,9 @@
 // the signals are 48 kHz: Tech 3342's cases 1-4, and a speech-like noise
 // programme with level steps and pauses, so both gates do work.
 //
-// Without an ffmpeg on PATH the suite passes as skipped, unless
-// ADI_REQUIRE_ORACLES=1 is set, for the CI leg that must run it.
+// Without an ffmpeg on PATH the suite reports itself skipped (exit 77, which
+// CTest shows as Not Run), unless ADI_REQUIRE_ORACLES=1 is set: then it fails.
+// No CI leg sets it yet; win adds one with ffmpeg installed.
 
 #include "adi/dsp/loudness.hpp"
 
@@ -30,6 +31,7 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -211,7 +213,7 @@ Readings measuredByFfmpeg(const fs::path& dir, const Signal& x) {
                              std::string("/d ") +
 #endif
                              quote(dir) +
-                             " && ffmpeg -hide_banner -nostats -loglevel error -y -i in.wav -af "
+                             " && ffmpeg -nostdin -hide_banner -nostats -loglevel error -y -i in.wav -af "
                              "\"ebur128=metadata=1,ametadata=mode=print:file=out.txt\" -f null -";
     if (run(line, dir / "ffmpeg.log") != 0) {
         return {};
@@ -224,24 +226,23 @@ Readings measuredByFfmpeg(const fs::path& dir, const Signal& x) {
     return r;
 }
 
-}  // namespace
+/// CTest's SKIP_RETURN_CODE for this suite (cmake/devices/loudness.cmake).
+constexpr int kSkipped = 77;
 
-int main() {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::printf("adi_loudness_ffmpeg_tests -- DEV-28 / LD6, against ffmpeg's ebur128 filter\n");
+int suite() {
     adi::test::TempDirectory tmp("loudness_ffmpeg", "wav");
     const bool required = [] {
         const char* v = envVar("ADI_REQUIRE_ORACLES");
         return v != nullptr && std::string(v) == "1";
     }();
-    if (run("ffmpeg -hide_banner -version", tmp.path() / "version.log") != 0) {
-        if (required) {
-            check(false, "ADI_REQUIRE_ORACLES=1, and there is no ffmpeg on PATH");
-        } else {
+    if (run("ffmpeg -nostdin -hide_banner -version", tmp.path() / "version.log") != 0) {
+        if (!required) {
             std::printf("  skipped: no ffmpeg on PATH (ADI_REQUIRE_ORACLES=1 makes this a failure)\n");
+            return kSkipped;
         }
-        std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
-        return failures ? 1 : 0;
+        check(false, "ADI_REQUIRE_ORACLES=1, and there is no ffmpeg on PATH");
+        std::printf("\nFAILED -- %d checks, %d failure(s)\n", checks, failures);
+        return 1;
     }
 
     const double inf = std::numeric_limits<double>::infinity();
@@ -267,4 +268,17 @@ int main() {
     }
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;
+}
+
+}  // namespace
+
+int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::printf("adi_loudness_ffmpeg_tests -- DEV-28 / LD6, against ffmpeg's ebur128 filter\n");
+    try {
+        return suite();
+    } catch (const std::exception& e) {
+        std::printf("FAIL  the suite threw: %s\n", e.what());
+        return 1;
+    }
 }
