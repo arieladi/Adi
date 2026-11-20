@@ -15,6 +15,14 @@ limit 8 MiB. The owner clock supplies nonnegative Unix microseconds. Use one
 owner at a time per Scanner/registry connection, on an owner worker. These are
 blocking services, not UI/audio callback work.
 
+A missing or unusable helper executable and an OS launch refusal report
+`scan::State::HelperCouldNotStart`. The VST3 and CLAP batches carry this state
+into `scan::Report::failures`, including a refusal before the first candidate.
+The N58 discovery result retains the prior accepted catalogue and exposes the
+typed failure to its owner during adoption. A launch refusal abandons an
+admitted ticket without recording a plug-in failure. A CacheOnly read can use
+the registry without a deployed helper.
+
 `probe(format,path,validator,context)` resolves an existing native canonical
 path, checks typed negative state, commits a pending marker before success-cache lookup or launch and invokes the helper with an
 explicit argument vector. It checks exit status and validates the whole packet,
