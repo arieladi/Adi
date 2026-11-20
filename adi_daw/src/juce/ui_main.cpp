@@ -555,8 +555,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
-        // A VST3 or CLAP plug-in from the browser (DF-W9 on N57): one undo step; the session makes it
-        // through the gated loader, so a scan running meanwhile is waited for.
+        // A VST3 or CLAP plug-in from the browser (DF-W9 on N57): one undo step. The Browser lists the
+        // loader's catalogue (N58), so the session makes it from a catalogue hit, which the loader serves
+        // while a discovery runs too. Every listed plug-in carries its kind; `kindGuessed` is the
+        // fallback for one that does not.
         root->loadPlugin = [this](rows::PluginRef ref, std::int64_t track, std::optional<std::int64_t> before,
                                   bool kindGuessed) {
             // A plug-in the project already holds keeps the kind its reference stores.
@@ -584,8 +586,7 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto kind = ref.subtype == "instrument" ? "an instrument" : ref.subtype == "midi_effect" ? "a MIDI effect" : "an audio effect";
             if (kindGuessed)
                 root_->say(stored ? ref.name + " went in as " + kind + ", as this project holds it." :
-                                    ref.name + " went in as " + kind +
-                                        ": ADI does not know a VST3's kind until its plug-in catalogue lists it (N58).");
+                                    ref.name + " went in as " + kind + ": its plug-in catalogue does not say its kind.");
             return true;
         };
         // The control bar's Re-Enable Automation and Automation Arm (manual 25.4, 25.1; N26): the
