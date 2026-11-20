@@ -467,11 +467,10 @@ void workerOwnRequestPage(Precision precision) {
 }
 void silentAfterEnd(Precision precision) {
     Fixture fixture;
-    // End at 40000 frames (120 bpm) with the source end still pinned to the
-    // whole file, as an import followed by moving Start leaves it. The clip
-    // plays silence from End to its arrangement end.
+    // Both clocks describe End at frame 40000 (120 bpm). The clip plays
+    // silence from its physical source End to its arrangement end.
     fixture.store->db().exec("INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,9609600);"
-                             "INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,2000000000)");
+                             "INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,833333333)");
     fixture.rebuild();
     fixture.clips->stallForTest(true);
     const auto ready=fixture.clips->readiness();const auto sources=fixture.clips->sourcesFor(1);

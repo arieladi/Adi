@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ops.hpp"
+#include "adi/store_rows.hpp"
 #include <span>
 #include <string_view>
 namespace adi {
+namespace engine { enum class RouteChoice : std::uint8_t; }
 struct BuiltinInfo {
     std::string_view uid,name,category,group;
     int inputs=2;
@@ -23,6 +25,12 @@ struct PreparedBuiltinInsert {
 };
 [[nodiscard]] PreparedBuiltinInsert prepareBuiltinInsert(Store&,std::string_view uid,
     std::int64_t track,std::optional<std::int64_t> beforeDevice={});
+struct PluginInsertOptions {
+    bool replaceInstrument = false;
+    std::optional<engine::RouteChoice> expressionRoute;
+};
+[[nodiscard]] PreparedBuiltinInsert preparePluginInsert(Store&,const rows::PluginRef&,std::int64_t track,
+    std::optional<std::int64_t> beforeDevice={},const PluginInsertOptions& = {});
 [[nodiscard]] CommitResult commitBuiltinInsert(Store&,const PreparedBuiltinInsert&,Actor=Actor::User);
 std::span<const OpDescriptor> builtinReferenceOps();
 }

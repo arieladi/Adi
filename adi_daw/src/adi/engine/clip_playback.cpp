@@ -67,7 +67,7 @@ struct Clip {
     std::int64_t clipId = 0, mediaId = 0;
     std::string storedBlake3;
     std::int64_t track = 0, start = 0, end = 0, offset = 0, length = 0;
-    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0, playEnd = 0;
+    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0;
     std::int64_t inCurve = 1, outCurve = 1;
     std::optional<double> inTension,outTension;
     std::array<std::optional<std::int64_t>,4> fadeClock;
@@ -82,6 +82,7 @@ struct Clip {
     fs::path pinned; // the decoded copy this clip holds in ADI's cache, if any (ADR-0156)
     std::shared_ptr<const audio::PreparedWarp> warped;
     std::shared_ptr<audio::ProgressiveFile> progressive;
+    bool monitorInputOnly = false;
     bool failed = false; // page worker only
     std::unique_ptr<audio::WavReader> reader; // touched ONLY by worker after construction
     // The pin goes back with the clip. Every rebuild builds new clips and pins
@@ -108,7 +109,7 @@ struct Clip {
         if (time < start || time >= end) return -1;
         auto n = time-start+offset;
         if (loopLength > 0 && n >= loopBegin) n = loopBegin+(n-loopBegin)%loopLength;
-        return n < length && n < playEnd ? n : -1;
+        return n < length ? n : -1;
     }
     template<typename V> V shaped(std::int64_t time,V gainValue)const noexcept {
         const auto local=time-start+offset;
@@ -138,14 +139,12 @@ struct Clip {
     }
     std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames,bool lookAhead=true) const noexcept {
         std::array<std::int64_t,slots> out; out.fill(-1);
-        if (!t.playing()) return out;
+        if (monitorInputOnly || !t.playing()) return out;
         std::size_t used = 0;
         auto sourceRange = [&](std::int64_t from, std::int64_t count) {
-            // sourceAt never reads at or past End, so no page there is wanted.
-            // A looped clip has playEnd==length.
-            const auto audible=std::min(length,playEnd);
-            if(from<0 || from>=audible || count<=0) return;
-            const auto last=std::min(audible,from+count)-1;
+            // sourceAt never reads at or past the effective source End.
+            if(from<0 || from>=length || count<=0) return;
+            const auto last=std::min(length,from+count)-1;
             for(auto p=from/pageFrames;p<=last/pageFrames && used<slots;++p)
                 if(std::find(out.begin(),out.end(),p)==out.end()) out[used++]=p;
         };
@@ -392,7 +391,7 @@ public:
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
-        if(!transport.playing()){
+        if(!transport.playing() || (!clips.empty() && clips.front()->monitorInputOnly)){
             for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex)clips[clipIndex]->releaseAdmission();
             return;
         }
@@ -583,8 +582,15 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             };
             clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
             if(!row.loopEnabled) {
-                if(!a->warpEnabled && row.sourceEndNs)clip->length=std::min(clip->length,fixedTime(*row.sourceEndNs));
-                else if(row.endMarkerTicks)clip->length=std::min(clip->length,sourceDuration(*row.endMarkerTicks));
+                // A physical pin survives placement and tempo edits. Warp and
+                // unpinned clips derive End from the same clock as their offset.
+                if (!a->warpEnabled && row.sourceEndNs) {
+                    clip->length = std::min(clip->length, fixedTime(*row.sourceEndNs));
+                } else if (row.endMarkerTicks) {
+                    if (*row.endMarkerTicks <= row.contentOffsetTicks)
+                        throw std::runtime_error("invalid audio clip End marker");
+                    clip->length = std::min(clip->length, sourceDuration(*row.endMarkerTicks));
+                }
             }
             const auto& fadeClock=a->warpEnabled?row.fadeClockTicks:row.fadeClockNs;
             for(std::size_t i=0;i<4;i+=2) {
@@ -596,15 +602,15 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
                 }
             }
-            clip->playEnd = clip->length; // after the warp length and the source-end pin (chain)
-            if (!row.loopEnabled && row.endMarkerTicks) {
-                if (*row.endMarkerTicks <= row.contentOffsetTicks)
-                    throw std::runtime_error("invalid audio clip End marker; silent");
-                clip->playEnd = std::min(clip->length, duration(*row.endMarkerTicks));
-            }
-            clip->fadeIn=duration(row.fadeInTicks);
-            if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");
-            clip->fadeOut=samples(tempo.ticksToSeconds(endTicks)-tempo.ticksToSeconds(endTicks-row.fadeOutTicks),rate);
+            clip->fadeIn = duration(row.fadeInTicks);
+            if (row.fadeOutTicks < 0) throw std::runtime_error("invalid fade-out duration");
+            // Resize can leave a legacy fade wider than the placement. Its
+            // fallback shape stays inside the rendered span. Retained split
+            // domains are evaluated independently in shaped().
+            const auto tickSpan = endTicks - origin;
+            const auto frameSpan = clip->end - clip->start;
+            clip->fadeOut = row.fadeOutTicks > tickSpan ? frameSpan : std::min(frameSpan,
+                samples(tempo.ticksToSeconds(endTicks) - tempo.ticksToSeconds(endTicks - row.fadeOutTicks), rate));
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
             if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||
                (row.fadeOutTension && (!std::isfinite(*row.fadeOutTension) || std::abs(*row.fadeOutTension)>1)))
@@ -645,6 +651,16 @@ ClipPlayback::~ClipPlayback()=default;
 std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
     for(auto& t:impl_->tracks) if(t->track==id) return {t.get()};
     return {};
+}
+std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int64_t id) const {
+    std::vector<SampleRange> ranges;
+    for (const auto& clip : impl_->clips)
+        if (clip->track == id) ranges.emplace_back(clip->start, clip->end);
+    return ranges;
+}
+void ClipPlayback::useMonitoredInput(std::int64_t id) noexcept {
+    for (auto& clip : impl_->clips)
+        if (clip->track == id) clip->monitorInputOnly = true;
 }
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
 std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {
@@ -687,6 +703,7 @@ ClipPlayback::Readiness ClipPlayback::readiness() const {
         }
         for(std::size_t i=0;i<held->clips.size();++i) {
             auto& clip=held->clips[i];
+            if(clip->monitorInputOnly)continue;
             if(clip->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
             for(const auto number:clip->wanted(target,frames,false)) {
                 if(number<0)continue;
@@ -727,7 +744,8 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
     for(auto& clip:impl_->clips){(void)wanted(*clip,pages);clip->request(pages);}
     do {
         bool ready=true;
-        for(const auto& c:impl_->clips)if(c->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
+        for(const auto& c:impl_->clips)
+            if(!c->monitorInputOnly && c->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
         for(auto& clip:impl_->clips) {
             (void)wanted(*clip,pages);
             for(const auto number:pages) {

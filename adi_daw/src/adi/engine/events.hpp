@@ -81,6 +81,18 @@ struct Event {
     double value = 0.0;
 };
 
+/// Runtime live notes use a separate ID space from Arrangement notes. Keep
+/// the spaces disjoint in CLAP and VST3's positive 31-bit IDs as well, since
+/// both sources can sound the same key on the same instrument and channel.
+inline constexpr auto kLiveNoteIdPrefix = std::uint64_t{1} << 63;
+
+[[nodiscard]] constexpr std::int32_t pluginNoteId(std::uint64_t id) noexcept {
+    if (id == 0) return -1;
+    constexpr auto live = std::uint64_t{1} << 30;
+    const auto serial = (id & ~kLiveNoteIdPrefix) % (live - 1);
+    return static_cast<std::int32_t>(serial | ((id & kLiveNoteIdPrefix) ? live : 0));
+}
+
 /// A fixed-capacity list over storage someone else owns.
 ///
 /// Fixed because `push` runs on the audio thread and ADR-0010 forbids

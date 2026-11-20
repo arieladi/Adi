@@ -153,9 +153,7 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
             slot.param.header.flags = 0;
             slot.param.param_id  = static_cast<clap_id>(in.paramId);
             slot.param.cookie    = nullptr;
-            slot.param.note_id   = (in.noteId == 0)
-                                     ? -1
-                                     : static_cast<std::int32_t>(in.noteId % 0x7FFFFFFFu);
+            slot.param.note_id   = engine::pluginNoteId(in.noteId);
             slot.param.port_index = -1;
             slot.param.channel    = -1;
             slot.param.key        = -1;
@@ -169,10 +167,6 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
 }
 
 namespace {
-
-std::int32_t clapNoteId(std::uint64_t id) noexcept {
-    return id == 0 ? -1 : static_cast<std::int32_t>(id % 0x7FFFFFFFu);
-}
 
 std::uint8_t unit7(double v) noexcept {
     const double c = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
@@ -227,7 +221,7 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
                     o.kind == K::NoteOn ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF);
                 slot.note.header.flags    = 0;
                 // A REAL note id, not -1: CLAP anchors note expression to it.
-                slot.note.note_id    = clapNoteId(o.noteId);
+                slot.note.note_id    = engine::pluginNoteId(o.noteId);
                 slot.note.port_index = 0;
                 slot.note.channel    = static_cast<std::int16_t>(o.channel & 0x0F);
                 slot.note.key        = o.key;
@@ -243,7 +237,7 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
                 slot.expr.header.type     = CLAP_EVENT_NOTE_EXPRESSION;
                 slot.expr.header.flags    = 0;
                 slot.expr.expression_id   = id;
-                slot.expr.note_id    = clapNoteId(o.noteId);
+                slot.expr.note_id    = engine::pluginNoteId(o.noteId);
                 slot.expr.port_index = 0;
                 slot.expr.channel    = static_cast<std::int16_t>(o.channel & 0x0F);
                 // The note's own key when the route is tracking it, -1 (any)
@@ -439,7 +433,26 @@ ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
         for (const char* const* f = plugin_->desc->features; f != nullptr && *f != nullptr; ++f)
             if (std::strcmp(*f, CLAP_PLUGIN_FEATURE_INSTRUMENT) == 0) instrument_ = true;
 
+    readInputBusRoles();
     rescanParams();
+}
+
+void ClapDevice::readInputBusRoles() {
+    mainInputBus_=0;keyInputBus_=-1;keyChannels_=0;
+    if(!plugin_ || !plugin_->get_extension)return;
+    const auto* ports=static_cast<const clap_plugin_audio_ports_t*>(plugin_->get_extension(plugin_,CLAP_EXT_AUDIO_PORTS));
+    if(!ports || !ports->count || !ports->get)return;
+    mainInputBus_=-1;
+    const auto count=ports->count(plugin_,true);
+    for(std::uint32_t i=0;i<count && i<64;++i) {
+        clap_audio_port_info_t port{};
+        if(!ports->get(plugin_,i,true,&port))continue;
+        if((port.flags&CLAP_AUDIO_PORT_IS_MAIN)!=0) {
+            if(mainInputBus_<0)mainInputBus_=static_cast<std::int32_t>(i);
+        } else if(keyInputBus_<0 && port.channel_count>0 && port.channel_count<=64) {
+            keyInputBus_=static_cast<std::int32_t>(i);keyChannels_=static_cast<std::int32_t>(port.channel_count);
+        }
+    }
 }
 
 void ClapDevice::adoptGlue(std::unique_ptr<ClapHostGlue> glue) noexcept {
@@ -1107,6 +1120,7 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
         addBus(inBuses_, channels_);
         addBus(outBuses_, channels_);
     }
+    readInputBusRoles();
     // A plugin with no output bus cannot be rendered; give it one so the
     // graph gets silence rather than a null dereference.
     if (outBuses_.empty()) addBus(outBuses_, channels_);
@@ -1321,16 +1335,21 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     // are segment-sized and always start at 0, so the offset applies on the
     // graph's side of every copy and nowhere else (ADR-0042).
     const std::int32_t off = io.blockOffset;
-    // Bus 0 is the main input; every other declared bus is fed silence.
+    // Main and the first declared auxiliary input are cached while deactivated.
+    // Unrouted auxiliary inputs receive valid, cleared memory at either width.
     // A sidechain bus the graph is not driving must still be VALID memory,
     // because the plugin will read it.
     for (std::size_t b = 0; b < inBuses_.size(); ++b) {
         Bus& bus = inBuses_[b];
+        const bool main=mainInputBus_>=0 && b==static_cast<std::size_t>(mainInputBus_);
+        const bool key=keyInputBus_>=0 && b==static_cast<std::size_t>(keyInputBus_);
+        const auto* source32=main?io.in:key?io.sidechain:nullptr;
+        const auto* source64=main?io.in64:key?io.sidechain64:nullptr;
         for (std::int32_t c = 0; c < bus.channels; ++c) {
-            const bool fed = b == 0 && c < ch;
+            const bool fed = (main||key) && c < ch;
             if (wide64) {
                 double* dst = bus.wptrs[static_cast<std::size_t>(c)];
-                const double* src = (fed && io.in64 != nullptr) ? io.in64[c] + off : nullptr;
+                const double* src = (fed && source64 != nullptr && source64[c]) ? source64[c] + off : nullptr;
                 if (src != nullptr) for (std::int32_t i = 0; i < n; ++i) dst[i] = src[i];
                 else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0;
                 continue;
@@ -1338,14 +1357,14 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
             float* dst = bus.ptrs[static_cast<std::size_t>(c)];
             if (wideIo) {
                 // Double handed to a device processed at 32: narrowed once.
-                const double* src = (fed && io.in64 != nullptr) ? io.in64[c] + off : nullptr;
+                const double* src = (fed && source64 != nullptr && source64[c]) ? source64[c] + off : nullptr;
                 if (src != nullptr)
                     for (std::int32_t i = 0; i < n; ++i) dst[i] = static_cast<float>(src[i]);
                 else
                     for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
                 continue;
             }
-            const float* src = (fed && io.in != nullptr) ? io.in[c] + off : nullptr;
+            const float* src = (fed && source32 != nullptr && source32[c]) ? source32[c] + off : nullptr;
             if (src != nullptr) for (std::int32_t i = 0; i < n; ++i) dst[i] = src[i];
             else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
         }

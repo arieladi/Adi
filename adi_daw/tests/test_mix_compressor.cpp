@@ -414,6 +414,44 @@ void precisionAndStaticLaws() {
     check(ok && std::abs(dc[1].back() - expected) < 2e-6 && std::abs(dc[0].back() - expected * .1) < 2e-7,
           "linked steady DC follows analytic threshold ratio law");
 }
+template <class Sample>
+void nonFiniteInput() {
+    for (const bool external : {false, true}) {
+        auto s = compress();
+        if (external)
+            s.keySource = c::KeySource::External;
+        c::Core subject, zeros;
+        bool prepared = subject.prepare({48000, 256, 2}, s) == c::Status::Ok;
+        prepared &= zeros.prepare({48000, 256, 2}, s) == c::Status::Ok;
+        check(prepared, "bad-sample fixtures prepare");
+        if (!prepared)
+            continue;
+        auto a = signal<Sample>(), b = a;
+        auto key = signal<Sample>(true, 100), cleanKey = key;
+        a[0][255] = std::numeric_limits<Sample>::quiet_NaN();
+        a[1][256] = -std::numeric_limits<Sample>::infinity();
+        b[0][255] = b[1][256] = Sample{};
+        if (external) {
+            key[1][510] = std::numeric_limits<Sample>::quiet_NaN();
+            key[0][511] = std::numeric_limits<Sample>::infinity();
+            cleanKey[1][510] = cleanKey[0][511] = Sample{};
+        }
+        const auto run = [&](c::Core &core, Audio<Sample> &audio, const Audio<Sample> &keySignal) {
+            return external ? render(core, audio, &keySignal, 2, s) : render(core, audio, s);
+        };
+        const bool accepted = run(subject, a, key);
+        const bool referenceAccepted = run(zeros, b, cleanKey);
+        check(accepted && referenceAccepted && equal(a, b), external ?
+              "external compressor key and programme replace each NaN or infinity with zero" :
+              "internal compressor key and programme replace each NaN or infinity with zero");
+        a = b = signal<Sample>(true, count);
+        key = cleanKey = signal<Sample>(true, count + 100);
+        const bool resumed = run(subject, a, key);
+        const bool referenceResumed = run(zeros, b, cleanKey);
+        check(resumed && referenceResumed && equal(a, b),
+              "later compressor blocks keep the same detector and gain history without resetting");
+    }
+}
 } // namespace
 
 int main() {
@@ -423,6 +461,8 @@ int main() {
     splitsAndControls<double>();
     keyAndLink();
     precisionAndStaticLaws();
+    nonFiniteInput<float>();
+    nonFiniteInput<double>();
     check(allocations == 0 && deallocations == 0, "audio callbacks allocate and deallocate nothing");
     std::printf("Mix compressor: %d checks, %d failures; %llu compared samples; audio allocations %zu/%zu\n",
                 checks, failures, static_cast<unsigned long long>(comparedSamples), allocations,

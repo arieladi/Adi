@@ -118,9 +118,10 @@ void freezeWarpFades(Store& store,Payload& image,const edit::TimeMap& time) {
     const auto last=row.at("time_base")==0?edit::addTime(origin,detail::signedInteger(row.at("length_ticks"))):
         time.ticks(edit::addTime(detail::signedInteger(row.at("pos_ns")),detail::signedInteger(row.at("length_ns"))));
     if(offset<0 || last<origin)throw std::runtime_error("warped clip needs a valid source clock");
-    const auto in=detail::signedInteger(row.at("fade_in_ticks")),out=detail::signedInteger(row.at("fade_out_ticks"));
     const auto span=last-origin;
-    if(in<0 || out<0 || in>span || out>span)throw std::runtime_error("warped clip fades exceed its visible musical span");
+    const auto in=detail::signedInteger(row.at("fade_in_ticks"));
+    const auto out=std::min(span,detail::signedInteger(row.at("fade_out_ticks")));
+    if(in<0 || out<0 || in>span)throw std::runtime_error("warped clip fades exceed its visible musical span");
     if(in==0 && out==0)return;
     auto& records=image["children"]["clip_warp_fade_domains"];
     if(records.empty())records.push_back(edit::defaultRow(store.db(),"clip_warp_fade_domains",{{"clip_id",image.at("id")}}));
@@ -166,9 +167,9 @@ void freezeAudio(Store& store,Payload& image,const edit::TimeMap& time,double ra
     }
     if(fadeOut>0 && clock.at("out_begin_ns").is_null()) {
         const auto lastTick=row.at("time_base")==0?edit::addTime(origin,detail::signedInteger(row.at("length_ticks"))):
-            time.ticks(detail::signedInteger(row.at("pos_ns"))+detail::signedInteger(row.at("length_ns")));
-        if(lastTick<fadeOut)throw std::runtime_error("clip fade precedes project origin");
-        const auto length=sample(time.seconds(lastTick)-time.seconds(lastTick-fadeOut),rate);
+            time.ticks(edit::addTime(detail::signedInteger(row.at("pos_ns")),detail::signedInteger(row.at("length_ns"))));
+        const auto length=fadeOut>lastTick-origin?span:
+            std::min(span,sample(time.seconds(lastTick)-time.seconds(lastTick-fadeOut),rate));
         if(length>0) {
             clock["out_begin_ns"]=sampleNanos(edit::addTime(offset,span)-length,rate);
             clock["out_end_ns"]=sampleNanos(edit::addTime(offset,span),rate);

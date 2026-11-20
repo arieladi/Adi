@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
+#include "adi/mix/AudioPlanes.hpp"
+#include "adi/mix/filters/FiniteInput.hpp"
+#include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -200,30 +203,43 @@ bool Core::processImpl(Sample *const *main, const Sample *const *key, std::int32
     if (!prepared_ || !valid(s) || frames < 0 || frames > spec_.maximumFrames ||
         keyChannels < 0 || keyChannels > 2)
         return false;
-    if (frames == 0)
+    if (frames == 0) {
+        if (!s.enabled)
+            activity_ = Activity::Sleeping;
         return true;
+    }
     if (!main)
         return false;
     for (std::int32_t c = 0; c < spec_.channels; ++c)
         if (!main[c])
             return false;
-    if (!s.enabled)
+    if (spec_.channels == 2 && audioPlanesOverlap(main[0], main[1], frames))
+        return false;
+    if (!s.enabled) {
+        activity_ = Activity::Sleeping;
         return true;
+    }
     if (keyChannels > 0) {
         if (!key)
             return false;
-        for (std::int32_t c = 0; c < keyChannels; ++c)
+        for (std::int32_t c = 0; c < keyChannels; ++c) {
             if (!key[c])
                 return false;
+            for (std::int32_t m = 0; m < spec_.channels; ++m)
+                if (key[c] != main[m] &&
+                    audioPlanesOverlap(key[c], static_cast<const Sample *>(main[m]), frames))
+                    return false;
+        }
     }
+    [[maybe_unused]] filters::FlushDenormals flush;
     admit(s);
     // A zero crossing at the beginning of an otherwise active first block is
     // not an idle period. Admit its programme history from the block boundary.
     if (firstActivation_ && !s.audition) {
         for (std::int32_t i = 0; i < frames && keyChannels > 0; ++i) {
-            const float left = static_cast<float>(key[0][i]);
+            const float left = filters::finiteInput(key[0][i]);
             const float folded = keyChannels == 2
-                                     ? (left + static_cast<float>(key[1][i])) * .125f
+                                     ? (left + filters::finiteInput(key[1][i])) * .125f
                                      : left * .25f;
             if (std::abs(folded) > quietExit) {
                 firstActivation_ = false;
@@ -245,8 +261,8 @@ bool Core::processImpl(Sample *const *main, const Sample *const *key, std::int32
     const float largestWeight = monoMain ? amount_ : std::max(leftWeight, rightWeight);
     const bool heldCurve = s.freeze && heldMaximum > 0 && amount_ > 0;
     for (std::int32_t frame = 0; frame < frames; ++frame) {
-        const float keyLeft = keyChannels ? static_cast<float>(key[0][frame]) : 0.f;
-        const float keyRight = keyChannels == 2 ? static_cast<float>(key[1][frame]) : keyLeft;
+        const float keyLeft = keyChannels ? filters::finiteInput(key[0][frame]) : 0.f;
+        const float keyRight = keyChannels == 2 ? filters::finiteInput(key[1][frame]) : keyLeft;
         const float folded = keyChannels == 2 ? (keyLeft + keyRight) * .125f : keyLeft * .25f;
         observeKey(s.audition && !monoMain ? std::max(std::abs(keyLeft), std::abs(keyRight)) * .25f
                                          : std::abs(folded));
@@ -297,7 +313,7 @@ bool Core::processImpl(Sample *const *main, const Sample *const *key, std::int32
         if (blend_ > 0) {
             const Sample originalLeft = main[0][frame];
             const Sample originalRight = spec_.channels == 2 ? main[1][frame] : originalLeft;
-            const float left = static_cast<float>(originalLeft), right = static_cast<float>(originalRight);
+            const float left = filters::finiteInput(originalLeft), right = filters::finiteInput(originalRight);
             const bool midSide = s.mode == Mode::MidSide && spec_.channels == 2;
             float a = programme(midSide ? (left + right) * .5f : left, 0,
                                 monoMain ? amount_ : leftWeight, envelopes, s.freeze);
@@ -314,9 +330,12 @@ bool Core::processImpl(Sample *const *main, const Sample *const *key, std::int32
                 if (spec_.channels == 2)
                     main[1][frame] = static_cast<Sample>(b);
             } else {
-                main[0][frame] = originalLeft + static_cast<Sample>(blend_) * (static_cast<Sample>(a) - originalLeft);
-                if (spec_.channels == 2)
-                    main[1][frame] = originalRight + static_cast<Sample>(blend_) * (static_cast<Sample>(b) - originalRight);
+                const auto dryLeft = std::isfinite(static_cast<float>(originalLeft)) ? originalLeft : Sample{};
+                main[0][frame] = dryLeft + static_cast<Sample>(blend_) * (static_cast<Sample>(a) - dryLeft);
+                if (spec_.channels == 2) {
+                    const auto dryRight = std::isfinite(static_cast<float>(originalRight)) ? originalRight : Sample{};
+                    main[1][frame] = dryRight + static_cast<Sample>(blend_) * (static_cast<Sample>(b) - dryRight);
+                }
             }
             programmeCleared_ = false;
         } else if (!programmeCleared_) {

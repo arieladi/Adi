@@ -63,6 +63,11 @@ tip gets a system branch before compaction removes its old bridge. Neither
 named points nor forks pin the stepwise prefix. The active budget excludes all
 metadata roots, state objects, content/media pools and SQLite overhead.
 
+A history move away from a childless stored root preserves it on a system
+branch if the move would leave it without a branch or named snapshot. A legacy
+checkpoint without stored roots permits navigation within its retained suffix.
+A request for the original pre-edit state is refused before replay.
+
 Capture temporarily moves project state under a savepoint and rolls back. All
 required states are captured and actually restored/validated before any graph
 rewrite or pruning. A recoverable failure rolls back only retention; normal edit

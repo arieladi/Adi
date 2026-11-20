@@ -19,6 +19,7 @@
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
+#include <functional>
 #include <optional>
 namespace adi::ui {
 using media::pathFromUtf8;
@@ -76,6 +77,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
+    // Installed by the audio device owner before attaching its callback. Evaluated on the
+    // message thread when the driver supplies the granted size to prepare.
+    void configureGraphWorkers(std::function<std::uint32_t(std::int32_t)> count,
+                               std::int32_t minimumFrames);
     void prepare(double rate, std::int32_t frames) override;
     void release() override;
     void process(const engine::AudioIo &) noexcept override;
@@ -140,7 +145,12 @@ class ProjectDocument final : public engine::BlockProcessor {
     // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
     bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    bool insertPlugin(const rows::PluginRef &, std::int64_t track,
+                      std::optional<std::int64_t> before = {}, const PluginInsertOptions& = {});
     bool addMixFunction(mix::Function, std::int64_t track);
+    std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
+    bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);
+    bool setDeviceKey(const DevicePanelData&,std::optional<std::int64_t> source,const std::string& tap);
     bool moveMixFunction(const DevicePanelData &expected, std::int64_t track,
                          std::optional<std::int64_t> before);
     // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
@@ -183,6 +193,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    bool finishInsert(PreparedBuiltinInsert);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
     // and for a gesture, so a gesture's quiet timer and its End agree.
@@ -200,6 +211,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // so a frame that changes nothing builds nothing; the rows did not move, so the session has
     // nothing to re-read after it.
     void followOverrides();
+    void persistReportedLatencies();
+    void refreshReportedLatenciesForSave();
     std::unique_ptr<Store> store_;
     std::string name_;
     engine::ProjectView view_;
@@ -213,8 +226,15 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::shared_ptr<const gesture::OwnerToken> owner;
     };
     std::map<std::pair<std::int64_t, std::string>, SurfaceGesture> surfaceGestures_;
+    std::function<std::uint32_t(std::int32_t)> graphWorkerCount_;
+    std::int32_t graphWorkerMinimumFrames_ = 1;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     ParameterFeed feed_;
+    // Owner-only. Refresh the pointer even when latency fields still match so
+    // an old load of controls is never held after its display changes.
+    std::shared_ptr<const ParameterPublication> reportedLatencyFeed_;
+    std::uint64_t reportedLatencySequence_ = 0;
+    double reportedLatencyRate_ = 0;
     struct AnalysisSource { engine::ScopeLease lease; double seconds = 0; };
     std::map<engine::ScopeSource, AnalysisSource> analysisSources_;
     std::shared_ptr<SharedAnalysis> analysis_;

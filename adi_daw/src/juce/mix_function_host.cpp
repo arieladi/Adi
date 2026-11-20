@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "mix_function_host.hpp"
 #include "mix_eq_host.hpp"
+#include "mix_compressor_host.hpp"
 #include "adi/mix/eq/Backend.hpp"
 #include "adi/mix/limiter/DspEngine.h"
 #include "adi/mix/limiter/ControlMapping.h"
@@ -244,6 +245,7 @@ public:
         if(!prepared_||!loaded())return;
         backend_->pumpMainThread(settings(readValues(),offline_));publishLatency(backend_->advertisedLatency());
     }
+    std::int32_t sidechainInputChannels() const noexcept override {return channels_;}
     void process(const engine::NodeIo& io) noexcept override {
         const ReactivationGate::Pass pass(gate_);
         if(!pass||!prepared_||!loaded()||!io.out||io.channels!=channels_||io.frames<=0) {passThrough(io);return;}
@@ -414,7 +416,7 @@ private:
 };
 } // namespace
 mix::Availability mixFunctionAvailability(mix::Function kind) {
-    if(kind==mix::Function::Limiter || kind==mix::Function::Eq)return {true,{}};
+    if(kind==mix::Function::Limiter || kind==mix::Function::Eq || kind==mix::Function::Compressor)return {true,{}};
     return {false,"This processing core is not integrated in this build yet"};
 }
 std::unique_ptr<DeviceInstance> makeMixFunction(const engine::DeviceRequest& request,std::string& error) {
@@ -426,6 +428,7 @@ std::unique_ptr<DeviceInstance> makeMixFunction(const engine::DeviceRequest& req
         const auto* info=request.ref?mix::functionForReference(request.ref->format,request.ref->uid):nullptr;
         if(!info){error="Unknown native mix function";return {};}
         if(info->kind==mix::Function::Eq)return makeMixEqFunction(request,error,mix::eq::makeBackend());
+        if(info->kind==mix::Function::Compressor)return makeMixCompressorFunction(request,error);
         const auto available=mixFunctionAvailability(info->kind);
         if(!available.ready){error=available.reason;return {};}
         if(request.channels!=1&&request.channels!=2) {error="Native Limiter currently supports explicit mono or stereo layouts";return {};}

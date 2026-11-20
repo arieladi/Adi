@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
+#include "juce/device_core.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
@@ -45,6 +47,84 @@ class Tone final : public engine::Node {
     }
     const char *name() const noexcept override { return "document tone"; }
 };
+class WorkerTone final : public engine::Node {
+  public:
+    bool canProcessOnWorker() const noexcept override { return true; }
+    void process(const engine::NodeIo &io) noexcept override {
+        for (int c = 0; c < io.channels; ++c)
+            std::fill_n(io.out[c] + io.blockOffset, io.frames, 0.125f);
+    }
+    const char *name() const noexcept override { return "device graph worker tone"; }
+};
+void deviceGraphWorkers(const std::filesystem::path &dir) {
+    std::array<WorkerTone, 4> sources;
+    std::vector<std::int64_t> tracks;
+    settings::AppSettings preferences(appdata::App::Daw, dir / "device-graph-workers.json");
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "device-graph-workers.adi", true, {}, error);
+    check(document != nullptr, "graph workers: open a project through the document");
+    if (!document) return;
+    auto &session = document->session();
+    for (const auto &track : document->view().current()->tracks)
+        if (track->kind == "audio" || track->kind == "midi")
+            tracks.push_back(track->id);
+    check(tracks.size() == sources.size(), "graph workers: independent audio and MIDI strips");
+    if (tracks.size() != sources.size()) return;
+    session.setSourcesFor([&](std::int64_t id) {
+        for (std::size_t i = 0; i < tracks.size(); ++i)
+            if (id == tracks[i]) return std::vector<engine::Node *>{&sources[i]};
+        return std::vector<engine::Node *>{};
+    });
+
+    constexpr int minimum = settings::kGraphWorkersMinimumFrames;
+    int lastGrant = 0;
+    document->configureGraphWorkers([&](std::int32_t granted) -> std::uint32_t {
+        lastGrant = granted;
+        return settings::graphWorkersEnabled(preferences.get(settings::kGraphWorkersKey), granted) ? 2U : 0U;
+    }, minimum);
+    device::DeviceCore driver;
+    const auto workerCount = [&] { return session.graph().currentGraph()->renderWorkerCount(); };
+    check(driver.open(*document, 48000, 2048, 1023).sizeMismatch() &&
+              lastGrant == 1023 && workerCount() == 0,
+          "graph workers: a large request with a 1023-frame grant stays serial");
+    const auto before = session.stats().rebuilds;
+    check(driver.changeBlockSize(48000, 256, minimum).sizeMismatch() &&
+              lastGrant == minimum && workerCount() == 2 && session.stats().rebuilds == before + 1,
+          "graph workers: a small request with a 1024-frame grant prepares workers in one build");
+
+    std::array<float, minimum> left{}, right{};
+    std::array<float *, 2> outputs{left.data(), right.data()};
+    driver.process(outputs.data(), 2, nullptr, 0, minimum - 1);
+    check(session.graph().currentGraph()->stats().workerNodeBlocks == 0 && left[0] > 0,
+          "graph workers: a short callback renders serially on the prepared graph");
+    driver.process(outputs.data(), 2, nullptr, 0, minimum);
+    const auto parallelLeft = left;
+    const auto parallelRight = right;
+    check(session.graph().currentGraph()->stats().workerNodeBlocks > 0 && left[0] > 0,
+          "graph workers: a full callback dispatches independent tracks");
+    auto *parallel = session.graph().currentGraph();
+    const auto builds = session.stats().rebuilds;
+    check(driver.changeBlockSize(48000, 2048, minimum).opened &&
+              session.graph().currentGraph() == parallel && session.stats().rebuilds == builds,
+          "graph workers: unchanged grant and policy preserve the live graph");
+
+    check(preferences.set(settings::kGraphWorkersKey, "off", {}, error),
+          "graph workers: the internal Off override is accepted");
+    check(driver.changeBlockSize(48000, 2048, minimum).opened &&
+              workerCount() == 0 && session.stats().rebuilds == builds + 1,
+          "graph workers: Off takes effect at the same granted format");
+    driver.process(outputs.data(), 2, nullptr, 0, minimum);
+    check(left == parallelLeft && right == parallelRight, "graph workers: serial and parallel output match exactly");
+    check(preferences.set(settings::kGraphWorkersKey, "auto", {}, error),
+          "graph workers: automatic device policy can be restored");
+    check(driver.changeBlockSize(48000, 4096, 2048).opened && workerCount() == 2 &&
+              driver.changeBlockSize(48000, 4096, 512).opened && lastGrant == 512 && workerCount() == 0,
+          "graph workers: changing device size back below the boundary removes the workers");
+    driver.close();
+    check(driver.open(*document, 48000, 256, minimum).opened && workerCount() == 2,
+          "graph workers: a restarted device reapplies its actual grant");
+    driver.close();
+}
 double bin(const std::array<float, 2048> &data, int k) {
     std::complex<double> sum{};
     for (int i = 0; i < 1024; ++i)
@@ -57,17 +137,114 @@ double bin(const std::array<float, 2048> &data, int k) {
 // DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
 class SurfaceKnobs final : public device::DeviceInstance {
   public:
+    explicit SurfaceKnobs(std::int32_t initialLatency = 37) : reportedLatency(initialLatency) {}
     const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
     bool loaded() const noexcept override { return true; }
     void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
-    std::int32_t latencySamples() const noexcept override { return 37; }
+    std::int32_t latencySamples() const noexcept override { return reportedLatency; }
     std::int32_t paramCount() const noexcept override { return controls.paramCount(); }
     const device::ParamDescriptor *paramAt(std::int32_t i) const noexcept override { return controls.paramAt(i); }
     device::ParamValue getParam(const std::string &id) const noexcept override { return controls.getParam(id); }
     bool setParam(const std::string &id, const device::ParamValue &v) override { return controls.setParam(id, v); }
     std::string paramText(const std::string &id, double v) const override { return controls.paramText(id, v); }
+    std::int32_t reportedLatency;
     test::Knobs controls;
 };
+
+Payload readLatencyReport(Store &store) {
+    SQLite::Statement query(store.db(), "SELECT value FROM session_state WHERE key='devices.reported_latency'");
+    return query.executeStep() ? Payload::parse(query.getColumn(0).getString()) : Payload(nullptr);
+}
+
+void reportedDeviceLatency(const std::filesystem::path &dir) {
+    const auto loader = [](std::int32_t latency) -> engine::DeviceLoader {
+        return [latency](const engine::DeviceRequest &request, std::string &error)
+            -> std::unique_ptr<device::DeviceInstance> {
+            if (request.ref && request.ref->uid == test::kKnobsUid) return std::make_unique<SurfaceKnobs>(latency);
+            error = "fixture has no such device";
+            return nullptr;
+        };
+    };
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "reported-latency.adi", true, loader(0), error);
+    check(document != nullptr, "reported latency document opens");
+    if (!document) return;
+    auto &store = document->store();
+    auto &db = store.db();
+    db.exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+            test::kKnobsUid + "','Latency controls'),(4,'clap','test.unavailable','Unavailable')");
+    std::vector<OpRequest> add(3);
+    add[0].opType = "chain.create";
+    add[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    add[1].opType = add[2].opType = "device.insert";
+    add[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "Loaded"}, {"latency", 0}};
+    add[2].payload = {{"id", 4}, {"chain", 3}, {"ord", 1}, {"ref", 4}, {"name", "Unavailable"}, {"latency", 999}};
+    check(document->ops().submit(std::move(add)).ok && document->synchronise(), "latency fixture devices load");
+    document->tick(0);
+    auto *knobs = dynamic_cast<SurfaceKnobs *>(document->session().instanceFor(3));
+    if (!knobs) { check(false, "resolved fixture device"); return; }
+    const auto initial = readLatencyReport(store);
+    check(initial.is_object() && initial["version"] == 1 && initial["devices"].size() == 1 &&
+              initial["devices"][0]["device_id"] == 3 && initial["devices"][0]["latency_samples"] == 0,
+          "loaded zero is explicit and an unavailable device has no reported measurement");
+
+    using Event = engine::ParamEventKind;
+    const auto beforeHead = History(store).head();
+    check(document->parameterGesture(3, "cutoff", Event::Begin, .5) &&
+              document->parameterGesture(3, "cutoff", Event::Value, .6), "open a real uncommitted parameter gesture");
+    knobs->reportedLatency = 237;
+    document->tick(10);
+    check(History(store).head() == beforeHead && readLatencyReport(store) == initial,
+          "an uncommitted gesture does not rewrite the reported latency");
+    check(document->parameterGesture(3, "cutoff", Event::End, .6), "commit the control gesture");
+    const auto settledHead = History(store).head();
+    document->tick(20);
+    const auto settled = readLatencyReport(store);
+    const Payload latencyRow{{"device_id", 3}, {"plugin_ref_id", 3}, {"format", "clap"},
+                             {"uid", test::kKnobsUid}, {"latency_samples", 237}};
+    check(settledHead && settledHead != beforeHead && settled.is_object() && settled["history_head"] == *settledHead &&
+              settled["devices"].size() == 1 && settled["devices"][0] == latencyRow && History(store).head() == settledHead &&
+              db.execAndGet("SELECT latency_samples FROM devices WHERE id=3").getInt() == 0,
+          "settled report is bound to the actual identity and history without an authored edit");
+    const auto changes = db.execAndGet("SELECT total_changes()").getInt64();
+    document->tick(30);
+    check(db.execAndGet("SELECT total_changes()").getInt64() == changes,
+          "a repeated settled reading causes no SQL write");
+
+    check(document->deviceAction("device.setLatency", {{"id", 3}, {"latency", 19}}), "explicit authored latency remains editable");
+    document->prepare(96000., 256);
+    knobs->reportedLatency = 475;
+    const auto copy = dir / "reported-latency-copy.adi";
+    check(document->saveCopy(copy), "Save a Copy refreshes a settled rate and latency before the next tick");
+    StoreError openError{};
+    auto saved = Store::open(copy, openError, true);
+    check(saved != nullptr, "read the copied project without activating any devices");
+    if (!saved) return;
+    const auto copied = readLatencyReport(*saved);
+    const auto copiedHead = History(*saved).head();
+    check(copiedHead && copied.is_object() && copied["sample_rate"] == 96000. && copied["history_head"] == *copiedHead &&
+              copied["devices"].size() == 1 && copied["devices"][0]["latency_samples"] == 475 &&
+              saved->db().execAndGet("SELECT latency_samples FROM devices WHERE id=3").getInt() == 19,
+          "copied file retains exact measured samples, rate and history separately from the authored value");
+    saved.reset();
+    auto reopened = ui::ProjectDocument::open(copy, false, loader(61), error);
+    check(reopened != nullptr, "reopen activates the saved project using the current device");
+    if (!reopened) return;
+    const auto measuredAgain = readLatencyReport(reopened->store());
+    check(measuredAgain.is_object() && measuredAgain["sample_rate"] == reopened->session().spec().sampleRate &&
+              measuredAgain["devices"].size() == 1 && measuredAgain["devices"][0]["latency_samples"] == 61 &&
+              History(reopened->store()).head() == copiedHead &&
+              reopened->store().db().execAndGet("SELECT latency_samples FROM devices WHERE id=3").getInt() == 19,
+          "reopen replaces the saved observation with the new reported latency and preserves history");
+    check(document->ops().undo().ok && document->synchronise() &&
+              db.execAndGet("SELECT latency_samples FROM devices WHERE id=3").getInt() == 0,
+          "Undo reverses only the explicit authored latency");
+    check(document->deviceAction("device.remove", {{"id", 3}}), "remove the measured device");
+    document->tick(40);
+    const auto removed = readLatencyReport(store);
+    check(removed.is_object() && removed["devices"].is_array() && removed["devices"].empty(),
+          "removed and unavailable devices leave no measured row");
+}
 
 void refusedBeginOwnership(const std::filesystem::path &dir) {
     using engine::ParamEventKind;
@@ -989,6 +1166,30 @@ int main(int argc, char **argv) {
         }
     }
     {
+        auto external = ui::ProjectDocument::open(temp.path() / "external-plugin.adi", true, test::knobsLoader(), error);
+        check(external != nullptr, "a fresh document for external insertion");
+        if (external) {
+            rows::PluginRef plugin;
+            plugin.format = "clap";
+            plugin.uid = test::kKnobsUid;
+            plugin.name = "External knobs";
+            plugin.subtype = "instrument";
+            check(external->insertPlugin(plugin, 2), "the external insert entry point loads the resolved plug-in on MIDI");
+            const auto& devices = external->session().model().devices;
+            const auto found = std::find_if(devices.begin(), devices.end(),
+                [](const rows::Device& row) { return row.name == "External knobs"; });
+            const auto* instance = found == devices.end() ? nullptr : external->session().instanceFor(found->id);
+            const auto undo = external->ops().nextUndo();
+            check(instance && instance->loaded() && undo && undo->label == "Insert External knobs",
+                  "the inserted instance is realized in the Session and offered as one Undo");
+            check(external->ops().undo().ok && external->synchronise() &&
+                  external->store().db().execAndGet("SELECT count(*) FROM plugin_refs WHERE uid='" +
+                      std::string(test::kKnobsUid) + "'").getInt() == 0,
+                  "one document Undo removes the external plug-in reference and instance");
+            external->release();
+        }
+    }
+    {
         // Live's device clipboard (manual 23.2.1; D2, N18, #394), on a device the project stores and
         // no plug-in loaded: Copy reads the stored rows only; Paste in front of a device is one undo
         // step with a new id and the source's stored parameters; Cut and Paste bring it back.
@@ -1355,9 +1556,11 @@ int main(int argc, char **argv) {
             check(false, e.what());
         }
     }
+    deviceGraphWorkers(temp.path());
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
+    reportedDeviceLatency(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

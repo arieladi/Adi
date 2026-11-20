@@ -260,6 +260,12 @@ public:
     /// 0 by default, the OPPOSITE default from the tail. See
     /// `engine::Node::latencySamples`.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
+    // Cached declaration, owner thread. Zero means no supported key input.
+    // Level 1 routes one straight channel prefix into the first auxiliary bus.
+    [[nodiscard]] virtual std::int32_t sidechainInputChannels() const noexcept { return 0; }
+    // Owner records activation intent before the graph is prepared. Formats
+    // needing a bus reactivation do it under their existing preparation gate.
+    virtual bool configureSidechain(bool active) { return !active || sidechainInputChannels()>0; }
 
     /// Whether this device turns notes into audio, and so stops the note
     /// stream (ADR-0091). Through by default, the harmless failure: see

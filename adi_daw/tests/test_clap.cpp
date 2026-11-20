@@ -21,13 +21,18 @@
 #include "temp_directory.hpp"
 
 #include "juce/clap_host.hpp"
+#include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/gesture_presentation.hpp"
+#include "adi/gesture_producers.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <array>
 #include <cmath>
+#include <array>
 #include <algorithm>
 #include <cstring>
 #include <utility>
@@ -153,6 +158,19 @@ void testEventListCarriesNoteIdAndDouble() {
     // an event struct, and this is the last hop before the plugin.
     static_assert(std::is_same_v<decltype(clap_event_note_expression_t::value), double>,
                   "CLAP note expression value must be a double -- ADR-0054");
+
+    // These voices previously both narrowed to 3 in a plug-in, despite
+    // carrying distinct 64-bit IDs in the graph.
+    const auto clip = (std::uint64_t{1} << 32) | 1;
+    const auto live = engine::kLiveNoteIdPrefix | 1;
+    list.clear();
+    check(list.add(noteOn(clip, 60, 0.75)) && list.add(noteOn(live, 60, 0.75)) &&
+          list.add(expr(live, ExpressionDim::Pitch, 0.25)), "overlapping live and clip voices translate together");
+    const auto* clipNote = reinterpret_cast<const clap_event_note_t*>(list.at(0));
+    const auto* liveNote = reinterpret_cast<const clap_event_note_t*>(list.at(1));
+    const auto* livePitch = reinterpret_cast<const clap_event_note_expression_t*>(list.at(2));
+    check(clipNote && liveNote && livePitch && clipNote->note_id != liveNote->note_id &&
+          liveNote->note_id == livePitch->note_id, "CLAP keeps overlapping live and clip note IDs distinct");
     check(sizeof(x->value) == 8, "the expression value is 8 bytes");
 }
 
@@ -1825,6 +1843,7 @@ void testTheBusLayoutIsAsked() {
                 *info = clap_audio_port_info_t{};
                 info->id = index;
                 info->channel_count = 2;
+                info->flags = index==0?CLAP_AUDIO_PORT_IS_MAIN:0;
                 std::snprintf(info->name, sizeof info->name, "%s%u",
                               isInput ? "in" : "out", index);
                 return true;
@@ -2425,6 +2444,7 @@ void testPrepareReactivatesWhenTheLayoutMoves() {
                            clap_audio_port_info_t* info) -> bool {
                 (void) p; (void) idx;
                 info->channel_count = isInput ? 2u : 2u;
+                info->flags = idx==0?CLAP_AUDIO_PORT_IS_MAIN:0;
                 return true;
             };
         }
@@ -2610,6 +2630,11 @@ struct Fake64 {
     int calls = 0;
     bool saw32 = false, saw64 = false, mixed = false;
     bool sideFedZeros64 = true;            ///< the second input port, at 64, held zeros
+    bool mainInput = true;
+    std::uint32_t keyChannels = 2;
+    double keyFirst = 0, keyLast = 0;
+    bool extraZero = true;
+
     bool active = false;
     int portReads = 0, portReadsWhileActive = 0;   ///< audio-ports.h: deactivated only
 
@@ -2651,7 +2676,9 @@ struct Fake64 {
             info->channel_count = 2;
             info->flags = isInput ? (i == 1 ? f.secondInputFlags : f.flags)
                                   : (f.outputFlags >= 0 ? static_cast<std::uint32_t>(f.outputFlags) : f.flags);
-            info->port_type = CLAP_PORT_STEREO;
+            if(i==0 && (!isInput || f.mainInput))info->flags|=CLAP_AUDIO_PORT_IS_MAIN;
+            if(isInput && i==(f.mainInput?1u:0u))info->channel_count=f.keyChannels;
+            info->port_type = info->channel_count==1?CLAP_PORT_MONO:CLAP_PORT_STEREO;
             info->in_place_pair = CLAP_INVALID_ID;
             return true;
         };
@@ -2674,6 +2701,17 @@ struct Fake64 {
             if (any32 && any64) f.mixed = true;
             f.saw32 = f.saw32 || any32;
             f.saw64 = f.saw64 || any64;
+            const auto keyIndex=f.mainInput?1u:0u;
+            if(pd->audio_inputs_count>keyIndex && pd->frames_count>0) {
+                const auto& key=pd->audio_inputs[keyIndex];
+                f.keyFirst=key.data64?key.data64[0][0]:key.data32[0][0];
+                f.keyLast=key.data64?key.data64[0][pd->frames_count-1]:key.data32[0][pd->frames_count-1];
+            }
+            if(pd->audio_inputs_count>2) {
+                const auto& extra=pd->audio_inputs[2];
+                for(std::uint32_t c=0;c<extra.channel_count;++c)for(std::uint32_t i=0;i<pd->frames_count;++i)
+                    f.extraZero=f.extraZero && (extra.data64?extra.data64[c][i]==0:extra.data32[c][i]==0);
+            }
             const clap_audio_buffer_t& out = pd->audio_outputs[0];
             const clap_audio_buffer_t* in = pd->audio_inputs_count > 0 ? &pd->audio_inputs[0] : nullptr;
             for (std::uint32_t c = 0; c < out.channel_count; ++c) {
@@ -2722,6 +2760,33 @@ struct Io64 {
         else      { io.in = in32; io.out = out32; }
     }
 };
+
+void testDeviceKeyInputBuses() {
+    section("device keys -- declared main/aux roles, widths and segment offsets");
+    for(int mode=0;mode<3;++mode)for(const auto keyWidth:{1u,2u}) {
+        Fake64 fake;fake.inputs=3;fake.keyChannels=keyWidth;fake.steady.reserve(16);
+        if(mode==2){fake.flags=0;fake.secondInputFlags=0;}
+        DeviceIdentity identity;identity.format="clap";ClapDevice device(&fake.plugin,identity);
+        check(device.sidechainInputChannels()==static_cast<std::int32_t>(keyWidth),"aux width is known before activation");
+        device.willBeHanded(mode?engine::Precision::Float64:engine::Precision::Float32);device.prepare(48000,32);
+        Io64 buffers(32,.875,mode!=0);
+        std::array<float,32> left{},right{};std::array<double,32> wideLeft{},wideRight{};
+        for(std::size_t i=0;i<32;++i){left[i]=static_cast<float>(i)/32;right[i]=.5f;wideLeft[i]=static_cast<double>(i)/32;wideRight[i]=.5;}
+        const float* key32[]{left.data(),right.data()};const double* key64[]{wideLeft.data(),wideRight.data()};
+        buffers.io.blockOffset=7;buffers.io.frames=11;
+        if(mode)buffers.io.sidechain64=key64;else buffers.io.sidechain=key32;
+        const auto portReads=fake.portReads;
+        device.process(buffers.io);
+        check(fake.keyFirst==7./32 && fake.keyLast==17./32 && fake.extraZero,"only the first aux gets the exact key segment; other ports stay silent");
+        check(fake.portReads==portReads && fake.portReadsWhileActive==0,"callback and cached key capability read no SDK layout");
+        buffers.io.sidechain=nullptr;buffers.io.sidechain64=nullptr;device.process(buffers.io);
+        check(fake.keyFirst==0 && fake.keyLast==0,"disconnected key is cleared, never the preceding block");
+    }
+    Fake64 instrument;instrument.inputs=1;instrument.mainInput=false;instrument.steady.reserve(4);
+    DeviceIdentity id;ClapDevice device(&instrument.plugin,id);device.prepare(48000,32);
+    Io64 buffers(32,.875,true);buffers.io.sidechain64=buffers.in64;device.process(buffers.io);
+    check(device.sidechainInputChannels()==2 && instrument.keyFirst==.875,"a declared aux-only input at port zero is a key, not a fabricated main bus");
+}
 
 void testA64BitPluginSaysSo() {
     section("ADR-0207 d2 -- a CLAP whose every port takes 64 bits processes double");
@@ -2945,6 +3010,7 @@ void testTransportAtDeviceInput() {
         "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
         "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,always_process) VALUES"
         "(1,1,0,1,'Latency',1),(2,1,1,2,'Clock',1);"
+        "INSERT INTO mixer_strip(track_id) VALUES(1);"
         "INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,120,0),(2,5765760,60,0);"
         "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,7,8),(2,5765760,3,4)");
     Fake delay;
@@ -2963,6 +3029,11 @@ void testTransportAtDeviceInput() {
     private:
         WideConst signal_;
     } source;
+    const auto loader = [&](const engine::DeviceRequest& request, std::string&) {
+        DeviceIdentity identity;
+        identity.format = "clap";
+        return std::make_unique<ClapDevice>(request.device->id == 1 ? &delay.plugin : &probe.plugin, identity);
+    };
     for (const bool offline : {false, true}) {
         engine::Session session;
         engine::SessionSpec spec;
@@ -2971,11 +3042,6 @@ void testTransportAtDeviceInput() {
         session.setSourcesFor([&](std::int64_t id) {
             return id == 1 ? std::vector<engine::Node*>{&source} : std::vector<engine::Node*>{};
         });
-        const auto loader = [&](const engine::DeviceRequest& request, std::string&) {
-            DeviceIdentity identity;
-            identity.format = "clap";
-            return std::make_unique<ClapDevice>(request.device->id == 1 ? &delay.plugin : &probe.plugin, identity);
-        };
         const bool loaded = session.load(*store, loader, spec);
         check(loaded, "load two CLAP devices in a real session");
         if (!loaded) return;
@@ -3059,6 +3125,75 @@ void testTransportAtDeviceInput() {
         check(probe.count == 1 && sampleAt(0) == 4096,
               "with compensation off the device sees the heard time");
         delay.latencyValue = 1024;
+        check(session.setDelayCompensation(true), "restore receiving compensation before testing gesture publications");
+        {
+            namespace g = adi::gesture;
+            engine::ProjectView view;
+            view.refresh(*store);
+            auto coordinator = g::Coordinator::attach(*store, std::make_shared<g::EnginePresentation>(view, session));
+            if (!coordinator.status.ok() || !coordinator.value) {
+                check(false, "attach a real gesture coordinator to the hosted clock fixture");
+                return;
+            }
+            const auto splitAtChange = [&](double followingTempo) {
+                clock.locate(24400);
+                render(1024);
+                return probe.count == 2 && sampleAt(0) == 23376 && sampleAt(1) == 24000 &&
+                       probe.blocks[0].frames == 624 && probe.blocks[1].frames == 400 &&
+                       probe.blocks[0].transport.tempo == 120 && probe.blocks[1].transport.tempo == followingTempo &&
+                       probe.blocks[0].transport.tsig_num == 7 && probe.blocks[0].transport.tsig_denom == 8 &&
+                       probe.blocks[1].transport.tsig_num == 3 && probe.blocks[1].transport.tsig_denom == 4;
+            };
+            OpRequest volume;
+            volume.opType = "mixer.setVolume";
+            volume.payload = {{"id",1},{"db",-3.0}};
+            check(OpJournal(*store).commit(volume).ok && coordinator.value->drain(100).status.ok() &&
+                  splitAtChange(60), "a drain-adopted volume commit keeps both receiving clock segments");
+            g::Spec structural;
+            structural.strategy = g::Strategy::Structural;
+            structural.label = "receiving clock preview";
+            const auto preview = coordinator.value->begin(structural, g::tempoProducer(5765760));
+            if (!preview.status.ok() || !preview.session) {
+                check(false, "begin native receiving clock preview");
+                return;
+            }
+            const auto changed = preview.session->update(std::make_unique<g::TempoInput>(90.0));
+            check(changed.status.ok() && changed.preview && splitAtChange(90),
+                  "a structural tempo preview gives the receiver its own new boundary");
+            check(preview.session->cancel().status.ok() && splitAtChange(60),
+                  "cancelling the preview restores the receiver's original tempo and meter split");
+        }
+    }
+
+    store->db().exec("DELETE FROM tempo_map; DELETE FROM time_signature_map;"
+        "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,117,0);"
+        "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(0,4,4)");
+    SQLite::Statement meter(store->db(), "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(?,3,4)");
+    meter.bind(1, 8 * textproj::kPPQ);
+    meter.exec();
+    for (const double rate : {48000.0, 44100.0}) {
+        engine::Session session;
+        engine::SessionSpec spec;
+        spec.sampleRate = rate;
+        spec.maxFrames = 64;
+        if (!session.load(*store, loader, spec)) {
+            check(false, "load rounded CLAP bar-boundary session");
+            return;
+        }
+        const auto boundary = std::llround(8.0 * 60.0 / 117.0 * rate);
+        session.transport().locate(boundary + 1024 - 32);
+        session.transport().play();
+        probe.count = 0;
+        engine::AudioIo io;
+        io.frames = 64;
+        session.process(io);
+        const auto& before = probe.blocks[0];
+        const auto& after = probe.blocks[1];
+        check(probe.count == 2 && before.frames == 32 && after.frames == 32 &&
+              before.transport.tsig_num == 4 && after.transport.tsig_num == 3 &&
+              after.transport.bar_number == 2 && after.transport.bar_start == 8 * CLAP_BEATTIME_FACTOR &&
+              after.transport.song_pos_beats == after.transport.bar_start,
+              "CLAP's rounded meter boundary splits on time and aligns beat and bar start");
     }
 }
 
@@ -3479,6 +3614,7 @@ int main() {
     testRescanAllPreservesIndicesAndClearKeepsTheLane();
     testAutomationReachesClapInPlainUnits();
     testAnEchoDoesNotBecomeAnEdit();
+    testDeviceKeyInputBuses();
     testA64BitPluginSaysSo();
     testAt64ThePluginIsHandedDouble();
     testAt64AFloatOnlyPluginIsConverted();

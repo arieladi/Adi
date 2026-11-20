@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <new>
 #include <sstream>
 #include <string>
@@ -941,6 +942,30 @@ void testTruePeakFindsTheCrestBetweenSamples() {
     check(g_allocs.load() == 0, "fifty blocks, no allocation");
     m.reset();
     check(m.peak() == 0.0, "reset clears the held peak");
+
+    float signal[16] = {};
+    for (int i = 1; i < 16; ++i)
+        signal[i] = (i % 4) < 2 ? 0.75f : -0.75f;
+    const float* input[] = {signal};
+    for (double rate : {48000.0, 192000.0}) {
+        signal[0] = 0.0f;
+        m.prepare(rate);
+        m.process(input, 1, 16);
+        const double reference = m.peak();
+        check(rate == 48000.0 ? reference > 0.75 : reference == 0.75,
+              "the finite fixture exercises interpolation or the sample-only path");
+        for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                              std::numeric_limits<float>::infinity(),
+                              -std::numeric_limits<float>::infinity()}) {
+            signal[0] = invalid;
+            m.reset();
+            m.process(input, 1, 1);
+            const float* rest[] = {signal + 1};
+            m.process(rest, 1, 15);
+            check(m.peak() == reference,
+                  "a non-finite sample is silence across blocks at " + std::to_string(rate));
+        }
+    }
 }
 
 // ===========================================================================

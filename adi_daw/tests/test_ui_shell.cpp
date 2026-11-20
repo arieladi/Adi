@@ -400,6 +400,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
               root.devices.panels.size() == 2,
           "the parity scene has Live's columns and the fourth track's two devices");
     reference(root, "live-parity", write);
+    std::fputs("[shell] liveParity render returned\n", stderr);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     auto render = [&root, folder](const char *name) {
         if (folder.isEmpty())
@@ -441,6 +442,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     root.mark(DirtySet::All);
     root.frame();
     render("adi-parity-mixer.png");
+    std::fputs("[shell] liveParity Mixer View frame returned\n", stderr);
     // Bitwig's project view (the director, 2026-10-28), given a tree as the snapshot will give
     // it once it carries groups (N6): track 2 is a group holding 3, a group holding 4; 1 is Main.
     root.arrangement.setTrackRows([](const SnapshotReader &, std::vector<TrackRow> &rows) {
@@ -474,6 +476,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
         return out;
     };
     const auto before = items();
+    std::fputs("[shell] liveParity project menu read\n", stderr);
     check(before.size() == 5 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
               before[2].first == "Fx" && !before[2].second && !root.namesBar.show.getToggleState(),
           "the project view's menu: the whole project, ticked, then its groups as a tree");
@@ -523,6 +526,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.namesBar.show.getToggleState() &&
               shownRows(root.mixer) == std::vector<std::int64_t>{1, 2, 3, 4},
           "Project shows every track again, the button unlit");
+    std::fputs("[shell] liveParity before teardown\n", stderr);
 }
 // A menu on one line: its items in order, a disabled one dashed, a ticked one starred when `ticks`
 // is set, a separator a bar, so a check sees Live's groups too.
@@ -9719,6 +9723,7 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
+    std::fputs("[shell] mix fixture entered\n", stderr);
     StoreError err{};
     auto store = Store::createEmpty(dir / "mixview.adi", err);
     check(store != nullptr, "the Mix View's project opens");
@@ -9742,7 +9747,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         madeAll = submitter.submit(std::move(r)).ok && madeAll;
     }
     check(madeAll, "Kick, Bass, Lead and Main");
-    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "mix");
+    // Keep the three long-lived roots off the Debug test thread stack.
+    const auto rootStorage = std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
+                                                               persistence, session, "mix");
+    auto &root = *rootStorage;
+    std::fputs("[shell] mix fixture root constructed\n", stderr);
     root.setSize(1440, 900);
     root.mark(DirtySet::All);
     root.frame();
@@ -9762,7 +9771,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     root.frame();
     check(panel.stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
               panel.stack.channelScope.getSelectedId() == 1 && panel.stack.model().shownCount() == 0 &&
-              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("Device View"),
+              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("+ Function"),
           "STACK starts with tool channels and explains how to add the first tool");
     {
         const auto selectionBefore = root.arrangement.geometry.selection;
@@ -10146,10 +10155,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.referenceTrack() == 0 && root.arrangement.geometry.inView(12), "back to the stub: Lead shows");
     }
     // A second window keeps its own.
-    AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "mix-other");
-    other.setSize(1200, 720);
-    other.frame();
-    check(!other.mixViewPanel.isVisible() && other.arrangement.isVisible(), "a second window keeps its own view");
+    const auto other = std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
+                                                         persistence, session, "mix-other");
+    other->setSize(1200, 720);
+    other->frame();
+    check(!other->mixViewPanel.isVisible() && other->arrangement.isVisible(), "a second window keeps its own view");
     root.transport.mix.onClick();
     root.frame();
     check(!root.state().mixView && !panel.isVisible() && root.arrangement.isVisible() && root.mixer.isVisible() &&
@@ -10173,6 +10183,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         root.transport.mix.onClick();
         root.frame();
     }
+    std::fputs("[shell] mix fixture docking start\n", stderr);
     // In a window of its own, onto any display (ADR-0209 d11, ADR-0180 d3): the same panel moves
     // into the floating host's window and back.
     {
@@ -10276,6 +10287,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.command(AppCommands::ToggleMixView) && !panel.isVisible() && root.arrangement.isVisible(), "and F4 closes it");
         root.applicationCommand = nullptr;
     }
+    std::fputs("[shell] mix fixture device document start\n", stderr);
     // A real document and its shared feed, using only the headless Knobs fixture.
     {
         std::string error;
@@ -10295,8 +10307,10 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             }
             check(document->ops().submit(std::move(make)).ok && document->synchronise(),
                   "two actual ordered devices on one track");
-            AdiRootComponent actual(document->view(), document->ops(), document->mailbox(), commands,
-                                    document->views(), document->sessionState(), "mix-devices");
+            const auto actualStorage = std::make_unique<AdiRootComponent>(document->view(), document->ops(),
+                document->mailbox(), commands, document->views(), document->sessionState(), "mix-devices");
+            auto &actual = *actualStorage;
+            std::fputs("[shell] mix fixture device root constructed\n", stderr);
             // This test peer overrides createNewPeer with UiFakePeer: no OS window, input or display.
             UiPeerRoot fake;
             fake.setSize(1440, 900);
@@ -10411,6 +10425,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 check(knobs && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
                           actual.undoTitle(false) == beforeUndo,
                       "one undo restores the untouched parameter through the shared authority");
+                std::fputs("[shell] mix fixture compact activator start\n", stderr);
                 const auto compactTime = std::max(dragTime + 20,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setAutoZoom(false, compactTime);
@@ -10450,6 +10465,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     check(actual.command(AppCommands::Undo), "undo only the displayed second pill's activator");
                     document->tick(38); actual.frame();
                 }
+                std::fputs("[shell] mix fixture compact activator returned\n", stderr);
                 const auto restoreTime = std::max(compactTime + 210,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setBaseHeight(100, restoreTime);
@@ -11012,6 +11028,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             actual.afterEdit = nullptr;
             fake.removeChildComponent(&actual);
             fake.removeFromDesktop();
+            std::fputs("[shell] mix fixture demand peers start\n", stderr);
             // Exercise the real main/floating visibility hooks with fake peers.
             // Neither DocumentWindow constructs a native peer in this fixture.
             std::map<const void *, std::vector<std::int64_t>> demands;
@@ -11149,7 +11166,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   "panel End still reaches its original owner after target validation turns stale");
         }
     }
+    std::fputs("[shell] mix fixture seek checks start\n", stderr);
     adi::uitest::mixSeekChecks(commands, dir, check);
+    std::fputs("[shell] mix fixture seek checks returned\n", stderr);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     if (!headlessOnly && folder.isNotEmpty()) {
         root.command(AppCommands::ToggleMixView);
@@ -11195,6 +11214,19 @@ int main(int argc, char **argv) {
     engine::Transport driver;
     settings::AppSettings settings(appdata::App::Daw, temp.path() / "settings.json");
     AppCommands commands(settings);
+    const auto trace = [](const char *name, const auto &fixture) {
+        std::fprintf(stderr, "[shell] begin %s\n", name);
+        fixture();
+        std::fprintf(stderr, "[shell] end %s\n", name);
+    };
+    if (argc == 2 && std::string(argv[1]) == "--arrangement-components-only") {
+        // These fixtures render components in software and do not create a native peer.
+        trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
+        trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
+        trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
+        std::printf("%d checks, %d failures (Arrangement components)\n", checks, failures);
+        return failures ? 1 : 0;
+    }
     if (argc == 2 && std::string(argv[1]) == "--mixview-only") {
         // Deliberately before every UiPeerRoot/addToDesktop/reference() branch below.
         // Fake plug-ins and UiFakePeer only; no native window, desktop input/capture or audio device.
@@ -13826,7 +13858,10 @@ int main(int argc, char **argv) {
                     ++placed;
                     once = once && tabOf(*setting) == tab.name;
                 }
-        check(once && placed == settings::registry().size(), "every setting is on one tab, once");
+        std::size_t paged = 0;
+        for (const auto &s : settings::registry())
+            paged += s.page.empty() ? std::size_t{0} : std::size_t{1}; // internal preferences (DEV-23) have no page
+        check(once && placed == paged, "every setting is on one tab, once");
         {
             // Live's sections in Live's order (N14), then ADI's own settings on the tab, in the
             // tab's own group: Live 12 manual 2.3.1 lists neither Zoom on Selection, the tooltips
@@ -14272,40 +14307,40 @@ int main(int argc, char **argv) {
                 juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
-    liveParity(commands, temp.path(), write);
-    groupTracks(commands, temp.path());
-    footRows(commands, temp.path());
-    newProject(commands, temp.path());
-    stripParamUndo(commands, temp.path());
-    deviceClipboard(commands, temp.path());
-    pluginWindows(commands, temp.path());
-    automationArm(commands, temp.path());
-    sendKnobs(commands, temp.path());
-    audioDrop(commands, temp.path());
-    importPrompt(commands, settings, temp.path());
-    browserDevices(commands, temp.path());
-    splitAndRangeEdits(commands, settings, temp.path());
-    clipClipboard(commands, temp.path());
-    timeCommands(commands, temp.path());
-    colorCabTile(commands, temp.path());
-    rangeSelection(commands, temp.path());
-    clipToTrack(commands, temp.path());
-    clipView(commands, temp.path(), write);
-    clipViewNotes(commands, temp.path());
-    clipViewFields(commands, temp.path());
-    clipViewTools(commands, temp.path());
-    clipViewMore(commands, temp.path());
-    clipViewTime(commands, temp.path());
-    clipViewClipTime(commands, temp.path());
-    clipViewMulti(commands, temp.path());
-    mixViewShell(commands, temp.path());
-    recordingOptions(commands, settings, temp.path());
-    undoHistoryWindow(commands, temp.path());
-    clipWaveforms(commands, temp.path());
-    clipFades(commands, temp.path());
-    showcase(commands, temp.path());
-    loopMetronome(commands, settings, temp.path());
-    locators(commands, temp.path());
+    trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
+    trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
+    trace("footRows", [&] { footRows(commands, temp.path()); });
+    trace("newProject", [&] { newProject(commands, temp.path()); });
+    trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
+    trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
+    trace("pluginWindows", [&] { pluginWindows(commands, temp.path()); });
+    trace("automationArm", [&] { automationArm(commands, temp.path()); });
+    trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
+    trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
+    trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
+    trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
+    trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
+    trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
+    trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
+    trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
+    trace("rangeSelection", [&] { rangeSelection(commands, temp.path()); });
+    trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
+    trace("clipView", [&] { clipView(commands, temp.path(), write); });
+    trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
+    trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
+    trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
+    trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });
+    trace("clipViewTime", [&] { clipViewTime(commands, temp.path()); });
+    trace("clipViewClipTime", [&] { clipViewClipTime(commands, temp.path()); });
+    trace("clipViewMulti", [&] { clipViewMulti(commands, temp.path()); });
+    trace("mixViewShell", [&] { mixViewShell(commands, temp.path()); });
+    trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
+    trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
+    trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
+    trace("clipFades", [&] { clipFades(commands, temp.path()); });
+    trace("showcase", [&] { showcase(commands, temp.path()); });
+    trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
+    trace("locators", [&] { locators(commands, temp.path()); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
