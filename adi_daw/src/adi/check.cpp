@@ -15,6 +15,7 @@
 #include <set>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace adi {
 
@@ -51,6 +52,8 @@ struct PolyRef {
     bool idNullable;
 };
 
+// Journal targets describe the edit at its historical position. Only live
+// references belong here. The journal itself is checked in checkHistory.
 const PolyRef kPolyRefs[] = {
     {"routing", "id", "src_kind", "src_id", false},
     {"routing", "id", "dst_kind", "dst_id", false},
@@ -58,7 +61,6 @@ const PolyRef kPolyRefs[] = {
     {"ui_view", "id", "scope_kind", "scope_id", true},
     {"extensions", "id", "scope_kind", "scope_id", true},
     {"controller_maps", "id", "target_kind", "target_id", true},
-    {"ops", "seq", "target_kind", "target_id", true},
 };
 
 /// kind -> table. Anything not here is either external hardware or a scope name
@@ -75,7 +77,7 @@ const std::set<std::string> kNotRows = {
     "hw_in", "hw_out",   // hardware port indices on the current audio device
     "project",           // the singleton; id is meaningless
     "editor",            // a UI surface, not a row
-    "",                  // ops.target_kind defaults to empty
+    "",                  // no target kind
 };
 
 // --- 1. what SQLite can tell us itself -----------------------------------------
@@ -410,7 +412,69 @@ void checkHistory(Ctx& c) {
     }
 }
 
-// --- 5. time and media ------------------------------------------------------------
+// --- 5. project structure, time and media ----------------------------------------
+
+void checkCycles(Ctx& c, const char* sql, const char* table, const char* code,
+                 const char* detail) {
+    c.ran();
+    try {
+        struct Node {
+            std::size_t incoming = 0;
+            std::vector<std::int64_t> outputs;
+        };
+        std::map<std::int64_t, Node> nodes;
+        SQLite::Statement st(c.db, sql);
+        while (st.executeStep()) {
+            const auto src = st.getColumn(0).getInt64();
+            const auto dst = st.getColumn(1).getInt64();
+            nodes[src].outputs.push_back(dst);
+            ++nodes[dst].incoming;
+        }
+
+        std::vector<Node*> ready;
+        for (auto& [id, node] : nodes) {
+            if (node.incoming == 0) ready.push_back(&node);
+        }
+        std::size_t visited = 0;
+        while (!ready.empty()) {
+            const auto* node = ready.back();
+            ready.pop_back();
+            ++visited;
+            for (const auto dst : node->outputs) {
+                auto& target = nodes.at(dst);
+                if (--target.incoming == 0) ready.push_back(&target);
+            }
+        }
+        if (visited != nodes.size()) c.add(Severity::Error, code, table, detail);
+    } catch (const std::exception& e) {
+        c.add(Severity::Error, "graph.checkFailed", table, e.what());
+    }
+}
+
+void checkProjectStructure(Ctx& c) {
+    checkCycles(c, "SELECT id, parent_id FROM tracks WHERE parent_id IS NOT NULL",
+                "tracks", "track.parentCycle", "track parent links contain a cycle");
+
+    // Match the planner's main edges, including ADR-0065's implicit output to
+    // a parent or the first master when there is no usable explicit main row.
+    checkCycles(c, R"sql(
+        WITH main_output AS (
+            SELECT r.src_id, r.dst_id FROM routing r
+            JOIN tracks src ON src.id = r.src_id
+            JOIN tracks dst ON dst.id = r.dst_id
+            WHERE r.kind = 'main' AND r.enabled <> 0
+              AND r.src_kind = 'track' AND r.dst_kind = 'track'
+        ), defaults AS (
+            SELECT t.id, COALESCE(t.parent_id, (SELECT MIN(id) FROM tracks
+                                              WHERE kind = 'master')) AS dst_id
+            FROM tracks t WHERE t.kind NOT IN ('master', 'vca')
+            AND NOT EXISTS (SELECT 1 FROM main_output m WHERE m.src_id = t.id)
+        )
+        SELECT src_id, dst_id FROM main_output
+        UNION ALL
+        SELECT id, dst_id FROM defaults WHERE dst_id IS NOT NULL
+    )sql", "routing", "routing.mainCycle", "main track outputs contain a cycle");
+}
 
 void checkTimeBase(Ctx& c) {
     // SPEC §4.1: an object populates exactly the column matching its time_base.
@@ -435,6 +499,21 @@ void checkTimeBase(Ctx& c) {
         c.add(Severity::Error, "time.checkFailed", "clips", e.what());
     }
 
+    c.ran();
+    try {
+        SQLite::Statement st(c.db,
+            "SELECT id, time_base FROM clips "
+            "WHERE (time_base = 0 AND (length_ticks IS NULL OR length_ticks < 0)) "
+            "   OR (time_base = 1 AND (length_ns IS NULL OR length_ns < 0))");
+        while (st.executeStep())
+            c.add(Severity::Error, "time.clipLength",
+                  "clips#" + std::to_string(st.getColumn(0).getInt64()),
+                  std::string(st.getColumn(1).getInt() == 0 ? "length_ticks" : "length_ns") +
+                      " is missing or negative");
+    } catch (const std::exception& e) {
+        c.add(Severity::Error, "time.checkFailed", "clips", e.what());
+    }
+
     // A project with no tempo at tick 0 has no defined tempo before its first
     // event. Legal SQL, meaningless music.
     c.ran();
@@ -446,7 +525,8 @@ void checkTimeBase(Ctx& c) {
             c.add(Severity::Warning, "time.noInitialTempo", "tempo_map",
                   "there are tempo events but none at tick 0, so the tempo before the "
                   "first one is undefined");
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        c.add(Severity::Error, "time.checkFailed", "tempo_map", e.what());
     }
 }
 
@@ -518,6 +598,7 @@ CheckReport checkProject(const Store& s, bool verifyMediaFiles) {
     checkBlobs(c);
     checkNoteExpressionTargets(c);
     checkHistory(c);
+    checkProjectStructure(c);
     checkTimeBase(c);
     checkMedia(c);
     if (verifyMediaFiles) {
