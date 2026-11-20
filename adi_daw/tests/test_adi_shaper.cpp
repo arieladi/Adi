@@ -325,6 +325,155 @@ void bypassAndInvalid() {
           && left == 0.01f, "zero master mix is bit transparent across live split stages");
 }
 
+bool sameSampleBits(float actual, float expected) {
+    return std::bit_cast<std::uint32_t>(actual) == std::bit_cast<std::uint32_t>(expected);
+}
+
+void nonfiniteAudio() {
+    struct Case {
+        const char* name;
+        void (*configure)(Shaper&);
+    };
+    const std::array cases{
+        Case{"neutral rack substitutes one zero for nonfinite audio", [](Shaper&) {}},
+        Case{"Volume split substitutes one zero for nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::VolumeBands, 1);
+            flat(rack, Stage::Volume, Band::Mid, 50.f);
+        }},
+        Case{"Width compensation stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::WidthBands, 3);
+            rack.set(Shaper::WidthLowSlope, 1);
+            rack.set(Shaper::WidthHighSlope, 2);
+        }},
+        Case{"Pan compensation stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::PanBands, 3);
+            rack.set(Shaper::PanLowSlope, 2);
+            rack.set(Shaper::PanHighSlope, 1);
+        }},
+        Case{"Filter stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::FilterOn, 1);
+            rack.set(Shaper::modParam(Stage::Filter, Band::Mid, Shaper::Type), 1);
+        }},
+        Case{"Sweep flanger delay stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::SweepOn, 1);
+        }},
+        Case{"Sweep phaser feedback stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::SweepOn, 1);
+            rack.set(Shaper::modParam(Stage::Sweep, Band::Mid, Shaper::Type), 5);
+        }},
+        Case{"Drive wet path stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::DriveOn, 1);
+            for (int i = 0; i < 8; ++i)
+                rack.set(Shaper::driveParam(Band::Mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + i)), 50);
+        }},
+        Case{"Drive split latency and warm bypass stay exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::DriveOn, 1);
+            rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 1), 3);
+            rack.set(Shaper::MasterMix, 0);
+        }},
+        Case{"Crush hold and dither stay exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::CrushOn, 1);
+            rack.set(Shaper::modParam(Stage::Crush, Band::Mid, Shaper::Type), 1);
+            for (int i = 0; i < 8; ++i) {
+                rack.set(Shaper::modParam(Stage::Crush, Band::Mid, static_cast<Shaper::ModControl>(Shaper::Primary1 + i)), 50);
+                rack.set(Shaper::modParam(Stage::Crush, Band::Mid, static_cast<Shaper::ModControl>(Shaper::Secondary1 + i)), 50);
+            }
+        }}
+    };
+    struct Fault {
+        float sample;
+        bool right;
+    };
+    constexpr auto inf = std::numeric_limits<float>::infinity();
+    const std::array faults{Fault{std::numeric_limits<float>::quiet_NaN(), false},
+                            Fault{inf, true}, Fault{-inf, false}};
+    constexpr std::size_t block = 128, frames = 12 * block, badFrame = 2 * block - 1;
+    std::array<float, frames> inL{}, inR{}, actualL{}, actualR{}, expectedL{}, expectedR{};
+    for (std::size_t i = 0; i < frames; ++i) {
+        const auto time = static_cast<double>(i);
+        inL[i] = static_cast<float>(.35 * std::sin(.13 * time));
+        inR[i] = static_cast<float>(.22 * std::cos(.09 * time));
+    }
+    inL.front() = -0.f;
+
+    for (const auto& test : cases) {
+        for (const auto rate : {48000., 96000.}) {
+            for (const auto& fault : faults) {
+                Shaper actual, expected;
+                actual.prepare(rate);
+                expected.prepare(rate);
+                test.configure(actual);
+                test.configure(expected);
+                actualL = inL;
+                actualR = inR;
+                auto& invalid = fault.right ? actualR : actualL;
+                auto& clean = fault.right ? inR : inL;
+                const auto original = clean[badFrame];
+                invalid[badFrame] = fault.sample;
+                clean[badFrame] = 0.f;
+                for (std::size_t frame = 0; frame < frames; frame += block) {
+                    auto* left = actualL.data() + frame;
+                    auto* right = actualR.data() + frame;
+                    actual.process(left, right, left, right, block);
+                    expected.process(inL.data() + frame, inR.data() + frame,
+                                     expectedL.data() + frame, expectedR.data() + frame, block);
+                }
+                clean[badFrame] = original;
+                check(actual.latency() == expected.latency() &&
+                          std::equal(actualL.begin(), actualL.end(), expectedL.begin(), sameSampleBits) &&
+                          std::equal(actualR.begin(), actualR.end(), expectedR.begin(), sameSampleBits),
+                      test.name);
+            }
+        }
+    }
+
+    Shaper crossed;
+    float left = inf, right = -.25f;
+    crossed.process(&left, &right, &right, &left, 1);
+    check(right == 0.f && left == -.25f, "nonfinite stereo copy supports crossed input and output planes");
+}
+
+void finiteDriveOverflow() {
+    constexpr std::size_t frames = 128;
+    std::array<float, frames> inL{}, inR{}, actualL{}, actualR{}, expectedL{}, expectedR{};
+    for (std::size_t i = 0; i < frames; ++i) {
+        const auto time = static_cast<double>(i);
+        inL[i] = static_cast<float>(.35 * std::sin(.13 * time));
+        inR[i] = static_cast<float>(.22 * std::cos(.09 * time));
+    }
+    for (const auto rate : {48000., 96000.}) {
+        Shaper actual, expected;
+        for (auto* rack : {&actual, &expected}) {
+            rack->prepare(rate);
+            rack->set(Shaper::DriveOn, 1);
+            rack->set(Shaper::driveParam(Band::Mid, Shaper::InputTrim), 100);
+            rack->set(Shaper::driveParam(Band::Mid, Shaper::OutputTrim), 100);
+        }
+        auto run = [&](const std::array<float, frames>& left) {
+            actual.process(left.data(), inR.data(), actualL.data(), actualR.data(), frames);
+            expected.process(inL.data(), inR.data(), expectedL.data(), expectedR.data(), frames);
+        };
+        run(inL);
+        auto fault = inL;
+        // Finite ingress with extreme trims at exactly zero Drive overflows
+        // the internal wet float ring, independently of NaN/Inf input handling.
+        fault[frames / 2] = std::numeric_limits<float>::max();
+        run(fault);
+        bool rightExact = std::equal(actualR.begin(), actualR.end(), expectedR.begin(), sameSampleBits);
+        bool leftFinite = true, leftAudible = false;
+        for (int block = 0; block < 3; ++block) {
+            run(inL);
+            rightExact &= std::equal(actualR.begin(), actualR.end(), expectedR.begin(), sameSampleBits);
+            for (float sample : actualL) {
+                leftFinite &= std::isfinite(sample);
+                leftAudible |= std::abs(sample) > .1f;
+            }
+        }
+        check(leftFinite && leftAudible, "Drive recovers finite audio on the next callback after internal overflow");
+        check(rightExact, "Drive overflow recovery preserves the unaffected channel's filter and delay state");
+    }
+}
+
 void clockLimitsAndAliases() {
     constexpr std::size_t count = 100003;
     std::vector<float> inL(count, 1.0f), inR(count, -0.25f), outL(count), outR(count);
@@ -607,6 +756,8 @@ int main() {
     independentBandClocks();
     steepCrossovers();
     bypassAndInvalid();
+    nonfiniteAudio();
+    finiteDriveOverflow();
     clockLimitsAndAliases();
     modulationStack();
     modulationBands();
