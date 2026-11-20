@@ -6,6 +6,34 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-20, evening — the outside review of bundles 41 to 45: five rows (DF-E59 to DF-E62, DF-W36)
+
+**For the seats — read first.** The review covered the code that landed on 20 November: the keyboard path, the built-in host, ADI-Shaper, the plug-in registry and the scanner. Every quoted line was real; each of its 10 findings was checked by a probe against main and a second skeptic.
+- **clones seat: DF-E59 first, then DF-E60, before the panel work.** One NaN or infinite sample from any plug-in before ADI-Shaper silences that channel for good (a probe: 239,871 NaN samples of 479,744); and Drive jumps about 3.3 dB the moment it leaves exactly 0 %.
+- **devices lane: DF-E61** with DF-E57 (a stored value skipped after automation moved it).
+- **engine-win: DF-E62** (the scan cache keeps stale rows in five edge cases), (a) and (d) before the Plug-Ins browser reads the catalogue.
+- **window (window-fn): DF-W36**, a comment that promises thread safety `dropped()` does not have.
+Not entered: the stuck note when an instrument stops processing (false: the route clears `armedTrack` then). The next free ids are DF-E63 and DF-W37.
+
+---
+
+## 2026-11-20, later — three engine rows lent to engine-win while the engine reconciles #677
+
+**For the engine seat and engine-win.** Engine-win finished DF-E44, PD-06 and EX-06 and its own queue; the
+engine seat's next item is #677. So the engine lends engine-win three of its rows (collab/README.md, loans);
+the engine seat reviews each hunk:
+- **DF-E51 (a) and (b), urgent:** the keyboard reaches the MIDI parser since window-fn's window landed; a
+  retriggered key leaves a stuck note, and a zone change orphans held notes. `engine/mpe_input.*`,
+  `mpe_output.cpp`'s `noteOff`.
+- **DF-E45:** MIDI capture refuses ordinary tempos through `secondsToTicks`' truncation.
+  `midi_capture.cpp`, `TempoMap::secondsToTicks`.
+- **DF-E54 (a):** `checkProject`'s false error on journal rows, which makes Collect and Export refuse.
+  `check.cpp`.
+Then engine-win's own #642 (`rankable()` out, ADR-0248 d7) and PD-05. The engine seat keeps DF-E51 (c) and
+(d), DF-E52, DF-E53, DF-E54 (b), DF-E55 and DF-E56.
+
+---
+
 ## 2026-11-20 — the devices lane's four questions answered
 
 **For the devices lane — read first.** Your entries of 19 November asked win for four things:
