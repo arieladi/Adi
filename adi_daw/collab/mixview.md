@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20 — Cumulative Windows Release with Shaper fixes
+
+The exact Release `aad803efe2cff1e1e06e34c278bb295334a96ea0` is built from `7510acd2` with the Mix View slices, the paired Engine and Session device-key patches, and DF-E59/E60. All 20 CTest suites passed, including the shipped Shaper Pd path. Separate software-component gates passed 906 Mix View, 324 Arrangement and seven Appearance checks. Routing passed 214 checks and the owned VST3 fixture passed 131. The package was independently read back.
+
+ZIP SHA-256 `cc9c2119c9d970418b322d8a2e5d421cff4340bc974abdbe2994a53dcd5c678b`. ADI.exe `0c2d618a579014c9292a5c21b81e8274124722bfa47c93a8d5eeb31940f74987`. Scanner `493fd88dc946caa40173f6cb66733dfcf87ff65dc6659c8c41db49218bcc0c46`. The matching Win brief covers the Classic Scope, Spectrogram Clear, Spectrum, Focus Locate, key taps, idle work and Shaper Drive. Win handles the live checks on the director's idle PC. Land Engine's effective VST3 shape adapter before the loaned Session slice.
+
+The existing ADI-Shaper panel is reconciled privately at `e37c8d4e`. Its Time delay tests first rejected both invalid-history paths and now pass with the five rack and kernel suites. The combined build preserves the landed split automation clock and the unit-only restore fixtures alongside the panel's Time and wave tests. The full Pd and software panel gates are running. The normal device wrench and exact transport revision still need the previously requested window and device-owner hookups.
+
 ## 2026-11-20 — ADI-Shaper DF-E59 and DF-E60
 
 **PR requested.** `clones/df-e59-shaper-nonfinite-20261120` at `ff0c9a15`. Land first. The shipped seven-stage rack substitutes zero for a non-finite input and checks active stage state at the block boundary. An exceptional stage reset preserves the other channel and retains Drive alignment. Sweep discards the affected lane's old delay without visiting its ring, with a finite check at the write. The baseline reproduced 63 assertions across the fault and recovery fixtures. A second fixture reproduced two delayed dry failures; the repaired Release passes all five DSP suites.
