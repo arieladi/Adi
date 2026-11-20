@@ -144,3 +144,33 @@ one use per lane, mixed fallback ordering, atomic failure and exact Undo/Redo.
 Readings correspond to PLAN M6-A6H-016 and CT-03's Overdub cases. Existing ADI
 engine fixtures use supplied callback input. Hardware latency and the desktop
 workflow have separate gates.
+## Interrupted recording recovery (PD-06)
+
+The document owner calls `recording::configureRecovery` before
+`Session::startRecording`. This enables recovery for that saved project and
+sets a stable project UUID if the file does not yet have one. Start publishes
+`take.json` in the recorder's private directory before admitting callbacks.
+The worker writes `start.json` with the first accepted timeline sample before
+writing audio. The capture retains an exclusive lease on its separate
+`owner.lock` while it is active or awaiting placement.
+
+The launch owner passes a known recording root and a candidate directory to
+`recording::recoverInterrupted` for the reopened project. Ready candidates
+carry track IDs, actual first sample, a verified common frame count and, where
+applicable, the reconstructed loop-pass log. The launch owner can use the
+track names to identify the take in the reopen question. The normal linear or
+loop Stop preparation assigns clip, media and lane IDs and places the result.
+Recovery groups all its operations into one Undo. Ordinary loop Stop continues
+to create one Undo per pass.
+
+Recovery first verifies the project, the native identities and the exact
+recorder WAV layout. It repairs copies of the common complete prefix and leaves
+the original audio in the recording directory. Both ordinary Stop and recovery
+store a `recording.placed.<id>` receipt in `adi_meta` in the transaction that
+places the audio. A later reopen skips a placed ID even if the original folder
+remains or the edit was undone. Failed placement leaves the original available.
+
+The engine entry points can recover from a process exit. Discovering candidates
+at launch and showing the reopen question belong to PD-05 and the Window.
+The current background writer flushes its stream and can still have queued
+frames. This does not establish ADR-0250's one-block power-cut bound.

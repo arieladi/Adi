@@ -636,11 +636,13 @@ void recoverInterruptedLoop() {
     if(!committed.ok)return;
     check(recording::recoverInterrupted(*f.store,root,original).status==recording::RecoveryStatus::AlreadyPlaced,
           "a committed recording ID skips a leftover original plan");
-    History history(*f.store);
-    check(history.undo().ok && takeOrder(*f.store).empty(),"one Undo removes every recovered pass");
+    check(History(*f.store).undo().ok && takeOrder(*f.store).empty(),"one Undo removes every recovered pass");
+    f.store.reset();
+    f.store=Store::open(project,error);
+    if(!f.store)throw std::runtime_error(toString(error));
     check(recording::recoverInterrupted(*f.store,root,original).status==recording::RecoveryStatus::AlreadyPlaced,
           "one Undo does not resurrect a committed interrupted recording");
-    check(history.redo().ok && takeOrder(*f.store).size()==3,"one Redo restores the entire recovered recording");
+    check(History(*f.store).redo().ok && takeOrder(*f.store).size()==3,"one Redo restores the entire recovered recording");
 }
 void recoverPcm24AndReportDeletedTrack() {
     namespace fs=std::filesystem;
@@ -709,6 +711,40 @@ void recoverRf64() {
               "RF64 repair recovers the exact PCM from the recorder-owned data chunk");
     }
     check(media::blake3File(file).hex==sourceHash.hex,"RF64 header repair leaves original bytes unchanged");
+}
+void refuseReboundRecoveryFile() {
+    namespace fs=std::filesystem;
+    Fixture fixture;
+    const auto root=fixture.temporary.path()/"recordings";
+    fs::path take;
+    {
+        const auto recording=fixture.capture(false,Precision::Float32,false,128,root,512,true);
+        take=recording.tracks.at(0).file;
+    }
+    const auto original=fs::canonical(fixture.temporary.path())/"original.wav";
+    fs::rename(take,original);
+    fs::copy_file(original,take);
+    const auto verified=media::blake3File(take);
+    const auto refused=recording::recoverInterrupted(*fixture.store,root,take.parent_path());
+    check(refused.status==recording::RecoveryStatus::Refused &&
+          refused.error.find("identity")!=std::string::npos &&
+          verified && media::blake3File(take).hex==verified.hex &&
+          media::blake3File(original).hex==verified.hex,
+          "a byte-identical replacement recording is refused using native identity and both files remain intact");
+}
+void ordinaryStopUsesTheSameRecordingReceipt() {
+    Fixture fixture;
+    const auto root=fixture.temporary.path()/"recordings";
+    const auto recorded=fixture.capture(false,Precision::Float32,false,128,root,512,true);
+    const auto original=recorded.directory();
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Ordinary Stop"}}};
+    auto edit=recording::prepareCommit(*fixture.store,recorded,ids);
+    const auto committed=recording::commit(*fixture.store,edit);
+    SQLite::Statement receipt(fixture.store->db(),"SELECT value FROM adi_meta WHERE key=?");
+    receipt.bind(1,"recording.placed."+recorded.recordingId());
+    check(committed.ok && receipt.executeStep() && receipt.getColumn(0).getInt64()==committed.txnId &&
+          !std::filesystem::exists(original),
+          "ordinary Stop writes the same transaction receipt before discarding its private plan");
 }
 int crashRecordingChild(const std::filesystem::path& project,const std::filesystem::path& root) {
     namespace fs=std::filesystem;
@@ -789,7 +825,8 @@ int main(int argc,char** argv){try{
     publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
-    recoverInterruptedLoop();recoverPcm24AndReportDeletedTrack();recoverRf64();
+    recoverInterruptedLoop();recoverPcm24AndReportDeletedTrack();recoverRf64();refuseReboundRecoveryFile();
+    ordinaryStopUsesTheSameRecordingReceipt();
     recoverAfterProcessExit(media::pathFromUtf8(argv[0]));
     if(argc==3) {
         const auto captureFolder=media::pathFromUtf8(argv[2]);
