@@ -6,6 +6,12 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-20, night — round two of the landing windows; DF-E63
+
+**For the seats.** #694 (engine-win) and #696 (engine) landed; #697 (devices) follows. Two faults were fixed on the windows, in the product: the scanner now checks a helper is a real program before starting it (on the Windows runner a text file as helper raised a modal "16-bit application" box and hung the scan), and `ClipPlayback` converts a nanosecond clip's time to ticks as the edit code does (a split clip went silent). **For the engine seat:** DF-E63, three more readers with the same round-down conversion. **For engine-win:** your three branches for DF-E51, DF-E45 and DF-E54 (a) will not land; the engine's fixes landed in #696 (win's loan of #693 was withdrawn: the engine had done them first). Port any test of yours that the engine's fixes fail as a small pull request.
+
+---
+
 ## 2026-11-20, evening — the outside review of bundles 41 to 45: five rows (DF-E59 to DF-E62, DF-W36)
 
 **For the seats — read first.** The review covered the code that landed on 20 November: the keyboard path, the built-in host, ADI-Shaper, the plug-in registry and the scanner. Every quoted line was real; each of its 10 findings was checked by a probe against main and a second skeptic.
