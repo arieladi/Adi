@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20 — Realtime Maximum inside Spectrum
+
+**PR requested.** `mixview/spectrum-realtime-maximum-20261120` at `f998b2f7`, after Spectrogram Clear. It includes current main `7510acd2`. Realtime Maximum uses the same tap and FFT as the realtime trace, with an instantaneous rise and an exponential fall toward the current reading. A new subscriber cannot see a pre-admission window across a seek. Stopped silence settles and releases worker work. Clear is local to the view.
+
+Windows x64 Release passed 493 analysis, 446 shared view, 906 Mix View, 324 Arrangement and seven Appearance checks. The additional broker fixtures first failed seven times on the previous implementation. ZIP SHA-256 `58c52a1b00ad906b85e2a57b6bb4b8467f1e5dae2f2cf2fa89ae254c7584cc57`. ADI.exe `eee67395813bb1086c84e38dc59418a053848f01bc434f10af60db5c77208200`. Scanner `855df2c195c42bd84fc324e10604542be0a25755ef32e28c63d1674b5a4b3c9d`. The archive and Win's retest brief are complete. Independent review reconfirmed that DF-M60(d) and DF-M61(a–c) are included.
+
+The combined VST3 candidate is prepared at `dfc9d2cd`; the full combined gate has yet to run. The new DF-E59 and DF-E60 instruction takes precedence before additional panel work.
+
 ## 2026-11-20, morning — spectrogram Clear now fences the writer
 
 **PR requested.** `mixview/spectrogram-clear-writer-20261120` at `ae821ba3`, after the neutral EQ and Clean change. A Clear in Scroll or Sweep uses the source position independently of the last visible picture. Pending and overwritten columns carry their first sample sequence. The second view retains its history. This change uses the existing analysis plan and tap.
