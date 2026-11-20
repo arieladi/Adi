@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20 — ADI-Shaper panel resumes after the audio fixes
+
+**PR requested.** `clones/shaper-panel-audio-reconcile-20261120` at `e37c8d4e`. Review after DF-E59, then DF-E60. This gives the pending pens and panel stack a current-main base. The rack sanitizes input before the panel captures it, preserves Time's rendering and waveform memo, and repairs the existing stage state after each callback. Both Time history writers now drop invalid samples independently by channel. The two Time assertions failed before their writer change.
+
+The exact x64 Release passed all six DSP suites. The integrated Pd, wave, panel and panel-session tests passed. The production shell with its panel sources compiled. The Pd merge keeps the landed automation clock and unit-only recall alongside the Time and wave migration cases. A sparse state omits both value encodings.
+
+Win and the device owners still have the previously requested hooks for the normal wrench, the instance scope and exact Time transport revision. The headless panel and session tests exercise direct construction. Live acceptance follows the owner integration.
+
 ## 2026-11-20 — Cumulative Windows Release with Shaper fixes
 
 The exact Release `aad803efe2cff1e1e06e34c278bb295334a96ea0` is built from `7510acd2` with the Mix View slices, the paired Engine and Session device-key patches, and DF-E59/E60. All 20 CTest suites passed, including the shipped Shaper Pd path. Separate software-component gates passed 906 Mix View, 324 Arrangement and seven Appearance checks. Routing passed 214 checks and the owned VST3 fixture passed 131. The package was independently read back.
