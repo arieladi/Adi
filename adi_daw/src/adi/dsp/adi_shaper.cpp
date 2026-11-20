@@ -21,9 +21,12 @@ float panGain(double position) noexcept {
     return static_cast<float>(position * (c + position * (b + a * position)));
 }
 
+float finiteOrZero(float sample) noexcept {
+    return std::isfinite(sample) ? sample : 0.0f;
+}
+
 void sanitizeStereo(const float* inL, const float* inR, float* outL, float* outR,
                     std::size_t frames) noexcept {
-    const auto finiteOrZero = [](float sample) { return std::isfinite(sample) ? sample : 0.0f; };
     if (outL == inR || outR == inL) {
         for (std::size_t i = 0; i < frames; ++i) {
             const float l = inL[i], r = inR[i];
@@ -426,8 +429,12 @@ float AdiShaper::Contour::at(std::uint64_t position) const noexcept {
 }
 
 void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
-    std::swap(l, samples[index][0]);
-    std::swap(r, samples[index][1]);
+    const auto previous = samples[index];
+    // A preceding stage can overflow even with finite rack input. Do not put
+    // that sample in the parallel dry delay where it could reach a later block.
+    samples[index] = {finiteOrZero(l), finiteOrZero(r)};
+    l = previous[0];
+    r = previous[1];
     index = (index + 1) % samples.size();
 }
 
