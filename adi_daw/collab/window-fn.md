@@ -44,6 +44,49 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-20, window-fn — AU-04: Re-Enable Automation in a control's context menu (PR requested)
+
+M1's AU-04, its open half. The Control Bar's switch (#472) re-enables every lane at once. Live's
+parameter menu re-enables one (manual 25.4), and `Session::reenableAutomation(laneId)` was on main with
+no caller.
+
+- A device knob's right-click (on the knob or its labels), and the mixer's pan and send menus, offer
+  **Re-Enable Automation** while the control has a lane. It is available while that lane is overridden.
+  Choosing it makes that one lane follow its envelope again; the others stay overridden. It is session
+  state and no undo step, as the switch is (ADR-0162). `ProjectDocument::reenableAutomation(laneId)`
+  refreshes the snapshot and the feed as the global one does, and refuses a lane that is not overridden,
+  with the reason.
+- The lane behind a control (`adi/ui/automation_override.hpp`) is the one the engine plays. As its
+  binders do, the lookup skips a disabled lane or one in another value domain, and the first of two
+  plays. A device's lane is named as the engine names it (`engine::automationParamRef`, a CLAP id in
+  decimal), so `DevicePanelData` now carries its plug-in format.
+- **Not here.** The vertical volume fader: a JUCE linear slider moves on a right-click before a menu can
+  open, so its item waits for a fader that ignores the right button (the look's or a follow-up). The
+  AU-01 lanes' own item comes once `window-fn/automation-lanes` lands. Split pans' items come with MX-02.
+
+**Run.** The window's 27 suites (100%). `adi_ui_shell_tests` (2798 checks): Cutoff overridden, its
+menu's item available; chosen, it follows its lane, the switch is unlit, and no undo step is added; a lane
+not overridden is refused; a control with no lane gets no item. `adi_ui_seams_tests` (537 checks): the
+played lane among disabled, wrong-domain and second lanes, and a CLAP id. Review: three dimensions with a
+skeptic on each finding. One was confirmed (the lookup took the first lane, not the played one) and fixed;
+three were refuted.
+
+**PR requested** — `window-fn/reenable-param` at `f2988fab`, on main `909ba114`: "adi_daw: AU-04: Live's
+per-parameter Re-Enable Automation in a control's context menu". It depends on nothing.
+
+## 2026-11-20, window-fn — DF-W9's load half brought onto N58 (PR requested)
+
+`window-fn/plugin-load` was built on the first scan branch's gate. It now merges
+`window-fn/plugin-scan-n58`, with no conflict. The insert goes straight to the loader: the Browser lists
+the catalogue, and the loader serves a catalogue hit while a discovery runs. Every listed plug-in carries
+its kind, so the guessed-kind path is only a fallback, and its Status Bar line no longer cites N58.
+
+**Run.** The window's 27 suites (100%); `adi_ui_shell_tests` 2841 checks, 0 failures.
+
+**PR requested** — `window-fn/plugin-load` at `ee8bd592`: "adi_daw: DF-W9 load on N58: the Browser inserts
+from the loader's catalogue". It depends on `window-fn/plugin-scan-n58` (land that first; this branch
+contains it) and on N57, which is on main.
+
 ## 2026-11-20, window-fn — DF-W34 on N58: the Browser's plug-ins through the loader's discovery jobs (PR requested)
 
 N58 (engine-win's catalogue API) and the Settings' separate VST3 and CLAP search roots are on main, so
