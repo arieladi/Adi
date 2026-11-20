@@ -36,6 +36,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 **MEASURED.** The original code failed seven regression assertions including both zone-change directions. The fixed strict pinned Windows gate passed 223 checks across the input, output, native MPE and retrospective memory suites. It includes capacity refusal, slot reuse and no callback allocations or file I/O.
 
+## 2026-11-20, Capture MIDI clock, journal target validation and #642
+
+**PR requested** — `engine-win/midi-capture-clock` at `f26730fb82ff7b7984485820c0c2d9f66ed2f981`, DF-E45. Engine seat review requested. Capture keeps its origin tick, picks the nearest representable tick for each exact driver-sample offset and checks the sample round trip. The shared map snaps rounding dust near integral ticks and keeps the floor for genuine fractional times, with non-finite and overflow guards. Baseline failed six checks. The corrected cases include 110 BPM beat 2, 128 BPM bar 2, nanosecond round trips at 90/110/140 BPM and the preceding side of a tempo edge.
+
+**PR requested** — `engine-win/project-check-journal-targets` at `55f20c8c3e6fde6ed1171f70b7cd5ab68d137e40`, DF-E54 a. Engine seat review requested. Live-row reference validation skips journal subjects and keeps structural journal checks. The test removes a clip through Cut or Undo and still produces an archive. Baseline reproduced four false errors/refusals. The two exact candidates merge cleanly. Their combined strict Windows gate on the SQLiteCpp pin passed 663 checks in five suites, covering Capture, transport, clip edits, the checker and Collect and Export.
+
+**PR requested, existing #642** — verified `engine-win/acceptance-ci` at `68c92bbcb60c1c0da9b3267a0c8d616be3aefd8a`. Its stats file has no `rankable()` and its per-app statistics self-test passed all eight checks. A dry merge on `b56b1348` leaves the evidence and statistics files byte-identical to that head. The historical JSON key is a within-app frequency gate. No cross-DAW ranking or CPU measurement was made, and no additional source change is needed for this condition.
+
 ## 2026-11-19, order the MIDI settings before the graph-worker preference
 
 **PR requested** — `engine-win/graph-worker-setting` at `35a035acaf21b95da53e47923b217e945de1905d`, after Window-fn's MIDI settings `6cec1b83` and current main `88e2d94e`. The merge retains both Settings sections. The existing engine application wiring can merge the resolved settings tip. The worker preference stays Auto at granted buffers of 1,024 samples and above, serial below the threshold or for an unknown buffer, with explicit Off.
