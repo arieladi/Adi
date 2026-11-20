@@ -5,6 +5,7 @@
 #include "adi/engine/session.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/digest.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
@@ -154,6 +155,52 @@ void clocksAndSourceConventions() {
     for(std::size_t frame=0;frame<played.audio.size();++frame)exact=exact && played.audio[frame]==expected(static_cast<std::int64_t>(frame)-4);
     check(exact,"project placement and changing tempo preserve exact relative captured sample timing");
 }
+void ordinaryTempoBoundaries() {
+    constexpr std::int64_t ppq=5765760;
+    constexpr std::uint32_t rate=44100;
+    for(const auto bpm:{110,128}) {
+        Fixture f;
+        SQLite::Statement insert(f.store->db(),"INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,?,0)");
+        insert.bind(1,bpm);
+        insert.exec();
+        const auto start=bpm==110?ppq:4*ppq;
+        std::string error;
+        const auto prepared=capture::prepareMidi(*f.store,transcript(rate),spec(7,start),error);
+        check(prepared.has_value(),error.empty()?"ordinary beat/bar capture prepares at 44.1 kHz":error.c_str());
+        if(!prepared)continue;
+        const auto& clip=prepared->requests.front().payload.at("clip");
+        const edit::TimeMap map(f.store->db());
+        const auto sample=[&](std::int64_t tick) {return std::llround(map.seconds(tick)*rate);};
+        check(clip.at("pos").get<std::int64_t>()==start &&
+              sample(start+clip.at("length").get<std::int64_t>())-sample(start)==64 &&
+              capture::commitMidi(*f.store,*prepared).ok,
+              "Capture keeps the start tick and end sample through the real journal");
+    }
+    for(const auto bpm:{90,110,140}) {
+        Fixture f;
+        SQLite::Statement insert(f.store->db(),"INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,?,0)");
+        insert.bind(1,bpm);
+        insert.exec();
+        const edit::TimeMap map(f.store->db());
+        bool exact=true;
+        for(std::int64_t tick=1;tick<160*ppq;tick+=100003) {
+            if(map.ticks(map.nanos(tick))!=tick)exact=false;
+        }
+        check(exact,"integer ticks round-trip through nanoseconds at the tested project tempo");
+    }
+    TempoMap tempo;
+    tempo.events={{0,120,0},{ppq,90,0}};
+    const auto edge=tempo.ticksToSeconds(ppq);
+    const auto previous=tempo.ticksToSeconds(ppq-1);
+    check(tempo.secondsToTicks(edge)==ppq &&
+          tempo.secondsToTicks(edge-(edge-previous)*0.25)==ppq-1,
+          "exact tempo edges snap but genuinely earlier times stay on the preceding tick");
+    check(tempo.secondsToTicks(std::numeric_limits<double>::quiet_NaN())==0 &&
+          tempo.secondsToTicks(-std::numeric_limits<double>::infinity())==0 &&
+          tempo.secondsToTicks(std::numeric_limits<double>::infinity())==std::numeric_limits<std::int64_t>::max() &&
+          tempo.secondsToTicks(std::numeric_limits<double>::max())==std::numeric_limits<std::int64_t>::max(),
+          "non-finite and overflowing times clamp before integer conversion");
+}
 void guardsAndTransactions() {
     Fixture f;const auto source=transcript();std::string error;auto prepared=capture::prepareMidi(*f.store,source,spec(),error);check(prepared.has_value(),"guard fixture");if(!prepared)return;
     const auto before=digestProject(*f.store).text;
@@ -269,6 +316,6 @@ void largeCapture() {
         "large Capture retains every identity and one undo/redo restores the complete stream");
 }
 }
-int main(){try{nativeHistory();clocksAndSourceConventions();guardsAndTransactions();refusalCases();nativePackets();largeCapture();check(allocations==0 && audio::callbackFileIo==0,"actual input/Capture playback and callback refusal allocate nothing and perform no callback file I/O");}
+int main(){try{nativeHistory();clocksAndSourceConventions();ordinaryTempoBoundaries();guardsAndTransactions();refusalCases();nativePackets();largeCapture();check(allocations==0 && audio::callbackFileIo==0,"actual input/Capture playback and callback refusal allocate nothing and perform no callback file I/O");}
 catch(const std::exception& e){std::printf("EXCEPTION: %s\n",e.what());check(false,"fixture must complete");}
 std::printf("midi_capture: %d checks, %d failures\n",checks,failures);return failures?1:0;}

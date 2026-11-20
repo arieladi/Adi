@@ -37,22 +37,32 @@ engine::TempoMap tempoOf(Store& store) {
 struct Clock {
     engine::TempoMap tempo;
     std::int64_t originTick=0,originSample=0;
-    double rate=0,originSeconds=0,maxSeconds=0;
+    double rate=0,maxSeconds=0;
     Clock(engine::TempoMap map,std::int64_t tick,std::uint32_t sampleRate):tempo(std::move(map)),originTick(tick),rate(sampleRate) {
-        originSeconds=tempo.ticksToSeconds(tick);maxSeconds=tempo.ticksToSeconds(limit);
+        const auto originSeconds=tempo.ticksToSeconds(tick);
+        maxSeconds=tempo.ticksToSeconds(limit);
         const auto sample=originSeconds*rate;
         if(!std::isfinite(sample) || sample<0 || sample>static_cast<double>(limit) || !std::isfinite(maxSeconds))
             throw std::runtime_error("MIDI Capture placement exceeds supported sample precision");
         originSample=std::llround(sample);
-        if(at(0)!=0)throw std::runtime_error("MIDI Capture origin cannot preserve its tick");
     }
     std::int64_t at(std::int64_t relative) const {
         if(relative<0 || relative>limit-originSample)throw std::runtime_error("MIDI Capture extent exceeds supported sample precision");
-        const auto seconds=originSeconds+static_cast<double>(relative)/rate;
+        if(relative==0)return 0;
+        const auto targetSample=originSample+relative;
+        const auto seconds=static_cast<double>(targetSample)/rate;
         if(!std::isfinite(seconds) || seconds>maxSeconds)throw std::runtime_error("MIDI Capture extent exceeds supported tick precision");
-        const auto tick=tempo.secondsToTicks(seconds);const auto sample=tempo.ticksToSeconds(tick)*rate;
+        auto tick=std::max(originTick,tempo.secondsToTicks(seconds));
+        auto sample=tempo.ticksToSeconds(tick)*rate;
+        if(tick<limit && sample<static_cast<double>(targetSample)) {
+            const auto next=tempo.ticksToSeconds(tick+1)*rate;
+            if(std::abs(next-static_cast<double>(targetSample))<static_cast<double>(targetSample)-sample) {
+                ++tick;
+                sample=next;
+            }
+        }
         if(tick<originTick || tick>limit || !std::isfinite(sample) || sample<0 || sample>static_cast<double>(limit) ||
-           std::llround(sample)-originSample!=relative)throw std::runtime_error("MIDI Capture boundary cannot roundtrip its exact sample");
+           std::llround(sample)!=targetSample)throw std::runtime_error("MIDI Capture boundary cannot roundtrip its exact sample");
         return tick-originTick;
     }
 };

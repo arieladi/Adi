@@ -14,6 +14,8 @@
 #include <stdexcept>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <sqlite3.h>
@@ -95,26 +97,42 @@ double TempoMap::ticksToSeconds(std::int64_t ticks) const noexcept {
 }
 
 std::int64_t TempoMap::secondsToTicks(double seconds) const noexcept {
-    if (seconds <= 0.0 || events.empty()) return 0;
+    if (!(seconds > 0.0) || events.empty()) return 0;
+    constexpr auto lastTick = std::numeric_limits<std::int64_t>::max();
+    if (!std::isfinite(seconds)) return lastTick;
 
     double elapsed = 0.0;
     std::int64_t at = 0;
     double bpm = events.front().bpm;
+    const auto convertWithinSegment = [&]() noexcept {
+        if (!(bpm > 0.0) || !std::isfinite(bpm)) return at;
+        const double perSecond = bpm / 60.0 * kTicksPerQuarter;
+        const double ticks = (seconds - elapsed) * perSecond;
+        if (!(ticks > 0.0)) return at;
+        const auto room = lastTick - at;
+        if (ticks >= static_cast<double>(room)) return lastTick;
+
+        // An integer tick stored in nanoseconds can arrive just below its
+        // true value. Snap only within that quantization and FP error budget.
+        // Keeping the floor elsewhere avoids crossing a future tempo change.
+        const auto tolerance = std::min(0.25, (0.5e-9 +
+            4.0 * std::numeric_limits<double>::epsilon() * seconds) * perSecond);
+        const auto nearest = std::round(ticks);
+        const auto resolved = std::abs(nearest - ticks) <= tolerance ? nearest : std::floor(ticks);
+        if (resolved >= static_cast<double>(room)) return lastTick;
+        return at + static_cast<std::int64_t>(resolved);
+    };
 
     for (const auto& e : events) {
         if (e.posTicks <= at) { bpm = e.bpm; continue; }
         const double quarters = static_cast<double>(e.posTicks - at) / kTicksPerQuarter;
         const double segment = quarters * 60.0 / bpm;
-        if (elapsed + segment >= seconds) {
-            const double into = (seconds - elapsed) * bpm / 60.0;
-            return at + static_cast<std::int64_t>(into * kTicksPerQuarter);
-        }
+        if (elapsed + segment >= seconds) return convertWithinSegment();
         elapsed += segment;
         at = e.posTicks;
         bpm = e.bpm;
     }
-    const double into = (seconds - elapsed) * bpm / 60.0;
-    return at + static_cast<std::int64_t>(into * kTicksPerQuarter);
+    return convertWithinSegment();
 }
 
 // --- snapshot -------------------------------------------------------------------
