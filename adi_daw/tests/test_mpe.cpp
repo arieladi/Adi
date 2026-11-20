@@ -34,8 +34,13 @@ void section(const char* s) { std::printf("[%s]\n", s); }
 /// Collects what the parser emits.
 struct Collect {
     std::vector<Event> events;
+    bool accepting=true;
+    bool acceptExpression=true;
     static bool sink(void* ctx, const Event& e) {
-        static_cast<Collect*>(ctx)->events.push_back(e);
+        auto& collector=*static_cast<Collect*>(ctx);
+        if(!collector.accepting || (!collector.acceptExpression && e.type==EventType::NoteExpression))
+            return false;
+        collector.events.push_back(e);
         return true;
     }
 };
@@ -168,6 +173,88 @@ void testFourteenBitTimbre() {
     check(c2.events.size() == 1, "a lone LSB emits nothing -- no MSB, no 14-bit value");
 }
 
+void testInitialMemberExpression() {
+    MpeParser parser;
+    parser.setZone(MpeZone::lower());
+    Collect heard;
+    feed(parser,heard,{0xe1,0,64});
+    feed(parser,heard,{0xe1,1,65});
+    feed(parser,heard,{0xb1,74,64});
+    feed(parser,heard,{0xb1,106,1});
+    feed(parser,heard,{0xb2,74,20});
+    check(heard.events.empty(),"idle member pitch and timbre never emit unassigned expression");
+    parser.setZone(MpeZone::lower());
+    parser.setFrame(25);
+    feed(parser,heard,{0x91,60,100});
+    check(heard.events.size()==3 &&
+          heard.events[0].type==EventType::NoteOn &&
+          heard.events[1].type==EventType::NoteExpression &&
+          heard.events[1].dim==static_cast<std::uint16_t>(ExpressionDim::Pitch) &&
+          heard.events[1].value==bendToSemitones(8321,48) &&
+          heard.events[2].type==EventType::NoteExpression &&
+          heard.events[2].dim==static_cast<std::uint16_t>(ExpressionDim::Timbre) &&
+          heard.events[2].value==8193.0/16383 &&
+          heard.events[1].noteId==heard.events[0].noteId &&
+          heard.events[2].noteId==heard.events[0].noteId &&
+          heard.events[1].frame==25 && heard.events[2].frame==25,
+          "the latest bend and exact 14-bit timbre follow Note On at its frame");
+    Collect other;
+    feed(parser,other,{0x92,65,100});
+    check(other.events.size()==2 && other.events[1].value==20.0/127 &&
+          other.events[1].noteId==other.events[0].noteId,
+          "the neighboring member retains its own 7-bit timbre");
+
+    feed(parser,heard,{0x81,60,0});
+    Collect reuse;
+    feed(parser,reuse,{0xb1,106,3});
+    feed(parser,reuse,{0x91,62,100});
+    check(reuse.events.size()==1 && reuse.events[0].type==EventType::NoteOn,
+          "a new note cannot inherit a prior note's expression or stale timbre MSB");
+
+    parser.reset();
+    Collect zone;
+    feed(parser,zone,{0xe1,1,65});
+    feed(parser,zone,{0xb1,74,63});
+    parser.setZone(MpeZone{});
+    parser.setZone(MpeZone::lower());
+    feed(parser,zone,{0x91,60,100});
+    check(zone.events.size()==1 && zone.events[0].type==EventType::NoteOn,
+          "a changed zone drops unbound expression");
+    feed(parser,zone,{0xe0,1,65});
+    check(zone.events.size()==2 && zone.events[1].noteId==0 &&
+          zone.events[1].value==bendToSemitones(8321,2),
+          "master bend remains global at the master range");
+}
+
+void testInitialMemberBackpressure() {
+    MpeParser parser;
+    parser.setZone(MpeZone::lower());
+    Collect heard;
+    feed(parser,heard,{0xe1,1,65});
+    heard.acceptExpression=false;
+    feed(parser,heard,{0x91,60,100});
+    heard.acceptExpression=true;
+    parser.setFrame(37);
+    feed(parser,heard,{0x91,65,100});
+    check(heard.events.size()==3 && heard.events[1].type==EventType::NoteExpression &&
+          heard.events[1].noteId==heard.events[0].noteId && heard.events[1].frame==37 &&
+          heard.events[2].type==EventType::NoteOn && heard.events[2].noteId!=heard.events[0].noteId,
+          "retry keeps refused initial expression on its original accepted note");
+
+    parser.reset();
+    Collect refused;
+    feed(parser,refused,{0xe1,1,65});
+    feed(parser,refused,{0xb1,74,64});
+    refused.accepting=false;
+    feed(parser,refused,{0x91,60,100});
+    refused.accepting=true;
+    feed(parser,refused,{0x81,60,0});
+    feed(parser,refused,{0xb1,106,1});
+    feed(parser,refused,{0x91,65,100});
+    check(refused.events.size()==1 && refused.events[0].type==EventType::NoteOn,
+          "expression belonging to a rejected start never reaches another voice");
+}
+
 // --- identity -----------------------------------------------------------------
 
 void testNoteIdIsIdentityAndChannelIsNot() {
@@ -242,6 +329,74 @@ void testVelocityZeroIsANoteOff() {
     feed(p, c2, {0x81, 72, 0});
     check(!c2.events.empty() && c2.events[0].noteId == 0,
           "an unmatched note-off carries no note id");
+}
+
+void testRetriggerAndZoneChanges() {
+    for(const bool memberFirst:{false,true}) {
+        MpeParser parser;
+        if(memberFirst)parser.setZone(MpeZone::lower());
+        Collect heard;
+        feed(parser,heard,{0x91,60,100});
+        feed(parser,heard,{0x91,60,105});
+        feed(parser,heard,{0x91,64,110});
+        parser.setZone(memberFirst?MpeZone{}:MpeZone::lower());
+        feed(parser,heard,{0x81,60,27});
+        feed(parser,heard,{0x91,60,0});
+        feed(parser,heard,{0x81,64,15});
+        check(heard.events.size()==6 && heard.events[0].noteId!=heard.events[1].noteId &&
+              heard.events[3].noteId==heard.events[0].noteId && heard.events[4].noteId==heard.events[1].noteId &&
+              heard.events[5].noteId==heard.events[2].noteId && parser.activeNoteOn(2)==0,
+              "same-key retriggers release FIFO and keep held IDs in either zone direction");
+    }
+    MpeParser parser;
+    parser.setZone(MpeZone::lower());
+    Collect heard;
+    feed(parser,heard,{0x91,60,100});
+    feed(parser,heard,{0x91,64,100});
+    feed(parser,heard,{0x81,64,10});
+    feed(parser,heard,{0xE1,0,96});
+    check(heard.events.size()==4 && heard.events[3].noteId==heard.events[0].noteId,
+          "expressive bend returns to the latest still-held member-channel note");
+}
+
+void testOwnershipLimits() {
+    MpeParser parser;
+    Collect heard;
+    heard.accepting=false;
+    feed(parser,heard,{0x91,60,100});
+    heard.accepting=true;
+    feed(parser,heard,{0x91,60,100});
+    const auto id=parser.activeNoteOn(2);
+    feed(parser,heard,{0x81,60,1});
+    check(heard.events.size()==1 && id!=0 && parser.activeNoteOn(2)==id,
+          "the release of a rejected start cannot end the newer accepted voice");
+    heard.accepting=false;
+    feed(parser,heard,{0x81,60,23});
+    heard.accepting=true;
+    parser.setFrame(19);
+    feed(parser,heard,{0xB1,20,14});
+    check(heard.events.size()==3 && heard.events[1].type==EventType::NoteOff && heard.events[1].noteId==id &&
+          heard.events[1].frame==19 && heard.events[1].value==cc7ToUnit(23) && heard.events[2].type==EventType::Controller,
+          "a refused release retries its original ID and velocity before the next channel message");
+
+    parser.reset();heard.events.clear();
+    for(int i=0;i<256;++i)feed(parser,heard,{0x91,60,100});
+    feed(parser,heard,{0x91,60,100});
+    feed(parser,heard,{0x81,60,0});
+    feed(parser,heard,{0x91,60,100});
+    for(int i=0;i<257;++i)feed(parser,heard,{0x81,60,0});
+    bool exact=heard.events.size()==512;
+    if(exact)for(std::size_t i=0;i<256;++i)exact=exact && heard.events[i+256].noteId==heard.events[i].noteId;
+    check(exact && parser.droppedNoteStarts()==2 && parser.activeNoteOn(2)==0,
+          "bounded retriggers drain accepted notes FIFO and consume overflow releases before reuse");
+    feed(parser,heard,{0x91,60,100});
+    check(heard.events.size()==513 && parser.activeNoteOn(2)!=0,
+          "the key accepts new starts once its overflow releases are consumed");
+    const auto before=heard.events.size();
+    feed(parser,heard,{0xA1,60,11});feed(parser,heard,{0xC1,5});
+    feed(parser,heard,{0xA1,60});feed(parser,heard,{0xC1,188});
+    check(heard.events.size()==before && parser.unsupportedMessages()==2,
+          "complete poly pressure and program changes are counted without emitting or guessing");
 }
 
 void testPressureAndMasterChannel() {
@@ -417,8 +572,12 @@ int main() {
     testFourteenBitBendSurvives();
     testBendRangeAndCentre();
     testFourteenBitTimbre();
+    testInitialMemberExpression();
+    testInitialMemberBackpressure();
     testNoteIdIsIdentityAndChannelIsNot();
     testVelocityZeroIsANoteOff();
+    testRetriggerAndZoneChanges();
+    testOwnershipLimits();
     testPressureAndMasterChannel();
     testNoZoneStillWorks();
     testGarbageIsRefused();
