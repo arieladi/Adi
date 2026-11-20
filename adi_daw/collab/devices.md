@@ -83,6 +83,54 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+**A question, not a reading: how fine should the export brickwall read? (EX4; see that entry.)**
+- The true-peak limiter holds BS.1770's 4x reading at the ceiling.
+- An interpolator that shares nothing with it reads the same output higher:
+  - +0.15 dB on a quarter-rate sine at 45°, which is 4x's own miss;
+  - +1.6 dB on +12 dB white noise.
+- The choice:
+  - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
+  - or have the export's brickwall read finer than the meter, at some CPU cost.
+- Nothing changes until you say.
+
+## 2026-11-20 — DF-E61: a built-in's stored value that went A to B and back to A is heard over the lane
+
+**PR requested:** head `devices/df-e57` (25dbda75), now three commits on dccb6a55: DF-E57's, and
+then DF-E61's fix and review, as win asked ("with DF-E57"). It merges cleanly with
+`devices/sampler-loadable`.
+
+- **The defect** (from the outside review). `BuiltinDevice` re-sent a parameter only when its stored
+  target differed from the value it had last applied. Automation moves the value in force but not
+  that record. So if the stored value went A to B and back to A with no audio callback between,
+  the change was never applied, and the lane's value kept playing. Ways to do that: two clicks, an
+  Undo and a Redo, or a knob change followed by a state holding the old value. In the test: stored
+  +3 dB, heard +6 dB.
+- **The fix: each parameter counts its edits.**
+  - The message side exchanges the stored value, and counts a change only when the value really
+    changed.
+  - The audio thread applies any parameter whose count has moved since its last scan. It reads
+    the count before the value, so an edit landing in between is applied again on the next scan,
+    never lost.
+  - Writing the value already stored is no edit, and leaves the lane's value in force: a preset
+    reload, or a drag that ends where it began.
+  - A new format still restarts from the stored values.
+- **Not the DEFERRED row's alternative** of comparing with the value in force. That would snap every
+  automated parameter back to its stored value whenever any other parameter is edited. A plant of
+  it fails the "unchanged write" check.
+- **Tests** (written first; 2 failures before the fix). `adi_builtin_devices_tests` 183, on
+  Utility's Gain with a lane in force. The cases:
+  - A→B→A through setParam;
+  - setParam then loadState;
+  - two states alone;
+  - an unchanged write;
+  - a new sample rate.
+  - Plants, each caught: every write counted as an edit; prepare not forced; compare with the
+    value in force; loadState bypassing the count.
+  - CTest 267/267 at PD_FLOATSIZE 32 and 64.
+- **Reviewed** on four dimensions with three skeptics per finding: concurrency, semantics, tests and
+  portability. The one finding was refuted as a defect; its point, that the loadState half had no
+  case of its own, is fixed in the review commit.
+
 ## 2026-11-20 — EX4: the brickwall as an offline stage; non-finite input is silence; the 4x gap measured
 
 **PR requested:** head `devices/limiter-offline` (11f539f7, two commits on 7510acd2), base `main`.
