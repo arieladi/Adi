@@ -601,6 +601,9 @@ void Session::resolveNewRows(const Store& store) {
         }
         mapped->second = index;
     }
+    // A newly opened Session prepares its first graph straight after
+    // resolving the devices. Give those preparations the saved key intent.
+    if (!live_) syncFlags();
 }
 
 void Session::retireDepartedRows() {
@@ -1341,34 +1344,113 @@ std::optional<bool> Session::refreshDeviceKeys(const Store& store, const std::sh
     if (batch.sequence() != appliedSequence_ + 1) return {};
     auto next = rows::readModel(store);
     if (!next.problems.empty()) return {};
-    auto isKey = [](const auto& routes, std::int64_t id) {
-        return std::any_of(routes.begin(), routes.end(), [id](const auto& row) {
-            return row.id == id && row.srcKind == "track" && row.dstKind == "device" && row.kind == "sidechain";
-        });
+    const auto isKey = [](const rows::Routing& row) {
+        return row.srcKind == "track" && row.dstKind == "device" && row.kind == "sidechain";
     };
+    std::set<std::int64_t> recipients;
     for (const auto& op : batch.operations()) {
         const auto id = op.payload.at("id").get<std::int64_t>();
         const auto& routes = op.dispatchedType == "routing.disconnect" ? model_.routing : next.routing;
-        if (!isKey(routes, id)) return {};
+        const auto route = std::find_if(routes.begin(), routes.end(), [&](const auto& row) {
+            return row.id == id && isKey(row);
+        });
+        if (route == routes.end()) return {};
+        recipients.insert(route->dstId);
     }
+    const auto needsKey = [&](const auto& routes, std::int64_t id) {
+        return std::any_of(routes.begin(), routes.end(), [&](const auto& row) {
+            return row.enabled && row.dstId == id && isKey(row);
+        });
+    };
+    struct ChangedIntent {
+        device::DeviceInstance* instance;
+        bool previous;
+    };
+    std::vector<ChangedIntent> changedIntents;
+    changedIntents.reserve(recipients.size());
     auto playbackRoutes = next.routing;
-    if (!devices_.publishDeviceKeys(next, [this] { return &model_; })) {
-        error_ = devices_.lastRebuildError();
+    std::vector<std::string> previousProblems;
+    const auto diagnosticCount = sessionProblems_.size();
+    bool stagedRoutes = false;
+    const auto rollback = [&] {
+        if (stagedRoutes) {
+            model_.routing.swap(next.routing);
+            playbackModel_.routing.swap(playbackRoutes);
+            problems_.swap(previousProblems);
+        }
+        sessionProblems_.resize(diagnosticCount);
+        for (auto change = changedIntents.rbegin(); change != changedIntents.rend(); ++change) {
+            try { (void)change->instance->configureSidechain(change->previous); }
+            catch (const std::exception&) { /* keep the original preparation error */ }
+        }
+    };
+
+    bool shapeChanged = false;
+    try {
+        for (const auto id : recipients) {
+            const auto before = needsKey(model_.routing, id);
+            const auto after = needsKey(next.routing, id);
+            if (before == after) continue;
+            const auto* entry = entryFor(id);
+            if (!entry || entry->retired || entry->parked || entry->placeholder) continue;
+            auto* instance = instanceFor(id);
+            if (!instance || !instance->loaded()) continue;
+            const auto shape = instance->preparationShapeEpoch();
+            const auto width = instance->sidechainInputChannels();
+            changedIntents.push_back({instance, before});
+            if (!instance->configureSidechain(after)) {
+                const auto problem = "devices#" + std::to_string(id) + ": key input is unavailable";
+                if (std::find(sessionProblems_.begin(), sessionProblems_.end(), problem) == sessionProblems_.end())
+                    sessionProblems_.push_back(problem);
+            }
+            shapeChanged = shapeChanged || shape != instance->preparationShapeEpoch() ||
+                           width != instance->sidechainInputChannels();
+        }
+
+        if (shapeChanged) {
+            // The adapter cannot activate a dormant bus in a preserved graph.
+            // The full path prepares it behind its existing reactivation gate.
+            // Keep the authored receipt pending if preparation refuses.
+            model_.routing.swap(next.routing);
+            playbackModel_.routing.swap(playbackRoutes);
+            problems_.swap(previousProblems);
+            stagedRoutes = true;
+            // As on an ordinary refresh, release a completed preview's
+            // reader selection before building a new timing generation.
+            if (gestureClips(gestureRuntime_))
+                (void)refreshGestureRuntime(gestureRuntime_, store);
+            if (!rebuild()) {
+                rollback();
+                return false;
+            }
+        } else {
+            // Source and tap changes against an already prepared shape keep
+            // the current readers, timing view and device DSP running.
+            if (!devices_.publishDeviceKeys(next, [this] { return &model_; })) {
+                error_ = devices_.lastRebuildError();
+                rollback();
+                return false;
+            }
+            model_.routing.swap(next.routing);
+            playbackModel_.routing.swap(playbackRoutes);
+            ++stats_.rebuilds;
+            try {
+                presentationPending_ = !cueMonitor_.publish(cueSettings_, spec_.sampleRate, spec_.maxFrames,
+                                                            spec_.channels, spec_.performanceState, graph_.currentGraph());
+                attachTaps();
+                refreshProblems();
+            } catch (const std::exception&) {
+                presentationPending_ = true;
+            }
+        }
+    } catch (const std::exception& failure) {
+        rollback();
+        error_ = failure.what();
         return false;
     }
-    model_.routing.swap(next.routing);
-    playbackModel_.routing.swap(playbackRoutes);
+
     appliedSequence_ = receipts->applied = batch.sequence();
     receipts->image = image;
-    ++stats_.rebuilds;
-    try {
-        presentationPending_ = !cueMonitor_.publish(cueSettings_, spec_.sampleRate, spec_.maxFrames,
-                                                    spec_.channels, spec_.performanceState, graph_.currentGraph());
-        attachTaps();
-        refreshProblems();
-    } catch (const std::exception&) {
-        presentationPending_ = true;
-    }
     error_.clear();
     return true;
 }
