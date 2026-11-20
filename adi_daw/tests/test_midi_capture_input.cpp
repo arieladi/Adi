@@ -59,7 +59,69 @@ void allKeysAndReset() {
     Sink reset;feed(parser,reset,0x90,60,100);const auto prior=reset.events[0].noteId;parser.reset();feed(parser,reset,0x80,60,0);feed(parser,reset,0x90,60,100);
     check(reset.events[1].noteId==0 && reset.events[2].noteId>prior,"reset clears per-key ownership without recycling source identities");
     Sink repeated;feed(parser,repeated,0x90,72,100);feed(parser,repeated,0x90,72,101);feed(parser,repeated,0x80,72,0);feed(parser,repeated,0x80,72,0);
-    check(repeated.events[2].noteId==repeated.events[1].noteId && repeated.events[3].noteId==0,"same-key retrigger retains the existing newest-identity release policy");
+    check(repeated.events[2].noteId==repeated.events[0].noteId && repeated.events[3].noteId==repeated.events[1].noteId,
+          "same-key retriggers release the oldest live note first");
+}
+void heldAcrossZones() {
+    for(const bool startMember:{false,true}) {
+        MpeParser parser;
+        parser.setZone(startMember?MpeZone::lower():MpeZone{});
+        Sink sink;
+        feed(parser,sink,0x91,60,100);
+        feed(parser,sink,0x91,60,101);
+        feed(parser,sink,0x91,64,102);
+        feed(parser,sink,0x92,60,103);
+        parser.setZone(startMember?MpeZone{}:MpeZone::lower());
+        feed(parser,sink,0x91,60,0);
+        feed(parser,sink,0x81,64,7);
+        feed(parser,sink,0x82,60,8);
+        check(parser.activeNoteOn(2)==sink.events[1].noteId,"earlier held notes remain expression candidates");
+        feed(parser,sink,0x81,60,9);
+        check(sink.count==8 && sink.events[4].noteId==sink.events[0].noteId &&
+              sink.events[5].noteId==sink.events[2].noteId && sink.events[6].noteId==sink.events[3].noteId &&
+              sink.events[7].noteId==sink.events[1].noteId && parser.activeNoteOn(2)==0,
+              "changing a zone carries retriggers, chords and channel identities to their actual releases");
+        std::array<MpeOut,64> storage{};
+        MpeOutList output(storage.data(),static_cast<std::int32_t>(storage.size()));
+        MpeRouter router;
+        router.configure(ExpressionRoute::Plain,{});
+        {
+            audio::CallbackScope callback;
+            router.route(sink.events.data(),sink.count,0,output);
+        }
+        check(router.liveNotes()==0 && router.unknownNotes()==0 && output.size()==8,
+              "native router closes every voice after either zone change");
+    }
+}
+void trackingCapacity() {
+    MpeParser parser;
+    struct Counter {
+        std::uint64_t last=0;
+        unsigned total=0;
+    } counter;
+    const auto receive=[](void* context,const Event& event) {
+        auto& accepted=*static_cast<Counter*>(context);
+        accepted.last=event.noteId;
+        ++accepted.total;
+        return true;
+    };
+    const auto send=[&](std::uint8_t status,std::uint8_t key) {
+        const std::uint8_t bytes[]={status,key,100};
+        audio::CallbackScope callback;
+        return parser.feed(bytes,3,receive,&counter);
+    };
+    for(unsigned i=0;i<4096;++i)(void)send(0x90,60);
+    const bool full=counter.total==4096 && send(0x90,60)==0;
+    const bool oldest=send(0x80,60)==1 && counter.last==1;
+    const bool suppressed=send(0x90,60)==0 && parser.trackingRejections()==2;
+    const bool reused=send(0x91,60)==1 && counter.last==4097;
+    bool exact=true;
+    for(std::uint64_t id=2;id<=4096;++id) {
+        if(send(0x80,60)!=1 || counter.last!=id)exact=false;
+    }
+    check(full && oldest && suppressed && reused && exact && send(0x80,60)==0 && send(0x80,60)==0 &&
+          send(0x81,60)==1 && counter.last==4097,
+          "pool overflow suppresses paired attacks and releases without losing accepted notes or borrowing a channel's ID");
 }
 void controllers() {
     MpeParser parser;Sink sink;
@@ -102,6 +164,6 @@ void malformedAndRejection() {
     refused.refuse=false;check(feed(parser,refused,0xb0,7,101)==1 && refused.count==1 && refused.events[0].value==101.0/127,"parser remains usable after controller delivery rejection");
 }
 }
-int main(){try{chordsAndRouting();allKeysAndReset();controllers();malformedAndRejection();check(allocations==0 && audio::callbackFileIo==0,"polyphony/controller parsing and router/Capture delivery allocate nothing and perform no callback I/O");}
+int main(){try{chordsAndRouting();allKeysAndReset();heldAcrossZones();trackingCapacity();controllers();malformedAndRejection();check(allocations==0 && audio::callbackFileIo==0,"polyphony/controller parsing and router/Capture delivery allocate nothing and perform no callback I/O");}
 catch(const std::exception& e){std::printf("EXCEPTION: %s\n",e.what());check(false,"fixture must complete");}
 std::printf("midi_capture_input: %d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -3,6 +3,7 @@
 // See mpe_input.hpp. ADR-0054: no MIDI byte survives this file.
 
 #include "adi/engine/mpe_input.hpp"
+#include <limits>
 
 namespace adi::engine {
 
@@ -42,10 +43,49 @@ double cc7ToUnit(std::uint8_t v) noexcept {
 
 void MpeParser::reset() noexcept {
     for (auto& c : chans_) c = ChannelState{};
+    nextUnused_ = 1;
+    free_ = 0;
     // nextNoteId_ is NOT reset. A note id must never be reused within a
     // session: expression already queued against an old id would otherwise
     // land on a new note, which is an audible wrong-note rather than a
     // dropped one.
+}
+
+std::uint64_t MpeParser::startNote(ChannelState& channel,std::uint8_t key) noexcept {
+    auto& held = channel.keys[key];
+    if (held.suppressed != 0 || (free_ == 0 && nextUnused_ > kTrackedNotes)) {
+        if (held.suppressed != std::numeric_limits<std::uint64_t>::max()) ++held.suppressed;
+        if (trackingRejected_ != std::numeric_limits<std::uint64_t>::max()) ++trackingRejected_;
+        return 0;
+    }
+    const auto index = free_ != 0 ? free_ : nextUnused_++;
+    if (free_ != 0) free_ = live_[index].next;
+    const auto id = nextNoteId_++;
+    live_[index] = {id,0};
+    if (held.tail != 0) live_[held.tail].next = index;
+    else held.head = index;
+    held.tail = index;
+    channel.noteId = id;
+    return id;
+}
+
+std::uint64_t MpeParser::releaseNote(ChannelState& channel,std::uint8_t key) noexcept {
+    auto& held = channel.keys[key];
+    const auto index = held.head;
+    if (index == 0) return 0;
+    const auto note = live_[index];
+    held.head = note.next;
+    if (held.head == 0) held.tail = 0;
+    live_[index].next = free_;
+    free_ = index;
+    if (channel.noteId == note.id) {
+        channel.noteId = 0;
+        for (const auto& candidate : channel.keys) {
+            if (candidate.tail != 0 && live_[candidate.tail].id > channel.noteId)
+                channel.noteId = live_[candidate.tail].id;
+        }
+    }
+    return note.id;
 }
 
 std::uint64_t MpeParser::activeNoteOn(std::uint8_t chan1) const noexcept {
@@ -91,6 +131,11 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
             const bool isOff = (type == 0x80) || (vel == 0);
 
             if (isOff) {
+                auto& held = cs.keys[key];
+                if (held.head == 0 && held.suppressed != 0) {
+                    --held.suppressed;
+                    return 0;
+                }
                 Event e;
                 e.type    = EventType::NoteOff;
                 e.frame   = frame_;
@@ -98,11 +143,9 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 // Anchored to the note that is actually sounding on this
                 // channel. A note-off for a key we are not holding gets no
                 // id rather than a wrong one.
-                e.noteId  = member ? ((cs.key == key && cs.noteId != 0) ? cs.noteId : 0) : cs.plainNotes[key];
+                e.noteId  = releaseNote(cs,key);
                 e.dim     = key;
                 e.value   = cc7ToUnit(vel);
-                if(!member)cs.plainNotes[key]=0;
-                if (e.noteId==cs.noteId && e.noteId!=0) { cs.noteId = 0; cs.key = 0; }
                 if (emit(sink, ctx, e)) ++emitted;
                 return emitted;
             }
@@ -113,12 +156,10 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 e.channel = chan1;
                 // Minted here and never derived from the channel afterwards.
                 // ADR-0054: the channel is transport, the id is identity.
-                e.noteId  = nextNoteId_++;
+                e.noteId  = startNote(cs,key);
+                if (e.noteId == 0) return 0;
                 e.dim     = key;               // the key, for a note event
                 e.value   = cc7ToUnit(vel);    // velocity as a DOUBLE, 0..1
-                cs.noteId = e.noteId;
-                cs.key    = key;
-                if(!member)cs.plainNotes[key]=e.noteId;
                 ++notesStarted_;
                 if (emit(sink, ctx, e)) ++emitted;
             }

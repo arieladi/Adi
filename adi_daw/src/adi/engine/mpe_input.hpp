@@ -67,7 +67,7 @@ struct MpeZone {
 ///
 /// Not allocating and not throwing: this runs wherever MIDI arrives, which may
 /// be a realtime callback. Events are handed to a caller-supplied sink rather
-/// than collected, so the parser owns no buffer and imposes no capacity.
+/// than collected. The parser keeps a fixed pool of active note identities.
 class MpeParser {
 public:
     /// What a parsed event is delivered to. Returning false means the sink is
@@ -76,6 +76,8 @@ public:
 
     MpeParser() = default;
 
+    /// Changes expression routing. Held notes keep their original identities
+    /// until the wire releases them on the same channel and key.
     void setZone(const MpeZone& z) noexcept { zone_ = z; }
     [[nodiscard]] const MpeZone& zone() const noexcept { return zone_; }
 
@@ -99,17 +101,27 @@ public:
 
     [[nodiscard]] std::int64_t notesStarted() const noexcept { return notesStarted_; }
     [[nodiscard]] std::int64_t sinkRejections() const noexcept { return rejected_; }
+    [[nodiscard]] std::uint64_t trackingRejections() const noexcept { return trackingRejected_; }
 
     /// The note currently sounding on a member channel, or 0 for none.
     [[nodiscard]] std::uint64_t activeNoteOn(std::uint8_t chan1) const noexcept;
 
 private:
+    using NoteIndex = std::uint16_t;
+    static constexpr NoteIndex kTrackedNotes = 4096;
+    struct KeyState {
+        NoteIndex head = 0, tail = 0;
+        // Suppressed attacks follow the tracked ones in wire order. While
+        // any remain, another attack for this key must also be suppressed.
+        std::uint64_t suppressed = 0;
+    };
+    struct LiveNote {
+        std::uint64_t id = 0;
+        NoteIndex next = 0;
+    };
     struct ChannelState {
         std::uint64_t noteId = 0;
-        std::uint8_t  key    = 0;
-        // Outside an MPE member channel, multiple different keys can sound
-        // together. A channel's latest note is not every key's release target.
-        std::array<std::uint64_t,128> plainNotes{};
+        std::array<KeyState,128> keys{};
         /// Last value seen for every controller, so an LSB can find its MSB.
         /// A 14-bit CC whose MSB has not arrived is NOT promoted to 14 bits:
         /// pretending otherwise invents precision the wire did not carry.
@@ -117,6 +129,8 @@ private:
         std::array<bool, 128>         ccSeen{};
     };
 
+    std::uint64_t startNote(ChannelState&,std::uint8_t key) noexcept;
+    std::uint64_t releaseNote(ChannelState&,std::uint8_t key) noexcept;
     bool emit(Sink sink, void* ctx, const Event& e) noexcept;
     ChannelState& chan(std::uint8_t chan1) noexcept {
         return chans_[chan1 >= 1 && chan1 <= 16 ? chan1 - 1 : 0];
@@ -124,6 +138,9 @@ private:
 
     MpeZone zone_{};
     std::array<ChannelState, 16> chans_{};
+    std::array<LiveNote,kTrackedNotes+1> live_{};
+    NoteIndex nextUnused_ = 1, free_ = 0;
+    std::uint64_t trackingRejected_ = 0;
     std::int32_t  frame_ = 0;
     std::uint64_t nextNoteId_ = 1;   ///< 0 means "unassigned" (events.hpp)
     std::int64_t  notesStarted_ = 0;
