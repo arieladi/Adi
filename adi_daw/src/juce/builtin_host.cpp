@@ -215,15 +215,25 @@ public:
             // DF-E37 (c): the real value is preferred, clamped and turned back
             // into a position; a bad known value refuses the whole state.
             if(!builtin_values::read(value,declarations_.params,pending))return false;
+            // DF-E57: a parameter the state set (by its position or by its
+            // real value) keeps that value; every one it did not set returns
+            // to its default, for every built-in: a newer version's added
+            // parameters and a partial preset never keep a stale value.
+            std::vector<bool> restored(descriptors_.size(),false);
+            for(const auto& entry:pending) {
+                if(entry.first<restored.size()) {
+                    restored[entry.first]=true;
+                }
+            }
+            for(std::size_t i=0;i<descriptors_.size();++i) {
+                if(!restored[i]) {
+                    pending.emplace_back(i,static_cast<float>(descriptors_[i].defaultValue.normalized));
+                }
+            }
+            // ADI-Shaper also holds its audio while the whole state applies
+            // (its flag); the others apply within one block, as before.
             std::optional<ReactivationGate::Hold> hold;
             if(info_.resetMissingParameters) {
-                // A parameter the state set (by its position or by its real
-                // value) keeps that value; only the ones it did not set reset.
-                std::vector<bool> restored(descriptors_.size(),false);
-                for(const auto& entry:pending)if(entry.first<restored.size())restored[entry.first]=true;
-                for(std::size_t i=0;i<descriptors_.size();++i)
-                    if(!restored[i])
-                        pending.emplace_back(i,static_cast<float>(descriptors_[i].defaultValue.normalized));
                 hold.emplace(gate_);
             }
             extra_=std::move(value);

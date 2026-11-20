@@ -104,6 +104,25 @@ void paramsAndState() {
     auto restored=load("org.adidaw.builtin.utility");
     check(restored->loadState("state",saved) && restored->getParam("11").normalized==instance->getParam("11").normalized,"stored state restores parameter intent exactly");
     check(!restored->setExpressionRoute(RouteChoice::NoteExpression) && restored->setExpressionRoute(RouteChoice::MpeMidi),"format route supports its declared MIDI boundary");
+    // DF-E57: a partial state (a newer version's added parameters, a partial
+    // preset) resets what it omits to the default, not to the value before.
+    {
+        auto device=load("org.adidaw.builtin.utility");
+        check(device->setParam("11",ParamValue::fromNormalized(0.8)) && device->setParam("12",ParamValue::fromNormalized(0.9)),
+              "two parameters moved from their defaults");
+        const auto held=device->getParam("12").normalized;
+        auto partial=Payload::from_cbor(device->saveState("state"));
+        // Omitted everywhere the state can carry it: its position, its real value, its unit.
+        for(const char* part:{"params","real","units"}) {
+            if(partial.contains(part)) {
+                partial[part].erase("11");
+            }
+        }
+        check(device->loadState("state",Payload::to_cbor(partial)),"a state without one parameter loads");
+        check(std::abs(device->getParam("11").normalized-device->findParam("11")->defaultValue.normalized)<1e-6 &&
+              device->getParam("12").normalized==held,
+              "the omitted parameter returns to its default; the one the state holds keeps its value (DF-E57)");
+    }
 #endif
 }
 void insertionAndHistory() {
