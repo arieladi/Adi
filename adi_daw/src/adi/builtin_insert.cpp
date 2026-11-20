@@ -194,7 +194,8 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
         return result;
     }
     rows::PluginRef ref;
-    ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";ref.subtype="effect";
+    ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";
+    ref.subtype=info->instrument?"instrument":"effect";
     return prepareInsert(store,ref,track,before);
 }
 PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,

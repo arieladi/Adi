@@ -22,9 +22,11 @@ class OneShotPdMidi {
         dropped_ = 0;
         panic_ = false;
     }
-    void note(float key, float velocity, float channel) noexcept {
+    /// `frame`: block-relative, from a native host; Pd's ticks pass 0.
+    void note(float key, float velocity, float channel, std::int32_t frame = 0) noexcept {
         if (!integer(key, 0, 127) || !integer(velocity, 0, 127) ||
             !integer(channel, 1, 16)) return;
+        frame_ = frame;
         const auto c = static_cast<std::size_t>(channel - 1);
         const auto k = static_cast<std::size_t>(key);
         if (panic_) { ++dropped_; return; }
@@ -46,8 +48,9 @@ class OneShotPdMidi {
                   static_cast<std::uint16_t>(k), released, 0, 0});
         }
     }
-    void bend(float value, float channel) noexcept {
+    void bend(float value, float channel, std::int32_t frame = 0) noexcept {
         if (!integer(value, 0, 16383) || !integer(channel, 1, 16)) return;
+        frame_ = frame;
         const auto c = static_cast<std::size_t>(channel - 1);
         // The host MPE router declares this +/-48-semitone range. Keep its
         // asymmetric positive/negative MIDI endpoints (8191 versus 8192).
@@ -77,7 +80,9 @@ class OneShotPdMidi {
             ids_ = {};
             return false;
         }
-        events_[count_++] = e;
+        events_[count_] = e;
+        events_[count_].frame = frame_;
+        ++count_;
         return true;
     }
     void expression(std::size_t channel, std::uint64_t id) noexcept {
@@ -88,6 +93,7 @@ class OneShotPdMidi {
     std::array<std::array<std::uint64_t, 128>, 16> ids_{};
     std::array<double, 16> bends_{};
     std::size_t count_ = 0;
+    std::int32_t frame_ = 0;
     std::uint64_t serial_ = 0, dropped_ = 0;
     bool panic_ = false;
 };

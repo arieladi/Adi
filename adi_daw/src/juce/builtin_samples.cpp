@@ -5,6 +5,7 @@
 #include "adi/media/blake3.hpp"
 #if ADI_WITH_PD
 #include "adi/pd_builtins/colorcab_sample.hpp"
+#include "adi/pd_builtins/oneshot_sample.hpp"
 #endif
 #include <samplerate.h>
 #include <algorithm>
@@ -15,6 +16,7 @@
 namespace adi::device {
 namespace {
 constexpr std::string_view colorCabUid="org.adidaw.builtin.color-cab";
+constexpr std::string_view oneShotUid="org.adidaw.builtin.oneshot";
 void offThread(){if(audio::onAudioThread)throw std::runtime_error("sample preparation belongs off the audio thread");}
 void validRate(double rate){if(!std::isfinite(rate)||rate<=0||rate>768000)throw std::runtime_error("invalid sample processing rate");}
 bool hashValid(const std::string& hash){return hash.size()==64 && std::all_of(hash.begin(),hash.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});}
@@ -70,7 +72,7 @@ BuiltinSampleInfo inspectBuiltinSample(const Payload& value) {
     if(!kind.is_string() || kind.get_ref<const std::string&>()!="adi.builtin.sample" || value.at("version")!=1)throw std::runtime_error("unsupported built-in sample state");
     BuiltinSampleInfo info;info.uid=value.at("uid").get<std::string>();
     const auto slot=value.at("slot").get<std::int64_t>();
-    if(!value.at("slot").is_number_integer()||slot!=1||info.uid!=colorCabUid)throw std::runtime_error("unsupported built-in sample slot");
+    if(!value.at("slot").is_number_integer()||slot!=1||(info.uid!=colorCabUid && info.uid!=oneShotUid))throw std::runtime_error("unsupported built-in sample slot");
     info.slot=static_cast<std::int32_t>(slot);info.empty=value.at("empty").get<bool>();
     if(!info.empty){info.mediaHash=value.at("mediaHash").get<std::string>();if(!hashValid(info.mediaHash))throw std::runtime_error("invalid sample media hash");}
     return info;
@@ -82,6 +84,31 @@ Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,const std::f
     audio::WavReader reader(playable);
     if(reader.frames()==0||reader.frames()>builtinSampleMaxFrames||reader.channels()==0||reader.channels()>64)
         throw std::runtime_error("sample is empty or exceeds the 8M-frame preparation limit");
+    if(info.uid==oneShotUid) {
+        // DEV-21: OneShot plays the source itself, in stereo when it has two
+        // channels or more (the first two), at the source's own rate.
+        const std::uint16_t channels=reader.channels()>=2?2:1;
+        std::vector<float> interleaved(static_cast<std::size_t>(reader.frames())*channels);
+        std::vector<float> block(4096u*reader.channels());std::size_t done=0;
+        while(done<static_cast<std::size_t>(reader.frames())) {
+            const auto want=static_cast<std::uint32_t>(std::min<std::size_t>(4096,static_cast<std::size_t>(reader.frames())-done));
+            if(reader.read(block.data(),want)!=want)throw std::runtime_error("sample ended early");
+            for(std::uint32_t frame=0;frame<want;++frame)for(std::uint16_t c=0;c<channels;++c) {
+                const float sample=block[static_cast<std::size_t>(frame)*reader.channels()+c];
+                if(!std::isfinite(sample))throw std::runtime_error("sample contains nonfinite audio");
+                interleaved[(done+frame)*channels+c]=sample;
+            }
+            done+=want;
+        }
+        const auto hash=media::blake3File(source);if(!hash)throw std::runtime_error("sample media hashing failed");
+        value["empty"]=false;value["mediaHash"]=hash.hex;value["sourceRate"]=reader.sampleRate();value["channels"]=channels;
+        std::vector<std::uint8_t> bytes(interleaved.size()*4);
+        for(std::size_t i=0;i<interleaved.size();++i) {
+            const auto bits=std::bit_cast<std::uint32_t>(interleaved[i]);for(unsigned byte=0;byte<4;++byte)bytes[i*4+byte]=static_cast<std::uint8_t>((bits>>(8*byte))&255u);
+        }
+        value["source_f32le"]=Payload::binary(std::move(bytes));
+        return value;
+    }
     std::vector<float> mono(static_cast<std::size_t>(reader.frames()));std::vector<float> block(4096u*reader.channels());
     std::size_t done=0;
     while(done<mono.size()) {
@@ -113,6 +140,19 @@ Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,const std::f
 std::unique_ptr<PdSampleBuffer> restoreBuiltinSample(const Payload& value,double rate) {
     offThread();const auto info=inspectBuiltinSample(value);validRate(rate);
 #if ADI_WITH_PD
+    if(info.uid==oneShotUid) {
+        if(info.empty)return clearOneShotSample(info.slot);
+        const auto channels=value.at("channels").get<int>();const double sourceRate=value.at("sourceRate").get<double>();validRate(sourceRate);
+        if(channels<1||channels>2)throw std::runtime_error("invalid OneShot sample channels");
+        auto interleaved=sourceMono(value);   // the raw floats, any channel count
+        if(interleaved.size()%static_cast<std::size_t>(channels)!=0)throw std::runtime_error("invalid OneShot sample length");
+        auto raw=std::make_unique<PdSampleBuffer>();raw->id=info.slot;raw->channels=channels;raw->sampleRate=sourceRate;
+        raw->frames=static_cast<std::int64_t>(interleaved.size()/static_cast<std::size_t>(channels));
+        raw->interleaved=std::move(interleaved);raw->blake3=info.mediaHash;
+        auto prepared=prepareOneShotSample(std::move(raw));
+        if(!prepared)throw std::runtime_error("OneShot sample preparation refused");
+        return prepared;
+    }
     if(info.empty) {
         auto result=std::make_unique<PdColorCabSample>();result->id=info.slot;result->design.sampleRate=rate;
         result->design.kernel.taps[0]=1;result->design.kernel.size=1;return result;
