@@ -93,6 +93,57 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-20 — DEV-28: Tech 3341's true-peak cases held to an independent reference, the maxima to the reference's 10 ms grid
+
+**PR requested:** head `devices/loudness-reference` (c011d274). It stands on `devices/loudness-robust`
+and merges `devices/limiter-offline` (6aede01d), so **win lands it after both of those**. Tests
+only; no product code changes.
+
+- **The problem.** This is the DEV-28 gap audit's third devices item. The meter passed Tech 3341 on
+  the EBU's tolerances alone: +0.2/−0.4 dB for true peak and ±0.1 for the maxima. That let a true
+  peak reading 0.15 dB low, or a maximum 0.05 LU high, pass.
+- **The shared reference.** The independent true peak moves into a shared test header,
+  `tests/true_peak_reference.hpp`, used by both suites. It now skips a channel shorter than its
+  kernel instead of reading out of bounds.
+- **Cases 15 to 23, true peak.**
+  - **The synthesis first.** The reference reads each synthesized signal's own crest:
+    - cases 15 to 19 come within 0.01 dB of the sine's crest;
+    - cases 20 to 23 read −0.077 dBTP. That is what the 511-tap low-pass leaves of the EBU's 0.0
+      design value.
+  - **Then the meter, held to that crest.** It may never read more than 0.01 dB above it, and may
+    read below it only by its own bound:
+    - **cases 15 to 19:** the 4x grid's miss at each sine's known crest phase. That is 0 for
+      case 15, whose crests fall on samples; 0.168 dB for 16 and 19; 0.075 for 17; and 0.042
+      for 18.
+    - **cases 20 to 23:** the measured miss, rounded up to 0.09 dB (measured 0.013, 0.052, 0.013
+      and 0.073). The joins at the burst's ends reach the low-pass's edge, where no sine's bound
+      applies.
+  - Measured: case 16 reads −6.188 against −6.021, and case 19 reads +2.817 against +2.984.
+- **Cases 10, 11, 13 and 14, the maxima.**
+  - The brute-force reference now keeps every 10 ms sub-block's M and S. Its window means come from
+    running sums, so the suite takes the same time as before (about 60 s in Debug).
+  - The meter's maxima, file-based and live, are held within 0.001 LU of the reference's largest.
+    Measured: 0.000000.
+- **Plants:**
+  - true peak 0.15 dB low: 9 failures, every one in the new checks;
+  - maxima updated only every 100 ms: 4;
+  - max S 0.05 LU high: 2, only in the new checks.
+- **Totals:** `adi_loudness_tests` 87, `adi_dsp_tests` 433. CTest 267/267 at PD_FLOATSIZE 32 and 64
+  (MSVC Debug, /W4 /WX).
+- **Reviewed** on four dimensions (math, test validity, portability, merge structure) with three
+  skeptics per finding. All five findings were refuted as defects. Three were fair points and are
+  fixed in the review commit:
+  - per-case bounds in place of the worst case;
+  - an honest, empirical bound for cases 20 to 23;
+  - the header's 0.007 dB.
+
+**DEV-28's devices items left:**
+- the "LRA not yet stable" flag. **For win:** its definition needs a ruling. One option is fewer
+  than N gated short-term values; another is less than T seconds since reset.
+- a loudness case in the block benchmark;
+- the ffmpeg LRA oracle;
+- the provenance comments, which are the next branch.
+
 ## 2026-11-20 — DF-E61: a built-in's stored value that went A to B and back to A is heard over the lane
 
 **PR requested:** head `devices/df-e57` (25dbda75), now three commits on dccb6a55: DF-E57's, and
