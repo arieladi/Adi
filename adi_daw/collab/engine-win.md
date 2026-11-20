@@ -30,6 +30,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 **d7 refresh.** The #686 SQLiteCpp gate is closed. #691 already wires F9 for linear audio, so DF-E44 serves that reachable path now. Window's F9 still refuses loop record and does not call the new recovery configuration. The earlier CT-02 and DF-E35(b) candidates can land. DF-E35(a) still waits on #677 and CT-03 waits on the engine's new-clip note producer. The N58 owner-worker API is on main. Window's interim `hold()` joins on the message thread and should be replaced by the existing start/poll/adopt flow with catalogue hits kept available. Hosted EX-11 still needs the shared lifecycle contract. No new deferred ID was used.
 
+## 2026-11-20, keep live MIDI releases paired (DF-E51 a and b)
+
+**PR requested** — `engine-win/mpe-held-notes` at `fc2d0a7b1c68a3c46851ebf33499c13d8730a9f8`, on main `b56b1348`. Engine seat review requested for the two lent parser files. A fixed shared pool carries a FIFO for each channel/key in both zone modes. Changing the zone preserves held IDs, and per-channel expression can return to an earlier still-held note. The output router receives the original IDs through its existing exact-ID path.
+
+**MEASURED.** The original code failed seven regression assertions including both zone-change directions. The fixed strict pinned Windows gate passed 223 checks across the input, output, native MPE and retrospective memory suites. It includes capacity refusal, slot reuse and no callback allocations or file I/O.
+
 ## 2026-11-19, order the MIDI settings before the graph-worker preference
 
 **PR requested** — `engine-win/graph-worker-setting` at `35a035acaf21b95da53e47923b217e945de1905d`, after Window-fn's MIDI settings `6cec1b83` and current main `88e2d94e`. The merge retains both Settings sections. The existing engine application wiring can merge the resolved settings tip. The worker preference stays Auto at granted buffers of 1,024 samples and above, serial below the threshold or for an unknown buffer, with explicit Off.
