@@ -312,14 +312,31 @@ void SettingsPageList::paint(juce::Graphics &g) {
     const auto &names = panel_.pageNames();
     for (std::size_t i = 0; i < names.size(); ++i) {
         const bool open = !panel_.finding() && names[i] == panel_.page();
-        // The open tab runs on into its page; the others stop short of it.
+        // The open tab runs on into its page; the others stop short of it. Each is the shared tabs'
+        // (language.png part D): the open one raised, its right corners square where it meets its
+        // page and no edge there; the others on the tabs' ground, their names dim.
         const auto r = open ? rects[i].toFloat() : rects[i].toFloat().withTrimmedRight(7);
-        g.setColour(look::panel);
-        if (open)
-            g.fillRect(r.withTrimmedLeft(8));
-        g.fillRoundedRectangle(r, look::radiusBox);
-        g.setColour(look::text);
-        g.setFont(look::font(look::fontHeading, true));
+        if (open) {
+            const auto shape = [](juce::Rectangle<float> b) {
+                juce::Path p;
+                p.addRoundedRectangle(b.getX(), b.getY(), b.getWidth(), b.getHeight(), look::radiusControl,
+                                      look::radiusControl, true, false, true, false);
+                return p;
+            };
+            g.setColour(look::tabOn);
+            g.fillPath(shape(r));
+            juce::Graphics::ScopedSaveState keep(g);
+            juce::Path edge;
+            edge.addRectangle(r.withTrimmedRight(look::hairline));
+            g.reduceClipRegion(edge);
+            g.setColour(look::tabOnEdge);
+            g.strokePath(shape(r.reduced(look::hairline / 2)), juce::PathStrokeType(look::hairline));
+        } else {
+            g.setColour(look::tabsBack);
+            g.fillRoundedRectangle(r, look::radiusControl);
+        }
+        g.setColour(open ? look::text : look::textDim);
+        g.setFont(look::font(look::fontHeading, open));
         int y = rects[i].getY() + 2;
         for (const auto &line : lines(names[i])) {
             g.drawText(line, rects[i].getX() + 10, y, rects[i].getWidth() - 12, 15, juce::Justification::centredLeft);
@@ -407,6 +424,16 @@ void SettingsPanel::showPage(const std::string &name) {
         if (audio_)
             content_.addChildComponent(*audio_);
     }
+    if (name == "Tempo & MIDI" && midiPorts && !midi_) {
+        midi_ = midiPorts();
+        if (midi_)
+            content_.addChildComponent(*midi_);
+    }
+    if (midi_) {
+        midi_->setVisible(name == "Tempo & MIDI");
+        if (name == "Tempo & MIDI")
+            order_.push_back(midi_.get());
+    }
     if (audio_) {
         audio_->setVisible(name == "Audio");
         if (name == "Audio")
@@ -421,6 +448,9 @@ void SettingsPanel::showPage(const std::string &name) {
             order_.push_back(headings_.back().get());
             for (const auto *s : group.settings) {
                 // What the device chooser shows is not listed twice under it.
+                // The MIDI Ports table stands for the record's own row.
+                if (midi_ && name == "Tempo & MIDI" && s->key.rfind("midi.port", 0) == 0) // the record and its rows
+                    continue;
                 if (audio_ && name == "Audio" &&
                     (s->key == "audio.driverType" || s->key == "audio.inputDevice" ||
                      s->key == "audio.outputDevice" || s->key == "audio.sampleRate" ||
@@ -475,6 +505,8 @@ void SettingsPanel::find(const juce::String &query) {
     }
     if (audio_)
         audio_->setVisible(false);
+    if (midi_)
+        midi_->setVisible(false);
     // Restoring defaults is a page's; the results are no page.
     defaults.setEnabled(false);
     setHelp(rows_.empty() ? juce::String("Nothing matches.")
@@ -488,7 +520,7 @@ void SettingsPanel::layoutRows() {
     const int width = std::max(0, scroll_.getWidth() - scroll_.getScrollBarThickness());
     int y = 0;
     for (auto *c : order_) {
-        const int height = c == audio_.get()                                   ? audio_->getHeight()
+        const int height = c == audio_.get() || c == midi_.get()               ? c->getHeight()
                            : dynamic_cast<SettingsHeading *>(c) != nullptr ? SettingsHeading::kHeight
                                                                             : SettingRow::kHeight;
         c->setBounds(0, y, width, height);

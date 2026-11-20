@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 namespace {
 using namespace adi;
 int checks = 0, failures = 0;
@@ -145,11 +146,114 @@ void controllerExhaustion() {
               db.execAndGet("SELECT count(*) FROM event_streams WHERE id=1").getInt() == 1,
           "Undo and Redo retain the captured positive-gap identity and old maximum identity");
 }
+
+void remarkAnchors() {
+    test::TempDirectory temp("row-ids", "remark-anchors");
+    StoreError error = StoreError::Ok;
+    auto store = Store::createEmpty(temp.path() / "anchors.adi", error);
+    if (!store)
+        throw std::runtime_error("create remark allocator project");
+    auto &db = store->db();
+    db.exec("INSERT INTO project(id,name) VALUES(1,'Allocation');"
+            "INSERT INTO tracks(id,kind,name) VALUES(8,'midi','Other'),(9,'midi','Original track');"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ticks,length_ticks,name) VALUES"
+            "(39,8,'midi',0,0,5765760,'Other'),(40,9,'midi',0,0,5765760,'Original clip')");
+    const auto op = [](std::string type, Payload payload) {
+        OpRequest request;
+        request.opType = std::move(type);
+        request.payload = std::move(payload);
+        return request;
+    };
+    OpJournal journal(*store);
+    const OpRequest remarks[] = {
+        op("remark.add", {{"id", 1}, {"kind", "track"}, {"target", 9}, {"author", "user"},
+                          {"text", "Track take"}, {"created", 1}}),
+        op("remark.add", {{"id", 2}, {"kind", "clip"}, {"target", 40}, {"author", "user"},
+                          {"text", "Clip take"}, {"created", 2}})
+    };
+    if (!journal.commit(remarks).ok)
+        throw std::runtime_error("create exact remark anchors");
+    History history(*store);
+    const auto original = history.takeSnapshot("Original", 1, 0);
+    const auto oldHead = journal.headSeq();
+    const auto removed = journal.commit(op("track.delete", {{"id", 9}}));
+    if (!original.ok || !removed.ok)
+        throw std::runtime_error("retain snapshot and delete the remark targets");
+    const auto attached = [&] {
+        return db.execAndGet(
+            "SELECT (SELECT count(*) FROM remarks r JOIN tracks t ON r.target_id=t.id "
+            "WHERE r.target_kind='track') + (SELECT count(*) FROM remarks r JOIN clips c ON "
+            "r.target_id=c.id WHERE r.target_kind='clip')").getInt();
+    };
+    check(attached() == 0 && db.execAndGet("SELECT count(*) FROM remarks").getInt() == 2,
+          "track deletion leaves both the track and cascaded clip remarks orphaned");
+
+    const auto insert = [&](std::int64_t track, std::int64_t clip) {
+        const OpRequest edits[] = {
+            op("track.create", {{"id", track}, {"kind", "midi"}, {"name", "New track"}}),
+            op("clip.create", {{"id", clip}, {"track", track}, {"kind", "midi"},
+                               {"name", "New clip"}, {"pos", 0}, {"length", 5765760}})
+        };
+        CommitOptions options;
+        options.expectHead.emplace(journal.headSeq());
+        return journal.commit(edits, options);
+    };
+    const auto reused = insert(db.execAndGet("SELECT MAX(id)+1 FROM tracks").getInt64(),
+                               db.execAndGet("SELECT MAX(id)+1 FROM clips").getInt64());
+    check(reused.ok && attached() == 2,
+          "the old live-only shortcut makes the orphaned remarks resolve to the new rows");
+    CommitOptions stale;
+    stale.expectHead.emplace(oldHead);
+    const auto rename = op("track.rename", {{"id", 9}, {"name", "Stale rename"}});
+    check(journal.commit(std::span(&rename, 1), stale).stale &&
+              db.execAndGet("SELECT name FROM tracks WHERE id=9").getString() == "New track",
+          "the captured head guards a stale edit even after the numeric row ID reappears");
+    check(history.undo().ok && attached() == 0 && history.undo().ok && attached() == 2 &&
+              db.execAndGet("SELECT name FROM tracks WHERE id=9").getString() == "Original track" &&
+              db.execAndGet("SELECT name FROM clips WHERE id=40").getString() == "Original clip",
+          "ordered undo removes the replacement and restores the original targets with their remarks");
+    if (!history.redo().ok)
+        throw std::runtime_error("return to orphaned remarks");
+
+    RowIds ids(db);
+    const auto track = ids.next("tracks");
+    const auto clip = ids.next("clips");
+    check(track == 10 && clip == 41 && ids.next("tracks") == 11 && ids.next("clips") == 42,
+          "owner allocation skips each weak target and reserves a contiguous batch");
+    if (!insert(track, clip).ok)
+        throw std::runtime_error("allocate safely beside the orphaned remarks");
+    check(attached() == 0, "the safely allocated track and clip leave the remarks orphaned");
+    const auto fresh = journal.commit(op("project.setName", {{"name", "Latest"}}));
+    if (!fresh.ok)
+        throw std::runtime_error("retain the new branch");
+    const auto latest = journal.headSeq();
+    UndoRetentionPolicy budget;
+    budget.maxTransactions = 2;
+    const auto cap = history.setUndoRetentionPolicy(budget);
+    constexpr auto prepared = History::StoredRestore::SessionReloadPrepared;
+    const auto archived = history.revertToSnapshot(original.id, 3, prepared);
+    check(cap.ok && archived.ok && archived.sessionReloadRequired && attached() == 2 &&
+              db.execAndGet("SELECT name FROM tracks WHERE id=9").getString() == "Original track",
+          "stored replay restores the original material and its anchors together");
+    check(history.moveTo(latest, 4, prepared).ok && attached() == 0 &&
+              db.execAndGet("SELECT name FROM tracks WHERE id=10").getString() == "New track",
+          "returning to the new branch restores its own material and orphan state");
+
+    db.exec("INSERT INTO remarks(id,target_kind,target_id,author,text,created_utc) VALUES"
+            "(90,'device',9223372036854775807,'user','Top',4),"
+            "(91,'device',1,'user','Lowest',4)");
+    RowIds exhausted(db);
+    check(refuses([&] { (void)exhausted.next("devices"); }) &&
+              exhausted.next("devices", RowIdExhaustion::FirstPositiveGap) == 2 &&
+              exhausted.next("devices", RowIdExhaustion::FirstPositiveGap) == 3,
+          "device anchors participate in exhaustion and explicit safe gap allocation");
+}
 } // namespace
 int main() {
     try {
         run();
         controllerExhaustion();
+        remarkAnchors();
     } catch (const std::exception &error) {
         ++failures;
         std::printf("EXCEPTION %s\n", error.what());

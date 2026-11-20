@@ -47,6 +47,7 @@
 #include "adi/applied_batches.hpp"
 #include "adi/engine/gain_stage.hpp"
 #include "adi/engine/main_loudness.hpp"
+#include "adi/engine/live_midi_input.hpp"
 #include "adi/engine/input_gain.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_playback.hpp"
@@ -62,6 +63,7 @@
 #include "adi/store_rows.hpp"
 #include "juce/device_host.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -70,6 +72,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -83,6 +86,8 @@ namespace adi::engine {
 
 class AudioInputRecorder;
 struct AudioRecordingSpec;
+class MidiInputCapture;
+struct RecordingTarget;
 
 /// The format the session is asked to run at. `load` takes the expected one;
 /// `prepare` replaces it with what the driver actually granted.
@@ -106,6 +111,8 @@ struct SessionSpec {
     std::optional<double> externalTempoBpm = std::nullopt;
     /// Export quality is independent of monitoring/performance-state suppression.
     bool exporting = false;
+    /// Processing without a realtime deadline, even at the normal quality.
+    bool offline = false;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -202,6 +209,8 @@ public:
 
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
+    // nullopt means the latest transaction needs ordinary full synchronisation.
+    std::optional<bool> refreshDeviceKeys(const Store&, const std::shared_ptr<const std::vector<std::uint8_t>>& image);
 
     [[nodiscard]] std::shared_ptr<const SessionEndpoint> endpoint() const noexcept { return endpoint_; }
     [[nodiscard]] DeviceRuntimeToken deviceRuntimeToken(std::int64_t deviceId) const;
@@ -256,6 +265,12 @@ public:
     /// outlive every graph that holds them, which means: until the session is
     /// destroyed or a later rebuild without them has been collected.
     void setSourcesFor(SourceFn fn);
+
+    /// Owner-side physical input selection for audio monitoring. Channels
+    /// are resolved driver indices, as in AudioRecordingSpec. An empty set
+    /// disconnects monitoring inputs. Track Arm and Monitor Mode come from
+    /// the published project generation.
+    bool setAudioMonitorInputs(std::span<const RecordingTarget>);
 
     /// Drain plugin callbacks, answer restart requests, free retired graphs.
     /// Returns true when a latency change was applied.
@@ -318,9 +333,32 @@ public:
                             const std::function<bool()>& publishGuard = {});
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
+    /// Configure device-owned workers as part of the same graph preparation as the device format.
+    void prepareWithGraphWorkers(double sampleRate, std::int32_t maxFrames,
+                                 std::uint32_t workers, std::int32_t minimumFrames);
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
+    /// Track input from one serialized MIDI producer. Submit in ascending
+    /// physical stream samples (AudioIo::streamTimeSamples), preserving wire
+    /// order at equal samples. Use zero-based channels for all events. Note
+    /// on/off IDs must be nonzero and unique across ports. An unaddressed
+    /// expression event may use ID zero.
+    /// Returns false for invalid events or a full queue. Rebind the producer
+    /// when the driver restarts its sample clock.
+    bool enqueueMidiInput(std::int64_t streamSample, const Event&) noexcept;
+    /// Discard queued events and release held live notes on the next callback.
+    /// Call when the producer disconnects or replaces its port configuration.
+    void resetMidiInput() noexcept;
+    /// Owner only. Start a new capture with the listed armed MIDI tracks.
+    bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error);
+    [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
+
+    /// Owner only. Configures the next graph and rebuilds when loaded; the
+    /// prior graph stays live on failure. Zero workers restores serial.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr);
     /// The Processing Precision switch (ADR-0207 d2). Message thread. A new
     /// precision is a new graph, built and published as a format change is
     /// (decision 3), and swapped in as any graph is: the handover carries
@@ -328,11 +366,6 @@ public:
     /// there is no crossfade (the swap is faded in only when
     /// `graph().setFadeFrames` is non-zero, 0 by default). The same precision
     /// does nothing. False only when a graph was due and could not be built.
-    /// Owner only. Configures the next graph and rebuilds when loaded; the
-    /// prior graph stays live on failure. Zero workers restores serial.
-    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
-                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
-                              void* context=nullptr);
     bool setPrecision(Precision p);
 
     /// Message thread. Publish a new alignment policy without reloading
@@ -343,6 +376,7 @@ public:
 
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
     [[nodiscard]] const rows::Model& model() const noexcept { return model_; }
+    bool validateDeviceKey(const rows::Model& candidate,std::string& error); // owner, no SDK prepare
     /// Owner-side runtime notifications for this loaded Store connection.
     /// No Store/SQLite pointer survives in the revocable source token.
     [[nodiscard]] const AppliedSource& appliedNotifications() const noexcept { return appliedSource_; }
@@ -452,7 +486,10 @@ private:
     friend struct GestureRuntime;
     friend std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
     friend class gesture::EnginePresentation;
-    void attach(std::shared_ptr<const GraphTransportState>);
+    struct TimingView;
+    struct InputMonitors;
+    void attach(std::shared_ptr<const TimingView>);
+    void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
     bool readPlayback(const Store &);
     // The tempo this Session plays a model at: performed history (with its
     // authored resume), else the external tempo, else the model's map.
@@ -476,6 +513,10 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    std::unique_ptr<LiveMidiInput> midiInput_;
+    std::unique_ptr<MidiInputCapture> midiInputCapture_;
+    std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
+    std::map<std::int64_t, std::array<std::int32_t, 2>> monitorInputs_;
     std::unique_ptr<AudioInputRecorder> recording_;
     std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
@@ -495,14 +536,24 @@ private:
         std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
+        std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
+        std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
+        std::shared_ptr<InputMonitors> inputMonitors;
         double sampleRate = 48000.0;
+        double lastTickSeconds = 0.0;
         SessionSpec spec;
+        [[nodiscard]] std::int64_t sampleForTick(std::int64_t tick) const noexcept;
+        void prepareDeviceClockChanges();
         void applyLoop() const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
+        [[nodiscard]] double quartersAt(std::int64_t sample) const noexcept;
+        [[nodiscard]] DeviceTransport deviceAt(std::int64_t sample) const noexcept;
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
+        [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
     };
+    void prepareMidiInput(TimingView&, const rows::Model&);
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
@@ -564,10 +615,13 @@ private:
     GraphHost graph_;
     rows::Model model_;
     AppliedSource appliedSource_;
+    void observeKeyRoutes();
+    void refreshProblems();
     std::uint64_t appliedSequence_ = 0;
     std::shared_ptr<const void> lifetime_ = std::make_shared<const int>(0);
     std::shared_ptr<SessionEndpoint> endpoint_;
     std::vector<std::shared_ptr<SessionRuntimeClient>> runtimeClients_;
+    bool prepareFormat(double sampleRate, std::int32_t maxFrames, bool workerPolicyChanged);
     std::uint64_t runtimeEpoch_ = 0;
     rows::Model playbackModel_;
     std::set<std::int64_t> frozenGroupChildren_;

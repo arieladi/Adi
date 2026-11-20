@@ -37,11 +37,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -114,6 +116,10 @@ struct Options {
     std::int64_t toneTrack = 0;
     bool dry = false;
     bool list = false;
+    bool cacheOnly = false;
+    bool refresh = false;
+    bool searchOnly = false;
+    unsigned scanWorkers = 0; // 0 means the discovery default
     bool fixture = false;
     /// ADR-0011 keeps a plug-in that will not load as a bypassed stand-in, so
     /// a render through a missing plug-in is a SUCCESS: the project played,
@@ -155,7 +161,10 @@ int usage() {
         "                       [--dry] [--save-state]\n"
         "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
         "                       [--render-output WAV] (requires --render; 32-bit float)\n"
-        "adi_play --list [--search DIR]... [--fixture]\n"
+        "adi_play --list [--cache-only | --refresh] [--scan-workers 1..4] [--search DIR]... [--search-only DIR]... [--fixture]\n"
+        "  --list performs explicit incremental discovery; --cache-only reads only\n"
+        "  validated stored metadata. --refresh reprobes successes/rejections, preserving\n"
+        "  blocks. Workers apply to incremental/refresh only. --search-only excludes defaults.\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
         "  device at the granted block size. --resize changes the block size half way\n"
         "  through the run without reloading a plugin (ADR-0122). --tone pushes a 220 Hz\n"
@@ -187,6 +196,17 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--seconds") { const char* v = next(i); if (!v) return false; o.seconds = std::atoi(v); }
         else if (a == "--resize")  { const char* v = next(i); if (!v) return false; o.resize = std::atoi(v); }
         else if (a == "--search")  { const char* v = next(i); if (!v) return false; o.searchDirs.emplace_back(v); }
+        else if (a == "--search-only") { const char* v = next(i); if (!v || !*v) return false; o.searchOnly=true; o.searchDirs.emplace_back(v); }
+        else if (a == "--scan-workers") {
+            const char* value = next(i);
+            if (!value || o.scanWorkers != 0) return false;
+            const std::string_view number(value);
+            const auto end = number.data() + number.size();
+            const auto parsed = std::from_chars(number.data(), end, o.scanWorkers);
+            if (parsed.ec != std::errc{} || parsed.ptr != end ||
+                o.scanWorkers == 0 || o.scanWorkers > adi::scan::kMaximumProbeWorkers)
+                return false;
+        }
         else if (a == "--type")    { const char* v = next(i); if (!v) return false; o.deviceType = v; }
         else if (a == "--device")  { const char* v = next(i); if (!v) return false; o.deviceName = v; }
         else if (a == "--expect-no-edits") o.expectNoEdits = true;
@@ -204,6 +224,8 @@ bool parse(int argc, char** argv, Options& o) {
         }
         else if (a == "--dry")     o.dry = true;
         else if (a == "--list")    o.list = true;
+        else if (a == "--cache-only") o.cacheOnly = true;
+        else if (a == "--refresh") o.refresh = true;
         else if (a == "--fixture") o.fixture = true;
         else if (a == "--require-devices") o.requireDevices = true;
         else if (a == "--require-peak") {
@@ -220,6 +242,9 @@ bool parse(int argc, char** argv, Options& o) {
         else o.file = a;
     }
     if (o.block <= 0 || o.seconds <= 0) return false;
+    if ((o.cacheOnly || o.searchOnly || o.refresh) && !o.list) return false;
+    if (o.cacheOnly && o.refresh) return false;
+    if (o.scanWorkers != 0 && (!o.list || o.cacheOnly)) return false;
     if (o.requireDouble && o.precision != adi::engine::Precision::Float64) return false;
     if (!o.renderOutput.empty() && (!(o.render > 0.0) || !std::isfinite(o.render) || o.list)) return false;
     return o.list || !o.file.empty();
@@ -443,7 +468,7 @@ int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juceInit;
     std::printf("adi_play -- %s\n\n", juce::SystemStats::getJUCEVersion().toRawUTF8());
 
-    adi::device::JuceDeviceLoader loader;
+    adi::device::JuceDeviceLoader loader(!o.searchOnly);
     for (const std::string& d : o.searchDirs) {
         const juce::String s(d);
         loader.addSearchPath(juce::File::isAbsolutePath(s)
@@ -457,14 +482,31 @@ int main(int argc, char** argv) {
 #endif
 
     if (o.list) {
-        loader.scan();
+        if (o.scanWorkers != 0) {
+            adi::scan::Config config;
+            config.workers = o.scanWorkers;
+            loader.setScanConfig(config);
+            std::printf("  scanner workers requested: %u\n", config.workers);
+        }
+        const auto mode=o.cacheOnly?adi::device::DiscoveryMode::CacheOnly:
+            o.refresh?adi::device::DiscoveryMode::Refresh:adi::device::DiscoveryMode::Incremental;
+        const auto discovery=loader.discover(mode);
+        if(!discovery)return 1;
+        for(const auto& failure:discovery->report.failures)
+            std::printf("  discovery issue: %s -- %s\n",failure.path.c_str(),failure.error.c_str());
+        if(discovery->outcome!=adi::device::DiscoveryOutcome::Published) {
+            std::printf("FAILED -- plug-in discovery: %s\n",discovery->error.c_str());return 1;
+        }
         const std::vector<std::string> lines = loader.knownPlugins();
         for (const std::string& l : lines) std::printf("  %s\n", l.c_str());
-        std::printf("\n%s plugins\n", n(static_cast<std::int64_t>(lines.size())).c_str());
+        std::printf("\n%s plugins (validated metadata; %s)\n",n(static_cast<std::int64_t>(lines.size())).c_str(),
+            o.cacheOnly?"cache only":o.refresh?"explicit refresh":"incremental discovery");
         return 0;
     }
 
     adi::StoreError se = adi::StoreError::Ok;
+    std::string catalogueError;
+    (void)loader.hydrateCatalogue(catalogueError); // metadata only; instance diagnostics retain any error
     auto store = adi::Store::open(o.file, se, /*readOnly=*/!o.saveState);
     if (!store) {
         std::printf("FAILED -- cannot open %s (store error %d)\n", o.file.c_str(), static_cast<int>(se));
@@ -497,6 +539,8 @@ int main(int argc, char** argv) {
     spec.sampleRate = rate;
     spec.maxFrames = o.block;
     spec.precision = o.precision;
+    spec.offline = o.render > 0;
+    spec.performanceState = !spec.offline;
     const bool loaded = session.load(*store, loader.fn(), spec);
     report(session, loader, peek);
     if (!loaded) {

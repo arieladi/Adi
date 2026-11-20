@@ -4,11 +4,13 @@
 #include "blake3.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <thread>
 #include <array>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 #if defined(_WIN32)
@@ -96,10 +98,43 @@ struct ExclusiveFile {
     ExclusiveFile(const ExclusiveFile&) = delete;
     ExclusiveFile& operator=(const ExclusiveFile&) = delete;
 };
-struct Cleanup {
-    const fs::path& target;
-    bool owned = false;
-    ~Cleanup() { if (owned) { std::error_code ignored; fs::remove(target, ignored); } }
+class CopyStage {
+public:
+    explicit CopyStage(const fs::path& parent) {
+        static std::atomic<unsigned long long> sequence{0};
+        const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        for (unsigned attempt = 0; attempt < 128; ++attempt) {
+            auto candidate = parent / (".adi-publish-" + std::to_string(now) + "-" +
+                                       std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+            auto file = candidate / "copy";
+            std::error_code error;
+#if defined(_WIN32)
+            const bool created = fs::create_directory(candidate, error);
+#else
+            const bool created = ::mkdir(candidate.c_str(), 0700) == 0;
+            if (!created) error = {errno, std::generic_category()};
+#endif
+            if (created) {
+                directory_ = std::move(candidate);
+                path = std::move(file);
+                return;
+            }
+            if (error && error != std::errc::file_exists)
+                throw fs::filesystem_error("reserve publication staging", candidate, error);
+        }
+        throw std::runtime_error("cannot reserve publication staging");
+    }
+    ~CopyStage() {
+        std::error_code ignored;
+        if (createdCopy) fs::remove(path, ignored);
+        fs::remove(directory_, ignored);
+    }
+    CopyStage(const CopyStage&) = delete;
+    CopyStage& operator=(const CopyStage&) = delete;
+    fs::path path;
+    bool createdCopy = false;
+private:
+    fs::path directory_;
 };
 }
 namespace {
@@ -124,13 +159,56 @@ void closeNative(NativeFile file) noexcept {
     if(file>=0)(void)::close(file);
 #endif
 }
-std::optional<FileIdentity> identityOf(NativeFile file,std::error_code& error) noexcept {
 #if defined(_WIN32)
+constexpr bool unsupportedWideIdentity(DWORD error) noexcept {
+    // The information class and buffer size are fixed and valid. Unsupported
+    // classes/drivers may report INVALID_PARAMETER as well as NOT_SUPPORTED.
+    return error==ERROR_INVALID_FUNCTION || error==ERROR_NOT_SUPPORTED ||
+        error==ERROR_INVALID_PARAMETER || error==ERROR_CALL_NOT_IMPLEMENTED;
+}
+constexpr std::uint64_t identityHalf(const unsigned char* bytes) noexcept {
+    std::uint64_t value=0;
+    for(unsigned i=0;i<8;++i)value|=static_cast<std::uint64_t>(bytes[i])<<(8*i);
+    return value;
+}
+constexpr std::optional<FileIdentity> legacyIdentity(std::uint64_t volume,std::uint64_t index) noexcept {
+    if(index==0 || index==std::numeric_limits<std::uint64_t>::max())return {};
+    return FileIdentity{volume,index,0,FileIdentityScheme::WindowsLegacy64};
+}
+static_assert(!legacyIdentity(1,0) && !legacyIdentity(1,std::numeric_limits<std::uint64_t>::max()));
+static_assert(legacyIdentity(1,42)->file==42 && legacyIdentity(1,42)->fileHigh==0);
+static_assert(unsupportedWideIdentity(ERROR_NOT_SUPPORTED) && unsupportedWideIdentity(ERROR_INVALID_PARAMETER) &&
+              unsupportedWideIdentity(ERROR_INVALID_FUNCTION) && unsupportedWideIdentity(ERROR_CALL_NOT_IMPLEMENTED));
+static_assert(!unsupportedWideIdentity(ERROR_ACCESS_DENIED) && !unsupportedWideIdentity(ERROR_INVALID_HANDLE) &&
+              !unsupportedWideIdentity(ERROR_READ_FAULT) && !unsupportedWideIdentity(ERROR_SHARING_VIOLATION));
+constexpr unsigned char identityByteFixture[16]={1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+static_assert(identityHalf(identityByteFixture)==0x0807060504030201ULL &&
+              identityHalf(identityByteFixture+8)==0x100f0e0d0c0b0a09ULL);
+std::optional<FileIdentity> windowsIdentityOf(NativeFile file,std::error_code& error,bool rejectReparse=false) noexcept {
+    // The legacy query supplies attributes only unless the wide query is
+    // explicitly unsupported. Its ReFS index may be a colliding sentinel.
     BY_HANDLE_FILE_INFORMATION info{};
     if(!GetFileInformationByHandle(file,&info)){error=nativeError();return {};}
     if((info.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)!=0){error=std::make_error_code(std::errc::is_a_directory);return {};}
-    error.clear();return FileIdentity{static_cast<std::uint64_t>(info.dwVolumeSerialNumber),
-        (static_cast<std::uint64_t>(info.nFileIndexHigh)<<32)|info.nFileIndexLow};
+    if(rejectReparse && (info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)!=0){
+        error=std::make_error_code(std::errc::operation_not_permitted);return {};
+    }
+    FILE_ID_INFO wide{};
+    if(GetFileInformationByHandleEx(file,FileIdInfo,&wide,sizeof(wide))){
+        error.clear();return FileIdentity{wide.VolumeSerialNumber,identityHalf(wide.FileId.Identifier),
+            identityHalf(wide.FileId.Identifier+8),FileIdentityScheme::Windows128};
+    }
+    const auto wideError=GetLastError();
+    if(!unsupportedWideIdentity(wideError)){error={static_cast<int>(wideError),std::system_category()};return {};}
+    const auto result=legacyIdentity(info.dwVolumeSerialNumber,
+        (static_cast<std::uint64_t>(info.nFileIndexHigh)<<32)|info.nFileIndexLow);
+    if(!result){error=std::make_error_code(std::errc::operation_not_supported);return {};}
+    error.clear();return result;
+}
+#endif
+std::optional<FileIdentity> identityOf(NativeFile file,std::error_code& error) noexcept {
+#if defined(_WIN32)
+    return windowsIdentityOf(file,error);
 #else
     struct stat info{};
     if(::fstat(file,&info)!=0){error=nativeError();return {};}
@@ -240,6 +318,27 @@ bool transientRename(const std::error_code& error) noexcept {
     (void)error;return false;
 #endif
 }
+bool unsupportedRename(const std::error_code& error) noexcept {
+    if (error == std::errc::operation_not_supported || error == std::errc::invalid_argument ||
+        error == std::errc::function_not_supported) return true;
+#if defined(_WIN32)
+    return error.category() == std::system_category() &&
+        (error.value() == ERROR_NOT_SUPPORTED || error.value() == ERROR_INVALID_FUNCTION ||
+         error.value() == ERROR_INVALID_PARAMETER);
+#else
+    return false;
+#endif
+}
+std::error_code classicReplace(const fs::path& source, const fs::path& target) noexcept {
+#if defined(_WIN32)
+    if (MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return {};
+    return {static_cast<int>(GetLastError()), std::system_category()};
+#else
+    std::error_code error;
+    fs::rename(source, target, error);
+    return error;
+#endif
+}
 PublishResult publishedResult(const fs::path& target,const FileIdentity& identity,
                               std::error_code (*sync)(const fs::path&)=nullptr) {
     PublishResult result{PublishStatus::published,false,{}};result.identity=identity;
@@ -249,6 +348,18 @@ PublishResult publishedResult(const fs::path& target,const FileIdentity& identit
         result.durabilityConfirmed=!error;
         if(error)result.warning="file published; directory sync could not be confirmed: "+error.message();
     }catch(...){/* Publication already happened: never report an unchanged failure. */}
+    return result;
+}
+PublishResult portableResult(const fs::path& target, const FileIdentity& identity,
+                             const ReplaceHooks& hooks, std::string warning = {}) {
+    auto result = publishedResult(target, identity, hooks.syncDirectory);
+    result.usedFallback = true;
+    if (!warning.empty()) {
+        try {
+            if (!result.warning.empty()) warning += "\n" + result.warning;
+            result.warning = std::move(warning);
+        } catch (...) {}
+    }
     return result;
 }
 }
@@ -293,6 +404,10 @@ std::error_code renameReplacing(const fs::path& source,const fs::path& target) n
 #else
     std::error_code error;fs::rename(source,target,error);return error;
 #endif
+}
+std::optional<FileIdentity> readFileIdentity(const fs::path& path,std::error_code& error) noexcept {
+    if(audio::onAudioThread){error=std::make_error_code(std::errc::operation_not_permitted);return {};}
+    return identityAt(path,error);
 }
 struct ProjectFileLease::Impl {
     NativeFile file=invalidFile;
@@ -374,7 +489,8 @@ bool ProjectFileLease::removeCreated(std::error_code& error) noexcept {
     }catch(const fs::filesystem_error& exception){error=exception.code();return false;}
     catch(...){error=std::make_error_code(std::errc::io_error);return false;}
 }
-PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selectedTarget,ReplaceHooks hooks) noexcept {
+PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selectedTarget,
+                          ReplaceHooks hooks, ReplacePolicy policy) noexcept {
     if(audio::onAudioThread)return {};
     try {
         const auto source=fs::absolute(selectedSource).lexically_normal();
@@ -391,19 +507,34 @@ PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selecte
             error.clear();const auto status=fs::symlink_status(target,error);
             const bool absent=error==std::errc::no_such_file_or_directory || (!error && status.type()==fs::file_type::not_found);
             if(error && !absent)return {PublishStatus::failed,false,error.message()};
+            if(absent && hooks.expectedTarget)return {PublishStatus::failed,false,"expected replacement destination is missing"};
             std::shared_ptr<ProjectFileLease> lease;
             if(!absent){
                 if(!fs::is_regular_file(status))return {PublishStatus::failed,false,"destination is not a regular file"};
                 lease=ProjectFileLease::openExclusive(target,error);
                 if(!lease)return {PublishStatus::failed,false,"destination is in use or inaccessible: "+error.message()};
+                if(hooks.expectedTarget && lease->identity()!=*hooks.expectedTarget)
+                    return {PublishStatus::failed,false,"destination identity changed since preflight"};
                 if(lease->identity()==*sourceId)return {PublishStatus::failed,false,"source and destination identify the same file"};
             }
             if(hooks.validateTarget && (error=hooks.validateTarget(target)))return {PublishStatus::failed,false,"destination validation: "+error.message()};
+            HashResult previous;
+            if (!absent && policy == ReplacePolicy::PortableSettings) {
+                previous = blake3File(target);
+                if (!previous) return {PublishStatus::failed, false, "Cannot read the previous settings for portable replacement"};
+            }
             if(absent){
                 error=hooks.rename?hooks.rename(source,target):renameExclusive(source,target);
                 if(error==std::errc::file_exists)continue;
             }else{
                 for(unsigned attempt=0;;++attempt){
+                    if(hooks.expectedTarget) {
+                        const auto currentStatus=fs::symlink_status(target,error);
+                        if(error || !fs::is_regular_file(currentStatus))
+                            return {PublishStatus::failed,false,"replacement destination is no longer an ordinary file"};
+                        if(attempt>0 && hooks.validateTarget && (error=hooks.validateTarget(target)))
+                            return {PublishStatus::failed,false,"destination validation: "+error.message()};
+                    }
                     const auto current=identityAt(target,error);
                     if(!current || *current!=lease->identity())return {PublishStatus::failed,false,"destination changed during replacement"};
                     error=hooks.rename?hooks.rename(source,target):renameReplacing(source,target);
@@ -412,6 +543,57 @@ PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selecte
                     const unsigned delay=std::min(200u,10u<<attempt);
                     if(hooks.retryWait)hooks.retryWait(delay);else std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<std::int64_t>(delay)));
                 }
+            }
+            if (error && unsupportedRename(error) && policy != ReplacePolicy::LeaseOnly) {
+                const auto currentStage = identityAt(source, error);
+                if (!currentStage || *currentStage != *sourceId)
+                    return {PublishStatus::failed, false, "Staging file changed before portable publication"};
+                if (absent) {
+                    fs::create_hard_link(source, target, error);
+                    if (!error) {
+                        std::error_code ignored;
+                        fs::remove(source, ignored);
+                        return portableResult(target, *sourceId, hooks);
+                    }
+                    if (error == std::errc::file_exists)
+                        return {PublishStatus::exists, true, "Destination appeared before portable publication"};
+                    if (policy == ReplacePolicy::PortableBundle || !unsupportedRename(error))
+                        return {PublishStatus::failed, true, "This folder cannot publish an atomic save. Choose another folder. " + error.message()};
+                    if (hooks.validateFallback && (error = hooks.validateFallback(target)))
+                        return {PublishStatus::failed, true, "Destination validation: " + error.message()};
+                    error.clear();
+                    const auto current = fs::symlink_status(target, error);
+                    const bool stillAbsent = error == std::errc::no_such_file_or_directory ||
+                                             (!error && current.type() == fs::file_type::not_found);
+                    if (!stillAbsent) return {PublishStatus::failed, true, "Destination changed before portable publication"};
+                    std::string warning = "Saved with portable rename. Destination validation and publication were separate.";
+#if defined(_WIN32)
+                    error = renameExclusive(source, target);
+#else
+                    error = classicReplace(source, target);
+#endif
+                    if (error) return {PublishStatus::failed, true, "Portable publication: " + error.message()};
+                    return portableResult(target, *sourceId, hooks, std::move(warning));
+                }
+                if (policy == ReplacePolicy::PortableSettings) {
+                    const auto expected = lease->identity();
+                    lease.reset();
+                    if (hooks.validateFallback && (error = hooks.validateFallback(target)))
+                        return {PublishStatus::failed, true, "Destination validation: " + error.message()};
+                    if (!fs::is_regular_file(fs::symlink_status(target, error)))
+                        return {PublishStatus::failed, true, "Destination changed before portable replacement"};
+                    const auto current = identityAt(target, error);
+                    if (!current || *current != expected)
+                        return {PublishStatus::failed, true, "Destination changed before portable replacement"};
+                    const auto after = blake3File(target);
+                    if (!after || after.hex != previous.hex)
+                        return {PublishStatus::failed, true, "Destination bytes changed before portable replacement"};
+                    std::string warning = "Saved with portable rename. Destination validation and publication were separate.";
+                    error = classicReplace(source, target);
+                    if (error) return {PublishStatus::failed, true, "Portable replacement: " + error.message()};
+                    return portableResult(target, *sourceId, hooks, std::move(warning));
+                }
+                return {PublishStatus::failed, false, "This volume cannot replace the bundle atomically. Choose a new name."};
             }
             if(error==std::errc::operation_not_supported)
                 return {PublishStatus::failed,false,"replace file: this volume cannot replace a file in place; choose a new name"};
@@ -423,33 +605,82 @@ PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selecte
 }
 
 std::error_code replaceCacheFile(const fs::path& source,const fs::path& target) noexcept {
+    return classicReplace(source, target);
+}
+std::error_code removePublishedFile(const fs::path& path,const FileIdentity& expected) noexcept {
+    if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
 #if defined(_WIN32)
-    if(MoveFileExW(source.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))return {};
-    return {static_cast<int>(GetLastError()),std::system_category()};
+    NativeOwner file;
+    file.value=CreateFileW(path.c_str(),DELETE|FILE_READ_ATTRIBUTES,0,nullptr,OPEN_EXISTING,
+                           FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
+    if(file.value==invalidFile) {
+        const auto error=GetLastError();
+        if(error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND)return {};
+        return {static_cast<int>(error),std::system_category()};
+    }
+    std::error_code identityError;
+    const auto current=windowsIdentityOf(file.value,identityError,true);
+    if(!current)return identityError;
+    if(*current!=expected)return std::make_error_code(std::errc::state_not_recoverable);
+    FILE_DISPOSITION_INFO disposition{};disposition.DeleteFile=TRUE;
+    if(!SetFileInformationByHandle(file.value,FileDispositionInfo,&disposition,sizeof(disposition)))return nativeError();
+    if(!CloseHandle(file.value))return nativeError();
+    file.value=invalidFile;return {};
 #else
-    std::error_code error;fs::rename(source,target,error);return error;
+    (void)path;(void)expected;
+    return std::make_error_code(std::errc::operation_not_supported);
 #endif
 }
 PublishResult publishFile(const fs::path& source, const fs::path& target, PublishHooks hooks,PublishPolicy policy) noexcept {
     if(audio::onAudioThread)return {};
-    Cleanup cleanup{target};
+    bool copying = false;
     try {
         std::error_code identityError;
+        const auto sourceStatus=fs::symlink_status(source,identityError);
+        if(identityError || !fs::is_regular_file(sourceStatus))
+            return {PublishStatus::failed,false,"staging file is not a regular closed file"};
         const auto sourceLease=ProjectFileLease::openExclusive(source,identityError);
         if(!sourceLease)return {PublishStatus::failed,false,"staging file is open or inaccessible: "+identityError.message()};
         const auto identity=std::optional<FileIdentity>(sourceLease->identity());
-        const auto synced=syncStaged(source);
+        const auto sameStage=[&] {
+            identityError.clear();
+            const auto status=fs::symlink_status(source,identityError);
+            if(identityError || !fs::is_regular_file(status))return false;
+            const auto current=identityAt(source,identityError);
+            return current && *current==*identity;
+        };
+        unsigned retries=0;
+        const auto retry=[&](const std::error_code& error) {
+            if(!transientRename(error) || retries==7)return false;
+            const unsigned delay=std::min(200u,10u<<retries++);
+            if(hooks.retryWait)hooks.retryWait(delay);
+            else std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<std::int64_t>(delay)));
+            return true;
+        };
+        std::error_code synced;
+        do {
+            if(!sameStage())return {PublishStatus::failed,false,"staging file changed before sync"};
+            synced=hooks.syncFile?hooks.syncFile(source):syncStaged(source);
+        }while(synced && retry(synced));
         if(synced)return {PublishStatus::failed,false,"sync staging file: "+synced.message()};
-        const auto error = hooks.rename ? hooks.rename(source, target) : renameExclusive(source, target);
-        if (!error) return publishedResult(target,*identity);
+        std::error_code error;
+        do {
+            if(!sameStage())return {PublishStatus::failed,false,"staging file changed before publication"};
+            error=hooks.rename?hooks.rename(source,target):renameExclusive(source,target);
+        }while(error && retry(error));
+        if (!error) return publishedResult(target,*identity,hooks.syncDirectory);
         if (error == std::errc::file_exists) return {PublishStatus::exists, false, error.message()};
         if(policy==PublishPolicy::AtomicOnly)return {PublishStatus::failed,false,"atomic publication: "+error.message()};
+        if(!sameStage())return {PublishStatus::failed,false,"staging file changed before copy fallback"};
+        copying = true;
         const auto expected = blake3File(source);
         if (!expected) return {PublishStatus::failed, true, "cannot hash staging file"};
+        const auto parent = target.has_parent_path() ? target.parent_path() : fs::current_path();
+        CopyStage copy(parent);
         std::error_code createError;
-        ExclusiveFile out(target, createError);
-        if (createError) return {createError == std::errc::file_exists ? PublishStatus::exists : PublishStatus::failed, true, createError.message()};
-        cleanup.owned = true;
+        ExclusiveFile out(copy.path, createError);
+        if (createError) return {PublishStatus::failed, true, createError.message()};
+        copy.createdCopy = true;
         std::ifstream in(source, std::ios::binary);
         if (!in) throw std::runtime_error("cannot read staging file");
         std::array<char, 65536> buffer{};
@@ -460,15 +691,24 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         }
         if (!in.eof()) throw std::runtime_error("staging read failed");
         out.finish();
-        if (hooks.afterCopy) hooks.afterCopy(target);
-        const auto actual = blake3File(target);
+        if (hooks.afterCopy) hooks.afterCopy(copy.path);
+        const auto actual = blake3File(copy.path);
         if (!actual || actual.hex != expected.hex) throw std::runtime_error("published copy hash mismatch");
+        const auto copyIdentity = identityAt(copy.path, identityError);
+        if (!copyIdentity) throw std::runtime_error("verified copy identity unavailable: " + identityError.message());
+        // The name is claimed exclusively in one filesystem operation. A file
+        // created by another writer while we copied stays wholly that writer's.
+        std::error_code linkError;
+        fs::create_hard_link(copy.path, target, linkError);
+        if (linkError == std::errc::file_exists) return {PublishStatus::exists, true, linkError.message()};
+        if (linkError) return {PublishStatus::failed, true, "publish verified copy: " + linkError.message()};
         in.close();
         // Failure to remove a private staging name does not invalidate the
         // verified destination; its owning staging directory cleans it later.
         std::error_code ignored; fs::remove(source, ignored);
-        cleanup.owned = false;
-        return {PublishStatus::published, true, {}};
-    } catch (const std::exception& e) { return {PublishStatus::failed, true, e.what()}; }
+        auto result = publishedResult(target, *copyIdentity, hooks.syncDirectory);
+        result.usedFallback = true;
+        return result;
+    } catch (const std::exception& e) { return {PublishStatus::failed, copying, e.what()}; }
 }
 }

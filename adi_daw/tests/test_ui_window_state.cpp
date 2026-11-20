@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/store.hpp"
 #include "adi/ui/density.hpp"
+#include "adi/ui/midi_ports.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/theme.hpp"
 #include "adi/ui/window_state.hpp"
@@ -8,6 +9,8 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <cstdio>
 #include <thread>
+#include <vector>
+#include <array>
 using namespace adi;
 using namespace adi::ui;
 namespace {
@@ -62,6 +65,8 @@ void themeAndDensityTables() {
               "a theme's text stands off its panel and lanes, and its ink off its accent");
         check(apart(t.knobNeedle, t.panel) && apart(t.knobNeedle, t.lane) && t.knobRing != t.panel,
               "a theme's knob needle stands off its panel and lanes, and its ring is not the panel");
+        check(level(t.knobFaceHigh) > level(t.knobFaceLow) && level(t.knobFaceHoverHigh) > level(t.knobFaceHoverLow),
+              "a theme's knob dial is lit from its lighter stop, under the pointer too");
     }
     // The densities: Compact is Live's sizes as built, Open is roomier in every measure.
     check(densityFromSetting(densityName(DensityId::Open)) == DensityId::Open &&
@@ -80,9 +85,73 @@ void themeAndDensityTables() {
 #undef ADI_DENSITY_ROOMIER
     check(roomier, "Open is at least Compact in every measure");
 }
+
+// SRF-05's JUCE-free half: a port's switches from the Settings' `midi.ports` record, the lock-free ring
+// a port's events go through, and a Universal MIDI Packet read as the MIDI 1.0 message it carries.
+void midiPortsCore() {
+    const auto defaults = midiPortSwitches(settings::Value::object(), "port-1");
+    check(defaults.track == midiPortDefault("track") && defaults.remote == midiPortDefault("remote") &&
+              defaults.sync == midiPortDefault("sync") && defaults.mpe == midiPortDefault("mpe"),
+          "a port with no record takes the midi.port.* rows' defaults");
+    auto record = withMidiPortSwitch(settings::Value::object(), "port-1", "track", true);
+    record = withMidiPortSwitch(record, "port-1", "remote", true);
+    record = withMidiPortSwitch(record, "port-2", "track", false);
+    const auto one = midiPortSwitches(record, "port-1"), two = midiPortSwitches(record, "port-2");
+    check(one.track && one.remote && !two.track && two.remote == midiPortDefault("remote"),
+          "each port's own fields, and the defaults for the rest");
+    const auto *row = settings::find("midi.ports");
+    std::string why;
+    check(row != nullptr && settings::validate(*row, record, why), "the record written back is one the registry takes");
+    // The ring: in order, refusing when full, counting what it lost.
+    MidiEventRing<4> ring;
+    for (std::uint32_t i = 0; i < 5; ++i) {
+        MidiPortEvent e;
+        e.port = i;
+        ring.push(e);
+    }
+    MidiPortEvent out;
+    std::vector<std::uint32_t> got;
+    while (ring.pop(out))
+        got.push_back(out.port);
+    check(got == std::vector<std::uint32_t>{0, 1, 2, 3} && ring.dropped() == 1, "the ring keeps order, refuses when full and counts");
+    // One producer thread, one consumer: every event arrives once, in order.
+    MidiEventRing<64> shared;
+    std::thread producer([&] {
+        for (std::uint32_t i = 0; i < 20000;) {
+            MidiPortEvent e;
+            e.port = i;
+            if (shared.push(e))
+                ++i;
+        }
+    });
+    std::uint32_t expect = 0;
+    bool ordered = true;
+    while (expect < 20000)
+        if (shared.pop(out)) {
+            ordered = ordered && out.port == expect;
+            ++expect;
+        }
+    producer.join();
+    check(ordered && expect == 20000, "across two threads every event arrives once, in order");
+    // A UMP word in the MIDI 1.0 protocol: a note on, a program change, the clock, and what is not carried.
+    MidiPortEvent e;
+    check(midiFromUmpWord(0x20903c64u, e) && e.size == 3 && e.bytes == std::array<std::uint8_t, 3>{0x90, 0x3c, 0x64},
+          "a MIDI 1.0 note on (type 2) reads as its three bytes");
+    check(midiFromUmpWord(0x23c50577u, e) && e.size == 2 && e.bytes[0] == 0xc5 && e.bytes[1] == 5 && e.bytes[2] == 0 &&
+              e.group == 3,
+          "a program change on group 3 reads as two bytes, its stray third byte cleared, its group kept");
+    check(midiFromUmpWord(0x10f80000u, e) && e.size == 1 && e.bytes[0] == 0xf8, "the clock (type 1) reads as one byte");
+    check(!midiFromUmpWord(0x30160102u, e) && !midiFromUmpWord(0x40903c00u, e) && !midiFromUmpWord(0x00000000u, e) &&
+              !midiFromUmpWord(0x10f40000u, e),
+          "system exclusive, MIDI 2.0, utility and an undefined status are not carried");
+    check(midiMessageSize(0xe0) == 3 && midiMessageSize(0xd3) == 2 && midiMessageSize(0xf2) == 3 &&
+              midiMessageSize(0xf0) == 0 && midiMessageSize(0x40) == 0,
+          "each status byte's length");
+}
 } // namespace
 int main() {
     themeAndDensityTables();
+    midiPortsCore();
     test::TempDirectory temp("ui_state", "roundtrip");
     StoreError err{};
     auto store = Store::createEmpty(temp.path() / "p.adi", err);

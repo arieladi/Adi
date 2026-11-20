@@ -246,6 +246,7 @@ public:
     [[nodiscard]] std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) override;
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
+    void setOffline(bool offline) noexcept override { requestedOffline_ = offline; }
 
     /// ADR-0207 d2: true when EVERY audio port the plug-in declares says
     /// `CLAP_AUDIO_PORT_SUPPORTS_64BITS`, so a graph at 64 hands it double
@@ -261,6 +262,8 @@ public:
     /// moves with it: the graph is built once more, asks again, and that build
     /// leaves the plug-in active.
     [[nodiscard]] bool processesDouble() const noexcept override { return double64_; }
+    [[nodiscard]] std::int32_t sidechainInputChannels() const noexcept override { return keyChannels_; }
+    [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return true; }
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
@@ -482,6 +485,10 @@ private:
     std::vector<clap_id> paramIds_;
     bool activated_ = false;
     bool double64_ = false;            ///< every port takes 64 bits (see processesDouble)
+    std::int32_t mainInputBus_=0, keyInputBus_=-1, keyChannels_=0;
+    void readInputBusRoles(); // deactivated, owner only; the callback reads these cached indices
+    bool requestedOffline_ = false;
+    bool preparedOffline_ = false;
     bool processing_ = false;          ///< start_processing succeeded (ADR-0123)
     std::int64_t startFailures_ = 0;
     double sampleRate_ = 0.0;

@@ -142,7 +142,10 @@ void run() {
     const double floor = bin(audio, 7011);
     check(floor < 1e-7, "far bin at floor before peak");
     const double peak = bin(audio, 1000);
-    check(std::abs(peak - .4 * std::pow(10., -6. / 20)) < 1e-5,
+    // Amount 0: the wet is the tone 2 ms late, two whole cycles of 1 kHz, so it
+    // adds to the dry in phase -- at the equal-power 50 % (DEV-22) that is
+    // cos 45 + sin 45 = sqrt 2.
+    check(std::abs(peak - .4 * std::sqrt(2.) * std::pow(10., -6. / 20)) < 1e-5,
           "real patch -6 dB gain makes sound, neither silence nor bypass");
     std::printf("METRIC Chorus-Ensemble Pd peak %.9f far %.12f\n", peak, floor);
     wav(audio);

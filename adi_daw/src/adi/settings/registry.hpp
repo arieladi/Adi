@@ -41,7 +41,8 @@ struct Setting {
     std::string key;        // "audio.bufferSize" -- permanent, like an op name
     Type type = Type::Bool;
     Scope scope = Scope::App;
-    std::string page;       // the left-hand list (R-01): Live's ten tab names for Live's
+    std::string page;       // Empty for an internal preference. Otherwise the left-hand
+                            // list (R-01): Live's ten tab names for Live's
                             // tabs ("Display & Input" .. "Licenses & Updates"), ADI's own after
     std::string section;    // Live's section within the tab ("Audio Device", "Latency");
                             // empty: the tab's own group. ADI's pages have none.
@@ -63,7 +64,14 @@ struct Setting {
 /// 88.2 / 96, 176.4 / 192, 352.8 / 384 and 705.6 / 768 kHz. Nothing lower.
 [[nodiscard]] std::vector<Value> sampleRateLadder();
 
-/// Every setting, in page order and then display order.
+inline constexpr char kGraphWorkersKey[] = "audio.graphWorkers";
+inline constexpr int kGraphWorkersMinimumFrames = 1024;
+/// Resolve the internal DEV-23 preference using the granted device buffer.
+/// Unknown and nonpositive buffer sizes keep the serial path.
+[[nodiscard]] bool graphWorkersEnabled(const Value& setting, int grantedFrames) noexcept;
+
+/// Every setting, including internal preferences. Displayed rows keep their
+/// page order and display order.
 [[nodiscard]] const std::vector<Setting>& registry();
 [[nodiscard]] const Setting* find(std::string_view key);
 

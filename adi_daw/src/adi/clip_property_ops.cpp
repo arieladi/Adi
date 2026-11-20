@@ -5,7 +5,6 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -114,9 +113,6 @@ bool restore(OpContext& context, const Payload& payload) {
     }
     return true;
 }
-struct Child { const char* table; const char* key; };
-constexpr std::array<Child,7> children = {{{"event_streams","id"},{"note_expression","id"},
-    {"audio_clips","clip_id"},{"automation_data","id"},{"automation_segment_ranges","id"},{"clip_properties","clip_id"},{"clip_playback_details","clip_id"}}};
 } // namespace
 
 bool inverse(OpContext& context, const Payload& payload, Payload& captured, std::string& error) {
@@ -208,34 +204,4 @@ bool scale(OpContext& context, const Payload& payload, std::string& error) {
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 
-Payload captureDeleted(OpContext& context, std::int64_t clipId) {
-    Payload result = {{"id",clipId},{"row",core(context,clipId)},{"children",Payload::object()},{"alias_links",Payload::array()}};
-    for (const auto& child : children) {
-        auto& records = result["children"][child.table]; records = Payload::array();
-        if(!present(context.db,child.table))continue;
-        SQLite::Statement query(context.db,"SELECT " + std::string(child.key) + " FROM " + child.table + " WHERE clip_id=? ORDER BY " + child.key);
-        query.bind(1,clipId);
-        while (query.executeStep()) records.push_back(*detail::captureRow(context.db,child.table,child.key,query.getColumn(0).getInt64()));
-    }
-    SQLite::Statement links(context.db,"SELECT id FROM clips WHERE alias_of=? ORDER BY id"); links.bind(1,clipId);
-    while (links.executeStep()) result["alias_links"].push_back(links.getColumn(0).getInt64());
-    return result;
-}
-void restoreDeleted(OpContext& context, const Payload& payload) {
-    const auto clipId = id(payload);
-    if (signedInteger(payload.at("row").at("id")) != clipId) throw std::runtime_error("captured clip id differs");
-    detail::restoreRow(context.db,"clips",payload.at("row")); // never overwrite another id
-    for (const auto& child : children) {
-        if(!payload.at("children").contains(child.table))continue; // old captured images
-        for (const auto& record : payload.at("children").at(child.table)) {
-            if (signedInteger(record.at("clip_id")) != clipId) throw std::runtime_error("captured child clip differs");
-            detail::restoreRow(context.db,child.table,record);
-        }
-    }
-    for (const auto& link : payload.at("alias_links")) {
-        SQLite::Statement update(context.db,"UPDATE clips SET alias_of=? WHERE id=?");
-        update.bind(1,clipId); update.bind(2,signedInteger(link));
-        if (update.exec() != 1) throw std::runtime_error("captured alias is missing");
-    }
-}
 } // namespace adi::clip_properties

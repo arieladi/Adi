@@ -116,6 +116,7 @@ public:
     [[nodiscard]] std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) override;
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
+    void setOffline(bool offline) noexcept override { requestedOffline_ = offline; }
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
@@ -126,6 +127,7 @@ public:
     /// construction: the graph asks before it prepares, and a VST3 does not
     /// change what it supports.
     [[nodiscard]] bool processesDouble() const noexcept override { return canDouble_; }
+    [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return true; }
     /// The graph's width for the next `prepare`. A VST3 fixes its sample
     /// size in `setupProcessing`, at activation, so it is set up at 64 only
     /// when it will be handed double, and at 32 in a graph at 32 whatever it
@@ -135,6 +137,11 @@ public:
     }
     /// Set up at `kSample64` now. Message thread, or while not processing.
     [[nodiscard]] bool processingDouble() const noexcept { return double_; }
+    [[nodiscard]] std::int32_t sidechainInputChannels() const noexcept override { return keyChannels_; }
+    bool configureSidechain(bool active) override {
+        if(active && keyChannels_<=0)return false;
+        keyRequested_=active;return true;
+    }
 
     // --- the two declarations, mapped straight through ----------------------
 
@@ -201,7 +208,7 @@ public:
         if(!inst_)return 0;
         const auto input=static_cast<std::uint32_t>(inst_->getTotalNumInputChannels());
         const auto output=static_cast<std::uint32_t>(inst_->getTotalNumOutputChannels());
-        return (static_cast<std::uint64_t>(input)<<32)|output;
+        return ((static_cast<std::uint64_t>(input)<<32)|output) ^ (keyRequested_?(std::uint64_t{1}<<63):0);
     }
     [[nodiscard]] std::uint64_t stateEpoch() const noexcept override {
         return stateEpoch_.load(std::memory_order_acquire);
@@ -312,7 +319,13 @@ private:
 
     void readParameters();
 
+    struct PlayHead final : juce::AudioPlayHead {
+        const engine::DeviceTransport* clock = nullptr;
+        [[nodiscard]] juce::Optional<PositionInfo> getPosition() const override;
+    };
+
     std::weak_ptr<DeviceEditor> editor_;
+    PlayHead playHead_;
     std::unique_ptr<juce::AudioPluginInstance> inst_;
     DeviceIdentity id_;
     std::vector<ParamDescriptor> params_;
@@ -321,6 +334,16 @@ private:
     juce::AudioBuffer<float> scratch_;
     /// The same at 64, when the plug-in is set up at `kSample64`.
     juce::AudioBuffer<double> scratch64_;
+    juce::AudioBuffer<float> inputScratch_;
+    juce::AudioBuffer<double> inputScratch64_;
+    struct PreparedBus { std::int32_t channels=0, offset=0; };
+    std::vector<PreparedBus> inputLayout_,outputLayout_;
+    std::vector<Steinberg::Vst::AudioBusBuffers> inputBuses_,outputBuses_;
+    std::int32_t mainInputBus_=0,keyInputBus_=-1,keyChannels_=0,mainOutputChannels_=0;
+    bool keyRequested_=false,preparedKey_=false,defaultKeyEnabled_=false;
+    std::uint64_t preparedShape_=0;
+    void readInputBusRoles(); // constructor / deactivated owner only
+    void prepareAudioBuses();
     juce::MidiBuffer midi_;
 
     /// The raw interface, when we could reach it. Null means JUCE's
@@ -371,6 +394,7 @@ private:
     std::int32_t channels_ = 2;
     double sampleRate_ = 0.0;
     bool prepared_ = false;
+    bool requestedOffline_ = false;
     std::int64_t activations_ = 0;
     /// Holds the audio thread off the plug-in while `prepare` or `release`
     /// reactivates it, which a live rebuild does while the last graph still

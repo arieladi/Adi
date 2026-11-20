@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mixer.hpp"
+#include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -8,7 +9,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <string_view>
 namespace adi::ui {
 namespace {
 // The meter's ballistics, the window's (UI-ARCHITECTURE §9: the engine writes {peak, rms} per
@@ -37,29 +37,41 @@ double writtenVolume(double db) noexcept { return db <= kFloorDb ? kSilenceDb : 
 // at these depths; the scale is wider near 0 dB, as Live's.
 constexpr std::array<std::pair<double, double>, 7> kScale{
     {{6, 0}, {0, .06}, {-12, .28}, {-24, .5}, {-36, .71}, {-48, .87}, {-60, 1}}};
-// One of Live's In/Out choosers: its box, its label cut at the box's edge with no ellipsis, as Live
-// cuts "All Channe" (Live 12 manual, Figure 6.1), and its arrow; an empty one has no arrow.
+// One of Live's In/Out choosers: the shared chooser (language.png part D), its label and its arrow.
+// A dimmed one keeps its label dim; an empty one has no arrow: the button's box alone.
 void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label, bool enabled) {
-    look::box(g, r, look::chooser);
-    g.setColour(enabled ? look::text : look::textDim);
-    g.setFont(look::font(look::fontBody));
-    g.drawText(label, r.withTrimmedLeft(3).withTrimmedRight(12), juce::Justification::centredLeft, false);
-    if (*label != 0)
-        look::triangle(g, {r.getRight() - 10, r.getY() + 4, 7, 5}, juce::MathConstants<float>::halfPi,
-                       enabled ? look::text : look::textDim);
-}
-// Live's monitoring switch: In, Auto (lit) and Off, `gap` apart.
-void drawMonitor(juce::Graphics &g, float x, float y, float gap) {
-    const std::array<std::pair<const char *, int>, 3> monitor{{{"In", 16}, {"Auto", 23}, {"Off", 19}}};
-    for (const auto &[label, width] : monitor) {
-        const juce::Rectangle<float> r(x, y, static_cast<float>(width), 13);
-        const bool on = std::string_view(label) == "Auto";
-        look::box(g, r, on ? look::accent : look::button);
-        g.setColour(on ? look::ink : look::text);
-        g.setFont(look::font(look::fontBody));
-        g.drawText(label, r, juce::Justification::centred);
-        x += static_cast<float>(width) + gap;
+    if (*label == 0) {
+        controls::button(g, r, controls::ButtonState::Rest);
+        return;
     }
+    controls::chooser(g, r, label, look::fontBody, enabled);
+}
+// Live's monitoring switch: In, Auto and Off, one of three (language.png part D) across the span its
+// three boxes took (16, 23 and 19 wide, `gap` apart), the track's choice lit (MX-09).
+const juce::StringArray &monitorLabels() {
+    static const juce::StringArray labels{"In", "Auto", "Off"};
+    return labels;
+}
+juce::Rectangle<float> monitorBox(float x, float y, float gap) noexcept {
+    return {x, y, 16.f + 23.f + 19.f + 2 * gap, 13.f};
+}
+int monitorIndex(Monitor m) noexcept { return m == Monitor::In ? 0 : m == Monitor::Auto ? 1 : 2; }
+void drawMonitor(juce::Graphics &g, float x, float y, float gap, Monitor lit) {
+    controls::oneOf(g, monitorBox(x, y, gap), monitorLabels(), monitorIndex(lit));
+}
+// The choice whose cell holds `at`, if any.
+std::optional<Monitor> monitorCellAt(float x, float y, float gap, juce::Point<int> at) {
+    const auto box = monitorBox(x, y, gap);
+    for (int i = 0; i < 3; ++i)
+        if (controls::oneOfCell(box, monitorLabels(), i).contains(at.toFloat()))
+            return i == 0 ? Monitor::In : i == 1 ? Monitor::Auto : Monitor::Off;
+    return std::nullopt;
+}
+// Where In and Auto are drawn, together: the cells the one-of gives them.
+bool onInOrAuto(float x, float y, float gap, juce::Point<int> at) {
+    const auto box = monitorBox(x, y, gap);
+    const auto in = controls::oneOfCell(box, monitorLabels(), 0), automatic = controls::oneOfCell(box, monitorLabels(), 1);
+    return in.getUnion(automatic).contains(at.toFloat());
 }
 } // namespace
 double meterDepth(double db) noexcept {
@@ -92,17 +104,11 @@ PeakHold::PeakHold() : juce::Button("Peak Level") {
         repaint();
     };
 }
-void PeakHold::paintButton(juce::Graphics &g, bool over, bool) {
-    // Live's pill: light, red once the track has clipped.
-    const auto r = getLocalBounds().toFloat().reduced(0.5f);
-    g.setColour(held >= 1 ? look::record : over ? look::chooser.brighter(0.1f) : look::chooser);
-    g.fillRoundedRectangle(r, r.getHeight() / 2);
-    g.setColour(look::outline);
-    g.drawRoundedRectangle(r, r.getHeight() / 2, look::hairline);
-    g.setColour(look::text);
-    g.setFont(look::font(look::fontBody));
-    g.drawText(held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1), r,
-               juce::Justification::centred);
+void PeakHold::paintButton(juce::Graphics &g, bool over, bool down) {
+    // The shared button (language.png part B): lit in the record's red once the track has clipped.
+    controls::button(g, getLocalBounds().toFloat(),
+                     controls::stateOf(held >= 1, over, down, isEnabled(), controls::Lit::Record),
+                     held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1));
 }
 MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     if (panel.vertical()) {
@@ -238,8 +244,10 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     }
     // Live's switches when on: the activator orange, Solo blue, Arm red.
     solo.setColour(juce::TextButton::buttonOnColourId, look::value);
+    solo.getProperties().set("adi.lit", "value");
     solo.getProperties().set(kHalfLit, false);
     arm.setColour(juce::TextButton::buttonOnColourId, look::record);
+    arm.getProperties().set("adi.lit", "record");
     pan.addMouseListener(this, false);
     active.setClickingTogglesState(false);
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
@@ -248,7 +256,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
     // Its right-click menu: Solo in Place (manual 18.6).
     solo.onMenu = [this] { soloMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&solo)); };
-    arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
+    // Live's Arm (manual 21.1): Exclusive Arm unless Ctrl/Cmd is held; the selected tracks together.
+    arm.onClick = [this] { panel_.root.armTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
     // A return's Pre/Post (ADR-0203 d3), where a track has Arm: the return's own switch
     // (`TrackNode::returnSendTap`, #405), which every send into it follows, now and as each new one
     // connects. Shown on a return's row only.
@@ -265,8 +274,9 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
 }
 void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
     getLookAndFeel().drawButtonBackground(g, *this, findColour(buttonColourId), over, down);
-    // Live's Arm switch: a dark dot, light on red when armed.
-    g.setColour(getToggleState() ? look::text : look::band);
+    // Live's Arm switch: a dark dot, light on red when armed. The ink, not the band, when unarmed: the
+    // shared button's pressed fill is the band's grey.
+    g.setColour(getToggleState() ? look::text : look::ink);
     g.fillEllipse(getLocalBounds().toFloat().withSizeKeepingCentre(8, 8));
 }
 void MixerStrip::bind(std::int64_t id) {
@@ -308,6 +318,12 @@ void MixerStrip::frame(bool changed) noexcept {
                 repaint();
             }
         }
+    }
+    // The track's arm and monitoring as the session's rows hold them (MX-09): lit when they change.
+    if (const auto record = panel_.root.recordState(track_); record != record_) {
+        record_ = record;
+        arm.setToggleState(record.armed, juce::dontSendNotification);
+        repaint();
     }
     // The selected tracks' controls are lighter, as Live's, a selection across tracks lighting each.
     const bool selected = track_ != 0 && panel_.root.arrangement.geometry.inSelection(panel_.root.reader(), track_);
@@ -612,10 +628,7 @@ void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).
     const auto b = delay.getBounds();
     const juce::Rectangle<float> r(static_cast<float>(b.getRight() + 2), static_cast<float>(b.getY()), 22.f, 13.f);
-    look::box(g, r, look::accent);
-    g.setColour(look::ink);
-    g.setFont(look::font(look::fontBody));
-    g.drawText("ms", r, juce::Justification::centred);
+    controls::button(g, r, controls::ButtonState::On, "ms");
 }
 void MixerStrip::commitDelay() {
     // From the CURRENT cell, as every action is (ADR-0201): ms into samples at the project's rate,
@@ -664,21 +677,31 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     chooser(0, midi_ ? "All Ins" : "Ext. In", true);
     chooser(1, midi_ ? "All Channels" : "1/2", midi_);
     if (rows > 2)
-        drawMonitor(g, static_cast<float>(x + 3), 37, 6);
+        drawMonitor(g, static_cast<float>(x + 3), 37, 6, record_.monitor);
     chooser(3, outputLabel(), true);
     chooser(4, "", false);
 }
+std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept {
+    // The same places as `onMonitorInOrAuto` below, every one of the three cells.
+    if (kind_ == "master" || kind_ == "return" || kind_ == "group")
+        return std::nullopt;
+    if (panel_.vertical())
+        return io_ > 0 ? monitorCellAt(4.f, static_cast<float>(kMixerTop + 59), 3, at) : std::nullopt;
+    if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
+        return std::nullopt;
+    return monitorCellAt(5.f, 37.f, 6, at);
+}
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
-    // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut)
-    // has In and Auto at x 4 and 23, y kMixerTop + 59; the track controls' column (paintInOut) at x 5
-    // and 27, y 37.
+    // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut,
+    // at x 4, y kMixerTop + 59, its boxes 3 apart) and the track controls' column (paintInOut, at x 5,
+    // y 37, 6 apart), each in the cells the one-of gives In and Auto.
     if (kind_ == "master" || kind_ == "return" || kind_ == "group")
         return false;
     if (panel_.vertical())
-        return io_ > 0 && juce::Rectangle<int>(4, kMixerTop + 59, 16 + 3 + 23, 13).contains(at);
+        return io_ > 0 && onInOrAuto(4.f, static_cast<float>(kMixerTop + 59), 3, at);
     if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
         return false;
-    return juce::Rectangle<int>(5, 37, 16 + 6 + 23, 13).contains(at);
+    return onInOrAuto(5.f, 37.f, 6, at);
 }
 juce::PopupMenu MixerStrip::monitorMenu() {
     juce::PopupMenu menu;
@@ -733,7 +756,7 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     chooser(15, midi_ ? "All Ins" : "Ext. In", true);
     chooser(31, midi_ ? "All Channels" : "1/2", midi_);
     label(46, "Monitor");
-    drawMonitor(g, 4.f, static_cast<float>(top + 59), 3);
+    drawMonitor(g, 4.f, static_cast<float>(top + 59), 3, record_.monitor);
     label(74, audio_ ? "Audio To" : "MIDI To");
     chooser(87, outputLabel(), true);
     chooser(103, "", false);
@@ -829,8 +852,14 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             panel_.root.say("This send is off. Right-click it for Enable Send.");
         return;
     }
-    if (!e.mods.isPopupMenu())
+    if (!e.mods.isPopupMenu()) {
+        // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks
+        // together when it is among them.
+        if (e.eventComponent == this)
+            if (const auto mode = monitorAt(e.getPosition()))
+                panel_.root.setMonitor(track_, *mode);
         return;
+    }
     if (e.eventComponent == this && onMonitorInOrAuto(e.getPosition())) {
         monitorMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
         return;
@@ -1243,14 +1272,6 @@ void MixerPanel::paint(juce::Graphics &g) {
 void MixerPanel::paintTop(juce::Graphics &g) const {
     g.setColour(look::band);
     g.fillRect(0, 0, getWidth(), rowsBand().getStart());
-    // H and W, Live's Optimize Arrangement Height and Width, beside the Overview's end.
-    g.setFont(look::font(look::fontField));
-    for (const auto &[label, x] : {std::pair{"H", getWidth() - 43}, std::pair{"W", getWidth() - 21}}) {
-        const juce::Rectangle<float> r(static_cast<float>(x), 4, 18, 15);
-        look::box(g, r, look::chooser);
-        g.setColour(look::text);
-        g.drawText(label, r, juce::Justification::centred);
-    }
 }
 juce::Range<int> MixerPanel::rowsBand() const noexcept {
     if (vertical_)
@@ -1275,24 +1296,6 @@ void MixerPanel::paintOverChildren(juce::Graphics &g) {
     g.setColour(look::separator);
     g.fillRect(0, bottom, 2, getHeight() - bottom);
 }
-FlipButton::FlipButton() : juce::Button("Flip Sides") {
-    setTitle("Flip Sides");
-    setTooltip("Flip sides");
-    setClickingTogglesState(false);
-    // A view command, reached from the keyboard through the View menu: it takes no focus.
-    setWantsKeyboardFocus(false);
-    setMouseClickGrabsKeyboardFocus(false);
-}
-void FlipButton::paintButton(juce::Graphics &g, bool over, bool down) {
-    // Two small arrows, one each way, as Bitwig draws its own.
-    g.setColour(getToggleState() ? look::accent : over || down ? look::textBright : look::textOnBand);
-    const auto r = getLocalBounds().toFloat().reduced(3.f, 2.f);
-    const float upper = r.getY() + r.getHeight() * .3f, lower = r.getY() + r.getHeight() * .7f;
-    juce::Path arrows;
-    arrows.addArrow({r.getX(), upper, r.getRight(), upper}, 1.4f, 5.f, 4.f);
-    arrows.addArrow({r.getRight(), lower, r.getX(), lower}, 1.4f, 5.f, 4.f);
-    g.fillPath(arrows);
-}
 TrackHeightButton::TrackHeightButton() : juce::Button("Use Large Track Height") {
     setTitle("Use Large Track Height");
     setTooltip("Use Large Track Height: every track at its own height; off, at half of it.");
@@ -1310,50 +1313,24 @@ void TrackHeightButton::paintButton(juce::Graphics &g, bool over, bool down) {
             g.fillRect(r.getX() + static_cast<float>(column) * (w + 2.f), r.getY() + static_cast<float>(bar) * pitch, w,
                        std::max(1.f, pitch - 1.5f));
 }
-SelectorButton::SelectorButton(const juce::String &letters, const juce::String &tooltip) : juce::Button(letters) {
-    setTooltip(tooltip);
-    setClickingTogglesState(false);
-    setMouseClickGrabsKeyboardFocus(false);
-    setWantsKeyboardFocus(false);
-}
-void SelectorButton::paintButton(juce::Graphics &g, bool, bool) {
-    const auto r = getLocalBounds().toFloat();
-    const bool on = getToggleState();
-    g.setColour(on ? look::accent : look::selectorOff);
-    g.fillEllipse(r);
-    g.setColour(on ? look::ink : look::textOnBand);
-    g.setFont(look::font(getButtonText().length() > 1 ? look::fontMini : look::fontMicro, true));
-    g.drawText(getButtonText(), r, juce::Justification::centred);
-}
-SideStrip::SideStrip() {
-    addAndMakeVisible(flip);
-    addAndMakeVisible(tracks);
-    for (auto *s : {&inOut, &returns, &mixer, &delay})
-        addAndMakeVisible(*s);
-    inOut.setToggleState(true, juce::dontSendNotification);
-    returns.setToggleState(true, juce::dontSendNotification);
-    mixer.setToggleState(true, juce::dontSendNotification);
-    // Mixer only shows its state: the track controls' mixer has no toggle to switch. Delay is off
-    // until Track Options shows the Track Delay (Live's default Set hides it).
-    mixer.setInterceptsMouseClicks(false, false);
+SideStrip::SideStrip() { addAndMakeVisible(tracks); }
+void SideStrip::setHead(int y) {
+    if (y == head_)
+        return;
+    head_ = y;
+    resized();
+    repaint();
 }
 void SideStrip::resized() {
-    // Under the two view switches: the flip arrows, then the track height. At the foot, over the
-    // time ruler's band: In/Out, Returns, Mixer, Delay.
-    flip.setBounds(4, 47, 19, 15);
-    tracks.setBounds(4, 64, 19, 14);
-    int y = getHeight() - ArrangementView::kTimeRulerHeight - 4 * 19;
-    for (auto *s : {&inOut, &returns, &mixer, &delay}) {
-        s->setBounds(7, y, 15, 15);
-        y += 19;
-    }
+    // Under the two view switches, the track height.
+    tracks.setBounds(4, head_ + 47, 19, 14);
 }
 void SideStrip::paint(juce::Graphics &g) {
     g.fillAll(look::band);
     // At the strip's head, Live's switches between Arrangement and Session View; the
     // Arrangement's is lit.
     for (int i = 0; i < 2; ++i) {
-        const juce::Rectangle<float> r(4.f, 3.f + 22.f * static_cast<float>(i), 19, 19);
+        const juce::Rectangle<float> r(4.f, static_cast<float>(head_) + 3.f + 22.f * static_cast<float>(i), 19, 19);
         g.setColour(look::selectorEdge);
         g.fillEllipse(r);
         g.setColour(i == 0 ? look::accent : look::panel);

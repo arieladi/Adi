@@ -7,11 +7,18 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
+#include <utility>
 #include <vector>
 namespace adi { class Store; }
 namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 struct ClipProject;
+struct ClipMediaSource {
+    std::int64_t clipId = 0, mediaId = 0;
+    std::filesystem::path path;
+    std::string storedBlake3;
+};
 // Read the media hints and immutable rows off the callback. No Store survives.
 std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&);
 class ClipPlayback {
@@ -22,7 +29,18 @@ public:
     ClipPlayback(const ClipPlayback&) = delete;
     ClipPlayback& operator=(const ClipPlayback&) = delete;
     std::vector<Node*> sourcesFor(std::int64_t trackId);
+    using SampleRange = std::pair<std::int64_t, std::int64_t>;
+    /// Owner-side half-open Arrangement extents from the prepared clip clock.
+    [[nodiscard]] std::vector<SampleRange> arrangementRanges(std::int64_t track) const;
+    /// Owner only, before priming or publishing this source generation.
+    void useMonitoredInput(std::int64_t track) noexcept;
     const std::vector<std::string>& problems() const noexcept;
+    // Off-callback owner view of the external files successfully selected
+    // by this generation, including Session's frozen-source substitutions.
+    // Names the original input to decode/warp, not a second media resolver or
+    // a promise about plugin-owned samples. Muted/unopened clips are absent.
+    // Immutable for this generation's lifetime; callback use returns empty.
+    [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));

@@ -61,6 +61,16 @@ void cancelled(std::stop_token stop) {
     if(stop.stop_requested())throw DecodeError(DecodeProblem::Cancelled,"decoding cancelled");
 }
 
+std::uint64_t saturatedAdd(std::uint64_t a,std::uint64_t b) noexcept {
+    return b>std::numeric_limits<std::uint64_t>::max()-a?std::numeric_limits<std::uint64_t>::max():a+b;
+}
+bool fitsSpace(std::uint64_t free,std::uint64_t minimum,std::uint64_t incoming) noexcept {
+    return free>=minimum && incoming<=free-minimum;
+}
+bool fitsSize(std::uint64_t used,std::uint64_t incoming,std::uint64_t maximum) noexcept {
+    return incoming<=maximum && used<=maximum-incoming;
+}
+
 std::string display(const fs::path& p) {
     const auto u = p.generic_u8string();
     return {reinterpret_cast<const char*>(u.data()), u.size()};
@@ -115,13 +125,25 @@ public:
 class FlacDecoder final : public Decoder {
 public:
     explicit FlacDecoder(const fs::path& p) : stream_(p) {
-        flac_ = drflac_open(
+        // Inspect this opened byte source, not a second lookup of its pathname.
+        fileIoPoint();stream_.in.seekg(0,std::ios::end);
+        const auto end=stream_.in.tellg();stream_.in.seekg(0,std::ios::beg);
+        if(end<0 || !stream_.in)throw DecodeError(DecodeProblem::Unreadable,display(p)+": cannot read FLAC byte length");
+        const auto bytes=static_cast<std::uint64_t>(end);
+        std::unique_ptr<drflac,decltype(&drflac_close)> opened(drflac_open(
             [](void* u, void* o, std::size_t n) { return readBytes(u, o, n); },
             [](void* u, int off, drflac_seek_origin org) -> drflac_bool32 { return seekBytes(u, off, static_cast<int>(org)) ? DRFLAC_TRUE : DRFLAC_FALSE; },
             [](void* u, drflac_int64* at) -> drflac_bool32 { std::int64_t v = 0; if (!tellBytes(u, &v)) return DRFLAC_FALSE; *at = v; return DRFLAC_TRUE; },
-            &stream_, nullptr);
-        if (!flac_) throw DecodeError(DecodeProblem::Corrupt, display(p) + ": not a readable FLAC stream");
-        channels = flac_->channels; rate = flac_->sampleRate; frames = flac_->totalPCMFrameCount;
+            &stream_, nullptr),drflac_close);
+        if (!opened) throw DecodeError(DecodeProblem::Corrupt, display(p) + ": not a readable FLAC stream");
+        channels = opened->channels; rate = opened->sampleRate; frames = opened->totalPCMFrameCount;
+        // RFC 9639 sections 4.1/8.2: at most 65535 samples per frame. Every
+        // encoded frame takes at least one byte; including all metadata and
+        // Ogg overhead makes this deliberately loose, even for constant audio.
+        const auto minimumFrames=frames/65535+(frames%65535!=0?1U:0U);
+        if(minimumFrames>bytes)throw DecodeError(DecodeProblem::Corrupt,display(p)+
+            ": declared FLAC frames cannot fit encoded byte length");
+        flac_=opened.release();
     }
     ~FlacDecoder() override { drflac_close(flac_); }
     std::uint64_t read(float* out, std::uint64_t n) override { return drflac_read_pcm_frames_f32(flac_, n, out); }
@@ -444,7 +466,9 @@ DecodeCache::DecodeCache(fs::path folder, DecodeCacheLimits limits, DecodeCacheH
 fs::path DecodeCache::fileFor(const std::string& hash) const { return folder_ / (hash + ".wav"); }
 
 std::int64_t DecodeCache::stamp() {
-    lastStamp_ = std::max(hooks_.clock(), lastStamp_ + 1);
+    // A representable but extreme index hint must not overflow on the next use.
+    const auto next = lastStamp_ == std::numeric_limits<std::int64_t>::max() ? lastStamp_ : lastStamp_ + 1;
+    lastStamp_ = std::max(hooks_.clock(), next);
     return lastStamp_;
 }
 
@@ -460,7 +484,14 @@ void DecodeCache::loadIndex() {
             for (const auto& [hash, e] : entries.items()) {
                 if (!isHash(hash) || !e.is_object()) continue;
                 Item item;
-                item.lastUse = e.value("lastUse", std::int64_t{0});
+                if (const auto use = e.find("lastUse"); use != e.end()) {
+                    if (!use->is_number_integer()) continue;
+                    if (use->is_number_unsigned()) {
+                        const auto value = use->get<std::uint64_t>();
+                        if (value > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) continue;
+                        item.lastUse = static_cast<std::int64_t>(value);
+                    } else item.lastUse = use->get<std::int64_t>();
+                }
                 items_[hash] = item;
             }
         }
@@ -500,19 +531,52 @@ void DecodeCache::saveIndex() const {
 std::uint64_t DecodeCache::totalBytes() const {
     std::lock_guard lock(mutex_);
     std::uint64_t total = 0;
-    for (const auto& [hash, item] : items_) total += item.bytes;
+    for (const auto& [hash, item] : items_) total = saturatedAdd(total,item.bytes);
     return total;
+}
+
+void DecodeCache::admitSpace(std::uint64_t incoming,const std::string& keep) {
+    // Called with mutex_ held. This is an estimated refusal preflight, not a disk-space
+    // reservation: a later writer or undeletable file still needs the final check.
+    if(incoming>limits_.maxBytes)throw DecodeError(DecodeProblem::NoSpace,
+        "estimated decoded size "+std::to_string(incoming)+" bytes exceeds cache maximum "+std::to_string(limits_.maxBytes));
+    const auto free=freeBytes();
+    if(!fitsSpace(free,limits_.minFreeBytes,incoming)) {
+        std::uint64_t reclaimable=0;
+        for(const auto& [hash,item]:items_) {
+            if(item.pins>0 || hash==keep)continue;
+            // Missing/stale index entries cannot free bytes; inaccessible and
+            // non-regular entries are not an admissible source of headroom.
+            const auto file=fileFor(hash);std::error_code error;
+            if(!fs::is_regular_file(fs::symlink_status(file,error)) || error)continue;
+            const auto bytes=fs::file_size(file,error);
+            if(!error)reclaimable=saturatedAdd(reclaimable,static_cast<std::uint64_t>(bytes));
+        }
+        const auto reachable=saturatedAdd(free,reclaimable);
+        if(!fitsSpace(reachable,limits_.minFreeBytes,incoming)) {
+            const auto headroom=reachable>=limits_.minFreeBytes?reachable-limits_.minFreeBytes:0;
+            throw DecodeError(DecodeProblem::NoSpace,"estimated decoded size "+std::to_string(incoming)+
+                " bytes exceeds estimated reachable disk headroom "+std::to_string(headroom)+" bytes after minimum free space");
+        }
+    }
+    evict(incoming,keep);
+    const auto after=freeBytes();
+    if(!fitsSpace(after,limits_.minFreeBytes,incoming)) {
+        const auto headroom=after>=limits_.minFreeBytes?after-limits_.minFreeBytes:0;
+        throw DecodeError(DecodeProblem::NoSpace,"estimated decoded size "+std::to_string(incoming)+
+            " bytes exceeds available disk headroom "+std::to_string(headroom)+" bytes after eviction");
+    }
 }
 
 void DecodeCache::evict(std::uint64_t incoming, const std::string& keep) {
     // Called with the lock held.
     auto total = [&] {
         std::uint64_t t = 0;
-        for (const auto& [hash, item] : items_) t += item.bytes;
+        for (const auto& [hash, item] : items_) t = saturatedAdd(t,item.bytes);
         return t;
     };
     auto over = [&] {
-        return total() + incoming > limits_.maxBytes || freeBytes() < limits_.minFreeBytes + incoming;
+        return !fitsSize(total(),incoming,limits_.maxBytes) || !fitsSpace(freeBytes(),limits_.minFreeBytes,incoming);
     };
     std::vector<std::string> busy;
     while (over()) {
@@ -523,7 +587,7 @@ void DecodeCache::evict(std::uint64_t incoming, const std::string& keep) {
             if (!oldest || item.lastUse < when) { oldest = &hash; when = item.lastUse; }
         }
         if (!oldest) {
-            problems_.push_back(total() + incoming > limits_.maxBytes
+            problems_.push_back(!fitsSize(total(),incoming,limits_.maxBytes)
                 ? "decode cache over its maximum size: every file left in it is in use"
                 : "decode cache below its minimum free space: every file left in it is in use");
             return;
@@ -589,14 +653,12 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
     try {
         decodeTo(source, format, partial, [&](std::uint64_t estimate) {
             std::lock_guard lock(mutex_);
-            evict(estimate, hash.hex);
-            if (freeBytes() < limits_.minFreeBytes + estimate)
-                throw DecodeError(DecodeProblem::NoSpace, display(source) + ": decoding needs " + std::to_string(estimate) +
-                                                               " bytes and would leave less than the minimum free space");
+            admitSpace(estimate,hash.hex);
         },stop,hooks_.checkpoint);
         cancelled(stop);const auto after=media::blake3File(source,stop);cancelled(stop);
         if(!after || after.hex!=hash.hex)throw DecodeError(DecodeProblem::Unreadable,"source changed during decoding");
-        const auto published=media::publishFile(partial,target);
+        const auto published = media::publishFile(partial, target, {},
+                                                  media::PublishPolicy::VerifiedCopyFallback);
         if(published.status==media::PublishStatus::exists) {
             if(!fs::is_regular_file(fs::symlink_status(target)))throw DecodeError(DecodeProblem::CacheWrite,"cache target is not a real regular file");
             {
@@ -606,7 +668,7 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
             }
             fs::remove(partial);
         } else if(published.status!=media::PublishStatus::published)throw DecodeError(DecodeProblem::CacheWrite,published.error);
-        cancelled(stop);
+        if(hooks_.afterPublish)hooks_.afterPublish();
     } catch (...) {
         fs::remove(partial, ec);
         throw;
@@ -616,10 +678,13 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
     auto& item = items_[hash.hex];
     item.bytes = static_cast<std::uint64_t>(fs::file_size(target, ec));
     item.lastUse = stamp();
-    ++item.pins;
     ++stats_.decodes;
     evict(0, hash.hex);
     saveIndex();
+    // Publication is complete: cancellation leaves useful, counted PCM, but
+    // must not acquire a lease for a path the caller will never receive.
+    cancelled(stop);
+    ++item.pins;
     return target;
 }
 

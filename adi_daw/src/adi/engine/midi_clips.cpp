@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/midi_clips.hpp"
+#include "adi/engine/timeline_clips.hpp"
 #include "adi/blob.hpp"
 #include "adi/engine/midi_controllers.hpp"
 #include "adi/engine/snapshot.hpp"
@@ -363,8 +364,10 @@ public:
             if(!active.sounding && active.retainedOn!=generation){active.used=false;continue;}
             const auto* next=replacement(active);
             const bool retainedRelease=active.pending && active.retainedOff==generation;
+            // A release due at the first frame still belongs to the adopted
+            // voice. The normal release can run alongside the retained onset.
             if(next && next->on<=first &&
-               ((!active.releasing && !active.pending && next->off>first) || retainedRelease)) {
+               ((!active.releasing && !active.pending && next->off>=first) || retainedRelease)) {
                 const auto runtimeId=active.note.start.noteId;
                 active.note=*next;
                 active.note.start.noteId=runtimeId;active.note.stop.noteId=runtimeId;
@@ -527,7 +530,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     // delivery/retry state, including sustain already held by the instrument.
     for(auto& [id,source]:impl_->tracks) {
         ControllerIdentity identity;identity.rate=rate;
-        for(const auto& clip:model.clips) {
+        for(const auto& clip:timelineClips(model)) {
             if(clip.trackId!=id)continue;
             bool used=false;
             for(const auto& lane:model.controllers)if(lane.clipId==clip.id) {
@@ -571,7 +574,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     std::uint64_t identity=1;
     std::map<std::pair<std::int64_t,std::uint64_t>,std::size_t> identities;
     for(const auto& note:model.notes)if(note.noteId)++identities[{note.clipId,note.noteId}];
-    for(const auto& clip:model.clips) {
+    for(const auto& clip:timelineClips(model)) {
         if(clip.kind!="midi" || clip.muted)continue;
         const auto found=impl_->tracks.find(clip.trackId);if(found==impl_->tracks.end())continue;
         auto& source=*found->second;

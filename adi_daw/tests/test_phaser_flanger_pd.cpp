@@ -102,6 +102,23 @@ void run() {
     text << f.rdbuf();
     const auto declarations = device::parsePdDeclarations(text.str());
     check(declarations.problems.empty(), "parameters parse cleanly");
+    // DEV-22: each default where the control means the same as Live 12.4's,
+    // the value read from Live's own default preset (0..1 scales as %).
+    {
+        struct Live { std::int32_t id; double value; };
+        const Live live[] = {{2, 2},  {3, 400},  {4, 35.15625}, {6, 2.5},  {8, 0.1486274302}, {10, 1},
+                             {12, 0}, {14, 10},  {17, 0.5},     {19, 75},  {20, 0},          {22, 1},
+                             {24, 1}, {25, 120}, {27, 80},      {28, 0},   {30, 100}};
+        bool all = true;
+        for (const auto &l : live) {
+            const auto *d = declarations.param(l.id);
+            if (d == nullptr || std::abs(d->def - l.value) > 1e-9) {
+                all = false;
+                std::printf("default of param %d differs from Live's %.6g\n", static_cast<int>(l.id), l.value);
+            }
+        }
+        check(all, "every comparable default is Live 12.4's");
+    }
     engine.prepare(48000, 64);
     engine.bindParameters(declarations);
     engine.requestLatencyReport();

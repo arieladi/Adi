@@ -8,8 +8,12 @@
 #include "adi/store.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/media/publish_file.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
+#include <exception>
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -29,14 +33,18 @@ struct Fixture {
     Fixture(){StoreError error{};store=Store::createEmpty(temporary.path()/"song.adi",error);if(!store)throw std::runtime_error(toString(error));
         store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(21,'audio','One',1),(22,'audio','Two',1),(9,'master','Main',0)");}
     static float sample(std::size_t frame){return static_cast<float>(frame%17)/32-0.25f;}
-    AudioRecordingResult capture(bool two=false,Precision precision=Precision::Float32) {
+    AudioRecordingResult capture(bool two=false,Precision precision=Precision::Float32,bool loop=false,int totalFrames=300,
+        const std::filesystem::path& workFolder={}) {
         Session session;SessionSpec format{2,48000,128};format.precision=precision;session.graph().setFadeFrames(0);
         if(!session.load(*store,{},format))throw std::runtime_error(session.error());
-        AudioRecordingSpec request;request.workFolder=temporary.path();request.sampleRate=48000;request.maxFrames=128;request.ringFrames=4096;request.targets={{21,{0}}};if(two)request.targets.push_back({22,{0}});
+        AudioRecordingSpec request;request.workFolder=workFolder.empty()?temporary.path():workFolder;request.sampleRate=48000;request.maxFrames=128;request.ringFrames=4096;request.targets={{21,{0}}};if(two)request.targets.push_back({22,{0}});
+        if(loop)request.loop=AudioRecordingLoop{512,640,8};
         std::string error;if(!session.startRecording(request,error))throw std::runtime_error(error);
+        if(loop)session.transport().loop(512,640);
         session.transport().locate(512);session.transport().play();std::array<float,128> source{};const float* inputs[]={source.data()};std::array<float,256> out{};float* outputs[]={out.data(),out.data()+128};
         std::int64_t stream=0;
-        for(const auto count:{128,128,44}) {
+        for(int consumed=0;consumed<totalFrames;) {
+            const auto count=std::min(128,totalFrames-consumed);consumed+=count;
             for(int frame=0;frame<count;++frame)source[static_cast<std::size_t>(frame)]=sample(static_cast<std::size_t>(stream+frame));
             AudioIo io;io.in=inputs;io.numIn=1;io.out=outputs;io.numOut=2;io.frames=count;io.streamTimeSamples=stream;session.process(io);stream+=count;
         }
@@ -54,6 +62,81 @@ struct Fixture {
         return result;
     }
 };
+void publicationStagingOwnership() {
+    namespace fs=std::filesystem;
+    Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
+    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const auto unrelated=audioFolder/".adi-media-unrelated";fs::create_directories(unrelated);
+    const auto sentinel=unrelated/"keep.txt";{std::ofstream out(sentinel);out<<"unowned staging";}
+    const auto sentinelHash=media::blake3File(sentinel),takeHash=media::blake3File(recorded.tracks[0].file);
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Staging"}}};
+    std::vector<fs::path> owned;
+    {
+        const auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+        check(prepared.ok && digestProject(*f.store).text==before,"prepare leaves project rows unchanged while staging publication beside project media");
+        for(const auto& entry:fs::directory_iterator(audioFolder))
+            if(entry.is_directory() && entry.path()!=unrelated && entry.path().filename().string().starts_with(".adi-media-"))owned.push_back(entry.path());
+        check(owned.size()==1 && fs::is_regular_file(owned.front()/"asset-0.wav") &&
+            media::blake3File(owned.front()/"asset-0.wav").hex==takeHash.hex,
+            "the verified publication copy lives in one owned .adi-media- directory on the project filesystem");
+        std::size_t captureDirectories=0;
+        for(const auto& entry:fs::directory_iterator(recorded.directory()))if(entry.is_directory())++captureDirectories;
+        check(captureDirectories==0,"preparation adds no publication staging beneath the recoverable capture directory");
+    }
+    bool cleaned=true;for(const auto& path:owned)cleaned=cleaned && !fs::exists(path);
+    check(cleaned && media::blake3File(recorded.tracks[0].file).hex==takeHash.hex &&
+        media::blake3File(sentinel).hex==sentinelHash.hex && digestProject(*f.store).text==before,
+        "abandoning preparation removes only its publication directory and preserves the private take and unrelated stage");
+    const std::array<recording::ClipIds,1> invalid={{{0,8,"Invalid"}}};
+    {const auto refused=recording::prepareCommit(*f.store,recorded,invalid);check(!refused.ok,"invalid recording allocation refuses after reserving its private stage");}
+    std::size_t remaining=0;for(const auto& entry:fs::directory_iterator(audioFolder))if(entry.is_directory())++remaining;
+    check(remaining==1 && fs::exists(sentinel) && media::blake3File(recorded.tracks[0].file).hex==takeHash.hex,
+        "failed preparation cleans its project-side stage without removing foreign directories or the capture");
+    recorded.discard();
+}
+void crossVolumePublication(const std::filesystem::path& workFolder) {
+#if defined(_WIN32)
+    namespace fs=std::filesystem;
+    if(!workFolder.is_absolute() || !fs::is_directory(workFolder))throw std::runtime_error("cross-volume work folder must be an existing absolute directory");
+    Fixture f;auto recorded=f.capture(false,Precision::Float32,false,300,workFolder);
+    const auto source=recorded.tracks[0].file;
+    std::error_code error;
+    auto sourceLease=media::ProjectFileLease::openShared(source,error);
+    auto projectLease=media::ProjectFileLease::openShared(f.temporary.path()/"song.adi",error);
+    if(!sourceLease || !projectLease || sourceLease->identity().volume==projectLease->identity().volume)
+        throw std::runtime_error("cross-volume regression requires distinct native capture and project volumes");
+    std::printf("CROSS_VOLUME capture=%llu project=%llu\n",static_cast<unsigned long long>(sourceLease->identity().volume),
+        static_cast<unsigned long long>(projectLease->identity().volume));
+    sourceLease.reset();projectLease.reset();
+    const auto control=recorded.directory()/"cross-volume-control.wav",target=f.temporary.path()/"control.wav";
+    fs::copy_file(source,control);
+    const auto rejected=media::publishFile(control,target,{},media::PublishPolicy::AtomicOnly);
+    check(rejected.status==media::PublishStatus::failed && !rejected.usedFallback && fs::exists(control) && !fs::exists(target),
+        "real cross-volume AtomicOnly control refuses a direct publication and retains its source");
+    fs::remove(control);
+    const auto hash=media::blake3File(source);const auto before=digestProject(*f.store);
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Other volume"}}};
+    auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+    check(prepared.ok,"prepare a real recording captured on another native volume");
+    const auto committed=recording::commit(*f.store,prepared);
+    if(!committed.ok)std::printf("cross-volume commit: %s\n",committed.error.c_str());
+    check(committed.ok && committed.seqs.size()==3,"cross-volume capture commits through project-side AtomicOnly publication as one group");
+    if(committed.ok) {
+        const auto owned=media::projectFolder(*f.store)/media::pathFromUtf8(f.store->db().execAndGet("SELECT rel_path FROM media_files").getString());
+        check(owned.parent_path()==media::projectFolder(*f.store)/"audio" && media::blake3File(owned).hex==hash.hex && !fs::exists(recorded.directory()),
+            "cross-volume commit preserves exact captured bytes in project audio and discards its private take");
+        const auto heard=f.play(Precision::Float32);bool exact=true;
+        for(std::size_t frame=0;frame<heard.size();++frame)exact=exact && heard[frame]==(frame>=512 && frame<812?Fixture::sample(frame-512):0);
+        check(exact,"cross-volume recording plays its captured PCM at the original sample positions");
+        const auto after=digestProject(*f.store).text;History history(*f.store);
+        check(history.undo().ok && digestProject(*f.store).text==before.text && fs::exists(owned) &&
+            history.redo().ok && digestProject(*f.store).text==after && f.play(Precision::Float32)==heard,
+            "cross-volume recording has one undo step and restores the same retained audio on redo");
+    } else recorded.discard();
+#else
+    (void)workFolder;throw std::runtime_error("the opt-in cross-volume native identity regression is Windows-only");
+#endif
+}
 void heardPlacementAndHistory() {
     for(const auto precision:{Precision::Float32,Precision::Float64}) {
         Fixture f;auto recorded=f.capture(false,precision);const auto before=digestProject(*f.store).text;
@@ -89,13 +172,99 @@ void existingMediaAndHistoryPaths() {
         recorded.discard();
     }
 }
+bool rollbackReported(const CommitResult& result,const std::filesystem::path& path) {
+    return result.error.find("rollback")!=std::string::npos &&
+        result.error.find(media::pathUtf8(path))!=std::string::npos;
+}
+struct PublicationCommitVeto {
+    std::filesystem::path published,moved;
+    std::optional<media::FileIdentity> originalIdentity,foreignIdentity;
+    std::exception_ptr exception;
+    unsigned calls=0;
+    static constexpr const char* foreignBytes="later writer owns this path\n";
+    static int invoke(void* raw)noexcept {
+        auto& self=*static_cast<PublicationCommitVeto*>(raw);++self.calls;
+        try {
+            // This hook executes at SQLite's actual COMMIT, after the journal's
+            // beforeCommit publication. Do not execute SQLite from this hook.
+            std::error_code error;
+            self.originalIdentity=media::readFileIdentity(self.published,error);
+            if(!self.originalIdentity || !std::filesystem::is_regular_file(std::filesystem::symlink_status(self.published)))
+                throw std::runtime_error("commit hook did not observe the newly published regular WAV");
+            std::filesystem::rename(self.published,self.moved);
+            {std::ofstream foreign;foreign.exceptions(std::ios::badbit|std::ios::failbit);
+                foreign.open(self.published,std::ios::binary);foreign<<foreignBytes;foreign.close();}
+            self.foreignIdentity=media::readFileIdentity(self.published,error);
+            if(!self.foreignIdentity || self.foreignIdentity==self.originalIdentity)
+                throw std::runtime_error("commit hook failed to create a distinct later file identity");
+        }catch(...){self.exception=std::current_exception();}
+        return 1; // Veto COMMIT even if test setup failed; never unwind through C.
+    }
+};
+struct ScopedPublicationCommitVeto {
+    sqlite3* database;
+    ScopedPublicationCommitVeto(SQLite::Database& db,PublicationCommitVeto& state):database(db.getHandle()) {
+        // Fixture owns this new Store and has installed no previous commit hook.
+        sqlite3_commit_hook(database,&PublicationCommitVeto::invoke,&state);
+    }
+    ~ScopedPublicationCommitVeto(){sqlite3_commit_hook(database,nullptr,nullptr);}
+    ScopedPublicationCommitVeto(const ScopedPublicationCommitVeto&)=delete;
+    ScopedPublicationCommitVeto& operator=(const ScopedPublicationCommitVeto&)=delete;
+};
+void rollbackNeverDeletesLaterWriter() {
+    namespace fs=std::filesystem;
+    Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
+    const auto privateSource=recorded.tracks[0].file;
+    const auto sourceHash=media::blake3File(privateSource);
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Late replacement"}}};
+    auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+    check(prepared.ok,"prepare actual captured WAV for commit-veto identity regression");
+    if(!prepared.ok)throw std::runtime_error(prepared.error);
+    PublicationCommitVeto veto;
+    for(const auto& request:prepared.requests)if(request.opType=="media.import")
+        veto.published=media::projectFolder(*f.store)/media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
+    if(veto.published.empty())throw std::runtime_error("recording fixture has no captured publication path");
+    veto.moved=veto.published.parent_path()/"moved-owned-recording.wav";
+    const auto reference=f.temporary.path()/"foreign-reference.txt";
+    {std::ofstream foreign(reference,std::ios::binary);foreign<<PublicationCommitVeto::foreignBytes;}
+    const auto foreignHash=media::blake3File(reference);
+    CommitResult failed;
+    {ScopedPublicationCommitVeto hook(f.store->db(),veto);failed=recording::commit(*f.store,prepared);}
+    check(veto.calls==1 && !veto.exception,"actual SQLite commit hook replaced a published WAV before vetoing once");
+    if(veto.exception)std::rethrow_exception(veto.exception);
+    check(!failed.ok && digestProject(*f.store).text==before &&
+        f.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0 &&
+        f.store->db().execAndGet("SELECT count(*) FROM clips").getInt()==0,
+        "commit veto rolls back all recording/media/journal rows despite completed file publication");
+    const auto foreignAfter=media::blake3File(veto.published),movedAfter=media::blake3File(veto.moved);
+    check(foreignAfter && foreignAfter.hex==foreignHash.hex,"recording rollback retains exact bytes of the later foreign ordinary file");
+    std::error_code foreignError,movedError;
+    const auto currentForeign=media::readFileIdentity(veto.published,foreignError);
+    const auto currentMoved=media::readFileIdentity(veto.moved,movedError);
+    check(currentForeign && currentForeign==veto.foreignIdentity,"recording rollback does not remove or replace the later writer's file identity");
+    check(movedAfter && movedAfter.hex==sourceHash.hex && currentMoved && currentMoved==veto.originalIdentity,
+        "recording rollback never searches for or deletes its moved original publication");
+    check(rollbackReported(failed,veto.published),"failed recording commit reports the retained or changed publication path");
+    check(fs::is_regular_file(privateSource) && media::blake3File(privateSource).hex==sourceHash.hex,
+        "commit-veto identity conflict preserves the original private capture for recovery");
+    recorded.discard();
+}
+
 void lateSqlAndOwnedReuse() {
     Fixture f;auto recorded=f.capture();const std::array<recording::ClipIds,1> ids={{{7,8,"One"}}};auto& db=f.store->db();
     db.exec("CREATE TABLE late_parent(id INTEGER PRIMARY KEY);CREATE TABLE late_child(id INTEGER PRIMARY KEY,parent INTEGER REFERENCES late_parent(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER reject_recording AFTER INSERT ON audio_clips BEGIN INSERT INTO late_child(id,parent) VALUES(NEW.clip_id,999);END");
     const auto before=digestProject(*f.store).text;auto prepared=recording::prepareCommit(*f.store,recorded,ids);auto published=std::filesystem::path{};
     for(const auto& request:prepared.requests)if(request.opType=="media.import")published=media::projectFolder(*f.store)/media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
     const auto failed=recording::commit(*f.store,prepared);
-    check(prepared.ok && !failed.ok && digestProject(*f.store).text==before && !std::filesystem::exists(published) && std::filesystem::exists(recorded.tracks[0].file),"late SQL commit failure rolls back rows and new publication while retaining the private take for retry");
+    const bool retained=std::filesystem::exists(published);
+#if defined(_WIN32)
+    const bool cleanupAccepted=!retained;
+#else
+    // POSIX pathname unlink cannot atomically compare-and-remove an identity.
+    const auto sourceHash=media::blake3File(recorded.tracks[0].file);
+    const bool cleanupAccepted=retained && sourceHash && media::blake3File(published).hex==sourceHash.hex && rollbackReported(failed,published);
+#endif
+    check(prepared.ok && !failed.ok && digestProject(*f.store).text==before && cleanupAccepted && std::filesystem::exists(recorded.tracks[0].file),"late SQL failure rolls back rows, safely cleans or reports retained owned publication, and preserves the private take");
     db.exec("DROP TRIGGER reject_recording;DROP TABLE late_child;DROP TABLE late_parent");
     prepared=recording::prepareCommit(*f.store,recorded,ids);const auto retried=recording::commit(*f.store,prepared);check(retried.ok,"retry the same completed take after fixing the SQL failure");
     const auto originalHash=media::blake3File(published);check(History(*f.store).undo().ok && std::filesystem::exists(published),"undo keeps the owned recording available to a later recording branch");
@@ -121,5 +290,21 @@ void groupDedupAndGuards() {
     {std::ofstream bytes(another.tracks[0].file,std::ios::binary|std::ios::app);bytes<<"changed";}
     check(changed.ok && !recording::commit(*f.store,changed).ok && digestProject(*f.store).text==before && std::filesystem::exists(another.tracks[0].file),"changed take bytes roll back the complete attachment while preserving recovery files");another.discard();
 }
+void loopPublicationRefusesFlattening() {
+    for(const auto frames:{32,300}) {
+        Fixture fixture;auto recorded=fixture.capture(false,Precision::Float32,true,frames);
+        check(recorded.failure==RecordingFailure::None && recorded.loopSpec() && recorded.passes().size()==(frames==32?1u:3u),"actual Session supplies valid partial-single and multiple-pass loop sources");
+        const auto before=digestProject(*fixture.store).text;
+        const std::array<recording::ClipIds,1> ids={{{7,8,"Loop"}}};
+        const auto edit=recording::prepareCommit(*fixture.store,recorded,ids);
+        check(!edit.ok && edit.requests.empty() && edit.error.find("take-pass publication")!=std::string::npos,"linear materializer explicitly refuses opted-in loop captures, even a single partial pass");
+        check(digestProject(*fixture.store).text==before && std::filesystem::exists(recorded.tracks[0].file),"refused loop publication leaves project and recoverable continuous source unchanged");
+        recorded.discard();
+    }
 }
-int main(){try{heardPlacementAndHistory();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+}
+int main(int argc,char** argv){try{
+    if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
+    publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    if(argc==3)crossVolumePublication(media::pathFromUtf8(argv[2]));
+}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

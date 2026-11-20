@@ -74,10 +74,12 @@ class AutoFilter {
                feedback = 0, onePole = 0, onePoleBand = 0, sc1 = 0, sc2 = 0;
     };
     std::array<Lane, 2> lane_;
-    std::array<double, Count> target_{0,   1, 1000, 29.2893, 0,   0,    0,         0, 0, 0,   0,
-                                      1,   0, 1,    0,       50,  0,    0,         0, 0, 0,   8,
-                                      .25, 0, 10,   0,       100, 0,    .25,       0, 0, 100, 0,
-                                      100, 0, 0,    0,       4,   1000, .70710678, 0, 1},
+    // Live 12.4's Auto Filter default (DEV-22): LP, 24 dB, 10 kHz, no resonance,
+    // Clean; envelope 1 ms / 250 ms; sidechain EQ at 200 Hz.
+    std::array<double, Count> target_{0,   2, 10000, 0,  0,   0,    0,         0, 0, 0,   0,
+                                      1,   0, 1,     0,  50,  0,    0,         0, 0, 0,   8,
+                                      .25, 0, 1,     0,  250, 0,    .25,       0, 0, 100, 0,
+                                      100, 0, 0,     0,  4,   200,  .70710678, 0, 1},
         p_ = target_;
     double rate_ = 48000, bpm_ = 120, smooth_ = 0, beats_ = 0;
     static double random(std::uint64_t) noexcept;

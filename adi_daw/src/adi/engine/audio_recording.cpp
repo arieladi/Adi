@@ -54,15 +54,25 @@ struct Job {
     // Callback-owned continuity state; observed only after its quiescence.
     bool begun=false;
     std::int64_t nextTimeline=0,nextStream=0;
+    std::uint64_t transportRevision=0;
+    std::vector<RecordedPass> passes; // sized before publication, never grown here
+    std::size_t passCount=0;
     void fail(RecordingFailure value)noexcept{auto expected=RecordingFailure::None;failure.compare_exchange_strong(expected,value,std::memory_order_relaxed);}
     ~Job(){stopWriter.store(true,std::memory_order_release);if(worker.joinable())worker.join();}
     void run()noexcept {
         try {
             while(true) {
-                const auto head=written.load(std::memory_order_acquire),tail=read.load(std::memory_order_relaxed);
+                auto head=written.load(std::memory_order_acquire);
+                const auto tail=read.load(std::memory_order_relaxed);
                 if(head==tail) {
-                    if(stopWriter.load(std::memory_order_acquire))break;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;
+                    if(!stopWriter.load(std::memory_order_acquire)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        continue;
+                    }
+                    // Stop is published after the callback quiesces. The first
+                    // read of written may predate that callback's final block.
+                    head=written.load(std::memory_order_acquire);
+                    if(head==tail)break;
                 }
                 const auto frames=static_cast<std::uint32_t>(std::min<std::uint64_t>(4096,head-tail));
                 for(std::uint32_t frame=0;frame<frames;++frame)for(std::size_t channel=0;channel<inputChannels.size();++channel)
@@ -87,16 +97,41 @@ struct Job {
         if(io.frames<0 || static_cast<std::uint32_t>(io.frames)>spec.maxFrames){fail(RecordingFailure::BlockSize);return;}
         const auto frames=static_cast<std::uint32_t>(io.frames);
         for(const auto channel:inputChannels)if(!io.in || io.numIn<=0 || channel>=static_cast<std::uint32_t>(io.numIn) || !io.in[channel]){fail(RecordingFailure::MissingInput);return;}
-        const auto position=transport.position();
-        if(position<0 || io.streamTimeSamples<0 || position>std::numeric_limits<std::int64_t>::max()-frames ||
-           io.streamTimeSamples>std::numeric_limits<std::int64_t>::max()-frames || transport.contiguousFrames(0,frames)!=frames ||
+        const auto position=spec.loop?transport.sampleAt(0):transport.position();
+        if(position<0 || io.streamTimeSamples<0 || io.streamTimeSamples>std::numeric_limits<std::int64_t>::max()-frames ||
            (begun && (position!=nextTimeline || io.streamTimeSamples!=nextStream))){fail(RecordingFailure::Discontinuity);return;}
+        if(spec.loop) {
+            if(!transport.looping() || transport.loopBegin()!=spec.loop->beginSample || transport.loopEnd()!=spec.loop->endSample ||
+               (begun && transport.revision()!=transportRevision)){fail(RecordingFailure::Discontinuity);return;}
+            // Preflight the entire callback before modifying either log or ring.
+            // A callback can span many short loops; callback boundaries do not
+            // create passes, and ending exactly at loop end creates no empty row.
+            auto needed=passCount;
+            auto previousEnd=needed?passes[needed-1].timelineEndSample:std::int64_t{-1};
+            for(std::int64_t offset=0;offset<frames;) {
+                const auto at=transport.sampleAt(offset),count=transport.contiguousFrames(offset,frames-offset);
+                if(count<=0){fail(RecordingFailure::Discontinuity);return;}
+                if(previousEnd!=at) {
+                    if(needed==passes.size()){fail(RecordingFailure::PassLimit);return;}
+                    ++needed;
+                }
+                previousEnd=at+count;offset+=count;
+            }
+        }else if(position>std::numeric_limits<std::int64_t>::max()-frames || transport.contiguousFrames(0,frames)!=frames) {
+            fail(RecordingFailure::Discontinuity);return;
+        }
         const auto head=written.load(std::memory_order_relaxed),tail=read.load(std::memory_order_acquire);
         if(head>std::numeric_limits<std::uint64_t>::max()-frames || head-tail+frames>spec.ringFrames){fail(RecordingFailure::Overflow);return;}
+        if(spec.loop)for(std::int64_t offset=0;offset<frames;) {
+            const auto at=transport.sampleAt(offset),count=transport.contiguousFrames(offset,frames-offset);
+            if(passCount==0 || passes[passCount-1].timelineEndSample!=at)
+                passes[passCount++]={head+static_cast<std::uint64_t>(offset),0,at,at};
+            auto& pass=passes[passCount-1];pass.frames+=static_cast<std::uint64_t>(count);pass.timelineEndSample=at+count;offset+=count;
+        }
         for(std::uint32_t frame=0;frame<frames;++frame)for(std::size_t channel=0;channel<inputChannels.size();++channel)
             ring[static_cast<std::size_t>((head+frame)%spec.ringFrames)*inputChannels.size()+channel]=io.in[inputChannels[channel]][frame];
-        if(!begun){firstSample.store(position,std::memory_order_relaxed);begun=true;}
-        nextTimeline=position+frames;nextStream=io.streamTimeSamples+frames;
+        if(!begun){firstSample.store(position,std::memory_order_relaxed);transportRevision=transport.revision();begun=true;}
+        nextTimeline=spec.loop?transport.sampleAt(frames):position+frames;nextStream=io.streamTimeSamples+frames;
         written.store(head+frames,std::memory_order_release);
     }
 };
@@ -147,7 +182,10 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
         if(spec.workFolder.empty() || spec.sampleRate<8000 || spec.sampleRate>768000 || spec.maxFrames==0 || spec.maxFrames>16384 ||
            spec.ringFrames<spec.maxFrames || spec.targets.empty() || spec.targets.size()>256)throw std::runtime_error("invalid recording format or buffer bounds");
         if(spec.format!=audio::WavFormat::Float32 && spec.format!=audio::WavFormat::Pcm16 && spec.format!=audio::WavFormat::Pcm24)throw std::runtime_error("invalid recording encoding");
+        if(spec.loop && (spec.loop->beginSample<0 || spec.loop->endSample<=spec.loop->beginSample || spec.loop->maxPasses==0 || spec.loop->maxPasses>65536))
+            throw std::runtime_error("invalid recording loop bounds or pass capacity");
         auto job=std::make_shared<Job>();job->spec=spec;std::set<std::int64_t> targetIds;std::set<std::uint32_t> channels;
+        if(spec.loop)job->passes.resize(spec.loop->maxPasses);
         for(const auto& target:spec.targets) {
             if(target.trackId<=0 || !targetIds.insert(target.trackId).second || target.channels.empty() || target.channels.size()>64)throw std::runtime_error("invalid or duplicate recording track");
             std::set<std::uint32_t> unique;
@@ -186,6 +224,8 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     AudioRecordingResult result;result.failure=job->failure.load(std::memory_order_acquire);result.error=job->error;result.sampleRate=job->spec.sampleRate;
     result.frames=job->written.load(std::memory_order_acquire);result.startSample=job->firstSample.load(std::memory_order_acquire);result.tracks=job->tracks;
     result.sourceProject_=job->spec.sourceProject;
+    result.loop_=job->spec.loop;
+    result.passes_.assign(job->passes.begin(),job->passes.begin()+static_cast<std::ptrdiff_t>(job->passCount));
     if(job->discardRequested){result.failure=RecordingFailure::Cancelled;result.error.clear();}
     if(result.failure==RecordingFailure::None && result.frames==0)result.failure=RecordingFailure::NoFrames;
     if(result.error.empty())switch(result.failure) {
@@ -198,6 +238,7 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
         case RecordingFailure::Io:result.error="Recording writer failed";break;
         case RecordingFailure::NoFrames:result.error="No audio was recorded";break;
         case RecordingFailure::InvalidCapture:result.error="Invalid retrospective audio capture";break;
+        case RecordingFailure::PassLimit:result.error="Recording loop pass capacity exhausted";break;
     }
     result.files_=std::make_shared<AudioRecordingResult::Files>();result.files_->directory=job->directory;
     if(result.failure==RecordingFailure::Cancelled)result.discard();

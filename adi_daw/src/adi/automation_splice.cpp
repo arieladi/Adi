@@ -55,22 +55,15 @@ std::size_t afterSample(std::span<const SpliceKnot> knots, std::int64_t sample) 
                          [](std::int64_t at, const auto &knot) { return at < knot.sample; }) -
         knots.begin());
 }
-double value(std::span<const SpliceKnot> knots, double fallback, std::int64_t sample,
-             bool incoming) {
+double boundaryValue(std::span<const SpliceKnot> knots, double fallback, std::int64_t sample,
+                     std::size_t i) {
     if (knots.empty())
         return fallback;
-    const auto i =
-        incoming ? static_cast<std::size_t>(std::lower_bound(knots.begin(), knots.end(), sample,
-                                                             [](const auto &knot, std::int64_t at) {
-                                                                 return knot.sample < at;
-                                                             }) -
-                                            knots.begin())
-                 : afterSample(knots, sample);
     if (!i)
         return knots.front().point.value;
-    if (i == knots.size())
-        return knots.back().point.value;
     const auto &a = knots[i - 1];
+    if (i == knots.size() || a.sample == sample)
+        return a.point.value;
     const auto &b = knots[i];
     require(b.sample > a.sample, "automation splice cannot evaluate a zero-length segment");
     const auto fraction =
@@ -108,7 +101,8 @@ void retainDomain(SplicedKnot &output, std::span<const SpliceKnot> source, std::
     require(first.sample <= beginSample && beginSample < endSample && endSample <= last.sample &&
                 first.sample < last.sample,
             "automation splice curve bounds contradict its sample clock");
-    if (!first.slice && first.point.curve <= 1) {
+    const bool wholeSegment = beginSample == first.sample && endSample == last.sample;
+    if (!first.slice && (wholeSegment || first.point.curve <= 1)) {
         output.knot.slice.reset();
         output.rangeOrigin.reset();
         return;
@@ -169,14 +163,17 @@ SplicePlan planEnvelopeSplice(std::span<const SpliceKnot> original, double defau
         if (prefix && prefix < original.size())
             retainDomain(result.knots.back(), original, prefix - 1, original[prefix - 1].sample,
                          bounds.begin.sample);
-        result.knots.push_back(
-            guard(bounds.begin, value(original, defaultValue, bounds.begin.sample, true), 0));
+        // The native cut determines which coincident points survived on the
+        // left. If the clock later separates them, the guard holds the last
+        // of those points up to the start of the replacement.
+        result.knots.push_back(guard(
+            bounds.begin, boundaryValue(original, defaultValue, bounds.begin.sample, prefix), 0));
         for (std::size_t i = 0; i < replacement.size(); ++i)
             result.knots.push_back(retained(replacement[i], SplicePart::Replacement, i));
         if (!exactEnd) {
-            auto outgoing =
-                guard(bounds.end, value(original, defaultValue, bounds.end.sample, false), 1);
             const auto after = afterSample(original, bounds.end.sample);
+            auto outgoing = guard(
+                bounds.end, boundaryValue(original, defaultValue, bounds.end.sample, after), 1);
             if (after && after < original.size() &&
                 (suffix == original.size() || original[suffix].sample > bounds.end.sample)) {
                 const auto index = after - 1;

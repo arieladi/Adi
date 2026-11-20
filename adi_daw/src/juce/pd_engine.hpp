@@ -67,8 +67,11 @@
 #include "adi/engine/published_array.hpp"
 #include "adi/engine/mpe_output.hpp"
 
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <memory>
@@ -119,6 +122,11 @@ public:
     static void forgetInstance(void* instance) noexcept;
     /// Pd's fixed internal block, 64. Read from libpd rather than assumed.
     [[nodiscard]] static std::int32_t blockSize() noexcept;
+    /// PD4: every class name this build can create -- vanilla's and ADI's
+    /// compiled-in externals -- read from Pd's own creator table
+    /// (pd_vocabulary.cpp). Initialises the runtime; empty if that fails.
+    /// Message thread. Feeds `walkPdObjects` (pd_object_walk.hpp).
+    [[nodiscard]] static std::set<std::string, std::less<>> creatableClasses();
 };
 
 /// One patch, in its own Pd instance.
@@ -172,6 +180,9 @@ public:
     /// opened whole. **Message thread only** -- Pd prints while opening and
     /// while sending, never from `process`.
     [[nodiscard]] std::vector<std::string> consoleLines() const;
+    /// Message thread, on a schedule (PdDevice::pumpMainThread): moves what Pd
+    /// printed out of the audio-safe queue, so the queue does not fill (DF-E36 d).
+    void pumpConsole() override;
 
     bool open(PdLatencyReceiver& latency, std::string& error) override;
     void close() noexcept override;
@@ -230,24 +241,7 @@ public:
     /// 16,777,216, and ADI's 5,765,760 ticks per quarter note (SPEC 4.2) pass
     /// that within three quarter notes. Bar, beat and ticks-within-the-quarter
     /// are each small enough to stay exact for as long as anyone plays.
-    struct Transport {
-        bool playing = false;
-        double bpm = 120.0;
-        int timeSigNumerator = 4;
-        int timeSigDenominator = 4;
-        /// 1-based, as a musician counts them.
-        double bar = 1.0;
-        double beat = 1.0;
-        /// **The QUARTER-NOTE grid, not the position within the beat**, and in
-        /// 5/8 or 7/8 those are different numbers. It is the absolute tick
-        /// count modulo `ADI_PPQ` (5,765,760), counted from bar 1, so it runs
-        /// 0..5,765,759 and wraps once per quarter note whatever the meter
-        /// calls a beat. In 7/8, where the beat is an eighth, it wraps once
-        /// per TWO beats. `bar` and `beat` carry the meter; this carries a
-        /// quarter-note phase, and a patch that confuses them is early or late
-        /// by a factor of two with nothing to say why.
-        double ticksInQuarter = 0.0;
-    };
+    using Transport = PdTransport;
 
     /// **`process` READS `io.transport` ITSELF**, so nothing needs to call
     /// this in the ordinary path. `NodeIo::transport` is null outside a
@@ -319,7 +313,10 @@ public:
 
     /// Message thread. Sends a float to a receiver in THIS patch's instance,
     /// with `$0-` prefixed: `send("depth", 1.f)` reaches `[r $0-depth]`.
-    /// False when the patch is not open or the receiver does not exist.
+    /// False when the patch is not open, the receiver does not exist, or the
+    /// ring is full (counted). DEV-09: the value is QUEUED and delivered by the
+    /// audio thread inside its next locked tick, so it takes effect before the
+    /// next rendered block rather than at the moment of the call.
     bool sendFloat(const char* suffix, float value) noexcept;
 
     /// Audio-thread counters, for tests and for answering "is this patch
@@ -329,20 +326,58 @@ public:
         std::int64_t segments = 0;   ///< process() calls
         std::int64_t starved = 0;    ///< pops that found too little output
         std::int64_t rejectedSegments = 0; ///< WholeBlocks contract violations
+        /// DEV-09: ticks skipped because another thread held this instance's
+        /// lock. The audio thread never waits for it; the tick is silence.
+        std::int64_t skippedTicks = 0;
+        /// DEV-09: console pieces lost because the print queue was full.
+        std::int64_t consoleDropped = 0;
+        /// DEV-09: message-thread sends lost because their ring was full.
+        std::int64_t sendsDropped = 0;
     };
     [[nodiscard]] Counters counters() const noexcept;
+
+    /// DEV-09, message thread: holds this instance's Pd lock, as an editor
+    /// attached to the running patch will (DEV-11). While it is held the audio
+    /// thread skips its ticks (silence, counted) instead of waiting.
+    class InstanceLock {
+    public:
+        explicit InstanceLock(LibPdEngine& engine) noexcept;
+        ~InstanceLock();
+        InstanceLock(const InstanceLock&) = delete;
+        InstanceLock& operator=(const InstanceLock&) = delete;
+    private:
+        void* instance_ = nullptr;   ///< t_pdinstance*, null when nothing is held
+    };
 
 private:
     void selectInstance() const noexcept;
 
-    /// Message thread. One line from Pd's console, capped at
-    /// `kMaxConsoleLines` -- a patch in an error loop must not grow a vector
-    /// without bound.
-    void appendConsole(const char* line);
+    /// DEV-09, AUDIO THREAD: the only way the audio thread enters Pd. One
+    /// `sys_trylock` per Pd tick; busy means the tick is skipped, its output is
+    /// silence and it is counted, never waited for. Everything queued for Pd
+    /// (message-thread sends, parameters, transport, MIDI) is delivered inside
+    /// that lock, immediately before the tick. `sys_pollgui` is never called
+    /// here (libpd_process_float calls it on every tick).
+    bool lockedTick() noexcept;
+    /// AUDIO THREAD, inside the lock: what was queued for this tick.
+    void deliverPendingLocked() noexcept;
+    /// AUDIO THREAD, inside the lock: copies a declared table without libpd's
+    /// reader, which returns with the lock still held when the table has
+    /// shrunk. False when the table is missing or shorter than declared.
+    bool readArrayLocked(void* symbol, float* out, std::int32_t length) noexcept;
+    /// Message thread: joins the print queue's pieces into console lines.
+    void drainConsole() const;
+    /// Any thread Pd prints on: one piece into the bounded print queue.
+    void enqueuePrint(const char* piece) noexcept;
+
+    /// Message thread, under consoleMutex_. One piece of Pd's console, joined
+    /// into lines capped at `kMaxConsoleLines` -- a patch in an error loop
+    /// must not grow a vector without bound.
+    void appendConsole(const char* line) const;
     /// libpd's print hook. A bare function pointer with no user data, so like
-    /// the float hook it asks `libpd_this_instance()` who it is printing for.
-    /// A static member rather than a free function because it is the one thing
-    /// outside the class that has to reach `appendConsole`.
+    /// the float hook it asks `libpd_this_instance()` who it is printing for,
+    /// through the same lock-free instance table. A static member because it
+    /// has to reach `enqueuePrint`.
     static void printHookThunk(const char* line);
 
     std::string dir_, file_;
@@ -372,6 +407,7 @@ private:
     struct BoundArray {
         std::int32_t id = 0;
         std::string tableName;
+        void* tableSymbol = nullptr;   ///< t_symbol*, resolved under the lock in bindArrays
         std::int32_t length = 0;
         double framesPerRead = 0.0;
         double due = 0.0;
@@ -382,11 +418,57 @@ private:
     PdSampleSlots samples_;
     PdSampleBlock sampleBlock_;
 
-    /// Pd's console for this instance, filled by the print hook.
+    /// Pd's console for this instance. The print hook (on whatever thread Pd
+    /// prints, the audio thread included) only pushes into a bounded
+    /// multi-producer queue of fixed slots: no lock, no allocation. The message
+    /// thread drains it into lines when they are read (DEV-09).
     mutable std::mutex consoleMutex_;
-    std::vector<std::string> console_;
-    std::string pending_;            ///< a line Pd has begun and not ended
+    mutable std::vector<std::string> console_;
+    mutable std::string pending_;    ///< a line Pd has begun and not ended
     static constexpr std::size_t kMaxConsoleLines = 256;
+    struct PrintSlot {
+        std::atomic<std::uint64_t> sequence{0};
+        char text[240] = {};
+    };
+    static constexpr std::uint64_t kPrintSlots = 512;
+    /// DF-E36 (d): refusals ("ADI refused ...") have their own queue, which
+    /// ordinary printing cannot fill; consoleLines() always shows them.
+    struct RefusalSlot {
+        std::atomic<std::uint64_t> sequence{0};
+        char text[256] = {};
+    };
+    static constexpr std::uint64_t kRefusalSlots = 16;
+    mutable std::array<RefusalSlot, kRefusalSlots> refusalSlots_{};
+    std::atomic<std::uint64_t> refusalHead_{0};
+    mutable std::uint64_t refusalTail_ = 0;
+    std::atomic<std::int64_t> refusalsDropped_{0};
+    mutable std::int64_t droppedShown_ = 0;
+    std::unique_ptr<PrintSlot[]> printSlots_;
+    std::atomic<std::uint64_t> printHead_{0};
+    mutable std::uint64_t printTail_ = 0;   ///< consumer side, under consoleMutex_
+    std::atomic<std::int64_t> consoleDropped_{0};
+
+    /// Message-thread sends, delivered by the audio thread inside its lock
+    /// (single producer: the message thread; single consumer: the audio thread).
+    struct FloatSend {
+        void* symbol = nullptr;   ///< t_symbol*, resolved under the lock by sendFloat
+        float value = 0.f;
+    };
+    static constexpr std::uint64_t kSendSlots = 256;
+    std::array<FloatSend, kSendSlots> sends_{};
+    std::atomic<std::uint64_t> sendHead_{0}, sendTail_{0};
+    std::atomic<std::int64_t> sendsDropped_{0};
+
+    /// Parameters, latest value wins, parallel to paramSymbols_. Written by the
+    /// audio thread in sendParameter, delivered in the next locked tick.
+    std::vector<float> paramValues_;
+    std::vector<std::uint8_t> paramDirty_;
+    /// MIDI routed for Pd and not yet delivered: a segment with no whole tick
+    /// keeps its events until the next one. Sized in prepare; overflow counted.
+    std::vector<engine::MpeOut> pendingMidi_;
+    std::int32_t pendingMidiCount_ = 0;
+    bool transportPending_ = false;
+    std::atomic<std::int64_t> skippedTicks_{0};
 
     /// AUDIO THREAD. One routed MIDI event into this instance's Pd, through
     /// `inmidi_*` rather than `libpd_*`: the libpd entry points take
@@ -402,6 +484,13 @@ private:
     /// The receive symbol, resolved once in `open` for `sendParameter`'s
     /// reason: `gensym` on the audio thread allocates for an unseen name.
     void* transportSymbol_ = nullptr;
+
+    /// What `libpd_bind` handed back for the latency receive name (DEV-09;
+    /// #173 re-applied). **A handle, not a status:** `libpd_bind` returns a
+    /// `libpdreceive` object that only `libpd_unbind` frees. Discarded, every
+    /// engine leaked one object holding a pointer into its instance's symbol
+    /// table, which `pdinstance_free` then freed underneath it.
+    void* latencyBinding_ = nullptr;
 
     /// Engine events -> MIDI, per device and stateful: a member channel is
     /// allocated at note-on and released at note-off.

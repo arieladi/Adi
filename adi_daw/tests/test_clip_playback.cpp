@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/audio_recording.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/history.hpp"
@@ -80,6 +81,88 @@ struct Fixture {
         session.process({out,nullptr,2,0,frames,0});return result;
     }
 };
+void liveInputMonitoring() {
+    for (const auto precision : {Precision::Float32, Precision::Float64}) {
+        Fixture f;
+        f.add(1, 17, 32);
+        f.store->db().exec("UPDATE tracks SET monitor_mode=2 WHERE id=1");
+        f.load(64);
+        if (!f.session.setPrecision(precision)) throw std::runtime_error(f.session.error());
+        const std::array stereo{RecordingTarget{1, {2, 0}}};
+        check(f.session.setAudioMonitorInputs(stereo), "bind a resolved stereo input pair to the audio track");
+        auto change = [&](const char* opType, const Payload& payload) {
+            OpRequest r;
+            r.opType=opType;
+            r.payload=payload;
+            if(!OpJournal(*f.store).commit(r).ok || !f.session.refresh(*f.store))
+                throw std::runtime_error("refreshing the track monitor controls failed");
+        };
+        auto render = [&](bool playing, bool haveRight = true, std::int64_t start = 0) {
+            f.session.transport().locate(start);
+            f.session.transport().play(playing);
+            if (playing && !f.session.clips()->prime())
+                throw std::runtime_error("could not prime the Arrangement clip");
+            std::array<float,64> a{}, b{}, c{};
+            a.fill(0.125f); b.fill(0.25f); c.fill(0.5f);
+            const float* in[]{haveRight ? a.data() : nullptr, b.data(), c.data()};
+            std::array<float,128> pcm{};
+            std::array<double,128> wide{};
+            float* out[]{pcm.data(),pcm.data()+64};
+            double* out64[]{wide.data(),wide.data()+64};
+            AudioIo io{precision == Precision::Float32 ? out : nullptr, in, 2, 3, 64, 0};
+            if (precision == Precision::Float64) io.out64 = out64;
+            { const audio::CallbackScope callback; f.session.process(io); }
+            if (precision == Precision::Float32) std::copy(pcm.begin(),pcm.end(),wide.begin());
+            return wide;
+        };
+        const auto unarmed = render(false);
+        check(std::all_of(unarmed.begin(),unarmed.end(),[](double sample){return sample==0;}),
+              "Auto monitoring is silent when the track is unarmed");
+        change("track.setArm", {{"id",1},{"armed",true}});
+        auto stopped = render(false);
+        check(stopped[0]==0.5 && stopped[63]==0.5 && stopped[64]==0.125 && stopped[127]==0.125,
+              "Auto monitors the selected stereo channels when stopped");
+        const auto playing = render(true);
+        bool exact = true;
+        for (std::size_t channel = 0; channel < 2; ++channel)
+            for (std::size_t frame = 0; frame < 64; ++frame) {
+                const double input = channel == 0 ? 0.5 : 0.125;
+                const double wanted = frame >= 17 && frame < 49 ? f.media[(frame - 17) * 2 + channel] : input;
+                exact = exact && playing[channel*64+frame] == wanted;
+            }
+        check(exact, "Auto returns to the live input at the exact Arrangement clip end");
+        f.session.transport().loop(5,41,true);
+        const auto looped = render(true,true,35);
+        bool loopExact = true;
+        for (std::size_t frame = 0; frame < 64; ++frame) {
+            const auto sample = frame < 6 ? 35 + frame : 5 + (frame - 6) % 36;
+            const double wanted = sample >= 17 ? f.media[(sample - 17) * 2] : 0.5;
+            loopExact = loopExact && looped[frame] == wanted;
+        }
+        check(loopExact, "Auto reopens hardware monitoring at each loop wrap inside the callback");
+        f.session.transport().loop(0,64,false);
+        change("track.setMonitorMode", {{"id",1},{"mode",1}});
+        change("track.setArm", {{"id",1},{"armed",false}});
+        const auto inputOnly = render(true, false);
+        check(inputOnly[0]==0.5 && inputOnly[17]==0.5 && inputOnly[48]==0.5 &&
+              inputOnly[64]==0 && inputOnly[64+17]==0 && inputOnly[127]==0,
+              "In monitors without Arm, suppresses clips and silences a missing channel");
+        const std::array bad{RecordingTarget{1, {0, 1, 2}}};
+        check(!f.session.setAudioMonitorInputs(bad) && render(false)[0]==0.5,
+              "refusing an invalid input preserves the current hardware binding");
+        const std::array mono{RecordingTarget{1, {1}}};
+        check(f.session.setAudioMonitorInputs(mono), "replace the pair with one driver channel");
+        const auto doubled = render(true);
+        check(doubled[0]==0.25 && doubled[64]==0.25 && doubled[64+17]==0.25,
+              "mono input reaches both outputs");
+        change("track.setMonitorMode", {{"id",1},{"mode",0}});
+        change("track.setArm", {{"id",1},{"armed",true}});
+        const auto off = render(true);
+        check(off[0]==0 && off[16]==0 && off[17]==f.media[0] && off[48]==f.media[62] &&
+              off[49]==0 && off[63]==0, "Off keeps Arrangement PCM and discards hardware even when armed");
+        check(f.session.setAudioMonitorInputs({}), "disconnect all runtime inputs");
+    }
+}
 void placement() {
     for(const int block:{64,128,256,512,1024,2048,4096,257}) {
         Fixture f;f.add(1,73,21001,11,25000);f.load(block);
@@ -100,6 +183,30 @@ void placement() {
     f.store->db().exec("UPDATE clips SET time_base=0,pos_ns=NULL,length_ns=NULL,pos_ticks=576576,length_ticks=1153152; DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(576576,60,0)");
     f.load(4096);f.session.transport().locate(2300);const auto out=f.render(4096);
     check(out[99]==0 && out[100]==f.media[0] && out[101]==f.media[2],"tick placement integrates tempo map");
+}
+void takeLanePlayback() {
+    Fixture f;
+    f.add(1, 0, 500, 11, 1000);
+    f.add(2, 0, 500, 51, 1000);
+    f.store->db().exec("INSERT INTO lanes(id,track_id,name) VALUES(7,1,'Lane');"
+                       "UPDATE clips SET lane_id=7 WHERE id=2");
+    f.load(512);
+    const auto out = f.render(512);
+    bool exact = f.session.model().clips.size() == 2;
+    for (std::size_t channel = 0; channel < 2; ++channel) {
+        for (std::size_t frame = 0; frame < 512; ++frame) {
+            const auto expected = frame < 500 ? f.media[(frame + 11) * 2 + channel] : 0.0f;
+            exact = exact && out[channel * 512 + frame] == expected;
+        }
+    }
+    check(exact, "main comp plays sample-exactly while a stored take overlaps it");
+    f.store->db().exec("DELETE FROM clips WHERE id=1");
+    if (!f.session.refresh(*f.store)) throw std::runtime_error(f.session.error());
+    f.session.transport().locate(0);
+    const auto takeOnly = f.render(512);
+    check(f.session.model().clips.size() == 1 &&
+          std::ranges::all_of(takeOnly, [](float sample) { return sample == 0; }),
+          "refresh with only a stored take delivers silence");
 }
 void properties() {
     Fixture f;f.add(1,0,500,10,1000);f.add(2,0,500,10,1000);f.add(3,0,500,10,1000);
@@ -154,6 +261,66 @@ void editedFades() {
         render();
         check(std::abs(sample(50)-0.125)<1e-7 && sample(799)==0.5,"undo restores old square arithmetic and no automatic end fade");
     }
+}
+void shortenedFade() {
+    for (const int start : {0, 400}) {
+        Fixture f(48000, 2, 4000, -1);
+        f.add(1, start, 800, 0, 1000);
+        const auto ticks = static_cast<std::int64_t>(start) * 24024 / 100;
+        SQLite::Statement placement(f.store->db(), "UPDATE clips SET time_base=0,pos_ticks=?,"
+            "length_ticks=192192,pos_ns=NULL,length_ns=NULL WHERE id=1");
+        placement.bind(1, ticks);
+        placement.exec();
+        OpJournal journal(*f.store);
+        OpRequest fade;
+        fade.opType = "clip.setFades";
+        fade.payload = {{"id",1},{"out",{{"ticks",192192}}}};
+        check(journal.commit(fade).ok, "set a fade over the entire clip");
+        f.load(1024);
+        const auto render = [&] {
+            f.session.transport().locate(start);
+            return f.render(1024);
+        };
+        const auto before = render();
+        OpRequest resize;
+        resize.opType = "clip.resize";
+        resize.payload = {{"id",1},{"pos",ticks},{"length",96096}};
+        check(journal.commit(resize).ok && f.session.refresh(*f.store), "right edge resizes under its fade");
+        const auto shorter = render();
+        check(std::abs(shorter[0] - 0.5f * 399.0f / 400.0f) < 1e-7f &&
+              std::abs(shorter[200] - 0.5f * 199.0f / 400.0f) < 1e-7f &&
+              shorter[399] == 0.0f && shorter[400] == 0.0f,
+              "shortening clamps the fallback fade to the audible clip span");
+        const auto split = clip_edit::prepareSplit(*f.store, 1, 2, {0, ticks + 48048}, 48000);
+        const bool splitCommitted = split.ok && clip_edit::commitPrepared(*f.store, split).ok;
+        check(splitCommitted && f.session.refresh(*f.store) && render() == shorter,
+              "splitting a shortened clip retains the clamped fade exactly");
+        if (splitCommitted)
+            check(History(*f.store).undo().ok && f.session.refresh(*f.store) && render() == shorter,
+                  "Undo of Split restores the shortened clip and its audible fade");
+        check(History(*f.store).undo().ok && f.session.refresh(*f.store) && render() == before,
+              "Undo of a shorter placement restores the entire original fade exactly");
+    }
+
+    Fixture warped(48000, 2, 4000, -1);
+    warped.add(1, 0, 400, 0, 1000);
+    auto& db = warped.store->db();
+    db.exec("UPDATE clips SET time_base=0,pos_ticks=0,length_ticks=96096,pos_ns=NULL,length_ns=NULL,"
+        "fade_out_ticks=192192; UPDATE audio_clips SET warp_enabled=1,warp_mode='re-pitch'");
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {1000, 240240}}};
+    const auto map = audio::writeWarpMap(markers, 1000);
+    if (!map) throw std::runtime_error("prepare shortened fade Warp map");
+    SQLite::Statement setMap(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=1");
+    setMap.bind(1, map.bytes.data(), static_cast<int>(map.bytes.size()));
+    setMap.exec();
+    warped.load(1024);
+    const auto before = warped.render(1024);
+    const auto split = clip_edit::prepareSplit(*warped.store, 1, 2, {0, 48048}, 48000);
+    check(before[100] > 0.1f && split.ok && clip_edit::commitPrepared(*warped.store, split).ok &&
+              warped.session.refresh(*warped.store),
+          "a shortened Warp clip can split inside its clamped fade");
+    warped.session.transport().locate(0);
+    check(warped.render(1024) == before, "the split Warp fade keeps the exact audible envelope");
 }
 void splitSourceClocks() {
     for(const auto sourceRate:{44100u,48000u})for(const bool loop:{false,true}) {
@@ -502,6 +669,39 @@ void sourceMarkers() {
     check(repeated[150]==loop.media[414] && repeated[250]==loop.media[214] && repeated[500]==0,
           "Loop uses its own source window while the End marker is inactive");
 }
+void endSourceClocks() {
+    Fixture plain(48000, 2, 4000, -1);
+    plain.add(1, 600, 800, 0, 1000);
+    plain.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0);"
+        "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,120120);"
+        "INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,10416667);"
+        "UPDATE tempo_map SET bpm=240 WHERE pos_ticks=0");
+    plain.load(1024);
+    plain.session.transport().locate(600);
+    const auto pinned = plain.render(1024);
+    check(pinned[249] == 0.5f && pinned[499] == 0.5f && pinned[500] == 0.0f,
+          "a physical End pin keeps 500 samples when the placement tempo doubles");
+
+    Fixture warped(48000, 2, 4000, -1);
+    warped.add(1, 600, 800, 0, 2000);
+    auto& db = warped.store->db();
+    db.exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(144144,240,0);"
+        "UPDATE clips SET time_base=0,pos_ticks=144144,length_ticks=384384,pos_ns=NULL,length_ns=NULL,"
+        "content_offset_ticks=72072;"
+        "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,144144);"
+        "UPDATE audio_clips SET warp_enabled=1,warp_mode='re-pitch'");
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {2000, 480480}}};
+    const auto map = audio::writeWarpMap(markers, 2000);
+    if (!map) throw std::runtime_error("prepare End clock test Warp map");
+    SQLite::Statement setMap(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=1");
+    setMap.bind(1, map.bytes.data(), static_cast<int>(map.bytes.size()));
+    setMap.exec();
+    warped.load(1024);
+    warped.session.transport().locate(600);
+    const auto retimed = warped.render(1024);
+    check(std::abs(retimed[0]) > 0.1f && std::abs(retimed[149]) > 0.1f && retimed[150] == 0.0f,
+          "Warp End retains the 150-frame tail projected across its source tempo boundary");
+}
 void seeksAndStalls() {
     Fixture f;f.add(1,0,90000,0,90000);f.load(4096);(void)f.render(4096);
     f.session.transport().locate(70003);
@@ -649,6 +849,22 @@ void setHome(const fs::path& p) {
     setenv("ADI_HOME", p.string().c_str(), 1);
 #endif
 }
+void externalSourceSnapshots() {
+    Fixture f;f.add(1,0,12000);f.add(2,0,12000);
+    f.store->db().exec("UPDATE clips SET muted=1 WHERE id=2");
+    f.load(64);
+    const auto sources=f.session.clips()->externalSources();
+    check(sources.size()==1 && sources[0].clipId==1 && sources[0].mediaId==1 &&
+          sources[0].storedBlake3=="test" && fs::equivalent(sources[0].path,f.dir.path()/"audio.wav"),
+          "off-callback source snapshot names only opened production clip inputs");
+    f.store->db().exec("UPDATE media_files SET rel_path='not-the-open-file.wav' WHERE id=1");
+    const auto unchanged=f.session.clips()->externalSources();
+    check(unchanged.size()==1 && unchanged[0].path==sources[0].path,
+          "source snapshot belongs to the loaded generation, not mutable Store rows");
+    bool refused=false;
+    {audio::CallbackScope callback;refused=f.session.clips()->externalSources().empty();}
+    check(refused,"source descriptor copy refuses callback use without allocation or I/O");
+}
 void decodedPins() {
     // ADR-0156: a decoded clip pins its cache copy while a generation reads
     // it, and the pin goes back with the generation. Every edit rebuilds, and
@@ -661,6 +877,10 @@ void decodedPins() {
                            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,100000000);"
                            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,2,0,4800)");
         f.load(512);
+        const auto external=f.session.clips()->externalSources();
+        check(external.size()==1 && external[0].mediaId==2 &&
+              fs::equivalent(external[0].path,f.dir.path()/"tone.flac"),
+              "compressed source descriptor retains actual external input, not a growing decoded prefix");
         // Loading no longer waits for complete compressed conversion. The
         // private prefix has no LRU entry; assert this pin after publication.
         auto decoded=audio::defaultProgressiveDecoder().open(f.dir.path()/"tone.flac");
@@ -860,12 +1080,14 @@ int main(int argc,char** argv) {
     test::TempDirectory home{"clip_playback","home"};setHome(home.path());
     try {
         if(only=="all" || only=="placement")placement();
+        if(only=="all" || only=="monitor-input")liveInputMonitoring();
+        if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();
-        if(only=="all" || only=="fades")editedFades();
+        if(only=="all" || only=="fades"){editedFades();shortenedFade();}
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
-        if(only=="all" || only=="markers")sourceMarkers();
+        if(only=="all" || only=="markers"){sourceMarkers();endSourceClocks();}
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
         if(only=="all" || only=="segments")segmentsAndCrop();
@@ -874,6 +1096,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="endpoint")fractionalEndpoint();
         if(only=="all" || only=="highRates")highRates();
         if(only=="all" || only=="pins")decodedPins();
+        if(only=="all" || only=="inputs")externalSourceSnapshots();
     }
     catch(const std::exception& e){check(false,e.what());}
     check(callbackAllocations.load()==0,"callback allocates nothing");

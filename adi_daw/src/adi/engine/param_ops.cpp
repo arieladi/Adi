@@ -26,7 +26,12 @@
 namespace adi::engine {
 
 namespace {
-
+std::string parameterLabel(const std::string &deviceName, const device::ParamDescriptor &parameter) {
+    const auto page = parameter.groupName.empty() || parameter.groupName == deviceName ? deviceName
+                      : deviceName.empty()                                             ? parameter.groupName
+                                           : deviceName + " / " + parameter.groupName;
+    return page.empty() ? parameter.name : page + ": " + parameter.name;
+}
 std::vector<std::uint8_t> toU8(std::span<const std::byte> in) {
     std::vector<std::uint8_t> out(in.size());
     for (std::size_t i = 0; i < in.size(); ++i) out[i] = static_cast<std::uint8_t>(in[i]);
@@ -995,13 +1000,16 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                 if(row==replay.session->model().devices.end())return Target::Retired;
                 const auto& reference=facts->device->at("plugin_ref_id");
                 const auto expected=reference.is_null()?std::optional<std::int64_t>{}:
-                    std::optional<std::int64_t>{reference.get<std::int64_t>()};
+                    std::optional<std::int64_t>{reference.template get<std::int64_t>()};
                 if(row->pluginRefId!=expected)return Target::Invalid;
                 const auto* entry=replay.session->entryFor(id);
                 if(!entry || entry->resolvedPluginRef!=expected)return Target::Invalid;
                 if(facts->pluginRef && expected) {
-                    const auto& expectedFormat=facts->pluginRef->at("format").get_ref<const std::string&>();
-                    const auto& expectedUid=facts->pluginRef->at("uid").get_ref<const std::string&>();
+                    // `template` here and on `reference` above: MSVC 14.52 (the CI runner's image since
+                    // 19 November) reads these as dependent template names and warns C4864 without the
+                    // keyword, which is valid either way.
+                    const auto& expectedFormat=facts->pluginRef->at("format").template get_ref<const std::string&>();
+                    const auto& expectedUid=facts->pluginRef->at("uid").template get_ref<const std::string&>();
                     const auto ref=std::find_if(replay.session->model().pluginRefs.begin(),replay.session->model().pluginRefs.end(),
                         [&](const auto& item){return item.id==*expected;});
                     if(ref==replay.session->model().pluginRefs.end() || ref->format!=expectedFormat ||
@@ -1232,7 +1240,7 @@ void ParamOps::Runtime::fillRequest(OpRequest& r, std::int64_t deviceId, const s
     if (d.hasRealRange)
         r.payload["real"] = d.minReal + norm * (d.maxReal - d.minReal);
     r.actor = Actor::User;
-    r.label = name.empty() ? d.name : name + ": " + d.name;
+    r.label = parameterLabel(name,d);
     r.targetKind = "device";
     r.targetId = deviceId;
 }
@@ -1798,7 +1806,9 @@ std::shared_ptr<ParamOps::Runtime::Gesture> ParamOps::Runtime::beginGesture(std:
     else {
         const auto declared=attached.committed.declarations.find(parameter);
         const auto& display=declared==attached.committed.declarations.end()?parameter:declared->second.name;
-        spec.label=attached.name.empty()?display:attached.name+": "+display;
+        spec.label=declared==attached.committed.declarations.end()
+            ? (attached.name.empty()?display:attached.name+": "+display)
+            : parameterLabel(attached.name,declared->second);
     }
     std::vector<gesture::TargetClaim> claims{{state?gesture::ClaimKind::DeviceInstance:gesture::ClaimKind::ScalarEndpoint,
         gesture::TargetDomain::Device,id,parameter,attached.runtimeToken.claimIdentity()}};

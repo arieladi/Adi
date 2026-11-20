@@ -305,10 +305,57 @@ void OneShot::queueNoteGain(double gain) noexcept {
     ++noteGainCount_;
 }
 
+// DF-E46: the source region a Slice-mode key plays, or false for a key with
+// no slice. Every Slice By mode refuses a slice that begins at or past End
+// and cuts one that runs past it, unless Slice Playback is Thru.
+bool OneShot::slice(int key, const Sample &s, const std::array<double, Count> &p, double &begin,
+                    double &end) noexcept {
+    if (key < 0)
+        return false;
+    const int by = static_cast<int>(p[SliceBy]);
+    double from = 0, to = end;
+    if (by < 2) {
+        const double size = by == 0 ? (end - begin) / p[Regions]
+                                    : s.rate * 60 / p[SampleBpm] * p[BeatDivision];
+        from = begin + key * size;
+        if (p[SlicePlayback] != 2)
+            to = std::min(end, from + size);
+    } else {
+        const auto &slices = by == 2 ? s.transients : s.manual;
+        auto first = std::lower_bound(slices.begin(), slices.end(), static_cast<std::size_t>(begin));
+        if (static_cast<std::size_t>(slices.end() - first) <= static_cast<std::size_t>(key))
+            return false;
+        const auto it = first + key;
+        from = static_cast<double>(*it);
+        if (p[SlicePlayback] != 2 && it + 1 != slices.end())
+            to = std::min(end, static_cast<double>(*(it + 1)));
+    }
+    if (from >= end)
+        return false;
+    begin = from;
+    end = to;
+    return true;
+}
 void OneShot::noteOn(const engine::Event &e, const Sample &s,
                      const std::array<double, Count> &p) noexcept {
     if(e.dim>127 || !std::isfinite(e.value) || e.value<=0)return;
     const int mode = static_cast<int>(p[Mode]);
+    // The region this note plays is decided BEFORE a voice is chosen (DF-E46
+    // a): in Slice mode a key with no slice plays nothing and steals nothing.
+    const double frames = static_cast<double>(s.frames());
+    double begin = std::min(frames - 1, frames * p[Start] / 100.);
+    double end = std::max(begin + 1, frames * p[End] / 100.);
+    if (mode == 0)
+        end = begin + (end - begin) * p[Length] / 100.;
+    if (mode == 2 && !slice(e.dim - 36, s, p, begin, end)) {
+        // The per-note gain queued for this note is its own: take it, so the
+        // next note gets the one queued for it.
+        if (noteGainCount_ > 0) {
+            noteGainHead_ = (noteGainHead_ + 1) % noteGains_.size();
+            --noteGainCount_;
+        }
+        return;
+    }
     const bool mono = mode == 1 || (mode == 2 && p[SlicePlayback] != 1);
     const int count = mono ? 1 : static_cast<int>(p[Voices]);
     Voice *selected = nullptr;
@@ -338,43 +385,8 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
         --noteGainCount_;
     }
     v.rng = static_cast<std::uint32_t>(v.age) | 1u;
-    const double frames = static_cast<double>(s.frames());
-    v.begin = std::min(frames - 1, frames * p[Start] / 100.);
-    v.end = std::max(v.begin + 1, frames * p[End] / 100.);
-    if (mode == 0)
-        v.end = v.begin + (v.end - v.begin) * p[Length] / 100.;
-    if (mode == 2) {
-        const int key = v.key - 36;
-        if (key < 0) {
-            v.active = false;
-            return;
-        }
-        const int by = static_cast<int>(p[SliceBy]);
-        if (by < 2) {
-            const double size = by == 0 ? (v.end - v.begin) / p[Regions]
-                                        : s.rate * 60 / p[SampleBpm] * p[BeatDivision];
-            const auto begin = v.begin + key * size;
-            if (begin >= v.end) {
-                v.active = false;
-                return;
-            }
-            if (p[SlicePlayback] != 2)
-                v.end = std::min(v.end, begin + size);
-            v.begin = begin;
-        } else {
-            const auto &slices = by == 2 ? s.transients : s.manual;
-            auto first =
-                std::lower_bound(slices.begin(), slices.end(), static_cast<std::size_t>(v.begin));
-            if (static_cast<std::size_t>(slices.end() - first) <= static_cast<std::size_t>(key)) {
-                v.active = false;
-                return;
-            }
-            auto it = first + key;
-            v.begin = static_cast<double>(*it);
-            if (p[SlicePlayback] != 2 && it + 1 != slices.end())
-                v.end = static_cast<double>(*(it + 1));
-        }
-    }
+    v.begin = begin;
+    v.end = end;
     v.loop = v.end - (v.end - v.begin) * p[LoopLength] / 100.;
     if (p[Snap] > 0) {
         auto snap = [&](double x) {

@@ -71,7 +71,8 @@ THIRD_PARTY=(
   "mackron/dr_libs             dr_libs     Unlicense/MIT-0 wav-0.14.5 fa931f3285ced10ace628f7f1ac951e1951e7ea6 build"
   "mackron/miniaudio           miniaudio   MIT/PD    0.11.25   9634bedb5b5a2ca38c1ee7108a9358a4e233f14d  build"
   "richgel999/miniz            miniz       MIT       3.1.2     77d0dce8627735138c51770d1799a1ef48f2117d build"
-  "SRombauts/SQLiteCpp          SQLiteCpp   MIT       3.3.3     59a047b8d3fe8574406ed73ab9fac0474e87bd03  build"
+  # SQLite 3.53.4 in this release contains the upstream WAL-reset fix.
+  "SRombauts/SQLiteCpp          SQLiteCpp   MIT       3.4.0     df0a28ca9733f687ab7ce77f070c0df84368a45e  build"
   "nlohmann/json                json        MIT       v3.12.0   55f93686c01528224f448c19128836e7df245f72  build"
   "breakfastquay/rubberband     rubberband  GPL-2.0-or-later v4.0.0 1d95888bec3ae0a17c0c4af791810d5a63f6bc35 build"
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"

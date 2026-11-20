@@ -162,6 +162,13 @@ struct PdDeclarations {
     [[nodiscard]] const PdSampleDecl* sample(std::int32_t id) const noexcept;
 };
 
+/// THE tokeniser: every record of a patch's text, in file order, each split
+/// into atoms with escapes resolved (`\$0` is the atom `$0`). One record per
+/// unescaped `;` -- canvases, objects, messages, connections, everything. The
+/// declaration parse and the allowed-object walk (PD4, pd_object_walk.hpp)
+/// both read through it, so the two can never disagree about what a box is.
+[[nodiscard]] std::vector<std::vector<std::string>> pdRecords(std::string_view patchText);
+
 /// Reads every `[adi.param]` and `[adi.array]` in a patch's text.
 ///
 /// **Parameters, arrays and samples have THREE SEPARATE id spaces.** A parameter's id is
