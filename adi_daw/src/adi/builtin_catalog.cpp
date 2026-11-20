@@ -21,7 +21,7 @@ constexpr std::array<BuiltinInfo,20> entries={{
  {"org.adidaw.builtin.delay","Delay","Audio Effects","Delay & Loop",2,ready,false},
  {"org.adidaw.builtin.eq-eight","EQ Eight","Audio Effects","EQ & Filters",2,ready,false},
  {"org.adidaw.builtin.echo","Echo","Audio Effects","Delay & Loop",2,ready,false},
- {"org.adidaw.builtin.hybrid-reverb","Hybrid Reverb","Audio Effects","Reverb & Resonance",2,false,false},
+ {"org.adidaw.builtin.hybrid-reverb","Hybrid Reverb","Audio Effects","Reverb & Resonance",2,ready,false},
  {"org.adidaw.builtin.multiband-dynamics","Multiband Dynamics","Audio Effects","Dynamics",4,ready,false},
  {"org.adidaw.builtin.overdrive","Overdrive","Audio Effects","Drive & Color",2,ready,false},
  {"org.adidaw.builtin.phaser-flanger","Phaser-Flanger","Audio Effects","Pitch & Modulation",2,ready,false},
@@ -45,7 +45,7 @@ std::string_view builtinCanvas(std::string_view uid) noexcept {
 #if ADI_WITH_PD
     using namespace device::canonical;
     constexpr std::array<std::string_view,20> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
-        std::string_view{},multibandDynamics,overdrive,phaserFlanger,redux,resonators,reverb,saturator,shifter,utility,vocoder,
+        hybridReverb,multibandDynamics,overdrive,phaserFlanger,redux,resonators,reverb,saturator,shifter,utility,vocoder,
         oneShot};
     for(std::size_t i=0;i<entries.size();++i)if(entries[i].uid==uid)return canvases[i];
 #else
