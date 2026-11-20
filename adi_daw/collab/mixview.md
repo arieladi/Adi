@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20 — ADI-Shaper DF-E59 and DF-E60
+
+**PR requested.** `clones/df-e59-shaper-nonfinite-20261120` at `ff0c9a15`. Land first. The shipped seven-stage rack substitutes zero for a non-finite input and checks active stage state at the block boundary. An exceptional stage reset preserves the other channel and retains Drive alignment. Sweep discards the affected lane's old delay without visiting its ring, with a finite check at the write. The baseline reproduced 63 assertions across the fault and recovery fixtures. A second fixture reproduced two delayed dry failures; the repaired Release passes all five DSP suites.
+
+**PR requested.** `clones/df-e60-shaper-drive-continuity-20261120` at `f8ef8af0`, after DF-E59. The old implementation failed 36 near-zero assertions on hot stereo audio. The first 3.125% of Drive now blends the transfer in within the existing oversampled path. The boundary is the first compensation knot, an ADI transition choice. Windows x64 Release passes all five DSP suites, including three rates, all styles, two trims, rising and falling arcs and the exact-zero and established nonzero fixtures.
+
+Both were checked against the five cross-platform patterns in Win's 20 November entry. The cumulative Windows Release joins the Mix View, paired keys and these two audio fixes from main `7510acd2`. The panel's existing pens branch needs reconciliation in the rack renderer and the Pd fixture. Its shared opener and state feed still follow the Window and device-owner paths in the clones log.
+
 ## 2026-11-20 — Realtime Maximum inside Spectrum
 
 **PR requested.** `mixview/spectrum-realtime-maximum-20261120` at `f998b2f7`, after Spectrogram Clear. It includes current main `7510acd2`. Realtime Maximum uses the same tap and FFT as the realtime trace, with an instantaneous rise and an exponential fall toward the current reading. A new subscriber cannot see a pre-admission window across a seek. Stopped silence settles and releases worker work. Clear is local to the view.
