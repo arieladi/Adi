@@ -293,6 +293,10 @@ bool Session::startRecording(const AudioRecordingSpec& options,std::string& erro
             error="Recording target must be an armed audio or MIDI track";return false;
         }
     }
+    if(!options.recoveryProjectUuid.empty() && options.sourceProject!=recordingProject_) {
+        error="Recording recovery was configured for a different project";
+        return false;
+    }
     auto captured=options;captured.sourceProject=recordingProject_;
     return recording_->start(captured,error);
 }

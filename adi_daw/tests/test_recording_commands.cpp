@@ -3,12 +3,14 @@
 #include "adi/recording_commands.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/audio_recording.hpp"
+#include "adi/engine/recording_recovery_plan.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/publish_file.hpp"
+#include "adi/scan_process.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <exception>
@@ -17,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <thread>
@@ -35,12 +38,25 @@ struct Fixture {
         store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(21,'audio','One',1),(22,'audio','Two',1),(9,'master','Main',0)");}
     static float sample(std::size_t frame){return static_cast<float>(frame%17)/32-0.25f;}
     AudioRecordingResult capture(bool two=false,Precision precision=Precision::Float32,bool loop=false,int totalFrames=300,
-        const std::filesystem::path& workFolder={},std::int64_t startSample=512) {
+        const std::filesystem::path& workFolder={},std::int64_t startSample=512,
+        bool recoverable=false,audio::WavFormat encoding=audio::WavFormat::Float32) {
         Session session;SessionSpec format{2,48000,128};format.precision=precision;session.graph().setFadeFrames(0);
         if(!session.load(*store,{},format))throw std::runtime_error(session.error());
         AudioRecordingSpec request;request.workFolder=workFolder.empty()?temporary.path():workFolder;request.sampleRate=48000;request.maxFrames=128;request.ringFrames=4096;request.targets={{21,{0}}};if(two)request.targets.push_back({22,{0}});
         if(loop)request.loop=AudioRecordingLoop{512,640,8};
-        std::string error;if(!session.startRecording(request,error))throw std::runtime_error(error);
+        request.format=encoding;
+        std::string error;
+        if(recoverable && !recording::configureRecovery(*store,request,error))throw std::runtime_error(error);
+        if(!session.startRecording(request,error))throw std::runtime_error(error);
+        if(recoverable) {
+            for(const auto& entry:std::filesystem::directory_iterator(request.workFolder)) {
+                if(!std::filesystem::is_regular_file(entry.path()/"take.json"))continue;
+                check(!std::filesystem::exists(entry.path()/"start.json"),
+                      "the immutable recording plan reaches disk before the first input block");
+                check(recording::recoverInterrupted(*store,request.workFolder,entry.path()).status==
+                      recording::RecoveryStatus::Refused,"a live recorder holds the recovery lease");
+            }
+        }
         if(loop)session.transport().loop(512,640);
         session.transport().locate(startSample);session.transport().play();std::array<float,128> source{};const float* inputs[]={source.data()};std::array<float,256> out{};float* outputs[]={out.data(),out.data()+128};
         std::int64_t stream=0;
@@ -547,12 +563,234 @@ void loopReuseRefusesUnprovedExtents() {
     check(physical.ok && preparedTakeLane(physical,200)==70,"nanosecond clip ending exactly at pass start is reusable");
 }
 
+void recoverInterruptedLoop() {
+    namespace fs=std::filesystem;
+    Fixture f;
+    const auto root=f.temporary.path()/"recordings";
+    fs::path original;
+    {
+        auto stopped=f.capture(true,Precision::Float32,true,317,root,512,true);
+        original=stopped.directory();
+        check(stopped.failure==RecordingFailure::None && !stopped.recordingId().empty() &&
+              fs::exists(original/"take.json") && fs::exists(original/"start.json"),
+              "Record saves a plan and the actual first sample, independently of the Stop result");
+        check(recording::recoverInterrupted(*f.store,root,original).status==recording::RecoveryStatus::Refused,
+              "a finishing take still owns the original plan");
+    }
+    const auto damaged=original/"take-0.wav";
+    {
+        std::fstream file(damaged,std::ios::in|std::ios::out|std::ios::binary);
+        const std::array<char,4> stale{};
+        file.seekp(4);
+        file.write(stale.data(),static_cast<std::streamsize>(stale.size()));
+        file.seekp(90); // Mono recorder Float32 data size.
+        file.write(stale.data(),static_cast<std::streamsize>(stale.size()));
+        if(!file)throw std::runtime_error("cannot make the stale recorder header");
+    }
+    const auto hash=media::blake3File(damaged);
+    check(hash && !hash.hex.empty(),"read original interrupted recorder bytes");
+    // Reopen the project through a new owner and leave the original media on disk.
+    const auto project=f.store->path();
+    f.store.reset();
+    StoreError error{};
+    auto readOnly=Store::open(project,error,true);
+    if(!readOnly)throw std::runtime_error(toString(error));
+    check(recording::recoverInterrupted(*readOnly,root,original).status==recording::RecoveryStatus::Refused,
+          "a read-only project never prepares interrupted audio");
+    readOnly.reset();
+    f.store=Store::open(project,error);
+    if(!f.store)throw std::runtime_error(toString(error));
+    Fixture different;
+    check(recording::recoverInterrupted(*different.store,root,original).status==recording::RecoveryStatus::Refused,
+          "an interrupted recording cannot be attached to another project");
+    check(recording::recoverInterrupted(*f.store,root,original.parent_path()/".."/"recordings"/original.filename()).status==
+          recording::RecoveryStatus::Refused,"a parent traversal is rejected before reading its plan");
+    auto recovered=recording::recoverInterrupted(*f.store,root,original);
+    check(recovered.status==recording::RecoveryStatus::Ready && recovered.capture.recovered(),
+          recovered.error.empty()?"reopen a stale-header recorder take from its plan":recovered.error.c_str());
+    if(recovered.status!=recording::RecoveryStatus::Ready)return;
+    check(recovered.capture.frames==317 && recovered.capture.startSample==512 &&
+          recovered.capture.passes().size()==3 && recovered.capture.passes().back().frames==61,
+          "recovery keeps completed loop passes and the captured prefix of the last pass");
+    {
+        audio::WavReader audio(recovered.capture.tracks.at(0).file);
+        std::vector<float> heard(317);
+        const auto frames=audio.read(heard.data(),317);
+        bool exact=frames==317;
+        for(std::size_t i=0;i<heard.size();++i) {
+            if(heard[i]!=Fixture::sample(i))exact=false;
+        }
+        check(exact && media::blake3File(damaged).hex==hash.hex,
+              "header repair matches captured PCM and leaves the original untouched");
+    }
+    auto refused=recording::prepareLoopCommit(*f.store,recovered.capture,loopIds(recovered.capture));
+    refused.options.beforeCommit=[](SQLite::Database&,std::int64_t,std::string& text) {
+        text="injected recovery commit refusal";
+        return false;
+    };
+    check(refused.ok && !recording::commit(*f.store,refused).ok,"failed recovery can still be placed");
+    auto edit=recording::prepareLoopCommit(*f.store,recovered.capture,loopIds(recovered.capture));
+    const auto committed=recording::commit(*f.store,edit);
+    check(committed.ok && takeOrder(*f.store).size()==3,
+          committed.error.empty()?"recovery places the same track and loop passes as Stop":committed.error.c_str());
+    if(!committed.ok)return;
+    check(recording::recoverInterrupted(*f.store,root,original).status==recording::RecoveryStatus::AlreadyPlaced,
+          "a committed recording ID skips a leftover original plan");
+    History history(*f.store);
+    check(history.undo().ok && takeOrder(*f.store).empty(),"one Undo removes every recovered pass");
+    check(recording::recoverInterrupted(*f.store,root,original).status==recording::RecoveryStatus::AlreadyPlaced,
+          "one Undo does not resurrect a committed interrupted recording");
+    check(history.redo().ok && takeOrder(*f.store).size()==3,"one Redo restores the entire recovered recording");
+}
+void recoverPcm24AndReportDeletedTrack() {
+    namespace fs=std::filesystem;
+    Fixture f;
+    const auto root=f.temporary.path()/"recordings";
+    fs::path original;
+    {
+        auto stopped=f.capture(false,Precision::Float32,false,129,root,512,true,audio::WavFormat::Pcm24);
+        check(stopped.failure==RecordingFailure::None,"make an owned odd-length PCM24 source");
+        original=stopped.directory();
+    }
+    {
+        auto recovered=recording::recoverInterrupted(*f.store,root,original);
+        check(recovered.status==recording::RecoveryStatus::Ready && recovered.capture.frames==129,
+              recovered.error.empty()?"PCM24 padding is excluded from the recovered frames":recovered.error.c_str());
+        if(recovered.status==recording::RecoveryStatus::Ready) {
+            check(media::blake3File(recovered.capture.tracks.at(0).file).hex==
+                  media::blake3File(original/"take-0.wav").hex,
+                  "already complete PCM24 remains byte-identical after repair");
+        }
+    }
+    f.store->db().exec("DELETE FROM tracks WHERE id=21");
+    const auto refused=recording::recoverInterrupted(*f.store,root,original);
+    check(refused.status==recording::RecoveryStatus::Refused && refused.error.find("21")!=std::string::npos,
+          "a deleted recovery target is named and its private files stay available");
+    check(fs::is_regular_file(original/"take-0.wav"),"unplaced source remains recoverable for inspection");
+}
+void recoverRf64() {
+    namespace fs=std::filesystem;
+    Fixture fixture;
+    const auto root=fixture.temporary.path()/"recordings";
+    fs::create_directories(root/"rf64");
+    const auto directory=fs::canonical(root)/"rf64";
+    const auto file=directory/"take-0.wav";
+    const std::array<float,5> samples{0.25f,-0.25f,-0.5f,0.0f,0.5f};
+    {
+        audio::WavWriter writer(file,48000,1,audio::WavFormat::Float32,nullptr,8);
+        writer.write(samples.data(),static_cast<std::uint32_t>(samples.size()));
+        writer.close();
+    }
+    AudioRecordingSpec spec;
+    spec.sampleRate=48000;
+    spec.targets={{21,{0}}};
+    std::string error;
+    if(!recording::configureRecovery(*fixture.store,spec,error))throw std::runtime_error(error);
+    {
+        const auto plan=recording_recovery::begin(spec,directory,spec.recoveryProjectUuid);
+        (void)recording_recovery::writeStart(directory,plan.plan.recordingId,512);
+    }
+    {
+        std::fstream header(file,std::ios::in|std::ios::out|std::ios::binary);
+        const std::array<char,24> stale{};
+        header.seekp(20);
+        header.write(stale.data(),static_cast<std::streamsize>(stale.size()));
+        if(!header)throw std::runtime_error("cannot make a stale RF64 header");
+    }
+    const auto sourceHash=media::blake3File(file);
+    auto repaired=recording::recoverInterrupted(*fixture.store,root,directory);
+    check(repaired.status==recording::RecoveryStatus::Ready,
+          repaired.error.empty()?"recover an RF64 capture with stale ds64 sizes":repaired.error.c_str());
+    if(repaired.status!=recording::RecoveryStatus::Ready)return;
+    {
+        audio::WavReader reader(repaired.capture.tracks.at(0).file);
+        std::array<float,5> actual{};
+        check(reader.frames()==samples.size() && reader.read(actual.data(),5)==5 && actual==samples,
+              "RF64 repair recovers the exact PCM from the recorder-owned data chunk");
+    }
+    check(media::blake3File(file).hex==sourceHash.hex,"RF64 header repair leaves original bytes unchanged");
+}
+int crashRecordingChild(const std::filesystem::path& project,const std::filesystem::path& root) {
+    namespace fs=std::filesystem;
+    StoreError openError{};
+    auto store=Store::open(project,openError);
+    if(!store)throw std::runtime_error(toString(openError));
+    Session session;
+    if(!session.load(*store,{},SessionSpec{2,48000,128}))throw std::runtime_error(session.error());
+    AudioRecordingSpec spec;
+    spec.workFolder=root;
+    spec.sampleRate=48000;
+    spec.maxFrames=128;
+    spec.targets={{21,{0}}};
+    std::string error;
+    if(!recording::configureRecovery(*store,spec,error) || !session.startRecording(spec,error))
+        throw std::runtime_error(error);
+    session.transport().locate(512);
+    session.transport().play();
+    std::array<float,128> samples{};
+    for(std::size_t frame=0;frame<samples.size();++frame)samples[frame]=Fixture::sample(frame);
+    const float* in[]={samples.data()};
+    std::array<float,128> left{},right{};
+    float* out[]={left.data(),right.data()};
+    AudioIo io;
+    io.in=in;
+    io.numIn=1;
+    io.out=out;
+    io.numOut=2;
+    io.frames=128;
+    session.process(io);
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(std::chrono::steady_clock::now()<deadline) {
+        for(const auto& entry:fs::directory_iterator(root)) {
+            std::error_code sizeError;
+            const auto size=fs::file_size(entry.path()/"take-0.wav",sizeError);
+            if(!sizeError && size>=94+128*sizeof(float) && fs::is_regular_file(entry.path()/"start.json"))
+                std::_Exit(37); // Bypass Stop and all C++ destructors.
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return 38;
+}
+void recoverAfterProcessExit(const std::filesystem::path& executable) {
+    namespace fs=std::filesystem;
+    Fixture fixture;
+    const auto project=fixture.store->path();
+    const auto root=fixture.temporary.path()/"crash-recordings";
+    fixture.store.reset();
+    const auto child=scan::runProcess(fs::canonical(executable),
+        {"--crash-recording",media::pathUtf8(project),media::pathUtf8(root)});
+    if(child.status!=scan::ProcessStatus::Exited || child.exitCode!=37) {
+        const auto description="interrupted fixture child did not reach the live write (status "+
+            std::to_string(static_cast<unsigned>(child.status))+", exit "+std::to_string(child.exitCode)+
+            "): "+child.output;
+        check(false,description.c_str());
+        return;
+    }
+    StoreError error{};
+    fixture.store=Store::open(project,error);
+    if(!fixture.store)throw std::runtime_error(toString(error));
+    const auto directory=fs::directory_iterator(root)->path();
+    auto recovered=recording::recoverInterrupted(*fixture.store,root,directory);
+    check(recovered.status==recording::RecoveryStatus::Ready && recovered.capture.frames==128 &&
+          recovered.capture.startSample==512,
+          recovered.error.empty()?"recover a live take after the recording process exits":recovered.error.c_str());
+    if(recovered.status!=recording::RecoveryStatus::Ready)return;
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Interrupted take"}}};
+    auto edit=recording::prepareCommit(*fixture.store,recovered.capture,ids);
+    const auto committed=recording::commit(*fixture.store,edit);
+    check(committed.ok,committed.error.empty()?"place recovered live PCM through linear Stop":committed.error.c_str());
+    if(committed.ok)check(History(*fixture.store).undo().ok,"the recovered live take is one Undo step");
+}
 }
 int main(int argc,char** argv){try{
+    if(argc==4 && std::string_view(argv[1])=="--crash-recording")
+        return crashRecordingChild(media::pathFromUtf8(argv[2]),media::pathFromUtf8(argv[3]));
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
+    recoverInterruptedLoop();recoverPcm24AndReportDeletedTrack();recoverRf64();
+    recoverAfterProcessExit(media::pathFromUtf8(argv[0]));
     if(argc==3) {
         const auto captureFolder=media::pathFromUtf8(argv[2]);
         crossVolumePublication(captureFolder);

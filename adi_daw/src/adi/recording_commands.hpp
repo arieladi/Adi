@@ -9,6 +9,21 @@ struct ClipIds {std::int64_t clip=0,media=0;std::string name;};
 /// identities must be unoccupied even when a fallback is ultimately unused.
 struct LoopPassIds {std::int64_t lane=0,clip=0;std::string name;};
 struct LoopTrackIds {std::int64_t media=0;std::vector<LoopPassIds> passes;};
+enum class RecoveryStatus {Ready, AlreadyPlaced, Refused};
+struct RecoveryTake {
+    RecoveryStatus status=RecoveryStatus::Refused;
+    engine::AudioRecordingResult capture;
+    std::string error;
+};
+// Document owner. Sets the project's stable identity in the recorder spec.
+// The normal Session::startRecording path then persists the private take plan.
+[[nodiscard]] bool configureRecovery(Store&,engine::AudioRecordingSpec&,std::string& error);
+// Called only for a directory identified by the launch/session owner. The
+// directory must be directly inside the known recording root. A live recorder,
+// another project, a read-only store, and missing destinations are refused.
+// A Ready take is prepared by the existing linear or loop Stop command.
+[[nodiscard]] RecoveryTake recoverInterrupted(Store&,const std::filesystem::path& recordingRoot,
+    const std::filesystem::path& directory);
 struct RecordingEdit {
     bool ok=false;
     std::string error,sourceProject;
@@ -57,7 +72,8 @@ private:
 /// exact reference-DAW selection among several eligible lanes remains unmeasured.
 [[nodiscard]] RecordingEdit prepareLoopCommit(Store&,const engine::AudioRecordingResult&,std::span<const LoopTrackIds>,
     std::span<const std::optional<Payload>> selectionsBefore={});
-/// Linear captures have one Undo. Loop captures have one per pass. Failure rolls
+/// Linear and recovered captures have one Undo. Ordinary loop captures have
+/// one per pass. Failure rolls
 /// back project rows, cleans only identity-verified publications where supported,
 /// and leaves private takes for retry.
 [[nodiscard]] CommitResult commit(Store&,RecordingEdit&,Actor=Actor::User);
