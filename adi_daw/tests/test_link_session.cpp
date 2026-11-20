@@ -55,7 +55,11 @@ void local() {
     LinkCommand stop;stop.transport=LinkTransport::Stop;const auto stopped=callback(*session,buffer,stop);buffer.callbackMicros+=1000000;later=callback(*session,buffer);check(!stopped.requestedPlaying && !later.requestedPlaying && near(later.beat,3),"shared musical timeline continues while local transport is stopped");
     LinkCommand negative;negative.requestBeat=true;negative.beat=-.25;const auto preRoll=callback(*session,buffer,negative);check(preRoll.valid && near(preRoll.beat,-.25) && near(preRoll.phase,3.75),"negative beats use the SDK's nonnegative quantum phase");
     check(session->enableStartStopSync(true),"owner explicitly enables separate start/stop synchronization");check(callback(*session,buffer).startStopSync,"audio view exposes the explicit start/stop option");check(session->enableStartStopSync(false) && session->enable(false),"owner can disable start/stop and networking independently");
-    const auto stable=callback(*session,buffer);std::array<LinkBuffer,8> invalidBuffers{buffer,buffer,buffer,buffer,buffer,buffer,buffer,buffer};invalidBuffers[0].callbackMicros=INT64_MAX;invalidBuffers[1].callbackMicros=INT64_MIN;invalidBuffers[2].outputLatencyMicros=-1;invalidBuffers[3].outputLatencyMicros=10000001;invalidBuffers[4].quantum=0;invalidBuffers[5].quantum=nan;invalidBuffers[6].quantum=257;invalidBuffers[7].quantum=1e-12;
+    // Deterministic only because those owner calls change nothing the SDK
+    // reports and so keep the pre-roll commit as the audio thread's own state:
+    // retiring it would let stable/retained below read the IO thread's copy
+    // before and after it catches up with that commit.
+    const auto stable=callback(*session,buffer);check(stable.valid && !stable.enabled && near(stable.tempo,preRoll.tempo) && near(stable.beat,-.25) && stable.requestedPlaying==preRoll.requestedPlaying && stable.transportChangeMicros==preRoll.transportChangeMicros,"start/stop and unchanged-networking owner calls keep the audio thread's own last commit");std::array<LinkBuffer,8> invalidBuffers{buffer,buffer,buffer,buffer,buffer,buffer,buffer,buffer};invalidBuffers[0].callbackMicros=INT64_MAX;invalidBuffers[1].callbackMicros=INT64_MIN;invalidBuffers[2].outputLatencyMicros=-1;invalidBuffers[3].outputLatencyMicros=10000001;invalidBuffers[4].quantum=0;invalidBuffers[5].quantum=nan;invalidBuffers[6].quantum=257;invalidBuffers[7].quantum=1e-12;
     LinkCommand mutate;mutate.tempo=240;mutate.transport=LinkTransport::Play;mutate.requestBeat=true;mutate.beat=20;
     for(const auto& bad:invalidBuffers)check(!callback(*session,bad,mutate).valid,"invalid timestamp/latency/quantum refuses the whole SDK command");
     std::array<LinkCommand,6> invalidCommands{mutate,mutate,mutate,mutate,mutate,mutate};invalidCommands[0].tempo=nan;invalidCommands[1].tempo=1000;invalidCommands[2].tempo=-1;invalidCommands[3].beat=inf;invalidCommands[4].beat=1e10;invalidCommands[5].transport=static_cast<LinkTransport>(999);
@@ -87,6 +91,31 @@ void readYourWrites() {
     if(stale)std::printf("stale captures after a commit: %d of 20000\n",stale);
     check(stale==0,"with networking off, the next callback always captures the state the previous callback committed");
 }
+// The same read-your-writes contract across owner configuration calls that do
+// not change what the SDK reports: start/stop sync only flips a flag in Link
+// 4.1.1, and enable(false) while networking is already off does nothing. A
+// first fix retired the audio thread's own commit on every such call, which let
+// the very next capture read the IO thread's older copy again (3,300 to 4,700 of
+// 20,000 stale in a probe).
+void ownerCallsKeepOwnWrites() {
+    std::string error;auto session=LinkSession::create(120,error);check(session!=nullptr,"owner-call read-your-writes participant constructs");if(!session)return;
+    LinkBuffer buffer{session->clockMicros(),20000,4};int stale=0;bool owned=true;
+    for(int i=0;i<20000;++i){
+        LinkCommand command;command.tempo=(i%2)==0?60:120;command.transport=(i%3)==0?LinkTransport::Stop:LinkTransport::Play;
+        const auto committed=callback(*session,buffer,command);
+        switch(i%4){
+            case 0:owned=session->enableStartStopSync(false) && owned;break;
+            case 1:owned=session->enable(false) && owned;break;
+            case 2:owned=session->enableStartStopSync(true) && owned;break;
+            default:owned=session->enableStartStopSync(false) && session->enable(false) && owned;break;
+        }
+        const auto observed=callback(*session,buffer);
+        if(!committed.valid || !observed.valid || observed.enabled || !near(observed.tempo,command.tempo) || observed.requestedPlaying!=(command.transport==LinkTransport::Play) || !near(observed.beat,committed.beat))++stale;
+        buffer.callbackMicros+=1000;
+    }
+    if(stale)std::printf("stale captures after a commit and an owner call: %d of 20000\n",stale);
+    check(owned && stale==0,"owner calls that change nothing the SDK reports keep the audio thread's own last commit");
+}
 void peers() {
     std::string error;auto first=LinkSession::create(120,error),second=LinkSession::create(90,error);if(!first || !second)throw std::runtime_error(error);
     check(first->enableStartStopSync(true) && second->enableStartStopSync(true) && first->enable(true) && second->enable(true),"explicit owner action opens two real SDK participants");
@@ -109,4 +138,4 @@ void peers() {
     check(first->enable(false) && second->enable(false),"owner closes actual network discovery before participant retirement");
 }
 }
-int main(int argc,char** argv){try{local();readYourWrites();if(argc==2 && std::string_view(argv[1])=="--peers")peers();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(int argc,char** argv){try{local();readYourWrites();ownerCallsKeepOwnWrites();if(argc==2 && std::string_view(argv[1])=="--peers")peers();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

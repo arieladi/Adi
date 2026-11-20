@@ -51,8 +51,9 @@ struct LinkSession::Impl {
     explicit Impl(double tempo):sdk(tempo){}
     ableton::Link sdk;
     std::atomic<bool> startStopSync{false};
-    // Owner configuration epoch. Any enable/start-stop change retires the
-    // audio-held commit below, so it never outlives the networking-off state.
+    // Owner configuration epoch, bumped only when the owner turns networking
+    // on; that retires the audio-held commit below, so it never outlives the
+    // networking-off state. Calls that change nothing the SDK reports keep it.
     std::atomic<std::uint64_t> epoch{0};
     // Audio thread only.
     std::optional<ableton::Link::SessionState> committed;
@@ -71,11 +72,21 @@ std::unique_ptr<LinkSession> LinkSession::create(double initialTempo,std::string
 }
 bool LinkSession::enable(bool enabled) {
     if(audio::onAudioThread)return false;
-    impl_->sdk.enable(enabled);impl_->epoch.fetch_add(1,std::memory_order_release);return true;
+    // Only turning networking on changes what the SDK reports: Link resets its
+    // session state when discovery starts and peers may then write. Turning it
+    // off needs no epoch (a callback that sees Link enabled already drops the
+    // held commit, and off->on->off between two callbacks bumps here), and an
+    // unchanged value does nothing in the SDK, so neither retires the commit.
+    const bool was=impl_->sdk.isEnabled();
+    impl_->sdk.enable(enabled);
+    if(enabled && !was)impl_->epoch.fetch_add(1,std::memory_order_release);
+    return true;
 }
 bool LinkSession::enableStartStopSync(bool enabled) {
     if(audio::onAudioThread)return false;
-    impl_->sdk.enableStartStopSync(enabled);impl_->startStopSync.store(enabled,std::memory_order_release);impl_->epoch.fetch_add(1,std::memory_order_release);return true;
+    // Link 4.1.1 only flips its sync flag here; timeline and transport stay, so
+    // the audio thread's held commit stays too.
+    impl_->sdk.enableStartStopSync(enabled);impl_->startStopSync.store(enabled,std::memory_order_release);return true;
 }
 bool LinkSession::enabled()const noexcept{return impl_->sdk.isEnabled();}
 std::int64_t LinkSession::clockMicros()const noexcept{return impl_->sdk.clock().micros().count();}
