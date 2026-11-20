@@ -52,6 +52,17 @@ public:
 
     /// 1 to kMaxFactor.
     [[nodiscard]] int oversampling() const noexcept { return factor_; }
+
+    /// The oversampling the Annex asks for at `sampleRate` (see the header).
+    [[nodiscard]] static int factorFor(double sampleRate) noexcept;
+    /// The interpolator, `factor` phases of kTapsPerPhase: tap p + k*factor
+    /// weighs x[n - k] for phase p. Phase p at input sample n reads the signal
+    /// at n - 8 + (2p + 1) / (2 * factor) -- strictly between n - 8 and n - 7
+    /// (kDelay). One tap of 1 when factor is 1. The limiter's true-peak
+    /// detector (DEV-29 c) uses the same one, so a limited signal measures
+    /// at the ceiling on this meter.
+    static void design(int factor, std::vector<double>& taps);
+    static constexpr int kDelay = kTapsPerPhase / 2;
     [[nodiscard]] int channels() const noexcept { return channels_; }
 
 private:

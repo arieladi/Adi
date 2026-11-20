@@ -27,32 +27,45 @@ double besselI0(double x) {
 
 void TruePeakMeter::prepare(double sampleRate, int channels) {
     // The Annex: at least 176.4 kHz after oversampling (see the header).
-    const double rate = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000.0;
-    factor_ = std::clamp(static_cast<int>(std::ceil(176400.0 / rate - 1e-9)), 1, kMaxFactor);
+    factor_ = factorFor(sampleRate);
     channels_ = std::max(0, channels);
     history_.assign(static_cast<std::size_t>(channels_) * kTapsPerPhase, 0.0);
-    const int n = factor_ * kTapsPerPhase;
-    taps_.assign(static_cast<std::size_t>(n), 0.0);
-    if (factor_ > 1) {
+    design(factor_, taps_);
+    reset();
+}
+
+int TruePeakMeter::factorFor(double sampleRate) noexcept {
+    const double rate = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000.0;
+    return std::clamp(static_cast<int>(std::ceil(176400.0 / rate - 1e-9)), 1, kMaxFactor);
+}
+
+void TruePeakMeter::design(int factor, std::vector<double>& taps) {
+    factor = std::clamp(factor, 1, kMaxFactor);
+    const int n = factor * kTapsPerPhase;
+    taps.assign(static_cast<std::size_t>(n), 0.0);
+    if (factor == 1) {
+        taps[0] = 1.0;
+        return;
+    }
+    {
         // A windowed sinc cut at the INPUT's Nyquist, in the oversampled domain.
         const double centre = static_cast<double>(n - 1) / 2.0;
         constexpr double kBeta = 8.0;
         const double norm = besselI0(kBeta);
         for (int i = 0; i < n; ++i) {
-            const double t = (static_cast<double>(i) - centre) / static_cast<double>(factor_);
+            const double t = (static_cast<double>(i) - centre) / static_cast<double>(factor);
             const double sinc = t == 0.0 ? 1.0 : std::sin(kPi * t) / (kPi * t);
             const double r = (static_cast<double>(i) - centre) / (static_cast<double>(n) / 2.0);
             const double w = besselI0(kBeta * std::sqrt(std::max(0.0, 1.0 - r * r))) / norm;
-            taps_[static_cast<std::size_t>(i)] = sinc * w;
+            taps[static_cast<std::size_t>(i)] = sinc * w;
         }
         // Each phase at unity DC gain: a constant reads as itself.
-        for (int p = 0; p < factor_; ++p) {
+        for (int p = 0; p < factor; ++p) {
             double sum = 0.0;
-            for (int k = 0; k < kTapsPerPhase; ++k) sum += taps_[static_cast<std::size_t>(p + k * factor_)];
-            for (int k = 0; k < kTapsPerPhase; ++k) taps_[static_cast<std::size_t>(p + k * factor_)] /= sum;
+            for (int k = 0; k < kTapsPerPhase; ++k) sum += taps[static_cast<std::size_t>(p + k * factor)];
+            for (int k = 0; k < kTapsPerPhase; ++k) taps[static_cast<std::size_t>(p + k * factor)] /= sum;
         }
     }
-    reset();
 }
 
 void TruePeakMeter::reset() noexcept {
