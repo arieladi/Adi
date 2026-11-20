@@ -76,6 +76,16 @@ void locateFence() {
     mailbox.drain(transport);
     check(mailbox.playing() && settledLocateRevision(mailbox) == locateInMixedDrain,
           "a Stop and Play drain leaves the applied Locate witness alone");
+
+    constexpr std::int64_t recordTick = 720;
+    std::int64_t observedRecordTick = -1;
+    check(mailbox.post(Command::Record, recordTick), "queue the existing Record command");
+    mailbox.drain(transport, [&](std::int64_t tick) noexcept {
+        observedRecordTick = tick;
+        transport.locate(position);
+    });
+    check(observedRecordTick == recordTick && settledLocateRevision(mailbox) == locateInMixedDrain,
+          "Record still dispatches its tick without replacing the last explicit Locate revision");
 }
 // The theme and density tables (DF-W24): the window's every colour and size, by role.
 void themeAndDensityTables() {
