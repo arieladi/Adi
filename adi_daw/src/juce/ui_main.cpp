@@ -755,6 +755,40 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // A VST3 or CLAP plug-in from the browser (DF-W9 on N57): one undo step. The Browser lists the
+        // loader's catalogue (N58), so the session makes it from a catalogue hit, which the loader serves
+        // while a discovery runs too. Every listed plug-in carries its kind; `kindGuessed` is the
+        // fallback for one that does not.
+        root->loadPlugin = [this](rows::PluginRef ref, std::int64_t track, std::optional<std::int64_t> before,
+                                  bool kindGuessed) {
+            // A plug-in the project already holds keeps the kind its reference stores.
+            std::optional<std::string> stored;
+            if (kindGuessed)
+                if ((stored = storedSubtype(document_->store(), ref.format, ref.uid)))
+                    ref.subtype = *stored;
+            const auto newest = [this] {
+                return document_->store().db().execAndGet("SELECT COALESCE(MAX(id), 0) FROM devices").getInt64();
+            };
+            const auto before_ = newest();
+            if (!document_->insertPlugin(ref, track, before)) {
+                if (root_)
+                    root_->say(document_->error());
+                return false;
+            }
+            if (!root_)
+                return true;
+            // A plug-in that did not load stays in the chain as a placeholder, bypassed: say so and why.
+            const auto made = newest();
+            if (const auto *entry = made > before_ ? document_->session().entryFor(made) : nullptr; entry && entry->placeholder) {
+                root_->say(ref.name + " did not load (" + entry->error + "); it stays in the chain, bypassed. Undo removes it.");
+                return true;
+            }
+            const auto kind = ref.subtype == "instrument" ? "an instrument" : ref.subtype == "midi_effect" ? "a MIDI effect" : "an audio effect";
+            if (kindGuessed)
+                root_->say(stored ? ref.name + " went in as " + kind + ", as this project holds it." :
+                                    ref.name + " went in as " + kind + ": its plug-in catalogue does not say its kind.");
+            return true;
+        };
         // The control bar's Re-Enable Automation and Automation Arm (manual 25.4, 25.1; N26): the
         // session's state, through the document.
         root->reenableAutomation = [this] {

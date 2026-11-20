@@ -6,6 +6,9 @@
 // `app::PluginCatalogueService`, DF-W34), tests fill it by hand, and the Browser lays it out.
 #pragma once
 #include "adi/plugin_scanner.hpp"
+#include "adi/store.hpp"
+#include "adi/store_rows.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -145,6 +148,35 @@ inline std::vector<PluginGroup> pluginGroups(const PluginListing &listing, const
         out.back().entries.push_back(p);
     }
     return out;
+}
+// The plug-in reference a load inserts (DF-W9's load on N57, `ProjectDocument::insertPlugin`): its format,
+// identity, name, vendor, version, file, and its kind as the reference's subtype, which places it in the
+// chain (a MIDI effect before the instrument, an audio effect after it). A VST3's kind is not known until
+// engine-win's catalogue (N58): `unknownAsInstrument` says what the window takes it for meanwhile.
+inline rows::PluginRef pluginReference(const PluginEntry &p, bool unknownAsInstrument) {
+    rows::PluginRef ref;
+    ref.format = p.format;
+    ref.uid = p.uid;
+    ref.name = p.name;
+    ref.vendor = p.vendor;
+    ref.version = p.version;
+    ref.pathHint = p.path;
+    using K = PluginEntry::Kind;
+    ref.subtype = p.kind == K::Instrument    ? "instrument"
+                  : p.kind == K::MidiEffect ? "midi_effect"
+                  : p.kind == K::Effect     ? "effect"
+                                            : (unknownAsInstrument ? "instrument" : "effect");
+    return ref;
+}
+// The kind the project already holds for a plug-in: its reference is one row per format and identity, so a
+// second load takes that row's subtype, whatever a guess would say. None when the project has no reference.
+inline std::optional<std::string> storedSubtype(Store &store, const std::string &format, const std::string &uid) {
+    SQLite::Statement q(store.db(), "SELECT subtype FROM plugin_refs WHERE format = ? AND uid = ? AND shell_id IS NULL");
+    q.bind(1, format);
+    q.bind(2, uid);
+    if (!q.executeStep())
+        return std::nullopt;
+    return q.getColumn(0).getString();
 }
 // A format's folder name, as Live writes its own.
 inline std::string formatFolder(const std::string &format) {

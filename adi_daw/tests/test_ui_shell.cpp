@@ -2673,9 +2673,45 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
             return -1;
         };
         const int glass = rowNamed("Glass Piano");
-        check(glass >= 0 && !browser.load(glass) && root.error().find("waits for the engine's insert") != std::string::npos &&
-                  root.error().find("N57") != std::string::npos,
-              "a double-click on a plug-in says its load waits for the engine's insert (N57)");
+        check(glass >= 0 && !browser.load(glass) && root.error().find("application's plug-in host") != std::string::npos,
+              "outside the application a double-click on a plug-in says it needs the application's host");
+        // DF-W9's load on N57: the reference handed over, its kind the subtype that places it.
+        std::vector<std::tuple<rows::PluginRef, std::int64_t, bool>> loaded;
+        root.loadPlugin = [&loaded](rows::PluginRef ref, std::int64_t track, std::optional<std::int64_t>, bool guessed) {
+            loaded.emplace_back(std::move(ref), track, guessed);
+            return true;
+        };
+        std::int64_t audioTrack = 0, midiTrack = 0;
+        for (const auto &t : root.reader().tracks())
+            if (t && t->kind == "audio" && audioTrack == 0)
+                audioTrack = t->id;
+            else if (t && t->kind == "midi" && midiTrack == 0)
+                midiTrack = t->id;
+        root.arrangement.geometry.selection.track = midiTrack;
+        check(midiTrack != 0 && browser.load(glass) && loaded.size() == 1 && std::get<1>(loaded[0]) == midiTrack &&
+                  std::get<0>(loaded[0]).format == "clap" && std::get<0>(loaded[0]).uid == "org.adi.glass" &&
+                  std::get<0>(loaded[0]).subtype == "instrument" && std::get<0>(loaded[0]).pathHint == "/x/glass.clap" &&
+                  std::get<0>(loaded[0]).vendor == "Northwind Audio" && !std::get<2>(loaded[0]),
+              "a CLAP instrument loads onto the selected track as an instrument, with its identity and file, not guessed");
+        const int echoRow = rowNamed("Echo");
+        root.arrangement.geometry.selection.track = audioTrack;
+        check(audioTrack != 0 && browser.load(echoRow) && loaded.size() == 2 && std::get<0>(loaded[1]).format == "vst3" &&
+                  std::get<0>(loaded[1]).subtype == "effect" && std::get<2>(loaded[1]),
+              "a VST3 of unknown kind onto an audio track is guessed an effect");
+        root.arrangement.geometry.selection.track = midiTrack;
+        check(browser.load(echoRow) && loaded.size() == 3 && std::get<0>(loaded[2]).subtype == "instrument" &&
+                  std::get<2>(loaded[2]),
+              "onto a MIDI track, an instrument");
+        // A plug-in the project already holds keeps its stored kind (one reference per plug-in).
+        document->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(990,'vst3','VST3-Echo-1a2b-3c4d','Echo','effect')");
+        check(storedSubtype(document->store(), "vst3", "VST3-Echo-1a2b-3c4d") == std::optional<std::string>("effect") &&
+                  !storedSubtype(document->store(), "vst3", "VST3-Hiss-1"),
+              "the project's stored kind for a plug-in it holds, and none for one it does not");
+        document->store().db().exec("DELETE FROM plugin_refs WHERE id = 990");
+        root.arrangement.geometry.selection.track = 0;
+        check(!browser.load(echoRow) && loaded.size() == 3 && root.error().rfind("Select a track", 0) == 0,
+              "with no track selected it says to select one");
+        root.loadPlugin = nullptr;
         browser.search.setText("zeta", false);
         browser.search.onTextChange();
         layout.clear();

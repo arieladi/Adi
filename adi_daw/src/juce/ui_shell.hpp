@@ -470,6 +470,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
     // undo step); `insertDevice` checks there is a track and says why it cannot.
     std::function<bool(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before)> loadBuiltin;
+    // A VST3 or CLAP plug-in from the Browser onto `track`, in front of `before` or where Live places its
+    // kind (N57, `ProjectDocument::insertPlugin`): one undo step, and the Status Bar says how it went in.
+    // `kindGuessed`: the reference's subtype is the Browser's guess (a VST3 before N58), which a kind the
+    // project already holds for the plug-in overrides. Unset outside the application.
+    std::function<bool(rows::PluginRef, std::int64_t track, std::optional<std::int64_t> before, bool kindGuessed)> loadPlugin;
     bool insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     DeviceChainStrip devices;
     DockResizer dockResizer;
