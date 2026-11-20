@@ -19633,3 +19633,32 @@ answers change no order before 3 December (ADR-0248 d2).
 | `docs/PLAN.md` PD-06, EX-06, §4 M5 | yes to recovery; the three names and their shapes (d1, d2) |
 | `collab/README.md` | ADR 0250 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0251 |
+
+## ADR-0251 — The classic scope keeps its source's own images and is named Classic Scope — `DECIDED` (2026-11-19) — **DIRECTOR'S RULING OF 19 NOVEMBER; NARROWS ADR-0244 d4 FOR THE SCOPE OF ADR-0244 d5**
+
+**What this records.** ADR-0244 d5 made the Mix View's classic scope s(M)exoscope itself, its display
+and controls taken from its open source code, while d4 kept the standing rule of no other maker's
+bitmaps, logos or fonts (ADR-0243 d5). The Mix View seat's branches ship the scope with its source's
+own bitmap images and under its source's name. Win's landing review asked the director which rule
+governs the images, and recommended an ADI name, since a shipped device never carries another
+product's name. His words: "agreed with your recommendation".
+
+### Decisions
+
+1. **The images stay.** The classic scope keeps the bitmap images of its open source code, as d5
+   asks: its display and controls come from its source, not from a redrawing. This is the one
+   exception to ADR-0244 d4's no-bitmaps rule, for this scope only; every other cloned tool is
+   still drawn by ADI.
+2. **Its name is Classic Scope.** Wherever ADI shows the scope (the Mix View's pages, menus, the
+   Analysers, tooltips, the catalogue) it is "Classic Scope". The source's name stays only where
+   the source code itself carries it (its files and its notice), never in ADI's interface.
+3. **For the Mix View seat.** Rename the scope to Classic Scope on its branches before its stack
+   lands; the images need no change.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0244 d4, d5 | the classic scope keeps its source's images (d1); its name is Classic Scope (d2) |
+| `collab/README.md` | ADR 0251 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0252 |
