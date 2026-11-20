@@ -27,7 +27,8 @@
 // Channels are LINKED: one gain for all of them, so a peak on the left does not
 // move the stereo image by ducking only the left.
 //
-// Allocation-free after `prepare`. Latency is exactly the lookahead, and the
+// process() is allocation-free after `prepare`; processOffline() is not (the
+// export worker's call, below). Latency is exactly the lookahead, and the
 // device wrapping this must report it -- which is what ADR-0095 exists for.
 //
 // TRUE PEAK, OFF BY DEFAULT (DEV-29 c, EX-05 LD5). A sample-peak brickwall
@@ -44,7 +45,11 @@
 // is never below the sample peak); between the samples, where the gain moves
 // inside the interpolator's span, a residue is left: under 0.001 dB with a
 // lookahead of 64 samples or more and under 0.05 dB with none, on the tests'
-// noise, bursts and doublets. The encoded check after dither stays the final
+// noise, bursts and doublets. Those are readings by the Annex's interpolator,
+// the one the detector shares; an ideal reconstruction of the same output
+// reads higher where that interpolator reads low (EX4: +0.15 dB on the
+// quarter-rate sine at 45 degrees, +1.6 dB on +12 dB white noise; see the
+// independent reference in tests/test_dsp.cpp). The encoded check after dither stays the final
 // gate (the refine loop in NormalizationCapture is the engine's). Below the ceiling the output is the
 // input, delayed, bit for bit. From 176.4 kHz the Annex oversamples by 1 and
 // the mode is the sample-peak limiter with no added delay.
@@ -120,7 +125,8 @@ private:
     void reset() noexcept;
     template <class Sample>
     void run(const Sample* const* in, Sample* const* out, int frames) noexcept;
-    /// True-peak mode: takes input frame i, returns the target gain for the
+    /// True-peak mode: reads the current frame from frame_ (already finite),
+    /// returns the target gain for the
     /// sample truePeakDelay() behind it.
     double truePeakTarget() noexcept;
     template <class Sample>

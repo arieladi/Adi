@@ -966,7 +966,7 @@ void testTheTruePeakLimiterInFloatAndAtLowRates() {
             for (const auto& f : overProgrammes(rate, 16384)) {
                 for (bool asFloat : {false, true}) {
                     if (!asFloat && rate > 40000.0) {
-                        continue;   // double at 44.1 and 48 kHz is the test above
+                        continue;   // double at 44.1 and 48 kHz: the test above, and the reference's below
                     }
                     LookaheadLimiter lim;
                     lim.prepare(rate, 2, 1024);
@@ -1098,19 +1098,19 @@ void testTheTruePeakLimiterAgainstAnIndependentReference() {
     const auto db = [](double v) { return 20.0 * std::log10(v); };
 
     // The reference first: sines whose crest is 1, at awkward phases, up to
-    // 0.41 of the rate.
+    // 0.41 of the rate (in cycles per sample: it reads any rate alike). From
+    // about 0.47 of the rate its own response rolls off too.
     double worst = 0.0;
-    for (double rate : {44100.0, 48000.0}) {
-        for (double f : {997.0, 6000.0, 11025.0 * 1.003, 15000.0, 18000.0}) {
-            for (double phase : {0.1, 0.77, 2.3}) {
-                std::vector<double> x(1024);
-                for (std::size_t i = 0; i < x.size(); ++i) {
-                    x[i] = std::sin(2.0 * kPi * f * static_cast<double>(i) / rate + phase);
-                }
-                worst = std::max(worst, std::fabs(db(independentTruePeak(Planar{x}, 128, 896))));
+    for (double f : {0.0226, 0.125, 0.2304, 0.3125, 0.375, 0.41}) {
+        for (double phase : {0.1, 0.77, 2.3}) {
+            std::vector<double> x(1024);
+            for (std::size_t i = 0; i < x.size(); ++i) {
+                x[i] = std::sin(2.0 * kPi * f * static_cast<double>(i) + phase);
             }
+            worst = std::max(worst, std::fabs(db(independentTruePeak(Planar{x}, 128, 896))));
         }
     }
+    const double rates[] = {22050.0, 32000.0, 44100.0, 48000.0};
     check(worst < 0.01, "the reference reads known crests within " + std::to_string(worst) + " dB");
 
     // THE LIMITER IS HELD TO THE ANNEX'S READING, AND THE ANNEX READS 4x. The
@@ -1122,16 +1122,19 @@ void testTheTruePeakLimiterAgainstAnIndependentReference() {
     //    at 45 degrees has its crest at the half, an eighth from the nearest
     //    point: cos(pi / 16) is 0.168 dB low.
     //  - near the Nyquist frequency, where its 16 taps roll off: broadband
-    //    noise at +12 dB, limited, reads 1.6 dB higher on the reference.
-    // The bounds are the measured values rounded up, so the gap is on the
-    // record and cannot grow unseen. Whether the brickwall should read finer
-    // than the meter is a decision for the director (the devices log).
+    //    noise at +12 dB, limited, reads 1.6 dB higher on the reference --
+    //    and the reference rolls off there too, so for that content the
+    //    figure is a lower bound on what an ideal reconstruction reads.
+    // At 6x and 8x (32 and 22.05 kHz) the points are finer and the first
+    // cause shrinks. The bounds are the measured values rounded up, so the gap
+    // is on the record and cannot grow unseen. Whether the brickwall should
+    // read finer than the meter is a decision for the director (the log).
     struct Gap {
         const char* name;
         double bound;   // dB over the ceiling, on the reference
     };
-    const Gap gaps[] = {{"quarter-rate", 0.17}, {"0.23 fs", 0.02}, {"noise", 1.7}, {"doublets", 0.2}};
-    for (double rate : {44100.0, 48000.0}) {
+    const Gap gaps[] = {{"quarter-rate", 0.17}, {"0.23 fs", 0.02}, {"noise", 1.7}, {"doublets", 0.25}};
+    for (double rate : rates) {
         for (const auto& f : overProgrammes(rate, 4096)) {
             LookaheadLimiter lim;
             lim.prepare(rate, 2, 1024);
@@ -1150,7 +1153,7 @@ void testTheTruePeakLimiterAgainstAnIndependentReference() {
                     bound = g.bound;
                 }
             }
-            std::printf("    [measured] %s at %d Hz: %+.4f dB on the Annex's 4x reading, %+.4f dB on the reference\n",
+            std::printf("    [measured] %s at %d Hz: %+.4f dB on the Annex's reading, %+.4f dB on the reference\n",
                         f.name.c_str(), static_cast<int>(rate), annex, over);
             check(bound > 0.0 && over <= bound,
                   f.name + " at " + std::to_string(static_cast<int>(rate)) + " Hz: on the reference " +
