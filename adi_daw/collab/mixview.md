@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, morning — dormant VST3 routing passes with the Engine adapter
+
+**PR requested.** `mixview/device-key-shape-dfm60b-20261120` at `9a4064c8`, after the identity and Locate changes. Review the loaned Session hunks. Land the Engine lane's `engine/vst3-effective-key-shape` before this branch, or land both in that order in one window. The Mix View branch does not change the VST3 or CLAP adapters.
+
+Exact Windows x64 Release against the old Session failed five of 214 routing checks and four of 131 owned VST3 checks. The repaired pair at `031bd65c` passed all 214 routing, 131 VST3, 129 document and 269 function checks. This includes dormant assignment, Pre/Post taps, removal, Undo, reopening, preservation of an already active bus and exact programme samples through a retap. The refused preparation retains the previous programme and the same receipt retries. The first reopened callback uses the stored key. The joined app build for win is running.
+
 ## 2026-11-20, morning — device identity and Focus Locate ready for Window review
 
 **PR requested.** `mixview/device-identity-dfm60a-20261120` at `3f6b08b7`, after `mixview/cumulative-20261120`. Engine and Window review the existing loans. Paste, Duplicate and Browser insertion keep new IDs above retained devices. A legacy same-ID replacement checks the reference, format and UID. Undo and Redo restore the appropriate instance. A historical retiree cannot detach a current parameter capture. The exact Windows x64 Release baseline had 14 expected failures in 122 document checks. The corrected owner-tick fixture passed 129 document checks and the parameter replay suite passed 970 checks.
