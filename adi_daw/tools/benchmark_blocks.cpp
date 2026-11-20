@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // ADR-0102: synthetic callback timing, without an audio device or platform API.
 // Build Release with ADI_BUILD_BENCHMARKS=ON; run --self-test before measuring.
+#include "adi/dsp/loudness.hpp"
 #include "adi/engine/graph.hpp"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -251,6 +253,54 @@ void measure(const Project& project, std::int32_t frames, std::size_t iterations
     }
     processor.release();
 }
+// DEV-28 (ADR-0203 d7: Main's meter is always on, so its cost is measured).
+// One LoudnessMeter, true peak on, over a -20 dBFS 997 Hz tone on every
+// channel: the time of each process() call at each block size, beside the
+// callback's deadline. Stereo, and 5.1 with BS.1770's weights.
+bool measureLoudness(std::size_t channels, std::int32_t frames, std::size_t iterations) {
+    std::vector<double> weights(channels, 1.0);
+    if (channels == 6) {
+        weights = {1.0, 1.0, 1.0, 0.0, adi::dsp::LoudnessMeter::kSurroundWeight,
+                   adi::dsp::LoudnessMeter::kSurroundWeight};
+    }
+    adi::dsp::LoudnessMeter meter;
+    meter.prepare(kRate, weights);
+    std::vector<std::vector<float>> audio(channels, std::vector<float>(static_cast<std::size_t>(frames)));
+    std::vector<const float*> pointers(channels);
+    for (std::size_t c = 0; c < channels; ++c) pointers[c] = audio[c].data();
+    std::vector<double> times(iterations);   // no allocation while measuring
+    const double amplitude = std::pow(10.0, -20.0 / 20.0);
+    const double step = 2.0 * 3.14159265358979323846 * 997.0 / kRate;
+    std::int64_t clock = 0;
+    for (std::size_t block = 0; block < kWarmup + iterations; ++block) {
+        // The tone on a global sample clock, made outside the timing.
+        for (std::int32_t frame = 0; frame < frames; ++frame) {
+            const auto value = static_cast<float>(amplitude * std::sin(step * static_cast<double>(clock + frame)));
+            for (auto& channel : audio) channel[static_cast<std::size_t>(frame)] = value;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        meter.process(pointers.data(), frames);
+        const auto end = std::chrono::steady_clock::now();
+        if (block >= kWarmup)
+            times[block - kWarmup] = std::chrono::duration<double, std::micro>(end - start).count();
+        clock += frames;
+    }
+    const auto s = summarize(times, static_cast<double>(frames) * 1e6 / kRate);
+    const auto r = meter.readings();
+    // A broken fixture must not publish timings: the tone must read as
+    // itself. Its true peak is -20 dBTP; once 400 ms have run, momentary is
+    // -20 LUFS in stereo (Tech 3341 case 1's rule), and on any layout -20 +
+    // 10 log10 of the weights' sum over 2.
+    double weightSum = 0.0;
+    for (double w : weights) weightSum += w;
+    const double expected = -20.0 + 10.0 * std::log10(weightSum / 2.0);
+    const bool filled = static_cast<double>(clock) >= 0.4 * kRate;
+    const bool valid = std::abs(r.truePeak + 20.0) < 0.2 && (!filled || std::abs(r.momentary - expected) < 0.2);
+    std::printf("loudness,%zu,%d,%zu,%.3f,%.3f,%.3f,%zu,%.2f,%.2f,%.3f\n", channels, frames, iterations, s.p50, s.p99,
+                s.maximum, s.deadlineMisses, r.momentary, r.truePeak,
+                100.0 * s.p99 / (static_cast<double>(frames) * 1e6 / kRate));
+    return valid;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -271,18 +321,22 @@ int main(int argc, char** argv) {
                   "Fixed fixtures: 8x4 active, 64x4 silence-heavy/all-active, 8x4 MPE+.\n"
                   "MPE+ = 16 notes x 3 dimensions at 500 Hz into the first track.\n"
                   "--breakdown: per-callback rows for both 64-track projects.\n"
+                  "--loudness: instead, Main's loudness meter alone (DEV-28), true peak on,\n"
+                  "  stereo and 5.1, every block size; p99 is also given as a percentage of\n"
+                  "  the callback's deadline.\n"
                   "Node body clocks perturb the measurement; normal mode is the control.\n"
                   "Residual includes Graph overhead and skipped work; skipped time is NA\n"
                   "because Node does not expose the suspended scheduler path.\n"
                   "This is synthetic timing, not an Ableton comparison.");
         return 0;
     }
-    bool breakdown = false;
+    bool breakdown = false, loudness = false;
     Precision precision = Precision::Float32;
     std::uint32_t workers=0,minimumNodes=4;std::int32_t minimumFrames=256;bool explicitFrames=false;
     for (int arg = 1; arg < argc; ++arg) {
         const std::string_view option(argv[arg]);
         if (option == "--breakdown") { breakdown = true; continue; }
+        if (option == "--loudness") { loudness = true; continue; }
         if (option == "--precision" && arg + 1 < argc) {
             const std::string_view value(argv[++arg]);
             if (value == "32") precision = Precision::Float32;
@@ -308,6 +362,24 @@ int main(int argc, char** argv) {
     }
     if(workers>0 && !explicitFrames){std::fputs("workers require explicit --parallel-min-frames; use 1 to measure wake cost\n",stderr);return 2;}
     if(breakdown && workers>0){std::fputs("breakdown clocks share a serial accumulator; use ordinary mode for workers\n",stderr);return 2;}
+    if (loudness) {
+        if (breakdown || workers > 0 || precision != Precision::Float32) {
+            std::fputs("--loudness takes only --iterations\n", stderr);
+            return 2;
+        }
+        std::puts("meter,channels,frames,callbacks,p50_us,p99_us,max_us,dropouts,momentary_lufs,true_peak_dbtp,p99_percent_of_deadline");
+        bool valid = true;
+        for (std::size_t channels : {std::size_t{2}, std::size_t{6}}) {
+            for (std::int32_t frames : {32, 64, 128, 256, 512, 1024, 2048, 4096}) {
+                valid = measureLoudness(channels, frames, iterations) && valid;
+            }
+        }
+        if (!valid) {
+            std::fputs("benchmark failed: the loudness fixture did not read as itself\n", stderr);
+            return 1;
+        }
+        return 0;
+    }
     std::puts(breakdown ?
         "project,frames,callback,processed_nodes,skipped_nodes,callback_us,node_body_us,residual_us,body_us_per_processed_node,skipped_scheduler_us" :
         "project,tracks,effects_per_track,frames,nodes,callbacks,p50_us,p99_us,max_us,dropouts,event_drops,rejected_events,requested_workers,created_workers,parallel_levels,worker_node_blocks");
