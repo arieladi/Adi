@@ -2993,10 +2993,15 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
         auto &sel = view.geometry.selection;
         if (delta != 0 || !across.empty()) {
             if (const auto current = view.root.current()) {
+                // Placed by the engine's planner: what the clips land on is cleared, as Live (DF-W28).
                 auto edit = moveClips(current->tracks, view.geometry.selectedClips(), delta, across);
+                std::vector<AdiRootComponent::ClipPlace> places;
+                for (const auto &op : edit.ops)
+                    places.push_back({op.payload.at("id").get<std::int64_t>(), op.payload.at("track").get<std::int64_t>(),
+                                      op.payload.at("to").get<std::int64_t>()});
                 if (!edit.refusal.empty())
                     view.root.say(edit.refusal);
-                else if (!edit.ops.empty() && view.root.submitEdits(std::move(edit.ops))) {
+                else if (!places.empty() && view.root.placeClips(places, edit.ops.front().label.c_str())) {
                     sel.start += delta;
                     sel.end += delta;
                     // The selection follows the clip dragged, onto its new track.
@@ -3021,7 +3026,7 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
         if (to != from || across) {
             auto &sel = view.geometry.selection;
             const auto length = sel.end - sel.start;
-            if (clipEdit("clip.move", {{"id", clip}, {"to", to}, {"track", track}}, "Move Clip")) {
+            if (view.root.placeClips({{clip, track, to}}, "Move Clip")) {
                 sel.start = to;
                 sel.end = to + length;
                 sel.track = track;
@@ -3453,8 +3458,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
                 if (c->id == sel.clip) {
                     const auto id = c->id, from = c->posTicks, length = c->lengthTicks;
                     const auto target = geo.nextGridLine(from, forward);
-                    if (target != from &&
-                        clipEdit("clip.move", {{"id", id}, {"to", target}, {"track", sel.track}}, "Move Clip")) {
+                    if (target != from && view.root.placeClips({{id, sel.track, target}}, "Move Clip")) {
                         sel.insert = sel.start = target;
                         sel.end = target + length;
                         view.changed();

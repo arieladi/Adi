@@ -588,6 +588,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool toggleRecord();
     // Selects clip `clip` as a click on it would (a recorded take, once it lands).
     void selectClip(std::int64_t clip);
+    // Clips moved, each to a track and a position (DF-W28, ED-03; Live 12 manual 6.7): one placement by the
+    // engine's planner (`edit_plan::prepareMove`), which clears what each clip lands on in its track as
+    // Live does (the covered part goes, a clip crossing the edge is trimmed or split) under the user's
+    // edit policy, one undo step named `label`. A refusal is said.
+    struct ClipPlace {
+        std::int64_t clip = 0, track = 0, position = 0;
+    };
+    bool placeClips(const std::vector<ClipPlace> &, const char *label);
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.

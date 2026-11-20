@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/edit_plan.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
@@ -1686,6 +1687,61 @@ bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
 }
 double AdiRootComponent::editRate() const noexcept {
     return sampleRate_ > 0 ? sampleRate_ : (reader_ ? reader_->sampleRate() : 48000.0);
+}
+bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const char *label) {
+    const auto current = view_.current();
+    if (!current || places.empty())
+        return fail("Select a clip to move.");
+    // The scope: every track a clip leaves or lands on, over the span from the earliest start to the
+    // latest end, where it was and where it goes.
+    std::vector<std::int64_t> tracks;
+    std::int64_t begin = std::numeric_limits<std::int64_t>::max(), end = 0;
+    std::vector<edit_plan::Move> moves;
+    for (const auto &place : places) {
+        const engine::ClipNode *clip = nullptr;
+        std::int64_t from = 0;
+        for (const auto &t : current->tracks)
+            if (t)
+                for (const auto &c : t->clips)
+                    if (c && c->id == place.clip) {
+                        clip = c.get();
+                        from = t->id;
+                    }
+        if (clip == nullptr)
+            return fail("That clip is gone.");
+        for (const auto id : {from, place.track})
+            if (std::find(tracks.begin(), tracks.end(), id) == tracks.end())
+                tracks.push_back(id);
+        begin = std::min({begin, clip->posTicks, place.position});
+        end = std::max({end, clip->posTicks + clip->lengthTicks, place.position + clip->lengthTicks});
+        moves.push_back({place.clip, {place.track, std::nullopt}, {0, place.position}});
+    }
+    const auto scope = edit_plan::materialScope(tracks, edit_plan::PlacementClock::Ticks, {begin, std::max(end, begin + 1)});
+    edit_plan::Options options;
+    options.referenceRate = editRate();
+    options.policy = edit_plan::capturePolicy(commands_.settings());
+    auto prepared = edit_plan::prepareMove(submitter_.store(), scope, moves, options);
+    if (!prepared.ok) {
+        // The planner will not place here yet (automation that follows its clips, AU-05; a frozen track;
+        // an editing setting off Live's rule; clips that already overlap): the clips move as before,
+        // keeping what they land on, and the Status Bar says why, as a range edit does.
+        std::vector<OpRequest> ops;
+        for (const auto &place : places) {
+            OpRequest op;
+            op.opType = "clip.move";
+            op.payload = {{"id", place.clip}, {"to", place.position}, {"track", place.track}};
+            op.label = label;
+            ops.push_back(std::move(op));
+        }
+        const auto why = prepared.error;
+        if (!submitEdits(std::move(ops)))
+            return false;
+        say("Moved, keeping what the clips land on: the engine does not place them here yet (" + why + ").");
+        return true;
+    }
+    if (!prepared.requests.empty())
+        prepared.requests.front().label = label;
+    return commitEdit(std::move(prepared));
 }
 bool AdiRootComponent::commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended) {
     if (!prepared.ok)
