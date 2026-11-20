@@ -141,15 +141,25 @@ inline TrackEdit setSend(const engine::Snapshot &snapshot, std::int64_t source, 
     edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", written(db)}}, label));
     return edit;
 }
-// Live's Enable Send, and its undoing: a row switched on or off; a new row, fully down, when there
-// is none to switch on (refused, with the reason, when no id is left). Nothing to do when the send is
-// already as asked.
+namespace send_edits_detail {
+// Whether the send from `source` reads on: `sendOn`'s one rule, for Enable Send's tick and for what
+// Enable Send writes (DF-W35 (a)). A source the snapshot does not hold reads a missing row as off.
+inline bool readsOn(const engine::Snapshot &snapshot, std::int64_t source, const engine::SendRoute *s) noexcept {
+    const auto *src = snapshot.findTrack(source);
+    return src != nullptr ? sendOn(*src, s) : s != nullptr && s->enabled;
+}
+} // namespace send_edits_detail
+// Live's Enable Send, and its undoing: a row switched on or off. Without a row, the send reads as
+// `sendOn` reads it, on for a track and off for a return, so the menu's tick and its action agree: a
+// return's Enable Send makes the row, fully down; a track's Disable Send makes the row, fully down, as
+// the knob shows it, and switched off. Refused, with the reason, when no id is left for that row;
+// nothing to do when the send is already as asked.
 inline TrackEdit enableSend(const engine::Snapshot &snapshot, std::int64_t source, std::int64_t destination, bool on) {
     using namespace send_edits_detail;
     const char *label = on ? "Enable Send" : "Disable Send";
     TrackEdit edit;
     const auto *s = findSend(snapshot.sends, source, destination);
-    if (s != nullptr ? s->enabled == on : !on) {
+    if (readsOn(snapshot, source, s) == on) {
         edit.refusal = on ? "The send is on already." : "The send is off already.";
         return edit;
     }
@@ -165,6 +175,8 @@ inline TrackEdit enableSend(const engine::Snapshot &snapshot, std::int64_t sourc
     edit.ops.push_back(connect(id, source, destination, label));
     follow(edit, snapshot.findTrack(destination), id, label);
     edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
+    if (!on)
+        edit.ops.push_back(track_edits_detail::op("routing.setEnabled", {{"id", id}, {"enabled", false}}, label));
     return edit;
 }
 // Live's Enable All Sends (§18.4: "right-click on a Return track's Send knob and select Enable Send or
@@ -176,9 +188,11 @@ inline TrackEdit enableAllSends(const engine::Snapshot &snapshot, std::int64_t s
     constexpr const char *label = "Enable All Sends";
     TrackEdit edit;
     const auto &sends = snapshot.sends;
+    // A send needs a new row only when it reads off without one, as a return's does; a track's reads on.
+    const bool missingOn = readsOn(snapshot, source, nullptr);
     std::int64_t rows = 0;
     for (const auto destination : returns)
-        if (findSend(sends, source, destination) == nullptr)
+        if (!missingOn && findSend(sends, source, destination) == nullptr)
             ++rows;
     auto id = rows > 0 ? newIds(snapshot, rows) : 0;
     if (rows > 0 && id == 0) {
@@ -192,10 +206,14 @@ inline TrackEdit enableAllSends(const engine::Snapshot &snapshot, std::int64_t s
                 edit.ops.push_back(track_edits_detail::op("routing.setEnabled", {{"id", s->id}, {"enabled", true}}, label));
             continue;
         }
+        if (missingOn)
+            continue;
         edit.ops.push_back(connect(id, source, destination, label));
         follow(edit, snapshot.findTrack(destination), id, label);
         edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
-        ++id;
+        // The next row's id; none past the last row, whose id may be INT64_MAX itself (DF-W35 (b)).
+        if (--rows > 0)
+            ++id;
     }
     if (edit.ops.empty())
         edit.refusal = "Every send of this return is on already.";

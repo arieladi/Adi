@@ -1030,6 +1030,22 @@ void groupAndUngroupAsBatches() {
           "with nothing selected, the reason");
     check(ui::heldBy(view.current()->tracks, 6) == std::vector<std::int64_t>{3} && ui::heldBy(view.current()->tracks, 2).empty(),
           "the group holds Snare; Kick holds nothing");
+    // DF-W35 (c): a parent that loops back, which the project should never hold, ends the walk rather
+    // than hanging the window. The snapshot's tracks are copied and two of them made each other's parent.
+    {
+        auto looped = view.current()->tracks;
+        for (auto &t : looped)
+            if (t && (t->id == 6 || t->id == 3)) {
+                auto copy = std::make_shared<engine::TrackNode>(*t);
+                copy->parent = t->id == 6 ? 3 : 6;
+                copy->soloed = false;
+                t = copy;
+            }
+        auto held = ui::heldBy(looped, 6);
+        std::sort(held.begin(), held.end());
+        check(!ui::holdsSoloed(looped, 2) && ui::heldBy(looped, 2).empty() && held == std::vector<std::int64_t>{3, 6},
+              "a parent loop ends the walks: nothing hangs");
+    }
     check(sub.undo().ok, "undo");
 }
 
@@ -1144,6 +1160,31 @@ void sendsAsBatches() {
     check(sub.submit(std::move(loop.ops)).ok && ui::findSend(view.current()->sends, 10, 10) != nullptr,
           "A may send to itself (Live's feedback loop)");
 
+    // DF-W35 (a): one rule for the tick and for what Enable Send writes. A track's send with no row
+    // reads on, so Enable Send has nothing to do and Disable Send makes the row, fully down as the knob
+    // shows it, and switched off; ticked again, the same row back on.
+    check(ui::findSend(view.current()->sends, 2, 11) == nullptr &&
+              ui::enableSend(*view.current(), 2, 11, true).refusal == "The send is on already.",
+          "Kick's send B, no row: on already");
+    auto trackOff = ui::enableSend(*view.current(), 2, 11, false);
+    check(trackOff.refusal.empty() && trackOff.ops.size() == 3 && trackOff.ops[0].opType == "routing.connect" &&
+              trackOff.ops[1].opType == "routing.setGain" && trackOff.ops[1].payload["db"] == ui::kSendSilenceDb &&
+              trackOff.ops[2].opType == "routing.setEnabled" && trackOff.ops[2].payload["enabled"] == false &&
+              trackOff.ops[2].payload["id"] == trackOff.ops[0].payload["id"] && sub.submit(std::move(trackOff.ops)).ok &&
+              sub.nextUndo()->label == "Disable Send",
+          "Disable Send on it: the row, fully down, switched off, one step");
+    const auto *kb = ui::findSend(view.current()->sends, 2, 11);
+    check(kb != nullptr && !kb->enabled && kb->gainDb == ui::kSendSilenceDb && !ui::sendOn(*view.current()->findTrack(2), kb) &&
+              ui::enableSend(*view.current(), 2, 11, false).refusal == "The send is off already.",
+          "Kick's send B reads off now, and unticking again only says so");
+    auto trackOn = ui::enableSend(*view.current(), 2, 11, true);
+    check(trackOn.ops.size() == 1 && trackOn.ops[0].opType == "routing.setEnabled" && sub.submit(std::move(trackOn.ops)).ok &&
+              ui::findSend(view.current()->sends, 2, 11)->enabled,
+          "ticked again: the same row on");
+    check(sub.undo().ok && sub.undo().ok && ui::findSend(view.current()->sends, 2, 11) == nullptr, "both undone: no row again");
+    check(ui::enableAllSends(*view.current(), 2, {10, 11}).refusal == "Every send of this return is on already.",
+          "a track's sends with no row read on: Enable All Sends makes no row for them");
+
     // A return's Pre/Post (ADR-0203 d3) is the return's own (#405, N42): one switch on the return, read
     // from `TrackNode::returnSendTap`, written as one `return.setSendTap` that the engine spreads over
     // every send into the return; it holds with no send, and a send made afterwards follows it.
@@ -1253,8 +1294,8 @@ void sendsAsBatches() {
     }
     auto noId = ui::setSend(*view.current(), 2, 11, -6);
     check(noId.ops.empty() && noId.refusal == ui::kSendNoIdLeft, "a new send from a knob is refused: no routing id is left");
-    auto noIdEnable = ui::enableSend(*view.current(), 3, 10, true);
-    check(noIdEnable.ops.empty() && noIdEnable.refusal == ui::kSendNoIdLeft, "Enable Send on a send without a row: refused the same");
+    auto noIdEnable = ui::enableSend(*view.current(), 3, 10, false);
+    check(noIdEnable.ops.empty() && noIdEnable.refusal == ui::kSendNoIdLeft, "Disable Send on a send without a row: refused the same");
     auto noIdAll = ui::enableAllSends(*view.current(), 11, {10, 11, 12});
     check(noIdAll.ops.empty() && noIdAll.refusal == ui::kSendNoIdLeft,
           "Enable All Sends needing one new row: refused whole, nothing switched on");
@@ -1265,6 +1306,44 @@ void sendsAsBatches() {
     check(sub.undo().ok && sub.undo().ok && sub.undo().ok && view.current()->maxRoutingId == 702 &&
               view.current()->findTrack(12) == nullptr,
           "undo: the level, C Return and the INT64_MAX row");
+    // DF-W35 (b): the last new row may take INT64_MAX itself, with no id counted past it.
+    check(sidechain(lastId - 1) && view.current()->maxRoutingId == lastId - 1, "a routing row one below INT64_MAX");
+    {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 12}, {"kind", "return"}, {"name", "C Return"}, {"index", 2}};
+        r.label = "Create track";
+        check(sub.submit(std::move(r)).ok, "C Return once more");
+    }
+    auto lastRow = ui::enableAllSends(*view.current(), 11, {10, 11, 12});
+    check(lastRow.refusal.empty() && lastRow.ops.size() == 2 && lastRow.ops[0].payload["id"] == lastId &&
+              sub.submit(std::move(lastRow.ops)).ok && ui::findSend(view.current()->sends, 11, 12) != nullptr &&
+              ui::findSend(view.current()->sends, 11, 12)->id == lastId,
+          "Enable All Sends needing one row: it takes INT64_MAX and lands");
+    check(sub.undo().ok && sub.undo().ok && sub.undo().ok && view.current()->maxRoutingId == 702 &&
+              view.current()->findTrack(12) == nullptr,
+          "undo: the row, C Return and the sidechain");
+    // Two rows ending at INT64_MAX: consecutive ids, the last the maximum itself.
+    check(sidechain(lastId - 2) && view.current()->maxRoutingId == lastId - 2, "a routing row two below INT64_MAX");
+    {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 12}, {"kind", "return"}, {"name", "C Return"}, {"index", 2}};
+        r.label = "Create track";
+        check(sub.submit(std::move(r)).ok, "C Return, then");
+    }
+    check(ui::enableAllSends(*view.current(), 12, {10, 11, 12}).refusal == ui::kSendNoIdLeft,
+          "three new rows from two below INT64_MAX do not fit: refused whole");
+    auto twoRows = ui::enableAllSends(*view.current(), 12, {10, 12});
+    check(twoRows.refusal.empty() && sub.submit(std::move(twoRows.ops)).ok &&
+              ui::findSend(view.current()->sends, 12, 10) != nullptr &&
+              ui::findSend(view.current()->sends, 12, 10)->id == lastId - 1 &&
+              ui::findSend(view.current()->sends, 12, 12) != nullptr &&
+              ui::findSend(view.current()->sends, 12, 12)->id == lastId,
+          "two new rows: INT64_MAX - 1, then INT64_MAX itself, and they land");
+    check(sub.undo().ok && sub.undo().ok && sub.undo().ok && view.current()->maxRoutingId == 702 &&
+              view.current()->findTrack(12) == nullptr,
+          "undo: the rows, C Return and the sidechain");
     auto after = ui::setSend(*view.current(), 2, 11, -6);
     check(after.refusal.empty() && after.ops.size() == 2 && after.ops[0].payload["id"] == 703 && sub.submit(std::move(after.ops)).ok &&
               ui::findSend(view.current()->sends, 2, 11) != nullptr && ui::findSend(view.current()->sends, 2, 11)->id == 703,
