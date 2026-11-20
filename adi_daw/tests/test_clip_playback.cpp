@@ -261,6 +261,27 @@ void editedFades() {
         check(History(*f.store).undo().ok && f.session.refresh(*f.store),"undo rebuilds legacy envelope and absent shape row");
         render();
         check(std::abs(sample(50)-0.125)<1e-7 && sample(799)==0.5,"undo restores old square arithmetic and no automatic end fade");
+
+        const Payload offset={{"ticks",24024},{"startTicks",12012},{"curve",1}};
+        edit.payload={{"id",1},{"in",offset},{"out",offset}};
+        const auto setOffsets=OpJournal(*f.store).commit(edit);
+        check(setOffsets.ok && f.session.refresh(*f.store),"offset fade handles rebuild in the playing session");
+        render();
+        check(sample(49)==0 && sample(50)==0 && sample(75)==0.25 && sample(100)==0.5,
+              "fade-in stays silent until its lower handle and reaches the same peak");
+        check(sample(699)==0.5 && sample(724)==0.25 && sample(749)==0 && sample(750)==0 && sample(799)==0,
+              "fade-out reaches its independent lower handle and leaves the rest silent");
+
+        edit.payload={{"id",1},{"in",{{"ticks",12013},{"startTicks",12012}}}};
+        const auto shortFade=OpJournal(*f.store).commit(edit);
+        check(shortFade.ok && f.session.refresh(*f.store),"handle span below one output sample keeps the clip playable");
+        render();
+        check(sample(49)==0 && sample(50)==0.5 && sample(724)==0.25 && sample(750)==0,
+              "sub-sample handle span becomes a step and keeps the opposite fade");
+        check(History(*f.store).undo().ok && f.session.refresh(*f.store),"undo restores the authored fade domain");
+        render();
+        check(sample(50)==0 && sample(75)==0.25 && sample(724)==0.25 && sample(750)==0,
+              "undo restores both offset fade envelopes sample exactly");
     }
 }
 void shortenedFade() {

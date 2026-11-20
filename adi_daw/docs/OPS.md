@@ -566,9 +566,12 @@ updating in place without cascading children; clearing retains extensions.
 links. Legacy captured create payloads remain readable. No unknown child-table
 capture is claimed.
 
-The clip.setFades payload is {id,in?:{ticks?,curve?,tension?},out?:{...}}.
+The clip.setFades payload is {id,in?:{ticks?,startTicks?,curve?,tension?},out?:{...}}.
 It is audio-only; ticks are nonnegative and no longer than the clip's musical
 span, curve is 0..5, tension is finite [-1,1] or null for legacy arithmetic.
+The two distances are inward from each side's clip edge. `ticks` locates the
+peak, and `startTicks` locates the zero-gain handle. A positive `startTicks`
+must precede its peak, and a zero or omitted value puts it at the clip edge.
 Each selected side must set at least one known field. Both sides are one edit;
 its inverse captures native fields and the full typed details row or absence.
 
@@ -636,8 +639,10 @@ supported commands and explicit refusals.
 accept attached Warp audio. They preserve AWRP/source windows and capture
 source musical fade domains in clip_warp_fade_domains (schema 1.13), so Split
 retains the original curve on both pieces with no new internal edge fade.
-clip.setFades clears the selected side's retained domain and captures its
-complete typed row in the inverse, alongside the existing nanosecond shape.
+clip.setFades uses that domain for an authored Warp handle pair and the existing
+nanosecond domain for an unwarped source. A selected side at the clip edge
+returns to its legacy edge-based envelope. The inverse captures both complete
+typed domain rows or their absence.
 
 **Captured Warp import (N17).** `clip_edit::prepareImportAudio` with
 `ImportOptions::warp` analyzes the source off the callback, then captures

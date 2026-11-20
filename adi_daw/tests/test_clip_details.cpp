@@ -115,6 +115,21 @@ void linearAndTuningContext() {
           "out-of-range derived end marker does not overflow or lose stored placement");
 }
 
+void exactLinearEnd() {
+    Fixture fixture("exact-end");
+    fixture.store->db().exec(
+        "DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+        "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,"
+        "pos_ns=342123,length_ns=5126627 WHERE id=10");
+    check(fixture.read().endMarkerTicks == 59141,
+          "the Clip View resolves a linear end on the exact tick");
+    OpRequest start;
+    start.opType = "clip.setStartMarker";
+    start.payload = {{"id",10},{"ticks",101}};
+    check(OpJournal(*fixture.store).commit(start).ok && fixture.read().endMarkerTicks == 59141,
+          "the native Start operation preserves the same exact linear End tick");
+}
+
 void optionalLocalProperties() {
     Fixture f("local");
     // Read compatibility with N33's additive format, not a migration claim.
@@ -165,7 +180,7 @@ void corruptAndIndependentStreams() {
 }
 } // namespace
 int main() {
-    try { propertiesAndIdentity(); linearAndTuningContext(); optionalLocalProperties(); corruptAndIndependentStreams(); }
+    try { propertiesAndIdentity(); linearAndTuningContext(); exactLinearEnd(); optionalLocalProperties(); corruptAndIndependentStreams(); }
     catch (const std::exception& error) { check(false,std::string("exception: ")+error.what()); }
     std::printf("%d checks, %d failures\n",checks,failures);
     return failures ? 1 : 0;

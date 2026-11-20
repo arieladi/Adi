@@ -39,9 +39,10 @@ std::int64_t defaultEnd(OpContext& context, const Payload& row) {
         if (tempo.events.empty()) { tempo.events.push_back({0,120,0}); maxBpm = 120; }
         const auto pos = signedInteger(row.at("pos_ns"));
         const auto nanos = signedInteger(row.at("length_ns"));
-        if (pos < 0 || nanos <= 0) throw std::runtime_error("invalid linear clip time");
+        if (pos < 0 || nanos <= 0 || pos > std::numeric_limits<std::int64_t>::max() - nanos)
+            throw std::runtime_error("invalid linear clip time");
         const double begin = static_cast<double>(pos)*1e-9;
-        const double finish = begin + static_cast<double>(nanos)*1e-9;
+        const double finish = static_cast<double>(pos+nanos)*1e-9;
         const long double bound = static_cast<long double>(finish)*maxBpm*5765760.0L/60.0L;
         if (!std::isfinite(bound) || bound >= 0x1p62L) throw std::runtime_error("clip musical duration out of range");
         length = tempo.secondsToTicks(finish) - tempo.secondsToTicks(begin);
