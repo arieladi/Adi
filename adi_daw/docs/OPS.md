@@ -582,6 +582,10 @@ is not rewritten. clip.join restores the captured source and removes all new
 pieces, without allocating IDs or recapturing their source clocks. A prepared
 two-cut split and an appended clip.setMute for its middle piece can be committed
 as one expected-head transaction and one undo step (ADR-0153; N17).
+`prepareSplits` prepares one or two cuts per selected clip using one project
+snapshot and shared clip and child identity allocation (N55). It reports
+per-clip refusals and returns the accepted captures for one expected-head
+commit and one Undo.
 The clip.duplicate op creates only one captured clip and its children; its inverse
 is clip.delete.
 Delete captures full native rows, opaque children and external alias links.

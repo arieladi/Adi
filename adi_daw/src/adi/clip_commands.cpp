@@ -398,39 +398,98 @@ PreparedEdit prepareDuplicate(Store& store,std::int64_t sourceId,std::int64_t ne
         return result;
     } catch(const std::exception& exception){PreparedEdit result;result.error=exception.what();return result;}
 }
-PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t rightId,TimePoint point,double referenceRate) {
+namespace {
+OpRequest captureSplit(Store& store,const ClipSplit& split,std::int64_t firstId,
+                       std::optional<std::int64_t> secondId,const edit::TimeMap& time,
+                       double rate,CopyIds& ids) {
+    auto first=split.first;
+    auto second=split.second;
+    if(second) {
+        if(split.clipId==firstId || split.clipId==*secondId || firstId==*secondId)
+            throw std::runtime_error("split needs three distinct clip identities");
+        if(first.base!=second->base || (first.base!=0 && first.base!=1) || first.value<0 || second->value<=first.value)
+            throw std::runtime_error("split needs ordered endpoints in one clock");
+    }
+    OpContext context{store,store.db()};
+    auto image=captureDeleted(context,split.clipId);
+    if(second) {
+        const int base=static_cast<int>(detail::signedInteger(image.at("row").at("time_base")));
+        first={base,coordinate(first,base,time)};
+        second=TimePoint{base,coordinate(*second,base,time)};
+        if(second->value<=first.value)throw std::runtime_error("split endpoints coincide in the clip's clock");
+    }
+    auto next=splitImage(store,image,firstId,first,time,rate,ids);
+    std::optional<Payload> tail;
+    if(second)tail=splitImage(store,next,*secondId,*second,time,rate,ids);
+    edit::RowEdits plan(store.db());
+    plan.set("clips",split.clipId,image.at("row"));
+    retainDetails(plan,image);
+    createImage(plan,next);
+    if(tail)createImage(plan,*tail);
+    OpRequest request;
+    request.opType="clip.split";
+    request.payload={{"id",split.clipId},{"changes",plan.changes()}};
+    request.label="Split Clip";
+    request.targetKind="clip";request.targetId=split.clipId;
+    return request;
+}
+
+PreparedEdit prepareOneSplit(Store& store,const ClipSplit& split,std::int64_t firstId,
+                             std::optional<std::int64_t> secondId,double referenceRate) {
     PreparedEdit result;
     try {
-        validRate(referenceRate);Read read(store.db());expectedHead(store,result);OpContext context{store,store.db()};
-        auto image=captureDeleted(context,sourceId);edit::TimeMap time(store.db());
-        CopyIds ids(store.db());auto right=splitImage(store,image,rightId,point,time,referenceRate,ids);
-        edit::RowEdits plan(store.db());plan.set("clips",sourceId,image.at("row"));
-        retainDetails(plan,image);
-        createImage(plan,right);packet(store,result,"clip.split","Split Clip",sourceId,plan);
-    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+        validRate(referenceRate);Read read(store.db());expectedHead(store,result);
+        result.sourceFile=filename(store);
+        const edit::TimeMap time(store.db());
+        CopyIds ids(store.db());
+        result.requests.push_back(captureSplit(store,split,firstId,secondId,time,referenceRate,ids));
+        result.ok=true;
+    } catch(const std::exception& exception){result.error=exception.what();}
     return result;
+}
+}
+PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t rightId,TimePoint point,double referenceRate) {
+    return prepareOneSplit(store,{sourceId,point,{}},rightId,{},referenceRate);
 }
 PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t middleId,std::int64_t rightId,
                           TimePoint begin,TimePoint end,double referenceRate) {
-    PreparedEdit result;
+    return prepareOneSplit(store,{sourceId,begin,end},middleId,rightId,referenceRate);
+}
+PreparedSplits prepareSplits(Store& store,std::span<const ClipSplit> splits,double referenceRate) {
+    PreparedSplits result;
     try {
-        validRate(referenceRate);
-        if(sourceId==middleId || sourceId==rightId || middleId==rightId)
-            throw std::runtime_error("split needs three distinct clip identities");
-        if(begin.base!=end.base || (begin.base!=0 && begin.base!=1) || begin.value<0 || end.value<=begin.value)
-            throw std::runtime_error("split needs ordered endpoints in one clock");
-        Read read(store.db());expectedHead(store,result);OpContext context{store,store.db()};
-        auto image=captureDeleted(context,sourceId);edit::TimeMap time(store.db());
-        const int base=static_cast<int>(detail::signedInteger(image.at("row").at("time_base")));
-        const auto first=coordinate(begin,base,time),last=coordinate(end,base,time);
-        if(last<=first)throw std::runtime_error("split endpoints coincide in the clip's clock");
-        CopyIds ids(store.db());
-        auto middle=splitImage(store,image,middleId,{base,first},time,referenceRate,ids);
-        auto right=splitImage(store,middle,rightId,{base,last},time,referenceRate,ids);
-        edit::RowEdits plan(store.db());plan.set("clips",sourceId,image.at("row"));
-        retainDetails(plan,image);createImage(plan,middle);createImage(plan,right);
-        packet(store,result,"clip.split","Split Clip",sourceId,plan);
-    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+        validRate(referenceRate);Read read(store.db());expectedHead(store,result.edit);
+        result.edit.sourceFile=filename(store);
+        const edit::TimeMap time(store.db());
+        std::optional<CopyIds> ids(std::in_place,store.db());
+        std::set<std::int64_t> seen;
+        for(const auto& split:splits) {
+            try {
+                if(!seen.insert(split.clipId).second)throw std::runtime_error("clip appears twice in the split selection");
+                const auto firstId=ids->next("clips");
+                const auto secondId=split.second?std::optional{ids->next("clips")}:std::nullopt;
+                auto request=captureSplit(store,split,firstId,secondId,time,referenceRate,*ids);
+                result.edit.requests.push_back(std::move(request));
+            } catch(const std::exception& exception){
+                result.refused.push_back({split.clipId,exception.what()});
+                // A refused split may have reserved the last available ID.
+                // Carry only the actual insertions from accepted requests.
+                ids.emplace(store.db());
+                for(const auto& accepted:result.edit.requests)for(const auto& change:accepted.payload.at("changes")) {
+                    const auto& table=change.at("table").get_ref<const std::string&>();
+                    if(change.at("before").is_null() && !change.at("after").is_null() &&
+                       std::string_view(edit::rowSpec(table).key)=="id")
+                        ids->reserve(table,detail::signedInteger(change.at("id")));
+                }
+            }
+        }
+        if(result.edit.requests.empty()) {
+            result.edit.error=result.refused.empty()?"split selection is empty":result.refused.front().error;
+            return result;
+        }
+        if(result.edit.requests.size()>1)for(auto& request:result.edit.requests)request.label="Split Clips";
+        result.edit.ok=true;
+    } catch(const std::exception& exception){result.edit.error=exception.what();}
     return result;
 }
 namespace {

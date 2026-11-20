@@ -933,6 +933,71 @@ void twoPointSplitPayloadBounds() {
               "one redo restores the same zero/negative identity and copied material");
     }
 }
+void groupedSplits() {
+    constexpr std::int64_t q=5765760;
+    using clip_edit::ClipSplit;
+    using clip_edit::TimePoint;
+    Project p;auto& db=p.store->db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'midi','Notes');"
+            "INSERT INTO media_files(id,hash_blake3,format) VALUES(1,'split','wav');"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(7,1,48000);"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=500000000 WHERE id=7;"
+            "UPDATE clips SET track_id=22 WHERE id=8;"
+            "UPDATE clips SET alias_of=8,kind='midi',track_id=22 WHERE id=9;"
+            "INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(51,7,'cc',X'0102'),(61,8,'notes',X'0AFE');");
+    const std::array cuts{
+        ClipSplit{7,{1,125000000},{}},
+        ClipSplit{9,{0,q/2},{}},
+        ClipSplit{8,{0,q/4},TimePoint{0,3*q/4}},
+        ClipSplit{8,{0,q/2},{}},
+    };
+    const auto prepared=clip_edit::prepareSplits(*p.store,cuts,48000);
+    check(prepared.edit.ok && prepared.edit.requests.size()==2 && prepared.edit.options.expectHead &&
+          prepared.refused.size()==2 && prepared.refused[0].clipId==9 && prepared.refused[1].clipId==8,
+          "batch captures valid one- and two-point splits and reports alias and duplicate clip refusals");
+    check(db.execAndGet("SELECT count(*) FROM clips").getInt()==3 && db.execAndGet("SELECT count(*) FROM event_streams").getInt()==2,
+          "grouped split preparation leaves every native row unchanged");
+    const auto committed=clip_edit::commitPrepared(*p.store,prepared.edit);
+    check(committed.ok && committed.seqs.size()==2,
+          "both split captures commit together without colliding root or child identities");
+    if(!committed.ok)return;
+    check(db.execAndGet("SELECT count(*) FROM clips").getInt()==6 &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id=9 AND alias_of=8 AND length_ticks=5765760").getInt()==1,
+          "batch only creates its three accepted pieces and leaves the refused alias alone");
+    check(db.execAndGet("SELECT count(*) FROM clips c JOIN clip_playback_details d ON c.id=d.clip_id "
+          "WHERE c.id>9 AND c.track_id=21 AND c.pos_ns=125000000 AND c.length_ns=375000000 AND d.content_offset_ns=125000000").getInt()==1 &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id>9 AND track_id=22 AND pos_ticks IN (1441440,4324320)").getInt()==2,
+          "grouped split retains the separate physical and musical sections and source clocks");
+    check(db.execAndGet("SELECT count(*) FROM event_streams WHERE id>61 AND "
+          "((stream_kind='cc' AND hex(data)='0102') OR (stream_kind='notes' AND hex(data)='0AFE'))").getInt()==3,
+          "each new piece receives its own native child ID and exact source bytes");
+    const auto children=db.execAndGet("SELECT group_concat(id || ':' || clip_id) FROM (SELECT * FROM event_streams ORDER BY id)").getString();
+    const auto undone=History(*p.store).undo();
+    check(undone.ok && undone.opsApplied==2 && undone.txnId==committed.txnId &&
+          db.execAndGet("SELECT count(*) FROM clips").getInt()==3 && db.execAndGet("SELECT count(*) FROM event_streams").getInt()==2,
+          "one Undo restores both originals and removes their new children");
+    const auto redone=History(*p.store).redo();
+    check(redone.ok && redone.opsApplied==2 && redone.txnId==committed.txnId &&
+          db.execAndGet("SELECT group_concat(id || ':' || clip_id) FROM (SELECT * FROM event_streams ORDER BY id)").getString()==children,
+          "one Redo restores both clips with the same captured child identities");
+    const auto onlyAlias=clip_edit::prepareSplits(*p.store,std::span(cuts).subspan(1,1),48000);
+    check(!onlyAlias.edit.ok && onlyAlias.refused.size()==1 && onlyAlias.edit.requests.empty() &&
+          !clip_edit::commitPrepared(*p.store,onlyAlias.edit).ok,"an entirely refused split group records no edit");
+
+    check(History(*p.store).undo().ok,"reset grouped split to verify expected-head publication");
+    const auto stale=clip_edit::prepareSplits(*p.store,cuts,48000);
+    OpRequest rename;rename.opType="track.rename";rename.payload={{"id",21},{"name","Another edit"}};
+    const auto newer=OpJournal(*p.store).commit(rename);
+    check(newer.ok && !clip_edit::commitPrepared(*p.store,stale.edit).ok &&
+          db.execAndGet("SELECT count(*) FROM clips").getInt()==3,"a stale grouped split cannot publish a subset of its pieces");
+
+    db.exec("UPDATE clips SET id=9223372036854775806 WHERE id=9;");
+    const std::array nearLimit{ClipSplit{9223372036854775806LL,{0,q/2},{}},ClipSplit{8,{0,q/2},{}}};
+    const auto finalId=clip_edit::prepareSplits(*p.store,nearLimit,48000);
+    check(finalId.edit.ok && finalId.refused.size()==1 && clip_edit::commitPrepared(*p.store,finalId.edit).ok &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id=9223372036854775807 AND track_id=22").getInt()==1,
+          "a refused clip leaves the last available identity for the next valid split");
+}
 } // namespace
 
-int main(){try{stateAndSharing();refusalAndCurves();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{stateAndSharing();refusalAndCurves();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
