@@ -66,6 +66,27 @@ void local() {
     error="keep";bool refused=false;const auto beforeA=allocations.load(),beforeF=frees.load();{adi::audio::CallbackScope scope;auto denied=LinkSession::create(120,error);refused=!denied && !session->enable(true) && !session->enableStartStopSync(true);}
     check(refused && error=="keep" && !session->enabled() && !callback(*session,buffer).startStopSync && beforeA==allocations.load() && beforeF==frees.load(),"owner-only construction/configuration refuses callback use without side effects or diagnostics");
 }
+// Read-your-writes with networking off. Link 4.1.1 clears its "pending audio
+// commits" flag when its IO thread finishes an OLDER batch, and with Link
+// disabled its audio cache has no grace period, so a capture right after a
+// commit could read the IO copy that predates it: the old tempo, the beat
+// computed on the old timeline. The ubuntu arm64 leg caught it once on main
+// 5acebf6b at "committed SDK tempo affects the next captured audio state".
+// Commit back to back so the IO thread is always mid-batch, and require every
+// next callback to see exactly what the previous one committed.
+void readYourWrites() {
+    std::string error;auto session=LinkSession::create(120,error);check(session!=nullptr,"read-your-writes participant constructs");if(!session)return;
+    LinkBuffer buffer{session->clockMicros(),20000,4};int stale=0;
+    for(int i=0;i<20000;++i){
+        LinkCommand command;command.tempo=(i%2)==0?60:120;command.transport=(i%3)==0?LinkTransport::Stop:LinkTransport::Play;
+        const auto committed=callback(*session,buffer,command);
+        const auto observed=callback(*session,buffer);
+        if(!committed.valid || !observed.valid || !near(observed.tempo,command.tempo) || observed.requestedPlaying!=(command.transport==LinkTransport::Play) || !near(observed.beat,committed.beat))++stale;
+        buffer.callbackMicros+=1000;
+    }
+    if(stale)std::printf("stale captures after a commit: %d of 20000\n",stale);
+    check(stale==0,"with networking off, the next callback always captures the state the previous callback committed");
+}
 void peers() {
     std::string error;auto first=LinkSession::create(120,error),second=LinkSession::create(90,error);if(!first || !second)throw std::runtime_error(error);
     check(first->enableStartStopSync(true) && second->enableStartStopSync(true) && first->enable(true) && second->enable(true),"explicit owner action opens two real SDK participants");
@@ -88,4 +109,4 @@ void peers() {
     check(first->enable(false) && second->enable(false),"owner closes actual network discovery before participant retirement");
 }
 }
-int main(int argc,char** argv){try{local();if(argc==2 && std::string_view(argv[1])=="--peers")peers();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(int argc,char** argv){try{local();readYourWrites();if(argc==2 && std::string_view(argv[1])=="--peers")peers();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

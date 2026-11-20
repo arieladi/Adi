@@ -10,7 +10,10 @@
 #endif
 #include <type_traits>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <optional>
 #include <utility>
 namespace adi::engine {
 namespace {
@@ -32,12 +35,32 @@ bool valid(const LinkBuffer& buffer,const LinkCommand& command)noexcept {
     return false;
 }
 }
+// Link 4.1.1 serves the audio thread its own last commit only while that commit
+// is younger than its 1 s local-modification grace period, and it stamps the
+// grace period ZERO while networking is disabled. With networking off it
+// therefore reads its IO thread's copy whenever no audio commit is pending; but
+// that IO thread clears the pending flag when it finishes the batch it took
+// BEFORE a newer commit arrived, so the next capture can return the state from
+// before the newest commit (old tempo, old transport) until the IO thread
+// catches up. The ubuntu arm64 leg caught that on main 5acebf6b. With
+// networking off this participant is the only writer, so the audio thread keeps
+// its own last commit for the same grace period. Networking on keeps the SDK's
+// own timestamped path untouched, where peers may legitimately change state.
+constexpr std::chrono::microseconds kOwnCommitGrace{1000000};
 struct LinkSession::Impl {
     explicit Impl(double tempo):sdk(tempo){}
     ableton::Link sdk;
     std::atomic<bool> startStopSync{false};
+    // Owner configuration epoch. Any enable/start-stop change retires the
+    // audio-held commit below, so it never outlives the networking-off state.
+    std::atomic<std::uint64_t> epoch{0};
+    // Audio thread only.
+    std::optional<ableton::Link::SessionState> committed;
+    std::chrono::microseconds committedAt{0};
+    std::uint64_t committedEpoch=0;
 };
 static_assert(std::atomic<bool>::is_always_lock_free);
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 LinkSession::LinkSession(std::unique_ptr<Impl> impl):impl_(std::move(impl)){}
 LinkSession::~LinkSession()=default;
 std::unique_ptr<LinkSession> LinkSession::create(double initialTempo,std::string& error) {
@@ -48,22 +71,29 @@ std::unique_ptr<LinkSession> LinkSession::create(double initialTempo,std::string
 }
 bool LinkSession::enable(bool enabled) {
     if(audio::onAudioThread)return false;
-    impl_->sdk.enable(enabled);return true;
+    impl_->sdk.enable(enabled);impl_->epoch.fetch_add(1,std::memory_order_release);return true;
 }
 bool LinkSession::enableStartStopSync(bool enabled) {
     if(audio::onAudioThread)return false;
-    impl_->sdk.enableStartStopSync(enabled);impl_->startStopSync.store(enabled,std::memory_order_release);return true;
+    impl_->sdk.enableStartStopSync(enabled);impl_->startStopSync.store(enabled,std::memory_order_release);impl_->epoch.fetch_add(1,std::memory_order_release);return true;
 }
 bool LinkSession::enabled()const noexcept{return impl_->sdk.isEnabled();}
 std::int64_t LinkSession::clockMicros()const noexcept{return impl_->sdk.clock().micros().count();}
 LinkFrame LinkSession::process(const LinkBuffer& buffer,const LinkCommand& command)noexcept {
     if(!valid(buffer,command))return {};
     const auto audible=std::chrono::microseconds(buffer.callbackMicros+buffer.outputLatencyMicros);
-    auto state=impl_->sdk.captureAudioSessionState();
+    // Epoch before enabled: the owner changes the SDK first, then the epoch.
+    const auto epoch=impl_->epoch.load(std::memory_order_acquire);
+    const bool enabled=impl_->sdk.isEnabled();
+    const auto now=impl_->sdk.clock().micros();
+    const bool ownCommit=!enabled && impl_->committed && impl_->committedEpoch==epoch &&
+        now>=impl_->committedAt && now-impl_->committedAt<kOwnCommitGrace;
+    if(!ownCommit)impl_->committed.reset();
+    auto state=ownCommit?*impl_->committed:impl_->sdk.captureAudioSessionState();
     if(command.tempo!=0)state.setTempo(command.tempo,audible);
     if(command.transport!=LinkTransport::Keep)state.setIsPlaying(command.transport==LinkTransport::Play,audible);
     if(command.requestBeat)state.requestBeatAtTime(command.beat,audible,buffer.quantum);
-    LinkFrame frame;frame.valid=true;frame.capturedMicros=buffer.callbackMicros;frame.enabled=impl_->sdk.isEnabled();frame.startStopSync=impl_->startStopSync.load(std::memory_order_acquire);frame.peers=impl_->sdk.numPeers();
+    LinkFrame frame;frame.valid=true;frame.capturedMicros=buffer.callbackMicros;frame.enabled=enabled;frame.startStopSync=impl_->startStopSync.load(std::memory_order_acquire);frame.peers=impl_->sdk.numPeers();
     frame.tempo=state.tempo();frame.beat=state.beatAtTime(audible,buffer.quantum);frame.phase=state.phaseAtTime(audible,buffer.quantum);frame.requestedPlaying=state.isPlaying();frame.audibleMicros=audible.count();frame.transportChangeMicros=state.timeForIsPlaying().count();
     if(command.requestBeat){frame.hasLaunchTime=true;frame.launchMicros=state.timeAtBeat(command.beat,buffer.quantum).count();}
     else if(buffer.queryLaunch && frame.requestedPlaying) {
@@ -72,7 +102,10 @@ LinkFrame LinkSession::process(const LinkBuffer& buffer,const LinkCommand& comma
         frame.hasLaunchTime=true;
         frame.launchMicros=launch.timeAtBeat(buffer.launchBeat,buffer.quantum).count();
     }
-    if(command.tempo!=0 || command.transport!=LinkTransport::Keep || command.requestBeat)impl_->sdk.commitAudioSessionState(state);
+    if(command.tempo!=0 || command.transport!=LinkTransport::Keep || command.requestBeat) {
+        impl_->sdk.commitAudioSessionState(state);
+        if(!enabled){impl_->committed=state;impl_->committedAt=now;impl_->committedEpoch=epoch;}
+    }
     return frame;
 }
 } // namespace adi::engine
