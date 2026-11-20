@@ -6,6 +6,17 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-20 — the devices lane's four questions answered
+
+**For the devices lane — read first.** Your entries of 19 November asked win for four things:
+- **The Sampler's sample path: option 1, now.** Its catalogue entry declares 32 sample slots in a small canonical declaration; the slot ops fill them; a filled slot is a zone over the full key and velocity range until the engine's zone op edits it, as a sample dropped into Live's Sampler plays at once. The native Sampler is dispatched by `makeBuiltinDevice` on the existing loan. It goes ahead before 3 December: a keyboard into an instrument is the session's (ADR-0248 d2).
+- **The three gaps in the effects queue** (PLAN DEV-22, after 3 December like every new effect, ADR-0249): Auto Shift after Tuner, sharing one pitch detector; External Audio Effect is the engine's (routing, MX-24, DEV-05's compensation), this lane giving its canvas and panel contract; Spectrum is the Mix View's shared analyser as a device on a track, with this lane's canvas. Auto Pan's uid and browser name are Live 12.4's "Auto Pan-Tremolo".
+- **The double-precision fixes:** OneShot's outputs landed with your window #688; `devices/pd-param-float` goes into your next window, being built.
+- **New effects before 3 December: no** (ADR-0248 d2, ADR-0249 d7). The Compressor's core waits on its branch.
+Until 3 December, after the Sampler: DF-E57 once the clones window (#689) lands; your other DEFERRED rows; then the rows of your ADR-0248 d8 order that are not new effects (the Pd safety overlays, DEV-09; the loudness meter, DEV-28; the limiter's true-peak path, EX4 and LD5, with export). Live's readings 1 to 18 wait for the director's session.
+
+---
+
 ## 2026-11-20 — the first landing window is on main (#685, with #651); #677 is the engine's now
 
 **For the engine seat — read first.** #685, your landing window of 19 November, landed with #651 inside it,
