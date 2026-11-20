@@ -234,6 +234,9 @@ void measurements() {
     check(render(quant, x) == render(constant, x),
           "one-step sine quantization holds phase-zero value");
     C negative;
+    negative.set(C::Frequency, 1000);   // the settings this oracle was written for
+    negative.set(C::Slope, 1);
+    negative.set(C::Resonance, 29.2893);
     negative.set(C::External, 1);
     negative.set(C::Envelope, -100);
     negative.prepare(48000);
@@ -282,9 +285,62 @@ void measurements() {
     counting = false;
     check(allocations == 0, "comb process allocates zero");
 }
+// DEV-22: Live 12.4's Auto Filter at its browser default (LP, 24 dB, 10 kHz,
+// Resonance 0, Clean), measured by the director's research at 48 kHz: six
+// tones' gain and phase, and the impulse's peak. The numbers are the
+// measurement; the filter that fits them to four decimals is two cascaded
+// TPT state-variable low-passes with k = 2, which is what ADI's Clean core
+// already is -- what had differed was the default (1 kHz, 29 %, 12 dB).
+void liveDefaultParity() {
+    struct Tone { double hz, gainDb, phaseDeg; };
+    const Tone live[] = {{71, -0.0006370902, -1.3879114}, {223, -0.0062846744, -4.3590204},
+                         {997, -0.1255291100, -19.4702341}, {3001, -1.1305380208, -58.1494047},
+                         {7001, -6.0076964014, -130.9280651}, {11003, -14.5235569717, 164.6960187}};
+    C c;
+    c.prepare(48000);
+    std::vector<float> x(96000, 0.f);
+    for (const auto& t : live)
+        for (std::size_t i = 0; i < x.size(); ++i)
+            x[i] += static_cast<float>(0.1 * std::sin(2 * pi * t.hz * static_cast<double>(i) / 48000));
+    const auto y = render(c, x);
+    bool gains = true, phases = true;
+    double worstDb = 0, worstDeg = 0;
+    for (const auto& t : live) {
+        std::complex<double> in = 0, out = 0, ph = 1;
+        const auto step = std::polar(1., -2 * pi * t.hz / 48000);
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            if (i >= 48000) {
+                in += static_cast<double>(x[i]) * ph;
+                out += static_cast<double>(y[i]) * ph;
+            }
+            ph *= step;
+        }
+        const auto h = out / in;
+        const double db = 20 * std::log10(std::abs(h));
+        double deg = std::arg(h) * 180 / pi - t.phaseDeg;
+        deg = std::remainder(deg, 360.0);
+        worstDb = std::max(worstDb, std::abs(db - t.gainDb));
+        worstDeg = std::max(worstDeg, std::abs(deg));
+        gains = gains && std::abs(db - t.gainDb) < 0.01;
+        phases = phases && std::abs(deg) < 0.1;
+    }
+    std::printf("Live default parity: worst gain %.5f dB, worst phase %.4f deg\n", worstDb, worstDeg);
+    check(gains, "Live 12.4 default: six tones' gains within 0.01 dB");
+    check(phases, "Live 12.4 default: six tones' phases within 0.1 degree");
+
+    // The impulse: Live's peak is 2 samples late at 0.2942 of the input.
+    C d;
+    d.prepare(48000);
+    std::vector<float> imp(256, 0.f);
+    imp[0] = 1.f;
+    const auto r = render(d, imp);
+    const auto at = static_cast<std::size_t>(std::max_element(r.begin(), r.end()) - r.begin());
+    check(at == 2 && std::abs(r[at] - 0.2942240834) < 1e-3, "Live 12.4 default: impulse peak at +2, 0.2942");
+}
 } // namespace
 int main() {
     measurements();
+    liveDefaultParity();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
