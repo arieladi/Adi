@@ -84,7 +84,9 @@ inline float fedInput(std::size_t channel, std::int64_t stream) noexcept {
 // The audio device: two inputs, two outputs, 256-frame blocks at 48 kHz, its stream clock advancing. The
 // app's timer (`ProjectDocument::tick`, the only caller of `synchronise()`, the take's landing and the
 // parameter drain) runs every four blocks, about 21 ms. Clips are primed between blocks, as an offline
-// driver must (`ClipPlayback::prime`); the real driver's read-ahead has the wall clock instead.
+// driver must (`ClipPlayback::prime`); the real driver's read-ahead has the wall clock instead. Priming
+// reads the transport as it stands, so it can only be more generous than the app's disk worker: a page it
+// does not fetch before a callback, the app's asynchronous worker cannot have fetched either.
 class Driver {
   public:
     explicit Driver(ui::ProjectDocument &doc) : doc_(&doc) {
@@ -97,14 +99,18 @@ class Driver {
     // What the inputs carry; none is silence.
     std::function<float(std::size_t, std::int64_t)> input;
     std::int64_t stream = 0;
-    std::uint32_t underruns() { return doc_->session().clips() ? doc_->session().clips()->underrunSamples() : 0; }
+    // Clip underrun samples over every callback so far. Each clip generation counts its own, and the
+    // timer's rebuilds replace the generation, so the count is taken per callback.
+    std::uint64_t underruns() const noexcept { return underruns_; }
     // One callback; its output is appended to `heard` when given.
     void block(Stereo *heard = nullptr) {
         for (std::size_t c = 0; c < 2; ++c)
             for (std::size_t i = 0; i < in_[c].size(); ++i)
                 in_[c][i] = input ? input(c, stream + static_cast<std::int64_t>(i)) : 0.f;
-        if (auto *clips = doc_->session().clips())
+        auto *clips = doc_->session().clips();
+        if (clips)
             (void)clips->prime();
+        const auto missedBefore = clips ? clips->underrunSamples() : 0;
         const std::array<const float *, 2> ins{in_[0].data(), in_[1].data()};
         const std::array<float *, 2> outs{out_[0].data(), out_[1].data()};
         engine::AudioIo io;
@@ -115,6 +121,8 @@ class Driver {
         io.frames = kFrames;
         io.streamTimeSamples = stream;
         doc_->process(io);
+        if (clips && clips == doc_->session().clips())
+            underruns_ += clips->underrunSamples() - missedBefore;
         stream += kFrames;
         if (++blocks_ % 4 == 0)
             doc_->tick(stream * 1000 / static_cast<std::int64_t>(kRate));
@@ -133,6 +141,7 @@ class Driver {
     ui::ProjectDocument *doc_;
     std::array<std::vector<float>, 2> in_, out_;
     std::uint64_t blocks_ = 0;
+    std::uint64_t underruns_ = 0;
 };
 // The window's Stop (`AdiRootComponent`'s PlayStop/Stop, ui_shell.cpp: a recording is stopped first, then
 // a `transport.stop` op and the mailbox's Stop).

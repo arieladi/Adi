@@ -218,7 +218,10 @@ void step2(Session &s, Report &report) {
     const auto underrunsBefore = driver.underruns();
     windowPlayFrom(doc, 0);
     Stereo heard;
-    driver.run(1508, &heard);
+    driver.run(1, &heard); // the block Play starts in
+    const auto firstBlockUnderruns = driver.underruns() - underrunsBefore;
+    driver.run(1507, &heard);
+    const auto underruns = driver.underruns() - underrunsBefore;
     windowStop(doc);
     driver.run(4);
     std::size_t worstAt = 0;
@@ -231,15 +234,16 @@ void step2(Session &s, Report &report) {
                 firstDiffering = i;
             lastDiffering = i;
         }
-    const auto underruns = driver.underruns() - underrunsBefore;
     const auto playback = format("playback vs take max|d| %.3g at frame %zu (heard %.4f, take %.4f); %zu of %zu frames "
-                                 "differ, from %zu to %zu; clip underruns %u; monitoring %s",
+                                 "differ, from %zu to %zu; clip underruns %llu (%llu in the block Play starts in); "
+                                 "monitoring %s",
                                  best, worstAt, heard.at(0, worstAt), s.take.at(0, worstAt), differing, s.take.size(),
-                                 firstDiffering, lastDiffering, underruns, ui::monitorName(monitor));
+                                 firstDiffering, lastDiffering, static_cast<unsigned long long>(underruns),
+                                 static_cast<unsigned long long>(firstBlockUnderruns), ui::monitorName(monitor));
     const char *playbackExpected = "output == take delayed by 0 samples (max|d| <= 1e-6); the live input is not heard";
     std::string cause;
     // The same start with the locate one callback ahead of Play (the playhead already at 0 when Play comes):
-    // whether the first block's loss is the locate and the start landing in one callback.
+    // whether a stopped playhead reads ahead at all.
     if (differing > 0) {
         OpRequest play;
         play.opType = "transport.play";
@@ -256,9 +260,10 @@ void step2(Session &s, Report &report) {
         report.engine("2b", format("Locate posted one block before Play (%d): first 40 blocks vs take max|d| %.3g at "
                                    "frame %zu; first sound at frame %zu",
                                    posted ? 1 : 0, early, at, firstSound(again)),
-                      "0: the take from its first frame once the playhead is there before Play");
-        // And with Play taken by an empty callback first (the mailbox drained, nothing rendered): whether the loss
-        // is the start being drained after the block's render began (ProjectDocument::process).
+                      "0 if the stopped playhead's pages are read ahead before Play");
+        // And with Play taken by an empty callback first (the mailbox drained, nothing rendered), so that this
+        // harness's prime between callbacks sees a playing transport: whether the loss is the pages, not the
+        // order of the drain and the render in ProjectDocument::process. The app has no such prime.
         OpRequest replay;
         replay.opType = "transport.play";
         replay.payload = Payload::object();
@@ -276,14 +281,19 @@ void step2(Session &s, Report &report) {
         windowStop(doc);
         driver.run(4);
         const double drained = maxDiff(third, s.take, 0, third.size(), &at);
-        report.engine("2b", format("Play drained by an empty callback before the first block: max|d| %.3g; first sound "
-                                   "at frame %zu",
+        report.engine("2b", format("Play drained by an empty callback, then the playing transport primed before the "
+                                   "first block: max|d| %.3g; first sound at frame %zu",
                                    drained, firstSound(third)),
-                      "0 if the first block is lost because the start is drained after the render began");
-        if (drained == 0 && firstSound(third) == 0 && firstDiffering == 0)
-            cause = "the block Play starts in renders silence while the playhead moves on: ProjectDocument::process "
-                    "drains the mailbox after session_.beginRender() (an empty callback first plays it whole); owner "
-                    "window (src/adi/ui/**)";
+                      "0 if the first block is lost for want of the clip's pages, not the drain order");
+        if (drained == 0 && firstSound(third) == 0 && firstDiffering == 0 && firstBlockUnderruns > 0)
+            cause = format("Play from Stop renders its first block before any of the clip's pages are read: ClipPlayback "
+                           "asks for read-ahead only while the transport plays (ClipPlayback wanted() is empty when "
+                           "stopped), and nothing holds the start until RenderBlock::sourcesReadyAt; that block underruns "
+                           "%llu samples, silent while the playhead moves on. The app's disk worker is asynchronous, so "
+                           "there the loss is this block at least. Owner engine (read-ahead at the stopped playhead, "
+                           "src/adi/engine/clip_playback.cpp), or the window holding Play in ProjectDocument::process "
+                           "until sourcesReadyAt",
+                           static_cast<unsigned long long>(firstBlockUnderruns));
     }
     if (best <= 1e-6 && monitor == ui::Monitor::Off)
         report.step("2b", V::Pass, playback, playbackExpected);
@@ -836,7 +846,11 @@ void step7(Session &s, Report &report) {
                         "(frame %zu) until frame %zu",
                         live, liveAt, liveA.size(), liveLoud, liveFirst, glide, glideAt, glideEnd),
                  "the same play after the same history sounds the same: max|d| <= 1e-6");
-    report.check("7c", refusals.empty() && bitExact && offline >= 0 && offline <= 1e-7,
+    // The offline render above runs the same engine Session the export's job runs, so it cannot see a fault the
+    // two share; the live play of the same project is the independent witness. From block 8: the live play's
+    // first block is 2b's.
+    const double liveVsWav = wav.size() > 0 ? maxDiff(liveB, wav, stepStart(8), liveB.size()) : 1;
+    report.check("7c", refusals.empty() && bitExact && offline >= 0 && offline <= 1e-7 && liveVsWav <= 1e-6,
                  format("choices refused %zu; A %s (%llu frames), B %s; A == B bit for bit %d; B vs offline render "
                         "(%zu frames) max|d| %.3g%s; the WAV's first sound at frame %zu, the live render's at %zu; live "
                         "vs WAV from block 8 max|d| %.3g",
@@ -844,8 +858,9 @@ void step7(Session &s, Report &report) {
                         static_cast<unsigned long long>(a.framesWritten),
                         b.state == render::JobState::Completed ? "exported" : b.error.c_str(), bitExact ? 1 : 0,
                         offlineFrames, offline, offlineError.empty() ? "" : (" " + offlineError).c_str(),
-                        firstSound(wav), firstSound(liveB), maxDiff(liveB, wav, stepStart(8), liveB.size())),
-                 "both export 768000 frames (8 bars); A == B bit for bit; the WAV == the offline render within 1e-7");
+                        firstSound(wav), firstSound(liveB), liveVsWav),
+                 "both export 768000 frames (8 bars); A == B bit for bit; the WAV == the offline render within 1e-7 "
+                 "and == the live play from block 8 within 1e-6");
     std::printf("WTS01 7d, 7e: export with a VST3 in the project, in adi_acceptance_wts01_vst3 (JUCE)\n");
 }
 } // namespace
