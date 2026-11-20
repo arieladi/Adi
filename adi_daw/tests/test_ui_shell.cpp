@@ -1729,6 +1729,22 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               !takesClicks(*reverb->sendKnobs()[1]) && reverb->sendKnobs()[1]->getAlpha() < 1.f &&
               audio->sendOn(0) && takesClicks(a),
           "a return's sends are off until Enable Send; a track's are on");
+    // DF-W35 (a): a track's send with no row reads on, and unticking Enable Send switches it off: a
+    // row, fully down as the knob shows it, written switched off, one step; undo gives the tick back.
+    {
+        audio->enableSend(0, false);
+        root.frame();
+        const auto *off = findSend(root.reader().sends(), 3, 5);
+        check(off != nullptr && !off->enabled && off->gainDb == kSendSilenceDb && !audio->sendOn(0) &&
+                  submitter.nextUndo() && submitter.nextUndo()->label == "Disable Send" &&
+                  submitter.nextUndo()->opCount == 3,
+              "Disable Send on 3 Audio's send A with no row: the row, fully down and off, one step");
+        audio->enableSend(0, false);
+        check(root.error() == "The send is off already.", "unticking it again only says so");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(findSend(root.reader().sends(), 3, 5) == nullptr && audio->sendOn(0), "undone: no row, the send reads on");
+    }
 
     // A typed value commits at once: the row and its level, one undo step.
     audio->sendKnobs()[0]->setValue(-12, juce::sendNotificationSync);
