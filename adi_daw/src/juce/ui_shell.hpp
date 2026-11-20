@@ -3,6 +3,7 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/arm_edits.hpp"
+#include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/export_choices.hpp"
 #include "adi/ui/import_choices.hpp"
@@ -358,6 +359,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<void(const ExportChoices &)> exportAudio;
     // The Export page's starting choices, from the frame's snapshot and selection.
     ExportChoices exportDefaults() const;
+    // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture. The strip begins it
+    // on the control's drag start with its kind and its track or send, and the selected tracks go with
+    // it when the dragged one is among them; each value goes to `mixerDrag`; the release commits one undo
+    // step and Esc cancels. Unset outside the application: the strip commits on release, as before.
+    std::function<bool(const gesture::RelativeScalarSelection &, std::optional<double>, const std::string &)> beginMixerDrag;
+    std::function<bool(double)> mixerDrag;
+    std::function<bool()> endMixerDrag;
+    std::function<void()> cancelMixerDrag;
     std::function<bool()> reenableAutomation;
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;

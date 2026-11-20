@@ -651,6 +651,22 @@ class AdiApplication final : public juce::JUCEApplication,
         root->recording = [this] { return document_->recording(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
+        // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.
+        root->beginMixerDrag = [this](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
+                                      const std::string &label) {
+            const bool ok = document_->beginMixerDrag(selection, value, label);
+            if (!ok)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->mixerDrag = [this](double value) { return document_->mixerDrag(value); };
+        root->endMixerDrag = [this] {
+            const bool ok = document_->endMixerDrag();
+            if (!ok)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->cancelMixerDrag = [this] { document_->cancelMixerDrag(); };
         for (auto *panel : {&root->mixer, &root->mixerView}) {
             // The strips' meters: the engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381),
             // through the session; null until the session has a strip for the track. The strips
