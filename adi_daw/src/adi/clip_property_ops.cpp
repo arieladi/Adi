@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/clip_property_ops.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/row_capture.hpp"
 
@@ -46,8 +47,11 @@ std::int64_t defaultEnd(OpContext& context, const Payload& row) {
         length = tempo.secondsToTicks(finish) - tempo.secondsToTicks(begin);
     }
     const auto offset = signedInteger(row.at("content_offset_ticks"));
-    validTick(offset); validTick(length);
-    if (length <= 0 || length > tickLimit-offset) throw std::runtime_error("clip end marker out of range");
+    if (offset < -tickLimit || offset > tickLimit)
+        throw std::runtime_error("clip source offset outside supported range");
+    validTick(length);
+    if (length <= 0 || offset < -length || length > tickLimit-offset)
+        throw std::runtime_error("clip end marker out of range");
     return offset + length;
 }
 std::int64_t currentEnd(OpContext& context, const Payload& row) {
@@ -85,6 +89,72 @@ void clearClocks(OpContext& context,std::int64_t clipId,const char* assignments)
     if(!present(context.db,"clip_playback_details"))return;
     SQLite::Statement update(context.db,std::string("UPDATE clip_playback_details SET ")+assignments+" WHERE clip_id=?");
     update.bind(1,clipId);update.exec();
+}
+void setStartTicks(OpContext& context, std::int64_t clipId, std::int64_t ticks) {
+    SQLite::Statement update(context.db, "UPDATE clips SET content_offset_ticks=? WHERE id=?");
+    update.bind(1, ticks);
+    update.bind(2, clipId);
+    update.exec();
+}
+struct SourcePins {
+    std::optional<std::int64_t> start;
+    std::optional<std::int64_t> end;
+};
+std::optional<SourcePins> unwarpedPins(OpContext& context, std::int64_t clipId) {
+    if (!present(context.db, "clip_playback_details")) return std::nullopt;
+    SQLite::Statement query(context.db,
+        "SELECT p.content_offset_ns,p.source_end_ns FROM audio_clips a"
+        " LEFT JOIN clip_playback_details p ON p.clip_id=a.clip_id"
+        " WHERE a.clip_id=? AND a.warp_enabled=0");
+    query.bind(1, clipId);
+    if (!query.executeStep()) return std::nullopt;
+    SourcePins pins;
+    if (!query.isColumnNull(0)) pins.start = query.getColumn(0).getInt64();
+    if (!query.isColumnNull(1)) pins.end = query.getColumn(1).getInt64();
+    return pins;
+}
+enum class Marker { Start, End };
+std::int64_t displayTick(const edit::TimeMap& time, std::int64_t origin, std::int64_t ns, Marker marker) {
+    auto tick = std::max<std::int64_t>(0, time.ticks(edit::addTime(time.nanos(origin), ns)) - origin);
+    const auto projected = time.duration(origin, tick);
+    // Round the preserved boundary outward when it lies between displayed ticks.
+    if (marker == Marker::End && projected < ns) ++tick;
+    if (marker == Marker::Start && projected > ns && tick > 0) --tick;
+    validTick(tick);
+    return tick;
+}
+void setUnwarpedMarkers(OpContext& context, std::int64_t clipId, const Payload& row,
+                        const SourcePins& pins, Marker marker, std::int64_t ticks) {
+    const edit::TimeMap time(context.db);
+    const auto origin = row.at("time_base") == 0 ? signedInteger(row.at("pos_ticks"))
+                                                : time.ticks(signedInteger(row.at("pos_ns")));
+    std::int64_t startTicks = ticks, endTicks = ticks;
+    std::int64_t startNs = 0, endNs = 0;
+    if (marker == Marker::Start) {
+        startNs = time.duration(origin, ticks);
+        endTicks = pins.end ? displayTick(time, origin, *pins.end, Marker::End) : currentEnd(context, row);
+        endNs = pins.end ? *pins.end : time.duration(origin, endTicks);
+    } else {
+        startTicks = pins.start ? displayTick(time, origin, *pins.start, Marker::Start)
+                                : signedInteger(row.at("content_offset_ticks"));
+        startNs = pins.start ? *pins.start : time.duration(origin, startTicks);
+        endNs = time.duration(origin, ticks);
+    }
+    validTick(startTicks);
+    validTick(endTicks);
+    if (startTicks >= endTicks || startNs >= endNs) throw std::runtime_error("Start must be before End");
+    setStartTicks(context, clipId, startTicks);
+    setProperties(context, clipId, {{"end_marker_ticks",endTicks}});
+    SQLite::Statement write(context.db,
+        "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(?,?,?)"
+        " ON CONFLICT(clip_id) DO UPDATE SET content_offset_ns=excluded.content_offset_ns,"
+        " source_end_ns=excluded.source_end_ns");
+    write.bind(1, clipId);
+    write.bind(2, startNs);
+    write.bind(3, endNs);
+    write.exec();
+    if (marker == Marker::Start)
+        clearClocks(context, clipId, "in_begin_ns=NULL,in_end_ns=NULL,out_begin_ns=NULL,out_end_ns=NULL");
 }
 bool restore(OpContext& context, const Payload& payload) {
     if (!payload.contains("row")) return false;
@@ -127,25 +197,37 @@ bool inverse(OpContext& context, const Payload& payload, Payload& captured, std:
 bool start(OpContext& context, const Payload& payload, std::string& error) {
     try {
         if (restore(context,payload)) return true;
-        const auto row = core(context,id(payload));
-        const auto value = signedInteger(payload.at("ticks")), finish = currentEnd(context,row);
-        validTick(value); validTick(finish);
+        const auto clipId = id(payload);
+        const auto row = core(context, clipId);
+        const auto value = signedInteger(payload.at("ticks"));
+        validTick(value);
+        if (const auto pins = unwarpedPins(context, clipId)) {
+            setUnwarpedMarkers(context, clipId, row, *pins, Marker::Start, value);
+            return true;
+        }
+        const auto finish = currentEnd(context,row);
+        validTick(finish);
         if (value >= finish) throw std::runtime_error("Start must be before End");
-        setProperties(context,id(payload),{{"end_marker_ticks",finish}}); // pin End while Start moves
-        SQLite::Statement update(context.db,"UPDATE clips SET content_offset_ticks=? WHERE id=?");
-        update.bind(1,value); update.bind(2,id(payload)); update.exec();
-        clearClocks(context,id(payload),"content_offset_ns=NULL,in_begin_ns=NULL,in_end_ns=NULL,out_begin_ns=NULL,out_end_ns=NULL");
+        setProperties(context,clipId,{{"end_marker_ticks",finish}}); // pin End while Start moves
+        setStartTicks(context,clipId,value);
+        clearClocks(context,clipId,"content_offset_ns=NULL,in_begin_ns=NULL,in_end_ns=NULL,out_begin_ns=NULL,out_end_ns=NULL");
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 bool end(OpContext& context, const Payload& payload, std::string& error) {
     try {
         if (restore(context,payload)) return true;
-        const auto row = core(context,id(payload)); const auto value = signedInteger(payload.at("ticks"));
+        const auto clipId = id(payload);
+        const auto row = core(context,clipId);
+        const auto value = signedInteger(payload.at("ticks"));
         validTick(value);
+        if (const auto pins = unwarpedPins(context, clipId)) {
+            setUnwarpedMarkers(context, clipId, row, *pins, Marker::End, value);
+            return true;
+        }
         if (value <= signedInteger(row.at("content_offset_ticks"))) throw std::runtime_error("End must follow Start");
-        setProperties(context,id(payload),{{"end_marker_ticks",value}});
-        clearClocks(context,id(payload),"source_end_ns=NULL");
+        setProperties(context,clipId,{{"end_marker_ticks",value}});
+        clearClocks(context,clipId,"source_end_ns=NULL");
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
