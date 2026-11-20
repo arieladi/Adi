@@ -77,9 +77,11 @@ bool LinkSession::enable(bool enabled) {
     // off needs no epoch (a callback that sees Link enabled already drops the
     // held commit, and off->on->off between two callbacks bumps here), and an
     // unchanged value does nothing in the SDK, so neither retires the commit.
-    const bool was=impl_->sdk.isEnabled();
+    // Every enable(true) bumps, not only a change seen here: two owner threads
+    // could otherwise both read "already on" around the one that turned it on.
+    // A bump while on costs nothing, since the held commit is only used while off.
     impl_->sdk.enable(enabled);
-    if(enabled && !was)impl_->epoch.fetch_add(1,std::memory_order_release);
+    if(enabled)impl_->epoch.fetch_add(1,std::memory_order_release);
     return true;
 }
 bool LinkSession::enableStartStopSync(bool enabled) {
