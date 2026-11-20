@@ -57,7 +57,7 @@ void run() {
     std::ifstream f(std::string(ADI_SHIFTER_PATCH_DIR)+"/Shifter.pd");std::stringstream text;text<<f.rdbuf();
     const auto declarations=device::parsePdDeclarations(text.str());check(declarations.problems.empty(),"Shifter parameter declarations valid");
     engine.prepare(48000,64);engine.bindParameters(declarations);engine.requestLatencyReport();
-    check(latency.latencySamples()>0,"Pitch reports intrinsic window latency");
+    check(latency.latencySamples()==0,"Pitch reports no latency, as Live 12.4 (DV-06)");
     check(engine.sendParameter(1,1),"Mode parameter routes to external");
     check(engine.sendParameter(2,1),"Coarse parameter routes to external");
     std::array<float,64> l{},r{},ol{},orr{};std::array<const float*,2> in{l.data(),r.data()};std::array<float*,2> out{ol.data(),orr.data()};

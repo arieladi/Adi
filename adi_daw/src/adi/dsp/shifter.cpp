@@ -24,9 +24,6 @@
 // upstream notices. Pitch, modulation and Live-style controls are ADI code.
 #include "adi/dsp/shifter.hpp"
 #include "adi/dsp/shifter_hilbert.hpp"
-extern "C" {
-#include "pffft.h"
-}
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -38,62 +35,69 @@ namespace adi::dsp {
 namespace {
 constexpr double pi=std::numbers::pi;
 double wrap(double x){return x-std::floor(x);}
+// Pitch mode, after Live 12.4 as measured (the director's research, DV-06):
+// the device reports no latency, its Window runs 10..350 ms, and at unison its
+// output is a clean copy of the input exactly half the Window late (240, 1920
+// and 8400 samples at 10, 80 and 350 ms, 48 kHz), compensated or not. A
+// rotating-tap delay line has that property by construction: two read taps
+// sweep a delay of 0..Window, half a cycle apart, crossfaded by sin^2 windows
+// that always sum to one; at unison they rest with one tap at Window/2 and
+// gain one. The same model put Live's measured +7 st onset and peak within a
+// few samples once the sweep phase was free; Live's phase reference is not
+// known, so the shape away from unison is not claimed (DEV-22).
 struct Pitch {
-    int size=0, hop=0, position=0, count=0;
-    PFFFT_Setup* setup=nullptr;
-    float *time=nullptr,*frequency=nullptr,*work=nullptr;
-    std::vector<float> input,output,window;
-    std::vector<double> previous,phase,magnitude,weighted;
-    ~Pitch(){if(setup)pffft_destroy_setup(setup);pffft_aligned_free(time);pffft_aligned_free(frequency);pffft_aligned_free(work);}
-    void prepare(int n){
-        size=n;hop=n/4;position=count=0;
-        if(setup)pffft_destroy_setup(setup);
-        pffft_aligned_free(time);pffft_aligned_free(frequency);pffft_aligned_free(work);
-        setup=pffft_new_setup(n,PFFFT_REAL);
-        const auto bytes=static_cast<std::size_t>(n)*sizeof(float);
-        time=static_cast<float*>(pffft_aligned_malloc(bytes));frequency=static_cast<float*>(pffft_aligned_malloc(bytes));work=static_cast<float*>(pffft_aligned_malloc(bytes));
-        if(!setup || !time || !frequency || !work)throw std::bad_alloc();
-        input.assign(static_cast<std::size_t>(n),0);output=input;window=input;
-        previous.assign(static_cast<std::size_t>(n/2+1),0);phase=previous;magnitude=previous;weighted=previous;
-        for(int i=0;i<n;++i)window[static_cast<std::size_t>(i)]=static_cast<float>(0.5-0.5*std::cos(2*pi*i/n));
+    /// DF-E37 (b): how long the taps take to come back to rest at unison.
+    static constexpr double kRestSeconds=0.020;
+    std::vector<float> line;
+    std::size_t write=0;
+    double phase=0.5,rest=0;   ///< rest: 0..1 through the return to the clean read
+    void prepare(double maximumWindow){
+        line.assign(static_cast<std::size_t>(std::ceil(maximumWindow))+4,0);
+        write=0;phase=0.5;rest=0;
     }
-    float sample(float in,double ratio) noexcept {
-        const auto pos=static_cast<std::size_t>(position);
-        const float result=output[pos];output[pos]=0;input[pos]=in;
-        position=(position+1)%size;
-        if(++count<hop)return result;
-        count=0;
-        for(int i=0;i<size;++i)time[i]=input[static_cast<std::size_t>((position+i)%size)]*window[static_cast<std::size_t>(i)];
-        pffft_transform_ordered(setup,time,frequency,work,PFFFT_FORWARD);
-        std::fill(magnitude.begin(),magnitude.end(),0);std::fill(weighted.begin(),weighted.end(),0);
-        for(int k=1;k<size/2;++k){
-            const auto index=static_cast<std::size_t>(k);
-            const double angle=std::atan2(frequency[2*k+1],frequency[2*k]);
-            const double omega=2*pi*k/size;
-            const double actual=omega+std::remainder(angle-previous[index]-omega*hop,2*pi)/hop;
-            previous[index]=angle;
-            const int destination=static_cast<int>(std::round(k*ratio));
-            if(destination>0 && destination<size/2){
-                const auto d=static_cast<std::size_t>(destination);
-                const double amplitude=std::hypot(frequency[2*k],frequency[2*k+1]);
-                magnitude[d]+=amplitude;weighted[d]+=amplitude*actual*ratio;
-            }
+    /// The two sin^2-weighted taps at `ph`. At ph 0 or 0.5 it is one clean
+    /// copy, half the Window late.
+    double taps(double ph,double window) const noexcept {
+        const auto size=line.size();
+        double out=0;
+        for(const double offset:{0.0,0.5}){
+            const double at=wrap(ph+offset);
+            const double gain=std::sin(pi*at);
+            double position=static_cast<double>(write)-at*window;
+            if(position<0)position+=static_cast<double>(size);
+            const double whole=std::floor(position);
+            const double fraction=position-whole;
+            const auto first=static_cast<std::size_t>(whole)%size;
+            const auto second=(first+1)%size;
+            out+=gain*gain*(line[first]*(1-fraction)+line[second]*fraction);
         }
-        std::fill(frequency,frequency+size,0.f);
-        for(int k=1;k<size/2;++k){
-            const auto i=static_cast<std::size_t>(k);
-            if(magnitude[i]>1e-15)phase[i]=std::remainder(phase[i]+hop*weighted[i]/magnitude[i],2*pi);
-            frequency[2*k]=static_cast<float>(magnitude[i]*std::cos(phase[i]));
-            frequency[2*k+1]=static_cast<float>(magnitude[i]*std::sin(phase[i]));
+        return out;
+    }
+    /// `restStep` is 1 / (kRestSeconds * rate).
+    float sample(float in,double ratio,double window,double restStep) noexcept {
+        line[write]=in;
+        double out;
+        // At unison the phase does not move, so a phase a pitch move left
+        // between the rests (0 and 0.5) would comb for good. Crossfade from
+        // the two taps where they are to the clean read, then rest there: no
+        // pitch glide, no jump. Any move away from unison cancels the return.
+        const bool away=std::abs(phase-0.5*std::round(2*phase))>1e-12;
+        if(ratio==1.0 && (away || rest>0)){
+            rest=std::min(1.0,rest+restStep);
+            out=(1-rest)*taps(phase,window)+rest*taps(0.5,window);
+            if(rest>=1){phase=0.5;rest=0;}
+        }else{
+            rest=0;
+            out=taps(phase,window);
         }
-        pffft_transform_ordered(setup,frequency,time,work,PFFFT_BACKWARD);
-        for(int i=0;i<size;++i)output[static_cast<std::size_t>((position+i)%size)]+=time[i]*window[static_cast<std::size_t>(i)]*(2.f/(3.f*static_cast<float>(size)));
-        return result;
+        write=(write+1)%line.size();
+        phase=wrap(phase+(1-ratio)/window);
+        return static_cast<float>(out);
     }
 };
 struct Lane {
     shifter_detail::HilbertTransformMonoFloat hilbert;
-    std::array<Pitch,6> pitch;
+    Pitch pitch;
     std::vector<float> delay,dry;
     std::size_t write=0,dryWrite=0;
     double oscillator=0,lfo=0,envelope=0,tone=0,randomFrom=0,randomTo=0;
@@ -104,22 +108,18 @@ struct Shifter::State {
     std::array<double,Count> p{};
     std::array<Lane,2> lanes;
     double rate=48000,bpm=120,noteTarget=60,noteCurrent=60,bendValue=0;
-    int pitchIndex=3;
     bool prepared=false;
     State(){for(int i=0;i<Count;++i)p[static_cast<std::size_t>(i)]=ranges[i].initial;}
-    int window()const {return 256<<pitchIndex;}
-    void selectWindow(){
-        const double desired=p[Window]*rate/1000;
-        pitchIndex=std::clamp(static_cast<int>(std::round(std::log2(desired/256))),0,5);
-    }
+    /// The Window in samples: Live's milliseconds at this rate, not rounded.
+    double window()const {return p[Window]*rate/1000;}
 };
 Shifter::Shifter():state_(std::make_unique<State>()){}
 Shifter::~Shifter()=default;
 void Shifter::prepare(double rate){
-    auto& s=*state_;s.rate=std::isfinite(rate)&&rate>0?rate:48000;s.selectWindow();
+    auto& s=*state_;s.rate=std::isfinite(rate)&&rate>0?rate:48000;
     for(std::size_t c=0;c<2;++c){auto& l=s.lanes[c];
         l.hilbert.setSampleRate(static_cast<float>(s.rate));
-        for(int i=0;i<6;++i)l.pitch[static_cast<std::size_t>(i)].prepare(256<<i);
+        l.pitch.prepare(ranges[Window].high*s.rate/1000);
         l.delay.assign(static_cast<std::size_t>(s.rate*30)+2,0);l.dry.assign(8193,0);
         l.write=l.dryWrite=0;l.oscillator=l.lfo=l.envelope=l.tone=l.randomFrom=l.randomTo=0;
         l.random=0x12345678u+static_cast<std::uint32_t>(c);
@@ -128,12 +128,13 @@ void Shifter::prepare(double rate){
 void Shifter::set(Param p,double value) noexcept {
     if(p<0 || p>=Count || !std::isfinite(value))return;
     state_->p[static_cast<std::size_t>(p)]=std::clamp(value,ranges[p].low,ranges[p].high);
-    if(p==Window)state_->selectWindow();
 }
 void Shifter::tempo(double bpm) noexcept {if(std::isfinite(bpm))state_->bpm=std::clamp(bpm,20.,999.);}
 void Shifter::note(double n,double velocity) noexcept {if(std::isfinite(n)&&velocity>0)state_->noteTarget=std::clamp(n,0.,127.);}
 void Shifter::bend(double v) noexcept {if(std::isfinite(v))state_->bendValue=std::clamp(v,-1.,1.);}
-int Shifter::latency()const noexcept{return state_->p[Mode]<0.5?state_->window():0;}
+// Live 12.4 reports no latency for Shifter in any mode (DV-06), and leaves the
+// half-Window delay of Pitch mode uncompensated; so does ADI (ADR-0203 d4).
+int Shifter::latency()const noexcept{return 0;}
 void Shifter::process(const float* inL,const float* inR,float* outL,float* outR,std::size_t frames) noexcept {
     auto& s=*state_;auto& p=s.p;
     if(!s.prepared){std::fill(outL,outL+frames,0.f);std::fill(outR,outR+frames,0.f);return;}
@@ -182,7 +183,7 @@ void Shifter::process(const float* inL,const float* inR,float* outL,float* outR,
             l.tone+=(delayed-l.tone)*(1-std::exp(-2*pi*std::min(p[Tone],s.rate*0.45)/s.rate));
             const double feed=input+(p[Delay]>=0.5?l.tone*p[Feedback]/100:0);
             double wet=0;
-            if(mode==0)wet=l.pitch[static_cast<std::size_t>(s.pitchIndex)].sample(static_cast<float>(feed),std::exp2(std::clamp(shift,-48.,48.)/12));
+            if(mode==0)wet=l.pitch.sample(static_cast<float>(feed),std::exp2(std::clamp(shift,-48.,48.)/12),s.window(),1/(Pitch::kRestSeconds*s.rate));
             else {
                 l.oscillator=wrap(l.oscillator+std::clamp(shift,-s.rate*0.45,s.rate*0.45)/s.rate);
                 if(mode==1){const auto [re,im]=l.hilbert.stepPair(static_cast<float>(feed));wet=re*std::cos(2*pi*l.oscillator)+im*std::sin(2*pi*l.oscillator);}

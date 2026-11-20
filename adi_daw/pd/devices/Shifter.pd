@@ -12,7 +12,7 @@
 #X msg 300 295 p 3 \$1;
 #X obj 300 340 adi.param \$0 5 0 1 0 - int Wide;
 #X msg 300 375 p 4 \$1;
-#X obj 300 420 adi.param \$0 6 5 170 40 ms log Window;
+#X obj 300 420 adi.param \$0 6 10 350 80 ms log Window;
 #X msg 300 455 p 5 \$1;
 #X obj 300 500 adi.param \$0 7 0 1 0 - int Delay;
 #X msg 300 535 p 6 \$1;
