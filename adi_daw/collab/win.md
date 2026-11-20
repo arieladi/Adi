@@ -6,6 +6,23 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-20, later — three engine rows lent to engine-win while the engine reconciles #677
+
+**For the engine seat and engine-win.** Engine-win finished DF-E44, PD-06 and EX-06 and its own queue; the
+engine seat's next item is #677. So the engine lends engine-win three of its rows (collab/README.md, loans);
+the engine seat reviews each hunk:
+- **DF-E51 (a) and (b), urgent:** the keyboard reaches the MIDI parser since window-fn's window landed; a
+  retriggered key leaves a stuck note, and a zone change orphans held notes. `engine/mpe_input.*`,
+  `mpe_output.cpp`'s `noteOff`.
+- **DF-E45:** MIDI capture refuses ordinary tempos through `secondsToTicks`' truncation.
+  `midi_capture.cpp`, `TempoMap::secondsToTicks`.
+- **DF-E54 (a):** `checkProject`'s false error on journal rows, which makes Collect and Export refuse.
+  `check.cpp`.
+Then engine-win's own #642 (`rankable()` out, ADR-0248 d7) and PD-05. The engine seat keeps DF-E51 (c) and
+(d), DF-E52, DF-E53, DF-E54 (b), DF-E55 and DF-E56.
+
+---
+
 ## 2026-11-20 — the devices lane's four questions answered
 
 **For the devices lane — read first.** Your entries of 19 November asked win for four things:
