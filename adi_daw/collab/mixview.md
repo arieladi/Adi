@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, morning — reconcile the landed catalogue and record the exact red gates
+
+Main at `917b22c0` includes #579, #580 and #651. The current review stack uses the landed catalogue discovery worker. It projects both formats from the accepted catalogue and publishes the same catalogue to the loader that serves inserts. The legacy local scan thread and loader wrapper are removed. The Classic Scope plug-in assets and notice are unchanged.
+
+Two failures were reproduced in Windows x64 Release before their repairs. The document fixture recorded 14 expected failures in 122 checks. The accessibility and tooltip wrapper fixture recorded one expected failure in 430 checks. The settings and built-in device controls passed 330 and 165 checks. The direct transport mailbox fixture failed eight of 14 checks before the Locate witness and passed all 14 afterward, including the landed Record dispatch. The joined Release and full software component gates are running.
+
+DF-M60(b) requires the Engine lane's `engine/vst3-effective-key-shape` before a Session routing change can preserve an already active VST3 auxiliary bus. That branch is still outside main. The held Session changes and the Engine adapter have a private joined validation checkout. Native EQ and Clean offline-suspension regression fixtures are staged for DF-M34. Generic offline graph suspension and Auto Gain Stage's offline intent belong to the Engine lane. The measured Adaptive residual keeps Limiter outside this suspension change.
+
 ## 2026-11-20, early — verify the standalone Clear correction on the cumulative rehearsal
 
 The default-history correction passes with the familiar one-hop analyser. The source position passes through immediate, staged and overwritten history columns. This changes only the clearing view's pixels and Sweep origin. There is no new tap, transform or worker.
