@@ -83,6 +83,101 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-20 — DEV-28: the loudness meter survives a NaN and reads the programme's last true peak
+
+**PR requested:** head `devices/loudness-robust` (cda11168, one commit on 7510acd2), base `main`.
+
+A gap audit of DEV-28 against main found that two things the row needs were missing. Both are
+needed before the one meter replaces Main's N13, which already guards the first.
+
+- **Non-finite input.**
+  - The problem: `LoudnessMeter::run()` had no guard. One NaN poisoned the K-weighting state, so M
+    and S read NaN, and I and LRA froze until `reset()`.
+  - The fix: a non-finite sample is now read as silence, and a finite one is held to ±10⁶
+    (+120 dBFS). The true-peak interpolator already guards its own input.
+  - Test: a block of NaN measures exactly like a block of zeros, for M, S, I and LRA. A block of
+    3·10³⁸ leaves every reading finite.
+- **The end of a programme.**
+  - The problem: the interpolator answers 8 samples late, so the last samples' overs between the
+    samples were never read. Feeding zeros through `process()` to reach them lets the padding
+    complete a sub-block and reach I, which the contract forbids.
+  - The fix: `finish()` runs the interpolator over its tail with silence and touches no loudness
+    state. It allocates nothing.
+  - Test: a pair of opposite full-scale steps in the last 4 samples reads +0.1 dB or more with
+    `finish()`, the same as padding gives. I, M and S are bit-identical with and without it.
+- **Tests:** `adi_loudness_tests` 67, two of them failing before the fix. CTest 267/267 (MSVC
+  Debug, /W4 /WX).
+
+**What the audit leaves open.** All of it is after 3 December; nothing in DEV-28 blocks that date,
+because `export.normalize` defaults to off.
+
+- **Devices (this lane, in order):**
+  - the "LRA not yet stable" flag in `Readings`, with its definition;
+  - Tech 3341 cases 20 to 23 held to an independent reference. The reference is now in
+    `test_dsp.cpp`, and cases 13 and 14 can be tightened against it;
+  - a loudness case in `tools/benchmark_blocks.cpp`;
+  - the ffmpeg LRA oracle behind `ADI_REQUIRE_ORACLES`;
+  - provenance comments: libebur128's K-weighting constants in `auto_gain.cpp`, and a statement on
+    LD1.
+- **Engine seat:**
+  - rewire N13 (Main's meter) onto `dsp::LoudnessMeter`, with the LD7 snapshot and its validity
+    flags;
+  - rewire Auto Gain Stage's LUFS mode, and rule on what a selection under 400 ms reads.
+- **engine-win:** measure export normalization with `dsp::LoudnessMeter`, using `finish()` instead
+  of the 16-zero padding.
+- **win:**
+  - pin libebur128 v1.2.6 (67b33abe, test-only), with its EXTERNAL-CODE row, and turn on one CI
+    leg with `ADI_REQUIRE_LOUDNESS_ORACLE=ON`;
+  - strike the XC-46 loan lines in LANES.
+
+## 2026-11-20 — DEV-09: `[; pd compatibility(` is fenced, and the object walk refuses a class named by a path
+
+**PR requested:** head `devices/dev09-gaps` (43e372f8, one commit on 7510acd2), base `main`.
+
+A gap audit of DEV-09 against main found two holes that this lane could close.
+
+- **`compatibility` was not fenced.** It sets `pd_compatibilitylevel`, one process-wide integer
+  that every Pd instance reads, so one patch changed how all the others behave. In the test's
+  unfixed run the level was left at 47. The selector now joins the m_glob fence's refused
+  selectors, by name (`pd_loader_fix.cmake`).
+- **PD4's walk took a path as a class name.** Classes like `[/tmp/x]`, `[../x]`, `[C:/x]` and
+  `[\\server\x]` were taken as an ordinary unknown or, worse, as a stored abstraction of that
+  name.
+  - They are now refused as `pd.path_named_class`, named by box.
+  - A class the build makes is checked first, because `[/]` is division; the template suite
+    caught that.
+  - A plain subfolder name such as `[mylib/voice]` stays an ordinary name, resolved against what
+    is stored.
+- **Tests:** `adi_pd_engine_tests` 668 and `adi_pd_object_walk_tests` 92, written first; a plant
+  gave 12 failures. CTest 267/267.
+
+**What the audit leaves open.**
+
+- **For win, two rulings** (also under FOR THE DIRECTOR if win wants the director's word):
+  1. **The cross-instance dropout (AR8).**
+     - The libpd pin holds a global write lock while a patch opens or closes
+       (`z_libpd.c:141-149`, `s_inter.c:1980-2034`), so opening any Pd device silences every other
+       Pd device for that long.
+     - `new_anything` also takes a blocking write lock inside a tick when a patch creates an
+       unknown class at run time. That breaks "the audio thread never waits".
+     - The choice: record the dropout in the row, or open without holding the lock across
+       `glob_evalfile`, which needs a delicate overlay.
+     - Either way, this lane will write the AR8 test: A renders while B opens a 200-object patch,
+       and the test reports A's skipped ticks and the length of the silence.
+  2. **Runaway loops.** Does DEV-09's "a patch cannot stall ADI" cover an unbounded `[until]` on the
+     audio thread? If it does, this lane proposes an overlay that caps `[until]`'s unbounded mode
+     with a named refusal, or a per-tick watchdog that marks the device failed.
+- **win (.github):** an ASan leg (AR18) that runs at least `adi_pd_engine_tests`. This lane's
+  ASan build passes locally.
+- **Devices, after 3 December:**
+  - a seeded patch-text fuzz through `walkPdObjects` and `LibPdEngine::open`, and a state round
+    trip (PD2);
+  - wiring the walk into the user-patch loader when DEV-10 comes.
+- **win (docs):**
+  - DEV-09's "On main" line: AR7, AR17 and #173 are met; AR8 and AR18 are partial.
+  - Close DF-E36.
+  - Add DEFERRED rows for the AR8 test, the ASan leg, PD2 and the runaway-loop question.
+
 ## 2026-11-20 — [adi.transport] gives each Pd tick its exact position (the "editable Pd timing cases")
 
 **PR requested:** head `devices/pd-exact-position` (0e8cd8a3, one commit on dccb6a55), base `main`.
