@@ -506,7 +506,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto info=audio::inspectPcm(clip->path);
                 if(info.frames && *info.frames) {
                     auto& service=decoder?*decoder:audio::defaultProgressiveDecoder();
-                    clip->progressive=service.open(clip->path);
+                    clip->progressive=service.openSaved(clip->path,info,media->hashBlake3);
                     clip->channels=static_cast<std::uint16_t>(clip->progressive->info().channels);
                     clip->sourceRate=clip->progressive->info().sampleRate;
                     sourceFrames=*clip->progressive->info().frames;

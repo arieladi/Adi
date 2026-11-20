@@ -1552,8 +1552,16 @@ void testAPatchCannotQuitOrReconfigurePd() {
 // the instance's lock (an editor, later: DEV-11) makes the audio thread skip
 // its ticks, silent and counted. libpd_process_float took sys_lock and waited
 // out the whole hold inside the callback.
+//
+// The editor holds the lock until the audio thread has finished its segments,
+// not for a fixed time, so the proof does not lean on a wall clock: a segment
+// that waited for the lock could only return after the editor let go, and the
+// editor lets go of its own accord only after a 30 s safety bound. Every
+// segment finishing while stage is still 1 is therefore "never waits", on any
+// runner load. (A 50 ms hold timed against a 10 ms bound failed on a loaded
+// macOS runner when the audio thread itself was descheduled for 12.9 ms.)
 void testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait() {
-    section("DEV-09 AR8 -- an editor holding the lock for 50 ms: the audio thread skips, never waits");
+    section("DEV-09 AR8 -- an editor holding the lock: the audio thread skips, never waits");
     LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2);
     PdLatencyReceiver latency;
     std::string err;
@@ -1563,28 +1571,32 @@ void testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait() {
     (void)runSegmented(eng, sig, 0.f, {64});   // running before the hold
     const auto before = eng.counters();
 
+    constexpr int kSegments = 200;
     std::atomic<int> stage{0};
+    std::atomic<bool> audioDone{false};
+    std::atomic<bool> releasedOnItsOwn{false};
     std::thread editor([&] {
         LibPdEngine::InstanceLock hold(eng);
         stage.store(1);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!audioDone.load()) {
+            if (std::chrono::steady_clock::now() >= limit) { releasedOnItsOwn.store(true); break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         stage.store(2);
     });
     while (stage.load() == 0) std::this_thread::yield();
-    double worstMs = 0;
-    int segments = 0;
-    while (stage.load() == 1) {
-        const auto start = std::chrono::steady_clock::now();
+    int segments = 0, whileHeld = 0;
+    for (; segments < kSegments; ++segments) {
         (void)runSegmented(eng, sig, 0.f, {64});
-        const std::chrono::duration<double, std::milli> took = std::chrono::steady_clock::now() - start;
-        worstMs = std::max(worstMs, took.count());
-        ++segments;
+        if (stage.load() == 1) ++whileHeld;
     }
+    audioDone.store(true);
     editor.join();
     const auto during = eng.counters();
-    check(segments > 1 && worstMs < 10.0,
-          "every segment returned while the lock was held (" + std::to_string(segments) +
-              " segments, the slowest " + std::to_string(worstMs) + " ms of a 50 ms hold)");
+    check(whileHeld == kSegments && !releasedOnItsOwn.load(),
+          "every segment returned while the lock was held (" + std::to_string(whileHeld) + " of " +
+              std::to_string(segments) + " segments)");
     check(during.skippedTicks - before.skippedTicks > 0,
           "and its ticks were skipped and counted (" +
               std::to_string(during.skippedTicks - before.skippedTicks) + ")");

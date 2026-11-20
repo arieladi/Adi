@@ -62,10 +62,17 @@ struct Job {
     void run()noexcept {
         try {
             while(true) {
-                const auto head=written.load(std::memory_order_acquire),tail=read.load(std::memory_order_relaxed);
+                auto head=written.load(std::memory_order_acquire);
+                const auto tail=read.load(std::memory_order_relaxed);
                 if(head==tail) {
-                    if(stopWriter.load(std::memory_order_acquire))break;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;
+                    if(!stopWriter.load(std::memory_order_acquire)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        continue;
+                    }
+                    // Stop is published after the callback quiesces. The first
+                    // read of written may predate that callback's final block.
+                    head=written.load(std::memory_order_acquire);
+                    if(head==tail)break;
                 }
                 const auto frames=static_cast<std::uint32_t>(std::min<std::uint64_t>(4096,head-tail));
                 for(std::uint32_t frame=0;frame<frames;++frame)for(std::size_t channel=0;channel<inputChannels.size();++channel)
