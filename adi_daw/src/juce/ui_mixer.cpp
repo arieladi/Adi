@@ -289,6 +289,13 @@ void MixerStrip::bind(std::int64_t id) {
 void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
+    // Live makes Track Delay unavailable while Options > Delay Compensation is off (manual 18.7;
+    // MX-04); its value stays as stored, and comes back with the switch.
+    if (const bool compensated = panel_.root.commands().delayCompensation(); delay.isEnabled() != compensated) {
+        delay.setEnabled(compensated);
+        delay.setTooltip(compensated ? "Delays the track's output by this many milliseconds; a negative value pre-delays it."
+                                     : "Track Delay is unavailable while Options > Delay Compensation is off.");
+    }
     // A device put on a MIDI track or taken off it may give it an audio mixer or take it away.
     const auto devices = panel_.root.devices.publication ? panel_.root.devices.publication() : nullptr;
     if (changed || devices.get() != devices_) {

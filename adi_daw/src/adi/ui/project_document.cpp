@@ -286,6 +286,14 @@ bool ProjectDocument::reenableAutomation() {
     error_ = refusal;
     return ok;
 }
+bool ProjectDocument::setDelayCompensation(bool on) {
+    if (session_.setDelayCompensation(on)) {
+        error_.clear();
+        return true;
+    }
+    error_ = session_.error().empty() ? std::string("The session could not change Delay Compensation.") : session_.error();
+    return false;
+}
 void ProjectDocument::setAutomationArmed(bool armed) noexcept {
     session_.setAutomationWriteState(armed, false);
 }

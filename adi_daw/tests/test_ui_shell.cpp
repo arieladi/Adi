@@ -2111,6 +2111,38 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                   "undone, 3 Audio reads 10.00 ms again");
         }
         if (column != nullptr) {
+            // Options > Delay Compensation (manual 18.7; MX-04): off, Track Delay is unavailable and
+            // keeps its value; an application setting the session follows, and no undo step.
+            bool applied = true;
+            int calls = 0;
+            root.applyDelayCompensation = [&](bool on) {
+                applied = on;
+                ++calls;
+            };
+            const auto stepBefore = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+            const auto ticked = [&commands] {
+                juce::ApplicationCommandInfo info(AppCommands::DelayCompensation);
+                commands.getCommandInfo(AppCommands::DelayCompensation, info);
+                return (info.flags & juce::ApplicationCommandInfo::isTicked) != 0 && info.shortName == "Delay Compensation";
+            };
+            check(commands.delayCompensation() && ticked() && column->delay.isEnabled(),
+                  "Delay Compensation is on by default, ticked, and Track Delay is available");
+            check(root.command(AppCommands::DelayCompensation), "the Options menu's Delay Compensation, chosen");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            check(!commands.delayCompensation() && !ticked() && calls == 1 && !applied && column != nullptr &&
+                      !column->delay.isEnabled() && boxAt(column->delay, 10.) &&
+                      (submitter.nextUndo() ? submitter.nextUndo()->txnId : 0) == stepBefore,
+                  "off: the session told, Track Delay unavailable and still 10.00 ms, no undo step");
+            check(root.command(AppCommands::DelayCompensation), "chosen again");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            check(commands.delayCompensation() && ticked() && calls == 2 && applied && column != nullptr &&
+                      column->delay.isEnabled(),
+                  "on again: Track Delay available");
+            root.applyDelayCompensation = nullptr;
+        }
+        if (column != nullptr) {
             // The box's own grid is a hundredth: 10.004 snaps to the 10.00 it holds and nothing
             // is committed.
             column->delay.setValue(10.004, juce::sendNotificationSync);
@@ -9709,6 +9741,8 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     arm.onClick();
     root.frame();
     check(arm.getToggleState() && document->automationArmed(), "and on again");
+    check(document->setDelayCompensation(false) && document->setDelayCompensation(true) && document->error().empty(),
+          "the session takes Delay Compensation off and on (MX-04)");
     // A root with no session (the hooks unset) says so instead of toggling.
     root.reenableAutomation = nullptr;
     root.armAutomation = nullptr;
@@ -12256,8 +12290,9 @@ int main(int argc, char **argv) {
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), then Solo in Place (§18.6)");
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloInPlace},
+              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), then "
+              "Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -12270,8 +12305,10 @@ int main(int argc, char **argv) {
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them; it ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloInPlace, 0,
+                                                   C::Settings},
+              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), Solo in "
+              "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
         // The new ids' names through getCommandInfo: `names[id - PlayStop]` is a table by position, so
@@ -12310,11 +12347,13 @@ int main(int argc, char **argv) {
                       C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
-                      C::ArrangementRecord == C::FitToTimeRange + 1 && C::LastId == C::ArrangementRecord,
+                      C::ArrangementRecord == C::FitToTimeRange + 1 && C::DelayCompensation == C::ArrangementRecord + 1 &&
+                      C::LastId == C::DelayCompensation,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
-                  "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, each named");
+                  "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
+                  "Arrangement Record and Delay Compensation, each named");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {

@@ -428,6 +428,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // Options > Delay Compensation (MX-04): the application's setting, which this project's session
+        // follows from its open and at each toggle.
+        root->applyDelayCompensation = [this](bool on) {
+            if (document_ && !document_->setDelayCompensation(on) && root_)
+                root_->say(document_->error());
+        };
+        if (!document_->setDelayCompensation(commands_->delayCompensation()))
+            root->say(document_->error());
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
@@ -814,6 +822,9 @@ class AdiApplication final : public juce::JUCEApplication,
                     };
                 settingsWindow_->panel().onChange = [this] {
                     commands_->reload();
+                    // The Audio page's Delay Compensation row is the Options menu's switch.
+                    if (root_ && root_->applyDelayCompensation)
+                        root_->applyDelayCompensation(commands_->delayCompensation());
                     configurePluginSources();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {

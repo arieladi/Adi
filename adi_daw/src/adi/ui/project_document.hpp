@@ -123,6 +123,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     // not an undo step: the override is session state (ADR-0162), and so is its end. True with
     // nothing overridden too; false with `error()` when the session's rebuild failed.
     bool reenableAutomation();
+    // Live's Options > Delay Compensation (manual 18.7; MX-04): the session lines every track up with
+    // the slowest chain, or compensates nothing and suspends Track Delay, keeping its stored values.
+    // The application's setting, not the project's: not an op and not an undo step. False with
+    // `error()` when the session refused it.
+    bool setDelayCompensation(bool on);
     // Live's Automation Arm (manual 25.1): whether a control moved while the Arrangement Record
     // button is on becomes automation. The session's switch, on in a new Set as Live's. Automation
     // recording is not wired yet (AU-03), so the session is never told that recording is on.

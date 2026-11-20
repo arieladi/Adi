@@ -155,7 +155,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FocusClipView, // Live's Navigate menu: Clip View, Alt/Option+3
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
         ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
-        LastId = ArrangementRecord
+        DelayCompensation, // Live's Options > Delay Compensation (manual 18.7; MX-04)
+        LastId = DelayCompensation
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -176,6 +177,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // How Follow keeps the playhead on screen: by page (Live's default), or by scrolling.
     bool followByPage() const noexcept { return followByPage_; }
     bool setTabMovesFocus(bool on, std::string &why);
+    // Live's Options > Delay Compensation (manual 18.7; MX-04; `audio.delayCompensation`, on by
+    // default): every track lined up with the slowest chain. Off, nothing is compensated and Track
+    // Delay is unavailable, its stored values kept. An application setting, not an undo step.
+    bool delayCompensation() const noexcept { return delayCompensation_; }
+    bool setDelayCompensation(bool on, std::string &why);
     // Live's Wrap Tab Navigation (§41.1.1), on by default: Tab from an area's last control
     // returns to its first; off, it stops there.
     bool wrapTabNavigation() const noexcept { return wrapTab_; }
@@ -246,6 +252,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
+    bool delayCompensation_ = true;
     bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
@@ -352,6 +359,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // `automationArmed` each frame (unset: on, as Live's new Set) and a click sets `armAutomation`.
     // Unset, a click says the switch has no session.
     std::function<bool()> reenableAutomation;
+    // The session follows Options > Delay Compensation (MX-04): set by the application, called when
+    // the command toggles the setting. Unset, the setting changes and the session hears it at the next
+    // project open.
+    std::function<void(bool)> applyDelayCompensation;
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;
     // Arm, monitoring and Arrangement Record (MX-09). The session's rows hold a track's arm and its
