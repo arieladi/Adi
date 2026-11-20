@@ -606,6 +606,15 @@ void replaceIdentityInOneJournalStep() {
     check(restored, "one Redo restores the retained replacement at the same ID");
     if (!restored)
         return;
+    OpRequest authored;
+    authored.opType = "device.setParam";
+    authored.label = "Set replacement gain";
+    authored.payload = {{"dev", id}, {"param", "420"}, {"norm", .375}};
+    const bool seeded = doc->ops().submit(authored).ok && doc->synchronise() &&
+                        gain->getParam("420").normalized == .375;
+    check(seeded, "the replacement has an authored gain before testing a subsequent gesture");
+    if (!seeded)
+        return;
     const auto active = matchingPanel(*doc, ordinaryUid, 3, id);
     if (!active || !gain->hasParamSink()) {
         check(false, "the current generation is published with its parameter capture attached");
