@@ -7967,13 +7967,13 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
             check(whole, "one Undo gives 13 back whole");
             // Where the planner does not place yet (here a track with an automation lane, AU-05), the clip
             // moves as before, keeping what it lands on, and the Status Bar says why.
-            automation::LaneSpec lane;
-            lane.id = 77;
-            lane.ownerKind = "track";
-            lane.ownerId = 3;
-            lane.paramRef = "volume";
-            lane.paramName = "Volume";
-            check(submitter.submit(automation::createLane(lane)).ok, "an automation lane on track 3");
+            automation::LaneSpec volumeLane;
+            volumeLane.id = 77;
+            volumeLane.ownerKind = "track";
+            volumeLane.ownerId = 3;
+            volumeLane.paramRef = "volume";
+            volumeLane.paramName = "Volume";
+            check(submitter.submit(automation::createLane(volumeLane)).ok, "an automation lane on track 3");
             root.frame();
             check(root.placeClips({{12, 3, start + length / 2}}, "Move Clip") &&
                       root.error().rfind("Moved, keeping what the clips land on", 0) == 0,
