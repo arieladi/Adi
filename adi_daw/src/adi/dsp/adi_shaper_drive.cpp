@@ -20,8 +20,8 @@ constexpr std::array<double,33> rectGain{
 
 double compensation(const std::array<double,33>& values, float amount) noexcept {
     const double pos = 32.0 * amount;
-    const int i = std::min(31, static_cast<int>(pos));
-    const double t = pos - i, left = values[i], right = values[i+1];
+    const auto i = static_cast<std::size_t>(std::min(31, static_cast<int>(pos)));
+    const double t = pos - static_cast<double>(i), left = values[i], right = values[i+1];
     const double a = i > 0 ? (right-values[i-1])*0.5 : (4*right-3*left-values[2])*0.5;
     const double b = i < 31 ? (values[i+2]-left)*0.5 : (3*right-4*left+values[30])*0.5;
     const double delta = right - left;
@@ -66,16 +66,17 @@ void AdiShaperDrive::prepare(double sampleRate) noexcept {
             const double t = offset/8;
             const double h = (s == 0 ? 1.0 : std::sin(s)/s)
                            * besselI0(beta*std::sqrt(std::max(0.0,1.0-t*t)))*windowScale;
-            decimate_[i] = static_cast<float>(h);
+            decimate_[static_cast<std::size_t>(i)] = static_cast<float>(h);
             sum += h;
         }
         interpolate_ = {};
-        for (int i=0; i<taps_; ++i) {
+        const auto factor = static_cast<std::size_t>(factor_), taps = static_cast<std::size_t>(taps_);
+        for (std::size_t i=0; i<taps; ++i) {
             decimate_[i] = static_cast<float>(decimate_[i]/sum);
-            interpolate_[i%factor_][i/factor_] = static_cast<float>(factor_)*decimate_[i];
+            interpolate_[i%factor][i/factor] = static_cast<float>(factor_)*decimate_[i];
         }
         if (factor_ == 4) {
-            for (int j = 0; j < inputs / 2; ++j) {
+            for (std::size_t j = 0; j < inputs / 2; ++j) {
                 const double a = interpolate_[1][j], b = interpolate_[3][j];
                 oddSum_[j] = .5 * (a + b);
                 oddDifference_[j] = .5 * (a - b);
@@ -145,7 +146,7 @@ double AdiShaperDrive::shape(double z, Channel& channel) const noexcept {
 template<int Factor>
 AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history) const noexcept {
     Phases out{};
-    for (int j = 0; j < inputs / 2; ++j) {
+    for (std::size_t j = 0; j < inputs / 2; ++j) {
         for (std::size_t c = 0; c < 2; ++c) {
             const double a = history[j][c], b = history[inputs - 2 - j][c];
             out[0][c] += interpolate_[0][j] * (a + history[inputs - 1 - j][c]);
@@ -171,23 +172,26 @@ void AdiShaperDrive::process(float& left, float& right, float driveNormalized) n
     if (!std::isfinite(driveNormalized)) driveNormalized = std::max(0.0f,previousDrive_);
     if (driveNormalized != previousDrive_) tune(std::clamp(driveNormalized,0.0f,1.0f));
     inputHead_ = inputHead_ == 0 ? inputs-1 : inputHead_-1;
-    input_[inputHead_] = input_[inputHead_+inputs] = {left, right};
+    const auto inputHead = static_cast<std::size_t>(inputHead_);
+    input_[inputHead] = input_[inputHead+inputs] = {left, right};
     const Stereo* in = input_.data()+inputHead_;
     const auto upsampled = factor_ == 4 ? interpolate<4>(in) : interpolate<2>(in);
+    const auto factor = static_cast<std::size_t>(factor_), taps = static_cast<std::size_t>(taps_);
     StereoSum base{};
-    for (int p=0; p<factor_; ++p) {
+    for (std::size_t p=0; p<factor; ++p) {
         wetHead_ = wetHead_ == 0 ? taps_-1 : wetHead_-1;
+        const auto wetHead = static_cast<std::size_t>(wetHead_);
         Stereo wet{};
         for (std::size_t c=0; c<2; ++c)
             wet[c] = static_cast<float>(shape(upsampled[p][c] * pre_, channels_[c]) * post_);
-        wet_[wetHead_] = wet_[wetHead_+taps_] = wet;
+        wet_[wetHead] = wet_[wetHead+taps] = wet;
         if (p == 0) {
             const Stereo* history = wet_.data() + wetHead_;
-            const int middle = taps_ / 2;
-            for (int j = 0; j < middle; ++j) {
+            const std::size_t middle = taps / 2;
+            for (std::size_t j = 0; j < middle; ++j) {
                 const double coefficient = decimate_[j];
                 for (std::size_t c = 0; c < 2; ++c) {
-                    const double pair = static_cast<double>(history[j][c]) + history[taps_ - 1 - j][c];
+                    const double pair = static_cast<double>(history[j][c]) + history[taps - 1 - j][c];
                     base[c] += coefficient * pair;
                 }
             }
