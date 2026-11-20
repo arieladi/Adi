@@ -31,7 +31,7 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0251**.
+Next free: **ADR-0252**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
@@ -39,8 +39,8 @@ Next free: **ADR-0251**.
 |---|---|---|---|---|
 | DF-C | Control | the control seat, through win | DF-C5 | DF-C6 |
 | DF-M | Mix View | the Mix View seat, through win | DF-M61 | DF-M62 |
-| DF-W | Window | the window lane and win | DF-W34 | DF-W35 |
-| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E43 | DF-E44 |
+| DF-W | Window | the window lane and win | DF-W35 | DF-W36 |
+| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E58 | DF-E59 |
 | DF-R | Repository | win | DF-R1 | DF-R2 |
 
 Three seats share DF-E, so each DF-E id is reserved here first.

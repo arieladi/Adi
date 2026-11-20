@@ -39,13 +39,24 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
         gesture(engine::ParamEventKind::End, toggle.getToggleState() ? 1 : 0);
     };
     menu.onChange = [this] {
-        if (!record)
+        if (!record || record->shape != panel::Shape::Menu) return;
+        const auto chosen = menu.getSelectedId();
+        if (chosen <= 0 || chosen > menuSteps_) return;
+        const auto previous = record->playing;
+        const double v = static_cast<double>(chosen - 1) / std::max(1, menuSteps_ - 1);
+        presentedMenuId_ = chosen; // consume before a gesture can synchronously present
+        if (v == previous) return;
+        const SafePointer<ParameterControl> safe(this);
+        if (!gesture(engine::ParamEventKind::Begin, previous)) {
+            if (safe) {
+                presentedMenuId_ = 1 + static_cast<int>(std::round(previous * std::max(1, menuSteps_ - 1)));
+                menu.setSelectedId(presentedMenuId_, juce::dontSendNotification);
+            }
             return;
-        const double v =
-            static_cast<double>(menu.getSelectedId() - 1) / std::max(1, record->stepCount - 1);
-        gesture(engine::ParamEventKind::Begin, v);
+        }
+        if (!safe) return;
         gesture(engine::ParamEventKind::Value, v);
-        gesture(engine::ParamEventKind::End, v);
+        if (safe) gesture(engine::ParamEventKind::End, v);
     };
     addChildComponent(slider);
     addChildComponent(toggle);
@@ -95,6 +106,7 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     if (r.shape == panel::Shape::Menu && (menuSteps_ != std::max(1, r.stepCount) || menuLabels_ != r.choiceLabels)) {
         menuSteps_ = std::max(1, r.stepCount); menuLabels_ = r.choiceLabels;
         menu.clear(juce::dontSendNotification);
+        presentedMenuId_ = 0;
         for (std::int32_t i = 0; i < menuSteps_; ++i) {
             const auto at = static_cast<std::size_t>(i);
             menu.addItem(at < menuLabels_.size() && !menuLabels_[at].empty() ? juce::String(menuLabels_[at])
@@ -104,8 +116,12 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     if (!slider.isMouseButtonDown())
         slider.setValue(r.playing, juce::dontSendNotification);
     toggle.setToggleState(r.playing >= .5, juce::dontSendNotification);
-    menu.setSelectedId(1 + static_cast<int>(std::round(r.playing * std::max(1, r.stepCount - 1))),
-                       juce::dontSendNotification);
+    // ComboBox sends its choice asynchronously. A differing ID is a choice
+    // not delivered yet; a frame must not replace it with the old playing value.
+    if (r.shape == panel::Shape::Menu && menu.getSelectedId() == presentedMenuId_) {
+        presentedMenuId_ = 1 + static_cast<int>(std::round(r.playing * std::max(1, r.stepCount - 1)));
+        menu.setSelectedId(presentedMenuId_, juce::dontSendNotification);
+    }
 }
 void ParameterControl::resized() {
     // Live's knob column: the name, the knob, the value under it.
@@ -266,12 +282,13 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     title.addMouseListener(this, false);
     title.onClick = [this] { grabKeyboardFocus(); };
     enabled.onClick = [this] {
+        const auto safe = SafePointer<DevicePanelView>(this);
         if (!validTarget()) return;
-        if (nativeFunction()) {
-            const auto safe = SafePointer<DevicePanelView>(this);
-            cancelInteractions();
-            if (safe && safe->validTarget()) safe->strip.action("device.remove", {{"id", safe->id}});
-        } else strip.action("device.setEnabled", {{"id", id}, {"enabled", enabled.getToggleState()}});
+        if (nativeFunction()) cancelInteractions();
+        if (!safe || !safe->validTarget() || !safe->data) return;
+        const bool requested = safe->nativeFunction() ? !safe->data->enabled : safe->enabled.getToggleState();
+        if (!safe->strip.setEnabledExpected(*safe->data, requested) && safe && safe->data)
+            safe->enabled.setToggleState(safe->data->enabled, juce::dontSendNotification);
     };
     configureButton.onClick = [this] { configure(); };
     addChildComponent(rename);
@@ -932,6 +949,25 @@ juce::PopupMenu DevicePanelView::commands() {
         if (safe && safe->validTarget())
             safe->strip.fold(safe->id);
     });
+    if (data && strip.keyChoices && strip.setKey) {
+        const auto expected=*data;juce::PopupMenu keys;
+        const auto choices=strip.keyChoices(expected);
+        std::map<std::int64_t,std::pair<juce::String,juce::PopupMenu>> sources;
+        for(const auto& choice:choices){
+            juce::PopupMenu::Item item(choice.source?(choice.tap=="pre_fx"?"Pre FX":choice.tap=="post_fx"?"Post FX":"Post Mixer"):"None");
+            item.isTicked=choice.current;
+            item.action=[safe,epoch,expected,choice]{
+                if(!safe || safe->menuEpoch_!=epoch)return;
+                safe->endInteraction(Interaction::Menu);
+                if(safe && safe->validTarget() && safe->strip.validExpected(expected) && safe->strip.setKey)
+                    safe->strip.setKey(expected,choice);
+            };
+            if(choice.source){auto& entry=sources[*choice.source];entry.first=juce::String::fromUTF8(choice.name.c_str());entry.second.addItem(std::move(item));}
+            else keys.addItem(std::move(item));
+        }
+        for(auto& [sourceId,entry]:sources){(void)sourceId;keys.addSubMenu(entry.first,entry.second);}
+        if(!choices.empty()){m.addSeparator();m.addSubMenu("Sidechain Input",keys);}
+    }
     if (!eqPresentation()) {
         m.addSeparator();
         m.addItem("Configure", [safe, epoch] {
@@ -1104,23 +1140,50 @@ bool DeviceChainStrip::hasFunction(mix::Function kind) const {
     return false;
 }
 juce::PopupMenu DeviceChainStrip::functionMenu() {
-    juce::PopupMenu menu;
     const auto safe = SafePointer<DeviceChainStrip>(this);
     const auto track = selectedTrack;
     const auto epoch = ++addMenuEpoch_;
+    return functionMenuFor(track, [safe, track, epoch] {
+        return safe && safe->addMenuEpoch_ == epoch && safe->selectedTrack == track &&
+               safe->isShowing();
+    });
+}
+juce::PopupMenu DeviceChainStrip::functionMenuFor(std::int64_t track,
+                                                  std::function<bool()> ownerCurrent) {
+    juce::PopupMenu menu;
+    const auto safe = SafePointer<DeviceChainStrip>(this);
+    const auto shown = publication ? publication() : presented;
+    if (!safe)
+        return menu;
     for (const auto &info : mix::functionCatalog()) {
-        const bool present = hasFunction(info.kind);
-        const auto availability = functionAvailability ? functionAvailability(info.kind)
-            : mix::Availability{false, "Engine unavailable"};
+        const auto present = [track, kind = info.kind](const auto &feed) {
+            return feed && std::any_of(feed->begin(), feed->end(), [&](const auto &d) {
+                       const auto *function = !d.plugin ? mix::functionForUid(d.uid) : nullptr;
+                       return d.track == track && function && function->kind == kind;
+                   });
+        };
+        const bool exists = present(shown);
+        const auto availability = functionAvailability
+                                      ? functionAvailability(info.kind)
+                                      : mix::Availability{false, "Engine unavailable"};
+        if (!safe)
+            return menu;
         auto label = juce::String::fromUTF8(info.name.data(), static_cast<int>(info.name.size()));
-        if (!availability.ready && !present && !availability.reason.empty()) label += " (" + juce::String(availability.reason) + ")";
+        if (!availability.ready && !exists && !availability.reason.empty())
+            label += " (" + juce::String(availability.reason) + ")";
         juce::PopupMenu::Item item(label);
-        item.isTicked = present;
-        item.isEnabled = !present && availability.ready && addFunction && selectedTrack > 0;
-        item.action = [safe, track, epoch, kind = info.kind] {
-            if (!safe || safe->addMenuEpoch_ != epoch || safe->selectedTrack != track || !safe->isShowing() ||
-                safe->hasFunction(kind) || !safe->addFunction || !safe->functionAvailability ||
-                !safe->functionAvailability(kind).ready) return;
+        item.isTicked = exists;
+        item.isEnabled = !exists && availability.ready && addFunction && ownerCurrent && track > 0;
+        item.action = [safe, track, ownerCurrent, present, kind = info.kind] {
+            if (!safe || !ownerCurrent || !ownerCurrent() || !safe || !safe->addFunction ||
+                !safe->functionAvailability)
+                return;
+            const auto latest = safe->publication ? safe->publication() : safe->presented;
+            if (!safe || present(latest) || !ownerCurrent() || !safe)
+                return;
+            const auto availability = safe->functionAvailability(kind);
+            if (!safe || !availability.ready || !ownerCurrent() || !safe)
+                return;
             safe->addFunction(kind, track);
         };
         menu.addItem(std::move(item));
@@ -1139,7 +1202,10 @@ void DeviceChainStrip::cancelFunctionInteractions() {
     ++addMenuEpoch_;
     for (auto &panel : panels) if (panel->nativeFunction()) panel->cancelInteractions();
 }
-DeviceChainStrip::~DeviceChainStrip() { if (parameterDemand) parameterDemand(this, {}); }
+DeviceChainStrip::~DeviceChainStrip() {
+    if (parameterDemand)
+        parameterDemand(this, {});
+}
 void DeviceChainStrip::updateParameterDemand(std::vector<std::int64_t> devices) {
     std::sort(devices.begin(), devices.end());
     devices.erase(std::unique(devices.begin(), devices.end()), devices.end());
@@ -1406,6 +1472,25 @@ bool DeviceChainStrip::validExpected(const DevicePanelData &expected) const {
 }
 bool DeviceChainStrip::action(const std::string &op, Payload p) {
     return submit && submit(op, std::move(p));
+}
+bool DeviceChainStrip::setEnabledExpected(const DevicePanelData &expected, bool enabled) {
+    const auto safe = SafePointer<DeviceChainStrip>(this);
+    const auto id = expected.id;
+    const bool native = !expected.plugin && mix::functionForUid(expected.uid);
+    // Retain only identity across a callback that can replace the publication
+    // or destroy its panel. Do not copy a large parameter table for this action.
+    DevicePanelData identity;
+    identity.id = id;
+    identity.runtime = expected.runtime;
+    identity.instance = expected.instance;
+    if (!validExpected(identity) || !safe)
+        return false;
+    // Compatibility: older projects, control clients and Bounce can leave a
+    // native function bypassed. Its first activation recovers it; deactivating
+    // an active native function still means remove plus Undo.
+    if (native && expected.enabled)
+        return safe->action("device.remove", {{"id", id}});
+    return safe->action("device.setEnabled", {{"id", id}, {"enabled", enabled}});
 }
 bool DeviceChainStrip::focusNext(std::int64_t from, bool forward) {
     for (std::size_t i = 0; i < panels.size(); ++i)

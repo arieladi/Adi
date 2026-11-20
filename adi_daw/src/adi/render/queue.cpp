@@ -55,9 +55,60 @@ bool occupiedBeforePublication(const fs::path& path) {
         if(foldedFilename(entry.path())==key)return true;
     return false;
 }
+std::vector<std::string> foldedOccupants(const fs::path& path) {
+    const auto key=foldedFilename(path);
+    std::vector<std::string> names;
+    for(const auto& entry:fs::directory_iterator(path.parent_path()))
+        if(foldedFilename(entry.path())==key)names.push_back(media::pathUtf8(entry.path().filename()));
+    std::sort(names.begin(),names.end());
+    return names;
+}
+media::FileIdentity ordinaryOutputIdentity(const fs::path& path) {
+    std::error_code error;
+    const auto status=fs::symlink_status(path,error);
+    if(error || !fs::is_regular_file(status))
+        throw std::runtime_error("Replace requires an existing ordinary file at the requested path");
+    const auto identity=media::readFileIdentity(path,error);
+    if(!identity)throw std::runtime_error("cannot identify replacement destination: "+error.message());
+    return *identity;
+}
+void verifyReplacement(const Result& result) {
+    const auto& binding=*result.replacement;
+    if(result.output!=binding.target || foldedOccupants(result.output)!=binding.foldedNames)
+        throw std::runtime_error("replacement path or folded collision set changed since preflight");
+    if(!binding.existing) {
+        if(occupiedNative(result.output))throw std::runtime_error("replacement destination arrived after absent preflight");
+        return;
+    }
+    if(ordinaryOutputIdentity(result.output)!=*binding.existing)
+        throw std::runtime_error("replacement destination identity changed since preflight");
+    const auto digest=media::blake3File(result.output);
+    if(!digest || digest.hex!=binding.blake3 || ordinaryOutputIdentity(result.output)!=*binding.existing)
+        throw std::runtime_error("replacement destination contents or identity changed since preflight");
+    if(foldedOccupants(result.output)!=binding.foldedNames)
+        throw std::runtime_error("replacement collision set changed during validation");
+}
+std::string portableName(std::string name) {
+    // The supplied text is a filename component and never becomes a path.
+    for (char& c : name)
+        if (static_cast<unsigned char>(c) < 32 || std::string_view("<>:\"/\\|?*").find(c) != std::string_view::npos) c = '_';
+    while (!name.empty() && (name.back() == '.' || name.back() == ' ')) name.pop_back();
+    if (name.empty() || name == "." || name == "..") throw std::invalid_argument("export name is empty");
+    if (name.size() > 200) throw std::invalid_argument("export name exceeds 200 UTF-8 bytes");
+    auto stem = name.substr(0, name.find('.'));
+    while (!stem.empty() && stem.back() == ' ') stem.pop_back();
+    for (char& c : stem) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    const bool numberedDevice = (stem.starts_with("COM") || stem.starts_with("LPT")) &&
+        ((stem.size() == 4 && stem[3] >= '1' && stem[3] <= '9') ||
+         stem.substr(3) == "\xC2\xB9" || stem.substr(3) == "\xC2\xB2" || stem.substr(3) == "\xC2\xB3");
+    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
+        stem == "CONIN$" || stem == "CONOUT$" || numberedDevice) name = "_" + name;
+    return name;
+}
+
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
-    if (j.collision != Collision::Fail && j.collision != Collision::Increment)
+    if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
         throw std::invalid_argument("unsupported export collision policy");
     if (!j.regionId && (j.beginSample < 0 || j.endSample <= j.beginSample)) throw std::invalid_argument("export range must be nonempty and nonnegative");
     if (!std::isfinite(j.session.sampleRate) || j.session.sampleRate < 8000 || j.session.sampleRate > 768000 ||
@@ -76,7 +127,16 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export dither");
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
-    (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
+    if (j.exactWavFilename) {
+        if (j.niStems || j.collision == Collision::Increment)
+            throw std::invalid_argument("a literal WAV filename requires a single WAV with Fail or Replace");
+        const auto& literal = *j.exactWavFilename;
+        if (portableName(literal) != literal ||
+            !foldedFilename(media::pathFromUtf8(literal)).ends_with(".wav"))
+            throw std::invalid_argument("the selected WAV filename is not a portable literal .wav name");
+    } else {
+        (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
+    }
 }
 struct Stage {
     fs::path path;
@@ -164,13 +224,13 @@ void captureMedia(const engine::ClipPlayback& playback,MediaVerification& report
     // lookup joins hard links, symlinks and native case aliases without pairwise
     // filesystem queries or a host-independent case-folding rule.
     std::map<fs::path,std::size_t> selectedPaths;
-    std::map<std::pair<std::uint64_t,std::uint64_t>,std::size_t> nativeFiles;
+    std::map<media::FileIdentity,std::size_t> nativeFiles;
     for(const auto& source:playback.externalSources()) {
         cancellation(control);
         auto selected=selectedPaths.find(source.path);
         if(selected==selectedPaths.end()) {
             const auto native=mediaIdentityAt(source.path);
-            const auto [found,inserted]=nativeFiles.try_emplace({native.volume,native.file},report.identities.size());
+            const auto [found,inserted]=nativeFiles.try_emplace(native,report.identities.size());
             if(inserted) {
                 MediaIdentity identity;
                 identity.path=fs::canonical(source.path);
@@ -231,20 +291,7 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
         else throw std::invalid_argument("unknown export name token: " + token);
         at = end + 1;
     }
-    // Expanded values never become paths. Do not rescan braces in metadata.
-    for (char& c : name)
-        if (static_cast<unsigned char>(c) < 32 || std::string_view("<>:\"/\\|?*").find(c) != std::string_view::npos) c = '_';
-    while (!name.empty() && (name.back() == '.' || name.back() == ' ')) name.pop_back();
-    if (name.empty() || name == "." || name == "..") throw std::invalid_argument("export name is empty");
-    if (name.size() > 200) throw std::invalid_argument("export name exceeds 200 UTF-8 bytes");
-    auto stem = name.substr(0, name.find('.'));
-    for (char& c : stem) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-    const bool numberedDevice = (stem.starts_with("COM") || stem.starts_with("LPT")) &&
-        ((stem.size() == 4 && stem[3] >= '1' && stem[3] <= '9') ||
-         stem.substr(3) == "\xC2\xB9" || stem.substr(3) == "\xC2\xB2" || stem.substr(3) == "\xC2\xB3");
-    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
-        stem == "CONIN$" || stem == "CONOUT$" || numberedDevice) name = "_" + name;
-    return name;
+    return portableName(std::move(name));
 }
 
 void validateOutputName(const fs::path& output) {
@@ -253,11 +300,36 @@ void validateOutputName(const fs::path& output) {
 }
 
 void detail::prepareOutput(Result& result,Collision collision,const char* suffix,const char* collisionMessage) {
-    if(collision!=Collision::Fail && collision!=Collision::Increment)
+    result.replacement.reset();
+    if(collision!=Collision::Fail && collision!=Collision::Increment && collision!=Collision::Replace)
         throw std::invalid_argument("unsupported export collision policy");
     validateOutputName(result.output);
     const auto directory=result.output.parent_path();
     if(!fs::is_directory(directory))throw std::runtime_error("export directory does not exist");
+    if(collision==Collision::Replace) {
+        // Freeze the resolved parent so a later working-directory or parent
+        // symlink change cannot silently redirect the selected delivery.
+        result.output=fs::canonical(directory)/result.output.filename();
+        ReplacementBinding binding;binding.target=result.output;
+        binding.foldedNames=foldedOccupants(result.output);
+        if(!occupiedNative(result.output)) {
+            if(!binding.foldedNames.empty())
+                throw std::runtime_error("Replace refuses a fold-only collision at another spelling");
+        } else {
+            binding.existing=ordinaryOutputIdentity(result.output);
+            if(binding.foldedNames.size()>1)
+                throw std::runtime_error("Replace refuses an ambiguous folded collision set");
+            if(!binding.foldedNames.empty() &&
+                ordinaryOutputIdentity(result.output.parent_path()/media::pathFromUtf8(binding.foldedNames.front()))!=*binding.existing)
+                throw std::runtime_error("Replace refuses a folded collision with another file");
+            const auto digest=media::blake3File(result.output);
+            if(!digest)throw std::runtime_error("cannot hash replacement destination");
+            binding.blake3=digest.hex;
+        }
+        result.replacement=std::move(binding);
+        verifyReplacement(result);
+        return;
+    }
     std::set<std::string> names;
     std::uint64_t entries=0;
     for(const auto& entry:fs::directory_iterator(directory)) {
@@ -333,11 +405,25 @@ void detail::publishOutput(const fs::path& stage, Result& result, media::Publish
                           const char* collisionMessage) {
     // The chosen spelling is frozen. This is a fresh folded check, not an
     // atomic cross-process folded reservation; native no-clobber still follows.
-    if(occupiedBeforePublication(result.output))throw std::runtime_error(collisionMessage);
+    const bool replacing=result.replacement && result.replacement->existing.has_value();
+    if(result.replacement) {
+        if(!replacing)verifyReplacement(result);
+        else if(result.output!=result.replacement->target)
+            throw std::runtime_error("replacement path changed since preflight");
+    } else if(occupiedBeforePublication(result.output))throw std::runtime_error(collisionMessage);
+    media::ReplaceHooks replaceHooks;
+    if(replacing) {
+        replaceHooks.rename=hooks.rename;replaceHooks.syncDirectory=hooks.syncDirectory;
+        replaceHooks.expectedTarget=result.replacement->existing;
+        replaceHooks.validateTarget=[&result](const fs::path&) {
+            verifyReplacement(result);return std::error_code{};
+        };
+    }
     // Reserve the fallback message before the irreversible commit point.
     result.publication.emplace(PublicationReport{false, false,
         "file published; durability could not be confirmed"});
-    auto published = media::publishFile(stage, result.output, hooks, media::PublishPolicy::AtomicOnly);
+    auto published = replacing ? media::replaceFile(stage,result.output,std::move(replaceHooks)) :
+        media::publishFile(stage, result.output, hooks, media::PublishPolicy::AtomicOnly);
     if (published.status != media::PublishStatus::published) {
         result.publication.reset();
         throw std::runtime_error(published.status == media::PublishStatus::exists
@@ -353,6 +439,10 @@ void detail::publishOutput(const fs::path& stage, Result& result, media::Publish
 
 Result renderWav(Job job, engine::DeviceLoader loader, Control control,
                        JobId id, std::uint64_t counter) {
+    return detail::renderWavPrepared(std::move(job),std::move(loader),std::move(control),id,counter,{});
+}
+Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control control,
+                       JobId id, std::uint64_t counter,const std::function<void(const Result&)>& prepared) {
     Result result;
     try {
         cancellation(control);
@@ -410,9 +500,11 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
                 job.session.sampleRate, job.regionId, names};
             snapshot.commit();
         }
-        const auto filename = resolveName(job.nameTemplate, names) + ".wav";
+        const auto filename = job.exactWavFilename ? *job.exactWavFilename :
+            resolveName(job.nameTemplate, names) + ".wav";
         result.output = job.directory / media::pathFromUtf8(filename);
         detail::prepareOutput(result,job.collision,".wav","export destination already exists");
+        if(prepared)prepared(result);
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
         const auto endpoint = session.offlineOutput(job.source.trackId, job.source.tap);
@@ -570,6 +662,14 @@ bool Queue::retry(JobId id) {
 
 std::string serializeRunManifest(const RunReport& run) {
     using Json = nlohmann::json;
+    const auto identityScheme = [](media::FileIdentityScheme scheme) {
+        switch(scheme){
+        case media::FileIdentityScheme::Posix:return "posix";
+        case media::FileIdentityScheme::Windows128:return "windows_file_id_128";
+        case media::FileIdentityScheme::WindowsLegacy64:return "windows_legacy_64";
+        }
+        return "unknown";
+    };
     const auto stateName = [](JobState state) {
         switch (state) {
         case JobState::Pending: return "pending";
@@ -582,6 +682,10 @@ std::string serializeRunManifest(const RunReport& run) {
     };
     const auto optionalNumber = [](const std::optional<double>& value) -> Json {
         return value ? Json(*value) : Json(nullptr);
+    };
+    const auto identityValue = [&](const media::FileIdentity& identity) -> Json {
+        return {{"volume",identity.volume},{"file",identity.file},
+                {"file_high",identity.fileHigh},{"scheme",identityScheme(identity.scheme)}};
     };
     const auto sourceValue = [](const Source& source) -> Json {
         return {{"track_id", source.trackId},
@@ -630,10 +734,11 @@ std::string serializeRunManifest(const RunReport& run) {
             }
             item["job"] = {{"project", media::pathUtf8(job.project)}, {"directory", media::pathUtf8(job.directory)},
                 {"name_template", job.nameTemplate}, {"source", sourceValue(job.source)},
-                {"collision",job.collision==Collision::Fail ? "fail" : "increment"},
+                {"collision",job.collision==Collision::Fail ? "fail" : job.collision==Collision::Increment ? "increment" : "replace"},
                 {"requested_range", {{"begin_sample", job.beginSample}, {"end_sample", job.endSample},
                     {"region_id", job.regionId ? Json(*job.regionId) : Json(nullptr)}}},
                 {"requested_profile", std::move(profile)}};
+            if (job.exactWavFilename) item["job"]["exact_wav_filename"] = *job.exactWavFilename;
         }
         if (member.result) {
             const auto& result = *member.result;
@@ -641,6 +746,12 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"error", result.error}, {"publication", nullptr}, {"stage_cleanup", nullptr},
                 {"normalization", nullptr},
                 {"resolved_snapshot", nullptr}, {"ni_stem_snapshots", Json::array()}, {"media_verification", nullptr}};
+            if(result.replacement) {
+                const auto& binding=*result.replacement;
+                value["replacement_preflight"]={{"target",media::pathUtf8(binding.target)},
+                    {"existing_identity",binding.existing ? identityValue(*binding.existing) : Json(nullptr)},
+                    {"blake3",binding.blake3},{"folded_names",binding.foldedNames}};
+            }
             if(result.mediaVerification) {
                 const auto& verification=*result.mediaVerification;
                 value["media_verification"]={{"scope","external_audio_clips"},
@@ -648,7 +759,7 @@ std::string serializeRunManifest(const RunReport& run) {
                 item["media_identities"]=Json::array();
                 for(const auto& identity:verification.identities) {
                     Json mediaValue{{"path",media::pathUtf8(identity.path)}, {"blake3_at_start",identity.blake3AtStart},
-                        {"native_identity",{{"volume",identity.nativeIdentity.volume},{"file",identity.nativeIdentity.file}}},
+                        {"native_identity",identityValue(identity.nativeIdentity)},
                         {"blake3_before_publication",identity.blake3BeforePublication ? Json(*identity.blake3BeforePublication) : Json(nullptr)},
                         {"references",Json::array()}};
                     for(const auto& reference:identity.references)

@@ -2,8 +2,8 @@
 //
 // The Browser's Plug-Ins (DF-W9; Live 12 manual 4.1, the browser's Plug-Ins label): the VST3 and CLAP
 // plug-ins the app's loader found, in folders by format and then by vendor, each a name and a kind.
-// No JUCE: the app fills it from the loader (`JuceDeviceLoader::knownPlugins`, `ClapHost::plugins`) on
-// the scan's worker (`plugin_scan.hpp`, DF-W34), tests fill it by hand, and the Browser lays it out.
+// No JUCE: the app fills it from the loader's catalogue (engine-win's N58, through
+// `app::PluginCatalogueService`, DF-W34), tests fill it by hand, and the Browser lays it out.
 #pragma once
 #include "adi/plugin_scanner.hpp"
 #include "adi/store.hpp"
@@ -19,7 +19,7 @@
 namespace adi::ui {
 struct PluginEntry {
     // What a plug-in is, for the row's icon: an instrument, an audio effect, a MIDI effect, or not known
-    // (a VST3 whose kind the loader's line does not carry until engine-win's catalogue, N58).
+    // (a line of `JuceDeviceLoader::knownPlugins`, which carries no VST3's kind; the catalogue does).
     enum class Kind { Unknown, Instrument, Effect, MidiEffect };
     std::string format; // "vst3" or "clap", as `plugin_refs.format` names them
     std::string uid;    // VST3: JUCE's identifier string; CLAP: the descriptor's id

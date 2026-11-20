@@ -364,8 +364,10 @@ public:
             if(!active.sounding && active.retainedOn!=generation){active.used=false;continue;}
             const auto* next=replacement(active);
             const bool retainedRelease=active.pending && active.retainedOff==generation;
+            // A release due at the first frame still belongs to the adopted
+            // voice. The normal release can run alongside the retained onset.
             if(next && next->on<=first &&
-               ((!active.releasing && !active.pending && next->off>first) || retainedRelease)) {
+               ((!active.releasing && !active.pending && next->off>=first) || retainedRelease)) {
                 const auto runtimeId=active.note.start.noteId;
                 active.note=*next;
                 active.note.start.noteId=runtimeId;active.note.stop.noteId=runtimeId;

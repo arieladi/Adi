@@ -149,9 +149,11 @@ void run() {
     wav(audio);
     for (double bpm : {90., 120.}) {
         engine.prepare(48000, 64);
+        // Filter off: this oracle times an unfiltered impulse (the default
+        // filter is Live's, on since DEV-22).
         check(engine.sendParameter(3, 1) && engine.sendParameter(5, 4) &&
-                  engine.sendParameter(23, 2),
-              "select quarter-note synced Jump delay");
+                  engine.sendParameter(23, 2) && engine.sendParameter(12, 0),
+              "select quarter-note synced Jump delay, filter off");
         engine::TransportInfo transport;
         transport.bpm = bpm;
         transport.playing = true;

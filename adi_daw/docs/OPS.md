@@ -1723,6 +1723,7 @@ rate conversion, missing-file snapshot and immutable-content publication limit.
 | `return.setSendTap` | e | G | cap | P1 |
 | `routing.connect` | e | G | pair `routing.disconnect` | P0 |
 | `routing.disconnect` | e | G | cap | P0 |
+| `routing.setKeyTap` | e | G | state capture (absent = Post Mixer) | P1 |
 | `routing.setGain` | e | S | sym, coalescable | P0 |
 | `routing.setPan` | e | S | sym, coalescable | P1 |
 | `routing.setPreFader` | e | G | sym | P0 |
@@ -1802,8 +1803,11 @@ application settings enters a payload.
 creates a locator or cycle marker. Time base defaults to musical (0, ticks),
 linear (1) uses nanoseconds. `pos` and `length` stay in that base's units.
 Kinds are position (default), cycle, chapter and sync. A supplied length defaults
-the kind to cycle; cycles require positive length. `marker.move {id,pos}` keeps
-its base, and `marker.resize {id,length}` resizes cycles. `marker.rename {id,name}`
+the kind to cycle. Cycles require positive length. `marker.move {id,pos}` keeps
+its base, and `marker.resize {id,length}` resizes cycles. New positions are
+nonnegative and a cycle end must be within the same range, up to 2^50 musical
+ticks or the maximum signed 64-bit nanosecond value. History can replay marker
+positions saved by older versions. `marker.rename {id,name}`
 and `marker.setColor {id,color?}` edit identity/colour (omit colour to clear;
 otherwise a Live palette index 0..69). Notes/prompts use `{id,text}`, including
 an empty string to clear. Prompts are literal stored data, never executed here.
@@ -2122,6 +2126,15 @@ else (ADR-0131 d2). Payloads, all keys permanent:
   — `kind` is `track`, `clip` or `device`; `param` names a device parameter and
   is legal only when `kind` is `device`; `author` is `user` or `agent`.
 - `remark.edit {id, text}` · `remark.resolve {id, resolved}` · `remark.remove {id}`.
+
+A remark keeps its weak target ID when a track, clip or device is deleted.
+Owner-side producers allocate those row IDs with `RowIds::next`, which includes
+remark targets in the read snapshot. Use one allocator per edit and submit
+the literal IDs with the head from that same snapshot. Undo, Redo and stored
+baseline navigation restore material and anchors together. A note ID belongs
+to its clip's note stream. Use the guarded note edit path for changes prepared
+from a snapshot. An automation range's `record_index` locates a record in its
+own data stream.
 
 Two §7 points specific to remarks:
 

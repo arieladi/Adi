@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <new>
 #include <sstream>
 #include <string>
@@ -467,6 +468,217 @@ void testTheLimiterAllocatesNothing() {
     check(g_allocs.load() == 0, "fifty loud blocks, no allocation");
 }
 
+// --- DEV-29 (c): the true-peak brickwall ------------------------------------
+
+/// A sine at a quarter of the rate, 45 degrees off its crest: every sample is
+/// at amplitude / sqrt(2) and the wave between them reaches the amplitude.
+/// `gate` > 0 switches it on and off every `gate` samples (hard edges).
+std::vector<double> quarterRateAt45(std::size_t n, double amplitude, std::size_t gate = 0) {
+    std::vector<double> x(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (gate > 0 && (i / gate) % 2 == 1) continue;
+        x[i] = amplitude * std::sin(kPi / 2.0 * static_cast<double>(i) + kPi / 4.0);
+    }
+    return x;
+}
+
+struct Limited {
+    std::vector<double> l, r;
+};
+
+/// Through the limiter in 256-frame blocks, float or double.
+template <class Sample>
+Limited limitAs(LookaheadLimiter& lim, const std::vector<double>& l, const std::vector<double>& r) {
+    std::vector<Sample> il(l.size()), ir(r.size()), ol(l.size()), orr(l.size());
+    for (std::size_t i = 0; i < l.size(); ++i) {
+        il[i] = static_cast<Sample>(l[i]);
+        ir[i] = static_cast<Sample>(r[i]);
+    }
+    for (std::size_t off = 0; off < l.size(); off += 256) {
+        const int n = static_cast<int>(std::min<std::size_t>(256, l.size() - off));
+        const Sample* ip[2] = {il.data() + off, ir.data() + off};
+        Sample* op[2] = {ol.data() + off, orr.data() + off};
+        lim.process(ip, op, n);
+    }
+    return {std::vector<double>(ol.begin(), ol.end()), std::vector<double>(orr.begin(), orr.end())};
+}
+
+double truePeakOf(double fs, const Limited& y) {
+    TruePeakMeter m;
+    m.prepare(fs, 2);
+    const double* p[2] = {y.l.data(), y.r.data()};
+    m.process(p, 2, static_cast<int>(y.l.size()));
+    return m.peak();
+}
+
+void testTheTruePeakLimiterIsAPureDelayBelowTheCeiling() {
+    section("DEV-29 c -- true peak is off by default; on, below the ceiling it is a delay");
+
+    LookaheadLimiter lim;
+    lim.prepare(kFs, 2, 1024);
+    lim.setLookaheadMs(1.5);
+    check(!lim.truePeak() && lim.latencySamples() == 72,
+          "off by default: the latency is the lookahead alone");
+    lim.setTruePeak(true);
+    check(lim.truePeak() && lim.truePeakDelay() == 10 && lim.latencySamples() == 82,
+          "on at 48 kHz: 72 + 8 (the interpolator) + 2 (the spread) = 82: " +
+              std::to_string(lim.latencySamples()));
+
+    for (double rate : {44100.0, 96000.0, 176400.0, 192000.0}) {
+        LookaheadLimiter other;
+        other.prepare(rate, 2, 1024);
+        other.setLookahead(64);
+        other.setTruePeak(true);
+        const int expected = rate >= 176400.0 ? 64 : 74;
+        check(other.latencySamples() == expected,
+              "at " + std::to_string(static_cast<int>(rate)) + " Hz the latency is " +
+                  std::to_string(other.latencySamples()) + " (expected " +
+                  std::to_string(expected) + "; none added once the Annex oversamples by 1)");
+    }
+
+    // Under the ceiling in TRUE peak: the quarter-rate sine at 45 degrees with
+    // its crest at -1.5 dBTP against -1 dBTP, plus a 440 Hz tone on the right.
+    const double ceiling = std::pow(10.0, -1.0 / 20.0);
+    std::vector<double> l = quarterRateAt45(8192, std::pow(10.0, -1.5 / 20.0));
+    std::vector<double> r(8192);
+    for (std::size_t i = 0; i < r.size(); ++i)
+        r[i] = 0.8 * std::sin(2.0 * kPi * 440.0 * static_cast<double>(i) / kFs);
+    for (bool asDouble : {false, true}) {
+        LookaheadLimiter tp;
+        tp.prepare(kFs, 2, 1024);
+        tp.setLookaheadMs(1.5);
+        tp.setCeiling(ceiling);
+        tp.setTruePeak(true);
+        const int d = tp.latencySamples();
+        const Limited y = asDouble ? limitAs<double>(tp, l, r) : limitAs<float>(tp, l, r);
+        bool exact = true;
+        for (std::size_t i = 0; i < y.l.size() && exact; ++i) {
+            const double wantL = i >= static_cast<std::size_t>(d) ? l[i - static_cast<std::size_t>(d)] : 0.0;
+            const double wantR = i >= static_cast<std::size_t>(d) ? r[i - static_cast<std::size_t>(d)] : 0.0;
+            const double gotL = y.l[i], gotR = y.r[i];
+            if (asDouble) exact = gotL == wantL && gotR == wantR;
+            else exact = gotL == static_cast<double>(static_cast<float>(wantL)) &&
+                         gotR == static_cast<double>(static_cast<float>(wantR));
+        }
+        check(exact, std::string(asDouble ? "double" : "float") +
+                         ": comes out as itself, exactly latencySamples() late, bit for bit");
+    }
+}
+
+void testTheTruePeakLimiterHoldsTheCeilingBetweenTheSamples() {
+    section("DEV-29 c -- the ceiling holds between the samples, not only on them");
+
+    const double ceilingDb = -1.0;
+    const double ceiling = std::pow(10.0, ceilingDb / 20.0);
+    const auto db = [](double v) { return 20.0 * std::log10(v); };
+
+    // THE CASE A SAMPLE-PEAK BRICKWALL CANNOT SEE. Every sample of the +6 dBTP
+    // quarter-rate sine is turned down to the ceiling exactly -- and the wave
+    // between them leaves 3 dB over it.
+    {
+        const std::vector<double> x = quarterRateAt45(16384, 2.0);
+        LookaheadLimiter sp;
+        sp.prepare(kFs, 2, 1024);
+        sp.setLookaheadMs(1.5);
+        sp.setCeiling(ceiling);
+        const Limited y = limitAs<float>(sp, x, x);
+        const double over = db(truePeakOf(kFs, y)) - ceilingDb;
+        check(over > 2.5 && over < 3.1,
+              "sample-peak mode: the quarter-rate sine leaves " + std::to_string(over) +
+                  " dB over a -1 dB ceiling between the samples");
+    }
+
+    struct Fixture {
+        std::string name;
+        std::vector<double> l, r;
+    };
+    std::vector<Fixture> fixtures;
+    {
+        auto x = quarterRateAt45(16384, 2.0);
+        fixtures.push_back({"quarter-rate sine at 45 degrees, +6 dBTP", x, x});
+    }
+    {
+        std::vector<double> l(16384), r(16384);
+        for (std::size_t i = 0; i < l.size(); ++i) {
+            l[i] = 3.0 * std::sin(2.0 * kPi * 11025.0 * 1.003 * static_cast<double>(i) / kFs + 0.3);
+            r[i] = 2.0 * std::sin(2.0 * kPi * 997.0 * static_cast<double>(i) / kFs);
+        }
+        fixtures.push_back({"11 kHz on the left (+9.5 dB), 997 Hz on the right", l, r});
+    }
+    {
+        auto x = quarterRateAt45(16384, 2.0, 1500);
+        fixtures.push_back({"quarter-rate bursts at 45 degrees, +6 dBTP, hard-gated", x, x});
+    }
+    {
+        std::vector<double> l(16384), r(16384);
+        std::uint32_t s = 2024u;
+        for (std::size_t i = 0; i < l.size(); ++i) {
+            s = s * 1664525u + 1013904223u;
+            l[i] = 8.0 * ((s >> 8) / 16777216.0 - 0.5);
+            s = s * 1664525u + 1013904223u;
+            r[i] = 8.0 * ((s >> 8) / 16777216.0 - 0.5);
+        }
+        fixtures.push_back({"white noise at +12 dB", l, r});
+    }
+    {
+        std::vector<double> l(16384, 0.0);
+        for (std::size_t i = 2000; i < l.size(); i += 3000) {
+            l[i] = 4.0;
+            l[i + 1] = -4.0;   // a doublet: its true peak is far above its samples
+        }
+        fixtures.push_back({"+12 dB doublets", l, std::vector<double>(16384, 0.0)});
+    }
+
+    // THE RESIDUE. Where the gain moves inside the interpolator's span the
+    // output's true peak is not exactly the gain times the input's. With a
+    // lookahead the gain moves slowly and the residue is under a thousandth
+    // of a dB (measured: 0.0003 on noise at 64 samples); with none the gain
+    // can step from one sample to the next (measured: 0.025 on noise). The
+    // encoded check after dither is the final gate either way.
+
+    for (double rate : {44100.0, 48000.0, 96000.0}) {
+        for (int L : {0, 64, 288}) {
+            for (const auto& f : fixtures) {
+                LookaheadLimiter lim;
+                lim.prepare(rate, 2, 1024);
+                lim.setLookahead(L);
+                lim.setCeiling(ceiling);
+                lim.setTruePeak(true);
+                const Limited y = limitAs<double>(lim, f.l, f.r);
+                double sample = 0.0;
+                for (std::size_t i = 0; i < y.l.size(); ++i)
+                    sample = std::max({sample, std::fabs(y.l[i]), std::fabs(y.r[i])});
+                const double over = db(truePeakOf(rate, y)) - ceilingDb;
+                const std::string at = " at " + std::to_string(static_cast<int>(rate)) +
+                                       " Hz, lookahead " + std::to_string(L);
+                check(sample <= ceiling * (1.0 + 1e-12),
+                      f.name + at + ": every sample at or under the ceiling");
+                const double allowed = L > 0 ? 0.001 : 0.05;
+                check(over <= allowed,
+                      f.name + at + ": true peak " + std::to_string(over) +
+                          " dB against the ceiling (allowed " + std::to_string(allowed) + ")");
+            }
+        }
+    }
+}
+
+void testTheTruePeakLimiterAllocatesNothing() {
+    section("ADR-0010 -- true-peak mode allocates nothing either");
+
+    LookaheadLimiter lim;
+    lim.prepare(kFs, 2, 2048);
+    lim.setLookahead(288);
+    lim.setTruePeak(true);
+    std::vector<double> l(256, 3.0), r(256, -3.0), ol(256), orr(256);
+    const double* ip[2] = {l.data(), r.data()};
+    double* op[2] = {ol.data(), orr.data()};
+    g_allocs.store(0);
+    g_counting.store(true);
+    for (int b = 0; b < 50; ++b) lim.process(ip, op, 256);
+    g_counting.store(false);
+    check(g_allocs.load() == 0, "fifty loud double blocks in true peak, no allocation");
+}
+
 // ===========================================================================
 // RMSC
 // ===========================================================================
@@ -892,6 +1104,42 @@ void testTruePeakFindsTheCrestBetweenSamples() {
     check(m.oversampling() == 2, "96 kHz: 2x");
     m.prepare(192000.0);
     check(m.oversampling() == 1, "192 kHz: none, already past 176.4 kHz");
+    // DF-E20 (d): the header promises at least 176.4 kHz after oversampling;
+    // at 32 kHz the old rule gave 4x, 128 kHz.
+    m.prepare(32000.0);
+    check(m.oversampling() == 6, "32 kHz: 6x, 192 kHz");
+    m.prepare(22050.0);
+    check(m.oversampling() == 8, "22.05 kHz: 8x, 176.4 kHz");
+    for (double fs : {22050.0, 32000.0, 44100.0, 48000.0, 88200.0, 96000.0, 176400.0}) {
+        m.prepare(fs);
+        check(fs * m.oversampling() >= 176400.0 - 1e-6, "every rate reaches 176.4 kHz");
+    }
+    {
+        // DEV-28: any channel count, and a double path. A crest only in the
+        // twelfth channel is found; float and double input read the same.
+        TruePeakMeter wide;
+        wide.prepare(48000.0, 12);
+        std::vector<std::vector<float>> f(12, std::vector<float>(4800, 0.f));
+        std::vector<std::vector<double>> d(12, std::vector<double>(4800, 0.0));
+        for (std::size_t i = 0; i < 4800; ++i) {
+            const double v = 0.5 * std::sin(2.0 * kPi * 12000.0 * static_cast<double>(i) / 48000.0 + kPi / 4.0);
+            f[11][i] = static_cast<float>(v);
+            d[11][i] = static_cast<double>(f[11][i]);
+        }
+        std::vector<const float*> fp;
+        std::vector<const double*> dp;
+        for (int c = 0; c < 12; ++c) {
+            fp.push_back(f[static_cast<std::size_t>(c)].data());
+            dp.push_back(d[static_cast<std::size_t>(c)].data());
+        }
+        wide.process(fp.data(), 12, 4800);
+        const double fromFloat = wide.peak();
+        check(wide.channels() == 12 && 20.0 * std::log10(fromFloat) > -6.42,
+              "a crest in the twelfth of twelve channels is found");
+        wide.reset();
+        wide.process(dp.data(), 12, 4800);
+        check(wide.peak() == fromFloat, "the double path reads exactly what the float path reads");
+    }
 
     // The classic case: a quarter of the rate, sampled 45 degrees off its crest.
     double sp = 0.0;
@@ -941,6 +1189,30 @@ void testTruePeakFindsTheCrestBetweenSamples() {
     check(g_allocs.load() == 0, "fifty blocks, no allocation");
     m.reset();
     check(m.peak() == 0.0, "reset clears the held peak");
+
+    float signal[16] = {};
+    for (int i = 1; i < 16; ++i)
+        signal[i] = (i % 4) < 2 ? 0.75f : -0.75f;
+    const float* input[] = {signal};
+    for (double rate : {48000.0, 192000.0}) {
+        signal[0] = 0.0f;
+        m.prepare(rate);
+        m.process(input, 1, 16);
+        const double reference = m.peak();
+        check(rate == 48000.0 ? reference > 0.75 : reference == 0.75,
+              "the finite fixture exercises interpolation or the sample-only path");
+        for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                              std::numeric_limits<float>::infinity(),
+                              -std::numeric_limits<float>::infinity()}) {
+            signal[0] = invalid;
+            m.reset();
+            m.process(input, 1, 1);
+            const float* rest[] = {signal + 1};
+            m.process(rest, 1, 15);
+            check(m.peak() == reference,
+                  "a non-finite sample is silence across blocks at " + std::to_string(rate));
+        }
+    }
 }
 
 // ===========================================================================
@@ -1194,6 +1466,9 @@ int main() {
     testRmsDetectionWouldHaveMissedTheSpike();
     testTheLimiterIsLinkedAcrossChannels();
     testTheLimiterAllocatesNothing();
+    testTheTruePeakLimiterIsAPureDelayBelowTheCeiling();
+    testTheTruePeakLimiterHoldsTheCeilingBetweenTheSamples();
+    testTheTruePeakLimiterAllocatesNothing();
     testRmscIsInstantAndDepthZeroIsBypass();
     testAHotKeyNeverInvertsTheMusic();
     testTheSidebandsAreACharacterYouCanTurnOff();

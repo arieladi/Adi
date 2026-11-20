@@ -45,13 +45,17 @@ class Core final {
     void reset(const Settings &);
     // Bounded publication only: no planning, allocation, wait or lock.
     bool requestConfiguration(const Settings &) noexcept;
+    // Serialized audio owner, after it has retired an aggregate that never
+    // promised latency. The token is the held child offer from that aggregate.
+    void withdrawUnpromisedOffer(std::uint64_t token) noexcept;
     // Owner builds the newest requested complete coefficient generation.
     // FIR frequency and Q jointly update one shared main/key extraction kernel:
     // identical settings and a fresh stream have identical sound for any edit order.
     // FIR captures its prepared kernel and extraction-enable mask at the first
     // source sample of each half-kernel block. Later admission cannot rewrite
     // captured samples; older blocks/tails retain their complete generations.
-    // One offered generation remains immutable until physical admission. New
+    // One offered generation remains immutable until physical admission or
+    // withdrawal of an unused latency at a physical boundary. Other new
     // requests coalesce behind it, including equal-latency coefficient edits.
     // False means no new request, an offer awaits admission or no free slot;
     // the newest request stays queued. No polling or worker is started here.
@@ -59,9 +63,10 @@ class Core final {
     [[nodiscard]] ConfigurationStatus configurationStatus() const noexcept;
     [[nodiscard]] LatencyChange pendingLatencyChange() const noexcept;
     [[nodiscard]] std::int32_t latencySamples() const noexcept;
-    // The parent may hold an immutable pending offer while preparing other
-    // stages. A false flag still publishes desired controls and starts a fresh
-    // physical context, retaining the current admitted coefficients/latency.
+    // A false flag preserves the parent's pending offer while it prepares
+    // other stages and PDC. A true flag admits matching configured latency
+    // first. If the PDC is still active and the controls revert to the active
+    // configuration, a true flag can withdraw a different-latency offer.
     [[nodiscard]] BlockContext beginBlock(std::uint64_t physicalBlock,
         std::int32_t configuredLatency, const Settings &, bool admitPending = true) noexcept;
     bool process(float *const *main, const float *const *key, std::int32_t keyChannels,

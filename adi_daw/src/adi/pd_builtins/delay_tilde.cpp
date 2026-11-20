@@ -49,7 +49,7 @@ void parameter(Object *x, t_symbol *, int argc, t_atom *argv) {
     if (!std::isfinite(id) || id < 0 || id >= static_cast<float>(adi::dsp::LiveDelay::Count))
         return;
     x->core->set(static_cast<adi::dsp::LiveDelay::Param>(static_cast<int>(id)),
-                 atom_getfloat(argv + 1));
+                 static_cast<float>(atom_getfloat(argv + 1)));
     report(x);
 }
 void tempo(Object *x, t_floatarg v) { x->core->tempo(v); }

@@ -2,10 +2,19 @@
 
 `OneShot.pd` is a top-level instrument canvas with stereo `dac~` outputs and
 the compiled-in `adi.oneshot~` external. Open it through `LibPdEngine` with two
-inputs and two outputs and add the parent `pd/` search path. Its forty controls
-declare the recovered native parameter names, units, ranges and defaults.
-These are ADI values from #206, **unverified against Live**. This recovery adds
-no new claim about Simpler parity or fresh Live defaults.
+inputs and two outputs and add the parent `pd/` search path. Its forty-one
+controls declare the native parameter names, units, ranges and defaults.
+
+Since DEV-21 step 1 the ranges, units and defaults of the controls OneShot
+shares with Simpler are Live 12.4's own, read from the default Simpler preset
+that build ships (Volume -36..36 dB at -12; Attack 0.1 ms to 20 s at 0.1 ms;
+Decay and Release 1 ms to 60 s at 600 ms and 50 ms; Sustain -70..0 dB at 0 dB;
+Fade In and Out 0..2000 ms at 0.1 ms; Loop, Snap, Filter and LFO on; Filter
+30 Hz..22 kHz at 22 kHz; Resonance 0..125 %; Voices 6; Vel > Vol 35 %);
+`test_oneshot.cpp` pins them. The LAWS behind them are still ADI's and are not
+claimed as Live's: the linear attack, decay and release (Live has slopes), the
+Vel > Vol blend, the Resonance-to-Q curve, the filter (Live's circuits and its
+Morph type are not built), and the Voices chooser's list (a reading to take).
 
 Bind parameters and sample declarations with audio stopped. Decode sample slot
 1 off-thread, then call `prepareOneShotSample()` before publishing the result
@@ -39,7 +48,9 @@ running Pd graph, so it does not automatically reset this external's held
 voices. Until the host integrates lifecycle notification, send a float to
 `$0-oneshot-reset` (via `sendFloat("oneshot-reset", 0)`) or publish an empty
 sample slot before resuming. The explicit reset clears voices and the bounded
-MIDI state without allocating. The native core's own `prepare()` resets voices.
+MIDI state without allocating. The native core's own `prepare()` resets voices
+only when the rate or block size changes, or after `release()` (ADR-0090 d5,
+DF-E37 f); the Pd external's DSP restart resets them explicitly.
 
 Tests cover independent synthetic gain/pitch oracles, event timing,
 state/file round trips, immutable replacement and clearing, sample publication

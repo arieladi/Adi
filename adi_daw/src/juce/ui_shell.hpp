@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/arm_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/locator_edits.hpp"
@@ -153,7 +154,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ArrangePanelsVertically,
         FocusClipView, // Live's Navigate menu: Clip View, Alt/Option+3
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
-        LastId = FitToTimeRange
+        ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
+        LastId = ArrangementRecord
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -191,6 +193,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
     bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
+    // Live's Exclusive Arm (the same page), on by default: arming a track disarms the others unless
+    // Ctrl/Cmd is held.
+    bool exclusiveArm() const noexcept { return exclusiveArm_; }
     // The registry's recording defaults a new track takes (`record.quantize`,
     // `audio.keepMonitoringLatency`; N31).
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
@@ -245,6 +250,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
+    bool exclusiveArm_ = true;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
     bool splitAll_ = true;
@@ -295,6 +301,15 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
+    // The Control Bar's MIDI Indicators (Live 12 manual 2.x, the Control Bar's right end): lit while MIDI
+    // has come in from an open port within the last moment (SRF-05). The application sets it.
+    void setMidiIn(bool on) noexcept {
+        if (on != midiIn_) {
+            midiIn_ = on;
+            mark(DirtySet::Transport); // the Control Bar redraws while the transport is stopped too
+        }
+    }
+    bool midiIn() const noexcept { return midiIn_; }
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
     unsigned lastDrain() const noexcept { return lastDrain_; }
@@ -339,6 +354,30 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool()> reenableAutomation;
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;
+    // Arm, monitoring and Arrangement Record (MX-09). The session's rows hold a track's arm and its
+    // monitoring, which the snapshot does not carry yet, so the application hands them over: once a
+    // frame through `setRecordStates` (kept only when they changed, so a steady frame allocates
+    // nothing), and fresh for an action through `readRecordStates`. `startRecording(insertTick,
+    // playing)` prepares the recorder and, stopped, starts the transport as a recording start;
+    // `stopRecording` stops the recorder (the transport goes on, as Live's Record button);
+    // `recording` reads whether it runs. A refusal comes back as false and the application has said
+    // why. Unset outside the application.
+    std::function<RecordStates()> readRecordStates;
+    void setRecordStates(RecordStates states) {
+        if (states != recordStates_)
+            recordStates_ = std::move(states);
+    }
+    std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
+    std::function<void()> stopRecording;
+    std::function<bool()> recording;
+    // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
+    // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).
+    bool midiOverdub() const noexcept { return midiOverdub_; }
+    void setMidiOverdub(bool on) noexcept { midiOverdub_ = on; }
+    // The arm and monitoring of a track as the application last handed them (Off and unarmed when
+    // not known).
+    TrackRecordState recordState(std::int64_t track) const;
+    bool isRecording() const { return recording && recording(); }
     // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.
@@ -528,6 +567,16 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
     bool soloTrack(std::int64_t id, bool add);
+    // Live's Arm on track `id` (MX-09; manual 21.1), with Exclusive Arm, Ctrl/Cmd for several (`add`),
+    // and the selected tracks together; and its monitoring switch In, Auto, Off (manual 21.4). Each
+    // one batch.
+    bool armTrack(std::int64_t id, bool add);
+    bool setMonitor(std::int64_t id, Monitor mode);
+    // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
+    // stops recording and the transport plays on.
+    bool toggleRecord();
+    // Selects clip `clip` as a click on it would (a recorded take, once it lands).
+    void selectClip(std::int64_t clip);
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
@@ -668,6 +717,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool pluginWindowsShown_ = true;
     unsigned lastDrain_ = 0;
     bool playing_ = false;
+    bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
+    RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
+    RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
+    bool midiIn_ = false;
     bool infoShown_ = true;
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs

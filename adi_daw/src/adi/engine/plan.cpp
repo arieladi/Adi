@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <unordered_map>
 
 namespace adi::engine {
 namespace {
@@ -91,6 +92,27 @@ GraphPlan planGraph(const rows::Model& m) {
     std::map<std::int64_t, PlannedNode::Route> mainDecided;
     // ADR-0203 d3: the sends, planned after every main and default edge.
     std::vector<const rows::Routing*> sends;
+    std::unordered_map<std::int64_t,const rows::Device*> deviceRows;
+    std::unordered_map<std::int64_t,const rows::DeviceChain*> chainRows;
+    bool keyIndexReady=false;
+    const auto ownerOfDevice = [&](std::int64_t device)->std::optional<std::int64_t> {
+        // No key rows means no new maps or traversal work. With keys, build
+        // one owner-side index rather than rescan the whole project per route.
+        if(!keyIndexReady) {
+            deviceRows.reserve(m.devices.size());chainRows.reserve(m.deviceChains.size());
+            for(const auto& d:m.devices)deviceRows.emplace(d.id,&d);
+            for(const auto& c:m.deviceChains)chainRows.emplace(c.id,&c);
+            keyIndexReady=true;
+        }
+        for(std::size_t depth=0;depth<=m.devices.size();++depth) {
+            const auto d=deviceRows.find(device);if(d==deviceRows.end())return {};
+            const auto c=chainRows.find(d->second->chainId);if(c==chainRows.end())return {};
+            if(c->second->trackId)return c->second->trackId;
+            if(!c->second->parentDeviceId)return {};
+            device=*c->second->parentDeviceId;
+        }
+        return {}; // malformed ownership cycle; bounded with no per-route allocation
+    };
 
     for (const rows::Routing* r : routes) {
         // A send switched off is still planned, at its node's gate, so Enable
@@ -124,6 +146,21 @@ GraphPlan planGraph(const rows::Model& m) {
             r->dstKind == "hw_in" || r->dstKind == "hw_out")
             continue;
 
+        if(r->kind=="sidechain" && r->dstKind=="device") {
+            const auto owner=ownerOfDevice(r->dstId);
+            const auto source=byId.find(r->srcId);
+            const auto target=owner?byId.find(*owner):byId.end();
+            if(r->srcKind!="track" || source==byId.end() || target==byId.end()) {
+                plan.problems.push_back("routing#"+std::to_string(r->id)+": missing source track or key device");continue;
+            }
+            PlannedEdge e;e.from=source->second;e.to=target->second;e.bus=Bus::Sidechain;
+            e.kind="sidechain";e.routingId=r->id;e.keyDevice=r->dstId;e.keyGainDb=r->gainDb;e.keyPan=r->pan;
+            if(r->keyTap=="pre_fx")e.tap=Tap::PreFx;
+            else if(r->keyTap=="post_fx")e.tap=Tap::PostFx;
+            else if(r->keyTap=="post_mixer")e.tap=Tap::PostMixer;
+            else {plan.problems.push_back("routing#"+std::to_string(r->id)+": unknown key tap");continue;}
+            plan.edges.push_back(e);continue;
+        }
         if (!namesATrack(r->srcKind) || !namesATrack(r->dstKind)) {
             plan.problems.push_back("routing#" + std::to_string(r->id) +
                                     ": endpoint kind '" + r->srcKind + "'/'" +
@@ -255,7 +292,7 @@ GraphPlan planGraph(const rows::Model& m) {
                 const std::size_t i = todo.back();
                 todo.pop_back();
                 for (const PlannedEdge& e : plan.edges)
-                    if (e.from == i && e.to < seen.size() && !seen[e.to]) {
+                    if (e.keyDevice==0 && e.from == i && e.to < seen.size() && !seen[e.to]) {
                         if (e.to == from->second) loops = true;
                         seen[e.to] = true;
                         todo.push_back(e.to);
@@ -298,7 +335,7 @@ GraphPlan planGraph(const rows::Model& m) {
         const std::size_t n = plan.nodes.size();
         std::vector<std::size_t> indegree(n, 0);
         for (const auto& e : plan.edges)
-            if (e.to < n && !e.feedback) ++indegree[e.to];
+            if (e.to < n && !e.feedback && e.keyDevice==0) ++indegree[e.to];
 
         std::vector<std::size_t> ready;
         for (std::size_t i = 0; i < n; ++i)
@@ -310,7 +347,7 @@ GraphPlan planGraph(const rows::Model& m) {
             ready.pop_back();
             ++seen;
             for (const auto& e : plan.edges)
-                if (e.from == id && e.to < n && --indegree[e.to] == 0)
+                if (e.keyDevice==0 && e.from == id && e.to < n && --indegree[e.to] == 0)
                     ready.push_back(e.to);
         }
         if (seen != n) {

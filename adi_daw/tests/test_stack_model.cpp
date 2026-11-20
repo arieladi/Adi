@@ -2818,6 +2818,15 @@ void actualChainAdapter() {
     check(model.resolve(model.chainRef(1, 105))->identity == 9005,
           "the restored target carries the publication's identity rather than a name/index hash");
 
+    const auto foldRef=model.chainRef(1,101);
+    model.setBaseHeight(240,251);
+    auto foldedDevice=std::find_if(devices.begin(),devices.end(),[](const auto& d){return d.device==101;});
+    foldedDevice->folded=true;refresh();model.setRows(out.input(reader.seq(),8),252);
+    bool compact=false;
+    model.forEachChainItem(*model.shownIndex(1),[&](const ItemGeo& item){if(item.ref.device==101)compact=item.pill && item.width==22;});
+    check(compact && model.live(foldRef),"explicit device fold uses one compact pill and retains stable identity");
+    foldedDevice->folded=false;refresh();model.setRows(out.input(reader.seq(),9),253);
+    check(model.live(foldRef),"unfolding does not replace the edit target or audio device");
     // Eligibility is a stable publication field, independent of the whole chain's
     // display classes, user labels, availability and activation.
     auto native = std::find_if(devices.begin(), devices.end(), [](const ChainDeviceInput &d) { return d.device == 101; });

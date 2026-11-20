@@ -257,6 +257,7 @@ struct Routing {
     /// planner that cannot see it cannot honour the rule.
     std::string origin = "user";
     std::optional<bool> storedPreFader{}; // set when a return policy overrides the raw row
+    std::string keyTap = "post_mixer"; // routing_key_taps absent: ADR-0203 d3
 };
 
 // --- the whole readable project ---------------------------------------------

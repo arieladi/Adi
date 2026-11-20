@@ -16,9 +16,12 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <sqlite3.h>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 namespace {
 using namespace adi;
@@ -93,11 +96,12 @@ struct Fixture {
         coordinator = std::move(attached.value);
         engine.transport().play();
     }
-    std::unique_ptr<g::Session> begin(g::ScalarTarget target = {g::ScalarKind::TrackVolume, 1}) {
+    std::unique_ptr<g::Session> begin(g::ScalarTarget target = {g::ScalarKind::TrackVolume, 1},
+                                      std::shared_ptr<g::Presentation> perGesture = {}) {
         g::Spec spec;
         spec.strategy = g::Strategy::LiveValues;
         spec.label = "Quiet native scalar";
-        auto result = coordinator->begin(spec, g::scalarProducer(target));
+        auto result = coordinator->begin(spec, g::scalarProducer(target), std::move(perGesture));
         require(result.status.ok() && result.session, "begin quiet native Session");
         return std::move(result.session);
     }
@@ -142,6 +146,101 @@ struct Fixture {
         check(equal, label + ": independent actual PCM");
     }
 };
+struct RestoreGate final : g::Presentation {
+    g::EnginePresentation& engine;
+    bool blocked = false;
+    explicit RestoreGate(g::EnginePresentation& real) : engine(real) {}
+    g::PresentationStatus adoptCommitted(const Store& store, const g::Base& base,
+                                          const AppliedBatch* receipt) override {
+        if (blocked)
+            return {g::PresentationState::Refused, "waiting for restoration", {}};
+        return engine.adoptCommitted(store, base, receipt);
+    }
+    g::CaptureResult capture(const Store& store, const g::Base& base, const g::OwnerToken& owner,
+                             g::Strategy strategy, std::span<const OpRequest> ops) override {
+        return engine.capture(store, base, owner, strategy, ops);
+    }
+    g::PrepareResult prepare(std::unique_ptr<const g::CapturedPresentation> captured) override {
+        return engine.prepare(std::move(captured));
+    }
+    g::PresentationStatus publish(std::unique_ptr<g::PreparedPresentation> prepared) override {
+        return engine.publish(std::move(prepared));
+    }
+    g::PresentationStatus promote(const Store& store, const g::Base& base,
+                                   const g::OwnerToken& owner, const AppliedBatch& receipt) override {
+        return engine.promote(store, base, owner, receipt);
+    }
+    g::PresentationStatus clear(const g::OwnerToken& owner) override { return engine.clear(owner); }
+};
+
+struct CommitProbe {
+    sqlite3* db;
+    g::QuietSession& detector;
+    bool entered = false;
+    bool refused = false;
+    CommitProbe(sqlite3* handle, g::QuietSession& quiet) : db(handle), detector(quiet) {
+        sqlite3_update_hook(db, [](void* opaque, int, const char*, const char* table,
+                                   sqlite3_int64) noexcept {
+            auto& self = *static_cast<CommitProbe*>(opaque);
+            if (self.entered || std::string_view(table) != "mixer_strip" ||
+                self.detector.state() != g::State::Committing)
+                return;
+            self.entered = true;
+            try {
+                self.refused = true;
+                for (std::uint64_t now : {399u, 400u}) {
+                    const auto update = self.detector.update(std::make_unique<g::ScalarInput>(-9), now);
+                    const auto poll = self.detector.poll(now);
+                    self.refused = self.refused && update.status.error == g::Error::Reentrant &&
+                                   poll.status.error == g::Error::Reentrant && !poll.ended &&
+                                   update.status.message == "quiet gesture commit is in progress" &&
+                                   poll.status.message == update.status.message;
+                }
+            } catch (...) {
+                self.refused = false;
+            }
+        }, this);
+    }
+    ~CommitProbe() { sqlite3_update_hook(db, nullptr, nullptr); }
+};
+
+void transitions() {
+    Fixture f(Precision::Float64);
+    auto restoration = std::make_shared<RestoreGate>(*f.presentation);
+    g::QuietSession cancelling(f.begin({g::ScalarKind::TrackVolume, 1}, restoration), 300);
+    f.value(cancelling, -6, 100);
+    restoration->blocked = true;
+    const auto pending = cancelling.cancel();
+    require(!pending.status.ok() && cancelling.state() == g::State::Cancelling,
+            "force cancellation to wait for actual engine restoration");
+    for (std::uint64_t now : {399u, 400u, 700u}) {
+        const auto update = cancelling.update(std::make_unique<g::ScalarInput>(-9), now);
+        const auto poll = cancelling.poll(now);
+        check(update.status.error == g::Error::Closed && poll.status.error == g::Error::Closed &&
+                  update.status.message == "quiet gesture cancellation is pending" &&
+                  poll.status.message == update.status.message && !poll.ended,
+              "pending cancellation reports itself before and after the deadline");
+    }
+    restoration->blocked = false;
+    const auto restored = f.coordinator->retryRestorations(701);
+    check(restored.status.ok() && restored.pendingRestorations == 0 &&
+              cancelling.state() == g::State::Cancelled && cancelling.poll(701).status.ok() &&
+              !cancelling.poll(702).ended && OpJournal(*f.store).count() == 0 && f.stored() == 0,
+          "restoration finishes without a late End or journal write");
+    f.sound(.25, .5, "restoration restores actual PCM");
+
+    auto committing = f.quiet();
+    f.value(*committing, -6, 100);
+    CommitProbe probe(f.store->db().getHandle(), *committing);
+    const auto result = committing->end();
+    check(probe.entered && probe.refused,
+          "reentrant calls during the real SQL commit report Committing without an End");
+    check(result.status.ok() && result.durable && result.durable->ok &&
+              committing->state() == g::State::Committed && !committing->poll(700).ended &&
+              f.stored() == -6 && OpJournal(*f.store).count() == 1,
+          "the original End writes exactly the last accepted input");
+}
+
 void ordinary(Precision width) {
     Fixture f(width);
     const auto digest = digestProject(*f.store).text;
@@ -376,8 +475,9 @@ int main() {
         }
     try {
         construction();
+        transitions();
     } catch (const std::exception& e) {
-        check(false, std::string("unexpected constructor fixture exception: ") + e.what());
+        check(false, std::string("unexpected quiet lifecycle fixture exception: ") + e.what());
     }
     std::printf("quiet gesture: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
