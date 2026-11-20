@@ -131,6 +131,36 @@ void realtimeMaximumSpectrum() {
                   hidden.cursorReads == idle.cursorReads && hidden.transforms == idle.transforms,
               "hiding the final view leaves no maximum plan, capture or FFT work");
     }
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = window / 2;
+    auto raw = f.broker.acquire(request);
+    f.tap->write(loud.data(), loud.data(), window, 0, true, 1);
+    f.broker.pump();
+    request.outputs = SharedAnalysis::RealtimeMaximum;
+    auto reopened = f.broker.acquire(request);
+    f.tap->write(quiet.data(), quiet.data(), window / 2, window, true, 1);
+    f.broker.pump();
+    check(raw.read() && !reopened.readMaximum(),
+          "a newly admitted maximum excludes windows that overlap the loud pre-admission history");
+    f.tap->write(quiet.data(), quiet.data(), window / 2, window + window / 2, true, 1);
+    f.broker.pump();
+    const auto fresh = reopened.readMaximum();
+    check(fresh && fresh->window->firstSequence == window &&
+              fresh->binsDbfs.front() == adi::dsp::kDbFloor && f.acquireCalls == 1,
+          "a new maximum starts at its first complete fresh window on the existing tap");
+
+    f.tap->write(quiet.data(), quiet.data(), window, 2000, false, 2);
+    f.broker.pump();
+    const auto settled = f.broker.stats();
+    for (int i = 0; i < 12; ++i) {
+        f.tap->write(quiet.data(), quiet.data(), window, 2000, false, 2);
+        f.broker.pump();
+    }
+    const auto parked = f.broker.stats();
+    check(settled.cursorReads == parked.cursorReads && settled.transforms == parked.transforms &&
+              settled.publications == parked.publications,
+          "the parked maximum becomes idle once its complete quiet window is at the display floor");
 }
 void focusScopeBarTiming() {
     constexpr auto quarter = adi::textproj::kPPQ;
