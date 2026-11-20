@@ -5,13 +5,21 @@
 #include <numbers>
 namespace adi::dsp {
 EqEight::EqEight() noexcept {
-    constexpr double freq[] = {80, 200, 500, 1000, 2000, 4000, 8000, 16000};
+    // DEV-22: Live 12.4's browser default, per curve (A, B) and band: on, type,
+    // frequency; every gain 0 dB, every Q 0.7071. Curve B serves L/R and M/S.
+    struct Default { int on; Type type; double hz; };
+    constexpr Default live[2][8] = {
+        {{1, LowShelf, 30}, {1, Peak, 200}, {1, Peak, 1000}, {1, HighShelf, 5000},
+         {0, Peak, 100}, {0, Peak, 10000}, {0, Peak, 5000}, {0, HighCut12, 18000}},
+        {{0, LowCut12, 40}, {0, LowShelf, 200}, {1, Peak, 100}, {1, Peak, 500},
+         {1, Peak, 2000}, {1, Peak, 10000}, {0, HighShelf, 5000}, {0, HighCut12, 18000}},
+    };
     for (std::size_t c = 0; c < 2; ++c)
         for (std::size_t b = 0; b < 8; ++b) {
             const auto n = c * 40 + b * 5;
-            p_[n] = b < 4 ? 1 : 0;
-            p_[n + 1] = Peak;
-            p_[n + 2] = freq[b];
+            p_[n] = live[c][b].on;
+            p_[n + 1] = live[c][b].type;
+            p_[n + 2] = live[c][b].hz;
             p_[n + 3] = 0;
             p_[n + 4] = .70710678;
         }
