@@ -215,7 +215,8 @@ AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::st
         }
         if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
         result.budgetMet=!unvalidatedSkipped && result.bytesAfter<=maximumBytes;
-        if(firstError.empty())error.clear();return result;
+        if(firstError.empty())error.clear();
+        return result;
     }catch(const std::bad_alloc&){result.problem=AnalysisCacheProblem::Resource;return result;}
     catch(const std::exception& e){result.problem=AnalysisCacheProblem::Io;error=firstError.empty()?e.what():firstError+"; trim aborted: "+e.what();return result;}
 }

@@ -23,7 +23,8 @@ template<class F> DecodeProblem problem(F&& action,std::string* text=nullptr){
     return static_cast<DecodeProblem>(-2);
 }
 bool noPartial(const fs::path& folder){for(const auto& file:fs::directory_iterator(folder))
-    if(file.path().filename().native().find(fs::path(".partial-").native())!=fs::path::string_type::npos)return false;return true;}
+    if(file.path().filename().native().find(fs::path(".partial-").native())!=fs::path::string_type::npos)return false;
+    return true;}
 std::string hash(const fs::path& path){return adi::media::blake3File(path).hex;}
 void oversized(bool damaged){
     adi::test::TempDirectory temp("decode_consistency",damaged?"claimed":"genuine");
