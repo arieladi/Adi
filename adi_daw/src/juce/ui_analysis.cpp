@@ -251,10 +251,15 @@ std::optional<MainMeterSnapshot> readMainMeterSnapshot(const engine::MainLoudnes
     return result;
 }
 namespace {
-void describeAnalysisView(SharedSpectrumView &view, bool classic) {
-    if (classic) {
+void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mode) {
+    if (mode == SharedSpectrumView::Mode::ClassicScope) {
         view.setTitle("Classic Scope");
         view.setTooltip("Classic Scope shows the waveform using the selected channel and trigger.");
+        return;
+    }
+    if (mode == SharedSpectrumView::Mode::SpectrumMaximum) {
+        view.setTitle("Realtime Maximum");
+        view.setTooltip("Each spectrum bin rises immediately and falls by up to 20 dB per second of source audio.");
         return;
     }
     view.setTitle("Channel spectrum");
@@ -268,12 +273,13 @@ void describeAnalysisView(SharedSpectrumView &view, bool classic) {
 }
 SharedSpectrumView::SharedSpectrumView() {
     (void)analysisPaletteColour(palettes::defaultIndex, 0); // no lazy LUT initialization in paint
-    describeAnalysisView(*this, false);
+    describeAnalysisView(*this, mode_);
     setInterceptsMouseClicks(false, false);
 }
 void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
-    if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage) frozen_ = false;
+    if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage ||
+        mode == Mode::SpectrumMaximum || mode_ == Mode::SpectrumMaximum) frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     if (mode == Mode::ClassicScope && !classicPanel_) {
@@ -286,8 +292,9 @@ void SharedSpectrumView::setMode(Mode mode) {
         };
         addChildComponent(*classicPanel_);
     }
-    if ((mode_ == Mode::ClassicScope) != (mode == Mode::ClassicScope))
-        describeAnalysisView(*this, mode == Mode::ClassicScope);
+    if (mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
+        mode_ == Mode::SpectrumMaximum || mode == Mode::SpectrumMaximum)
+        describeAnalysisView(*this, mode);
     mode_ = mode;
     if (classicPanel_) {
         resetClassic(false);
@@ -368,11 +375,14 @@ void SharedSpectrumView::updateSpectrumProjection() {
 std::span<const float> SharedSpectrumView::spectrumBins() const noexcept {
     if (mode_ == Mode::SpectrumAverage)
         return averageBins_ ? std::span<const float>(*averageBins_) : std::span<const float>{};
+    if (mode_ == Mode::SpectrumMaximum)
+        return maximumShown_ ? std::span<const float>(maximumShown_->binsDbfs) : std::span<const float>{};
     return mode_ == Mode::Spectrum && shown_ ? std::span<const float>(shown_->binsDbfs) : std::span<const float>{};
 }
 void SharedSpectrumView::resetPicture() noexcept {
     shown_.reset();
     averageBins_.reset();
+    maximumShown_.reset();
     scaledSpectrum_.reset();
     averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
 }
@@ -512,6 +522,7 @@ void SharedSpectrumView::updateDemand() noexcept {
             case Mode::Phase: request.outputs = SharedAnalysis::Phase; break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
             case Mode::SpectrumAverage: request.outputs = SharedAnalysis::Average1s; break;
+            case Mode::SpectrumMaximum: request.outputs = SharedAnalysis::RealtimeMaximum; break;
             case Mode::ClassicScope: break; // Uses the continuous capture lease above.
             }
             try {
@@ -635,10 +646,19 @@ void SharedSpectrumView::frame() noexcept {
     updateDemand(); // owner resolution may have changed pending availability/generation
     if (!lease_.available()) return;
     const bool averaging = mode_ == Mode::SpectrumAverage;
+    const bool maximumMode = mode_ == Mode::SpectrumMaximum;
     const auto average = averaging ? lease_.readAverage() : nullptr;
+    const auto maximum = maximumMode ? lease_.readMaximum() : nullptr;
     const auto averageStatus = average ? average->status : SharedAnalysis::AverageStatus::Waiting;
-    auto next = averaging ? (averageStatus == SharedAnalysis::AverageStatus::Ready && average->binsDbfs
-                                 ? average->window : nullptr) : lease_.read();
+    std::shared_ptr<const SharedAnalysis::Result> next;
+    if (averaging) {
+        if (averageStatus == SharedAnalysis::AverageStatus::Ready && average->binsDbfs)
+            next = average->window;
+    } else if (maximumMode) {
+        if (maximum) next = maximum->window;
+    } else {
+        next = lease_.read();
+    }
     // Invalidation can replace a live source before its next publication. Fence
     // at that activation, rather than accepting buffered replacement-source data.
     if (!next && shown_) armFreshBoundary();
@@ -659,10 +679,13 @@ void SharedSpectrumView::frame() noexcept {
     if (!next) raster_.reset();
     // An explicit source/transport epoch may invalidate a result without dropping the lease.
     const auto nextBins = next && average ? average->binsDbfs : nullptr;
-    const bool pictureChanged = next != shown_ || nextBins != averageBins_ || averageStatus != averageStatus_;
+    const auto nextMaximum = next ? maximum : nullptr;
+    const bool pictureChanged = next != shown_ || nextBins != averageBins_ || nextMaximum != maximumShown_ ||
+                                averageStatus != averageStatus_;
     if (pictureChanged) {
         shown_ = std::move(next);
         averageBins_ = nextBins;
+        maximumShown_ = nextMaximum;
         averageStatus_ = averageStatus;
         mainMeter_.reset();
         status_ = pictureStatus();
@@ -894,7 +917,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     g.setColour(look::textOnBand);
     g.setFont(look::font(10.f, true));
     const char *names[]{"Spectrum", "Scope", "Sample peak / RMS", "Phase / L-R correlation", "Spectrogram",
-                        "Channel analysis", "Spectrum / 1 s average"};
+                        "Channel analysis", "Spectrum / 1 s average", "Classic Scope", "Realtime Maximum"};
     const char *points[]{"Post Mixer", "Post FX", "Pre FX", "Device In", "Device Out"};
     g.drawText(juce::String(names[static_cast<int>(mode_)]) + " / " + points[static_cast<int>(point_)] +
                    (frozen_ ? " / Frozen" : ""), area.withHeight(14.f), juce::Justification::centredLeft, true);
@@ -1045,6 +1068,7 @@ AnalysisPane::AnalysisPane() {
     setTitle("Analysis");
     modeBox.addItemList({"Spectrum", "Scope", "Meters", "Phase", "Spectrogram"}, 1);
     modeBox.addItem("Spectrum 1 s average", static_cast<int>(SharedSpectrumView::Mode::SpectrumAverage) + 1);
+    modeBox.addItem("Realtime Maximum", static_cast<int>(SharedSpectrumView::Mode::SpectrumMaximum) + 1);
     modeBox.addItem("Classic Scope", static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1);
     sourceBox.addItemList({"Main", "Selected"}, 1);
     pointBox.addItemList({"Post Mixer", "Post FX", "Pre FX"}, 1);
@@ -1113,7 +1137,8 @@ bool AnalysisPane::anyControlsFocused() noexcept {
 void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     view.setMode(mode); modeBox.setSelectedId(static_cast<int>(mode) + 1, juce::dontSendNotification);
     freezeButton.setToggleState(view.frozen(), juce::dontSendNotification);
-    const bool spectral = mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::SpectrumAverage;
+    const bool spectral = mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::SpectrumAverage ||
+                          mode == SharedSpectrumView::Mode::SpectrumMaximum;
     channelBox.setEnabled(spectral || mode == SharedSpectrumView::Mode::Spectrogram);
     const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
     historyBox.setVisible(spectrogram);
