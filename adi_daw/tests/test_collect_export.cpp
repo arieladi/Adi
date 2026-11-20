@@ -172,6 +172,37 @@ void collectionCancellation() {
     check(beforePublish && !late.ok && !late.cancelled && read(output) == "another writer's ZIP",
           "a late arrival after ZIP finalization survives exclusive publication");
 }
+void collectionWithRemovedJournalTargets() {
+    for(const bool cut:{false,true}) {
+        Fixture f;
+        f.store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'midi','MIDI')");
+        OpRequest create;
+        create.opType="clip.create";
+        create.targetKind="clip";
+        create.targetId=7;
+        create.payload={{"id",7},{"track",1},{"kind","midi"},{"name","Phrase"},{"pos",0},{"length",5765760}};
+        if(!OpJournal(*f.store).commit(create).ok)throw std::runtime_error("cannot create history fixture clip");
+        if(cut) {
+            OpRequest remove;
+            remove.opType="clip.delete";
+            remove.label="Cut Clip";
+            remove.targetKind="clip";
+            remove.targetId=7;
+            remove.payload={{"id",7}};
+            if(!OpJournal(*f.store).commit(remove).ok)throw std::runtime_error("cannot cut history fixture clip");
+        } else if(!History(*f.store).undo().ok) {
+            throw std::runtime_error("cannot undo history fixture clip");
+        }
+        check(f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id=7").getInt()==0 &&
+              f.store->db().execAndGet("SELECT count(*) FROM ops WHERE target_kind='clip' AND target_id=7").getInt()>0,
+              "the historical target remains in the journal after its clip is gone");
+        check(checkProject(*f.store).clean(),"an absent historical clip is not a broken project reference");
+        const auto path=f.temp.path()/(cut?"cut.zip":"undone.zip");
+        const auto result=media::collectExport(f.store->path(),path);
+        check(result.ok && fs::is_regular_file(path),result.error.empty()
+              ?"Collect and Export publishes an archive containing the history":result.error.c_str());
+    }
+}
 
 void collection() {
     Fixture f;
@@ -567,7 +598,7 @@ void documentRollbackWarning() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); collection(); collectionCancellation(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); }
+    try { publication(); collection(); collectionCancellation(); collectionWithRemovedJournalTargets(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
