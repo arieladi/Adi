@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 namespace adi::device {
@@ -59,6 +60,7 @@ public:
     engine::EventFlow eventFlow()const noexcept override{
         return info_.instrument?engine::EventFlow::Consume:engine::EventFlow::Through;
     }
+    bool wantsDeviceTransport()const noexcept override{return info_.usesTransportPosition;}
     bool loaded()const noexcept override{return native_!=nullptr;}
     std::int32_t paramCount()const noexcept override{return static_cast<std::int32_t>(descriptors_.size());}
     const ParamDescriptor* paramAt(std::int32_t index)const noexcept override {
@@ -77,7 +79,9 @@ public:
         // is the true one (see builtin_values.hpp).
         const auto position=builtin_values::positionFor(declarations_.params[index],value);
         if(!position)return false;
-        targets_[index].store(static_cast<float>(*position),std::memory_order_release);return true;
+        targets_[index].store(static_cast<float>(*position),std::memory_order_release);
+        parameterRevision_.fetch_add(1,std::memory_order_release);
+        return true;
     }
     std::string paramText(const std::string& id,double value)const override {
         const auto index=findIndex(id);if(index==descriptors_.size() || !std::isfinite(value))return {};
@@ -99,7 +103,7 @@ public:
         native_->prepare(rate,frames);
         for(auto& [slot,sample]:preparedSamples)(void)samples_.publish(slot,std::move(sample));
         std::fill(applied_.begin(),applied_.end(),std::numeric_limits<float>::quiet_NaN());
-        applyParameters();publishLatency();
+        applyParameters(true);publishLatency();
         router_.configure(desiredRoute(),engine::ExpressionCaps{},15);router_.reset();
         rate_=rate;frames_=frames;prepared_=true;
     }
@@ -108,7 +112,7 @@ public:
         const ReactivationGate::Pass pass(gate_);
         if(!pass || !prepared_){passThrough(io);return;}
         applyParameters();
-        if(io.transport)native_->tempo(io.transport->bpm);
+        if(io.transport && !info_.usesTransportPosition)native_->tempo(io.transport->bpm);
         engine::MpeOutList messages(midi_.data(),static_cast<std::int32_t>(midi_.size()));
         if(info_.midi) {
             const auto desired=desiredRoute();if(router_.current()!=desired)router_.switchTo(desired,io.blockOffset,messages);
@@ -140,6 +144,9 @@ public:
             if(until<=position)return;
             feed(until);
             engine::NodeIo piece=io;piece.blockOffset=position;piece.frames=until-position;
+            // A position-synced core keeps its own clock after the segment's
+            // first piece: io's transport is the segment start's, not this piece's.
+            if(info_.usesTransportPosition && position>start){piece.deviceTransport=nullptr;piece.transport=nullptr;}
             native_->process(piece);position=until;
         };
         for(std::int32_t e=0;e<io.events.count;++e) {
@@ -208,8 +215,20 @@ public:
             // DF-E37 (c): the real value is preferred, clamped and turned back
             // into a position; a bad known value refuses the whole state.
             if(!builtin_values::read(value,declarations_.params,pending))return false;
+            std::optional<ReactivationGate::Hold> hold;
+            if(info_.resetMissingParameters) {
+                // A parameter the state set (by its position or by its real
+                // value) keeps that value; only the ones it did not set reset.
+                std::vector<bool> restored(descriptors_.size(),false);
+                for(const auto& entry:pending)if(entry.first<restored.size())restored[entry.first]=true;
+                for(std::size_t i=0;i<descriptors_.size();++i)
+                    if(!restored[i])
+                        pending.emplace_back(i,static_cast<float>(descriptors_[i].defaultValue.normalized));
+                hold.emplace(gate_);
+            }
             extra_=std::move(value);
             for(const auto& [index,target]:pending)targets_[index].store(target,std::memory_order_release);
+            parameterRevision_.fetch_add(1,std::memory_order_release);
             return true;
         }catch(const std::exception&){return false;}
     }
@@ -218,7 +237,12 @@ private:
         for(std::size_t i=0;i<descriptors_.size();++i)if(descriptors_[i].id==id)return i;
         return descriptors_.size();
     }
-    void applyParameters()noexcept {
+    void applyParameters(bool force=false)noexcept {
+        // Writers publish their new targets before advancing the revision. A
+        // change during this scan leaves another scan due on the next block.
+        const auto revision=parameterRevision_.load(std::memory_order_acquire);
+        if(!force && revision==appliedRevision_)return;
+        appliedRevision_=revision;
         for(std::size_t i=0;i<descriptors_.size();++i) {
             const float target=targets_[i].load(std::memory_order_acquire);
             if(target!=applied_[i]) {
@@ -250,6 +274,7 @@ private:
     /// Audio thread (DF-E50): the normalized value in force, the stored target
     /// or the lane's latest, and the modulation offset on it, per parameter.
     std::vector<double> current_,offset_;
+    std::atomic<std::uint64_t> parameterRevision_{0};std::uint64_t appliedRevision_=0;
     ReactivationGate gate_;bool prepared_=false;double rate_=0;std::int32_t frames_=0;
     std::atomic<std::int32_t> latency_{0};std::atomic<std::uint64_t> epoch_{0};
     std::atomic<engine::ExpressionRoute> route_{engine::ExpressionRoute::MpeMidi};

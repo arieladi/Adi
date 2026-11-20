@@ -12,6 +12,10 @@ struct BuiltinInfo {
     bool available=false,midi=false;
     /// Consumes notes (EventFlow::Consume) and is registered as an instrument (DEV-21).
     bool instrument=false;
+    // Ask the graph for the exact musical position of each render segment.
+    bool usesTransportPosition=false;
+    // Parameters appended after an older state was saved reopen at their defaults.
+    bool resetMissingParameters=false;
 };
 [[nodiscard]] std::span<const BuiltinInfo> builtinCatalog() noexcept;
 [[nodiscard]] const BuiltinInfo* findBuiltin(std::string_view uid) noexcept;

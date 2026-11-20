@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/pd_builtins/native_devices.hpp"
 
+#include "adi/builtin_catalog.hpp"
+#include "adi/dsp/adi_shaper.hpp"
+#include "adi/pd_builtins/adi_shaper_transport.hpp"
 #include "adi/dsp/auto_filter.hpp"
 #include "adi/dsp/chorus_ensemble.hpp"
 #include "adi/dsp/combchord.hpp"
@@ -25,6 +28,9 @@
 #include "adi/pd_builtins/sample_bridge.hpp"
 #include "juce/pd_declarations.hpp"
 #include "adi_native_pd_patches.hpp"
+extern "C" {
+#include "m_pd.h"
+}
 
 #include <algorithm>
 #include <array>
@@ -194,9 +200,29 @@ bool parameter(ColorCabStereo& core, int id, float value) noexcept {
     return core.parameter(id, value);
 }
 
+template <class Transport> void syncPdPosition(dsp::AdiShaper& core, const Transport& t) noexcept {
+    // Round through the same wire precision as [adi.transport] in this build.
+    applyShaperTransport(core, t.playing, static_cast<t_float>(t.bpm),
+        static_cast<t_float>(t.timeSigNumerator), static_cast<t_float>(t.timeSigDenominator),
+        static_cast<t_float>(t.bar), static_cast<t_float>(t.beat), static_cast<t_float>(t.ticksInQuarter));
+}
+
+void syncShaper(dsp::AdiShaper& core, const engine::NodeIo& io, const PdTransport* fallback) noexcept {
+    if (const auto* position = io.deviceTransport) {
+        core.tempo(position->bpm);
+        core.sync(position->quarterNotes, position->playing);
+    } else if (const auto* t = io.transport) {
+        syncPdPosition(core, *t);
+    } else if (fallback) {
+        syncPdPosition(core, *fallback);
+    }
+}
+
+template <class Core> using PositionHandler = void (*)(Core&, const engine::NodeIo&, const PdTransport*) noexcept;
+
 template <class Core> class NativeDevice final : public NativePdDevice {
   public:
-    explicit NativeDevice(int inputs) : inputs_(inputs) {}
+    NativeDevice(int inputs, PositionHandler<Core> position) : inputs_(inputs), position_(position) {}
     void prepare(double sampleRate, int maxFrames) override {
         capacity_ = static_cast<std::size_t>(std::max(1, maxFrames));
         for (auto& buffer : buffers_) buffer.assign(capacity_, 0.0f);
@@ -226,9 +252,11 @@ template <class Core> class NativeDevice final : public NativePdDevice {
     void tempo(double bpm) noexcept override {
         if constexpr (requires { core_.tempo(bpm); }) core_.tempo(static_cast<float>(bpm));
     }
+    bool usesTransportPosition() const noexcept override { return position_ != nullptr; }
     void midi(const engine::MpeOut& message) noexcept override { midiMessage(core_, message); }
-    void process(const engine::NodeIo& io) noexcept override {
+    void process(const engine::NodeIo& io, const PdTransport* fallback) noexcept override {
         if (io.frames <= 0 || io.blockOffset < 0 || capacity_ == 0) return;
+        if (position_) position_(core_, io, fallback);
         const auto frames = static_cast<std::size_t>(io.frames);
         const auto offset = static_cast<std::size_t>(io.blockOffset);
         const int channels = std::max(0, io.channels);
@@ -274,6 +302,7 @@ template <class Core> class NativeDevice final : public NativePdDevice {
   private:
     Core core_;
     int inputs_;
+    PositionHandler<Core> position_;
     std::size_t capacity_ = 0;
     float preparedRate_ = 0;
     bool prepared_ = false;
@@ -332,7 +361,8 @@ class OneShotNative final : public NativePdDevice {
             break;
         }
     }
-    void process(const engine::NodeIo& io) noexcept override {
+    // OneShot keeps its own transport for the tempo; the Pd fallback is not used.
+    void process(const engine::NodeIo& io, const PdTransport*) noexcept override {
         const auto* buffer = PdSampleBlock::get(1);
         const auto* sample = dynamic_cast<const PdOneShotSample*>(buffer);
         auto child = io;
@@ -361,8 +391,18 @@ std::unique_ptr<NativePdDevice> createOneShot(std::string_view text) {
     return device;
 }
 
-template <class Core> std::unique_ptr<NativePdDevice> create(std::string_view text, int inputs) {
-    auto device = std::make_unique<NativeDevice<Core>>(inputs);
+template <class Core> std::unique_ptr<NativePdDevice> create(std::string_view text, int inputs,
+                                                            PositionHandler<Core> position = nullptr) {
+    if (position) {
+        // Both the built-in host and a canonical canvas opened as Pd consult
+        // the same capability. Resolve it once, off the audio thread.
+        const auto entries = builtinCatalog();
+        const auto enabled = std::any_of(entries.begin(), entries.end(), [&](const BuiltinInfo& entry) {
+            return entry.usesTransportPosition && sameCanvas(text, builtinCanvas(entry.uid));
+        });
+        if (!enabled) position = nullptr;
+    }
+    auto device = std::make_unique<NativeDevice<Core>>(inputs, position);
     // adi.param emits its default on loadbang, before the external's DSP
     // prepare. Round through float exactly as Pd does, rather than relying
     // on a core's sometimes-higher-precision C++ defaults.
@@ -387,6 +427,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
             return create<dsp::MultibandDynamics>(patchText, 4);
         if (sameCanvas(patchText, canonical::vocoder)) return create<dsp::Vocoder>(patchText, 4);
     } else if (inChannels == 2) {
+        if (sameCanvas(patchText, canonical::adiShaper)) return create<dsp::AdiShaper>(patchText, 2, syncShaper);
         if (sameCanvas(patchText, canonical::chordComb)) return create<ChordCombStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::chorusEnsemble)) return create<dsp::ChorusEnsemble>(patchText, 2);
         if (sameCanvas(patchText, canonical::colorCab)) return create<ColorCabStereo>(patchText, 2);

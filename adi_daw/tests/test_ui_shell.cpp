@@ -2563,8 +2563,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("not built in ADI yet") != std::string::npos,
           "Hybrid Reverb is dimmed always, and a double-click says why");
     browser.choose(pdDevices);
-    check(browser.rows().size() == 2 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr,
-          "Pd Devices lists ADI's own: Chord Comb and Color Cab");
+    check(browser.rows().size() == 3 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr &&
+              browser.rows()[2].device != nullptr,
+          "Pd Devices lists ADI's own: ADI-Shaper, Chord Comb and Color Cab");
     browser.choose(plugIns);
     check(root.error().find("#438") != std::string::npos, "Plug-Ins says it waits for the scanner");
     browser.choose(audioEffects);

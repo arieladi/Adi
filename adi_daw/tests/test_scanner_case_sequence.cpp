@@ -26,7 +26,6 @@ namespace fs=std::filesystem;using namespace adi;using namespace adi::scan;
 using Json=nlohmann::json;
 std::string text(const fs::path& path){const auto bytes=path.u8string();return {bytes.begin(),bytes.end()};}
 fs::path native(const std::string& value){return fs::path(std::u8string(value.begin(),value.end()));}
-std::string read(const fs::path& path){std::ifstream in(path,std::ios::binary);return {std::istreambuf_iterator<char>(in),{}};}
 std::string environment(const char* key){char* value=nullptr;std::size_t bytes=0;
     if(_dupenv_s(&value,&bytes,key)!=0)throw std::runtime_error("environment read");
     const std::string result=value?value:"";std::free(value);return result;}

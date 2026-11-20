@@ -561,8 +561,8 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     // delivered inside the next locked tick (lockedTick), never into a running
     // instance without its lock. Pd acts on both at its next tick either way.
     if (transportSet_) {
-        if (native_ != nullptr) deliverTransport();
-        else transportPending_ = true;
+        if (native_ == nullptr) transportPending_ = true;
+        else if (!native_->usesTransportPosition()) native_->tempo(static_cast<float>(transport_.bpm));
     }
 
     // --- MIDI in, before the audio it belongs to (ADR-0194) ------------------
@@ -591,7 +591,7 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     }
 
     if (native_ != nullptr) {
-        native_->process(io);
+        native_->process(io, transportSet_ ? &transport_ : nullptr);
         nativeLatency_->report(native_->latencySamples());
         return;
     }
@@ -891,10 +891,6 @@ void LibPdEngine::setTransport(const Transport& tr) noexcept {
 }
 
 void LibPdEngine::deliverTransport() noexcept {
-    if (native_ != nullptr) {
-        native_->tempo(static_cast<float>(transport_.bpm));
-        return;
-    }
     t_symbol* const sym = static_cast<t_symbol*>(transportSymbol_);
     // A patch with no [adi.transport] binds nothing, so this is the whole cost
     // of transport for every patch that does not ask for it.
