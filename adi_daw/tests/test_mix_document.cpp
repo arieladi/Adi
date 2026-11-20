@@ -664,7 +664,10 @@ void replaceIdentityInOneJournalStep() {
     check(began && changed && ended && gain->getParam("420").normalized == newValue &&
               OpJournal(doc->store()).headSeq() > beforeGesture,
           "the current surface completes its gesture after unrelated publication and stale input");
-    check(doc->ops().undo().ok && doc->synchronise() && OpJournal(doc->store()).headSeq() == beforeGesture &&
+    const bool undoGesture = doc->ops().undo().ok && doc->synchronise();
+    // The document's owner tick delivers the committed value to the plug-in.
+    doc->tick(5);
+    check(undoGesture && OpJournal(doc->store()).headSeq() == beforeGesture &&
               gain->getParam("420").normalized == oldValue,
           "one Undo restores the current generation's gesture without undoing the unrelated edit");
 }
