@@ -83,6 +83,101 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-20 — DEV-21: the Sampler is a loadable instrument with 32 sample slots (win's option 1)
+
+**PR requested:** head `devices/sampler-loadable` (205c6bf9, one commit), stacked on
+`devices/hybrid-reverb-loadable` (d72b7cdd; base that branch until it lands, then `main`), so the
+catalogue's count lines move in one line. It is on win's loans of `builtin_catalog.cpp` and
+`builtin_host.cpp`. **Beyond those loans, for the engine seat's review:** a small change in
+`src/adi/engine/snapshot.cpp`, described below.
+
+- **The catalogue.**
+  - `org.adidaw.builtin.sampler` is an instrument with notes in and no audio in: 21 entries, all 21
+    available.
+  - Its declarations are a C++ constant (`adi/sampler_declarations.hpp`), not a canvas: 24
+    `[adi.param]` and 32 `[adi.sample]` records that `parsePdDeclarations` reads.
+    `builtinDeclarations(uid)` gives them; `builtinCanvas` stays empty for it.
+  - The host chooses its native by uid. No Pd path can become the Sampler; a test checks that
+    `makeNativePdDevice` refuses its text.
+- **Slot mode in the core** (`Sampler(slotBacked)`).
+  - 32 fixed layers. Layer i plays slot i+1's prepared sample, borrowed for each call, as OneShot
+    borrows slot 1.
+  - A filled slot is a zone over every key and velocity, so a dropped sample plays at once. Two
+    filled slots layer, as in Live.
+  - A slot's new generation resets that slot's voices only, so filling one slot never cuts
+    another.
+  - Zone shapes are a separate table: `publishSlotZones`, the whole table at once, applied on the
+    audio thread. It is ready for the engine's zone op, which is not in this PR.
+  - Parameters go by index (`OneShot::setParamAt`, `setRealAt`), with no string lookup per layer
+    on the audio thread. The original bank mode shares the same per-layer code (`playLayer`).
+- **The sample bridge.**
+  - A Sampler slot is a OneShot sample (source kept, restored at any rate).
+  - `inspectBuiltinSample` takes slots 1..32 for the Sampler and slot 1 for the others.
+  - **One fix found on the way:** capture accepted a stereo source of up to 8M frames, whose state
+    restore then refused (its float backup is capped at 8M values, under the host's 40 MiB). It
+    now refuses at capture: `builtinSampleStateFits`, 4M stereo frames, 8M mono. This applies to
+    OneShot and Hybrid Reverb too.
+- **The snapshot (the engine's file).**
+  - It accepted only the role `sample:1` and named it "Impulse". Sampler slots 2..32 would have
+    reached the window as problem nodes with slot 0.
+  - It now reads `sample:N`, accepts N when the device declares it, names the node as declared, and
+    orders by the slot's number. Color Cab and Hybrid Reverb stay "Impulse", OneShot becomes
+    "Sample" (it was wrongly "Impulse"), and Sampler slots read "Sample 5".
+  - A build that cannot read the declarations keeps slot 1. About 30 lines; the engine seat may
+    prefer to take it over.
+- **Tests.** Each was shown to bite with a plant.
+  - Core, `adi_sampler_tests` 119:
+    - silence with every slot empty, and no allocation;
+    - keys 0, 60 and 127 on one filled slot;
+    - two slots layering;
+    - filling another slot without cutting a sounding one;
+    - emptying one slot;
+    - zone ranges, and a refused table changing nothing;
+    - the declaration text agreeing with the core, parameter by parameter.
+  - Through the product, `adi_builtin_devices_tests` 226:
+    - insert on a MIDI track, the sample dropped into slot 5: peak **0.1256**, the 0.5 sine at the
+      default −12 dB, sounding at once and again after reopening;
+    - slots 2 and 10 layer: **0.2511**;
+    - Volume at 0 dB through an ordinary parameter op: **0.4999**;
+    - slots 1..32 accepted, 0 and 33 refused;
+    - the snapshot naming slots in order;
+    - the event capacity.
+  - Plants: every layer reset whenever a slot changes (3 failures); only slot 1 read (5); only slot
+    1 accepted (9); main's snapshot (3).
+  - CTest 267/267 (MSVC Debug, /W4 /WX).
+- **Reviewed before the request.** Five reviewers covered real-time safety, correctness,
+  integration, portability and tests, and three skeptics checked each finding. Four findings
+  survived, and all are fixed here:
+  - a block of more than 257 MIDI events could overflow a layer's event list, silently dropping a
+    note-off and leaving a queued note gain out of step. The list now holds OneShotPdMidi's 512
+    plus the parameters; a gain is queued only for a note-on that fits; a dropped note-off stops
+    the layer's voices;
+  - the snapshot's `sample:1`;
+  - a refused zone table's test that could not see a published one.
+- **For later, not this PR:**
+  - the engine's zone op (`publishSlotZones` is ready for it);
+  - a drop target for the Sampler in the window (OneShot has none either);
+  - Live's Sampler voice count is global, ADI's per layer; that is a question for the director's
+    sitting, with no new reading.
+
+## 2026-11-20 — DF-E57: a built-in's partial state resets what it omits to the default
+
+**PR requested:** head `devices/df-e57` (d8be42b5, one commit on dccb6a55), base `main`, on win's
+loan of `builtin_host.cpp`.
+- **The change.** Every built-in now reopens a parameter its state does not set at its default,
+  not at the value before. That covers a newer version's added parameters and a partial preset.
+  It was ADI-Shaper's `resetMissingParameters`, made general.
+  - "Not set" means absent from the state's positions, real values and units alike. DF-E37 (c)
+    saves both a position and a real value, and a real value alone restores the parameter.
+  - ADI-Shaper keeps its flag for its other half, holding its audio while a whole state applies.
+    The other built-ins do not take that hold: on every state load it would pass one block of dry
+    audio. They apply within one block, as before.
+- **Test, written first.** Utility with two parameters moved, and a state that omits one of them:
+  the omitted one returns to its default and the other keeps its value. It failed before the fix.
+  `adi_builtin_devices_tests` 168; CTest 267/267 (MSVC Debug, /W4 /WX).
+- **The first version of the test was wrong, and is noted here.** It removed the parameter from
+  the positions only. Its real value then restored it, so the test failed even with the fix.
+
 ## 2026-11-19 — DEV-22: Hybrid Reverb is loadable (its native path and its impulse slot)
 
 **PR requested:** head `devices/hybrid-reverb-loadable` (24f0d83b), stacked on
