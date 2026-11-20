@@ -43,6 +43,33 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-20, window-fn — DF-W35: a send's Enable Send tick and action under one rule (PR requested)
+
+Win's entry of 19 November gave DF-W35 (a) to this seat; (b) and (c) are small and were taken with it.
+
+- **(a)** `enableSend` now reads a send as `sendOn` does: with no row, a track's send is on and a return's
+  is off. Unticking Enable Send on a new track's send writes the row fully down, as the knob shows it, and
+  switched off: one step, "Disable Send". It is no longer refused as "off already". Ticking it again
+  switches the same row on, and undo removes the row, so the send reads on again. Enable All Sends makes
+  no row for a send that already reads on.
+- **(b)** Enable All Sends counts no id past its last new row, which may be INT64_MAX itself. The review
+  found that the first test of this passed on the old code too, because the overflow is undefined and
+  invisible on a plain build. So `adi_ui_seams_tests` now builds with signed-overflow trapping (GCC and
+  Clang, trap mode, no runtime), and putting the old increment back makes the suite trap. There are cases
+  for one row and for two rows ending at INT64_MAX, and for three that do not fit.
+- **(c)** `heldBy` and `holdsSoloed` share one walk (`track_edits_detail::insideGroup`). It stops after as
+  many steps as there are tracks, as `TrackTree::within` does, so a parent loop cannot hang the mixer. A
+  copied snapshot with two tracks made each other's parent checks it.
+
+**Run.** The window's 27 suites (100%); `adi_ui_shell_tests` (2747 checks, 0 failures) with a mixer case:
+Disable Send on 3 Audio's send with no row, the tick gone, one step, undo; `adi_ui_seams_tests` (549
+checks). The review ran in three dimensions with a skeptic on each finding: one confirmed (the test above,
+fixed), two refuted.
+
+**PR requested** — `window-fn/send-enable` at `bb8d28f1`, on main `909ba114`: "adi_daw: one rule for a
+send's Enable Send tick and action; bounded group walks (DF-W35)". It depends on nothing. It touches
+`CMakeLists.txt` in one place, the seams target's compile options.
+
 ## 2026-11-19, window-fn — AU-01: Automation Mode in the Arrangement (PR requested)
 
 **What it does** (`src/adi/ui/automation_mode.hpp`, `src/juce/ui_arrangement.*`, `ui_shell.*`): the bar's
