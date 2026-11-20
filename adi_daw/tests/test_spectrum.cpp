@@ -25,6 +25,7 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <tuple>
 #include <vector>
 #if defined(_MSC_VER) && defined(_DEBUG)
 #include <crtdbg.h>
@@ -190,6 +191,27 @@ void testFullScaleSineIsZeroDbfs() {
     const auto tenth = sine(1024, 128, 0.1);
     s.analyse(tenth, mag);
     near(toDbfs(mag[128]), -20.0, 0.01, "a tenth is -20 dBFS");
+}
+
+void testBetweenBinsIsScallopingLoss() {
+    section("DF-E20 (d) -- between two bins a full-scale sine reads the window's scalloping loss");
+
+    // The header's 0.00 is for a sine ON a bin centre. Half a bin off, the
+    // two nearest bins share it and each reads the window's scalloping loss:
+    // -1.42 dB for Hann, -3.92 dB with no window. Asserted so that the header
+    // and this file say the same thing.
+    // With no window the image at -f leaks 0.013 dB into each side at N=1024.
+    for (const auto& [w, loss, tol, name] : {std::tuple{Window::Hann, -1.4236, .01, "Hann"},
+                                        std::tuple{Window::Rectangular, -3.9224, .02, "no window"}}) {
+        Spectrum s(1024, w);
+        std::vector<float> frame(1024);
+        for (std::size_t i = 0; i < frame.size(); ++i)
+            frame[i] = static_cast<float>(std::sin(2.0 * 3.141592653589793 * 128.5 * static_cast<double>(i) / 1024.0));
+        std::vector<float> mag(static_cast<std::size_t>(s.bins()), 0.f);
+        s.analyse(frame, mag);
+        near(toDbfs(mag[128]), loss, tol, std::string(name) + ": bin 128, half a bin below the sine");
+        near(toDbfs(mag[129]), loss, tol, std::string(name) + ": bin 129, half a bin above it");
+    }
 }
 
 void testDcAndNyquist() {
@@ -460,6 +482,7 @@ int main() {
     std::printf("adi_spectrum_tests -- the one definition of a spectrum\n\n");
     testAgainstTheDefinition();
     testFullScaleSineIsZeroDbfs();
+    testBetweenBinsIsScallopingLoss();
     testDcAndNyquist();
     testTheWindow();
     testRefusals();

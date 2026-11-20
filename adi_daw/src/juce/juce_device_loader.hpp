@@ -8,11 +8,12 @@
 //
 //   * **How a row is matched to a binary.** `plugin_refs.uid` is the identity
 //     (VST3: JUCE's identifier string, as `identityOf` records it; CLAP: the
-//     descriptor's reverse-DNS id). `path_hint` is tried FIRST for VST3 -- a
-//     file the project remembers is exact and costs one child probe
-//     rather than a directory scan -- and is the tie-break for CLAP when one id
-//     is installed twice. The scan runs once, lazily, on the first row that
-//     needs it, and again only after a search path is added.
+//     descriptor's reverse-DNS id). VST3 checks the in-memory catalogue first.
+//     Discovery at an unknown VST3 path_hint contributes its descriptions to
+//     that catalogue. CLAP uses path_hint to choose between copies of one id.
+//     An ordinary open can probe one installed saved hint after a catalogue miss.
+//     Explicit CacheOnly prohibits that probe. Legacy root discovery is retained
+//     for a fresh loader with no registry or a validated v1/v2 schema.
 //   * **An instance that did not load is NOT returned.** Both hosts hand back a
 //     `MissingDevice` rather than null on failure (ADR-0011), which is right
 //     for a probe and wrong here: the SESSION builds the placeholder, because
@@ -32,6 +33,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -40,23 +42,111 @@
 
 namespace adi::device {
 
+/// Future discovery inputs, separate from the last published catalogue.
+struct PluginSearchPaths {
+    juce::FileSearchPath vst3;
+    std::vector<std::string> clap;
+};
+
+enum class DiscoveryMode { Incremental, CacheOnly, Refresh };
+enum class DiscoveryOutcome { Published, Missing, Legacy, Failed, Cancelled, Stale };
+
+enum class DiscoveryPhase { Idle, Queued, ReadingCache, Vst3, Clap, Reconciling, Ready };
+struct DiscoveryProgress {
+    std::uint64_t job = 0;
+    DiscoveryPhase phase = DiscoveryPhase::Idle;
+    bool cancellationRequested = false;
+    bool hasCandidateTotal = false;
+    std::size_t completed = 0;
+    std::size_t total = 0;
+};
+
+enum class DiscoveryStart { Started, Busy, Invalid, Unavailable, CallbackRefused };
+struct DiscoveryAdmission {
+    DiscoveryStart status = DiscoveryStart::Invalid;
+    std::uint64_t job = 0;
+    std::string error;
+};
+
+/// Owned format-validated metadata, not instantiated/restored/audio readiness.
+/// Reuses the actual host metadata types; no second registry/wire schema.
+struct DiscoveryCatalogue {
+    std::vector<juce::PluginDescription> vst3;
+    std::vector<ClapPluginRef> clap;
+};
+struct DiscoveryResult {
+    DiscoveryMode mode = DiscoveryMode::CacheOnly;
+    DiscoveryOutcome outcome = DiscoveryOutcome::Failed;
+    scan::Report report;
+    std::string error;
+    /// New snapshot only for Published. Other outcomes retain the last
+    /// accepted snapshot (possibly null), never a partially scanned prefix.
+    std::shared_ptr<const DiscoveryCatalogue> catalogue;
+};
+
 class JuceDeviceLoader {
 public:
-    JuceDeviceLoader();
+    explicit JuceDeviceLoader(bool includeDefaultSearchPaths = true);
+    ~JuceDeviceLoader();
 
-    /// A directory searched for both formats, ahead of the defaults. Adding
-    /// one after a scan schedules another scan on the next request.
+    /// Format conventions only; no directory enumeration or module loading.
+    [[nodiscard]] PluginSearchPaths defaultSearchPaths() const;
+    /// Owner only. Replaces future roots without scanning or discarding the
+    /// accepted catalogue/instances. An admitted discovery keeps its own roots.
+    /// Callback calls are refused before allocation; identical input is a no-op.
+    void setSearchPaths(const PluginSearchPaths&);
+
+    /// A directory searched by explicit discovery, ahead of the defaults.
+    /// Adding a root does not invalidate or bypass a hydrated snapshot.
     void addSearchPath(const juce::File& dir);
 
-    /// Explicit scan; `fn()` also scans lazily on the first row that needs one.
+    /// Explicit owner scan. Only a fresh loader with no cache-capable registry
+    /// retains legacy lazy root discovery for a miss without a usable hint.
     void scan();
 
+    /// Synchronous owner-side operation. Incremental enumerates configured roots
+    /// and reuses the isolated scanner/cache. Refresh enumerates the same roots
+    /// with fresh probes for cached successes/rejections, preserving blocks.
+    /// These explicit modes choose their cache policy over Config::cacheMode.
+    /// CacheOnly reads stored metadata
+    /// without checking a helper or touching candidates. Both publish an owned
+    /// const result, safe to retain after later operations or loader destruction.
+    /// Explicit CacheOnly with missing/legacy storage never opts into lazy scan;
+    /// hydrateCatalogue below preserves that separate compatibility policy.
+    /// No job scheduling, Clean mode, runtime loading or automatic startup here.
+    /// Callback refusal returns null before allocation or state mutation.
+    [[nodiscard]] std::shared_ptr<const DiscoveryResult> discover(DiscoveryMode);
+
+    /// Read-only owner hydration of stored metadata, independent of helper
+    /// deployment. Stages all common/format validation before publication.
+    /// Missing or validated v1/v2 registry on a fresh loader permits legacy discovery;
+    /// only that later owner discovery migrates. Corrupt existing metadata
+    /// fails closed for new external instances until a successful refresh/scan.
+    /// Ordinary opens can later probe one installed saved hint on a miss.
+    /// Hydration itself never checks installed plug-ins or launches the helper.
+    /// Does not claim current filesystem freshness or runtime readiness.
+    bool hydrateCatalogue(std::string& error);
+
     /// Owner configuration for the dedicated helper/shared quarantine. Empty
-    /// paths use app defaults. Changing it invalidates the lazy discovery cache.
-    void setScanConfig(const scan::Config& config) {
-        if(audio::onAudioThread)return;
-        scanConfig_=config;scanned_=false;
-    }
+    /// paths use app defaults. A change invalidates admission and metadata.
+    void setScanConfig(const scan::Config&);
+
+    /// Use one owner worker for read-only startup hydration, Incremental
+    /// discovery or explicit Refresh. A zero worker override uses half the
+    /// reported hardware threads, bounded to 1..4. The job owns cancellation
+    /// through cancelDiscovery.
+    /// After this API admits a job, runtime misses report NeedsDiscovery until
+    /// the owner supplies catalogue metadata. Existing hits stay available.
+    [[nodiscard]] DiscoveryAdmission startDiscovery(DiscoveryMode, unsigned workers = 0);
+    [[nodiscard]] DiscoveryProgress discoveryProgress() const;
+    bool cancelDiscovery(std::uint64_t job) noexcept;
+
+    /// Nonblocking. Returns a result only when the matching job has finished.
+    /// Successful results replace both format catalogues after staging. A job
+    /// invalidated by a settings change reports Stale and keeps the current catalogue.
+    [[nodiscard]] std::shared_ptr<const DiscoveryResult> adoptDiscovery(std::uint64_t job);
+    [[nodiscard]] std::shared_ptr<const DiscoveryCatalogue> catalogue() const noexcept;
+
     /// Borrowed on the owner between jobs; copy/publish for another thread.
     [[nodiscard]] const scan::Report& lastScanReport() const noexcept { return scanReport_; }
 
@@ -72,6 +162,8 @@ public:
         std::int64_t notFound = 0;   ///< hosted format, no binary matched the uid
         std::int64_t failed = 0;     ///< matched, and did not instantiate
         std::int64_t scans = 0;
+        std::int64_t catalogueReads = 0; ///< persistent metadata reads, never discovery
+        std::int64_t needsDiscovery = 0; ///< unresolved catalogue misses requiring discovery
     };
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
 
@@ -84,19 +176,31 @@ public:
     [[nodiscard]] std::vector<rows::PluginRef> knownPluginReferences() const;
 
 private:
+    struct DiscoveryJob;
+    std::shared_ptr<const DiscoveryResult> discoverOwned(DiscoveryMode, bool allowLegacyFallback,
+        DiscoveryJob* job = nullptr);
+    void invalidateDiscovery() noexcept;
     std::unique_ptr<DeviceInstance> make(const engine::DeviceRequest& rq, std::string& err);
     std::unique_ptr<DeviceInstance> makeVst3(const engine::DeviceRequest& rq, std::string& err);
     std::unique_ptr<DeviceInstance> makeClap(const engine::DeviceRequest& rq, std::string& err);
 
     Vst3Host vst3_;
     ClapHost clap_;
-    juce::KnownPluginList known_;
-    juce::FileSearchPath vst3Paths_;
-    std::vector<std::string> clapPaths_;
+    std::unique_ptr<juce::KnownPluginList> known_ = std::make_unique<juce::KnownPluginList>();
+    std::vector<ClapPluginRef> clapCatalogue_;
+    std::shared_ptr<const PluginSearchPaths> searchPaths_ = std::make_shared<PluginSearchPaths>();
     bool scanned_ = false;
+    bool hydrationAttempted_ = false;
+    bool cacheOnly_ = false;
+    std::string hydrationError_;
     Stats stats_;
     scan::Config scanConfig_;
     scan::Report scanReport_;
+    std::shared_ptr<const DiscoveryCatalogue> publishedCatalogue_;
+    std::uint64_t discoveryGeneration_ = 0;
+    std::uint64_t nextDiscoveryJob_ = 1;
+    bool managedDiscovery_ = false;
+    std::unique_ptr<DiscoveryJob> discoveryJob_;
 };
 
 }  // namespace adi::device

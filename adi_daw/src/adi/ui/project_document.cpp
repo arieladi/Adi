@@ -461,8 +461,9 @@ std::int64_t ProjectDocument::retainedDeviceId() const noexcept {
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
     return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
 }
-bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track) {
-    return finishInsert(preparePluginInsert(*store_, ref, track, {}, retainedDeviceId()));
+bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
+                                   std::optional<std::int64_t> before, const PluginInsertOptions& options) {
+    return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
 }
 bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     if (!prepared.ok) {
@@ -941,9 +942,17 @@ std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &p
         return "The plug-in does not let \"" + descriptor->name + "\" be edited from here.";
     return "The plug-in did not take the value.";
 }
+void ProjectDocument::configureGraphWorkers(std::function<std::uint32_t(std::int32_t)> count,
+                                            std::int32_t minimumFrames) {
+    graphWorkerCount_ = std::move(count);
+    graphWorkerMinimumFrames_ = minimumFrames;
+}
 void ProjectDocument::prepare(double rate, std::int32_t frames) {
     engineRate_ = rate;
-    session_.prepare(rate, frames);
+    if (graphWorkerCount_)
+        session_.prepareWithGraphWorkers(rate, frames, graphWorkerCount_(frames), graphWorkerMinimumFrames_);
+    else
+        session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
     refreshLimiterReductionSources();
     analysis_->refreshSources(true);

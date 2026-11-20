@@ -57,10 +57,22 @@ Eviction orders eligible entries by oldest modification stamp, then filename.
 A successful read refreshes that stamp best-effort; writes already refresh it.
 Failure to update this optional metadata does not invalidate readable analysis,
 so recency is approximate on read-only or coarse-timestamp filesystems. Inventory
-finishes before deletion starts. Cancellation or an I/O failure can leave a
-partially completed eviction: the result records bytes before/after, removed
-files, ignored entries, whether inventory completed and whether the budget was
-met. Pre-cancellation and callback refusal do not mutate the caller's error.
+finishes before deletion starts. An entry that cannot be inspected/read or
+deleted is counted in `skippedEntries`; trimming continues past that entry and
+retains the first error with its UTF-8 path. The result is `Io` whenever an entry
+was skipped, even if other deletions reached the known budget. An unreadable
+entry is never charged or deleted, and prevents claiming `budgetMet`: its
+eligibility/size has not been validated. `inventoryComplete` means directory
+enumeration and validation of all accessible candidates finished, not that every
+entry was readable. Invalid/foreign entries instead count as `ignoredEntries`.
+
+Cancellation or a root/inventory failure can leave a partially completed
+eviction: the result records bytes before/after, removed files and both skip
+counts. Only successful removals reduce bytes. Cancellation stops immediately,
+including when returned from a file read, without blanking the caller's existing
+diagnostic. Pre-cancellation and callback refusal do not mutate it either. An
+observed type/size/stamp change or disappearance of an already inventoried
+candidate still aborts the run; it is not treated as permission to skip a race.
 
 The same process mutex covers reads, updates and trim. Reads close their file
 before releasing the mutex, and returned analysis owns all its bytes even if a
@@ -76,7 +88,10 @@ Those settings integration and cross-process ownership steps remain open.
 `adi_analysis_cache_tests` exercises exact/zero budgets, read promotion and ties,
 ignored/unowned files, cancellation and callback refusal, retained returned data,
 concurrent reads/updates/trim, Windows non-delete-sharing reads, and actual
-persistent library defaults surviving eviction. Symlink fixture checks run when
+persistent library defaults surviving eviction. `adi_analysis_cache_trim_tests`
+adds owned Windows read/delete sharing refusals, continuation to healthy siblings,
+unreadable/retained byte accounting, cancellation inside the third file read and
+an actual timestamp change before inventory completes. Symlink checks run when
 the platform permits creation; they report a skip otherwise.
 
 Persisted Warp maps and clip settings are the user's data. They belong in

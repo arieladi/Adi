@@ -232,6 +232,8 @@ public:
     /// engine silently delays 64 samples is the misalignment ADR-0058 exists
     /// to remove (ADR-0183).
     [[nodiscard]] virtual std::int32_t adapterLatencySamples() const noexcept { return 0; }
+    /// Message thread, on the host's schedule: drain what the patch printed (DF-E36 d).
+    virtual void pumpConsole() {}
 };
 
 /// A Pd patch in a chain, wired into delay compensation through the ordinary
@@ -245,6 +247,8 @@ public:
 class PdDevice final : public DeviceInstance {
 public:
     PdDevice(std::unique_ptr<PdPatchEngine> engine, DeviceIdentity id);
+    /// DF-E36 (d): the host's message-thread timer drains the patch's console.
+    void pumpMainThread() override { if (engine_ != nullptr) engine_->pumpConsole(); }
     ~PdDevice() override;
 
     [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }

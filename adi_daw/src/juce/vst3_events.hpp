@@ -70,13 +70,8 @@ static_assert(sizeof(SV::NoteOnEvent::noteId) == 4, "VST3 noteId is int32");
 /// Narrow our 64-bit note id into VST3's int32, never producing their
 /// "unset" sentinel.
 ///
-/// A session can outlive 2^31 notes only in principle, but wrapping onto -1
-/// would turn one note's expression into global expression, silently. The
-/// modulo keeps it positive and the id stays unique for any plausible
-/// session; the important part is that -1 is unreachable.
 [[nodiscard]] inline Steinberg::int32 toVst3NoteId(std::uint64_t id) noexcept {
-    if (id == 0) return -1;                       // genuinely unassigned
-    return static_cast<Steinberg::int32>(id % 0x7FFFFFFFu);
+    return engine::pluginNoteId(id);
 }
 
 /// A fixed-capacity `IEventList` we fill and hand to a plugin.

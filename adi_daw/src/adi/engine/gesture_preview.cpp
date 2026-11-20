@@ -100,7 +100,7 @@ std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::
 Tables topology(Tables value) {
     const std::map<std::string,std::set<std::string>> retained{
         {"project",{"sample_rate","ppq"}},
-        {"tracks",{"id","parent_id","index_in_parent","kind","time_base","frozen","solo_defeat","freeze_media_id","role","input_ref","monitor_mode"}},
+        {"tracks",{"id","parent_id","index_in_parent","kind","time_base","frozen","solo_defeat","freeze_media_id","role","input_ref","monitor_mode","record_armed"}},
         {"mixer_strip",{"track_id","pan_law","width","phase_invert","delay_samples","vca_group_id"}},
         {"mixer_pan_settings",{"track_id","mode"}},
         {"group_summing",{"track_id","enabled","flavor"}},
@@ -451,7 +451,10 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->generationControls=out->controls;timing->gestureAudio=owner->gestureAudio_;
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
-        timing->spec=owner->spec_;timing->sourceReadiness=out->clips->readiness();timing->stripLanes=out->controls->lanes;
+        timing->spec=owner->spec_;timing->stripLanes=out->controls->lanes;
+        owner->prepareMidiInput(*timing, image->model);
+        owner->prepareInputMonitors(*timing,image->model,*out->clips);
+        timing->sourceReadiness=out->clips->readiness();
         timing->inputSlice.resize(64);
         timing->outputSlice.resize(static_cast<std::size_t>(std::max(64,owner->spec_.channels)));
         timing->outputSlice64.resize(timing->outputSlice.size());
@@ -465,7 +468,9 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         };
         timing->loopBegin=sample(image->transport.loopStartTicks);timing->loopEnd=sample(image->transport.loopEndTicks);
         if(timing->loopEnd<=timing->loopBegin && timing->loopBegin<std::numeric_limits<std::int64_t>::max())timing->loopEnd=timing->loopBegin+1;
-        timing->signatures=image->model.signatures;out->timing=timing;
+        timing->signatures=image->model.signatures;
+        timing->prepareDeviceClockChanges();
+        out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;
         options.devicesFor=[owner](std::int64_t id){return owner->trackChain(id);};
         // The GUI publishes both preview and committed generations through here.
@@ -484,8 +489,9 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         options.sendFor=[owner](std::int64_t id)->Node*{return owner->strips_.sendFor(id);};
         options.sendTailFor=[owner](std::int64_t id){return owner->summing_.sendTailFor(id);};
         options.feedbackFor=[owner](std::int64_t id){auto* loop=owner->strips_.loopFor(id);return loop?FeedbackNodes{&loop->writer(),&loop->reader()}:FeedbackNodes{};};
-        options.sourcesFor=[owner,clips=out->clips,midi=out->midi](std::int64_t id) {
+        options.sourcesFor=[owner,clips=out->clips,midi=out->midi,timing](std::int64_t id) {
             auto nodes=owner->sources_?owner->sources_(id):std::vector<Node*>{};
+            if(auto* monitor=timing->inputMonitorSource(id))nodes.push_back(monitor);
             const auto audio=clips->sourcesFor(id);nodes.insert(nodes.end(),audio.begin(),audio.end());
             const auto notes=midi->sourcesFor(id);nodes.insert(nodes.end(),notes.begin(),notes.end());return nodes;
         };

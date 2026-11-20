@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/builtin_catalog.hpp"
+#include "adi/engine/mpe_output.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
+#include <algorithm>
 #include <array>
 #include <set>
 #include <stdexcept>
@@ -12,6 +14,33 @@
 namespace adi {
 namespace {
 std::int64_t integer(const Payload& value){return detail::signedInteger(value);}
+enum class Role { MidiEffect, Instrument, AudioEffect };
+Role role(std::string_view subtype) {
+    if (subtype == "midi_effect") return Role::MidiEffect;
+    if (subtype == "instrument") return Role::Instrument;
+    return Role::AudioEffect;
+}
+struct ChainDevice {
+    std::int64_t id;
+    std::int64_t ord;
+    Role role;
+    bool rack;
+};
+std::size_t pluginPosition(std::span<const ChainDevice> devices, Role kind, std::size_t requested,
+                           bool hasAnchor) {
+    std::size_t firstNonMidi = devices.size(), firstAudio = devices.size();
+    std::size_t afterMidi = 0, afterNonAudio = 0;
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        if (devices[i].role == Role::MidiEffect) afterMidi = i + 1;
+        else firstNonMidi = std::min(firstNonMidi, i);
+        if (devices[i].role == Role::AudioEffect) firstAudio = std::min(firstAudio, i);
+        else afterNonAudio = i + 1;
+    }
+    if (kind == Role::MidiEffect) return std::min(requested, firstNonMidi);
+    if (kind == Role::AudioEffect) return std::max(requested, afterNonAudio);
+    if (afterMidi > firstAudio) throw std::runtime_error("no instrument position between MIDI and audio effects");
+    return hasAnchor ? std::clamp(requested, afterMidi, firstAudio) : firstAudio;
+}
 std::string identity(SQLite::Database& db) {
     SQLite::Statement query(db,"PRAGMA database_list");
     while(query.executeStep())if(query.getColumn(1).getString()=="main")return query.getColumn(2).getString();
@@ -69,7 +98,7 @@ const std::array<OpDescriptor,2> ops={{
 }
 std::span<const OpDescriptor> builtinReferenceOps(){return ops;}
 static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-                                           std::optional<std::int64_t> before,std::int64_t retainedDeviceId) {
+    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,const PluginInsertOptions* plugin = nullptr) {
     PreparedBuiltinInsert result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
@@ -107,26 +136,58 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
                 append("chain.create",{{"id",result.chainId},{"track",track},{"ord",0},{"name","Devices"}},"chain",result.chainId);
             }
         }
-        std::vector<std::pair<std::int64_t,std::int64_t>> order;
-        SQLite::Statement devices(db,"SELECT id,ord FROM devices WHERE chain_id=? ORDER BY ord,id");devices.bind(1,result.chainId);
-        while(devices.executeStep())order.emplace_back(devices.getColumn(0).getInt64(),devices.getColumn(1).getInt64());
+        std::vector<ChainDevice> order;
+        SQLite::Statement devices(db,"SELECT devices.id,devices.ord,"
+            "COALESCE(NULLIF(plugin_refs.subtype,''),devices.rack_kind,''),devices.is_rack "
+            "FROM devices LEFT JOIN plugin_refs ON plugin_refs.id=devices.plugin_ref_id "
+            "WHERE devices.chain_id=? ORDER BY devices.ord,devices.id");
+        devices.bind(1,result.chainId);
+        while(devices.executeStep())order.push_back({devices.getColumn(0).getInt64(),devices.getColumn(1).getInt64(),
+                                                   role(devices.getColumn(2).getString()),devices.getColumn(3).getInt()!=0});
         if(!std::in_range<std::int64_t>(order.size()))throw std::runtime_error("device order is exhausted");
         auto position=order.size();
-        if(before)for(std::size_t i=0;i<order.size();++i)if(order[i].first==*before){position=i;break;}
+        if(before)for(std::size_t i=0;i<order.size();++i)if(order[i].id==*before){position=i;break;}
+        if (plugin) {
+            auto replacement = order.end();
+            if (plugin->replaceInstrument) {
+                if (position < order.size() && order[position].role == Role::Instrument) {
+                    replacement = order.begin() + static_cast<std::ptrdiff_t>(position);
+                } else {
+                    for (auto device = order.begin(); device != order.end(); ++device) {
+                        if (device->role != Role::Instrument) continue;
+                        if (replacement != order.end())
+                            throw std::runtime_error("select which instrument to replace");
+                        replacement = device;
+                    }
+                }
+            }
+            if (replacement == order.end()) {
+                position = pluginPosition(order,role(ref.subtype),position,before.has_value());
+            } else {
+                if (replacement->rack)
+                    throw std::runtime_error("select an instrument inside the rack to replace");
+                position = static_cast<std::size_t>(replacement - order.begin());
+                append("device.remove",{{"id",replacement->id}},"device",replacement->id);
+                order.erase(replacement);
+            }
+        }
         for(std::size_t i=0;i<order.size();++i) {
             const auto index=static_cast<std::int64_t>(i+(i>=position?1u:0u));
-            if(order[i].second!=index)append("device.move",{{"id",order[i].first},{"chain",result.chainId},{"ord",index}},"device",order[i].first);
+            if(order[i].ord!=index)append("device.move",{{"id",order[i].id},{"chain",result.chainId},{"ord",index}},"device",order[i].id);
         }
         ids.reserve("devices",retainedDeviceId);
         result.deviceId=ids.next("devices");
         append("device.insert",{{"id",result.deviceId},{"chain",result.chainId},{"ord",static_cast<std::int64_t>(position)},
             {"ref",result.referenceId},{"name",ref.name},{"enabled",true},{"rack",false}},"device",result.deviceId);
+        if (plugin && plugin->expressionRoute && *plugin->expressionRoute != engine::RouteChoice::Auto)
+            append("device.setExpressionRoute",{{"dev",result.deviceId},{"route",engine::routeChoiceName(*plugin->expressionRoute)}},
+                   "device",result.deviceId);
         result.ok=true;
     }catch(const std::exception& exception){result.error=exception.what();}
     return result;
 }
-PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,
-                                           std::optional<std::int64_t> before,std::int64_t retainedDeviceId) {
+PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before,
+    std::int64_t retainedDeviceId) {
     const auto* info=findBuiltin(uid);
     if(!info || !info->available) {
         PreparedBuiltinInsert result;
@@ -134,15 +195,23 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
         return result;
     }
     rows::PluginRef ref;
-    ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";ref.subtype="effect";
+    ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";
+    ref.subtype=info->instrument?"instrument":"effect";
     return prepareInsert(store,ref,track,before,retainedDeviceId);
 }
 PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-                                          std::optional<std::int64_t> before,std::int64_t retainedDeviceId) {
+    std::optional<std::int64_t> before,const PluginInsertOptions& options,std::int64_t retainedDeviceId) {
     if((ref.format!="vst3" && ref.format!="clap") || ref.uid.empty() || ref.name.empty()) {
         PreparedBuiltinInsert result;result.error="Select a VST3 or CLAP plug-in with a valid identity";return result;
     }
-    return prepareInsert(store,ref,track,before,retainedDeviceId);
+    if (options.replaceInstrument && role(ref.subtype) != Role::Instrument) {
+        PreparedBuiltinInsert result;result.error="only an instrument can replace the current instrument";return result;
+    }
+    if (options.expressionRoute && *options.expressionRoute != engine::RouteChoice::Auto &&
+        *engine::routeChoiceName(*options.expressionRoute) == '\0') {
+        PreparedBuiltinInsert result;result.error="unknown plug-in expression route";return result;
+    }
+    return prepareInsert(store,ref,track,before,retainedDeviceId,&options);
 }
 CommitResult commitBuiltinInsert(Store& store,const PreparedBuiltinInsert& prepared,Actor actor) {
     CommitResult result;if(!prepared.ok){result.error=prepared.error;return result;}

@@ -2,6 +2,7 @@
 #include "adi/dsp/live_delay.hpp"
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -35,6 +36,13 @@ void check(bool v, const char *s) {
     }
 }
 void clean(D &d) {
+    // The mechanics these oracles were written for: free time, no filter, the
+    // linear Dry/Wet (since DEV-22 the defaults are Live's: synced, filtered,
+    // equal-power).
+    d.set(D::LeftSync, 0);
+    d.set(D::RightSync, 0);
+    d.set(D::Filter, 0);
+    d.set(D::EqualLoudness, 0);
     d.set(D::Feedback, 0);
     d.set(D::Mix, 100);
     d.set(D::Transition, 2);
@@ -74,6 +82,7 @@ void timing() {
     D d;
     clean(d);
     d.set(D::LeftSync, 1);
+    d.set(D::LeftNotes, 4);   // a quarter: 24000 samples at 120
     d.set(D::LeftOffset, 10);
     std::vector<float> in(30000), right(in.size());
     in[0] = 1;
@@ -200,12 +209,66 @@ void partition() {
                   "all LFO waveform/rate combinations remain finite");
         }
 }
+// DEV-22: Live 12.4's Delay at its browser default (synced 3/16 at 120 BPM,
+// Feedback 50 %, Filter on at 1 kHz over 8 octaves, Dry/Wet 50 %), measured by
+// the director's research at 48 kHz. Its first output sample is 0.7071 of an
+// impulse (the dry path, equal-power). Its six tones are dry plus the filtered
+// loop: solved for the loop filter they give a 12 dB/oct high-pass and
+// low-pass (+79 degrees at 71 Hz, where one pole gives +41). Measured over
+// the capture's own signal and window, ADI's Butterworth sections at
+// 1 kHz x 2^(-+4) land within 0.30 dB and 1.9 degrees; a free fit of both
+// corners and dampings gets no closer than 0.08 dB, so the exact shape of
+// Live's filter is not identified by these six points. Held to 0.35 dB and
+// 2 degrees.
+void liveDefault() {
+    D d;
+    d.tempo(120);
+    d.prepare(48000);
+    std::vector<float> imp(256, 0.f);
+    imp[0] = 1.f;
+    const auto y = render(d, imp);
+    check(std::abs(y[0] - 0.7071078420) < 2e-6, "Live default: the first sample is 0.7071 (equal-power dry)");
+
+    struct Tone { double hz, gainDb, phaseDeg; };
+    const Tone live[] = {{71, -8.5337909, -27.68}, {223, -11.1561, 26.85}, {997, 2.5788, 44.11},
+                         {3001, -9.6027, -37.89}, {7001, -11.3895, -24.54}, {11003, -3.2267, -52.25}};
+    D t;
+    t.tempo(120);
+    t.prepare(48000);
+    // The capture's own signal and window: six sines at -30 dBFS, all from
+    // phase 0 (the research's multitone probe), measured over 1..3 s after
+    // they start, as a ratio of rectangular-window bins.
+    const std::size_t n = 144000, from = 48000;
+    std::vector<float> x(n, 0.f);
+    for (const auto& tone : live)
+        for (std::size_t i = 0; i < n; ++i)
+            x[i] += static_cast<float>(0.03125 * std::sin(2 * std::numbers::pi * tone.hz * static_cast<double>(i) / 48000));
+    const auto out = render(t, x, 256);
+    double worstDb = 0, worstDeg = 0;
+    for (const auto& tone : live) {
+        std::complex<double> in = 0, o = 0, ph = 1;
+        const auto step = std::polar(1., -2 * std::numbers::pi * tone.hz / 48000);
+        for (std::size_t i = 0; i < n; ++i) {
+            if (i >= from) {
+                in += static_cast<double>(x[i]) * ph;
+                o += static_cast<double>(out[i]) * ph;
+            }
+            ph *= step;
+        }
+        const auto h = o / in;
+        worstDb = std::max(worstDb, std::abs(20 * std::log10(std::abs(h)) - tone.gainDb));
+        worstDeg = std::max(worstDeg, std::abs(std::remainder(std::arg(h) * 180 / std::numbers::pi - tone.phaseDeg, 360.)));
+    }
+    std::printf("Live default: six tones within %.3f dB and %.2f degrees\n", worstDb, worstDeg);
+    check(worstDb < 0.35 && worstDeg < 2.0, "Live default: six tones within 0.35 dB and 2 degrees");
+}
 } // namespace
 int main() {
     timing();
     feedback();
     transitions();
     partition();
+    liveDefault();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

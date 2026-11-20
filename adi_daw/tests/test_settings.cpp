@@ -10,6 +10,7 @@
 #include "temp_directory.hpp"
 
 #include "adi/audio/decode.hpp"
+#include "adi/media/zip_writer.hpp"
 #include "adi/settings/bundle.hpp"
 #include "adi/settings/catalogue.hpp"
 #include "adi/settings/channel_config.hpp"
@@ -24,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <set>
@@ -73,12 +75,13 @@ void testRegistry() {
         unique = unique && keys.insert(s.key).second;
         std::string why;
         defaultsLegal = defaultsLegal && validate(s, s.defaultValue, why);
-        pageKnown = pageKnown && !s.page.empty() && !s.label.empty() && !s.help.empty();
+        const bool internal = s.page.empty() && s.scope == Scope::App && !s.agentMayChange && s.section.empty();
+        pageKnown = pageKnown && (!s.page.empty() || internal) && !s.label.empty() && !s.help.empty();
     }
     check(registry().size() >= 30, "at least thirty settings, saw " + std::to_string(registry().size()));
     check(unique, "every key is unique");
     check(defaultsLegal, "every default is a legal value of its own setting");
-    check(pageKnown, "every setting has a page, a label and help text (R-01, R-02)");
+    check(pageKnown, "visible settings have a page and all settings carry a label and help");
     const std::vector<std::string> liveTabs = {"Display & Input", "Theme & Colors", "Audio",
                                                "Link",            "Tempo & MIDI",   "File & Folder",
                                                "Library",         "Plug-Ins",       "Record, Warp & Launch",
@@ -309,8 +312,18 @@ void testM0Records() {
     // ADR-0203 d9: Bitwig's sync-in chooser and its slider are gone.
     check(!find("sync.clockSource") && !find("sync.tempoResponsiveness"),
           "no sync-in chooser and no responsiveness slider: Link and MIDI sync run together (ADR-0203 d9)");
+    const auto* autoArm = find("record.autoArmOnSelect");
+    check(autoArm && autoArm->type == Type::Choice && autoArm->scope == Scope::App &&
+              autoArm->page == "Record, Warp & Launch" && autoArm->section == "Record" &&
+              autoArm->defaultValue == "none" && autoArm->choices == std::vector<Value>{"none", "instrumentAndMidi", "all"},
+          "new settings keep manual arming and retain both auto-arm options");
     // The plan's SRF-05: midi.port.* has a home, one App record per port.
     const auto* ports = find("midi.ports");
+    const auto* portName = find("midi.port.name");
+    check(portName && portName->type == Type::Text && portName->scope == Scope::Device &&
+              portName->page == "Tempo & MIDI" && portName->section == "MIDI Ports" &&
+              portName->defaultValue == "" && !portName->agentMayChange,
+          "the last known MIDI port name is a Device text value with an empty default");
     check(ports && ports->type == Type::Record && ports->scope == Scope::App && ports->page == "Tempo & MIDI" &&
               ports->section == "MIDI Ports" && ports->defaultValue == Value::object() && !ports->agentMayChange,
           "midi.ports: an App record on Tempo & MIDI's MIDI Ports section, empty by default (SRF-05)");
@@ -321,13 +334,26 @@ void testM0Records() {
     check(ports && !validate(*ports, Value({{"in-1", {{"nonsense", 1}}}}), why),
           "a field that is no midi.port.* row is refused: " + why);
     check(ports && !validate(*ports, Value({{"in-1", true}}), why), "a port must be a record: " + why);
+    check(ports && !validate(*ports, Value({{"in:shared", {{"name", 10}}}}), why),
+          "a saved port name must be text");
     {
         adi::test::TempDirectory temp("settings", "m0");
-        AppSettings s(appdata::App::Daw, temp.path() / "settings.json");
-        check(s.set("midi.ports", Value({{"in-1", {{"remote", true}}}}), kUser, why),
-              "the store writes the home: " + why);
+        const auto file = temp.path() / "settings.json";
+        AppSettings s(appdata::App::Daw, file);
+        const Value records = {{"in-1", {{"remote", true}}},
+                               {"in:shared", {{"name", "Keyboard"}, {"track", true}}},
+                               {"out:shared", {{"name", "MIDI Out"}, {"sync", true}}}};
+        check(s.get("record.autoArmOnSelect") == "none", "a new settings file starts with manual arm");
+        check(s.set("midi.ports", records, kUser, why), "the aggregate stores legacy and directional records: " + why);
         check(!s.set("midi.port.remote", true, kUser, why),
               "and still refuses a per-port row on its own: " + why);
+        check(!s.set("midi.port.name", "Wrong scope", kUser, why), "a port name belongs to the aggregate record");
+        check(!s.set("record.autoArmOnSelect", "unknown", kUser, why), "invalid auto-arm choices are refused");
+        check(s.set("record.autoArmOnSelect", "instrumentAndMidi", kUser, why) && s.save(why),
+              "save named ports and an explicit auto-arm choice: " + why);
+        const AppSettings reopened(appdata::App::Daw, file);
+        check(reopened.get("midi.ports") == records, "input and output retain distinct names across reload");
+        check(reopened.get("record.autoArmOnSelect") == "instrumentAndMidi", "reload preserves the user's explicit choice");
     }
     // The plan's WIN-02 and WIN-04: the window's two records.
     const auto* places = find("window.places");
@@ -433,6 +459,37 @@ void testAppearanceSettings() {
           "legacy profiles keep their accepted theme key and get Compact density");
 }
 
+void testGraphWorkerPreference() {
+    section("DEV-23 graph worker admission");
+    const auto* row = find(kGraphWorkersKey);
+    check(row && row->type == Type::Choice && row->scope == Scope::App &&
+              row->page.empty() && !row->agentMayChange && row->defaultValue == "auto",
+          "graph workers are an internal app preference in automatic mode by default");
+    const auto pageList = pages();
+    check(std::find(pageList.begin(), pageList.end(), "") == pageList.end() &&
+              search(kGraphWorkersKey).empty(),
+          "internal graph worker preference is outside Settings pages and Find");
+
+    adi::test::TempDirectory temp("settings", "graph_workers");
+    const auto file = temp.path() / "settings.json";
+    AppSettings preferences(appdata::App::Daw, file);
+    const auto automatic = preferences.get(kGraphWorkersKey);
+    check(!graphWorkersEnabled(automatic, -1) && !graphWorkersEnabled(automatic, 0) &&
+              !graphWorkersEnabled(automatic, 256) && !graphWorkersEnabled(automatic, 512) &&
+              !graphWorkersEnabled(automatic, 1023) && graphWorkersEnabled(automatic, 1024) &&
+              graphWorkersEnabled(automatic, 2048),
+          "automatic policy uses the actual positive driver buffer with a 1024-frame threshold");
+
+    std::string why;
+    check(!preferences.set(kGraphWorkersKey, "always", kUser, why),
+          "unrecognized worker policy is refused");
+    check(preferences.set(kGraphWorkersKey, "off", kUser, why) && preferences.save(why),
+          "explicit serial mode is saved");
+    AppSettings reopened(appdata::App::Daw, file);
+    check(reopened.get(kGraphWorkersKey) == "off" && !graphWorkersEnabled(reopened.get(kGraphWorkersKey), 2048),
+          "serial override survives reopening at a large device buffer");
+}
+
 void testUnknownKeysSurvive() {
     section("a key from a newer build survives a save");
     adi::test::TempDirectory temp("settings", "unknown");
@@ -450,13 +507,102 @@ void testUnknownKeysSurvive() {
                            : Value();
     check(kept == Value({{"attack", 3}, {"release", 300}}),
           "and the newer build's key is still there, exactly");
+    check(s.reset("lookfeel.theme", kUser, why) && !s.stored().contains("lookfeel.theme") &&
+          s.get("lookfeel.theme") == find("lookfeel.theme")->defaultValue,
+          "reset follows the registered default and removes its stored override");
+    check(s.set("lookfeel.theme", "light", kUser, why), "prepare a page override again");
+    s.resetPage(find("lookfeel.theme")->page, kUser);
+    const auto remaining = s.stored();
+    check(!remaining.contains("lookfeel.theme") && remaining.at("audio.bufferSize") == 1024 &&
+          remaining.at("future.meterBallistics") == kept,
+          "page reset erases its overrides and preserves other pages and unknown keys");
+    check(s.save(why) && Value::parse(readText(file)).at("values") == remaining,
+          "saved settings omit defaults removed by reset");
 
-    writeText(file, R"({"schema": 3, "app": "ADI", "values": {"lookfeel.theme": "light"}})");
+    const std::string future = R"({"schema": 3, "app": "ADI", "values": {"lookfeel.theme": "light"},
+         "futureHeader": {"mustSurvive": true}})";
+    writeText(file, future);
+    const auto logBefore = readText(s.changeLogFile());
     AppSettings newer(appdata::App::Daw, file);
     check(newer.status() == LoadStatus::NewerSchema && newer.get("lookfeel.theme") == "light",
           "a newer schema is read");
-    check(newer.save(why) && Value::parse(readText(file)).at("schema") == 3,
-          "and saved without downgrading its schema number");
+    check(!newer.set("lookfeel.theme", "dark", kUser, why) &&
+          !newer.reset("lookfeel.theme", kUser, why), "newer settings refuse mutation and reset");
+    newer.resetPage("Theme & Colors", kUser);
+    check(!newer.save(why) && why.find("read-only") != std::string::npos &&
+          newer.get("lookfeel.theme") == "light" && readText(newer.changeLogFile()) == logBefore &&
+          readText(file) == future, "newer settings and their change log stay byte-identical");
+
+    const std::string futureShape = R"({"schema": 18446744073709551615, "app": "ADI", "values": []})";
+    writeText(file, futureShape);
+    AppSettings incompatible(appdata::App::Daw, file);
+    check(incompatible.status() == LoadStatus::NewerSchema && !incompatible.keptAside() &&
+          !incompatible.save(why) && readText(file) == futureShape,
+          "a newer schema with a different shape is kept in place without narrowing its version");
+}
+
+void testAtomicSave() {
+    section("atomic saves own their stage and protect a late destination");
+    adi::test::TempDirectory temp("settings", "atomic-save");
+    const auto file = temp.path() / "settings.json";
+    const auto oldStage = temp.path() / "settings.json.tmp";
+    writeText(oldStage, "another writer's temporary file");
+    AppSettings settings(appdata::App::Daw, file);
+    std::string why;
+    check(settings.set("lookfeel.theme", "light", kUser, why) && settings.save(why),
+          "save through a private stage: " + why);
+    check(readText(oldStage) == "another writer's temporary file" &&
+              Value::parse(readText(file)).at("values").at("lookfeel.theme") == "light",
+          "the public document changes and the unrelated temporary file survives");
+
+    const std::string replacements[] = {
+        R"({"schema": 3, "app": "ADI", "values": {"future.key": 3}})",
+        R"({"schema": 1, "app": "ADiJ", "values": {}})",
+        "incomplete external write",
+    };
+    for (const auto& replacement : replacements) {
+        writeText(file, replacement);
+        check(!settings.save(why) && !why.empty() && readText(file) == replacement,
+              "reject a late incompatible destination without changing its bytes");
+    }
+    bool residue = false;
+    for (const auto& entry : fs::directory_iterator(temp.path())) {
+        residue = residue || entry.path().filename().string().starts_with(".adi-settings-");
+    }
+    check(!residue, "successful and refused saves both clean their private stages");
+}
+
+void testLastGoodBackup() {
+    section("reread, merge pending changes and preserve the prior good document");
+    adi::test::TempDirectory temp("settings", "last-good");
+    const auto file = temp.path() / "settings.json";
+    const auto backup = temp.path() / "settings.json.bak";
+    AppSettings store(appdata::App::Daw, file);
+    std::string why;
+    check(store.set("lookfeel.theme", "light", kUser, why) && store.save(why) &&
+              !fs::exists(backup), "the first save has no previous version to back up");
+
+    const std::string handEdit = R"({"schema": 1, "app": "ADI", "extra": 13, "values": {
+        "lookfeel.theme": "dark", "audio.bufferSize": 256, "future.userKey": [5, 6]}})";
+    writeText(file, handEdit);
+    check(store.reset("lookfeel.theme", kUser, why), "queue a reset over a hand edit");
+    check(fs::create_directory(backup) && !store.save(why) && readText(file) == handEdit,
+          "an unavailable backup prevents replacing the current settings");
+    check(fs::remove(backup) && store.save(why) && readText(backup) == handEdit,
+          "retry writes the exact previous document to the backup");
+    const auto merged = Value::parse(readText(file));
+    const auto& values = merged.at("values");
+    check(!values.contains("lookfeel.theme") && values.at("audio.bufferSize") == 256 &&
+              values.at("future.userKey") == Value::array({5, 6}) && merged.at("extra") == 13 &&
+              store.get("audio.bufferSize") == 256,
+          "the reset wins for its key while the other manual edits are adopted");
+
+    auto later = merged;
+    later.at("values")["lookfeel.theme"] = "dark";
+    writeText(file, later.dump());
+    check(store.save(why) && store.get("lookfeel.theme") == "dark" &&
+              readText(backup) == later.dump(),
+          "a published reset does not win against a subsequent hand edit");
 }
 
 void testCorruptKeptAside() {
@@ -692,6 +838,282 @@ void testBundles() {
               containsAbsolutePath(Value::array({"ok", "/abs"})) && !containsAbsolutePath(Value("1/16")) &&
               !containsAbsolutePath(Value("role:user library/x")),
           "the absolute-path test knows Windows, UNC and POSIX, and not roles or '1/16'");
+}
+
+void testPortableSettingsPublication() {
+    section("settings publication with unsupported lease-safe rename");
+    adi::test::TempDirectory temp("settings", "portable-publication");
+    const auto output = temp.path() / "settings.json";
+    auto backup = output;
+    backup += ".bak";
+    AppSettings settings(appdata::App::Daw, output);
+    const auto unsupported = [](const fs::path&, const fs::path& target) {
+        return std::make_error_code(fs::exists(target) ? std::errc::operation_not_supported
+                                                       : std::errc::invalid_argument);
+    };
+    std::string why;
+    check(settings.set("lookfeel.theme", "light", kUser, why), "first portable preference is pending");
+    const bool first = settings.save(why, unsupported);
+    check(first && fs::is_regular_file(output), "unsupported exclusive rename allows the first whole settings save");
+    if (!first) return;
+    const auto firstBytes = readText(output);
+    check(settings.set("lookfeel.theme", "dark", kUser, why), "second portable preference is pending");
+    const bool second = settings.save(why, unsupported);
+    check(second && readText(backup) == firstBytes && why.find("portable") != std::string::npos,
+          "portable replacement publishes the last good backup and reports its weaker guarantee");
+    if (!second) return;
+    const auto secondBytes = readText(output);
+    check(settings.set("lookfeel.theme", "light", kUser, why), "third portable preference is pending");
+    const auto blockedBackup = [](const fs::path&, const fs::path& target) {
+        if (target.extension() == ".bak") return std::make_error_code(std::errc::permission_denied);
+        return std::make_error_code(std::errc::operation_not_supported);
+    };
+    check(!settings.save(why, blockedBackup) && readText(output) == secondBytes && readText(backup) == firstBytes,
+          "permission refusal on backup leaves the main file and its previous backup intact");
+    check(settings.save(why, unsupported) && readText(backup) == secondBytes && readText(output) != secondBytes,
+          "a retry retains the third edit and the immediately preceding settings bytes");
+
+    const auto stage = temp.path() / "pending-settings.json";
+    writeText(stage, "staged settings replacement");
+    adi::media::ReplaceHooks changed;
+    changed.rename = unsupported;
+    changed.validateFallback = [](const fs::path& target) -> std::error_code {
+        writeText(target, "external settings revision");
+        return {};
+    };
+    const auto conflicting = adi::media::replaceFile(stage, output, changed,
+                                                    adi::media::ReplacePolicy::PortableSettings);
+    check(conflicting.status == adi::media::PublishStatus::failed &&
+              readText(output) == "external settings revision" && fs::is_regular_file(stage),
+          "portable replacement preserves bytes changed after the destination lease was released");
+    auto incomplete = secondBytes + std::string("\0later bytes", 12);
+    writeText(output, incomplete);
+    check(settings.set("lookfeel.theme", "dark", kUser, why) &&
+              !settings.save(why, unsupported) && readText(output) == incomplete &&
+              readText(backup) == secondBytes,
+          "a valid JSON prefix followed by a null byte cannot become the latest good settings");
+}
+
+void testBundlePublication() {
+    section("bundle export: private staging, atomic replacement and publication warnings");
+    adi::test::TempDirectory temp("settings","bundle-publication");
+    AppSettings from(appdata::App::Daw,temp.path()/"settings.json");
+    std::string why;
+    from.set("lookfeel.theme","light",kUser,why);
+    const auto output=temp.path()/"bundle.zip";
+    auto legacy=output;legacy+=".staging";
+    const auto unrelated=temp.path()/".adi-bundle-existing";
+    writeText(legacy/"keep.txt","legacy path belongs to the user");
+    writeText(unrelated/"keep.txt","unrelated sibling belongs to the user");
+    const auto retained=[&] {
+        return readText(legacy/"keep.txt")=="legacy path belongs to the user" &&
+               readText(unrelated/"keep.txt")=="unrelated sibling belongs to the user";
+    };
+    const auto noPrivateStage=[&] {
+        for(const auto& entry:fs::directory_iterator(temp.path()))
+            if(entry.path()!=unrelated && entry.path().filename().string().starts_with(".adi-bundle-"))return false;
+        return true;
+    };
+    const auto first=exportBundle(from,{},output);
+    check(first.ok && first.publication && retained() && noPrivateStage(),
+          "new export leaves preexisting fixed staging and unrelated sibling trees untouched");
+    const auto original=readText(output);
+    check(!original.empty() && readZipJson(output,"settings.json")["values"]["lookfeel.theme"]=="light",
+          "success publishes a complete readable settings archive");
+    from.set("lookfeel.theme","dark",kUser,why);
+    std::set<fs::path> stages;
+    for(const auto* blocker:{"manifest.json","bundle.zip"}) {
+        fs::path stage;
+        BundleExportHooks hooks;
+        hooks.stageReady=[&](const fs::path& path) {stage=path;stages.insert(path);fs::create_directory(path/blocker);};
+        const auto failed=exportBundle(from,{},output,hooks);
+        check(!failed.ok && !failed.publication && !failed.why.empty() && readText(output)==original &&
+              !fs::exists(stage) && retained() && noPrivateStage(),
+              "actual JSON/archive staging failure preserves old output and cleans only private staging");
+    }
+    check(stages.size()==2,"each export reserves a different private sibling stage");
+    auto badPreset=makePreset(from,"invalid UTF-8",{"Display & Input","Theme & Colors"});
+    badPreset.name=std::string(1,static_cast<char>(0xff));
+    const auto invalidJson=exportBundle(from,{badPreset},output);
+    check(!invalidJson.ok && !invalidJson.publication && readText(output)==original && retained() && noPrivateStage(),
+          "serialization exception after stage creation leaves existing output intact and is reported");
+    BundleExportHooks hooks;
+    hooks.publication.syncFile=[](const fs::path&) {return std::make_error_code(std::errc::io_error);};
+    const auto unsynced=exportBundle(from,{},output,hooks);
+    check(!unsynced.ok && !unsynced.publication && unsynced.why.find("sync staging file")!=std::string::npos &&
+          readText(output)==original && retained() && noPrivateStage(),
+          "failed staged-file sync never truncates or deletes the existing bundle");
+    hooks={};
+    hooks.publication.rename=[](const fs::path&,const fs::path&) {return std::make_error_code(std::errc::permission_denied);};
+    const auto refused=exportBundle(from,{},output,hooks);
+    check(!refused.ok && !refused.publication && readText(output)==original && retained() && noPrivateStage(),
+          "failed atomic replacement preserves old bytes without a copy fallback");
+    const auto absent=temp.path()/"absent.zip";
+    check(!exportBundle(from,{},absent,hooks).ok && !fs::exists(absent) && noPrivateStage(),
+          "failed publication to an absent path leaves no partial final archive");
+    hooks.publication.rename = [](const fs::path&, const fs::path&) {
+        return std::make_error_code(std::errc::invalid_argument);
+    };
+    const auto portable = exportBundle(from, {}, absent, hooks);
+    check(portable.ok && portable.publication &&
+              readZipJson(absent, "settings.json")["values"]["lookfeel.theme"] == "dark" && noPrivateStage(),
+          "unsupported no-replace rename publishes a complete bundle with an exclusive hard link");
+    check(!exportBundle(from, {}, output, hooks).ok && readText(output) == original,
+          "portable bundle fallback preserves an existing archive when lease-safe replacement is unavailable");
+    hooks.publication.syncDirectory = [](const fs::path&) { return std::make_error_code(std::errc::io_error); };
+    const auto portableWarning = exportBundle(from, {}, temp.path() / "portable-warning.zip", hooks);
+    check(portableWarning.ok && portableWarning.publication && !portableWarning.publication->durabilityConfirmed &&
+              !portableWarning.publication->warning.empty(),
+          "a folder sync warning follows successful hard-link publication");
+    const auto lateBundle = temp.path() / "late.zip";
+    hooks.publication.rename = [](const fs::path&, const fs::path& target) {
+        writeText(target, "external writer's archive");
+        return std::make_error_code(std::errc::invalid_argument);
+    };
+    check(!exportBundle(from, {}, lateBundle, hooks).ok && readText(lateBundle) == "external writer's archive",
+          "a target claimed before portable bundle publication stays that writer's file");
+    const auto directory=temp.path()/"directory.zip";fs::create_directory(directory);
+    const auto wrongType=exportBundle(from,{},directory);
+    check(!wrongType.ok && !wrongType.publication && fs::is_directory(directory) && fs::is_empty(directory),
+          "refused directory destination is never removed even when empty");
+    std::error_code error;
+    auto lease=adi::media::ProjectFileLease::openShared(output,error);
+    const auto locked=exportBundle(from,{},output);
+    check(lease && !locked.ok && readText(output)==original && noPrivateStage(),
+          "publisher refuses an in-use destination without damaging its existing archive");
+    lease.reset();
+    const auto replaced=exportBundle(from,{},output);
+    check(replaced.ok && replaced.publication && readText(output)!=original &&
+          readZipJson(output,"settings.json")["values"]["lookfeel.theme"]=="dark" && retained() && noPrivateStage(),
+          "ordinary successful export retains intended replacement semantics with a complete new archive");
+    hooks={};
+    hooks.publication.syncDirectory=[](const fs::path&) {return std::make_error_code(std::errc::io_error);};
+    from.set("lookfeel.theme","light",kUser,why);
+    const auto warning=exportBundle(from,{},output,hooks);
+    check(warning.ok && warning.why.empty() && warning.publication &&
+          !warning.publication->durabilityConfirmed && !warning.publication->warning.empty() &&
+          readZipJson(output,"settings.json")["values"]["lookfeel.theme"]=="light" && retained() && noPrivateStage(),
+          "post-publication sync warning retains success and published bytes instead of reporting a failed export");
+    fs::path outerStage,innerStage;
+    bool nestedOk=false,outerStillExists=false;
+    hooks={};
+    hooks.stageReady=[&](const fs::path& path) {
+        outerStage=path;
+        BundleExportHooks nested;
+        nested.stageReady=[&](const fs::path& inner) {innerStage=inner;};
+        nestedOk=exportBundle(from,{},temp.path()/"nested.zip",nested).ok;
+        outerStillExists=fs::is_directory(path);
+    };
+    const auto nested=exportBundle(from,{},output,hooks);
+    check(nested.ok && nestedOk && outerStillExists && outerStage!=innerStage &&
+          !fs::exists(outerStage) && !fs::exists(innerStage) && retained() && noPrivateStage(),
+          "overlapping exports have independent stages and cannot clean up each other's work");
+}
+
+void testBundleSchemas() {
+    section("bundle import envelope gate: versions and application types before mutation");
+    adi::test::TempDirectory temp("settings","bundle-schema");
+    AppSettings source(appdata::App::Daw,temp.path()/"source"/"settings.json");
+    std::string why;
+    source.set("lookfeel.theme","light",kUser,why);
+    source.set("library.userLibrary","/sender/library",kUser,why);
+    source.set("files.recordFolder","/sender/library/Recordings",kUser,why);
+    const auto preset=makePreset(source,"Actual v1 preset",{"Display & Input","Theme & Colors"});
+    const auto exported=temp.path()/"existing-v1.zip";
+    check(exportBundle(source,{preset},exported).ok,"schema cases start with an actual exported v1 archive");
+    const auto originalArchive=readText(exported);
+    const Value manifest=readZipJson(exported,"manifest.json");
+    const Value settings=readZipJson(exported,"settings.json");
+    const Value presetDocument=readZipJson(exported,"presets/1.json");
+    const auto targetFile=temp.path()/"receiver"/"settings.json";
+    {
+        AppSettings target(appdata::App::Daw,targetFile);
+        target.set("lookfeel.theme","dark",kUser,why);
+        target.set("library.userLibrary","/receiver/library",kUser,why);
+        check(target.save(why),"receiver has an existing persisted configuration and change log");
+    }
+    const auto fixture=temp.path()/"candidate.zip";
+    const auto reject=[&](const std::string& label,const std::optional<std::string>& manifestText,
+                          const std::optional<std::string>& settingsText) {
+        const auto documents=temp.path()/"documents";
+        writeText(documents/"preset.json",presetDocument.dump());
+        {
+            adi::media::ZipWriter zip(fixture);
+            bool ok=true;
+            if(manifestText) {writeText(documents/"manifest.json",*manifestText);ok=zip.addFile(documents/"manifest.json","manifest.json");}
+            if(settingsText) {writeText(documents/"settings.json",*settingsText);ok=ok && zip.addFile(documents/"settings.json","settings.json");}
+            if(!ok || !zip.addFile(documents/"preset.json","presets/1.json") || !zip.finish())
+                throw std::runtime_error("schema archive fixture failed");
+        }
+        AppSettings target(appdata::App::Daw,targetFile);
+        const Value before=target.stored();
+        const auto diskBefore=readText(targetFile),logBefore=readText(target.changeLogFile()),inputBefore=readText(fixture);
+        BundleReport report;
+        bool threw=false;
+        try {report=importBundle(fixture,target,kUser);} catch(...) {threw=true;}
+        check(!threw && !report.ok && !report.why.empty() && report.applied==0 && report.presets.empty() &&
+              report.skipped.empty() && report.unresolved.empty() && !report.publication &&
+              target.stored()==before && readText(targetFile)==diskBefore &&
+              readText(target.changeLogFile())==logBefore && readText(fixture)==inputBefore,
+              label+": refuses without target, log, input or preset mutation");
+    };
+    const std::vector<Value> badSchemas={0,-1,2,std::uint64_t{0x100000001ULL},
+        std::numeric_limits<std::uint64_t>::max(),std::numeric_limits<std::int64_t>::min(),
+        1.0,"1",true,nullptr,Value::array(),Value::object()};
+    for(const auto& schema:badSchemas) {
+        auto badManifest=manifest;badManifest["schema"]=schema;
+        reject("manifest schema "+schema.dump(),badManifest.dump(),settings.dump());
+        auto badSettings=settings;badSettings["schema"]=schema;
+        reject("settings schema "+schema.dump(),manifest.dump(),badSettings.dump());
+    }
+    auto missing=manifest;missing.erase("schema");
+    reject("missing manifest schema",missing.dump(),settings.dump());
+    missing=settings;missing.erase("schema");
+    reject("missing settings schema",manifest.dump(),missing.dump());
+    const std::vector<Value> wrongTypes={nullptr,true,7,1.5,Value::array(),Value::object()};
+    for(const auto& value:wrongTypes) {
+        auto bad=manifest;bad["kind"]=value;
+        reject("manifest kind type "+value.dump(),bad.dump(),settings.dump());
+        bad=manifest;bad["app"]=value;
+        reject("manifest app type "+value.dump(),bad.dump(),settings.dump());
+        bad=settings;bad["app"]=value;
+        reject("settings app type "+value.dump(),manifest.dump(),bad.dump());
+    }
+    for(const auto* key:{"kind","app"}) {
+        auto bad=manifest;bad.erase(key);
+        reject(std::string("missing manifest ")+key,bad.dump(),settings.dump());
+    }
+    missing=settings;missing.erase("app");
+    reject("missing settings app",manifest.dump(),missing.dump());
+    auto bad=manifest;bad["kind"]="other-bundle";
+    reject("foreign manifest kind",bad.dump(),settings.dump());
+    bad=manifest;bad["app"]="ADiJ";
+    reject("foreign manifest app",bad.dump(),settings.dump());
+    bad=settings;bad["app"]="ADiJ";
+    reject("manifest/settings application disagreement",manifest.dump(),bad.dump());
+    const std::vector<Value> badRoots={nullptr,true,7,"document",Value::array()};
+    for(const auto& root:badRoots) {
+        reject("nonobject manifest "+root.dump(),root.dump(),settings.dump());
+        reject("nonobject settings "+root.dump(),manifest.dump(),root.dump());
+    }
+    for(const auto& value:badRoots) {
+        bad=settings;bad["values"]=value;
+        reject("nonobject settings values "+value.dump(),manifest.dump(),bad.dump());
+    }
+    missing=settings;missing.erase("values");
+    reject("missing settings values",manifest.dump(),missing.dump());
+    reject("missing manifest entry",std::nullopt,settings.dump());
+    reject("missing settings entry",manifest.dump(),std::nullopt);
+    reject("malformed manifest JSON",std::string("{not json"),settings.dump());
+    reject("malformed settings JSON",manifest.dump(),std::string("{not json"));
+
+    AppSettings target(appdata::App::Daw,targetFile);
+    const auto valid=importBundle(exported,target,kUser);
+    check(valid.ok && valid.why.empty() && valid.applied>0 && !valid.publication &&
+          target.get("lookfeel.theme")=="light" && target.get("library.userLibrary")=="/receiver/library" &&
+          target.get("files.recordFolder")=="/receiver/library/Recordings" &&
+          valid.presets.size()==1 && valid.presets[0].name=="Actual v1 preset" && readText(exported)==originalArchive,
+          "actual exported v1 bundle still imports settings, roles and presets without changing its archive");
 }
 
 
@@ -945,7 +1367,10 @@ int runAll() {
     testCatalogue();
     testStoreBasics();
     testAppearanceSettings();
+    testGraphWorkerPreference();
     testUnknownKeysSurvive();
+    testAtomicSave();
+    testLastGoodBackup();
     testCorruptKeptAside();
     testApplicationsNeverShare();
     testChangeLog();
@@ -954,6 +1379,9 @@ int runAll() {
     testAgentWhitelist();
     testPartialPreset();
     testBundles();
+    testPortableSettingsPublication();
+    testBundlePublication();
+    testBundleSchemas();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;

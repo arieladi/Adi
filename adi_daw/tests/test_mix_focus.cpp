@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -79,6 +80,13 @@ void coreConcurrency() {
     f::Core core;f::Settings initial;initial.nodes[0].enabled=true;initial.nodes[0].q=1.;
     core.prepare({48000,64,2},initial);
     std::atomic<bool> done{false};std::atomic<int> bad{0};f::Settings finalDesired=initial;
+    // The owner must plan WHILE audio runs. Left to the scheduler, a loaded
+    // runner can park the owner thread for the producer's whole run and
+    // nothing was planned concurrently (macOS CI, ctest --parallel on three
+    // cores). So audio waits at its midpoint until the owner has planned at
+    // least once, then processes the rest against that live plan. The wait is
+    // bounded: an owner that never plans still fails below, it cannot hang.
+    std::atomic<std::uint64_t> services{0};std::atomic<bool> overlapped{false};
     std::thread producer([&]{
         f::Settings requested=initial;
         std::array<std::array<double,64>,2> x{},key{};
@@ -95,16 +103,23 @@ void coreConcurrency() {
             {AudioScope scope;const auto context=core.beginBlock(block,0,requested);
              if(!core.process(main.data(),keys.data(),2,64,requested,context))bad.fetch_add(1);}
             for(const auto &channel:x)for(double valueOut:channel)if(!std::isfinite(valueOut))bad.fetch_add(1);
+            if(block==500) {
+                const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+                while(services.load(std::memory_order_acquire)==0&&std::chrono::steady_clock::now()<limit)std::this_thread::yield();
+                overlapped.store(services.load(std::memory_order_acquire)>0,std::memory_order_release);
+            }
         }
         finalDesired=requested;done.store(true,std::memory_order_release);
     });
-    std::uint64_t services=0;
-    while(!done.load(std::memory_order_acquire)){if(core.serviceConfiguration())++services;else std::this_thread::yield();}
+    while(!done.load(std::memory_order_acquire)){if(core.serviceConfiguration())services.fetch_add(1,std::memory_order_acq_rel);else std::this_thread::yield();}
     producer.join();
     for(std::uint64_t i=0;i<4;++i){core.serviceConfiguration();static_cast<void>(core.beginBlock(1001+i,0,finalDesired));}
     core.serviceConfiguration();static_cast<void>(core.beginBlock(1005,0,finalDesired));
     const auto status=core.configurationStatus();
-    check(bad.load()==0&&services>0,"concurrent owner planning and audio processing stay valid");
+    if(bad.load()!=0||!overlapped.load())
+        std::printf("  invalid audio blocks %d, owner plans %llu, owner planned before audio's midpoint %d\n",bad.load(),
+            static_cast<unsigned long long>(services.load()),overlapped.load()?1:0);
+    check(bad.load()==0&&overlapped.load(),"concurrent owner planning and audio processing stay valid");
     check(status.requested==status.ready&&status.ready==status.applied&&core.pendingLatencyChange().token==0,"black-box latest request drains, applies and clears its offer");
 }
 void defaultsAndReadiness() {

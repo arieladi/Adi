@@ -514,8 +514,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "When Warp runs, 1.1.1 goes on the first beat or at the sample start (ADR-0132 d7).",
                        {"firstBeat", "sampleStart"}, "firstBeat"));
     r.push_back(choice("record.autoArmOnSelect", "Record, Warp & Launch", "Auto-arm on select",
-                       "Which tracks arm when selected (Bitwig).", {"none", "instrumentAndMidi", "all"},
-                       "instrumentAndMidi"));
+                       "Choose which tracks arm when selected. The default keeps arming manual.",
+                       {"none", "instrumentAndMidi", "all"}, "none"));
     r.push_back(make("record.discardIncompleteTakes", Type::Bool, "Record, Warp & Launch", "Discard incomplete takes",
                      "In loop recording, drop a first or last take shorter than the threshold "
                      "(REAPER). Off, as Live keeps every loop-recording pass (ADR-0203).",
@@ -543,6 +543,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "How the encoder encodes a turn (ADR-0130).",
                        {"absolute", "relativeTwosComplement", "relativeBinaryOffset", "relativeSignBit"},
                        "relativeTwosComplement"));
+    r.push_back(device("midi.port.name", Type::Text, "Tempo & MIDI", "Last known port name",
+                       "Stored with this MIDI port so its settings can be found if the identifier changes.", ""));
     r.push_back(device("midi.port.track", Type::Bool, "Tempo & MIDI", "Track",
                        "The port feeds tracks. Stored per port.", false));
     r.push_back(device("midi.port.sync", Type::Bool, "Tempo & MIDI", "Sync", "The port sends or takes sync. Stored per port.", false));
@@ -564,7 +566,7 @@ void catalogueSettings(std::vector<Setting>& r) {
         // its identifier (healed by name when the identifier changes), kept with the application
         // as audio.channelConfig keeps Live's channel configuration (N20).
         Setting s = make("midi.ports", Type::Record, "Tempo & MIDI", "MIDI Ports",
-                         "Live's MIDI Ports table: for each port, under its identifier, Track, Sync, "
+                         "Live's MIDI Ports table: for each port, under its identifier, the last known name, Track, Sync, "
                          "Remote and MPE, the MIDI Clock Sync Delay, the Sync Type and the MTC frame "
                          "rate and start offset, each a midi.port.* row. A port with no record uses "
                          "their defaults (the plan's SRF-05).",
@@ -850,6 +852,10 @@ std::vector<Setting> build() {
                        "automatic switching; a driver that grants less still runs and is shown "
                        "as granted (ADR-0145 d5). Default 512 (ADR-0203).",
                        {64, 128, 256, 512, 1024, 2048, 4096}, 512));
+    r.push_back(choice(kGraphWorkersKey, "", "Graph workers",
+                       "Auto enables workers for device buffers of 1024 samples or more. "
+                       "Off keeps graph processing serial (ADR-0248 d6).",
+                       {"auto", "off"}, "auto"));
     r.push_back(choice("audio.processingPrecision", "Audio", "Processing precision",
                        "32: the engine processes in 32-bit float and sums every mix point in "
                        "64-bit, as Live does (the default). 64: the whole engine in 64-bit float, "
@@ -1015,6 +1021,11 @@ std::vector<Value> sampleRateLadder() {
     return {44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000};
 }
 
+bool graphWorkersEnabled(const Value& setting, int grantedFrames) noexcept {
+    const auto* mode = setting.get_ptr<const Value::string_t*>();
+    return grantedFrames >= kGraphWorkersMinimumFrames && (!mode || *mode != "off");
+}
+
 const std::vector<Setting>& registry() {
     static const std::vector<Setting> all = build();
     return all;
@@ -1038,7 +1049,8 @@ std::vector<std::string> pages() {
             registry().end())
             out.push_back(tab);
     for (const auto& s : registry())
-        if (std::find(out.begin(), out.end(), s.page) == out.end()) out.push_back(s.page);
+        if (!s.page.empty() && std::find(out.begin(), out.end(), s.page) == out.end())
+            out.push_back(s.page);
     return out;
 }
 
@@ -1058,6 +1070,7 @@ std::vector<const Setting*> search(std::string_view query) {
     std::vector<const Setting*> out;
     if (words.empty()) return out;
     for (const auto& s : registry()) {
+        if (s.page.empty()) continue;
         const std::string hay = lower(s.label + " " + s.help + " " + s.key + " " + s.page);
         bool all = true;
         for (const auto& w : words) all = all && hay.find(w) != std::string::npos;

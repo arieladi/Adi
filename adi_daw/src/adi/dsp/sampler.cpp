@@ -11,7 +11,7 @@ Sampler::Sampler() {
                   OneShot::FilterOn,  OneShot::FilterType, OneShot::Slope,    OneShot::Cutoff,
                   OneShot::Resonance, OneShot::LfoOn,      OneShot::LfoShape, OneShot::LfoRate,
                   OneShot::LfoSync,   OneShot::LfoBeat,    OneShot::LfoPitch, OneShot::LfoVolume,
-                  OneShot::LfoPan,    OneShot::LfoFilter}) {
+                  OneShot::LfoPan,    OneShot::LfoFilter, OneShot::VelToVol}) {
         params_.push_back(*source.paramAt(i));
         destinations_.push_back(static_cast<std::uint32_t>(i));
     }
@@ -92,6 +92,7 @@ void Sampler::configure(Layer &l) {
     const auto &z = l.zone;
     l.engine->setRootKey(z.root);
     set(OneShot::Mode, 0);
+    set(OneShot::Snap, 0); // a zone's points are exact; Live's per-zone Snap is unread
     set(OneShot::Start, z.start * 100);
     set(OneShot::End, z.end * 100);
     set(OneShot::Length, 100);
@@ -146,8 +147,12 @@ void Sampler::prepare(double rate, std::int32_t frames) {
         params_.size());
     modulation_.fill(0);
     if (messageBank_)
-        for (auto &l : messageBank_->layers)
+        for (auto &l : messageBank_->layers) {
+            // A Sampler that prepares afresh prepares its layers afresh: their
+            // own prepare() is idempotent now (DF-E37 f).
+            l.engine->release();
             l.engine->prepare(rate_, maxFrames_);
+        }
 }
 void Sampler::process(const engine::NodeIo &io) noexcept {
     if (io.frames <= 0 || io.blockOffset < 0 || io.blockOffset + io.frames > maxFrames_)
@@ -197,7 +202,10 @@ void Sampler::process(const engine::NodeIo &io) noexcept {
                                       z.constantPower);
                     if (w <= 0)
                         continue;
-                    e.value *= w;
+                    // DF-E37 (e): the zone's weight is the voice's own gain,
+                    // latched at note-on -- not a scaled velocity, which Vel >
+                    // Vol would squeeze (0.825 for a 0.5 fade at 35 %).
+                    layer.engine->queueNoteGain(w);
                 }
                 (void)events.push(e); // sized in prepare() for the block's events
             }
