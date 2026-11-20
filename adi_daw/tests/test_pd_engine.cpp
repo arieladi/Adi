@@ -1986,9 +1986,14 @@ void testAShrunkPublishedTableDoesNotDeadlock() {
 void testAnUnknownObjectMadeInsideATickWaitsOnNoOtherDevice() {
     section("DEV-09 AR8 -- an unknown object made inside a tick is refused, never waited for");
     TempDir tmp("dynamic");
+    // Two objects are made inside a tick: a name Pd does not know, and
+    // [voice], an abstraction the patch already holds (so its name is
+    // registered, and its creation would read voice.pd from disk).
+    tmp.write("voice.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 inlet;\n");
     tmp.write("dynamic.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 5;\n"
-                            "#X msg 10 70 \\; pd-dynamic.pd obj 10 150 adi-no-such-class;\n"
-                            "#X obj 200 10 adc~ 1 2;\n#X obj 200 60 dac~ 1 2;\n"
+                            "#X msg 10 70 \\; pd-dynamic.pd obj 10 150 adi-no-such-class \\; "
+                            "pd-dynamic.pd obj 10 180 voice;\n"
+                            "#X obj 200 10 adc~ 1 2;\n#X obj 200 60 dac~ 1 2;\n#X obj 100 150 voice;\n"
                             "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 3 0 4 0;\n"
                             "#X connect 3 1 4 1;\n");
     LibPdEngine other(patchDir(), "adi-proof.pd", 2, 2);
@@ -2040,7 +2045,10 @@ void testAnUnknownObjectMadeInsideATickWaitsOnNoOtherDevice() {
           "and this device rendered every tick, none skipped");
     const std::string console = joined(eng.consoleLines());
     check(console.find("ADI refused creating 'adi-no-such-class' while audio runs") != std::string::npos,
-          "the object is refused by name\n          console: " + console);
+          "the object Pd does not know is refused by name\n          console: " + console);
+    check(console.find("ADI refused creating 'voice' while audio runs") != std::string::npos,
+          "and so is the abstraction whose name is registered: nothing is read from disk in a tick\n"
+          "          console: " + console);
 }
 
 // DEV-09 AR8, the cross-instance dropout, measured for win's ruling: opening
@@ -2075,6 +2083,7 @@ void testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits() {
     check(skippedOver(50) == 0, "alone, no tick is skipped");
 
     std::atomic<bool> openerDone{false};
+    std::atomic<bool> opening{false};
     std::atomic<int> opened{0};
     double openMs = 0.0;
     std::thread opener([&] {
@@ -2083,7 +2092,9 @@ void testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits() {
             PdLatencyReceiver otherLatency;
             std::string otherError;
             const auto start = std::chrono::steady_clock::now();
+            opening.store(true);
             const bool ok = other.open(otherLatency, otherError);
+            opening.store(false);
             openMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
             if (ok) {
                 opened.fetch_add(1);
@@ -2094,7 +2105,9 @@ void testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits() {
     // This thread renders as fast as it can, so ticks counted overstate audio
     // time: the silence a real-time callback would hear is the wall-clock
     // length of a run of skipped ticks.
-    int segments = 0;
+    // "Never waits", checked without a clock: a segment whose tick skipped
+    // began and returned while the other device was still opening.
+    int segments = 0, skippedWhileOpening = 0;
     std::int64_t skipped = 0;
     double longestMs = 0.0;
     bool skipping = false;
@@ -2102,8 +2115,13 @@ void testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits() {
     while (!openerDone.load()) {
         const auto before = eng.counters().skippedTicks;
         const auto start = std::chrono::steady_clock::now();
+        const bool openingBefore = opening.load();
         (void)runSegmented(eng, sig, 0.f, {64});
+        const bool openingAfter = opening.load();
         const auto now = eng.counters().skippedTicks - before;
+        if (now > 0 && openingBefore && openingAfter) {
+            ++skippedWhileOpening;
+        }
         skipped += now;
         if (now > 0 && !skipping) {
             skipping = true;
@@ -2121,8 +2139,9 @@ void testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits() {
     opener.join();
     check(opened.load() == kOpens, "the other device opened its " + std::to_string(kObjects) + "-object patch " +
                                        std::to_string(opened.load()) + " times");
-    check(segments > 0, "every one of this device's " + std::to_string(segments) +
-                            " segments returned while the other opened");
+    check(skippedWhileOpening > 0, "a tick of this device skipped and its segment returned while the other was "
+                                   "still opening (" + std::to_string(skippedWhileOpening) + " of " +
+                                       std::to_string(segments) + " segments): skipped, not waited for");
     check(skippedOver(50) == 0, "and once the opens stop, no tick is skipped");
     std::printf("    [measured] %d segments of 64 during %d opens of %d objects (%.2f ms each): %lld ticks "
                 "skipped; the longest unbroken run of skips lasted %.2f ms of wall time\n",

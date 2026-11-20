@@ -56,6 +56,25 @@ adi_pd_replace([=[int sys_run_scheduler(const char *externalschedlibname,
         pd_error(0, "ADI refused an external scheduler: %s", externalschedlibname);
         return (1);
     }]=])
+# DEV-09 AR8: no abstraction is made inside one of ADI's ticks, whether or not
+# its name is registered yet: it would be read and parsed from disk on the
+# audio thread (a [clone] resize, dynamic patching). The m_class.c overlay
+# below refuses a name Pd does not know; this refuses one it does, so the
+# answer depends on the tick alone, never on what any device loaded before.
+adi_pd_replace([=[static t_pd *do_create_abstraction(t_symbol*s, int argc, t_atom *argv)
+{
+]=] [=[int adi_pd_in_audio_tick(void);
+static t_pd *do_create_abstraction(t_symbol*s, int argc, t_atom *argv)
+{
+        /* ADI (DEV-09 AR8): not inside a tick. */
+    if (adi_pd_in_audio_tick())
+    {
+        pd_this->pd_newest = 0;
+        pd_error(0, "ADI refused creating '%s' while audio runs (DEV-09 AR8: "
+            "an abstraction is read from disk)", s->s_name);
+        return (0);
+    }
+]=])
 file(WRITE "${adi_pd_overlay}/s_loader.c" "${adi_pd_text}")
 file(READ "${adi_pd_source}/m_class.c" adi_pd_text)
 # Multi-line needles below are written with LF: a checkout with CRLF must match.
@@ -108,6 +127,11 @@ void adi_pd_set_audio_tick(int on);
 void adi_pd_set_audio_tick(int on)
 {
     adi_pd_audio_tick = on;
+}
+int adi_pd_in_audio_tick(void);   /* the s_loader.c overlay's question */
+int adi_pd_in_audio_tick(void)
+{
+    return (adi_pd_audio_tick);
 }
 
 void new_anything(void *dummy, t_symbol *s, int argc, t_atom *argv)
