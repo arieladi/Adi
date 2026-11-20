@@ -199,7 +199,11 @@ std::array<const MixFocus::Member *, 2> MixFocus::matchMembers() const noexcept 
 bool MixFocus::canLearnMatch(const std::array<const Member *, 2> &pair) const noexcept {
     return isShowing() && !suspended_ && !scope.getToggleState() && scopePlaying_ &&
            alignment_ == Alignment::Ready && pair[0] && pair[1] && pair[0]->data && pair[1]->data &&
-           focusMatchCompatible(*pair[0]->data, *pair[1]->data);
+           focusMatchCompatible(*pair[0]->data, *pair[1]->data) && matchCaptureIsCurrent(*pair[0]->data);
+}
+bool MixFocus::matchCaptureIsCurrent(const SharedAnalysis::Result &capture) const noexcept {
+    const auto locateRevision = root_.settledLocateRevision();
+    return locateRevision && capture.transportRevision >= *locateRevision;
 }
 void MixFocus::clearMatchPreview() {
     if (!match_) return;
@@ -240,9 +244,11 @@ void MixFocus::learnMatchPreview() {
     const auto *main = reader.findTrack(learned->main);
     const auto *target = reader.findTrack(learned->target);
     if (!main || !target) return;
-    matchCaption_ = " / Match " + juce::String::fromUTF8(target->name.c_str()) + " toward " +
-                    juce::String::fromUTF8(main->name.c_str()) + " (+/-" +
-                    juce::String(static_cast<int>(matchDisplayDb)) + " dB)";
+    auto caption = " / Match " + juce::String::fromUTF8(target->name.c_str()) + " toward " +
+                   juce::String::fromUTF8(main->name.c_str()) + " (+/-" +
+                   juce::String(static_cast<int>(matchDisplayDb)) + " dB)";
+    if (!matchCaptureIsCurrent(*pair[0]->data)) return;
+    matchCaption_ = std::move(caption);
     match_ = std::move(learned);
     matchBroker_ = owner;
     updateMatchControls();
@@ -525,8 +531,11 @@ void MixFocus::frame(const SnapshotReader &reader) {
         }
     }
     if (broker && !members_.empty()) broker->requestFrame();
-    if (redraw_) {
+    const auto locateRevision = scopeShown ? std::nullopt : root_.settledLocateRevision();
+    if (redraw_ || matchLocateRevision_ != locateRevision)
         updateMatchControls();
+    matchLocateRevision_ = locateRevision;
+    if (redraw_) {
         if (!scope.getToggleState()) rebuildPlot();
         rebuildScope();
         redraw_ = false;

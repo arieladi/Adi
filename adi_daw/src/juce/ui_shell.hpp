@@ -296,6 +296,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
     std::int64_t renderedSamplePosition() const noexcept { return mailbox_.position(); }
+    [[nodiscard]] auto settledLocateRevision() const noexcept { return mailbox_.settledLocateRevision(); }
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
     std::uint64_t projectViewGeneration() const noexcept { return view_.generation(); }

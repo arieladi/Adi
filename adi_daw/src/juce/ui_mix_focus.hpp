@@ -68,6 +68,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void refreshControls();
     std::array<const Member *, 2> matchMembers() const noexcept;
     bool canLearnMatch(const std::array<const Member *, 2> &) const noexcept;
+    bool matchCaptureIsCurrent(const SharedAnalysis::Result &) const noexcept;
     void updateMatchControls();
     void learnMatchPreview();
     void rebuildMatchPath();
@@ -87,6 +88,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::optional<FocusSumReading> sum_;
     std::array<juce::Path, 2> scopeSumPaths_;
     std::optional<FocusMatchReading> match_;
+    std::optional<std::uint64_t> matchLocateRevision_;
     std::weak_ptr<SharedAnalysis> matchBroker_;
     juce::Path matchPath_;
     juce::String matchCaption_;
