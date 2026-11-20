@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, morning — spectrogram Clear now fences the writer
+
+**PR requested.** `mixview/spectrogram-clear-writer-20261120` at `ae821ba3`, after the neutral EQ and Clean change. A Clear in Scroll or Sweep uses the source position independently of the last visible picture. Pending and overwritten columns carry their first sample sequence. The second view retains its history. This change uses the existing analysis plan and tap.
+
+Windows x64 Release passed 458 analysis, 438 shared view, 906 Mix View, 324 Arrangement and seven Appearance checks. An earlier fail-first software fixture showed the two visual faults with an unpublished worker backlog. No grouped-history experiment is in this branch.
+
+Joined Release source `ae821ba381a1167ca7de35036cb8b037fd2a6609`. ZIP SHA-256 `6452b14bd52c3adc90eaf23cfe240f42b01039351d8c95fcf6386782bd830c87`. ADI.exe `8b821edac4bbbb2b97b29f35836f44e74fafd2de36f13f817c70f1b883519c5c`. Scanner `c734474fca00c02721bfc11eaf86461ea809250bc56c2718b543adea61d1468f`. This brief covers the cumulative analyser and neutral EQ checks. The paired Device Keys build remains the routing retest.
+
 ## 2026-11-20, morning — neutral EQ suspension and Clean offline intent
 
 **PR requested.** `mixview/neutral-eq-suspension-dfm34-20261120` at `8fea4a7c`, based on `86fbc634`. This change is independent of the Engine VST3 adapter and the dormant-key branch. A pristine neutral EQ can suspend in realtime once it has proven an exact quiet path. A control edit wakes the EQ during silence, and the first new programme sample follows the authored setting. Offline intent keeps both neutral EQ and Clean awake. Stateful EQ and the Limiter retain their existing processing.
