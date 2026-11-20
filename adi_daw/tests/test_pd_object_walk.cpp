@@ -16,13 +16,18 @@
 #include "temp_directory.hpp"
 #endif
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iterator>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -262,7 +267,8 @@ std::string mutate(std::string text, FuzzRandom& random) {
         "-1e+38", "nan", "inf", "99999999999999999999", "#A set 1 2 3;\n", "#X array a 100 float 0;\n",
         "#X coords 0 1 100 -1 200 140 1;\n", "pd ", "clone 4 ", "../x ", "/abs ", "C:/x ", "#X msg 10 10 ",
         "#X text 0 0 ", "#X floatatom 0 0 5 0 0 0 - - -;\n", "{", "}", "\\$0", "#X obj 0 0 f;\n",
-        "#X obj 0 0 adi.param \\$0 1 x 0 1 0 lin -;\n", "#X obj 0 0 osc~ 440;\n", "#X obj 0 0 dac~;\n"};
+        "#X obj 0 0 adi.param \\$0 1 x 0 1 0 lin -;\n", "#X obj 0 0 osc~ 440;\n", "#X obj 0 0 dac~;\n",
+        "#X obj 0 0 osc~ foo;\n", "#X connect 0 100000 1 0;\n", "#X connect 0 0 1 100000;\n"};
     const std::size_t operations = 1 + random.below(4);
     for (std::size_t op = 0; op < operations; ++op) {
         const std::size_t at = random.below(text.size() + 1);
@@ -321,22 +327,75 @@ void testAConnectOnAnEmptyCanvasFailsByName() {
                                      std::to_string(failed) + ")\n          console: " + console);
 }
 
+// What the review of the fuzz found: a box that failed to create ([osc~ foo])
+// was given dummy ports up to a connection's number, unbounded: 1e8 outlets,
+// each by walking the list -- a hang, then a NULL write without memory.
+void testAPortPastTheBoundOnABrokenBoxFails() {
+    section("PD2 -- a connection to port 1e8 of a box that failed to create fails, no hang");
+    adi::test::TempDirectory tmp("pd_object_walk", "ports");
+    {
+        std::ofstream file(tmp.path() / "ports.pd", std::ios::binary | std::ios::trunc);
+        file << "#N canvas 0 0 100 100 12;\n#X obj 0 0 osc~ foo;\n#X obj 0 40 osc~ bar;\n"
+                "#X connect 0 100000000 1 0;\n#X connect 0 0 1 100000000;\n#X connect 0 3 1 2;\n";
+    }
+    std::atomic<bool> done{false};
+    std::thread watchdog([&] {
+        for (int i = 0; i < 400 && !done.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        if (!done.load()) {
+            std::printf("  FAIL  a connection to port 1e8 of a broken box hung the open (20 s)\n");
+            std::fflush(stdout);
+            std::_Exit(3);
+        }
+    });
+    {
+        LibPdEngine eng(tmp.path().string(), "ports.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        const bool opened = eng.open(latency, error);
+        std::string console;
+        for (const auto& line : eng.consoleLines()) {
+            console += line + "\n";
+        }
+        std::size_t failed = 0;
+        for (auto at = console.find("connection failed"); at != std::string::npos;
+             at = console.find("connection failed", at + 1)) {
+            ++failed;
+        }
+        check(opened && failed == 2,
+              "it opens, the two connections past the bound fail on the console, and the one within it is made "
+              "(" + std::to_string(failed) + " failed)\n          console: " + console);
+    }
+    done.store(true);
+    watchdog.join();
+}
+
 void testASeededFuzzOfPatchTextNeverCrashes() {
     section("PD2 -- a seeded fuzz of patch text: the walk names every refusal, Pd opens or says why");
     const std::filesystem::path dir = ADI_PD_PATCH_DIR;
-    PdAbstractions abs;
-    std::vector<std::string> corpus;
+    // The same bytes in the same order everywhere: a directory's order is
+    // unspecified, and a checkout may turn LF into CRLF.
+    std::vector<std::filesystem::path> paths;
     for (const auto& folder : {dir, dir / "devices"}) {
         for (const auto& e : std::filesystem::directory_iterator(folder)) {
-            if (e.path().extension() != ".pd") {
-                continue;
+            if (e.path().extension() == ".pd") {
+                paths.push_back(e.path());
             }
-            const auto text = slurp(e.path());
-            if (e.path().filename().string().rfind("adi.", 0) == 0) {
-                abs.emplace(e.path().filename().string(), text);
-            }
-            corpus.push_back(text);
         }
+    }
+    std::sort(paths.begin(), paths.end(), [&](const std::filesystem::path& a, const std::filesystem::path& b) {
+        return a.lexically_relative(dir).generic_string() < b.lexically_relative(dir).generic_string();
+    });
+    PdAbstractions abs;
+    std::vector<std::string> corpus;
+    for (const auto& path : paths) {
+        auto text = slurp(path);
+        text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+        if (path.filename().string().rfind("adi.", 0) == 0) {
+            abs.emplace(path.filename().string(), text);
+        }
+        corpus.push_back(text);
     }
     check(corpus.size() >= 20, "the corpus is every shipped patch: " + std::to_string(corpus.size()));
     const PdVocabulary vocabulary(PdRuntime::creatableClasses());
@@ -345,21 +404,28 @@ void testASeededFuzzOfPatchTextNeverCrashes() {
     constexpr int kMutants = 600, kMaxOpens = 150;
     FuzzRandom random{20261120u};
     int allowed = 0, refused = 0, unnamed = 0, opens = 0, ran = 0, failedWithMessage = 0, failedSilently = 0;
+    std::string firstUnnamed;
     std::vector<std::vector<float>> in(2, std::vector<float>(64, 0.f)), out(2, std::vector<float>(64, 0.f));
     const float* inPointers[2] = {in[0].data(), in[1].data()};
     float* outPointers[2] = {out[0].data(), out[1].data()};
     for (int m = 0; m < kMutants; ++m) {
         const auto mutant = mutate(corpus[random.below(corpus.size())], random);
         const auto walk = walkPdObjects(mutant, abs, vocabulary);
+        // Named: one line per refusal, each naming its class (a malformed
+        // canvas has none) where the box is.
         const auto lines = walk.describe();
         bool named = lines.size() == walk.refused.size();
-        for (const auto& line : lines) {
-            named = named && !line.empty();
+        for (std::size_t i = 0; named && i < walk.refused.size(); ++i) {
+            const auto& r = walk.refused[i];
+            named = r.reason == PdObjectRefusal::Malformed ||
+                    (!r.className.empty() && r.box > 0 && lines[i].find(r.className) != std::string::npos);
         }
-        for (const auto& r : walk.refused) {
-            named = named && std::string(toString(r.reason)).size() > 0;
+        if (!named) {
+            ++unnamed;
+            if (firstUnnamed.empty()) {
+                firstUnnamed = "mutant " + std::to_string(m) + ": " + (lines.empty() ? std::string("-") : lines[0]);
+            }
         }
-        unnamed += named ? 0 : 1;
         if (!walk.allowed()) {
             ++refused;
             continue;
@@ -394,8 +460,8 @@ void testASeededFuzzOfPatchTextNeverCrashes() {
         ++ran;
     }
     check(unnamed == 0, std::to_string(kMutants) + " mutants walked: " + std::to_string(allowed) + " allowed, " +
-                            std::to_string(refused) + " refused, every refusal named (" + std::to_string(unnamed) +
-                            " not)");
+                            std::to_string(refused) + " refused, every refusal named by class and box (" +
+                            std::to_string(unnamed) + " not" + (firstUnnamed.empty() ? "" : "; " + firstUnnamed) + ")");
     check(opens >= 50 && ran + failedWithMessage == opens && failedSilently == 0,
           std::to_string(opens) + " allowed mutants opened in Pd: " + std::to_string(ran) + " ran 16 blocks, " +
               std::to_string(failedWithMessage) + " failed with a message, " + std::to_string(failedSilently) +
@@ -417,6 +483,7 @@ int main() {
 #if defined(ADI_WITH_PD)
     testTheRunningBuildsVocabulary();
     testAConnectOnAnEmptyCanvasFailsByName();
+    testAPortPastTheBoundOnABrokenBoxFails();
     testASeededFuzzOfPatchTextNeverCrashes();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);

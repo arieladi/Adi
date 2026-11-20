@@ -300,6 +300,21 @@ adi_pd_replace([=[    if (THISED->paste_canvas == x) whoout += THISED->paste_ons
     if (!x->gl_list || whoout < 0 || whoin < 0)
         goto bad;
 ]=])
+# DEV-09 PD2 (found by the review of the fuzz): a box that failed to create
+# (`[osc~ foo]`) is given dummy outlets or inlets up to the connection's port
+# number, which came from the patch unbounded: `#X connect 0 100000000 1 0`
+# made Pd build 1e8 outlets, each by walking the list (a hang, then a NULL
+# write when memory ran out). A port past 1024 on such a box fails instead.
+adi_pd_replace([=[        /* if object creation failed, make dummy inlets or outlets
+           as needed */
+]=] [=[        /* ADI (DEV-09 PD2): dummy ports only up to a bound. */
+    if (outno < 0 || inno < 0 ||
+        (pd_class(&src->g_pd) == text_class && objsrc->te_type == T_OBJECT && outno >= 1024) ||
+        (pd_class(&sink->g_pd) == text_class && objsink->te_type == T_OBJECT && inno >= 1024))
+        goto bad;
+        /* if object creation failed, make dummy inlets or outlets
+           as needed */
+]=])
 file(WRITE "${adi_pd_overlay}/g_editor.c" "${adi_pd_text}")
 # DF-E36 (c): no help patch is opened for a patch. The canvas's and [array
 # define]'s `done-popup 2` reach glob_evalfile through open_via_helppath: the
