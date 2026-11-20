@@ -4,6 +4,7 @@
 #include "adi/settings/store.hpp"
 #include "adi/ui/arm_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/export_choices.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
@@ -155,7 +156,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FocusClipView, // Live's Navigate menu: Clip View, Alt/Option+3
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
         ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
-        LastId = ArrangementRecord
+        ExportAudio,       // the File menu's Export Audio/Video (manual 5.2.1), Ctrl/Cmd+Shift+R
+        LastId = ExportAudio
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -351,6 +353,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // `reenableAutomation`, which says why in the Status Bar when it refuses. Automation Arm reads
     // `automationArmed` each frame (unset: on, as Live's new Set) and a click sets `armAutomation`.
     // Unset, a click says the switch has no session.
+    // Live's Export Audio/Video (EX-11): the application shows the Export page with these choices, the
+    // render range the selection, else the loop, else the whole song. Unset outside the application.
+    std::function<void(const ExportChoices &)> exportAudio;
+    // The Export page's starting choices, from the frame's snapshot and selection.
+    ExportChoices exportDefaults() const;
     std::function<bool()> reenableAutomation;
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;

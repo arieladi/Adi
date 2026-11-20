@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/app_audio_page.hpp"
 #include "../src/juce/app_midi_ports.hpp"
+#include "../src/juce/ui_export.hpp"
 #include "../src/juce/ui_controls.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
@@ -9935,6 +9936,145 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(!root.midiOverdub() && !overdub.getToggleState(), "and off");
     document->release();
 }
+// EX-11, the Export page (Live 12 manual 5.2.1): the choices in Live's order, what the renderer cannot do
+// yet refused with its reason, the range from the selection, the loop or the song, and the job the choices
+// make, rendered to a WAV by the engine's renderer.
+void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "export.adi", true, {}, error);
+    check(document != nullptr, "a project to export");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "export");
+    root.setSize(1440, 900);
+    root.frame();
+    // The command: on Ctrl/Cmd+Shift+R, named as Live's; outside the application it says where it runs.
+    juce::ApplicationCommandInfo info(AppCommands::ExportAudio);
+    commands.getCommandInfo(AppCommands::ExportAudio, info);
+    check(info.shortName == "Export Audio/Video..." &&
+              info.defaultKeypresses.contains(juce::KeyPress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+          "Export Audio/Video, on Ctrl/Cmd+Shift+R");
+    check(!root.command(AppCommands::ExportAudio) && root.error() == "Export runs in the application.",
+          "outside the application it says where it runs");
+    std::optional<ExportChoices> asked;
+    root.exportAudio = [&](const ExportChoices &c) { asked = c; };
+    // With nothing selected: the loop brace, whether the loop is on or not (New's brace: four bars), Main,
+    // at the project's rate.
+    const auto &transport = root.reader().transport();
+    check(root.command(AppCommands::ExportAudio) && asked && !transport.loopEnabled &&
+              asked->startTicks == transport.loopStartTicks &&
+              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks && asked->lengthTicks == 4 * textproj::kWhole &&
+              asked->track == 0 && asked->sampleRate == root.reader().sampleRate(),
+          "the loop brace with the loop off, Main, at the project's rate");
+    auto &sel = root.arrangement.geometry.selection;
+    sel.start = 3840;
+    sel.end = 3840 * 5;
+    check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
+          "a time selection is the range, as Live's");
+    sel.start = 3840 * 5;
+    sel.end = 3840;
+    check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
+          "a selection made right to left is the same range");
+    sel.start = sel.end = 0;
+    // The page: Live's rows in Live's order, Main and the tracks to render.
+    ExportChoices c = *asked;
+    c.lengthTicks = textproj::kWhole * 2; // two 4/4 bars
+    ExportPage page(c, {{4, "3 Audio"}, {6, "A Reverb"}}, root.reader().meters());
+    std::vector<juce::String> titles;
+    for (auto *control : std::initializer_list<juce::Component *>{&page.renderedTrack, &page.start, &page.length,
+                                                                   &page.includeReturnAndMain, &page.renderAsLoop,
+                                                                   &page.convertToMono, &page.normalize,
+                                                                   &page.createAnalysisFile, &page.sampleRate,
+                                                                   &page.encodePcm, &page.fileType, &page.bitDepth,
+                                                                   &page.dither, &page.encodeMp3, &page.video})
+        titles.push_back(control->getTitle());
+    check(titles == std::vector<juce::String>{"Rendered Track", "Render Start", "Render Length",
+                                              "Include Return and Main Effects", "Render as Loop", "Convert to Mono",
+                                              "Normalize", "Create Analysis File", "Sample Rate", "Encode PCM",
+                                              "File Type", "Bit Depth", "Dither Options", "Encode MP3", "Export Video"},
+          "Live's choices in Live's order");
+    check(page.renderedTrack.getNumItems() == 3 && page.renderedTrack.getText() == "Main" &&
+              page.start.getText() == "1.1.1" && page.length.getText() == "2.0.0" && page.refusals().empty() &&
+              page.exportButton.isEnabled(),
+          "Main, from 1.1.1 for 2.0.0: Export is offered");
+    {
+        // The range as filled is kept exact while its fields are unchanged; the project's rate is offered
+        // when the list lacks it.
+        ExportChoices odd = c;
+        odd.lengthTicks = textproj::kWhole + 7;
+        odd.sampleRate = 192000;
+        ExportPage exact(odd, {}, root.reader().meters());
+        check(exact.choices().lengthTicks == textproj::kWhole + 7 && exact.choices().sampleRate == 192000 &&
+                  exact.sampleRate.getText() == "192000",
+              "an unedited range stays exact past the sixteenths it shows, and 192 kHz stays 192 kHz");
+    }
+    page.encodeMp3.setToggleState(true, juce::dontSendNotification);
+    page.encodeMp3.onClick();
+    check(!page.exportButton.isEnabled() && page.refusals().size() == 1 &&
+              page.refusals()[0].find("MP3 waits") != std::string::npos,
+          "MP3 on: Export waits, saying why");
+    page.encodeMp3.setToggleState(false, juce::dontSendNotification);
+    page.encodeMp3.onClick();
+    page.renderedTrack.setSelectedId(2, juce::sendNotificationSync);
+    check(page.choices().track == 4 && !page.exportButton.isEnabled() &&
+              page.refusals()[0].find("Include Return and Main Effects off") != std::string::npos,
+          "a track through the returns and Main waits; the reason says what renders now");
+    page.includeReturnAndMain.setToggleState(false, juce::dontSendNotification);
+    page.includeReturnAndMain.onClick();
+    check(page.exportButton.isEnabled(), "with the effects off, the track's own signal renders");
+    page.length.setText("one bar", false);
+    page.length.onTextChange();
+    check(!page.exportButton.isEnabled() && page.refusals()[0].find("Render Length is not a length") != std::string::npos,
+          "a length that is not one is refused");
+    page.length.setText("1.2.0", false);
+    page.length.onTextChange();
+    check(page.exportButton.isEnabled() && page.choices().lengthTicks == textproj::kWhole + textproj::kWhole / 2,
+          "1.2.0 is a bar and two beats");
+    std::optional<ExportChoices> exported;
+    page.onExport = [&](const ExportChoices &e) { exported = e; };
+    page.exportButton.onClick();
+    check(exported && exported->track == 4 && !exported->includeReturnAndMain, "Export hands over the choices");
+    // The job, and a real render of the project: Main for one bar, 16-bit, at 44.1 kHz.
+    ExportChoices one;
+    one.lengthTicks = textproj::kWhole;
+    one.sampleRate = 44100;
+    one.bitDepth = 16;
+    one.dither = "No Dither";
+    one.normalize = true;
+    const auto now = document->view().current();
+    const auto tempo = now ? now->tempo : nullptr;
+    check(tempo != nullptr, "the project's tempo map");
+    if (!tempo) {
+        document->release();
+        return;
+    }
+    auto job = exportJob(one, document->store().path(), dir / "Song {mix}.wav", *tempo);
+    const auto expected = exportSample(*tempo, textproj::kWhole, 44100);
+    check(job.directory == dir && job.nameTemplate == "Song {{mix}}" && job.beginSample == 0 && job.endSample == expected &&
+              job.session.sampleRate == 44100 && job.encoding.format == audio::WavFormat::Pcm16 &&
+              job.encoding.dither == audio::WavDither::None && job.normalization.mode == render::NormalizeMode::Peak &&
+              job.source.trackId == 0,
+          "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize");
+    one.normalize = false; // a silent song has no peak to normalize
+    // New's Set holds Reverb and Delay, which a build without Pd cannot load, and the renderer renders
+    // only a project whose every device loads: an empty project here.
+    {
+        StoreError made{};
+        auto empty = Store::createEmpty(dir / "export-empty.adi", made);
+        check(empty != nullptr, "an empty project to render");
+        if (empty)
+            empty->db().exec("INSERT INTO project(id,name) VALUES(1,'Export'); INSERT INTO tracks(id,kind,name) VALUES(1,'master','Main')");
+    }
+    job = exportJob(one, dir / "export-empty.adi", dir / "Song {mix}.wav", *tempo);
+    const auto result = render::renderWav(job, {});
+    if (result.state != render::JobState::Completed)
+        std::printf("render: %s\n", result.error.c_str());
+    check(result.state == render::JobState::Completed && result.output == dir / "Song {mix}.wav" &&
+              std::filesystem::exists(result.output) && result.framesWritten == static_cast<std::uint64_t>(expected),
+          "the renderer writes the chosen file, the whole range");
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
@@ -12259,16 +12399,17 @@ int main(int argc, char **argv) {
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), then Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport},
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them; Quit is the application menu's on the Mac");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the menu bar: File, Edit, Create, View, Options, Navigate");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::Quit},
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
+                                                C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them; it ends with Quit and no longer holds Settings");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
@@ -12310,7 +12451,8 @@ int main(int argc, char **argv) {
                       C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
-                      C::ArrangementRecord == C::FitToTimeRange + 1 && C::LastId == C::ArrangementRecord,
+                      C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
+                      C::LastId == C::ExportAudio,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -14590,6 +14732,7 @@ int main(int argc, char **argv) {
     trace("pluginWindows", [&] { pluginWindows(commands, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
+    trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });

@@ -211,7 +211,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
-                                  "Arrangement Record"};
+                                  "Arrangement Record", "Export Audio/Video..."};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -657,6 +657,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ArrangementRecord: // manual 21.1 and §41.6: F9
         info.addDefaultKeypress(juce::KeyPress::F9Key, 0);
         info.setTicked(active_ != nullptr && active_->isRecording());
+        break;
+    case ExportAudio: // manual 5.2.1 and §41.3: Ctrl/Cmd+Shift+R
+        info.addDefaultKeypress('r', cmd | shift);
         break;
     case ExpandClipView: // manual 10.2; Live 12's View menu: Expand Clip View, Ctrl/Cmd+Alt+E
         info.addDefaultKeypress('e', cmd | alt);
@@ -2733,6 +2736,28 @@ bool AdiRootComponent::toggleRecord() {
     mark(DirtySet::Transport);
     return true;
 }
+ExportChoices AdiRootComponent::exportDefaults() const {
+    // Live renders the time selection, else the loop brace (manual 5.2.1); a project has a brace from New,
+    // so the whole song (its start to the end of its last clip or locator) is for a project without one.
+    ExportChoices c;
+    const auto &sel = arrangement.geometry.selection;
+    const auto current = view_.current();
+    if (sel.end != sel.start) {
+        // A selection made right to left is the same range.
+        c.startTicks = std::min(sel.start, sel.end);
+        c.lengthTicks = std::max(sel.start, sel.end) - c.startTicks;
+    } else if (current && current->transport.loopEndTicks > current->transport.loopStartTicks) {
+        // The loop brace, whether the loop is switched on or not, as Live's.
+        c.startTicks = current->transport.loopStartTicks;
+        c.lengthTicks = current->transport.loopEndTicks - current->transport.loopStartTicks;
+    } else {
+        c.startTicks = 0;
+        c.lengthTicks = arrangementEnd();
+    }
+    if (current && current->sampleRate > 0)
+        c.sampleRate = static_cast<int>(current->sampleRate);
+    return c;
+}
 bool AdiRootComponent::setSoloInPlace(bool on) {
     // Live's Solo in Place (manual 18.6): one project field for the Solo button's menu and the
     // Options menu's entry (#412, N23), from the CURRENT cell (ADR-0201). The op is outside undo, as
@@ -3350,6 +3375,11 @@ bool AdiRootComponent::command(int id) {
         if (!toggleRecord())
             return false;
         break;
+    case AppCommands::ExportAudio:
+        if (!exportAudio)
+            return fail("Export runs in the application.");
+        exportAudio(exportDefaults());
+        break;
     case AppCommands::Undo:
     case AppCommands::Redo: {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
@@ -3695,10 +3725,10 @@ const std::vector<MenuEntries> &menuBar() {
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
         {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport}},
+                  C::CollectAndExport, 0, C::ExportAudio}},
 #else
         {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport, 0, C::Quit}},
+                  C::CollectAndExport, 0, C::ExportAudio, 0, C::Quit}},
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
