@@ -93,6 +93,49 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-20 — DEV-09 AR8: nothing made inside a tick waits on another Pd device; the cross-instance dropout measured
+
+**PR requested:** head `devices/pd-ar8` (bc48d53f, two commits), stacked on `devices/dev09-gaps`
+(which shares its overlay and test files), base `main`.
+
+- **The defect** (gap audit item 3). For an object Pd does not know, `new_anything` swaps the
+  tick's read lock for Pd's process-wide write lock (`pd_globallock`) and searches the disk for an
+  abstraction. Dynamic patching can do that inside a tick: a `[delay]` firing `[; pd-x.pd obj …(`, or
+  a parameter's message. Then the audio thread waits on every other Pd device's tick and on every
+  open editor.
+  - In the test before the fix, only 3 of 40 segments returned while another device's editor held
+    its instance. The rest waited out its 5 s hold.
+- **The fix.** `LibPdEngine::lockedTick` now marks its ticks, using a thread-local flag in the
+  m_class.c overlay. Inside a marked tick, these are refused by name ("ADI refused creating 'x'
+  while audio runs"):
+  - an unknown object (`new_anything`);
+  - an abstraction whose name is already registered (`do_create_abstraction`, in the s_loader.c
+    overlay), which would otherwise be read from disk on the audio thread. That includes a
+    `[clone]` resize.
+  - The box stays broken, as for any object Pd cannot create, and `pd_newest` is cleared so
+    nothing stale is taken for it.
+  - Opening a patch, abstractions included, and an editor's own changes are unchanged.
+- **The cross-instance dropout** (item 1), **measured for win's ruling.**
+  - Another device opened a 1000-object patch 20 times, about 30 ms an open.
+  - The longest unbroken run of skipped ticks on this device was 7–10 ms of wall time across two
+    runs. That is the write-locked part of the load (`libpd_openfile`).
+  - The test checks, without a clock, that this device's ticks are skipped and its segments
+    return while the other is still opening, and that nothing skips before or after.
+  - **So the ruling's question is concrete:** opening a large Pd patch silences every other Pd
+    device for roughly 10 ms. Either record that in the row, or fund an overlay that does not hold
+    the write lock across `glob_evalfile`.
+- **Tests:** `adi_pd_engine_tests` 676, written first (2 failures before).
+  - Plants, each caught: tick not marked (2 failures); abstraction fence removed (1).
+  - CTest 267/267 at PD_FLOATSIZE 32 and 64; the Pd engine tests also pass under ASan.
+- **Reviewed** on four dimensions with three skeptics per finding: Pd semantics, locking, tests,
+  portability. Every finding was refuted as a defect. Two fair points are fixed in the second
+  commit:
+  - the registered-abstraction path, so whether a creation is refused no longer depends on what
+    any device loaded before;
+  - an actual check of "never waits".
+- **Left on DEV-09 for this lane:** the PD2 fuzz and round trip, after 3 December.
+- **Still awaiting win:** the runaway-loop ruling, and the ASan CI leg.
+
 ## 2026-11-20 — DEV-28: the one loudness meter's cost per callback, measured by the block benchmark
 
 **PR requested:** head `devices/loudness-bench` (82397f06, two commits on f45c6f4a), base `main`.
