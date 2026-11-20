@@ -2851,6 +2851,30 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
               "it opens once the job is adopted, with no job beside it, the plug-in the job found listed");
         service.settleThen([&] { ++opened; });
         check(opened == 2, "with no job running, an open runs at once");
+        // The open runs between jobs: after the running job's adoption, before the job queued behind it.
+        service.request(DiscoveryMode::Incremental);
+        jobBesideOpen = true;
+        service.settleThen([&] {
+            ++opened;
+            jobBesideOpen = service.running();
+        });
+        service.request(DiscoveryMode::Incremental); // queued behind the running one, which goes on
+        finish(Outcome::Published);
+        service.poll();
+        check(opened == 3 && !jobBesideOpen && service.running(), "the open runs before the queued job starts");
+        finish(Outcome::Published);
+        service.poll();
+        // An open waiting on a job that a Rescan stops waits for the Refresh, which publishes what it finds.
+        service.request(DiscoveryMode::Incremental);
+        service.settleThen([&] { ++opened; });
+        service.request(DiscoveryMode::Refresh);
+        finish(Outcome::Cancelled);
+        service.poll();
+        check(opened == 3 && service.running() && started.back() == DiscoveryMode::Refresh,
+              "the stopped job published nothing: the open waits for the Refresh");
+        finish(Outcome::Published);
+        service.poll();
+        check(opened == 4 && !service.running(), "and runs once the Refresh is adopted");
         // A Rescan whose stop comes too late (the Incremental had already finished): the Incremental is
         // adopted as it ended, and the Refresh follows once, not twice.
         bool acceptCancel = false;
@@ -2906,7 +2930,7 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         finish(Outcome::Cancelled);
         service.poll();
         service.request(DiscoveryMode::Refresh);
-        check(cancelled == last && !service.running() && opened == 2 && started.back() == DiscoveryMode::Incremental,
+        check(cancelled == last && !service.running() && opened == 4 && started.back() == DiscoveryMode::Incremental,
               "Quit cancels the job; nothing starts after it and no waiting open runs");
         check(changes > 0, "the owner was told of each change");
     }

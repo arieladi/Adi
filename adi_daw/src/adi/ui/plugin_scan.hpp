@@ -249,8 +249,9 @@ class PluginCatalogueService {
         }
         state_.candidates = state_.completed = 0;
         // Between jobs: the opens that waited run now, with no job beside them, before the next job
-        // starts. A stale job's opens wait for its run on the new folders instead.
-        if (end.outcome != O::Stale)
+        // starts. A stale job's opens wait for its run on the new folders instead, and those of a job
+        // stopped for a Refresh wait for that Refresh: the stopped job published nothing.
+        if (end.outcome != O::Stale && !(quiet && end.outcome == O::Cancelled))
             runOpens();
         if (pending_ && !stopped_) {
             startQueued();
