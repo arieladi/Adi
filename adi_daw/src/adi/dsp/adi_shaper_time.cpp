@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/adi_shaper_time.hpp"
 #include <algorithm>
+#include <cmath>
 #include <new>
 
 namespace adi::dsp {
+namespace {
+float timeSample(float sample) noexcept {
+    return std::isfinite(sample) ? sample : 0.0f;
+}
+} // namespace
 
 bool AdiShaperTime::prepare() noexcept {
     if (!history_) {
@@ -33,7 +39,7 @@ bool AdiShaperTime::processFixedBlock(const float* inL, const float* inR, float*
     if (age > valid_ || frames > capacity - next_ || frames > capacity - read) return false;
     for (std::size_t i = 0; i < frames; ++i) {
         const Frame past = history_[read + i];
-        history_[next_ + i] = {inL[i], inR[i]};
+        history_[next_ + i] = {timeSample(inL[i]), timeSample(inR[i])};
         outL[i] = past[0];
         outR[i] = past[1];
     }
@@ -50,7 +56,7 @@ void AdiShaperTime::processStereo(float& left, float& right, double delayFrames,
     }
     constexpr std::size_t mask = capacity - 1;
     const auto current = next_;
-    history_[current] = {left, right};
+    history_[current] = {timeSample(left), timeSample(right)};
     next_ = (current + 1) & mask;
     valid_ = std::min(valid_ + 1, capacity);
     if (delayFrames == 0.0) return;
