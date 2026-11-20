@@ -561,18 +561,25 @@ void Session::resolveNewRows(const Store& store) {
                      : candidate.resolvedFormat.empty() && candidate.resolvedUid.empty());
         };
 
-        auto index = mapped->second;
-        if (Entry& previous = entries_[index]; !compatible(previous)) {
-            // The numeric ID is still present, so retireDepartedRows cannot
-            // distinguish this displaced instance from its replacement.
+        const auto previousIndex = mapped->second;
+        const auto retireDisplaced = [&] {
+            // The numeric row remains present, so retireDepartedRows cannot
+            // distinguish these incarnations. Reacquire after a fresh load,
+            // which can grow entries_.
+            auto& previous = entries_[previousIndex];
             if (!previous.retired) {
                 previous.retired = true;
                 previous.trackId = 0;
                 ++stats_.retired;
             }
+        };
+
+        auto index = previousIndex;
+        if (!compatible(entries_[index])) {
             const auto retained = std::find_if(entries_.rbegin(), entries_.rend(), compatible);
             if (retained == entries_.rend()) {
                 resolveOne(store, row);
+                retireDisplaced();
                 continue;
             }
             index = static_cast<std::size_t>(retained.base() - entries_.begin() - 1);
@@ -582,8 +589,11 @@ void Session::resolveNewRows(const Store& store) {
         if (entry.retired && entry.parked) {
             // Unfreeze restores saved state instead of old voices and delays.
             resolveOne(store, row);
+            retireDisplaced();
             continue;
         }
+        if (index != previousIndex)
+            retireDisplaced();
         if (entry.retired) {
             // Undo and Redo revive the retained state for the restored identity.
             entry.retired = false;

@@ -631,7 +631,7 @@ bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, st
                 return false;
             }
         }
-        // Windows can paste before a device in a nested chain or at the end of
+        // A paste can go before a device in a nested chain or at the end of
         // the track chain. The first paste can also create that track chain.
         std::int64_t chain = 0;
         if (before) {
