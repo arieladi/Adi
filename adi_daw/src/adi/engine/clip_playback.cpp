@@ -538,7 +538,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
             const auto beginNs = row.posNs.value_or(0);
-            const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.secondsToTicks(static_cast<double>(beginNs)*1e-9);
+            // Project stored nanoseconds as the edit clock and Snapshot do: an
+            // integer nanosecond rounded below its originating tick maps back to it.
+            const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.storedNanosecondsToTicks(beginNs);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
             auto tickSpanSeconds=[&](std::int64_t ticks){
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
@@ -580,7 +582,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(beginNs<0 || nanos<0 || beginNs>std::numeric_limits<std::int64_t>::max()-nanos)
                     throw std::runtime_error("invalid clip duration");
                 const auto endNs = beginNs + nanos;
-                endTicks=tempo.secondsToTicks(static_cast<double>(endNs)*1e-9);
+                endTicks=tempo.storedNanosecondsToTicks(endNs);
                 clip->start=samplesAtNs(beginNs,clip->rate);
                 clip->end=samplesAtNs(endNs,clip->rate);
             }
