@@ -645,6 +645,115 @@ void importWithChoices(const std::filesystem::path &dir) {
     doc->release();
 }
 // The extremes a waveform column draws (`peakSpan`): always those of real bins.
+// Arrangement Record (MX-09; Live 12 manual 21.1): the armed audio track records from the device's
+// input through the document's callback; stopped, the take lands on the timer as one undo step, its
+// samples the input's, and Undo takes it back. Nothing armed, only MIDI armed and a device with no
+// inputs are refused with a reason.
+void arrangementRecord(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
+    check(doc != nullptr, "a project to record into");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    const auto armed = [&](std::int64_t id, bool on) {
+        OpRequest r;
+        r.opType = "track.setArm";
+        r.payload = {{"id", id}, {"armed", on}};
+        return doc->ops().submit(r).ok && doc->synchronise();
+    };
+    check(!doc->startRecording(0, 2, false) && doc->error() == "Arm a track to record into it.",
+          "with nothing armed, Record says to arm a track");
+    check(armed(2, true) && doc->recordStates().at(2).armed, "a MIDI track armed, as the rows say");
+    check(!doc->startRecording(0, 2, false) && doc->error().find("live MIDI input") != std::string::npos,
+          "with only MIDI armed, Record says MIDI waits for the engine's live input");
+    check(armed(2, false) && armed(4, true), "3 Audio armed instead");
+    check(!doc->startRecording(0, 0, false) && doc->error().find("no inputs") != std::string::npos,
+          "a device with no inputs is refused");
+    const auto clipsBefore = doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt();
+    check(doc->startRecording(0, 1, false) && doc->recording(), "Record starts with one input");
+    std::array<float, 64> in{}, l{}, r{};
+    const float *inputs[]{in.data()};
+    float *outputs[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    for (int b = 0; b < 32; ++b) {
+        for (int i = 0; i < 64; ++i)
+            in[static_cast<std::size_t>(i)] = static_cast<float>((stream + i) % 17) / 32.f - .25f;
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    }
+    check(doc->mailbox().playing(), "the Record command started the transport");
+    doc->stopRecording();
+    check(!doc->recording() && doc->landingTake(), "stopped, the take is landing");
+    std::optional<ui::ProjectDocument::TakeLanded> landed;
+    for (int i = 0; i < 5000 && !landed; ++i) {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+        doc->tick(i);
+        landed = doc->takeLanded();
+        if (!landed)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (landed && !landed->ok)
+        std::printf("take: %s\n", landed->message.c_str());
+    check(landed && landed->ok && landed->clips.size() == 1 && landed->message == "Recorded one take.",
+          "the take lands on the timer, once");
+    check(!doc->takeLanded(), "and is reported once");
+    auto &db = doc->store().db();
+    check(db.execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore + 1 && landed &&
+              db.execAndGet("SELECT track_id FROM clips WHERE id=" + std::to_string(landed->clips.front())).getInt64() == 4,
+          "one clip on the armed track");
+    const auto *track = doc->view().current()->findTrack(4);
+    check(track != nullptr && track->clips.size() == 1 && track->clips.front()->name == "3 Audio",
+          "the clip is named after its track, and the view shows it");
+    check(doc->ops().canUndo() && doc->ops().undo().ok && doc->synchronise() &&
+              db.execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
+          "one Undo takes the whole take back");
+    // A capture that ends on its own while recording (here a locate mid-take: a discontinuity) ends the
+    // recording on the next tick, says why, and leaves no private take behind.
+    const auto before = std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{});
+    check(doc->startRecording(0, 1, true) && doc->recording(), "Record while playing");
+    for (int b = 0; b < 4; ++b) {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    }
+    doc->mailbox().post(ui::TransportMailbox::Command::Locate, 48000);
+    std::optional<ui::ProjectDocument::TakeLanded> failed;
+    for (int i = 0; i < 5000 && !failed; ++i) {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+        doc->tick(i);
+        failed = doc->takeLanded();
+        if (!failed)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(failed && !failed->ok && failed->message.find("jumped") != std::string::npos && !doc->recording(),
+          "a locate mid-take ends the recording at once and says the take was not kept");
+    check(std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{}) == before,
+          "and leaves no private take in the project's folder");
+    // The device stopped while a take lands: settled when the document is told the driver is gone.
+    check(doc->startRecording(0, 1, true), "Record again");
+    for (int b = 0; b < 4; ++b) {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    }
+    doc->release();
+    doc->settleRecording();
+    const auto settled = doc->takeLanded();
+    check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
+          "a take whose device stopped is settled into the project, not lost");
+}
 void peakSpans() {
     media::MediaPeaks p;
     p.channels = 2;
@@ -694,6 +803,10 @@ int main(int argc, char **argv) {
         return 0;
     }
     peakSpans();
+    {
+        test::TempDirectory recordDir("ui_document", "record");
+        arrangementRecord(recordDir.path());
+    }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
     Tone tone;

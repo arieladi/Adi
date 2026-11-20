@@ -8,6 +8,7 @@
 #include <cmath>
 namespace adi::ui {
 namespace {
+constexpr float matchDisplayDb = 24.f;
 bool focusable(const engine::TrackNode &t) {
     return t.kind != "master" && t.kind != "main" && t.kind != "reference" &&
            (!t.role || *t.role != "reference");
@@ -53,13 +54,17 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scope.onClick = [this] {
         auto retired = scope.getToggleState() ? SharedAnalysis::BarScopeLease{} : std::move(barScope_);
         if (!scope.getToggleState()) clearBarScopeData();
+        updateMatchControls();
         redraw_ = true;
         repaint();
     };
+    learnMatch.setTooltip("Capture the selected channel's spectrum difference toward the starred channel. Plays unchanged.");
+    learnMatch.onClick = [this] { learnMatchPreview(); };
+    clearMatch.onClick = [this] { clearMatchPreview(); updateMatchControls(); };
     scroll_.setViewedComponent(&strip_, false);
     scroll_.setScrollBarsShown(false, true);
-    for (auto *c : std::array<juce::Component *, 10>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
-                                                     &edit, &scope, &scroll_})
+    for (auto *c : std::array<juce::Component *, 12>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
+                                                     &edit, &scope, &learnMatch, &clearMatch, &scroll_})
         addAndMakeVisible(*c);
     refreshControls();
 }
@@ -179,6 +184,99 @@ void MixFocus::refreshControls() {
         button->setEnabled(t != nullptr);
     mute.setToggleState(t && t->muted, juce::dontSendNotification);
     solo.setToggleState(t && t->soloed, juce::dontSendNotification);
+    updateMatchControls();
+}
+std::array<const MixFocus::Member *, 2> MixFocus::matchMembers() const noexcept {
+    std::array<const Member *, 2> pair{};
+    if (!main_ || main_ == active_) return pair;
+    for (const auto &member : members_) {
+        if (member.id == main_) pair[0] = &member;
+        if (member.id == active_) pair[1] = &member;
+        if (pair[0] && pair[1]) break;
+    }
+    return pair;
+}
+bool MixFocus::canLearnMatch(const std::array<const Member *, 2> &pair) const noexcept {
+    return isShowing() && !suspended_ && !scope.getToggleState() && scopePlaying_ &&
+           alignment_ == Alignment::Ready && pair[0] && pair[1] && pair[0]->data && pair[1]->data &&
+           focusMatchCompatible(*pair[0]->data, *pair[1]->data) && matchCaptureIsCurrent(*pair[0]->data);
+}
+bool MixFocus::matchCaptureIsCurrent(const SharedAnalysis::Result &capture) const noexcept {
+    const auto locateRevision = root_.settledLocateRevision();
+    return locateRevision && capture.transportRevision >= *locateRevision;
+}
+void MixFocus::clearMatchPreview() {
+    if (!match_) return;
+    match_.reset();
+    matchBroker_.reset();
+    matchPath_.clear();
+    matchCaption_.clear();
+    repaint();
+}
+void MixFocus::updateMatchControls() {
+    const auto pair = matchMembers();
+    if (match_) {
+        const auto replaced = [](const Member &member, std::uint64_t generation) {
+            if (member.data) return member.data->generation != generation;
+            return member.lease.available() && member.lease.sourcePosition().generation != generation;
+        };
+        if (!pair[0] || !pair[1] || match_->main != pair[0]->id || match_->target != pair[1]->id ||
+            replaced(*pair[0], match_->mainGeneration) || replaced(*pair[1], match_->targetGeneration))
+            clearMatchPreview();
+    }
+    const bool together = !scope.getToggleState();
+    learnMatch.setVisible(together);
+    clearMatch.setVisible(together && match_.has_value());
+    learnMatch.setEnabled(canLearnMatch(pair));
+}
+void MixFocus::learnMatchPreview() {
+    const auto pair = matchMembers();
+    if (!canLearnMatch(pair)) return;
+    auto owner = broker_.lock();
+    if (!owner || !owner->active() || root_.sharedAnalysis != owner || !root_.playing()) return;
+    const SnapshotReader reader(root_.current());
+    const auto &transport = reader.transport();
+    if (transport.loopEnabled && transport.hasLoop) return;
+    for (const auto *member : pair)
+        if (member->lease.sourcePosition().generation != member->data->generation) return;
+    auto learned = focusReadMatch(*pair[0]->data, *pair[1]->data);
+    if (!learned) return;
+    const auto *main = reader.findTrack(learned->main);
+    const auto *target = reader.findTrack(learned->target);
+    if (!main || !target) return;
+    auto caption = " / Match " + juce::String::fromUTF8(target->name.c_str()) + " toward " +
+                   juce::String::fromUTF8(main->name.c_str()) + " (+/-" +
+                   juce::String(static_cast<int>(matchDisplayDb)) + " dB)";
+    if (!matchCaptureIsCurrent(*pair[0]->data)) return;
+    matchCaption_ = std::move(caption);
+    match_ = std::move(learned);
+    matchBroker_ = owner;
+    updateMatchControls();
+    rebuildMatchPath();
+    repaint();
+}
+void MixFocus::rebuildMatchPath() {
+    matchPath_.clear();
+    if (!match_ || plot_.isEmpty()) return;
+    bool drewPoint = false;
+    for (std::size_t bin = 1; bin < match_->deltaDb.size(); ++bin) {
+        const auto db = match_->deltaDb[bin];
+        if (!db) {
+            drewPoint = false;
+            continue;
+        }
+        const double hz = static_cast<double>(bin) * match_->sampleRate / match_->fftSize;
+        const float x = plot_.getX() + static_cast<float>(std::log(hz / 20.) / std::log(1000.)) * plot_.getWidth();
+        const float y = plot_.getCentreY() - std::clamp(*db / matchDisplayDb, -1.f, 1.f) * plot_.getHeight() / 2.f;
+        if (drewPoint) {
+            matchPath_.lineTo(x, y);
+        } else {
+            // A single measurable bin can occur with narrow tones.
+            matchPath_.startNewSubPath(x, y);
+            matchPath_.lineTo(std::min(x + look::hairline, plot_.getRight()), y);
+        }
+        drewPoint = true;
+    }
 }
 void MixFocus::hear(bool group) {
     if (!active_)
@@ -223,6 +321,7 @@ void MixFocus::drop() {
     scopeHasTrace_ = false;
     masked_.clear();
     broker_.reset();
+    updateMatchControls();
     redraw_ = true;
 }
 void MixFocus::dropIfActive() {
@@ -350,6 +449,10 @@ void MixFocus::frame(const SnapshotReader &reader) {
         return;
     }
     const auto broker = root_.sharedAnalysis;
+    if (match_ && (matchBroker_.lock() != broker || !broker || !broker->active())) {
+        clearMatchPreview();
+        updateMatchControls();
+    }
     if (broker != broker_.lock()) {
         const auto nextPose = membershipPose_ + 1;
         drop();
@@ -428,6 +531,10 @@ void MixFocus::frame(const SnapshotReader &reader) {
         }
     }
     if (broker && !members_.empty()) broker->requestFrame();
+    const auto locateRevision = scopeShown ? std::nullopt : root_.settledLocateRevision();
+    if (redraw_ || matchLocateRevision_ != locateRevision)
+        updateMatchControls();
+    matchLocateRevision_ = locateRevision;
     if (redraw_) {
         if (!scope.getToggleState()) rebuildPlot();
         rebuildScope();
@@ -734,11 +841,14 @@ void MixFocus::resized() {
     sumLabel_ = titleRow.getWidth() >= 4 * look::mixFocusSourceWidth
                     ? titleRow.removeFromRight(2 * look::mixFocusSourceWidth) : juce::Rectangle<int>{};
     auto actions = r.removeFromBottom(buttonRow);
-    const auto w = std::min(chipWidth, actions.getWidth() / 7);
+    const auto w = std::min(chipWidth, actions.getWidth() / 9);
     for (auto *button : {&star, &mute, &solo, &hearOne, &hearAll, &edit})
         button->setBounds(actions.removeFromLeft(w).reduced(hairline));
     scope.setBounds(actions.removeFromLeft(w).reduced(hairline));
+    learnMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
+    clearMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
     plot_ = r.reduced(plotInset).toFloat();
+    rebuildMatchPath();
     for (auto &m : members_)
         m.spectrumChanged = true;
     redraw_ = true;
@@ -764,6 +874,7 @@ void MixFocus::paint(juce::Graphics &g) {
             "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
         if (sumShown && !sumOverRange) title += "   Sum overlay";
     }
+    if (!scopeShown && match_) title += matchCaption_;
     const int titleWidth = sumLabel_.isEmpty() ? plot.getWidth() : std::max(0, sumLabel_.getX() - plot.getX());
     g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
                std::max(0, plot.getY() - scroll_.getBottom()), juce::Justification::centredLeft);
@@ -829,6 +940,11 @@ void MixFocus::paint(juce::Graphics &g) {
     for (const auto &m : members_) {
         g.setColour(m.colour);
         g.strokePath(m.path, juce::PathStrokeType(m.id == main_ ? look::heavyLine : look::line));
+    }
+    if (match_) {
+        g.setColour(look::accent);
+        g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
+        g.strokePath(matchPath_, juce::PathStrokeType(look::heavyLine));
     }
 }
 } // namespace adi::ui

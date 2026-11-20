@@ -152,7 +152,9 @@ class DirtySet {
 // One UI producer and one driver consumer. No UI ever reads/writes Transport.
 class TransportMailbox {
   public:
-    enum class Command { Play, Stop, Locate };
+    // Record (MX-09) starts playback as a recording start: the saved song start or the insert marker
+    // (`sample` holds the insert marker's tick), after the saved Count-In.
+    enum class Command { Play, Stop, Locate, Record };
     bool hasRoom(std::size_t count = 1) const noexcept {
         return count <= queue_.size() &&
                write_.load(std::memory_order_relaxed) - read_.load(std::memory_order_acquire) <=
@@ -167,22 +169,38 @@ class TransportMailbox {
         return true;
     }
     void drain(engine::Transport &transport) noexcept {
+        drain(transport, [&transport](std::int64_t) noexcept { transport.play(true); });
+    }
+    // `record(insertTick)` starts a recording: the driver's `RenderBlock::startPlayback(tick, true)`.
+    template <class Record> void drain(engine::Transport &transport, Record &&record) noexcept {
         auto r = read_.load(std::memory_order_relaxed);
         const auto w = write_.load(std::memory_order_acquire);
         while (r != w) {
             const auto item = queue_[r % queue_.size()];
-            if (item.command == Command::Locate)
+            if (item.command == Command::Locate) {
                 transport.locate(item.sample);
-            else
+                locateRevision_.store(transport.revision(), std::memory_order_relaxed);
+            } else if (item.command == Command::Record) {
+                record(item.sample);
+            } else {
                 transport.play(item.command == Command::Play);
+            }
             ++r;
         }
         publish(transport);
         read_.store(r, std::memory_order_release);
     }
     void publish(const engine::Transport &t) noexcept {
-        playing_.store(t.playing(), std::memory_order_relaxed);
+        // A Count-In before a recording is playing for the window: Space or Stop then stops it.
+        playing_.store(t.playing() || t.countInRemaining() > 0, std::memory_order_relaxed);
         position_.store(t.position(), std::memory_order_relaxed);
+    }
+    // Only the UI producer calls this. The read index acknowledges the
+    // applied Locate, including its revision, before a capture can use it.
+    [[nodiscard]] std::optional<std::uint64_t> settledLocateRevision() const noexcept {
+        if (write_.load(std::memory_order_relaxed) != read_.load(std::memory_order_acquire))
+            return std::nullopt;
+        return locateRevision_.load(std::memory_order_relaxed);
     }
     // UI producer sees the last queued intent until the driver acknowledges it.
     bool desiredPlaying() const noexcept {
@@ -191,7 +209,7 @@ class TransportMailbox {
         for (auto i = w; i != r;) {
             const auto c = queue_[--i % queue_.size()].command;
             if (c != Command::Locate)
-                return c == Command::Play;
+                return c == Command::Play || c == Command::Record;
         }
         return playing();
     }
@@ -210,5 +228,6 @@ class TransportMailbox {
     std::atomic<bool> playing_{false};
     std::atomic<double> sampleRate_{0};
     std::atomic<std::int64_t> position_{0};
+    std::atomic<std::uint64_t> locateRevision_{0};
 };
 } // namespace adi::ui

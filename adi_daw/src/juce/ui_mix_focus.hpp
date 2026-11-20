@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/dsp/masking.hpp"
-#include "adi/ui/focus_scope.hpp"
+#include "adi/ui/focus_match.hpp"
 #include "ui_look.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 namespace adi::ui {
@@ -28,7 +28,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void paint(juce::Graphics &) override;
     juce::ComboBox available;
     juce::TextButton add{"+"}, star{"Set main"}, mute{"Mute"}, solo{"Solo"}, hearOne{"Hear track"},
-        hearAll{"Hear all"}, edit{"Edit chain"};
+        hearAll{"Hear all"}, edit{"Edit chain"}, learnMatch{"Learn Match"}, clearMatch{"Clear Match"};
     juce::ToggleButton scope{"Scope"};
     std::function<void(std::int64_t)> onEdit;
     std::function<void()> onMembersChanged;
@@ -66,6 +66,13 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void clearScopeSum();
     void rebuildScope();
     void refreshControls();
+    std::array<const Member *, 2> matchMembers() const noexcept;
+    bool canLearnMatch(const std::array<const Member *, 2> &) const noexcept;
+    bool matchCaptureIsCurrent(const SharedAnalysis::Result &) const noexcept;
+    void updateMatchControls();
+    void learnMatchPreview();
+    void rebuildMatchPath();
+    void clearMatchPreview();
     AdiRootComponent &root_;
     juce::Viewport scroll_;
     juce::Component strip_;
@@ -80,6 +87,11 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::shared_ptr<const SharedAnalysis::BarScopeResult> shownBar_;
     std::optional<FocusSumReading> sum_;
     std::array<juce::Path, 2> scopeSumPaths_;
+    std::optional<FocusMatchReading> match_;
+    std::optional<std::uint64_t> matchLocateRevision_;
+    std::weak_ptr<SharedAnalysis> matchBroker_;
+    juce::Path matchPath_;
+    juce::String matchCaption_;
     std::vector<Member> members_;
     std::vector<std::int64_t> choices_;
     std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;

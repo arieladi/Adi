@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/shared_analysis.hpp"
+#include "adi/ui/focus_match.hpp"
 #include "adi/ui/focus_scope.hpp"
 #include "adi/dsp/spectrum_average.hpp"
 #include "adi/engine/transport.hpp"
@@ -531,6 +532,58 @@ void focusScopeFlatPath() {
     const auto quiet = capture(sloped);
     check(quiet.second == 1 && quiet.first == scalar(sloped) && quiet.first.size() == sloped.size(),
           "subpixel nonflat motion still emits every original vertex");
+}
+void focusMatchWindows() {
+    using namespace adi::ui;
+    SharedAnalysis::Result a;
+    a.request.track = 1;
+    a.request.fftSize = 1024;
+    a.sampleRate = 48000;
+    a.coherentGain = .5;
+    a.hopSize = 256;
+    a.outputs = SharedAnalysis::Spectrum;
+    a.advancing = true;
+    a.firstStamp = 768;
+    a.transportRevision = 7;
+    a.generation = 10;
+    a.windowSerial = 5;
+    a.binsDbfs.assign(513, adi::dsp::kDbFloor);
+    auto b = a;
+    b.request.track = 2;
+    b.generation = 20;
+    a.binsDbfs[0] = b.binsDbfs[0] = -12.f;
+    a.binsDbfs[20] = -18.f; b.binsDbfs[20] = -24.f;
+    a.binsDbfs[22] = -30.f; b.binsDbfs[22] = -27.f;
+    b.binsDbfs[29] = -24.f;
+    a.binsDbfs[50] = std::numeric_limits<float>::quiet_NaN(); b.binsDbfs[50] = -6.f;
+    a.binsDbfs[512] = b.binsDbfs[512] = -15.f;
+    const auto match = focusReadMatch(a, b);
+    check(match && match->main == 1 && match->target == 2 && match->mainGeneration == 10 &&
+              match->targetGeneration == 20 && match->deltaDb[20] == 6.f && match->deltaDb[22] == -3.f,
+          "Focus Match proposes the signed measured difference toward Main");
+    check(match && !match->deltaDb[0] && !match->deltaDb[29] && !match->deltaDb[50] && !match->deltaDb[512],
+          "DC, censored, nonfinite and beyond-20-kHz bins are omitted from the preview");
+    const auto swaps = focusReadMatch(b, a);
+    check(swaps && swaps->deltaDb[20] == -6.f && swaps->deltaDb[22] == 3.f,
+          "changing Match direction reverses the result");
+    const auto reject = [&](const auto &edit) {
+        auto different = b;
+        edit(different);
+        return !focusMatchCompatible(a, different) && !focusReadMatch(a, different);
+    };
+    check(reject([](auto &r) { ++r.firstStamp; }) &&
+          reject([](auto &r) { ++r.transportRevision; }) &&
+          reject([](auto &r) { r.advancing = false; }) &&
+          reject([](auto &r) { r.sampleRate = 44100; }),
+          "Focus Match requires exactly simultaneous playing windows at one rate");
+    check(reject([](auto &r) { r.request.track = 1; }) &&
+          reject([](auto &r) { r.request.point = ScopePoint::ChainInput; }) &&
+          reject([](auto &r) { r.coherentGain = .625; }) &&
+          reject([](auto &r) { r.nonFiniteSamples = 1; }) &&
+          reject([](auto &r) { r.outputs = SharedAnalysis::Scope; }),
+          "same-source, unequal calibrated data, or sanitised input cannot be captured as a Match");
+    std::fill(b.binsDbfs.begin(), b.binsDbfs.end(), adi::dsp::kDbFloor);
+    check(!focusReadMatch(a, b), "no measurable overlap leaves Match empty");
 }
 void parkedSilence() {
     Fixture f;
@@ -1950,7 +2003,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
