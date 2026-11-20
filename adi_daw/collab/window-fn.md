@@ -40,8 +40,62 @@ until then a need is named by its item.
 | Reserve: one N row. The input-monitor node of MX-09: a live input per monitored track, from its input (channels 1/2 until `input_ref` has its grammar, MX-25), heard per `monitor_mode` (In always; Auto while armed and no clip plays; Off never) | engine (ADR-0248 d6, item 4) | MX-09: the director hears what he records | Arm and the switch store their choice; nothing is heard of the input; Record records |
 | Reserve: one N row. A failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today: `recording::prepareCommit` takes only a clean result) | engine (`src/adi/recording_commands.*`) | MX-09: a take is not lost to one click on the timeline | the take is dropped and the Status Bar says why, at once |
 | Reserve: one N row. Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | win (AWAITING 20) and the engine | MX-09: a new audio track should monitor as Live's does once the input-monitor node exists | the switch shows Off on New's tracks, as stored |
+| Reserve: one N row. After a discovery job, an ordinary project open should still probe a plug-in's saved path when the catalogue lacks it, as it does before any job. Today `managedDiscovery_` is set by the first `startDiscovery` and never cleared, so `makeVst3` and `makeClap` answer "needs discovery" for every miss for the rest of the run (and `hydrateCatalogue` returns at once). A proposal: suppress the hint only while a job is in flight (`discoveryJob_`) | engine-win (`src/juce/juce_device_loader.cpp`, N58) | DF-W34: a project that names a plug-in installed since the last scan loads it on open, as before the window started discovery at launch | an open while a job runs waits for its adoption (engine-win's handoff); an open with no job running loads catalogue hits only |
 
 ---
+
+## 2026-11-20, window-fn — DF-W34 on N58: the Browser's plug-ins through the loader's discovery jobs (PR requested)
+
+N58 (engine-win's catalogue API) and the Settings' separate VST3 and CLAP search roots are on main, so
+the scan moves onto them, as engine-win's log asked. This branch replaces `window-fn/plugin-scan`: it is
+that branch merged with main and reworked. The window's own worker, its gate in front of the loader
+(`Hold`) and its folder plumbing are gone.
+
+- **The service.** `PluginCatalogueService` (`adi/ui/plugin_scan.hpp`, no JUCE) runs on the message
+  thread, over a `DiscoveryPort` that `ui_main.cpp` adapts to `startDiscovery`, `discoveryProgress`,
+  `adoptDiscovery`, `cancelDiscovery` and `catalogue()`. The app's 20 ms timer polls it. It never scans
+  and never waits.
+- **The jobs.** At launch the first project's open reads the stored catalogue (the loader's read-only
+  hydration, already on main), and the Browser lists it at once. Then an Incremental finds what was
+  installed or removed since. Engine-win suggested CacheOnly first; a separate CacheOnly job would only
+  make the first open wait. Rescan runs a Refresh, and stops a running Incremental first, since the
+  Refresh covers it. A change to the Settings' plug-in folders runs an Incremental; a running job left
+  stale runs again.
+- **What is shown.** The Browser's list comes from `catalogue()`. Each VST3 has its kind from the
+  catalogue's instrument flag (N58), named as `device::identityOf` names it. The status line ("Scanning
+  plug-ins: 12 of 150 files…") heads the list for the whole job. A count changes only that line, so the
+  selection and scroll stay. A failed or user-cancelled job keeps the list and names why it stopped; a job
+  the loader would not start is named too, on the Settings page as well.
+- **Opens.** Once a job has run, the loader resolves plug-ins from the catalogue alone (see the needs
+  table). So a project opened while a job runs waits for that job's adoption, then finds what it found.
+  The Status Bar says "Opening X once the plug-in scan has finished…". A stale job's opens wait for its
+  rerun; those of a job a Rescan stopped wait for the Refresh. Opens run between jobs, before the next job
+  starts. A refused open clears its line.
+
+**Run.** The window's 27 suites (100%). `adi_ui_shell_tests` 2836 checks, 0 failures: the service over a
+stand-in port (startup listing, progress, adoption, Rescan stopping an Incremental, a stop refused by a
+finished job, Stale, opens waiting and running between jobs, a failed job, a refused start, Quit), and the
+Browser's status line keeping the selection. The new Rescan test fails on the previous rule. The app ran
+headless under a virtual display, with a CLAP fixture folder set in the Settings: the Incremental started,
+was adopted Published, and the catalogue held the fixture's two plug-ins. There were two review rounds,
+each finding verified by a skeptic. The first confirmed 13 findings (one root cause: stopping a job for an
+open gained nothing; plus the Browser's selection, the progress line, Rescan's refusal and the waiting
+line), all fixed. The second confirmed one (the Rescan case above, reported twice) and a test gap, both
+fixed.
+
+**For engine-win, through win.** The needs-table row above: the loader's saved-path probe stays off for
+the whole run after the first discovery job.
+
+**For win.** `adi_play_render_tests` does not build on GCC 13 with warnings as errors:
+`tests/scanner_session_reopen.hpp:208`, "loop variable '<structured bindings>' creates a copy"
+(`-Werror=range-loop-construct`; `const auto& [position,count]` is the fix). It came from main (`3bfd0d5c`),
+and it is not this seat's file.
+
+**PR requested** — `window-fn/plugin-scan-n58` at `423f1027`, on main `909ba114` (merged): "adi_daw:
+DF-W34 on N58: the Browser's plug-ins through the loader's discovery jobs". It replaces
+`window-fn/plugin-scan` and depends on #676 (`window/plugins-browser`), which it contains. The DF-W9 load
+branch (`window-fn/plugin-load`) was built on `window-fn/plugin-scan`'s gate; it is brought onto this
+branch next.
 
 ## 2026-11-20, window-fn — DF-W35: a send's Enable Send tick and action under one rule (PR requested)
 
