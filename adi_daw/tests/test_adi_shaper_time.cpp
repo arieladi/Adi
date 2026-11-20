@@ -54,6 +54,17 @@ int main() {
           && right == std::array<float, 8>{11, 12, 1, 2, 3, 4, 5, 6},
           "fixed block truncates age and captures both input channels before overwriting them");
     check(read(0, 0, 1) == std::array{8.f, -2.f}, "moving read follows fixed block without losing input");
+    time.reset();
+    (void)read(std::numeric_limits<float>::infinity(), -.5f, 0.);
+    check(read(.125f, .25f, 1.) == std::array{0.f, -.5f}, "moving Time history replaces a bad sample on one channel");
+    time.reset();
+    (void)read(.125f, .5f, 0.);
+    (void)read(.25f, .75f, 0.);
+    std::array bad{std::numeric_limits<float>::quiet_NaN(), .5f};
+    std::array finite{-.75f, -.5f};
+    check(time.processFixedBlock(bad.data(), finite.data(), bad.data(), finite.data(), bad.size(), 2.),
+          "fixed Time history accepts an in-place block once prepared");
+    check(read(.25f, .125f, 2.) == std::array{0.f, -.75f}, "fixed Time history replaces a bad sample on one channel");
     check(time.prepare(), "reprepare");
     check(read(0.f,0.f,1.) == std::array{0.f,0.f}, "reprepare invalidates previous storage");
     return failures == 0 ? 0 : 1;
