@@ -246,8 +246,13 @@ bool ProjectDocument::synchronise() {
             return false;
         }
         realisedGeneration_ = view_.generation();
-        // Reconcile the capture against the live instance. A retained retiree
-        // may share the persisted row ID with its current replacement.
+        // A retained retiree can share its row ID with a newer instance.
+        // Detach by ID only while the retiree still owns the session's binding.
+        for (std::size_t i = 0; i < session_.entryCount(); ++i) {
+            const auto &entry = session_.entryAt(i);
+            if (entry.retired && session_.entryFor(entry.deviceId) == &entry)
+                parameterOps_.detach(entry.deviceId);
+        }
         parameterOps_.attachSession(session_);
         analysis_->refreshSources();
         error_.clear();
