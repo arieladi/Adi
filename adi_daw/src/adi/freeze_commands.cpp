@@ -2,6 +2,7 @@
 #include "adi/freeze_commands.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/engine/timeline_clips.hpp"
 #include "adi/freeze_fingerprint.hpp"
 #include "adi/freeze_groups.hpp"
 #include "adi/freeze_state.hpp"
@@ -162,7 +163,7 @@ FreezeEdit prepareFreeze(Store &store, render::FreezeAudioCapture capture, std::
                 files->requests.push_back(std::move(mediaRequest));
                 files->files.push_back({source, target, hash.hex});
             }
-            for (const auto &clip : model.clips)
+            for (const auto &clip : engine::timelineClips(model))
                 if (scoped.contains(clip.trackId)) {
                     if (clip.timeBase == 0 &&
                         clip.posTicks.value_or(0) >
