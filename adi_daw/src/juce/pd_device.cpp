@@ -170,6 +170,7 @@ PdDevice::PdDevice(std::unique_ptr<PdPatchEngine> engine, DeviceIdentity id)
         return;
     }
     loaded_ = engine_->open(latency_, openError_);
+    wantsPosition_ = loaded_ && engine_->wantsPosition();
 }
 
 PdDevice::~PdDevice() {

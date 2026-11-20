@@ -193,6 +193,9 @@ public:
     [[nodiscard]] bool isNative() const noexcept { return native_ != nullptr; }
 
     /// Zero for native DSP and WholeBlocks; one block for prepared Buffered Pd.
+    /// A patch whose transport receiver is bound (it has [adi.transport]), or
+    /// a native core that uses the graph's position. Decided in open().
+    [[nodiscard]] bool wantsPosition() const noexcept override { return wantsPosition_; }
     [[nodiscard]] std::int32_t adapterLatencySamples() const noexcept override {
         return adapterLatency_;
     }
@@ -394,7 +397,21 @@ private:
     std::unique_ptr<NativePdDevice> native_;
     PdLatencyReceiver* nativeLatency_ = nullptr;
     bool nativePrepared_ = false;
-    void processPdAudio(const engine::NodeIo& io) noexcept;
+    /// `segmentFrame`: how far into the graph's segment this piece starts,
+    /// so a tick's position is reckoned from the segment's deviceTransport.
+    void processPdAudio(const engine::NodeIo& io, std::int32_t segmentFrame) noexcept;
+    /// The exact quarter-note position of a Pd tick's first input sample, when
+    /// the graph gave one (the eighth [adi.transport] field).
+    struct TickStart {
+        double quarterNotes = 0.0;
+        double bpm = 120.0;      ///< the tick's own tempo and transport state,
+        bool playing = false;    ///< as the graph gave them for its segment
+        bool known = false;
+    };
+    [[nodiscard]] TickStart startAt(const engine::NodeIo& io, std::int32_t frame) const noexcept;
+    TickStart carried_{};    ///< audio thread: the partial tick at in_[0], latched when it began
+    TickStart tickStart_{};  ///< audio thread: the tick about to run
+    bool wantsPosition_ = false;
 
     /// The block adapter. `in_` and `out_` are interleaved by channel, sized
     /// for one tick plus the largest segment the graph promised.
@@ -477,7 +494,7 @@ private:
     void deliverMidi(const engine::MpeOut& m) noexcept;
 
     /// AUDIO THREAD. One list to `<$0>-aditr`, built on the stack.
-    void deliverTransport() noexcept;
+    void deliverTransport(const TickStart& start) noexcept;
 
     Transport transport_{};
     bool transportSet_ = false;
