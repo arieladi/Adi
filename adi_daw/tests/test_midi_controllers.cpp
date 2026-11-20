@@ -144,6 +144,24 @@ void timelines() {
     check(fixed && !fixed->valueAt(0, 4, ignored) && at(*fixed, 5) == 0 && !fixed->valueAt(0, 15, ignored),
           "linear placement retains its actual physical start and end");
 }
+void signedPrefixAndNativeEnd() {
+    auto input=model();
+    input.clips[0].contentOffsetTicks=-1200;
+    input.clips[0].lengthTicks=13200;
+    MidiControllerPrograms prefix(input,48048);
+    const auto program=prefix.forTrack(1);
+    check(prefix.problems().empty() && program && at(*program,0)==0 &&
+              at(*program,5)==0 && at(*program,10)==0.5 && at(*program,15)==1,
+          "controller signed source prefix holds then resumes the anchored curve");
+    for(const int begin:{0,5,31}) {
+        input=model();input.clips[0].timeBase=1;input.clips[0].posTicks.reset();input.clips[0].lengthTicks.reset();
+        input.clips[0].posNs=begin;input.clips[0].lengthNs=35000000-begin;
+        input.controllers[0].points={{1,0,0.25,0,0,0}};
+        MidiControllerPrograms linear(input,44100);const auto fixed=linear.forTrack(1);double ignored=0;
+        check(linear.problems().empty() && fixed && at(*fixed,1543)==0.25 && !fixed->valueAt(0,1544,ignored),
+              "linear controllers retain their exact native end through a left-edge change");
+    }
+}
 void overlapsAndBounds() {
     auto input = model();
     auto clip = input.clips[0];
@@ -647,7 +665,7 @@ void compensatedPlayback() {
 } // namespace
 int main() {
     try {
-        timelines();
+        timelines();signedPrefixAndNativeEnd();
         overlapsAndBounds();
         wire();
         graphDelivery();

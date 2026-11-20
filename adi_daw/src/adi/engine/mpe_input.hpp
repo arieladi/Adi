@@ -14,8 +14,9 @@
 //
 // WHAT IT HANDLES
 //
-//   MPE            member channels carry one note each; per-note pitch bend,
-//                  channel pressure and CC74 are that note's X, Y and Z.
+//   MPE            pitch bend, pressure and CC74 address the latest accepted
+//                  note on each member channel. Idle bend and timbre follow
+//                  the next note-on on that channel.
 //   MPE+           the Continuum's higher resolution: 14-bit CCs, sent as an
 //                  MSB on CC n and an LSB on CC n+32, at up to 500 Hz.
 //   plain MIDI     per-key note identities support same-channel chords;
@@ -34,6 +35,7 @@
 #include "adi/engine/events.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace adi::engine {
@@ -66,8 +68,8 @@ struct MpeZone {
 /// Bytes in, `Event`s out.
 ///
 /// Not allocating and not throwing: this runs wherever MIDI arrives, which may
-/// be a realtime callback. Events are handed to a caller-supplied sink rather
-/// than collected, so the parser owns no buffer and imposes no capacity.
+/// be a realtime callback. Events go to a caller-supplied sink. Note ownership
+/// is bounded to 256 pending or held starts per channel.
 class MpeParser {
 public:
     /// What a parsed event is delivered to. Returning false means the sink is
@@ -76,7 +78,9 @@ public:
 
     MpeParser() = default;
 
-    void setZone(const MpeZone& z) noexcept { zone_ = z; }
+    // Changes affect subsequent expression. Held notes keep their IDs until
+    // release, even when their channel changes membership.
+    void setZone(const MpeZone& z) noexcept;
     [[nodiscard]] const MpeZone& zone() const noexcept { return zone_; }
 
     /// Where in the current block subsequent events land. The caller sets this
@@ -99,25 +103,41 @@ public:
 
     [[nodiscard]] std::int64_t notesStarted() const noexcept { return notesStarted_; }
     [[nodiscard]] std::int64_t sinkRejections() const noexcept { return rejected_; }
+    [[nodiscard]] std::uint64_t droppedNoteStarts() const noexcept { return droppedStarts_; }
+    [[nodiscard]] std::uint64_t unsupportedMessages() const noexcept { return unsupported_; }
 
     /// The note currently sounding on a member channel, or 0 for none.
     [[nodiscard]] std::uint64_t activeNoteOn(std::uint8_t chan1) const noexcept;
 
 private:
+    static constexpr std::uint16_t kNoExpression=0xffff;
+    static constexpr std::uint16_t kSevenBitTimbre=0x4000;
+    struct InitialExpression {
+        std::uint16_t bend=kNoExpression;
+        std::uint16_t timbre=kNoExpression;
+    };
+    struct HeldNote {
+        std::uint64_t id=0; // zero retains the place of a rejected start
+        std::uint8_t key=0;
+        std::int16_t release=-1; // a rejected release awaiting retry
+        InitialExpression initial{};
+    };
     struct ChannelState {
-        std::uint64_t noteId = 0;
-        std::uint8_t  key    = 0;
-        // Outside an MPE member channel, multiple different keys can sound
-        // together. A channel's latest note is not every key's release target.
-        std::array<std::uint64_t,128> plainNotes{};
-        /// Last value seen for every controller, so an LSB can find its MSB.
-        /// A 14-bit CC whose MSB has not arrived is NOT promoted to 14 bits:
-        /// pretending otherwise invents precision the wire did not carry.
-        std::array<std::uint8_t, 128> cc{};
-        std::array<bool, 128>         ccSeen{};
+        std::array<HeldNote,256> held{};
+        std::size_t heldCount=0;
+        // Consume dropped starts in order before accepting more on that key.
+        std::array<std::uint32_t,128> dropped{};
+        InitialExpression idle{};
+        std::int16_t timbreMsb=-1; // the LSB can refine a previously received MSB
     };
 
     bool emit(Sink sink, void* ctx, const Event& e) noexcept;
+    bool emitExpression(std::uint8_t channel,std::uint64_t noteId,ExpressionDim dim,
+                        double value,Sink,void*) noexcept;
+    int sendInitial(HeldNote&,std::uint8_t channel,Sink,void*) noexcept;
+    static std::size_t activeNoteIndex(const ChannelState&) noexcept;
+    bool releaseNote(const HeldNote&,std::uint8_t channel,std::uint8_t velocity,Sink,void*) noexcept;
+    static void forgetNote(ChannelState&,std::size_t index) noexcept;
     ChannelState& chan(std::uint8_t chan1) noexcept {
         return chans_[chan1 >= 1 && chan1 <= 16 ? chan1 - 1 : 0];
     }
@@ -128,6 +148,7 @@ private:
     std::uint64_t nextNoteId_ = 1;   ///< 0 means "unassigned" (events.hpp)
     std::int64_t  notesStarted_ = 0;
     std::int64_t  rejected_ = 0;
+    std::uint64_t droppedStarts_ = 0, unsupported_ = 0;
 };
 
 // --- the conversions, exposed so they can be tested directly ---------------

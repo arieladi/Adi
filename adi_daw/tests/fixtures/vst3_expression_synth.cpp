@@ -234,7 +234,7 @@ public:
         bus.channelCount = type == kAudio ? (index == 1 && variant_ == Variant::Plain ? 1 : 2) : 16;
         copy128(bus.name, type == kAudio ? (dir == kInput ? "In" : "Out") : "Notes");
         bus.busType = index == 1 ? kAux : kMain;
-        bus.flags = index == 1 ? 0 : BusInfo::kDefaultActive;
+        bus.flags = index == 1 && variant_ != Variant::Plain ? 0 : BusInfo::kDefaultActive;
         return kResultOk;
     }
     tresult PLUGIN_API getRoutingInfo(RoutingInfo&, RoutingInfo&) override { return kNotImplemented; }

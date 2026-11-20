@@ -51,11 +51,22 @@ void contract() {
                 throw std::runtime_error(error);
             device::Vst3Device d(std::move(instance), device::identityOf(desc));
             const bool mono = desc.name.containsIgnoreCase("Plain");
-            check(d.sidechainInputChannels() == (mono ? 1 : 2),
-                  "declared dormant auxiliary width is cached before prepare");
-            check(d.configureSidechain(true), "owner can request the declared key input");
+            const bool defaultActive = mono;
+            const int keyWidth = mono ? 1 : 2;
+            check(d.sidechainInputChannels() == keyWidth,
+                  "declared auxiliary width is cached before prepare");
             d.willBeHanded(wide ? engine::Precision::Float64 : engine::Precision::Float32);
             d.prepare(48000, 32);
+            const auto initialShape = d.preparationShapeEpoch();
+            const auto initialActivations = d.activations();
+            check(d.configureSidechain(true), "owner can request the declared key input");
+            check((d.preparationShapeEpoch() == initialShape) == defaultActive,
+                  defaultActive ? "connecting a default-active key preserves the preparation stamp"
+                                : "connecting a dormant key changes the preparation stamp");
+            d.prepare(48000, 32);
+            check(d.activations() == initialActivations + (defaultActive ? 0 : 1),
+                  defaultActive ? "connecting a default-active key preserves activation"
+                                : "connecting a dormant key prepares the changed layout once");
             check(d.usingRawProcessor(), "test exercises production raw VST3 bus tables");
             std::array<float, 32> in{}, inR{}, keyL{}, keyR{}, outL{}, outR{};
             std::array<double, 32> in64{}, inR64{}, keyL64{}, keyR64{}, outL64{}, outR64{};
@@ -95,7 +106,7 @@ void contract() {
             }
             io.sidechainSilent = false;
             d.process(io);
-            check(channels() == (mono ? 1 : 2) && first() == 7. / 32 &&
+            check(channels() == keyWidth && first() == 7. / 32 &&
                       last() == (mono ? 17. / 32 : .5),
                   "exact mono/stereo key segment reaches the aux bus at native/narrowed precision");
             check(inPlace()==1,"aux delivery retains the main in-place SDK fast path");
@@ -134,11 +145,20 @@ void contract() {
                   "clearing the key preserves the entire programme array exactly");
             check(first() == 0 && last() == 0,
                   "disconnected key is silent, not stale data or programme");
+            const auto connectedShape = d.preparationShapeEpoch();
             check(d.configureSidechain(false), "owner can disable a formerly requested key");
+            check((d.preparationShapeEpoch() == connectedShape) == defaultActive,
+                  defaultActive ? "disconnecting a default-active key preserves the preparation stamp"
+                                : "disconnecting a requested dormant key changes the preparation stamp");
             d.prepare(48000, 32);
+            check(d.activations() == activations + (defaultActive ? 0 : 1),
+                  defaultActive ? "disconnecting a default-active key preserves activation"
+                                : "disconnecting a requested dormant key prepares the changed layout once");
             d.process(io);
             check(inPlace()==1 && programmeExact(),"removing the key retains in-place processing and exact full programme arrays");
-            check(channels() == 0, "default-inactive aux is deactivated after route removal");
+            check(channels() == (defaultActive ? keyWidth : 0) && first() == 0 && last() == 0,
+                  defaultActive ? "default-active aux carries silence after route removal"
+                                : "default-inactive aux is deactivated after route removal");
         }
 }
 } // namespace

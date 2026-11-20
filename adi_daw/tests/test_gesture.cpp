@@ -15,6 +15,7 @@
 #include <sqlite3.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -991,7 +992,7 @@ void unrelatedProducerCannotClearCaptureFault() {
             "clean producer recovery cannot clear another producer's unreconciled capture fault");
         static_cast<void>(clean.fence->acknowledgeLoss());
         check(!g::detail::beginNavigation(store).status.ok(),
-            "repeated unrelated recovery cannot clear stable foreign fault without a new fault epoch");
+            "repeated unrelated recovery cannot clear a stable foreign fault");
         clean.fence.reset();
         check(!g::detail::beginNavigation(store).status.ok(),
             "unrelated producer detachment preserves unresolved foreign fault ownership");
@@ -1022,6 +1023,44 @@ void unrelatedProducerCannotClearCaptureFault() {
         "clean state producer detachment cannot erase stable foreign capture fault");
     check(faulted.fence->acknowledgeLoss().ok() && g::detail::beginNavigation(store).status.ok(),
         "foreign fault remains recoverable by its actual producer after unrelated state cleanup");
+}
+
+void concurrentFaultRemainsLatched() {
+    Project project("concurrent_capture_fault");
+    auto& store = *project.store;
+    auto first = g::detail::registerProducer(store, 4);
+    auto other = g::detail::registerProducer(store, 4);
+    require(first.status.ok() && first.fence && other.status.ok() && other.fence,
+            "register producers for concurrent recovery");
+    constexpr unsigned rounds = 200000;
+    std::atomic<unsigned> requested{0}, completed{0};
+    auto waitFor = [](const std::atomic<unsigned>& counter, unsigned value) {
+        while (counter.load(std::memory_order_acquire) != value) std::this_thread::yield();
+    };
+    std::thread producer([&] {
+        for (unsigned round = 1; round <= rounds; ++round) {
+            waitFor(requested, round);
+            other.fence->captureFault();
+            completed.store(round, std::memory_order_release);
+        }
+    });
+    unsigned lost = 0, stuck = 0;
+    for (unsigned round = 1; round <= rounds; ++round) {
+        first.fence->captureFault();
+        requested.store(round, std::memory_order_release);
+        const auto recovered = first.fence->acknowledgeLoss();
+        waitFor(completed, round);
+        if (!recovered.ok() ||
+            g::detail::beginNavigation(store).status.error != g::Error::CaptureOverflow)
+            ++lost;
+        if (!other.fence->acknowledgeLoss().ok() || !g::detail::beginNavigation(store).status.ok())
+            ++stuck;
+    }
+    producer.join();
+    check(lost == 0, "a concurrent foreign fault remains latched across owner recovery, losses " +
+                         std::to_string(lost));
+    check(stuck == 0, "acknowledging the racing producer reopens navigation, blocked " +
+                          std::to_string(stuck));
 }
 
 void sourceChangeFinalizationPreservesLateCapture() {
@@ -1198,6 +1237,7 @@ int main() {
         {"callback reservations and navigation fence", producerReservationsFenceNavigation},
         {"failed navigation permit ownership", failedNavigationPermitDoesNotReleaseOwner},
         {"capture fault ownership across producers", unrelatedProducerCannotClearCaptureFault},
+        {"concurrent producer fault versus recovery", concurrentFaultRemainsLatched},
         {"atomic source finalization and late capture", sourceChangeFinalizationPreservesLateCapture},
         {"state signal prefix ownership", stateWatermarkPrefixOwnership},
         {"concrete scalar claims and momentary latch", scalarClaimsAndWrongThread},

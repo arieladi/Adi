@@ -13,10 +13,14 @@
 // varies.
 
 #include "juce/device_core.hpp"
+#include "adi/audio/floating_point_control.hpp"
+#include "adi/engine/render_workers.hpp"
 
 #include <atomic>
+#include <cfenv>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <new>
 #include <string>
 #include <vector>
@@ -263,6 +267,74 @@ void testProcessDoesNotAllocate() {
     check(g_allocs.load() > 0, "and the counter does observe an allocation when one happens");
 }
 
+struct DenormalProbe final : adi::engine::BlockProcessor {
+    struct Result {
+        float floatInput = 0, floatOutput = 0;
+        double doubleInput = 0, doubleOutput = 0;
+        int rounding = 0;
+        bool flushed() const noexcept {
+            return floatInput == 0 && floatOutput == 0 && doubleInput == 0 && doubleOutput == 0;
+        }
+    };
+    Result driver, worker;
+    adi::engine::RenderWorkers workers{1};
+    bool completed = false;
+
+    static Result observe() noexcept {
+        const volatile auto tinyFloat = std::numeric_limits<float>::denorm_min();
+        const volatile auto normalFloat = std::numeric_limits<float>::min();
+        const volatile auto tinyDouble = std::numeric_limits<double>::denorm_min();
+        const volatile auto normalDouble = std::numeric_limits<double>::min();
+        return {tinyFloat * 0x1p126f, normalFloat * 0.5f,
+                tinyDouble * 0x1p1022, normalDouble * 0.5, std::fegetround()};
+    }
+    void prepare(double, std::int32_t) override {}
+    void release() override {}
+    void process(const adi::engine::AudioIo&) noexcept override {
+        driver = observe();
+        const auto mask = workers.start(1, [](void* p, std::size_t) noexcept {
+            static_cast<DenormalProbe*>(p)->worker = observe();
+        }, this);
+        completed = mask == 1 && workers.finish(mask) == mask;
+    }
+};
+
+void testCallbackFlushesDenormals() {
+    using Control = adi::audio::FloatingPointControl;
+    if constexpr (Control::denormalMask == 0) return;
+    section("ADR-0042 decision 6: driver and render worker floating-point modes");
+    DenormalProbe probe;
+    DeviceCore core;
+    Buffers buffers(2, 4096, 1.0f);
+    check(core.open(probe, 48000.0, 4096, 4096).opened, "open the real driver preparation seam");
+    const auto original = Control::read();
+    const auto oldRound = std::fegetround();
+    check(std::fesetround(FE_UPWARD) == 0, "seed a nondefault caller rounding mode");
+    Control::write(Control::read() & ~Control::denormalMask);
+    const auto caller = Control::read();
+    const auto unflushed = DenormalProbe::observe();
+    check(unflushed.floatInput != 0 && unflushed.floatOutput != 0 &&
+              unflushed.doubleInput != 0 && unflushed.doubleOutput != 0,
+          "the caller can produce and consume float and double denormals before the callback");
+    const auto expected = Control::read(); // arithmetic can set sticky flags
+
+    core.process(buffers.out(), 2, nullptr, 0, 4096);
+    check(probe.driver.flushed(), "driver callback flushes float and double denormal inputs and results");
+    check(probe.completed && probe.worker.flushed(), "a dispatched render worker inherits denormal flushing");
+    check(probe.driver.rounding == FE_UPWARD && probe.worker.rounding == FE_UPWARD,
+          "callback and worker preserve the caller's rounding mode");
+    check(Control::read() == expected && std::fegetround() == FE_UPWARD,
+          "returning from the callback restores the original caller control");
+    Control::write((caller & ~Control::denormalMask) | Control::flushDenormals);
+    const auto flushOnEntry = Control::read();
+    core.process(buffers.out(), 2, nullptr, 0, 137);
+    check(probe.driver.flushed() && probe.completed && probe.worker.flushed() && Control::read() == flushOnEntry,
+          "a short callback preserves flushing that the caller already enabled");
+    std::fesetround(oldRound);
+    Control::write(original);
+    core.close();
+}
+
 }  // namespace
 
 int main() {
@@ -278,6 +350,7 @@ int main() {
     testBlockSizeChangeKeepsTheSession();
     testLifecycle();
     testProcessDoesNotAllocate();
+    testCallbackFlushesDenormals();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

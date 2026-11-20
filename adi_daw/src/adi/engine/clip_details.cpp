@@ -120,9 +120,10 @@ ClipDetailsRead readClipDetails(const Store& store, std::int64_t clipId,bool inc
         if (tempo.events.empty()) tempo.events.push_back({0,120,0});
         std::optional<std::int64_t> origin = clip.posTicks, duration = clip.lengthTicks;
         if (clip.timeBase == 1) {
-            const double start = static_cast<double>(clip.posNs.value_or(0)) * 1e-9;
-            origin = ticksAt(tempo, start);
-            const auto end = ticksAt(tempo, start + static_cast<double>(clip.lengthNs.value_or(0)) * 1e-9);
+            const auto start = clip.posNs.value_or(0);
+            const auto endNs = add(start, clip.lengthNs.value_or(0));
+            origin = ticksAt(tempo, static_cast<double>(start) * 1e-9);
+            const auto end = endNs ? ticksAt(tempo, static_cast<double>(*endNs) * 1e-9) : std::nullopt;
             duration = origin && end ? std::optional<std::int64_t>{*end - *origin} : std::nullopt;
         }
         if (duration) clip.endMarkerTicks = add(clip.startMarkerTicks, *duration);
