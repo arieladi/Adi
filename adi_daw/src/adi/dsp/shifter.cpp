@@ -110,6 +110,7 @@ struct Shifter::State {
     std::array<double,Count> p{};
     std::array<Lane,2> lanes;
     double rate=48000,bpm=120,noteTarget=60,noteCurrent=60,bendValue=0;
+    std::uint64_t clock=0;  // samples since prepare: the Hilbert states settle on every 64th
     bool prepared=false;
     State(){for(int i=0;i<Count;++i)p[static_cast<std::size_t>(i)]=ranges[i].initial;}
     /// The Window in samples: Live's milliseconds at this rate, not rounded.
@@ -125,7 +126,7 @@ void Shifter::prepare(double rate){
         l.delay.assign(static_cast<std::size_t>(s.rate*30)+2,0);l.dry.assign(8193,0);
         l.write=l.dryWrite=0;l.oscillator=l.lfo=l.envelope=l.tone=l.randomFrom=l.randomTo=0;
         l.random=0x12345678u+static_cast<std::uint32_t>(c);
-    }s.noteCurrent=s.noteTarget;s.prepared=true;
+    }s.noteCurrent=s.noteTarget;s.clock=0;s.prepared=true;
 }
 void Shifter::set(Param p,double value) noexcept {
     if(p<0 || p>=Count || !std::isfinite(value))return;
@@ -198,13 +199,17 @@ void Shifter::process(const float* inL,const float* inR,float* outL,float* outR,
             const float output=static_cast<float>(dry+(wet-dry)*p[Mix]/100);
             if(channel==0)outL[frame]=output;else outR[frame]=output;
         }
-    }
-    // The vendored Hilbert all-pass states, flushed at the end of each block.
-    for(auto& l:s.lanes){
-        for(auto& row:l.hilbert.allpass){
-            for(auto& bq:row){
-                if(std::abs(bq.reg0)<1e-30f){bq.reg0=0.f;}
-                if(std::abs(bq.reg1)<1e-30f){bq.reg1=0.f;}
+        // The vendored Hilbert all-pass states settle on every 64th sample
+        // since prepare: a grid of absolute positions, so where the host cuts
+        // its blocks never changes a sample (a found defect at block ends).
+        if((++s.clock&63u)==0){
+            for(auto& l:s.lanes){
+                for(auto& row:l.hilbert.allpass){
+                    for(auto& bq:row){
+                        if(std::abs(bq.reg0)<1e-30f){bq.reg0=0.f;}
+                        if(std::abs(bq.reg1)<1e-30f){bq.reg1=0.f;}
+                    }
+                }
             }
         }
     }

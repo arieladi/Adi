@@ -92,4 +92,14 @@ void unisonAfterAMove(){
  std::printf("METRIC Shifter return to unison: largest step %.5f (tone's own %.5f)\n",step,steepest);
  check(step<=steepest*1.5,"the return to unison does not click");
 }
-int main(){measured();invariants();liveUnison();unisonAfterAMove();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
+// Into a silent tail: Freq mode's Hilbert states settle at the same samples
+// whatever the host's blocks (a found defect: they settled at block ends).
+void tailAcrossBlocks(){
+  std::vector<float> impulse(96000,0.f);impulse[0]=1.f;std::vector<float> first;
+  for(std::size_t block:{32u,100u,4096u}){
+    S s;s.prepare(48000);s.set(S::Mode,1);s.set(S::Coarse,0.25);
+    const auto out=render(s,impulse,block);
+    if(first.empty()){first=out;}else{check(out==first,"Freq mode into a silent tail is identical for all block sizes");}
+  }
+}
+int main(){measured();invariants();liveUnison();unisonAfterAMove();tailAcrossBlocks();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

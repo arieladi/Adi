@@ -18,6 +18,7 @@ void AutoFilter::prepare(double rate) {
     p_ = target_;
     smooth_ = std::exp(-1. / (.005 * rate_));
     beats_ = 0;
+    clock_ = 0;
     for (auto &s : lane_) {
         s = Lane{};
         s.comb.assign(static_cast<std::size_t>(std::ceil(rate_ / 20)) + 4, 0);
@@ -368,8 +369,15 @@ void AutoFilter::process(const float *l, const float *r, float *ol, float *orr, 
                 p_[SCListen] >= .5 ? trigger : input[c] + p_[Mix] / 100 * (wet - input[c]));
         }
         beats_ += bpm_ / 60 / rate_;
+        if ((++clock_ & 63u) == 0) {
+            settle();
+        }
     }
-    // The vendored filter states are flushed at the end of each block.
+}
+void AutoFilter::settle() noexcept {
+    // The vendored filter states settle on exact 0 (a found defect: flushed
+    // at the end of each block, they made the output depend on the host's
+    // block size).
     for (auto &s : lane_) {
         for (auto &svf : s.svf) {
             flush(svf.i1);

@@ -118,7 +118,10 @@ double Echo::room(Lane &l, double input) noexcept {
     for (std::size_t j = 0; j < 4; ++j) {
         const double gain =
             std::pow(.001, static_cast<double>(l.room[j].size()) / (rate_ * p_[Decay]));
-        l.room[j][l.roomPos[j]] = static_cast<float>((y[j] - .5 * sum + input * .5) * gain);
+        // Snapped before the float store, as the main ring: the room's 4-line
+        // tank decays through float's subnormals otherwise (a found gap).
+        const double stored = (y[j] - .5 * sum + input * .5) * gain;
+        l.room[j][l.roomPos[j]] = static_cast<float>(std::abs(stored) < 1e-30 ? 0 : stored);
         l.roomPos[j] = (l.roomPos[j] + 1) % l.room[j].size();
     }
     return sum * .25;
