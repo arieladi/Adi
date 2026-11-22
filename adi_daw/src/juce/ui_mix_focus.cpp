@@ -916,7 +916,7 @@ void MixFocus::paint(juce::Graphics &g) {
     }
     g.setColour(look::outline);
     if (scopeShown) {
-        const bool stacked = display == ScopeDisplay::Stack && !plot_.isEmpty();
+        const bool stacked = display == ScopeDisplay::Stack && !plot_.isEmpty() && !members_.empty();
         if (!stacked) g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
         if (sumShown) {
             juce::Graphics::ScopedSaveState saved(g);
