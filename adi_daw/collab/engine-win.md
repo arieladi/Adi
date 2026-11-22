@@ -4,6 +4,17 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## FOR THE DIRECTOR
+
+- **MX-09.** Should audio that latency correction places before song zero become a left handle? Recommend preserving all recorded PCM and clamping the placed start to zero until the pre-zero rule is agreed.
+- **CT-01 and CT-02.** Confirm whether audition replaces Main, persists or creates Undo, the default new-lane name, and where pre-roll goes with loop and punch. Recommend transient exclusive audition without an Undo entry. Keep pre-roll outside the pass clips pending the reference.
+- **CT-04.** Confirm what an empty take interval and dragging past the source end should do. Recommend keeping existing Main audio outside the available take, clamping the edge to the take and preserving the one-step Undo.
+- **EX-03.** Confirm Live's first Render as Loop pass at a nonzero range. Recommend keeping ADI's zero-based priming into the first unwritten lap until a known impulse reference settles the start.
+- **EX-04.** Confirm Live's Convert to Mono coefficients with one-sided, in-phase and opposite-polarity signals. Recommend ADI's selectable arithmetic average for now.
+- **EX-05.** Confirm the default for the true-peak ceiling when conditional normalization skips the target. Recommend keeping the ceiling active and reporting the reduction separately. Confirm the true-peak detection target too. Recommend measuring compatibility at BS.1770 4x and considering finer internal detection if the independent oversampled check still finds a ceiling miss.
+- **PD-07.** Resolve PLAN's Backup choice with R-26. Recommend an opt-in Backup folder from committed snapshots, with Recycle Bin rotation after HI-02.
+- **EX-12.** Approve the exact File 2 per-scene telemetry schema and timebase before serialized `.adiviz` delivery so ADI and FilmCraft read the same fields.
+
 ## 2026-11-22 — DEV-23: hosted VST3 workers after #677
 
 - `engine-win/hosted-workers-current-main` `8d10b9a5` carries the diagnostics from #665 onto #677 and the current discovery CLI. The measured Release source was `593bf21f`. The subsequent main update `73f13028` changed only the Mix EQ provenance document. Strict native MSVC Release `adi_play_render_tests` passed. Offline traces identified all 64 VST3 instances, with six processing threads for independent tracks at five requested workers and one for the serial chain. Both 6,000-frame pairs null byte for byte. At 48 kHz / 2,048 samples 18 of 20 physical arms were accepted. Across three independent pairs, five workers changed run p99 by −22.43 ms [−24.99, −19.86] and process CPU by +26.54 one-logical-CPU points [23.92, 29.17]. The serial chain allocated zero workers. No over-budget or spacing-threshold events appeared among 4,214 accepted callbacks. Native overload and MMCSS evidence are unavailable. Two rejected arms stay in the package, and one overlapped a worktree checkout. No new 256-sample run and no default-policy change. Evidence and full report `D:/ADI-Research/Engine-Design/20261122-190002-dev23-current-main/REPORT.md`. ASIO4ALL left one added application key at 48 kHz / 2,048 and changed no existing values. PR requested.
@@ -298,15 +309,6 @@ PR requested.
 - **Parked, DF-E64 integration.** Engine or Win: please supply or lend the `Session::RenderBlock` Play-path hunk. Window-fn: please review the published `window_state.hpp` and `project_document.cpp` hunks. Win owns the WTS-01 harness; please capture from the first playing callback while asserting silence and an unchanged song position during the hold. The focused delayed-reader test uses no owner-side prime.
 - **Needs, MX-09.** Win's latest ownership entry confirms the recording half. Engine: please expose the driver's input and output latency in samples to the recording owner. I will build and verify the explicit placement offset.
 - **Needs, CT-01.** I will keep DF-E17's same-track lane retention and explicit cross-track detach contract. Engine review of the EditScope hunks requested.
-
-## FOR THE DIRECTOR
-
-- **MX-09.** When latency correction would put the take before song zero, should the pre-zero part become a left handle? Recommend keeping all recorded PCM and placing its first frame at zero until pre-zero placement behavior is agreed.
-
-- **CT-01 and CT-02.** Should a take audition replace the main track, persist, or create Undo? What is Live's exact new-lane name, and where does recorded pre-roll go with loop and punch? Recommend transient exclusive audition without an Undo entry, and keeping pre-roll outside loop-pass clips until a reference capture settles placement.
-- **CT-04.** How does comping treat an empty take-lane interval and a selection that extends beyond the take? Recommend preserving existing main audio outside the selected source material until the measured behavior is settled.
-- **EX-03.** Where does Live start the unwritten pass of Render as Loop? Recommend using the selected range start for the loop pass and handling earlier priming separately, pending the reference.
-- **EX-05.** Should export brickwall detection go beyond BS.1770 4x? Recommend keeping 4x as the compatibility meter and using finer detection only if an oversampled acceptance test still finds a ceiling miss.
 
 ## 2026-11-22, project saved plug-ins and the #642 gate
 
