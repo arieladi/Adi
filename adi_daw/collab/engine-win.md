@@ -4,6 +4,32 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, engine-win register audit on main `87ea349c`
+
+| Register row | Landed proof | Regression in the landed tree |
+|---|---|---|
+| DF-E19 (a) | #666 `71ef466a` | `test_render_queue.cpp` `publicationResults` and `runManifests` keep the published result and durability warning. |
+| DF-E19 (b) | #646 `629a9f3d` | `test_collect_export.cpp` `publication` checks private verified-copy staging, ownership and cleanup on collision or failure. |
+| DF-E19 (c) | #646 `d661f704` | `test_collect_export.cpp` `publication` checks the AtomicOnly refusal path and the explicit verified-copy path. The production callers state their policies. |
+| DF-E19 (d) | #666 `96ac4186` | `test_render_queue.cpp` `finalNamesAndCaseCollisions` verifies the complete name and suffix byte limit. |
+| DF-E20 (c) | #686 `262a2606` and the joined catalogue | `test_play_render.cpp` `catalogueContracts` checks no discovery on a known VST3 lookup. `test_scan_cache.cpp` `reuseAndChanges` checks that unchanged probes reuse validated metadata. |
+| DF-E25 (a) | #686 `3bfd0d5c` | `test_plugin_scanner.cpp` `reservedCandidateExits`, `helperStartFailures`, `hostAndFailurePolicy` distinguish helper failures, candidate exits and durable blocking. |
+| DF-E25 (b) | #646 `629a9f3d`, with #686 regression `bcf82f20` | `test_project_replace.cpp` `publicationRetries` checks that a verified copy returns native identity and a directory-sync warning when durability is unconfirmed. |
+| DF-E28 (a)–(c) | #686 `1abfcb3c` | `test_decode_space.cpp` tests an impossible FLAC total before reserve, and `test_decode_cache_consistency.cpp` covers oversize admission, malformed hints and published cancellation. |
+| DF-E31 (a)–(d) | #686 `3bfd0d5c`, `0f7289b2` and the joined scanner service | The saved-path and deleted-copy cases in `scanner_discovery.hpp` cover catalogue misses and relocated CLAP modules. `test_plugin_scanner.cpp` covers child exits on both sides of candidate start. `test_scan_cache.cpp` `waitsForRegistryWriter` covers write admission. N68 separately covers project hints after the asynchronous service has taken ownership. |
+| DF-E32 (a) | #686 `d90479e4` and `bcf82f20` | `test_project_replace.cpp` `windowsPublicationRetries` includes protected-stage sharing failures, retry exhaustion and no-clobber controls. |
+| DF-E32 (b) | #686 `d90479e4` and `bcf82f20` | `test_recording_commands.cpp` `crossVolumePublication` verifies a distinct-volume capture, exact PCM, project-side atomic publication and Undo/Redo. |
+| DF-E32 (c) | #686 single-WAV and publication stack | `test_render_queue.cpp` `finalNamesAndCaseCollisions` and `singleWavDestination` cover device stems with a spaced extension and the final filename refusal. |
+| DF-E32 (d) | #686 `bcf82f20` | `test_render_queue.cpp` `runManifests` preserves synthetic high file-ID and volume bits. `mediaIdentities` compares both halves against Windows FileIdInfo on NTFS; the volume fixture uses NTFS. |
+| DF-E33 (a), (b) | #686 `a99448c4` | `test_settings.cpp` `testPortableSettingsPublication` and `testBundlePublication` exercise unsupported native operations, intact existing archives and a competing destination. |
+| DF-E34 (a), changed dimensions | #686 `d4ecedb2` | `test_progressive_decode.cpp` `changedSavedSourceDimensions` reports mismatch before and after eviction. `damagedSavedCacheDimensions` still diagnoses a damaged cache and `savedHashesOnSessionOpen` preserves the warm zero-digest gate. |
+| DF-E34 (b), (c) | #686 `1abfcb3c` | `test_decode_space.cpp` `impossible` preserves existing cache bytes and order with no admissible space. `test_decode_cache_consistency.cpp` `extremeStamp` covers the maximum timestamp. |
+| DF-E34 (d) | #686 `d4ecedb2`, after #661 | `test_analysis_cache_trim.cpp` `unreadable`, `undeletable`, `cancellation` and `changedDuringInventory` cover inventory and removal with retained refusals. |
+| DF-E35 (b) | #694 `759014e9` | `test_freeze_commands.cpp` `mainLaneExtentMatrix` covers the eight Freeze and Bounce cases, including overlap and group scope. |
+| DF-E58 | #686 `274f81f5` | `test_audio_recording.cpp` `stopDrainsLastShortBlock` forces the final accepted block to race with Stop and checks the final WAV. |
+
+**Still open** — DF-E25 (c) class ID, DF-E34 (a) same-shape external edits (TM-MD-03), and DF-E35 (a) snapshot lane projection and window readers. #677 is on main; the snapshot and window handoff still needs its owner coordination. This is the log-only audit and requests the register update from Win.
+
 ## 2026-11-22, N66 stacked after DF-E44
 
 - `engine-win/recording-failed-prefix` at `0900deeb`, based on #710 and stacked on DF-E44 `0ed2c355`. Land DF-E44 first, then N66. The prefix receipt is set after the worker has reported completion and only if neither the write loop nor any sink close reported an exception. DF-E44 still closes every sink, resets the pending job before discarding and keeps any directory that `std::error_code` reports it could not remove.
