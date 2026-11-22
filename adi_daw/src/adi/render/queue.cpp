@@ -1404,7 +1404,7 @@ GaplessResult renderGaplessWav(Job job, std::span<const std::int64_t> regionIds,
         if (continuous.state != JobState::Completed || !continuous.mediaVerification || !continuous.snapshot)
             throw std::runtime_error(continuous.error.empty() ? "Cannot capture continuous PCM" : continuous.error);
         const auto stages = stageGaplessSlices(stage.path, continuous, batch.regions, job.encoding.speakerMask, control);
-        std::vector<std::string> digests;
+        std::vector<std::optional<std::string>> digests;
         if (control.fingerprintDelivery) {
             digests.reserve(stages.size());
             for (const auto& slice : stages) digests.push_back(fingerprintStagedDelivery(slice, control));
