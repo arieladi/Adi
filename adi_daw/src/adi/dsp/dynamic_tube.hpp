@@ -20,7 +20,9 @@
 // The tube is f(g x + b) - f(b), divided by g, with its DC blocked at 5 Hz.
 // Every curve's slope is 1 at 0 and less elsewhere, so the tube never puts
 // out more than it is given; a quiet signal passes at f'(b) (unity with no
-// bias) whatever the Drive and Tone, which the test checks.
+// bias) whatever the Drive and Tone, which the test checks. Bias, Output
+// and Dry/Wet glide over about 10 ms once audio runs, Drive over 50 ms (it
+// moves the biased curve's DC too) (dsp/glide.hpp).
 //
 // WHAT IS NOT LIVE'S YET, and says so: the curves, the bias and envelope
 // laws, the tone's shape, the ranges and defaults wait on a Live 12.4
@@ -30,6 +32,7 @@
 #pragma once
 
 #include "adi/dsp/biquad.hpp"
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cstddef>
@@ -66,7 +69,8 @@ private:
     Biquad pre_{}, post_{};
     std::array<State, 2> preState_{}, postState_{};
     std::array<double, 2> env_{}, dcIn_{}, dcOut_{};
-    double rate_ = 48000, dcPole_ = 0, drive_ = 1, bias_ = 0, envelope_ = 0, attack_ = 0, release_ = 0, output_ = 1, wet_ = 1;
+    double rate_ = 48000, dcPole_ = 0, envelope_ = 0, attack_ = 0, release_ = 0;
+    Glide drive_, bias_, output_, wet_;
 };
 
 }  // namespace adi::dsp
