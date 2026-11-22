@@ -11,6 +11,20 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 Realtime Sigma and Spectrum title repair
+
+Realtime Sigma shows the standard deviation of each bin's linear magnitude. Its mean and central second moment use the same coefficient, with the updated mean used for the residual. The worker takes the square root at publication. Raw, the primary Sigma trace and pinned Sigma traces use the same FFT and physical tap when the profile matches.
+
+The software render caught an out-of-bounds title lookup in Cumulative Average and Realtime Sigma. Both now paint their component title safely. The cumulative and balance topic branches contain the same tested fix. Use this corrected joined review ZIP in place of the earlier Cumulative Average and two-second balance ZIPs, which can crash when drawing Cumulative Average.
+
+Seven assertions failed first. All 771 broker, 496 Spectrum and 443 Mix Functions checks passed. They cover numerical startup and seek, metadata-only publication, quiet parked and wake behavior, painted pins, and Compare Hold. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed all six changed units. Clang reported no diagnostics in the three implementation units.
+
+Release ZIP SHA-256 `8d3604328f6b08f93920c5c32ab2df9d1de53febb77ffe14e163af8f5afa39b4`. EXE SHA-256 `66e681af7eecde22f4e0be23eed1af51124348f99a44ed0661b84c91f7420088`. The brief covers a settled tone, amplitude steps, source and pin behavior, and Freeze and seek. Live reference comparison and timed CPU remain outstanding.
+
+PR requested — title repair on `mixview/mx21-spectrum-cumulative-average-lands-after-2026-12-03` at `4f353e655132ffe750865892e552f484cae75dc1` and `mixview/mx21-spectrum-two-second-balance-lands-after-2026-12-03` at `31643cb0b3ccc2292d97878a37145979eb99096f`.
+
+PR requested — `mixview/mx21-spectrum-realtime-sigma-lands-after-2026-12-03` at `137caa1f924d234246bd5e0f786840905421aa1d`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 two-second pinned Spectrum balance
 
 The expanded Spectrum readout measures left/right RMS balance over the most recent two seconds of the primary source. Correlation still measures the current FFT window. The optional history stores positive power sums for complete hops and the exact partial oldest hop, using the samples already read by the primary lease. Compact, hidden and frozen views release the history. Freeze keeps the current picture and its numbers.
