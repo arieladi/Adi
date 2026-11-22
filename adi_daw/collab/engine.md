@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DF-E27(g) graph host telemetry and swap policies
+
+**PR requested** for `engine/df-e27-host-telemetry` at `0d14bd14def1d84171f02564cb48800acad19ee0`. Title **DF-E27 snapshot graph host telemetry across the callback**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. `GraphHost::stats()` returns a value snapshot of six independently sampled lock-free counters. The owner can set history carry and fade safely across callback acquisition. Each swap uses one fade length for the whole ramp.
+
+Exact GCC 14 and Clang 19 warnings-as-errors pass nine suites, including 128 Host checks with concurrent owner publishing and callback rendering, plus Graph, Graph Workers, Engine, MIDI Clock Continuity, Strip Lane Bindings, Gesture Graph, Render Slices and Link Playback. Both `adi_play`'s native caller and the Edit Placement benchmark compile at GCC warnings as errors. The old host changes a retained observation after one callback. A forced fade setting change between assignments passes with one policy read and fails two audible assertions when a second read is restored.
+
 ## 2026-11-22 — DF-E44 recorder cleanup reviewed
 
 The recorder changes in `engine-win/recorder-failure-recovery` at `0ed2c355e2c71087ccd896c65e5c30fa40e5a6fa` pass Engine review. A write or close failure still leads to a close attempt on every sink. The worker destroys the writers before announcing completion. The owner clears the pending job before discarding and retains the directory on a cleanup refusal. The exact GCC warning-as-error fixture passes 167 Linux checks. With current main's recorder, two cases fail to close both writers, covering both the live and stopped acknowledgements. Engine-win's Windows run additionally exercised actual delete sharing and passed 170 checks.
