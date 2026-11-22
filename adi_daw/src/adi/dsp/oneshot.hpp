@@ -155,6 +155,7 @@ class OneShot final : public DeviceInstance {
                       double &end) noexcept;
     void noteOn(const engine::Event &, const Sample &, const std::array<double, Count> &) noexcept;
     double read(const Sample &, double, int) const noexcept;
+    void readBoth(const Sample &, double position, double *x) const noexcept;
     void processSample(const engine::NodeIo&, const Sample*, std::uint64_t,
                        bool borrowed) noexcept;
     std::array<ParamDescriptor, Count> params_;

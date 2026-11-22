@@ -312,6 +312,20 @@ double OneShot::read(const Sample &s, double position, int channel) const noexce
     const double x = s.data[a * stride + ch];
     return x + (s.data[b * stride + ch] - x) * (position - static_cast<double>(a));
 }
+void OneShot::readBoth(const Sample &s, double position, double *x) const noexcept {
+    // read() for channels 0 and 1 at one position: the same arithmetic, the
+    // position's clamp and index taken once.
+    position = std::clamp(position, 0., static_cast<double>(s.frames() - 1));
+    const auto a = static_cast<std::size_t>(position);
+    const auto b = std::min(a + 1, s.frames() - 1);
+    const auto stride = static_cast<std::size_t>(s.channels);
+    const double t = position - static_cast<double>(a);
+    for (int c = 0; c < 2; ++c) {
+        const auto ch = static_cast<std::size_t>(std::min(c, s.channels - 1));
+        const double y = s.data[a * stride + ch];
+        x[c] = y + (s.data[b * stride + ch] - y) * t;
+    }
+}
 void OneShot::queueNoteGain(double gain) noexcept {
     if (noteGainCount_ == noteGains_.size() || !std::isfinite(gain)) return;
     noteGains_[(noteGainHead_ + noteGainCount_) % noteGains_.size()] = std::max(0., gain);
@@ -498,7 +512,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
     // a product with 0, and x + (-0) is x), so only its phase runs. With LFO
     // filter at 0 the filter's coefficients are the block's (exp2(+-0) is
     // exactly 1), not each voice's each sample.
-    double sustain = 0, velocityAmount = 0, level = 0, gFixed = 0, qFixed = 0;
+    double sustain = 0, velocityAmount = 0, level = 0, gFixed = 0, qFixed = 0, rFixed = 0, dFixed = 0;
     double lfoStep = 0;  // the LFO's phase a sample: block-constant
     bool classic = true, lfoHeard = true, filterFixed = false;
     const auto coefficients = [&](double lfo, double &g, double &q) {
@@ -519,8 +533,11 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
         const double hz =
             p[LfoSync] > 0 ? (io.transport ? io.transport->bpm : 120.) / 60 / p[LfoBeat] : p[LfoRate];
         lfoStep = hz / rate_;
-        if (filterFixed)
+        if (filterFixed) {
             coefficients(0, gFixed, qFixed);
+            rFixed = 1 / qFixed;
+            dFixed = 1 + gFixed * (gFixed + rFixed);
+        }
     };
     settle();
     // Voice by voice over each stretch between events (a voice's state stays
@@ -620,15 +637,16 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     const double fade = looping ? (v.end - v.loop) * p[Fade] / 200. : 0;
                     // The filter's coefficients: the block's, or this voice's
                     // this sample when the LFO moves the cutoff.
-                    double g = gFixed, q = qFixed, r = 0, d = 0;
-                    if (p[FilterOn] > 0) {
-                        if (!filterFixed)
-                            coefficients(lfo, g, q);
+                    double g = gFixed, q = qFixed, r = rFixed, d = dFixed;
+                    if (p[FilterOn] > 0 && !filterFixed) {
+                        coefficients(lfo, g, q);
                         r = 1 / q;
                         d = 1 + g * (g + r);
                     }
+                    double both[2];
+                    readBoth(*s, v.position, both);
                     for (int c = 0; c < 2; ++c) {
-                        double x = read(*s, v.position, c);
+                        double x = both[c];
                         if (fade > 0 && v.position > v.end - fade) {
                             const auto t = (v.position - (v.end - fade)) / fade;
                             x = x * std::cos(t * pi * .5) +
