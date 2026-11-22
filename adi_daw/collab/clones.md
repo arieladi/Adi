@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Saved Sweep offsets on the historical bank
+
+For all 116 affected programs, we loaded, saved and reopened the three offsets through a private 1,496-control registered device with weighted curves, Time and Trim. All 464 state restores and readback checks passed. On the original stage order, with Reverb held fixed where available, 85 stereo RMS errors fell, 26 rose and five stayed within 0.000001. Two programs finished below 0.001, up from one. All 33 overlapping centered Reverb paths reproduced their earlier samples exactly. Of the twelve programs with every stage represented, nine improved and three worsened.
+
+The new crossing fell from 0.00111743 to 0.000915782 against the entire original. Pitch remained absent in this chain. When we bypassed only Pitch in the original, the remaining Sweep and Width signal matched at 0.0000000935 RMS. The existing Reverb pass also stayed below threshold. All figures use the values that survived device recall.
+
+Keeping the 757 unaffected outputs gives **41 centered and 42 with offset among 873** on the measured original-order Reverb pipeline. A separate fixed-order registered experiment with the historical baseline moved from 39 to 40. These totals describe their respective private comparisons. The full bank still awaits a single integrated product build.
+
+PR requested
+
 ## 22 November 2026 — Measured quantizer bias for Crush
 
 Of the 873 paired programs, 43 have a nonzero bias on an audible Crush band, including four of the 81 previous regressions. The control spans 0–100% and defaults to zero. With normalized bias b and bit-depth contour u below full resolution, the quantization threshold shifts by 0.499b of a code interval. The old output scale, expressed per code before division by the number of levels, is 1−0.25(1−u)³. Bias subtracts a further 0.25b³(1−u)⁹. The highest resolution bypasses the quantizer.
