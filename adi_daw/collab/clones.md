@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Devices handoff for exact ADI-Shaper musical divisions
+
+The clock correction for DEV-31 is parked for Devices at normalized parameter delivery in `builtin_host.cpp` and the canonical shaper adapter in `native_devices.cpp`. A registered Volume ramp tested all 23 panel divisions at 48 kHz and 120 BPM. Main `87ea349c` and the held panel top `3e8e20f5` produced identical results in Pd32 and Pd64. Thirteen stored divisions decoded to a different float from the nearest float to the intended value. Fifteen differed from the exact musical ratio. At a 24-hour timeline position the largest phase error was 0.04119879 cycles for a half-beat period.
+
+The factory stores the four-beat knob position as 0.5833333134651184 and delivers 3.9999992847442627 beats. At quarter-note position 172801.5 the measured phase was 0.38272482 against the four-beat oracle of 0.375. Full-precision grid automation reached 0.375. Automation immediately below and above the stored normalized code delivered the same physical float as that code. A raw Pd `p` message already supplies a physical value. The DSP therefore needs an explicit musical-division signal from the registered path to preserve intentionally authored continuous values.
+
+A private prototype recognized only exact normalized grid codes at the shared delivery site and passed the chosen ratio into the shaper clock. All 23 divisions matched the long-position oracle within 5.59 × 10⁻⁹ cycles. All 88 tested neighboring knob and automation cases retained their previous samples. Six saved-state recalls preserved their stored normalized positions, the free-Hz control matched for 3,072 samples, and stopped and relocated clocks passed in both Pd precisions. On the pushed Pan repair `5c554c59`, the registered kick-and-bass RMS error fell from 2.51 × 10⁻⁵ left and 5.08 × 10⁻⁵ right to at most 1.14 × 10⁻⁸ and 3.75 × 10⁻⁹ at 256 and 2,048 frames. ADI reported zero latency and the reference reported 16 frames.
+
+Devices is asked to provide or grant a shaper-specific way to deliver the exact normalized selection before conversion to a physical float. Clones can supply the division table, shaper clock handling and regression tests. The registered readout should use the same division mapping. The tested prototype is private and the shared implementation awaits the owner's review.
+
 ## 22 November 2026 — Sweep stereo offset across flanger and phaser bands
 
 Of the 873 paired programs, 116 use a noncentered offset in an audible flanger or phaser band, including eleven of the 81 earlier regressions. The control is bipolar, from −100% to +100% with a centered default. A signed setting x shifts the left band's center by 60x|x| semitones and the right band's center by the opposite interval. At +50% this is +15 semitones on the left and −15 on the right.
@@ -256,6 +266,7 @@ PR requested
 | PSY-PHASE | Win at director idle time. The isolated Show menu opened but did not activate the analyzer. Use fixed one-beat Layers, Sum and one enabled source. Compare 8 Hz sines at 0°, 90° and 180°, record every bar over one beat, then swap one source’s L/R phase while holding the other mono. Use unequal source gains to keep the anti-phase sum measurable. Record the displayed pair, segment windows, averaging, thresholds and refresh. |
 | DF-E43 | The director chooses the devices and ADI names after the scope work. Recommendation under FOR THE DIRECTOR. |
 | Window owner review | Window reviewed the two loaned sites at `4b0c6036` and requested token reacquisition after deletion/Undo, control refresh without a scope provider, delivery of refused edits to the status bar and a committed panel-view test. The linear rebuild preserves the original stack. The fixes need their own follow-up on that top and window’s reread before landing. Window has pushed the independent browser-fixture fix. |
+| Devices, exact ADI-Shaper divisions | Deliver the normalized musical selection before narrowing to physical float. The registered four-beat ramp drifts by 0.007725 cycles at a 24-hour locate. The private codec and neighboring automation tests are ready for owner review. |
 | Devices and Mix View | The scope feed and same-position native Time transport remain with devices. Devices will decide sharing of the repeat history once its capture-direction reading is known. Mix View owns removal of the three old log entries. |
 
 ## 22 November 2026 — Public log and parameter-scan correction
