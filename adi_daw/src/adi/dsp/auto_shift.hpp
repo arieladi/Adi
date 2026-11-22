@@ -34,7 +34,7 @@
 // waveform, so the splice is not heard and nothing in the output steps when
 // the pitch moves. At a ratio of 1 (a shift within 0.2 cents counts as one,
 // so an in-tune note under Correction does) the tap returns to the centre (a
-// whole number of periods, then gliding at 0.5 % speed, under 9 cents, for
+// whole number of periods, then gliding at 0.1 % speed, under 2 cents, for
 // what is left) and stays there: the wet signal is the dry one, and Dry/Wet
 // cannot comb.
 //
