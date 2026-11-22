@@ -216,6 +216,41 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the glide sweep: the newest cores' gain controls no longer step
+
+Pedal's review found gain controls applied as instant steps. Amp, Cabinet, Corpus, Drum Buss,
+Dynamic Tube, Grain Delay and Roar were built the same way.
+- **`dsp/glide.hpp`** (on `devices/live-amp`) is a one-pole glide of about 10 ms.
+  - Set before any audio, the value simply lands.
+  - Within 1e-12 of its target, it snaps, so a unit gain or a zero mix is exact.
+- **What glides now.**
+  - Each core's gain, level, output, mix and feedback controls.
+  - Drive-like controls (Dynamic Tube's Drive, Roar's Amount) glide over 50 ms. They move a curve's
+    DC or 36 dB of level.
+- **The test, per core:** moved at a tone's peak, the largest step while the control moves stays
+  within 1.5 times the signal's own step, before or after. On the old cores they jumped 0.03 to 1.47
+  in a sample.
+
+**PR requested** (the same branches; new heads), each merged up the stack:
+- `devices/live-amp` (58c9398b): Gain, Volume, Output, Dry/Wet.
+- `devices/live-cabinet` (936afef8): Output, Dry/Wet.
+- `devices/corpus` (c9dc2a78): Gain, Bleed, Dry/Wet.
+- `devices/drum-buss` (2a52e068): Trim, Drive, Crunch, Transients, Boom, Output, Dry/Wet.
+- `devices/dynamic-tube` (6f63ee37): Drive, Bias, Output, Dry/Wet.
+- `devices/grain-delay` (90e162b1): Feedback, Dry/Wet.
+- `devices/live-pedal` (65d0a2f4): the merges; its own glide came with the fourth review.
+- `devices/roar` (46f2a71e): Input, each stage's Amount, Bias and Level, Feedback, Output, Dry/Wet.
+
+**CTest:** `devices/live-pedal` at 77d27c3c (before the fourth review) passed 292/292 at PD_FLOATSIZE
+32 and 64. The new top, `devices/roar`, is running.
+
+**Still to sweep, on the earlier branches:**
+- Erosion, Vinyl Distortion, Filter Delay, Auto Shift's Dry/Wet, EQ Three, Channel EQ, Align Delay
+  and Auto Pan's depth;
+- the Compressor stack's makeup and mix.
+
+They are next in this lane's queue.
+
 ## 2026-11-22 — Roar (DEV-22); the fourth review: Grain Delay and Pedal, four findings fixed
 
 **PR requested:** head `devices/roar` (0ac41161), base `main`, after `devices/live-pedal`. It stops
