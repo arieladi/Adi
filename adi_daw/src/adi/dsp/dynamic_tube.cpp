@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace adi::dsp {
 namespace {
@@ -52,6 +53,8 @@ void DynamicTube::prepare(double sampleRate) noexcept {
     rate_ = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
     preState_ = postState_ = {};
     env_ = {};
+    dcIn_ = dcOut_ = {};
+    dcPole_ = std::exp(-2 * std::numbers::pi * 5 / rate_);
     update();
 }
 
@@ -102,7 +105,13 @@ void DynamicTube::process(const float* inL, const float* inR, float* outL, float
             // The operating point: Bias, moved by the envelope, kept on the
             // curve's useful span.
             const double b = std::clamp(bias_ + envelope_ * 0.5 * std::min(env_[c], 1.0), -0.9, 0.9);
-            const double y = (curve(tube, drive_ * x + b) - curve(tube, b)) / (drive_ * slope(tube, b));
+            // Divided by the drive alone (every curve's slope is 1 at 0 and
+            // never more), so the tube never puts out more than it is given;
+            // its DC, which a biased curve makes under signal, is blocked.
+            const double e = (curve(tube, drive_ * x + b) - curve(tube, b)) / drive_;
+            const double y = e - dcIn_[c] + dcPole_ * dcOut_[c];
+            dcIn_[c] = e;
+            dcOut_[c] = settle(y);
             const double wet = output_ * run(post_, postState_[c], y);
             if (out[c]) {
                 out[c][i] = static_cast<float>(dry[c] + (wet - dry[c]) * wet_);

@@ -84,13 +84,16 @@ void quietUnity() {
                         t.set(T::Output, -3);
                         t.prepare(kRate);
                         const auto y = render(t, sine(hz, 96000, 1e-5));
-                        worst = std::max(worst, std::abs(20 * std::log10(component(y, hz) / 1e-5) + 3));
+                        // A quiet signal passes at the curve's slope at the
+                        // bias, f'(b), and Output.
+                        const double want = -3 + 20 * std::log10(T::slope(tube, 0.5 * bias / 100));
+                        worst = std::max(worst, std::abs(20 * std::log10(component(y, hz) / 1e-5) - want));
                     }
                 }
             }
         }
     }
-    check(worst < 0.05, "a quiet sine passes at Output's gain for every Tube, Drive, Bias and Tone (worst " + std::to_string(worst) + " dB)");
+    check(worst < 0.05, "a quiet sine passes at f'(b) and Output's gain for every Tube, Drive, Bias and Tone (worst " + std::to_string(worst) + " dB)");
 }
 
 void slopes() {
@@ -182,7 +185,41 @@ void routing() {
 
 }  // namespace
 
+/// The review of 2b507061: a biased tube's DC came out, and normalising by
+/// the slope at the bias made loud swings up to +18 dB louder.
+void reviewed() {
+    struct Case {
+        int tube;
+        double drive, bias, envelope, attack, release, tone, hz, amplitude;
+        const char* what;
+    };
+    const Case cases[] = {{T::A, 0, 50, 0, 5, 200, 0, 200, 0.5, "the defaults, a -6 dBFS sine"},
+                          {T::B, 0, 100, 0, 5, 200, 0, 200, 0.5, "Tube B, Bias 100, a -6 dBFS sine"},
+                          {T::B, -12, 100, 100, 0.1, 1, 100, 5000, 1.0, "Tube B, Bias and Envelope full, fast, Tone +100, full scale"}};
+    for (const auto& c : cases) {
+        T t;
+        t.set(T::Tube, c.tube);
+        t.set(T::Drive, c.drive);
+        t.set(T::Bias, c.bias);
+        t.set(T::Envelope, c.envelope);
+        t.set(T::Attack, c.attack);
+        t.set(T::Release, c.release);
+        t.set(T::Tone, c.tone);
+        t.prepare(kRate);
+        const auto y = render(t, sine(c.hz, 96000, c.amplitude));
+        double mean = 0, peak = 0;
+        for (std::size_t i = 48000; i < y.size(); ++i) {
+            mean += y[i];
+            peak = std::max(peak, static_cast<double>(std::abs(y[i])));
+        }
+        mean /= 48000;
+        check(std::abs(mean) < 1e-3, std::string(c.what) + ": no DC (" + std::to_string(mean) + ")");
+        check(peak <= 1.6 * c.amplitude, std::string(c.what) + ": no louder than its input, room for the tone's overshoot (" + std::to_string(peak) + ")");
+    }
+}
+
 int main() {
+    reviewed();
     quietUnity();
     slopes();
     harmonics();
