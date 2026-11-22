@@ -286,6 +286,39 @@ void restoreImage(SQLite::Database& db, const std::string& rootTable, std::int64
 Payload captureTrack(SQLite::Database& db,std::int64_t root) {
     const Catalog catalog(db);Image image(db,catalog);image.collect("tracks",root);return image.encode(root);
 }
+Payload captureBouncedTrack(SQLite::Database &db, const Payload &track, std::int64_t source) {
+    const auto id = signedInteger(track.at("id"));
+    const Catalog catalog(db);
+    Image image(db, catalog);
+    // Use the native defaults for a fresh root and strip. No source transport,
+    // recording, or input state belongs to the new track.
+    SQLite::Database scratch(":memory:", SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+    SQLite::Statement definition(db, "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?");
+    for (const auto *table : {"tracks", "mixer_strip"}) {
+        definition.bind(1, table);
+        if (!definition.executeStep())
+            throw std::runtime_error("missing native bounce track table");
+        scratch.exec(definition.getColumn(0).getString());
+        definition.reset();
+    }
+    scratch.exec("PRAGMA foreign_keys=OFF");
+    restoreRow(scratch, "tracks", track);
+    image.remove("tracks", *captureRow(scratch, "tracks", "id", id));
+
+    Payload strip = {{"track_id", id}};
+    if (const auto sourceStrip = captureRow(db, "mixer_strip", "track_id", source)) {
+        for (const auto *field :
+             {"volume_db", "pan", "pan_law", "width", "phase_invert", "delay_samples", "vca_group_id"})
+            strip[field] = sourceStrip->at(field);
+    }
+    restoreRow(scratch, "mixer_strip", strip);
+    image.remove("mixer_strip", *captureRow(scratch, "mixer_strip", "track_id", id));
+    if (auto pan = captureRow(db, "mixer_pan_settings", "track_id", source)) {
+        (*pan)["track_id"] = id;
+        image.remove("mixer_pan_settings", *pan);
+    }
+    return image.encode(id);
+}
 Payload captureTrackSource(SQLite::Database &db, std::int64_t root) {
     const Catalog catalog(db);
     Image image(db, catalog, true);

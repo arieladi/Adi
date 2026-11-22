@@ -170,6 +170,26 @@ void command() {
     for (const auto precision :
          std::array<engine::Precision, 2>{engine::Precision::Float32, engine::Precision::Float64}) {
         Project p;
+        auto &db = p.store->db();
+        const auto delay = precision == engine::Precision::Float32 ? 23 : -19;
+        db.exec("INSERT INTO tracks(id,kind,name) VALUES(51,'return','Return'),(61,'vca','VCA');"
+                "INSERT INTO mixer_pan_settings(track_id,mode,pan_left,pan_right)"
+                " VALUES(21,'split',-0.7,0.35);"
+                "UPDATE mixer_strip SET pan_law=2,width=0.65,phase_invert=1,input_gain_db=3,"
+                " vca_group_id=61 WHERE track_id=21;"
+                "UPDATE tracks SET record_armed=1,monitor_mode=0,input_ref='source input' WHERE id=21;"
+                "UPDATE routing SET gain_db=-3,pan=0.1 WHERE id=80;"
+                "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,gain_db,pan,pre_fader,enabled)"
+                " VALUES(70,'track',21,'track',51,'send',-18,-0.1,0,1),"
+                " (71,'track',21,'track',51,'send',-12,0.2,0,1),"
+                " (72,'track',21,'track',51,'send',-5,0,1,0);"
+                "INSERT INTO routing_send_taps(routing_id,tap)"
+                " VALUES(70,'post_fx'),(71,'post_mixer'),(72,'pre_fx');");
+        {
+            SQLite::Statement setDelay(db, "UPDATE mixer_strip SET delay_samples=? WHERE track_id=21");
+            setDelay.bind(1, delay);
+            setDelay.exec();
+        }
         auto options = p.options();
         options.job.session.precision = precision;
         const auto before = hear(p, "before", precision, 0, 1024);
@@ -187,7 +207,6 @@ void command() {
                                                     : committed.error.c_str());
         if (!committed.ok)
             continue;
-        auto &db = p.store->db();
         check(db.execAndGet("SELECT parent_id FROM tracks WHERE id=30").getInt64() == 10 &&
                   db.execAndGet("SELECT color FROM tracks WHERE id=30").getInt() == 6 &&
                   db.execAndGet("SELECT kind FROM tracks WHERE id=30").getString() == "audio",
@@ -195,13 +214,30 @@ void command() {
         check(db.execAndGet("SELECT index_in_parent FROM tracks WHERE id=30").getInt() == 1 &&
                   db.execAndGet("SELECT index_in_parent FROM tracks WHERE id=22").getInt() == 2,
               "new sibling is inserted immediately after the source");
-        check(db.execAndGet("SELECT dst_id FROM routing WHERE id=81").getInt() == 41 &&
+        check(db.execAndGet("SELECT count(*) FROM mixer_strip WHERE track_id=30 AND volume_db=-6 "
+                            "AND pan=0.25 AND pan_law=2 AND width=0.65 AND phase_invert=1 "
+                            "AND vca_group_id=61 AND input_gain_db=0").getInt() == 1 &&
+                  db.execAndGet("SELECT delay_samples FROM mixer_strip WHERE track_id=30").getInt() == delay &&
+                  db.execAndGet("SELECT count(*) FROM mixer_pan_settings WHERE track_id=30 "
+                                "AND mode='split' AND pan_left=-0.7 AND pan_right=0.35").getInt() == 1 &&
+                  db.execAndGet("SELECT count(*) FROM tracks WHERE id=30 AND record_armed=0 "
+                                "AND monitor_mode=2 AND input_ref IS NULL").getInt() == 1,
+              "new strip has editable mixer settings and no baked input gain or source recording input");
+        check(db.execAndGet("SELECT count(*) FROM routing WHERE id=81 AND dst_id=41 "
+                            "AND gain_db=-3 AND pan=0.1").getInt() == 1 &&
                   db.execAndGet("SELECT muted FROM tracks WHERE id=21").getInt() == 0 &&
                   db.execAndGet("SELECT count(*) FROM clips WHERE track_id=21 AND muted<>0").getInt() == 1 &&
                   db.execAndGet("SELECT count(*) FROM clips WHERE track_id=21 AND muted=0").getInt() == 2 &&
                   db.execAndGet("SELECT pos_ns FROM clips WHERE track_id=21 AND muted<>0").getInt64() == 2854167 &&
                   db.execAndGet("SELECT length_ns FROM clips WHERE track_id=21 AND muted<>0").getInt64() == 13333333,
               "the explicit output remains and only the middle source piece is muted on the sample clock");
+        check(db.execAndGet("SELECT count(*) FROM routing r JOIN routing_send_taps t ON t.routing_id=r.id "
+                            "WHERE r.src_id=30 AND r.dst_id=51 AND r.kind='send' AND "
+                            "((r.id=82 AND r.gain_db=-18 AND r.pan=-0.1 AND r.enabled=1 AND t.tap='post_fx') OR "
+                            " (r.id=83 AND r.gain_db=-12 AND r.pan=0.2 AND r.enabled=1 AND t.tap='post_mixer') OR "
+                            " (r.id=84 AND r.gain_db=-5 AND r.pre_fader=1 AND r.enabled=0 AND t.tap='pre_fx'))")
+                      .getInt() == 3,
+              "new send identities retain gain, pan, enable and explicit tap state");
         check(db.execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=31").getInt() == 0 &&
                   db.execAndGet("SELECT src_len_frames FROM audio_clips WHERE clip_id=31").getInt() == 640 &&
                   db.execAndGet("SELECT name FROM clips WHERE id=31").getString() == "Source (Bounce)",

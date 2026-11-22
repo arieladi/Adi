@@ -9,18 +9,22 @@ connection filename and journal head; commit refuses another connection/file,
 replacement document generation, or an intervening native edit.
 
 `prepareBounceToNewTrack(Store&, TrackBounceOptions, loader, control)` captures
-the selected regular track or group, renders its direct post-fader wet output,
-and prepares a plain audio sibling. Supply explicit source/new track, clip,
+the selected regular track's Post FX output and prepares a plain audio sibling.
+Supply explicit source/new track, clip,
 media and, when the source has a user Main route, new routing identities.
 The new sibling follows the source; later siblings shift together in the same
-undo step. It inherits the parent and palette color and retains the source's
-explicit Main destination. Name defaults to the source plus ` (Bounce)` and
+undo step. It inherits the parent, palette color, explicit Main route, static
+mixer settings and sends, including send level, pan, enable and any explicit
+tap. The render bakes input gain and effects. The new strip starts with 0 dB
+input gain, fresh recording state and editable fader, pan, width, phase and
+track delay. Name defaults to the source plus ` (Bounce)` and
 also names the new clip. `muteOriginal` defaults true and splits the main-lane
 material at the captured range's edges. It mutes the covered pieces and leaves
-the remaining material live. A group source still mutes its group output. This is a
-direct output render, not an isolated mix through Main. Sends, return effects
-and sidechain connections are not cloned. It does not promise to replace every
-parallel route of a source. The output clip starts at the job's begin sample,
+the remaining material live. Pre FX sends on the new track receive the bounced
+audio. Send effects stay on their return tracks. Source automation, sidechain
+connections and live inputs stay on the original track. A group source still
+uses its direct Post Fader output and mutes the group output. The output clip
+starts at the job's begin sample,
 converted to nanoseconds with a checked sample round trip, and plays Warp off.
 
 `prepareBounceInPlace(Store&, InPlaceBounceOptions, loader, control)` renders a
@@ -65,8 +69,9 @@ Undo restores its still-existing old path. External files left uncopied are
 verified again before SQL commit, so changing one after capture refuses the
 edit without deleting it. Successful pool files survive Undo for Redo/history.
 
-Tests audition actual outputs through a parent and a different explicit Main
-route in both processing widths, with source effects, gain and pan. They cover
+Tests audition actual outputs through a parent, a different explicit Main
+route and sends in both processing widths, with source effects, gain, split pan
+and signed track delay. They cover
 removal of delayed and disabled inserts, Warp off, exact native undo/redo
 and reopen, hierarchy/order/color, document/head guards, same-job retry after a
 deferred FK fault, and preservation of external sources. No schema or opcode

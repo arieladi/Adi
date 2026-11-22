@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/bounce_commands.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/row_capture.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/store.hpp"
+#include "adi/track_image.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <cmath>
 #include <iterator>
@@ -25,6 +28,26 @@ bool exists(SQLite::Database &db, const char *table, std::int64_t id) {
     SQLite::Statement q(db, std::string("SELECT 1 FROM ") + table + " WHERE id=?");
     q.bind(1, id);
     return q.executeStep();
+}
+void copyOutput(std::vector<OpRequest> &requests, SQLite::Database &db, Payload row,
+                std::int64_t track, std::int64_t id) {
+    const auto oldId = detail::signedInteger(row.at("id"));
+    row["id"] = id;
+    row["src_id"] = track;
+    Payload payload = {{"id", id},
+                       {"srcKind", "track"},
+                       {"src", track},
+                       {"dstKind", row.at("dst_kind")},
+                       {"dst", row.at("dst_id")},
+                       {"kind", row.at("kind")}};
+    if (row.at("kind") == "send") {
+        if (auto tap = detail::captureRow(db, "routing_send_taps", "routing_id", oldId)) {
+            (*tap)["routing_id"] = id;
+            payload["sendTapRow"] = std::move(*tap);
+        }
+    }
+    payload["row"] = std::move(row);
+    add(requests, "routing.connect", std::move(payload));
 }
 } // namespace
 bool TrackBounce::ready() const noexcept {
@@ -53,6 +76,7 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
         std::optional<std::int64_t> head;
         std::vector<OpRequest> prefix, sourceEdits;
         std::string name;
+        bool group = false;
         {
             SQLite::Transaction capture(store.db(), SQLite::TransactionBehavior::DEFERRED);
             head = OpJournal(store).headSeq();
@@ -90,37 +114,53 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
                 add(prefix, "track.reorder",
                     {{"id", siblings.getColumn(0).getInt64()}, {"index", previous + 1}});
             }
-            add(prefix, "track.create",
-                {{"id", options.newTrack},
-                 {"kind", "audio"},
-                 {"name", name},
-                 {"parent", parent},
-                 {"index", index}});
+            group = source.getColumn(0).getString() == "group";
+            Payload track = {{"id", options.newTrack},
+                             {"kind", "audio"},
+                             {"name", name},
+                             {"parent", parent},
+                             {"index", index}};
+            Payload root = {{"id", options.newTrack},
+                            {"kind", "audio"},
+                            {"name", name},
+                            {"parent_id", parent},
+                            {"index_in_parent", index},
+                            {"monitor_mode", 2}};
             if (!source.getColumn(4).isNull()) {
                 const auto color = source.getColumn(4).getInt64();
                 if (color < 0 || color > 69)
                     throw std::runtime_error("bounce source color is not a Live palette index");
-                add(prefix, "track.setColor", {{"id", options.newTrack}, {"color", color}});
+                root["color"] = color;
             }
-            SQLite::Statement route(store.db(), "SELECT dst_kind,dst_id FROM routing WHERE src_kind='track' "
+            if (!group)
+                track["contents"] = detail::captureBouncedTrack(store.db(), root, options.sourceTrack);
+            add(prefix, "track.create", std::move(track));
+            if (group && root.contains("color"))
+                add(prefix, "track.setColor", {{"id", options.newTrack}, {"color", root.at("color")}});
+            SQLite::Statement route(store.db(), "SELECT * FROM routing WHERE src_kind='track' "
                                                 "AND src_id=? AND kind='main' AND origin='user' ORDER BY id");
             route.bind(1, options.sourceTrack);
             if (route.executeStep()) {
                 if (options.routingId <= 0 || exists(store.db(), "routing", options.routingId))
                     throw std::runtime_error(
                         "bounce needs a free routing id for the source's explicit Main destination");
-                add(prefix, "routing.connect",
-                    {{"id", options.routingId},
-                     {"srcKind", "track"},
-                     {"src", options.newTrack},
-                     {"dstKind", route.getColumn(0).getString()},
-                     {"dst", route.getColumn(1).getInt64()},
-                     {"kind", "main"}});
+                copyOutput(prefix, store.db(), detail::captureQueryRow(route), options.newTrack,
+                           options.routingId);
                 if (route.executeStep())
                     throw std::runtime_error("bounce source has multiple explicit Main destinations");
             }
+            if (!group) {
+                RowIds ids(store.db());
+                ids.reserve("routing", options.routingId);
+                SQLite::Statement sends(store.db(), "SELECT * FROM routing WHERE src_kind='track' "
+                                                     "AND src_id=? AND kind='send' ORDER BY id");
+                sends.bind(1, options.sourceTrack);
+                while (sends.executeStep())
+                    copyOutput(prefix, store.db(), detail::captureQueryRow(sends), options.newTrack,
+                               ids.next("routing"));
+            }
             if (options.muteOriginal) {
-                if (source.getColumn(0).getString() == "group") {
+                if (group) {
                     add(sourceEdits, "track.setMute", {{"id", options.sourceTrack}, {"muted", true}});
                 } else {
                     auto muted = prepareMuteRange(store, {{options.sourceTrack}, {1, placement}, {1, end}},
@@ -133,7 +173,8 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
         }
         BounceOptions bounce;
         bounce.job = options.job;
-        bounce.job.source = {options.sourceTrack, engine::OfflineTap::PostFader};
+        bounce.job.source = {options.sourceTrack, group ? engine::OfflineTap::PostFader
+                                                       : engine::OfflineTap::PreFader};
         bounce.job.regionId.reset();
         bounce.destination.track = options.newTrack;
         bounce.destination.clipId = options.clipId;

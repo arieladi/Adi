@@ -5,6 +5,8 @@ namespace adi::detail {
 // Owner-thread causal row image for track.delete's paired track.create inverse.
 // The journal owns the transaction. Audio and shared plug-in blobs stay pooled.
 Payload captureTrack(SQLite::Database&,std::int64_t);
+// Fresh audio track and writable static mixer state for a post-FX bounce.
+Payload captureBouncedTrack(SQLite::Database &, const Payload &track, std::int64_t source);
 // Read-only causal source rows for render fingerprints. Includes restrictive
 // FK dependants, with no delete/restore safety relaxation. Freeze metadata and
 // purely visual/controller layout rows are excluded to avoid self-reference.
