@@ -115,6 +115,7 @@ class CompressorDevice final : public DeviceInstance {
     const DeviceIdentity &identity() const noexcept override { return identity_; }
     bool loaded() const noexcept override { return true; }
     bool processesDouble() const noexcept override { return true; }
+    ReactivationGate &gateForTesting() noexcept { return gate_; }
     void prepare(double rate, std::int32_t maximum) override {
         if (prepared_ && rate == rate_ && maximum == maximum_)
             return;
@@ -352,6 +353,11 @@ class CompressorDevice final : public DeviceInstance {
     Payload extra_ = Payload::object();
 };
 } // namespace
+ReactivationGate *detail::mixCompressorGateForTesting(DeviceInstance &instance) noexcept {
+    if (auto *compressor = dynamic_cast<CompressorDevice *>(&instance))
+        return &compressor->gateForTesting();
+    return nullptr;
+}
 std::unique_ptr<DeviceInstance> makeMixCompressorFunction(const engine::DeviceRequest &request,
                                                           std::string &error) {
     if (!request.ref || !mix::functionForReference(request.ref->format, request.ref->uid) ||

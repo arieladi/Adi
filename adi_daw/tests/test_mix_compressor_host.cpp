@@ -5,17 +5,21 @@
 #include "adi/ui/project_document.hpp"
 #include "adi/row_capture.hpp"
 #include "juce/builtin_host.hpp"
+#include "juce/mix_compressor_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "temp_directory.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <new>
+#include <thread>
 #include <type_traits>
 #if defined(_M_X64) || defined(__SSE2__)
 #include <emmintrin.h>
@@ -159,6 +163,98 @@ template <class T> void exactAudio(double rate) {
     check(exact, "native whole/split, live controls, same-format prepare and sanitized input equal "
                  "direct Clean samples");
     check(reduces, "loaded native compressor actually reduces programme level");
+}
+void duplicatePrepareKeepsGraphProcessing() {
+    constexpr double rate = 48000.;
+    constexpr int frames = 64;
+    auto compressor = make(), reference = make();
+    if (!compressor || !reference) {
+        check(false, "the no-op graph prepare fixture loads two native compressors");
+        return;
+    }
+    auto *gate = device::detail::mixCompressorGateForTesting(*compressor);
+    if (!gate) {
+        check(false, "the native compressor exposes its gate to the prepare probe");
+        return;
+    }
+    for (auto *instance : {compressor.get(), reference.get()}) {
+        for (const auto *id : {"0", "2", "4", "7"})
+            instance->setParam(id, device::ParamValue::fromNormalized(0.));
+    }
+    struct Programme final : engine::Node {
+        float value = .95f;
+        void process(const engine::NodeIo &io) noexcept override {
+            for (auto ch = 0; ch < io.channels; ++ch)
+                std::fill_n(io.out[ch] + io.blockOffset, io.frames, value);
+        }
+    };
+    Programme liveSource, nextSource;
+    device::DeviceNode liveNode(*compressor), nextNode(*compressor);
+    engine::Graph live, next;
+    const auto connect = [](engine::Graph &graph, Programme &source, device::DeviceNode &node) {
+        const auto input = graph.addNode(source), output = graph.addNode(node);
+        graph.connect(input, output);
+        graph.setOutput(output);
+    };
+    connect(live, liveSource, liveNode);
+    connect(next, nextSource, nextNode);
+    live.prepare(rate, frames);
+    reference->prepare(rate, frames);
+
+    Audio<float> produced{}, dry{};
+    for (auto &lane : dry) lane.fill(liveSource.value);
+    float *outputs[]{produced[0].data(), produced[1].data()};
+    engine::AudioIo io;
+    io.frames = frames;
+    io.numOut = 2;
+    io.out = outputs;
+    const auto render = [&] {
+        audio = true;
+        live.process(io);
+        audio = false;
+    };
+    auto warm = dry;
+    process(*reference, warm, 1, false);
+    render();
+    check(live.ok() && produced == warm && warm != dry, "the live graph starts with known wet Clean audio");
+    auto expected = dry;
+    process(*reference, expected, 2, false);
+
+    std::atomic<bool> finished{false};
+    const auto done = [&] { return finished.load(std::memory_order_acquire); };
+    const auto waitFor = [](auto predicate) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!predicate()) {
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::yield();
+        }
+        return true;
+    };
+    std::exception_ptr prepareFailure;
+    std::jthread owner;
+    bool admitted = false;
+    {
+        // With a call inside the gate, a misplaced Hold stays closed until this
+        // Pass leaves. Wait for closure or completion without timing the prepare.
+        const device::ReactivationGate::Pass inFlight(*gate);
+        owner = std::jthread([&] {
+            try { next.prepare(rate, frames); }
+            catch (...) { prepareFailure = std::current_exception(); }
+            finished.store(true, std::memory_order_release);
+        });
+        if (waitFor([&] { return done() || gate->closed(); })) {
+            admitted = static_cast<bool>(inFlight) && !gate->closed();
+            render();
+        }
+    }
+    if (!waitFor(done)) {
+        std::fputs("FAIL replacement graph prepare did not unwind after the test released its gate pass\n", stderr);
+        std::abort();
+    }
+    owner.join();
+    check(!prepareFailure && next.ok(), "the same-format replacement graph prepares");
+    check(admitted && expected != dry && produced == expected,
+          "same-format graph rebuild does not pass an unprocessed Clean segment");
 }
 void quietEnvelope() {
     auto device = make();
@@ -557,6 +653,7 @@ int main() {
     stateAndDescriptors();
     quietEnvelope();
     cleanGraphSuspension();
+    duplicatePrepareKeepsGraphProcessing();
     thresholdEditWhileSuspended();
     for (double rate : {44100., 48000., 96000., 176400., 192000., 384000., 768000.}) {
         exactAudio<float>(rate);
