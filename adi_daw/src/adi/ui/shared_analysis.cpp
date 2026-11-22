@@ -1168,9 +1168,12 @@ struct SharedAnalysis::Domain {
     }
     void skipCertifiedSilenceTo(std::int64_t next) noexcept {
         if (next <= cursor.next) return;
-        const bool averageParked = canParkAverage(outputs.load(std::memory_order_relaxed));
+        const auto bits = outputs.load(std::memory_order_relaxed);
+        const bool averageParked = canParkAverage(bits);
+        constexpr std::uint32_t ordinaryWindows = Spectrum | Scope | Phase;
+        const bool ordinaryWindow = !(bits & ~ordinaryWindows);
         if (spectrumLevelHistory) spectrumLevelHistory->skipSilence(cursor.next, next);
-        if (averageParked || spectrumLevelHistory) {
+        if (ordinaryWindow || averageParked || spectrumLevelHistory) {
             // The retained history is exactly zero. Omitted samples still
             // belong to the audible sequence and retain the original hop phase.
             const auto frames = next - cursor.next + static_cast<std::int64_t>(sinceWindow);

@@ -2686,6 +2686,70 @@ void parkedSilence() {
     check(view.read() && view.read()->advancing && view.read()->peak[0] == .5f,
           "playback resumes with the first complete window");
 }
+void parkedWindowHopPhase() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 61;
+    constexpr std::array<std::uint32_t, 4> outputs{
+        SharedAnalysis::Scope, SharedAnalysis::Phase, SharedAnalysis::Spectrum,
+        SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Phase};
+    const std::array<float, window> zeros{};
+    std::array<float, window> left, right;
+    left.fill(.5f);
+    right.fill(-.25f);
+    for (const auto output : outputs) {
+        Fixture parked, reference;
+        parked.tap = std::make_shared<ScopeTap>(48000., .25);
+        reference.tap = std::make_shared<ScopeTap>(48000., .25);
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.hopSize = hop;
+        request.window = adi::dsp::Window::Rectangular;
+        request.outputs = output;
+        auto view = parked.broker.acquire(request);
+        auto uninterrupted = reference.broker.acquire(request);
+        const float *silence = nullptr;
+        const auto write = [=](Fixture &fixture, const float *l, const float *r, int count) {
+            fixture.tap->write(l, r, count, stamp, false, revision);
+            fixture.broker.pump();
+        };
+        write(parked, silence, silence, window);
+        write(reference, zeros.data(), zeros.data(), window);
+        const auto first = view.read();
+        const auto settled = parked.broker.stats();
+        for (int i = 0; i < blocks; ++i) {
+            write(parked, silence, silence, block);
+            // A written zero buffer is the same audio, minus the parked-silence certificate.
+            write(reference, zeros.data(), zeros.data(), block);
+        }
+        const auto idle = parked.broker.stats();
+        const auto controlQuiet = uninterrupted.read();
+        check(first && view.read() == first && controlQuiet && controlQuiet->firstSequence == quietFrames - quietFrames % hop &&
+                  parked.tap->oldest() > window && settled.workerPasses == idle.workerPasses &&
+                  settled.cursorReads == idle.cursorReads && settled.transforms == idle.transforms &&
+                  settled.analysisWindows == idle.analysisWindows && settled.publications == idle.publications,
+              "plain windowed monitors hold one quiet frame with no extra work across a certified ring wrap");
+
+        write(parked, left.data(), right.data(), untilHop - 1);
+        write(reference, left.data(), right.data(), untilHop - 1);
+        check(view.read() == first && uninterrupted.read() == controlQuiet,
+              "an incomplete same-stamp monitor hop still holds the previous picture");
+        write(parked, left.data(), right.data(), 1);
+        write(reference, left.data(), right.data(), 1);
+        const auto audible = view.read(), expected = uninterrupted.read();
+        check(first && audible && expected && audible != first && expected != controlQuiet &&
+                  audible->windowSerial == expected->windowSerial &&
+                  audible->firstSequence == quietFrames + untilHop && audible->firstSequence == expected->firstSequence &&
+                  audible->firstStamp == stamp && audible->transportRevision == revision && !audible->advancing &&
+                  audible->sourceEpoch == first->sourceEpoch && audible->overrunCount == first->overrunCount &&
+                  audible->peak == std::array{.5f, .25f} && exactBins(audible->rms, expected->rms) &&
+                  audible->correlation == expected->correlation && exactBins(audible->binsDbfs, expected->binsDbfs) &&
+                  exactBins(audible->scopeLeft, expected->scopeLeft) && exactBins(audible->scopeRight, expected->scopeRight) &&
+                  parked.broker.stats().transforms == ((output & SharedAnalysis::Spectrum) != 0 ? 1u : 0u),
+              "Scope, Phase and Raw wake at the uninterrupted hop with matching samples, stamps and levels");
+    }
+}
+
 void parkedStereoBalance() {
     constexpr int window = 480, historyFrames = 96000, historyBlocks = historyFrames / window;
     constexpr std::int64_t stoppedStamp = 800;
@@ -2747,11 +2811,15 @@ void parkedStereoBalance() {
     f.tap->write(left.data(), right.data(), window, stoppedStamp, false, revision);
     f.broker.pump();
     const auto woke = spectrum.read();
+    // The first complete hop starts with the 160 quiet samples that preceded
+    // monitoring. Only its remaining samples belong in the resumed reading.
+    constexpr auto quietTail = window / 3;
+    const auto firstMonitorRms = .5 * std::sqrt(static_cast<double>(window - quietTail) / historyFrames);
     check(atZero && woke && !woke->advancing && woke->transportRevision == revision &&
-              woke->firstSequence == monitorStart && woke->sourceEpoch == atZero->sourceEpoch &&
+              woke->firstSequence == monitorStart - quietTail && woke->sourceEpoch == atZero->sourceEpoch &&
               woke->overrunCount == atZero->overrunCount && woke->balanceRms2s &&
-              near((*woke->balanceRms2s)[0], leftTailRms, 1e-7) &&
-              near((*woke->balanceRms2s)[1], leftTailRms * .5, 1e-7) &&
+              near((*woke->balanceRms2s)[0], firstMonitorRms, 1e-7) &&
+              near((*woke->balanceRms2s)[1], firstMonitorRms * .5, 1e-7) &&
               f.broker.stats().transforms == settled.transforms + 1,
           "same-stamp stopped monitoring wakes immediately with the full trailing denominator and no false overrun");
 
@@ -4685,7 +4753,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
-          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedWindowHopPhase(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); parkedSpectrumLevels(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
