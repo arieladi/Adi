@@ -45,9 +45,12 @@ worker reads whenever a control moves:
 
 - `fftSize` and `window`: 1,024 × 2^Block, with a Hann window.
 - `channel`: which signal is analysed (`SpectrumDevice::pick`).
-- `hopSamples`: Refresh in samples at the session rate.
+- `hopSamples`: Refresh in samples at the session rate, over the whole
+  range (2 s at 192 kHz is 384,000 samples).
 - `average`: the `LinearMagnitudeAverage::Settings`. Its decay is set so
-  that each analysis keeps 1 − 1/Avg of the average.
+  that each analysis keeps 1 − 1/Avg of the average. Its own hop is at most
+  `kMaximumHop` (65,536), with the decay for that hop. The averager's
+  coefficient depends only on decay ÷ hop, so this holds at any Refresh.
 
 The magnitudes are calibrated as `dsp::Spectrum` defines them: a full-scale
 sine on a bin reads 0 dBFS.

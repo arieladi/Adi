@@ -89,8 +89,26 @@ void settings() {
     check(d.analysis().hopSamples == 2880, "Refresh 60 ms at 48 kHz: a hop of 2,880 samples");
     d.prepare(44100);
     check(d.analysis().hopSamples == 2646, "and at 44.1 kHz, 2,646");
+    // From Left, so a rejected value (which would leave Left) is told apart
+    // from a clamped one (the second review: from the default, Sum, both
+    // read the same).
+    d.set(D::Channel, D::Left);
     d.set(D::Channel, 7);
     check(d.analysis().channel == D::Sum, "Channel is clamped to its three choices");
+    // Refresh is the hop at every rate, over its whole range: 2 s at 96 kHz
+    // is 192,000 samples, past the averager's own 65,536, and each analysis
+    // still moves the average 1/Avg of the way.
+    d.prepare(96000);
+    d.set(D::Refresh, 2000);
+    d.set(D::Avg, 4);
+    check(d.analysis().hopSamples == 192000, "Refresh 2 s at 96 kHz: a hop of 192,000 samples (" +
+                                                 std::to_string(d.analysis().hopSamples) + ")");
+    adi::dsp::LinearMagnitudeAverage avg;
+    check(avg.prepare(d.analysis().average) && std::abs(avg.coefficient() - 0.25) < 1e-12,
+          "and the averager moves 1/Avg an analysis (" + std::to_string(avg.coefficient()) + ")");
+    d.set(D::Refresh, 1500);
+    d.prepare(48000);
+    check(d.analysis().hopSamples == 72000, "Refresh 1.5 s at 48 kHz: 72,000 samples, not held at 65,536");
     check(D::pick(D::Left, 0.25f, -0.5f) == 0.25f && D::pick(D::Right, 0.25f, -0.5f) == -0.5f && D::pick(D::Sum, 0.25f, -0.5f) == -0.125f,
           "Channel picks L, R, or their mean");
 }
