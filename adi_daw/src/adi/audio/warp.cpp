@@ -131,20 +131,45 @@ struct NativeSource {
     std::vector<float> page;
     std::uint64_t first=std::numeric_limits<std::uint64_t>::max();std::uint32_t count=0;
     NativeSource(WavReader& source,const WarpRenderPlan& spec):reader(source),plan(spec),
-        page(static_cast<std::size_t>(blockFrames+1)*source.channels()){}
+        page(static_cast<std::size_t>(blockFrames+3)*source.channels()){}
     float sample(double position,std::uint16_t channel) {
         if(!(position>=0) || position>=static_cast<double>(plan.sourceFrames))return 0;
-        const auto frame=static_cast<std::uint64_t>(position),start=frame/blockFrames*blockFrames;
-        if(first!=start) {
-            count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames+1,plan.sourceFrames-start));
-            reader.seek(plan.sourceStart+start);
-            if(reader.read(page.data(),count)!=count)throw Failure{WarpError::Io,"short native warp source read"};
-            first=start;
+        const auto frame = static_cast<std::uint64_t>(position);
+        const auto block = frame / blockFrames * blockFrames;
+        const auto leftHalo = block == 0 ? 0u : 1u;
+        const auto start = block - leftHalo;
+        if (first != block) {
+            count = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(blockFrames + leftHalo + 2, plan.sourceFrames - start));
+            reader.seek(plan.sourceStart + start);
+            if (reader.read(page.data(), count) != count)
+                throw Failure{WarpError::Io, "short native warp source read"};
+            first = block;
         }
-        const auto local=static_cast<std::size_t>(frame-first);const auto channels=reader.channels();
-        const double a=page[local*channels+channel],b=local+1<count?page[(local+1)*channels+channel]:0;
-        const double fraction=position-static_cast<double>(frame);
-        return static_cast<float>((std::isfinite(a)?a:0)*(1-fraction)+(std::isfinite(b)?b:0)*fraction);
+        const auto local = static_cast<std::size_t>(frame - start);
+        const auto channels = reader.channels();
+        const auto at = [&](std::size_t index) -> double {
+            if (index >= count)
+                return 0;
+            const auto value = page[index * channels + channel];
+            return std::isfinite(value) ? value : 0.0;
+        };
+        const auto y1 = at(local);
+        const auto x = position - static_cast<double>(frame);
+        if (x == 0)
+            return static_cast<float>(y1);
+
+        // Catmull-Rom slopes are the centered differences on either side.
+        // A one-frame left and two-frame right halo keep the polynomial
+        // identical across cache pages, with silence beyond the source window.
+        const auto y0 = local ? at(local - 1) : 0.0;
+        const auto y2 = at(local + 1), y3 = at(local + 2);
+        const auto m1 = (y2 - y0) * 0.5, m2 = (y3 - y1) * 0.5;
+        const auto delta = y2 - y1;
+        const auto value = y1 + x * (m1 + x * (3 * delta - 2 * m1 - m2 +
+                                               x * (m1 + m2 - 2 * delta)));
+        constexpr auto limit = static_cast<double>(std::numeric_limits<float>::max());
+        return static_cast<float>(std::clamp(value, -limit, limit));
     }
 };
 double mapped(const std::vector<WarpAnchor>& anchors,double position,bool sourceToOutput) {
