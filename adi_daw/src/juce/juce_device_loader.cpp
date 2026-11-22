@@ -447,14 +447,11 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceR
             }
         }
     }
-    if(!found && (cacheOnly_ || managedDiscovery_)) {
-        ++stats_.notFound;++stats_.needsDiscovery;
-        err="NeedsDiscovery: VST3 identity is not in the validated catalogue";return nullptr;
-    }
-
-    // Even a known bundle can gain a new class after an update. The scanner
-    // reuses its stamped packet for an unchanged bundle.
-    if (!found && absoluteHint && juce::File(hint).hasFileExtension("vst3") && juce::File(hint).exists()) {
+    // A completed discovery job owns the Browser catalogue. A project's
+    // explicit path can still discover exactly one installed module when the
+    // job has finished, using the same isolated helper and registry checks.
+    if (!found && !cacheOnly_ && !discoveryJob_ && absoluteHint &&
+        juce::File(hint).hasFileExtension("vst3") && juce::File(hint).exists()) {
         juce::KnownPluginList types;
         const auto report=vst3_.scanFile(hint,types,scanConfig_);
         if(!report.complete || !report.failures.empty()) {
@@ -472,14 +469,14 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceR
         for (const auto& description : types.getTypes()) known_->addType(description);
         found = find(types);
     }
-    if (!found && !knownHint && !scanned_ && !publishedCatalogue_) {
+    if (!found && !knownHint && !cacheOnly_ && !managedDiscovery_ && !scanned_ && !publishedCatalogue_) {
         scan();
         if(!scanned_){++stats_.failed;err="VST3 discovery unavailable or cancelled";return nullptr;}
         found = find(*known_);
     }
     if (!found) {
         ++stats_.notFound;
-        if(publishedCatalogue_) {
+        if(cacheOnly_ || managedDiscovery_ || publishedCatalogue_) {
             ++stats_.needsDiscovery;
             err="NeedsDiscovery: VST3 identity is not in the validated catalogue";
             return nullptr;
@@ -534,7 +531,7 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeClap(const engine::DeviceR
         return first;
     };
     auto* pick=find();
-    if(pick==nullptr && !cacheOnly_ && !managedDiscovery_ && !installedHint.empty()) {
+    if(pick==nullptr && !cacheOnly_ && !discoveryJob_ && !installedHint.empty()) {
         auto scanner=scan::Scanner::open(scanConfig_,err);
         if(!scanner) {
             ++stats_.notFound;++stats_.needsDiscovery;err="NeedsDiscovery: "+err;
