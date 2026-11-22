@@ -225,6 +225,21 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — DEV-16, step 6: `[cycle~]`'s phase inlet, an offset as in Max (P2)
+
+**PR requested:** head `devices/amxd-cycle-phase` (c09df249), base `main`, after
+`devices/amxd-bpatcher`. Body: the commit message.
+- **The difference.** Max's `[cycle~]` adds a phase offset from its right inlet (0 to 1, a float or a
+  signal) to its running phase. Pd's `[osc~]` resets its phase there. Such a `[cycle~]` was refused;
+  it now becomes `[phasor~]` → `[+~]` → `[cos~]`.
+- **Tests:** `adi_pd_amxd_tests` 77.
+  - `[cycle~ 375]` with a signal offset of 0.25 matches cos(2π(ft + offset)) sample for sample in
+    libpd (worst under 1e-6).
+  - So does a float offset of 0.25 moved to 0.5 at 100 ms. That is half way through a period, where a
+    reset would land half a period away.
+  - Two plants fail both checks: the offset into `[phasor~]`'s reset inlet (Pd's meaning), and the
+    offset dropped.
+
 ## 2026-11-22 — DEV-16, step 5: embedded bpatchers in the `.amxd` translator (P2)
 
 **PR requested:** head `devices/amxd-bpatcher` (9def72a5), base `main`, after
