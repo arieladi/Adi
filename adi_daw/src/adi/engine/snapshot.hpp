@@ -148,6 +148,7 @@ struct SendRoute {
     std::int64_t sourceId = 0, destinationId = 0, order = 0;
     double gainDb = 0.0, pan = 0.0;
     bool preFader = false, enabled = true;
+    std::optional<IndividualSendTap> sendTap{};
 };
 
 /// Locator/cycle metadata. Positions and lengths retain their stored units;

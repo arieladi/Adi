@@ -14,7 +14,8 @@ struct BuiltinInfo {
     bool instrument=false;
     // Ask the graph for the exact musical position of each render segment.
     bool usesTransportPosition=false;
-    // Parameters appended after an older state was saved reopen at their defaults.
+    // Its audio is held while a whole state applies. (Every built-in now
+    // reopens a parameter its state omits at the default: DF-E57.)
     bool resetMissingParameters=false;
 };
 [[nodiscard]] std::span<const BuiltinInfo> builtinCatalog() noexcept;
@@ -22,6 +23,9 @@ struct BuiltinInfo {
 /// Canonical compiled canvas, never the working directory or an installed
 /// user-editable file. Empty when this build cannot host the device.
 [[nodiscard]] std::string_view builtinCanvas(std::string_view uid) noexcept;
+/// The parameter and sample declarations: the canvas for a Pd-backed device,
+/// the Sampler's declaration text (not a canvas) for the Sampler (DEV-21).
+[[nodiscard]] std::string_view builtinDeclarations(std::string_view uid) noexcept;
 struct PreparedBuiltinInsert {
     bool ok=false;
     std::string error,sourceFile;
