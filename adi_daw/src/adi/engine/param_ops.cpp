@@ -347,6 +347,17 @@ struct ParamOps::Runtime::DeviceProducer final : gesture::Producer {
 };
 
 struct ParamOps::Runtime::Replay {
+    static std::optional<std::int64_t> pluginReference(const AppliedDeviceTarget& target) {
+        const auto& reference = target.device->at("plugin_ref_id");
+        if (reference.is_null()) return std::nullopt;
+        return adi::detail::signedInteger(reference);
+    }
+    static bool matchesReference(const Session::Entry* entry, const AppliedDeviceTarget& target) {
+        if (!entry || !target.device || entry->resolvedPluginRef != pluginReference(target)) return false;
+        return !target.pluginRef ||
+            (entry->resolvedFormat == target.pluginRef->at("format").get_ref<const std::string&>() &&
+             entry->resolvedUid == target.pluginRef->at("uid").get_ref<const std::string&>());
+    }
     struct Witness {
         AppliedSource source;
         std::uint64_t expectedSequence=0,stateEpoch=0,inputOrdinal=0;
@@ -357,8 +368,14 @@ struct ParamOps::Runtime::Replay {
         std::map<std::string,std::string> states;
     };
     struct Receipt {
+        struct Target {
+            device::DeviceInstance* anchor = nullptr;
+            std::size_t firstOperation = 0;
+            bool hasState = false;
+            bool retainsInstance = false;
+        };
         std::shared_ptr<const AppliedBatch> batch;
-        std::map<std::int64_t,device::DeviceInstance*> anchors;
+        std::map<std::int64_t,Target> targets;
         std::size_t op = 0, projection = 0, parameter = 0;
         std::set<std::int64_t> acknowledgedStates;
     };
@@ -420,17 +437,44 @@ struct ParamOps::Runtime::Replay {
         if(batch->kind()==AppliedBatchKind::ReplayBaseReset) {
             invalidate("the replay base changed; reload the Session before parameter delivery");return;
         }
-        bool relevant=false;
-        for(const auto& op:batch->operations())
-            relevant=relevant || op.dispatchedType=="device.setParam" || op.dispatchedType=="device.loadState";
-        if(!relevant)return;
+        if (batch->deviceTargets().empty()) return;
         Receipt receipt;receipt.batch=std::move(batch);
-        for(const auto& target:receipt.batch->deviceTargets()) {
-            device::DeviceInstance* anchor=nullptr;
-            const auto found=owner.devices_.find(target.deviceId);
-            if(found!=owner.devices_.end() && found->second.active && found->second.session==session &&
-               !found->second.sessionLife.expired())anchor=found->second.inst;
-            receipt.anchors.emplace(target.deviceId,anchor);
+        for (const auto& target : receipt.batch->deviceTargets()) {
+            auto& delivery = receipt.targets[target.deviceId];
+            const auto* entry = session->entryFor(target.deviceId);
+            delivery.retainsInstance = entry && !entry->retired && matchesReference(entry, target);
+            const auto found = owner.devices_.find(target.deviceId);
+            if (found != owner.devices_.end() && found->second.active && found->second.session == session &&
+                !found->second.sessionLife.expired()) {
+                delivery.anchor = found->second.inst;
+            }
+        }
+        const auto operations = receipt.batch->operations();
+        // A replacement of the resolved identity waits for its own instance.
+        // Compatible retained devices keep their existing Undo semantics.
+        // History supplies inserts from the actual inverse and forward legs.
+        for (std::size_t index = 0; index < operations.size(); ++index) {
+            const auto& op = operations[index];
+            if (op.dispatchedType == "device.insert" || op.dispatchedType == "track.create") {
+                const auto inserted = [&](std::int64_t id) {
+                    if (const auto found = receipt.targets.find(id);
+                        found != receipt.targets.end() && !found->second.retainsInstance) {
+                        found->second.anchor = nullptr;
+                        found->second.firstOperation = index + 1;
+                        found->second.hasState = false;
+                    }
+                };
+                if (op.payload.contains("contents")) {
+                    for (const auto& row : op.payload.at("contents").at("rows")) {
+                        if (row.at("table") == "devices" && row.at("after").is_null())
+                            inserted(adi::detail::signedInteger(row.at("key").at("id")));
+                    }
+                } else if (op.dispatchedType == "device.insert") {
+                    inserted(adi::detail::signedInteger(op.payload.at("id")));
+                }
+            } else if (op.dispatchedType == "device.loadState") {
+                receipt.targets.at(op.payload.at("dev").get<std::int64_t>()).hasState = true;
+            }
         }
         pending.push_back(std::move(receipt));
         status.pendingBatchCount=pending.size();
@@ -973,18 +1017,17 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                     [id](const auto& item){return item.deviceId==id;});
                 if(facts==batch.deviceTargets().end())throw std::runtime_error("applied parameter batch has no target identity");
                 if(!facts->device)return Target::Retired;
-                auto anchor=receipt.anchors.find(id);
-                if(anchor==receipt.anchors.end())throw std::runtime_error("applied parameter target has no runtime anchor");
+                auto& delivery = receipt.targets.at(id);
                 auto attached=devices_.find(id);
                 const bool active=attached!=devices_.end() && attached->second.active &&
                     attached->second.session==replay.session && !attached->second.sessionLife.expired() && attached->second.inst;
-                if(anchor->second) {
+                if(delivery.anchor) {
                     const auto* entry=replay.session->entryFor(id);
                     if(!entry || entry->retired)
                         return replay.session->realisedAppliedSequence()<batch.sequence()?Target::Await:Target::Retired;
-                    if(replay.session->instanceFor(id)!=anchor->second)return Target::Invalid;
+                    if(replay.session->instanceFor(id)!=delivery.anchor)return Target::Invalid;
                     if(!active)return Target::Await;
-                    if(attached->second.inst!=anchor->second)return Target::Invalid;
+                    if(attached->second.inst!=delivery.anchor)return Target::Invalid;
                 } else {
                     const auto realised=replay.session->realisedAppliedSequence();
                     if(realised<batch.sequence())return Target::Await;
@@ -992,20 +1035,18 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                     // not evidence of the same instance. Only this exact
                     // realised batch may establish an initially absent anchor.
                     if(realised!=batch.sequence())return Target::Invalid;
-                    if(!active)return Target::Await;
-                    anchor->second=attached->second.inst;
+                    if(!active || replay.session->instanceFor(id)!=attached->second.inst)
+                        return Target::Await;
                 }
                 const auto row=std::find_if(replay.session->model().devices.begin(),replay.session->model().devices.end(),
                     [id](const auto& item){return item.id==id;});
                 if(row==replay.session->model().devices.end())return Target::Retired;
-                const auto& reference=facts->device->at("plugin_ref_id");
-                const auto expected=reference.is_null()?std::optional<std::int64_t>{}:
-                    std::optional<std::int64_t>{reference.template get<std::int64_t>()};
+                const auto expected = Replay::pluginReference(*facts);
                 if(row->pluginRefId!=expected)return Target::Invalid;
                 const auto* entry=replay.session->entryFor(id);
-                if(!entry || entry->resolvedPluginRef!=expected)return Target::Invalid;
+                if (!Replay::matchesReference(entry, *facts)) return Target::Invalid;
                 if(facts->pluginRef && expected) {
-                    // `template` here and on `reference` above: MSVC 14.52 (the CI runner's image since
+                    // `template` here: MSVC 14.52 (the CI runner's image since
                     // 19 November) reads these as dependent template names and warns C4864 without the
                     // keyword, which is valid either way.
                     const auto& expectedFormat=facts->pluginRef->at("format").template get_ref<const std::string&>();
@@ -1014,9 +1055,8 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                         [&](const auto& item){return item.id==*expected;});
                     if(ref==replay.session->model().pluginRefs.end() || ref->format!=expectedFormat ||
                        ref->uid!=expectedUid)return Target::Invalid;
-                    if(entry->resolvedFormat!=expectedFormat || entry->resolvedUid!=expectedUid)
-                        return Target::Invalid;
                 }
+                delivery.anchor = attached->second.inst;
                 return Target::Ready;
             };
             auto admit=[&](std::int64_t id)->std::optional<bool> {
@@ -1160,13 +1200,18 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
             };
             while(receipt.op<batch.operations().size()) {
                 replay.status.opIndex=receipt.op;
-                if(acknowledgeTyped() || acknowledgeOwn())continue;
                 const auto& op=batch.operations()[receipt.op];
                 if(op.dispatchedType!="device.setParam" && op.dispatchedType!="device.loadState") {++receipt.op;continue;}
-                const auto accepted=admit(op.payload.at("dev").get<std::int64_t>());
+                const auto id = op.payload.at("dev").get<std::int64_t>();
+                if (receipt.op < receipt.targets.at(id).firstOperation) {
+                    ++receipt.op;
+                    continue;
+                }
+                if(acknowledgeTyped() || acknowledgeOwn())continue;
+                const auto accepted=admit(id);
                 if(!accepted)return replay.status;
                 if(!*accepted) {++receipt.op;continue;}
-                receipt.acknowledgedStates.erase(op.payload.at("dev").get<std::int64_t>());
+                receipt.acknowledgedStates.erase(id);
                 if(op.dispatchedType=="device.setParam") {
                     if(!deliverParameter(op.payload))return replay.status;
                 } else {
@@ -1185,6 +1230,11 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
             while(receipt.projection<batch.finalParameters().size()) {
                 replay.status.projectionIndex=receipt.projection;replay.status.parameterIndex=receipt.parameter;
                 const auto& projection=batch.finalParameters()[receipt.projection];
+                if (!receipt.targets.at(projection.deviceId).hasState) {
+                    ++receipt.projection;
+                    receipt.parameter = 0;
+                    continue;
+                }
                 const auto accepted=admit(projection.deviceId);
                 if(!accepted)return replay.status;
                 if(!*accepted || !projection.devicePresent) {++receipt.projection;receipt.parameter=0;continue;}
