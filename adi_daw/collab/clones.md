@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Repair sustained fractional sample-and-hold timing
+
+`clones/shaper-crush-clock-precision` at `de769084` — Calibrate the sample-and-hold clock over sustained playback. Across 2,891,211 measured crossings in 129 rate/height cases, every case improved. On 39 blind cases median timing RMS fell from 0.0563432 to 0.00000117 sample and the worst case fell from 3.28477 to 0.00000484 sample. All 8,160,049 representable logarithmic arguments matched the correctly rounded exponential in an exhaustive check. The cache occupies 2,688 bytes. Main failed the sustained signed marker at 96 kHz. Rack, Crush and registered native/edited-Pd suites passed under MSVC /W4 /WX at both Pd precisions.
+
+At 256 and 2,048 frames on registered kick and bass, stationary fractional-hold stereo RMS fell from 0.001614 to 0.0000000315. A continuously moving triangle with identical physical heights fell from 0.000584 to 0.0000000315. A wider ramp fell from 0.001398 to 0.00001019. For that ramp, the remaining one-ULP contour-height differences independently predict the residual. The full flat capture stayed byte-identical to main. All 72 timed streams passed stereo hash checks and reported zero latency.
+
+Wide-ramp registered median/p99 at 256 frames was 26.8/76.2 µs for ADI against 77.8/256.2 µs for the source. At 2,048 the figures were 210.9/1,033.5 against 472.5/4,454.3 µs. ADI missed 17/1 deadlines at these sizes against 51/6 in the source, in 30,720 callbacks per cell. Main took 24.9/193.7 µs median. Registered thread cycles rose 6.2%/9.6% for the more accurate moving clock. The steady fractional medians were 15.9/123.9 µs, against 60.5/329.9 µs in the source.
+
+Across all 873 seven-stage programs 128 output streams changed. Eight RMS errors fell by over 0.000001, eleven rose and 854 were within tolerance. All 710 without active Crush stayed identical and 17/873 remain below 0.001. The sample clock and full-rate latch are independent fixes. The old and corrected clock both use the same main full-rate behavior in this comparison.
+
+PR requested
+
 ## 22 November 2026 — Fractional hold-clock calibration over sustained playback
 
 The existing exponential approximation accumulates measurable timing drift on an unchanged hold height. Three-second stereo marker trains at 44.1, 48 and 96 kHz distinguish rounding the normalized phase after each sample addition and before subtracting one on a wrap. The physical curve is a shifted exponential through 8.82 Hz and 44,100 Hz with a 225.96 Hz offset. Form the signed logarithmic span and each intermediate height operation in binary32, round the exponential and subtract the offset, then round the sample-normalized advance. The measured stored heights and the physical normalized values entering the DSP are distinct at the final bit in some cases.
