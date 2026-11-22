@@ -2567,9 +2567,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     for (const auto &r : browser.rows()) {
         if (r.heading.isNotEmpty())
             folders.push_back(r.heading);
-        // Every entry loads but Hybrid Reverb with Pd on; none with it off.
+        // Every entry loads with Pd on, Hybrid Reverb too since DEV-22 built it; none with it off.
 #if ADI_WITH_PD
-        const bool expected = r.device == nullptr || r.device->name != "Hybrid Reverb";
+        const bool expected = true;
 #else
         const bool expected = r.device == nullptr;
 #endif
@@ -2581,8 +2581,14 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
               dimmedRight && find("Auto Filter") >= 0 && find("Chord Comb") < 0,
           "Audio Effects lists Live's seven folders with their effects, each dimmed when this build cannot load it");
     rowOf = find("Hybrid Reverb");
-    check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("not built in ADI yet") != std::string::npos,
-          "Hybrid Reverb is dimmed always, and a double-click says why");
+#if ADI_WITH_PD
+    // Not loaded here: track 4 stays empty for the loads below.
+    check(rowOf >= 0 && BrowserPanel::unavailable(*browser.rows()[static_cast<std::size_t>(rowOf)].device).empty(),
+          "Hybrid Reverb loads with Pd on, as the rest (DEV-22)");
+#else
+    check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("leaves out") != std::string::npos,
+          "with Pd off, Hybrid Reverb is dimmed with the Pd devices, and a double-click says why");
+#endif
     browser.choose(pdDevices);
     check(browser.rows().size() == 3 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr &&
               browser.rows()[2].device != nullptr,
@@ -3003,6 +3009,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         return document->store().db().execAndGet("SELECT count(*) FROM device_chains WHERE track_id = " +
                                                  std::to_string(track)).getInt();
     };
+    // The plug-in loads above ended with no track selected: 3 Audio, track 4, again.
+    root.arrangement.geometry.selection.track = 4;
+    refresh();
 #if ADI_WITH_PD
     check(browser.load(find("Auto Filter")), "a double-click on Auto Filter loads it");
     refresh();
@@ -3016,7 +3025,8 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     refresh();
     check(root.devices.panels.size() == 1, "the strip shows it");
     // In front of the device chosen in the strip, though the browser now has the focus.
-    root.devices.chose(root.devices.panels[0]->id);
+    if (!root.devices.panels.empty())
+        root.devices.chose(root.devices.panels[0]->id);
     check(browser.load(find("EQ Eight")), "EQ Eight with Utility chosen");
     refresh();
     check(chainOf(4) == std::vector<std::string>{"EQ Eight", "Utility"}, "goes in front of it");
