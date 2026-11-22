@@ -352,6 +352,12 @@ void MpeRouter::noteOn(const Event* events, std::int32_t n, std::int32_t i,
     bool collision = false;
 
     if (route_ == ExpressionRoute::MpeMidi) {
+        // Reserve room for the three reset controls and the note-on together so
+        // a refused attack cannot reset a sounding voice on a shared channel.
+        if (out.remaining() < 4) {
+            out.drop(4);
+            return;
+        }
         chan = static_cast<std::uint8_t>(allocate());
 
         // THE CHANNEL IS RESET BEFORE THE NOTE. The previous note on this

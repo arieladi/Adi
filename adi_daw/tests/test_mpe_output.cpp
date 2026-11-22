@@ -648,27 +648,33 @@ void testFullOutputListPreservesState() {
               "retry with room emits full MCM + resets + note-on on channel 1");
     }
 
-    // 3. MpeMidi note-on whose resets fit but NoteOn itself drops does not track or count shared.
+    // 3. DF-E56-ATTACK: MpeMidi note-on with fewer than 4 free slots emits NO resets,
+    //    leaving a sounding voice on a shared member channel untouched (bend stays 10240).
     {
         MpeRouter r;
         r.configure(ExpressionRoute::MpeMidi, ExpressionCaps{}, 1);
         Out init(16);
-        route(r, {on(0, 1, 60)}, init, 0);
-        check(r.liveNotes() == 1 && r.channelOf(1) == 1 && r.sharedChannels() == 0,
-              "first note occupies the single member channel");
+        route(r, {on(0, 1, 60), expr(5, 1, ExpressionDim::Pitch, 12.0)}, init, 0);
+        const auto bendBefore = controls(init.all(), 1, kCtrlPitchBend);
+        check(r.liveNotes() == 1 && r.channelOf(1) == 1 && r.sharedChannels() == 0 &&
+                  bendBefore.size() == 2 && bendBefore[1].word == 10240,
+              "first note occupies the single member channel with bend at 10240");
 
-        Out onlyResets(3);
-        route(r, {on(10, 2, 64)}, onlyResets, 10);
-        check(onlyResets.list.size() == 3 && onlyResets.list.dropped() == 1,
-              "resets fit while NoteOn overflows");
-        check(r.liveNotes() == 1 && r.channelOf(2) == -1 && r.sharedChannels() == 0,
-              "failed NoteOn push leaves liveNotes, channelOf and sharedChannels unchanged");
+        for (int freeSlots : {1, 2, 3}) {
+            Out tooSmall(freeSlots);
+            route(r, {on(10, 2, 64)}, tooSmall, 10);
+            check(tooSmall.list.size() == 0 && tooSmall.list.dropped() == 4,
+                  "refused MpeMidi attack emits zero resets when only " + std::to_string(freeSlots) +
+                      " slot(s) remain, counting all 4 messages dropped");
+            check(r.liveNotes() == 1 && r.channelOf(2) == -1 && r.sharedChannels() == 0,
+                  "refused attack leaves liveNotes, channelOf and sharedChannels unchanged");
+        }
 
-        Out room(8);
-        route(r, {on(20, 2, 64)}, room, 20);
-        check(room.list.size() == 4 && room.list.dropped() == 0 &&
+        Out exact(4);
+        route(r, {on(20, 2, 64)}, exact, 20);
+        check(exact.list.size() == 4 && exact.list.dropped() == 0 &&
                   r.liveNotes() == 2 && r.channelOf(2) == 1 && r.sharedChannels() == 1,
-              "retrying NoteOn with room tracks the note and counts sharedChannels once");
+              "retrying NoteOn with 4 free slots emits resets + NoteOn and counts sharedChannels once");
     }
 
     // 4. Plain and NoteExpression note-on overflow leaves liveNotes and keyCollisions unchanged.
@@ -849,7 +855,7 @@ void testFullOutputListPreservesState() {
         std::vector<Event> dense;
         for (int i = 1; i <= 10; ++i) dense.push_back(on(i, static_cast<std::uint64_t>(i), 50 + i));
         for (int i = 1; i <= 10; ++i) dense.push_back(off(20 + i, static_cast<std::uint64_t>(i), 50 + i));
-        Out bounded(16);  // 3 MCM + 3 complete notes (12) + 1 spare reset = 16
+        Out bounded(16);  // 3 MCM + 3 complete notes (12) + note 1's NoteOff (1) = 16; no orphan resets
         route(r, dense, bounded, 0);
         const auto emitted = bounded.all();
         int sentOn = 0, sentOff = 0;
@@ -857,20 +863,17 @@ void testFullOutputListPreservesState() {
             if (o.kind == MpeOut::Kind::NoteOn) ++sentOn;
             if (o.kind == MpeOut::Kind::NoteOff) ++sentOff;
         }
-        check(bounded.list.size() == 16 && bounded.list.dropped() > 0 && sentOn == 3 && sentOff == 0,
-              "bounded list fills mid-block after MCM and 3 notes");
-        // All 3 notes that actually started received NoteOffs in the same block while out was full,
-        // so they are released and queued as pending NoteOffs for the next block (and notes 4..10 never started).
+        check(bounded.list.size() == 16 && bounded.list.dropped() > 0 && sentOn == 3 && sentOff == 1,
+              "bounded list emits MCM, 3 complete notes, no orphan resets, and note 1's NoteOff");
         check(r.liveNotes() == 0 && r.channelOf(1) == -1 && r.channelOf(4) == -1,
-              "dropped NoteOffs for started notes release their slots while dropped NoteOns were never tracked");
+              "notes 1..3 are all released (2..3 queued as pending) and refused notes 4..10 were never tracked");
         Out next(16);
         route(r, {}, next, 40);
         const auto drained = next.all();
-        check(drained.size() == 3 &&
-                  drained[0].kind == MpeOut::Kind::NoteOff && drained[0].noteId == 1 && drained[0].channel == 1 &&
-                  drained[1].kind == MpeOut::Kind::NoteOff && drained[1].noteId == 2 && drained[1].channel == 2 &&
-                  drained[2].kind == MpeOut::Kind::NoteOff && drained[2].noteId == 3 && drained[2].channel == 3,
-              "next block delivers NoteOffs for exactly the 3 notes that had started");
+        check(drained.size() == 2 &&
+                  drained[0].kind == MpeOut::Kind::NoteOff && drained[0].noteId == 2 && drained[0].channel == 2 &&
+                  drained[1].kind == MpeOut::Kind::NoteOff && drained[1].noteId == 3 && drained[1].channel == 3,
+              "next block delivers NoteOffs for the remaining 2 started notes without duplicating note 1");
     }
 }
 
