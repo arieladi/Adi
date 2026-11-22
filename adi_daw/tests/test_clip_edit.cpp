@@ -61,10 +61,13 @@ void nativePlacement() {
     const auto initial = SnapshotBuilder::fromStore(*p.store);
     const auto* track = initial->findTrack(21);
     if (!track) throw std::runtime_error("missing placement fixture track");
-    const auto original = std::find_if(track->clips.begin(), track->clips.end(),
-                                      [](const auto& clip) { return clip->id == 7; });
-    check(original != track->clips.end() && (*original)->posTicks == 2882880 &&
-              (*original)->lengthTicks > 0, "arrangement projects linear placement onto its tick clock");
+    const auto take = std::find_if(track->takeClips.begin(), track->takeClips.end(),
+                                   [](const auto& clip) { return clip->id == 7; });
+    check(take != track->takeClips.end() && (*take)->laneId == 301 && (*take)->posTicks == 2882880 &&
+              (*take)->lengthTicks > 0, "the take row projects linear placement onto its tick clock");
+    check(std::none_of(track->clips.begin(), track->clips.end(),
+                       [](const auto& clip) { return clip->id == 7; }),
+          "projecting the take leaves the main arrangement row free of take material");
     check(commit("clip.move", {{"id", 7}, {"to", 5765760}, {"track", 21}}).ok &&
               native("SELECT pos_ns FROM clips WHERE id=7") == 500000000 &&
               native("SELECT lane_id FROM clips WHERE id=7") == 301,
