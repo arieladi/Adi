@@ -4,6 +4,36 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 3 (WTS-01 on Linux): `main`, DF-E53 (`03be0b99`), and DF-E56 (`0b539fb2`)
+
+**What ran:**
+- Configured with `-DADI_ACCEPTANCE=ON -DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DCMAKE_BUILD_TYPE=Debug` (DF-M62 `FloatRealTransform.h:61` transiently patched locally and reverted after each run).
+- **GCC 12.2.0:** built `adi_acceptance_wts01` cleanly with zero warnings on all three heads and ran `ctest -L acceptance -R wts01 -V` (note: unfiltered `ctest -L acceptance` also matches `adi_builtin_realtime_tests`, which exceeds 10 min in Debug without `devices/perf-debug-timeout`; timed separately in item 6).
+- **Clang 14.0.6:** `tests/acceptance/test_session_wts01.cpp` compiles cleanly with zero warnings on all three heads (`main` `73f13028`, `03be0b99`, `0b539fb2`), but linking `adi_acceptance_wts01` under Clang 14.0.6 + libstdc++ 12 is blocked on `main` by the pre-existing `adi_core` Clang 14 errors logged in item 2 (`src/adi/engine/timeline_clips.hpp:13:24` `<ranges>` filter, and structured-binding lambda captures in `src/adi/project_files.cpp:308:47`, `src/adi/engine/param_ops.cpp:339/347/1995/2008`, `src/adi/engine/midi_clips.cpp:659`).
+
+**Result table (GCC 12.2.0 — matches win's 20 November table identically; 2b is the sole FAIL on all three heads):**
+
+| Step | `main` (`73f13028`) | `gemini/df-e53-canonical-param-ref` (`03be0b99`) | `gemini/df-e56-mpe-router-overflow` (`0b539fb2`) | Notes |
+|---|---|---|---|---|
+| 1 New project | PASS | PASS | PASS | 7 tracks, 120 BPM 4/4, 48 kHz, silence |
+| 2a Record 4 bars | PASS (`max\|d\| 0`) | PASS (`max\|d\| 0`) | PASS (`max\|d\| 0`) | 384,000 frames, sample-exact |
+| 2b Play the take back | **FAIL** (DF-E64) | **FAIL** (DF-E64) | **FAIL** (DF-E64) | 256/384,000 frames differ (0..255), 256 first-block underruns; `ENGINE` primed control `max\|d\| 0` |
+| 3a OneShot on MIDI track | PASS | PASS | PASS | `Insert OneShot`, loaded, slot 1 filled, armed |
+| 3b Live keyboard into OneShot | NOT_BUILT (`ENGINE` ok) | NOT_BUILT (`ENGINE` ok) | NOT_BUILT (`ENGINE` ok) | `ENGINE`: onset `+1`, peak `0.1256` (window-fn N60) |
+| 3c, 3d VST3 instrument | JUCE-only | JUCE-only | JUCE-only | `adi_acceptance_wts01_vst3` not built with `ADI_WITH_JUCE=OFF` |
+| 4 Fader drag + Undo | PASS | PASS | PASS | `-6/-12/-24 dB` live, `+1` op on release, Undo back to `0 dB` (`x1.0000`) |
+| 5a Returns with two sends | PASS | PASS | PASS | `max\|d\| 0` from block 8 (`x2.000000`), `-12 dB` return `max\|d\| 5.96e-08` (`x1.251189`) |
+| 5b Return inside a group | NOT_BUILT (`ENGINE` ok) | NOT_BUILT (`ENGINE` ok) | NOT_BUILT (`ENGINE` ok) | Post-`#677` `ENGINE`: `x0.3143` (window grouping rule `window/return-in-group`) |
+| 6a Volume automation | PASS (`max\|d\| 0.0309 dB`) | PASS (`max\|d\| 0.0309 dB`) | PASS (`max\|d\| 0.0309 dB`) | Within 0.1 dB across 3 points |
+| 6b Built-in param automation | NOT_BUILT (`ENGINE` ok) | NOT_BUILT (`ENGINE` ok) | NOT_BUILT (`ENGINE` ok) | `ENGINE`: Utility `x1.995262` -> `x1.000000`, `max\|d\| 2.2e-08` (window-fn DF-W37) |
+| 7a Save & reopen rows | PASS | PASS | PASS | Reopened rows equal (`tracks 7, strips 7, devices 3, routing 8, lanes 1, clips 2`) |
+| 7b Reopen playback match | PASS (`max\|d\| 0`) | PASS (`max\|d\| 0`) | PASS (`max\|d\| 0`) | Over 409,600 frames |
+| 7c Export WAV | PASS (`max\|d\| 0`) | PASS (`max\|d\| 0`) | PASS (`max\|d\| 0`) | 768,000 frames, A==B bit-exact, matches offline render & live from block 8 |
+| 7d, 7e Export with VST3 | JUCE-only | JUCE-only | JUCE-only | `adi_acceptance_wts01_vst3` not built with `ADI_WITH_JUCE=OFF` |
+| **Summary** | **1 FAIL (2b only)** | **1 FAIL (2b only)** | **1 FAIL (2b only)** | Zero regressions on DF-E53 or DF-E56 |
+
+---
+
 ## 2026-11-22 — Queue item 2 (PR-BUILDS, Round 1): all unmerged PR-requested heads on GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`
 
 **Scope and environment:**
