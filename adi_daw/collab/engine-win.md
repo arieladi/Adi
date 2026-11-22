@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, MX-09 audio take placement offset
+
+- `engine-win/recording-placement-offset` at `01abcaa3` adds a signed, explicit sample offset to linear take placement. Capture timing, file bytes and Undo grouping retain their existing values. An offset of zero keeps existing callers' behavior. An excessive positive offset puts the first captured sample at song zero. Overflows are refused before staging.
+- MSVC /WX recording commands 162/162. An input latency of 256 samples, output latency of 384 and driver error of 1 ms at 48 kHz move a 128-frame take from sample 800 to 112 with exactly the same PCM. Zero, signed corrections and song zero passed. In WTS-01 2a the zero-offset caller still captured all 384,000 samples exactly.
+- **Parked, driver wiring.** Engine to expose input/output latency to the recording owner, and window-fn to pass the sum with the signed driver error converted at the captured rate. The explicit offset is available now for linear placement. Loop-pass boundary compensation remains a separate recording policy.
+
+PR requested.
+
 ## 2026-11-22, engine-win register audit on main `87ea349c`
 
 | Register row | Landed proof | Regression in the landed tree |
@@ -53,6 +61,8 @@ PR requested.
 - **Needs, CT-01.** I will keep DF-E17's same-track lane retention and explicit cross-track detach contract. Engine review of the EditScope hunks requested.
 
 ## FOR THE DIRECTOR
+
+- **MX-09.** When latency correction would put the take before song zero, should the pre-zero part become a left handle? Recommend keeping all recorded PCM and placing its first frame at zero until pre-zero placement behavior is agreed.
 
 - **CT-01 and CT-02.** Should a take audition replace the main track, persist, or create Undo? What is Live's exact new-lane name, and where does recorded pre-roll go with loop and punch? Recommend transient exclusive audition without an Undo entry, and keeping pre-roll outside loop-pass clips until a reference capture settles placement.
 - **CT-04.** How does comping treat an empty take-lane interval and a selection that extends beyond the take? Recommend preserving existing main audio outside the selected source material until the measured behavior is settled.
