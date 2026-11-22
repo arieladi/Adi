@@ -43,7 +43,41 @@ until then a need is named by its item.
 | Reserve: one N row. A device parameter whose lane goes (its last point deleted, the lane deleted or disabled) should return to its stored value, as a mixer control does. Today the plug-in keeps the last automated value until it is touched or re-resolved | engine (`Session::rebuild`, `bindDeviceAutomation`) | DF-W37: deleting a device lane's last point in Automation Mode leaves the device playing the envelope's last value | nothing; the window deletes the lane as it does a track's |
 | Reserve: one N row. After a discovery job, an ordinary project open should still probe a plug-in's saved path when the catalogue lacks it, as it does before any job. Today `managedDiscovery_` is set by the first `startDiscovery` and never cleared, so `makeVst3` and `makeClap` answer "needs discovery" for every miss for the rest of the run (and `hydrateCatalogue` returns at once). A proposal: suppress the hint only while a job is in flight (`discoveryJob_`) | engine-win (`src/juce/juce_device_loader.cpp`, N58) | DF-W34: a project that names a plug-in installed since the last scan loads it on open, as before the window started discovery at launch | an open while a job runs waits for its adoption (engine-win's handoff); an open with no job running loads catalogue hits only |
 
+| Reserve: one N row. `Session::refresh` should re-read the project's identity (`recordingProject_`, read once in `Session::load` from `PRAGMA database_list`). After a Save As every take is refused, "recording belongs to a different project", until the project is reopened | engine (`src/adi/engine/session.cpp`) | PD06-SAVEAS-GUARD: recording after a Save As keeps its take | nothing: the take is refused and the Status Bar says why |
 ---
+
+## 2026-11-22, window-fn — queue item 3, PD06-SAVEAS-GUARD: a take lands in its own file before Save As, Open or New (PR requested)
+
+**Window lane, read first:** this item touches `src/adi/ui/project_document.*` (`saveAs`, a new
+`landTakeHere`, `settleRecording` now returns whether the take landed) and `src/juce/ui_main.cpp` (`install`
+says when a take could not be kept).
+
+- **Save As during Record or a pending take.** Before the file switches, `saveAs` stops Record, waits up to ten
+  seconds for the recorder's worker (the device keeps calling back, as in the app) and lands the take as its one
+  undo step ("Record Audio") in the file it was recorded in. Then the store switches, so the take is in both files.
+  The Status Bar says "Recording stopped, its take kept, before Save As." If the take is still being written after
+  ten seconds, Save As is refused ("The take is still being saved; try Save As again in a moment.") and nothing
+  switches.
+- **Open, New and a project replace** (`install`) already settled the take into the old project after the device
+  was detached. A take still being written after ten seconds went with the document without a word; the Status Bar
+  now says so. Quit is unchanged.
+- **Test** (`tests/test_ui_document.cpp`, `saveAsKeepsTheTake`): Save As during Record with a callback thread
+  running: Record stops, one clip lands, the undo step is "Record Audio", the clip is in the old file and the new
+  one, the warning names it. Then, in a second project, Save As with the take pending (stopped, device released,
+  not yet landed): it lands first in the old file, then saves, as one undo step.
+
+**Found, not fixed here (engine):** a take recorded *after* a Save As is refused: "recording belongs to a different
+project". `Session::load` reads the project's identity (`recordingProject_`, from `PRAGMA database_list`) once, and
+`Session::refresh`, which the document's `synchronise()` calls after Save As, never reads it again. So every
+recording after a Save As fails until the project is reopened. Added to the needs table. The test's second case uses
+a project of its own until then.
+
+**Run:** JUCE on, Pd off, warnings as errors (GCC 13, Debug): the 27 window and mix suites pass, the document suite
+320 checks, 0 failures, the shell suite from a scratch directory. WTS-01 (`-DADI_ACCEPTANCE=ON`, Pd on): 2a PASS.
+2b FAILs as on main (DF-E64, queue item 4).
+
+PR requested: `window-fn/saveas-guard` → main, "Save As, Open and New land a pending take in its own file first
+(PD06-SAVEAS-GUARD)". Depends on nothing beyond main.
 
 ## 2026-11-22, window-fn — queue item 2, DF-E16's window half: one RowIds per prepared edit (PR requested)
 
