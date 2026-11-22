@@ -6,8 +6,13 @@
 namespace adi::mix::eq {
 namespace {
 bool neutral(const Settings& s) noexcept {
+    // The authored 100% default round-trips through float(2/3). With a fused
+    // multiply-add it lands one float above 100%. Gain Scale affects only
+    // band gains, and the proof below excludes enabled and learning bands.
+    constexpr float contractedGainScaleDefault = 0x1.900002p+6f;
     return s.structure == Structure::Minimum && !s.externalSidechain && !s.bypass &&
-           s.outputGainDb == 0 && s.gainScalePercent == 100 &&
+           s.outputGainDb == 0 &&
+           (s.gainScalePercent == 100.f || s.gainScalePercent == contractedGainScaleDefault) &&
            !s.automaticGain && !s.staticGain && !s.polarity && s.lookaheadMs == 0 &&
            s.spectralResolution == Resolution::Medium && s.soloBand == -1 &&
            !s.soloSide && s.soloGainDb == 0 && !s.loudnessMatch &&
