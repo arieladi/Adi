@@ -61,6 +61,8 @@ struct Job {
     // The complete literal WAV filename chosen by the single-export save
     // dialog. It includes .wav, bypasses templates, and uses Fail or Replace.
     std::optional<std::string> exactWavFilename;
+    // Analyze the selected compensated source without a private or published delivery.
+    bool analysisOnly = false;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
@@ -107,6 +109,7 @@ struct MediaVerification {
     std::vector<MediaIdentity> identities;
     bool startComplete = false;
     bool publicationVerified = false;
+    bool analysisVerified = false;
 };
 struct ReplacementBinding {
     std::filesystem::path target;
@@ -138,6 +141,8 @@ struct Result {
     // Present only for explicit Replace, including an absent preflight target.
     // This is a run-local observation, not a reservation or reusable permission.
     std::optional<ReplacementBinding> replacement{};
+    std::uint64_t framesAnalyzed = 0;
+    std::optional<ExportStatistics> analysis{};
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct RunMember {
