@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/engine/scale_context.hpp"
+#include <map>
 namespace adi::rows { struct Model; }
 namespace adi::engine {
+struct DeviceScalePosition;
+struct TempoMap;
 struct ScaleKeyChange {std::int64_t id=0,posTicks=0;ClipScale scale;};
 struct ScaleTimelineEvent {std::int64_t keyId=0,posTicks=0;ScaleContext context;};
 struct ScaleTimelineData;
@@ -28,4 +31,23 @@ ScaleTimelineRead compileScaleTimeline(const rows::Model&);
 // One coherent owner snapshot of the five scale tables, with no note reads.
 // Clip-local scales remain separate explicit overrides of this global map.
 ScaleTimelineRead readScaleTimeline(const Store&);
+
+class TrackScaleTimeline {
+public:
+    /// Borrow the local override at this native input sample and its next
+    /// transition. No override means the device may use the project scale.
+    [[nodiscard]] DeviceScalePosition at(std::int64_t track, std::int64_t sample) const noexcept;
+private:
+    struct Span {
+        std::int64_t begin, end;
+        ScaleContext context;
+    };
+    std::map<std::int64_t, std::vector<Span>> tracks_;
+    friend TrackScaleTimeline compileTrackScaleTimeline(const rows::Model &, const TempoMap &,
+                                                         double, std::string &);
+};
+/// Main Arrangement MIDI clips can supply a local scale when exactly one
+/// eligible clip covers the sample. Simultaneous clips use the project scale.
+[[nodiscard]] TrackScaleTimeline compileTrackScaleTimeline(const rows::Model &, const TempoMap &,
+                                                            double sampleRate, std::string &error);
 } // namespace adi::engine

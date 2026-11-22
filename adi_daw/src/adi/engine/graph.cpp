@@ -27,9 +27,10 @@ std::uint32_t Graph::renderWorkerCount() const noexcept{return static_cast<std::
 // Construction
 // ---------------------------------------------------------------------------
 
-NodeId Graph::addNode(Node& node) {
+NodeId Graph::addNode(Node& node, std::int64_t track) {
     slots_.push_back(Slot{});
     slots_.back().node = &node;
+    slots_.back().track = track;
     prepared_ = false;
     return static_cast<NodeId>(slots_.size() - 1);
 }
@@ -1876,6 +1877,17 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
             const auto sample = transport->deviceClock->inputSample(begin, arrival);
             end = begin + transport->deviceClock->inputContiguousFrames(sample, boundary - begin);
             devicePosition = transport->devicePosition(transport->deviceClockContext, sample);
+            if (scaleTiming && s.track != 0 && transport->trackScalePosition) {
+                const auto local = transport->trackScalePosition(transport->deviceClockContext,
+                                                                  s.track, sample);
+                if (local.scale) {
+                    devicePosition.scale = local.scale;
+                    devicePosition.nextScaleChange = local.nextChange;
+                } else {
+                    devicePosition.nextScaleChange = std::min(devicePosition.nextScaleChange,
+                                                              local.nextChange);
+                }
+            }
             const auto nextChange = scaleTiming
                 ? std::min(devicePosition.nextChange, devicePosition.nextScaleChange)
                 : devicePosition.nextChange;

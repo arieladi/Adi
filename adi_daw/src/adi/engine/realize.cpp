@@ -137,9 +137,9 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
     r->graph_.setChannels(opts.channels);
     // Every placement, including feedback and monitor nodes, owns the same
     // lifetime/binding contract. No candidate mutates a shared Node binding.
-    const auto add = [&](Node& node) {
+    const auto add = [&](Node& node, std::int64_t track = 0) {
         if (auto owner = node.sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
-        const NodeId id = r->graph_.addNode(node);
+        const NodeId id = r->graph_.addNode(node, track);
         if (opts.eventSourceFor) {
             if (auto binding = opts.eventSourceFor(node))
                 (void)r->graph_.setEventSource(id, std::move(*binding));
@@ -181,7 +181,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                     continue;
                 }
                 if (!placeOnce(s, trackRef(pn.trackId), "a source")) continue;
-                const NodeId id = add(*s);
+                const NodeId id = add(*s, pn.trackId);
                 // A source the session builds afresh at every rebuild names
                 // itself; any other is keyed by the object it is.
                 const std::uint64_t name = s->historyName();
@@ -208,7 +208,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 if (!placeOnce(d, trackRef(pn.trackId), "a chain node")) continue;
                 // ADR-0164: a chain node may hold data the audio thread reads
                 // -- a strip's automation lanes -- and this graph keeps it alive.
-                const NodeId id = add(*d);
+                const NodeId id = add(*d, pn.trackId);
                 if (r->graph_.connect(tail, id))
                     r->chainEdges_.push_back({{pn.trackId, RealizedGraph::ChainKey::Leg::Next, prev, 0},
                                               tail, id, Bus::Main});

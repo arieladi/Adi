@@ -1017,6 +1017,8 @@ bool Session::rebuild() {
     auto scale = compileScaleTimeline(model_);
     timing->scaleTimeline = std::move(scale.timeline);
     deviceScaleProblem_ = std::move(scale.error);
+    timing->trackScaleTimeline = compileTrackScaleTimeline(playbackModel_, timing->tempo,
+                                                           spec_.sampleRate, trackScaleProblem_);
     timing->prepareDeviceClockChanges();
     std::unique_ptr<ClipPlayback> nextClips;
     std::unique_ptr<MidiClips> nextMidi;
@@ -1143,6 +1145,8 @@ void Session::refreshProblems() {
     problems_ = model_.problems;
     if (!deviceScaleProblem_.empty())
         problems_.push_back("Device scale unavailable: " + deviceScaleProblem_);
+    if (!trackScaleProblem_.empty())
+        problems_.push_back("Clip scale unavailable for devices: " + trackScaleProblem_);
     if (midi_) problems_.insert(problems_.end(), midi_->problems().begin(), midi_->problems().end());
     if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
@@ -2246,6 +2250,10 @@ const TransportInfo* Session::TimingView::beginBlock()const noexcept {
     blockInfo.deviceClockContext = this;
     blockInfo.devicePosition = [](const void* context, std::int64_t sample) noexcept {
         return static_cast<const TimingView*>(context)->deviceAt(sample);
+    };
+    blockInfo.trackScalePosition = [](const void *context, std::int64_t track,
+                                      std::int64_t sample) noexcept {
+        return static_cast<const TimingView *>(context)->trackScaleTimeline.at(track, sample);
     };
     if(overlay)blockInfo.stripLanes=overlay;
     return &blockInfo;

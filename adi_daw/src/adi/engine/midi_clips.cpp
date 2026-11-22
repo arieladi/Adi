@@ -16,6 +16,7 @@ namespace adi::engine {
 namespace {
 constexpr std::size_t maxActive = 128;
 constexpr std::size_t maxOccurrences = 1000000;
+constexpr auto tickLimit = std::int64_t{1} << 50;
 struct ClipClock {
     std::int64_t id=0,timeBase=0,offset=0,loopStart=0;
     std::optional<std::int64_t> posTicks,posNs,lengthTicks,lengthNs,loopLength,endMarker,alias;
@@ -496,6 +497,46 @@ std::int64_t checkedSample(double seconds,double rate) {
     return static_cast<std::int64_t>(std::llround(std::nextafter(n,std::numeric_limits<double>::infinity())));
 }
 }
+MidiClipPlacement projectMidiClipPlacement(const rows::Clip &clip, const TempoMap &tempo,
+                                           double rate) {
+    if (clip.timeBase != 0 && clip.timeBase != 1)
+        throw std::runtime_error("invalid MIDI clip time base; silent");
+    MidiClipPlacement result;
+    double endSeconds = 0;
+    if (clip.timeBase == 0) {
+        result.originTick = clip.posTicks.value_or(0);
+        result.lengthTicks = clip.lengthTicks.value_or(0);
+    } else {
+        const auto begin = clip.posNs.value_or(-1), extent = clip.lengthNs.value_or(0);
+        if (begin < 0 || extent <= 0 || begin > INT64_MAX - extent)
+            throw std::runtime_error("invalid linear MIDI clip time; silent");
+        result.startSeconds = static_cast<double>(begin) * 1e-9;
+        endSeconds = static_cast<double>(begin + extent) * 1e-9;
+        result.originTick = tempo.secondsToTicks(result.startSeconds);
+        result.lengthTicks = tempo.secondsToTicks(endSeconds) - result.originTick;
+    }
+    if (result.originTick < 0 || result.originTick > tickLimit ||
+        result.lengthTicks <= 0 || result.lengthTicks > tickLimit ||
+        clip.contentOffsetTicks < -tickLimit || clip.contentOffsetTicks > tickLimit)
+        throw std::runtime_error("invalid MIDI clip time; silent");
+    const auto loop = clip.loopLenTicks.value_or(0);
+    if (clip.loopEnabled &&
+        (loop <= 0 || loop > tickLimit || clip.loopStartTicks < 0 || clip.loopStartTicks > tickLimit))
+        throw std::runtime_error("invalid MIDI clip loop; silent");
+    if (!clip.loopEnabled && clip.endMarkerTicks &&
+        (*clip.endMarkerTicks <= clip.contentOffsetTicks || *clip.endMarkerTicks > tickLimit))
+        throw std::runtime_error("invalid MIDI clip End marker; silent");
+    result.originSeconds = tempo.ticksToSeconds(result.originTick);
+    if (clip.timeBase == 0) {
+        result.startSeconds = result.originSeconds;
+        endSeconds = result.startSeconds + tempo.ticksToSeconds(result.originTick + result.lengthTicks) -
+                     result.originSeconds;
+    }
+    result.beginSample = checkedSample(result.startSeconds + result.originSeconds -
+                                       result.originSeconds, rate);
+    result.endSample = checkedSample(endSeconds, rate);
+    return result;
+}
 struct MidiClipState {
     struct OwnedTrack {
         std::shared_ptr<TrackState> audio;
@@ -581,24 +622,14 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
         const auto before=source.notes.size();
         try {
             if(clip.aliasOf)throw std::runtime_error("MIDI alias unsupported; silent");
-            const double startSeconds=clip.timeBase==0?tempo.ticksToSeconds(clip.posTicks.value_or(0)):static_cast<double>(clip.posNs.value_or(0))*1e-9;
-            const auto origin=clip.timeBase==0?clip.posTicks.value_or(0):tempo.secondsToTicks(startSeconds);
-            double endSeconds=startSeconds;
-            if(clip.timeBase==1) {
-                const auto begin=clip.posNs.value_or(-1),extent=clip.lengthNs.value_or(0);
-                if(begin<0 || extent<=0 || begin>INT64_MAX-extent)throw std::runtime_error("invalid linear MIDI clip time; silent");
-                endSeconds=static_cast<double>(begin+extent)*1e-9;
-            }
-            const auto length=clip.timeBase==0?clip.lengthTicks.value_or(0):tempo.secondsToTicks(endSeconds)-origin;
-            constexpr auto tickLimit=std::int64_t{1}<<50;
-            if(origin<0||origin>tickLimit||length<=0||length>tickLimit||clip.contentOffsetTicks < -tickLimit||clip.contentOffsetTicks>tickLimit)throw std::runtime_error("invalid MIDI clip time; silent");
+            const auto placement = projectMidiClipPlacement(clip, tempo, rate);
+            const auto origin = placement.originTick, length = placement.lengthTicks;
             const auto loop=clip.loopLenTicks.value_or(0);
-            if(clip.loopEnabled && (loop<=0||loop>tickLimit||clip.loopStartTicks<0||clip.loopStartTicks>tickLimit))throw std::runtime_error("invalid MIDI clip loop; silent");
-            if (!clip.loopEnabled && clip.endMarkerTicks &&
-                (*clip.endMarkerTicks <= clip.contentOffsetTicks || *clip.endMarkerTicks > tickLimit))
-                throw std::runtime_error("invalid MIDI clip End marker; silent");
-            auto at=[&](std::int64_t local){return checkedSample(startSeconds+tempo.ticksToSeconds(origin+local)-tempo.ticksToSeconds(origin),rate);};
-            const auto clipEnd=clip.timeBase==0?at(length):checkedSample(endSeconds,rate);
+            auto at = [&](std::int64_t local) {
+                return checkedSample(placement.startSeconds + tempo.ticksToSeconds(origin + local) -
+                                     placement.originSeconds, rate);
+            };
+            const auto clipEnd = placement.endSample;
             bool unsupported=false;
             for(const auto& note:model.notes) {
                 if(note.clipId!=clip.id || (note.flags&1u)!=0)continue;
