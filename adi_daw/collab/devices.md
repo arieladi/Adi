@@ -21,7 +21,7 @@ Time. Beat Repeat and External Audio Effect are left out of the count; they are 
   - This seat starts Amp now, on its own branch, and stops there if the answer is no.
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 39 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 40 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -190,6 +190,10 @@ method); Live's files and renders stay in the director's research.
 39. **Dynamic Tube (built after 3 December).** A fresh Dynamic Tube, every control as shown. A
     200 Hz sine at −6 dBFS for each Tube at Drive 0, 12 and 24 dB, Bias 0 and 100 %: the first five
     harmonics. A drum loop with Envelope at ±100 %: how the colour follows the level.
+40. **Grain Delay (built after 3 December).** A fresh Grain Delay, every control as shown (the delay's
+    range and default, Frequency's, Random Pitch's and Spray's ranges). An impulse at its defaults with
+    Pitch 0 and Spray 0: the echo times. A 440 Hz sine with Pitch +12 and −12 at Frequency 20 Hz: the
+    spectrum.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -204,6 +208,22 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Grain Delay — lands after 3 December
+
+**PR requested:** head `devices/grain-delay` (6ec98033), base `main`, after `devices/dynamic-tube`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.** Grains start every 1/Frequency, last two periods under a periodic Hann window and
+  sum to exactly 1. Each reads at its Pitch, moved by Random Pitch, from the delay lengthened by
+  Spray. The controls also include Feedback, Sync or Time, and Dry/Wet. `prepare()` never throws.
+- **Tests:**
+  - `adi_grain_delay_tests` 16. An impulse returns after exactly the delay, alone, each repeat
+    Feedback times the last. Pitch ±12 moves 440 Hz to 880 and 220 Hz. Spray spreads the channels.
+    Sync. The longest reach at 192 kHz stays finite. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 42 built-ins.
+  - The −12 check caught a first draft that started grains at twice Frequency: its carrier cancelled.
+- **Reading 40, added to the ONE list.**
 
 ## 2026-11-22 — DEV-22, the chapter's next missing effect: Dynamic Tube — lands after 3 December
 
