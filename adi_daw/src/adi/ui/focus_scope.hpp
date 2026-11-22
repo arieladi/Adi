@@ -9,6 +9,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -57,6 +58,7 @@ struct FocusSumReading {
 struct FocusSumColumn {
     std::array<double, 2> low{}, high{};
 };
+inline double focusScopeMidSample(double left, double right) noexcept { return (left + right) * .5; }
 struct FocusScopeBarSource {
     engine::ScopeSource source;
     std::uint64_t generation = 0; // ScopeTap::generation() or SharedAnalysis::Result::generation
@@ -113,7 +115,13 @@ inline std::optional<std::int64_t> focusWindowEnd(std::int64_t first, std::int64
 class FocusScopeBarProjection {
   public:
     struct MidColumn {
-        double low, high;
+        double low = std::numeric_limits<double>::infinity();
+        double high = -std::numeric_limits<double>::infinity();
+
+        void include(double sample) noexcept {
+            low = std::min(low, sample);
+            high = std::max(high, sample);
+        }
     };
 
     bool prepare(FocusScopeRange range, std::span<const FocusScopeBarSource> sources,
@@ -136,7 +144,7 @@ class FocusScopeBarProjection {
         constexpr auto inf = std::numeric_limits<double>::infinity();
         std::vector<FocusSumColumn> bins((sources.size() + 1) * columns, FocusSumColumn{{inf, inf}, {-inf, -inf}});
         std::vector<MidColumn> midBins;
-        if (includeMid) midBins.assign(sources.size() * columns, MidColumn{inf, -inf});
+        if (includeMid) midBins.resize((sources.size() + 1) * columns);
         std::vector<FocusScopeBarSource> identities(sources.begin(), sources.end());
         bins_ = std::move(bins);
         midBins_ = std::move(midBins);
@@ -180,9 +188,11 @@ class FocusScopeBarProjection {
         return member < sources_.size() ? lane(member) : std::span<const FocusSumColumn>{};
     }
     [[nodiscard]] std::span<const MidColumn> memberMidColumns(std::size_t member) const noexcept {
-        if (midBins_.empty() || !visibleColumns_ || member >= sources_.size()) return {};
-        return std::span(midBins_).subspan(member * columns_, visibleColumns_);
+        return member < sources_.size() ? midLane(member) : std::span<const MidColumn>{};
     }
+    [[nodiscard]] std::span<const MidColumn> sumMidColumns() const noexcept { return midLane(sources_.size()); }
+    // Used only for an unfinished projection. Published results are immutable.
+    void discardMid() noexcept { std::vector<MidColumn>{}.swap(midBins_); }
     [[nodiscard]] std::span<const FocusSumColumn> sumColumns() const noexcept { return lane(sources_.size()); }
     [[nodiscard]] std::optional<FocusSumReading> sumReading() const noexcept {
         if (!frames()) return {};
@@ -209,17 +219,15 @@ class FocusScopeBarProjection {
                     const std::array<double, 2> sample{blocks[member].left[at], blocks[member].right[at]};
                     const auto index = member * columns_ + column_;
                     remember(bins_[index], sample);
-                    if constexpr (IncludeMid) {
-                        // Combine corresponding samples before binning to preserve cancellation.
-                        const auto mid = (sample[0] + sample[1]) * .5;
-                        auto &bin = midBins_[index];
-                        bin.low = std::min(bin.low, mid);
-                        bin.high = std::max(bin.high, mid);
-                    }
+                    // Combine corresponding samples before binning to preserve cancellation.
+                    if constexpr (IncludeMid)
+                        midBins_[index].include(focusScopeMidSample(sample[0], sample[1]));
                     value[0] += sample[0];
                     value[1] += sample[1];
                 }
                 remember(sum, value);
+                if constexpr (IncludeMid)
+                    midBins_[blocks.size() * columns_ + column_].include(focusScopeMidSample(value[0], value[1]));
                 for (std::size_t ch = 0; ch < value.size(); ++ch) {
                     peak_[ch] = std::max(peak_[ch], std::abs(value[ch]));
                     energy_[ch] += value[ch] * value[ch];
@@ -247,6 +255,10 @@ class FocusScopeBarProjection {
         return std::span(bins_).subspan(index * columns_, visibleColumns_);
     }
 
+    [[nodiscard]] std::span<const MidColumn> midLane(std::size_t index) const noexcept {
+        if (midBins_.empty() || !visibleColumns_) return {};
+        return std::span(midBins_).subspan(index * columns_, visibleColumns_);
+    }
     FocusScopeRange range_;
     std::vector<FocusScopeBarSource> sources_;
     std::vector<FocusSumColumn> bins_;
@@ -289,7 +301,7 @@ focusScopeRange(std::span<const SharedAnalysis::Result *const> sources) noexcept
 
 // The supplied range must be accepted for these sources. Measure the signed
 // stereo sum and optionally emit its display extrema during the same scan.
-template <class PublishColumn>
+template <bool IncludeMid = false, class PublishColumn>
 FocusSumReading focusProjectSum(std::span<const SharedAnalysis::Result *const> sources,
                                 const FocusScopeRange &range, std::size_t columns,
                                 PublishColumn &&publishColumn) {
@@ -315,14 +327,20 @@ FocusSumReading focusProjectSum(std::span<const SharedAnalysis::Result *const> s
         scan(0, range.frames, [](double, double) {});
     }
     for (std::size_t column = 0; column < columns; ++column) {
-        constexpr auto inf = std::numeric_limits<double>::infinity();
-        FocusSumColumn extrema{{inf, inf}, {-inf, -inf}};
+        [[maybe_unused]] constexpr auto inf = std::numeric_limits<double>::infinity();
+        using Extrema = std::conditional_t<IncludeMid, FocusScopeBarProjection::MidColumn, FocusSumColumn>;
+        Extrema extrema;
+        if constexpr (!IncludeMid) extrema = {{inf, inf}, {-inf, -inf}};
         scan(column * range.frames / columns, (column + 1) * range.frames / columns,
-             [&extrema](double left, double right) {
-                 extrema.low[0] = std::min(extrema.low[0], left);
-                 extrema.high[0] = std::max(extrema.high[0], left);
-                 extrema.low[1] = std::min(extrema.low[1], right);
-                 extrema.high[1] = std::max(extrema.high[1], right);
+             [&](double left, double right) {
+                 if constexpr (IncludeMid) {
+                     extrema.include(focusScopeMidSample(left, right));
+                 } else {
+                     extrema.low[0] = std::min(extrema.low[0], left);
+                     extrema.high[0] = std::max(extrema.high[0], left);
+                     extrema.low[1] = std::min(extrema.low[1], right);
+                     extrema.high[1] = std::max(extrema.high[1], right);
+                 }
              });
         publishColumn(column, extrema);
     }

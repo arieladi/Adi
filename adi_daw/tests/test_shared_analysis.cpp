@@ -682,9 +682,10 @@ void focusBarScopeMidDemand() {
             : std::span<const adi::ui::FocusScopeBarProjection::MidColumn>{};
     };
     const auto combined = levels(mid);
+    const auto member = mid && mid->projection ? mid->projection->memberMidColumns(0)
+        : std::span<const adi::ui::FocusScopeBarProjection::MidColumn>{};
     check(combined.size() == 1 && combined.front().low == -.25 && combined.front().high == .25 &&
-              mid->projection->memberMidColumns(0).front().low == 0. &&
-              mid->projection->memberMidColumns(0).front().high == 0.,
+              member.size() == 1 && member.front().low == 0. && member.front().high == 0.,
           "the grouped publication bins signed Mid for members and the sum");
 
     check(lease.request({2, 2, rate}, revision), "the following bar starts on the same grouped lease");
