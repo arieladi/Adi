@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-12 audio file conversion
+
+- EX-12 file conversion — PR requested, `engine-win/export-file-converter` at `dae10235` on `87ea349c`. Streams existing decodable audio into the shared WAV delivery with the source clock and channel count. Normalization and the quantizer use that delivery path. Verified exact float, seeded PCM, no-clobber publication, cancellation, same-source refusal and input replacement. MSVC: render queue 438, WAV 143, PCM stream 50, normalization 23. The existing symlink case requires Windows privilege. The converter entry point takes one file. Window owns the batch UI; additional formats, conversion rate and After Export fingerprinting need the joined delivery path.
+
 ## 2026-11-22 — EX-12 After Export import
 
 - EX-12 After Export to a track — PR requested, `engine-win/after-export-import` at `86b3c519` on `87ea349c`. Opt-in worker digest captured before publication. Owner-thread import verifies the delivery and the journalled source digest using the existing material command, then commits one undo step. Undo kept the published file and removed the new clip. Cancel and a same-length replacement were refused. MSVC: render queue 440, material 29, history 148, all green. The existing symlink case was skipped for Windows privilege. Window owns completion dispatch and destination selection. Gapless and converter delivery need the joined publication path before offering After Export there.
