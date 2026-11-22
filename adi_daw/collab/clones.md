@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Stereo reflection processing for Room
+
+`clones/shaper-reverb-port` at `97f9ffd7` — Accumulate stereo room reflections in one ordered pass. **Lands after 3 December.** This updates the existing generated Room submission. Each reflection now stores its two gains together. The processor finds the valid end of the reflection list once per frame, then accumulates both channels in the original order. Other architectures retain a scalar path. A 32-bit scalar build passed the expanded Room suite.
+
+On the 48 kHz stereo kick and bass, processing-thread cycles fell by 27.53% at 256 frames and 27.41% at 2,048 with steady controls. With moving send, return and room controls they fell by 19.90% and 23.16%. Every active paired trial improved. Three independent registered instances received the same input block on the same thread in rotating order. The new version's median wall times were 45.05 and 599.83 µs steady, and 57.23 and 378.15 µs moving. These compare implementations of ADI's authored response.
+
+At both buffer sizes all 162 eligible stored responses retained their stereo samples, a total of 31,104,000 frames. The independent direct suite checked 7,204,144 frames at six rates. Two new assertions catch a swapped reflection gain and a stale read when a long predelay follows a reset. Each intentional defect passed the previous suite and failed its new assertion. The rack, Room and registered native/edited-Pd suites passed under MSVC /W4 /WX at both precisions. Latency remains zero.
+
+PR requested
+
 ## 22 November 2026 — Measured Crush transitions between bit resolutions
 
 The current core evaluates the preceding sample on the new quantization grid. Signed stereo markers show that the reference retains each sample's own grid. At a change, take the fractional crossing weight in quantizer-code units, interpolate the two physical output levels on their respective grids, then apply the current gain compensation. Equal integer codes return the current physical level. Keep history when entering or leaving full resolution. The existing constant-resolution calculation can remain intact.
