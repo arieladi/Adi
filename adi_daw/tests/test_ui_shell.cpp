@@ -26,6 +26,7 @@
 #include "knobs_device.hpp"
 #include "mix_seek_fixture.hpp"
 #include "temp_directory.hpp"
+#include "ui_golden_text.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
@@ -13147,6 +13148,50 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
     }
 }
 } // namespace
+// WTS-03, AT-2: a golden that checks text by its place. The recorder keeps each run of glyphs' box in
+// the image's pixels (under a transform too); compared outside both renders' boxes, a word moved 1 px
+// passes and a divider moved 1 px fails; the boxes read back from their text; the diff shows the
+// divider in red.
+void textGoldens() {
+    struct Sheet final : juce::Component {
+        int wordX = 20, dividerX = 120;
+        void paint(juce::Graphics &g) override {
+            g.fillAll(juce::Colours::black);
+            g.setColour(juce::Colours::white);
+            g.setFont(look::font(look::fontBody));
+            g.drawText("Bass", wordX, 10, 80, 20, juce::Justification::centredLeft);
+            g.fillRect(dividerX, 0, 1, getHeight());
+        }
+    } sheet;
+    sheet.setSize(200, 40);
+    const auto golden = test::renderWithText(sheet);
+    check(golden.boxes.size() == 1 && golden.boxes[0].getX() >= 20 && golden.boxes[0].getRight() <= 100 &&
+              golden.boxes[0].getY() >= 10 && golden.boxes[0].getBottom() <= 30,
+          "the recorder keeps the word's box, inside where it was drawn");
+    sheet.wordX = 21;
+    const auto moved = test::renderWithText(sheet);
+    auto c = test::compareMasked(golden.image, golden.boxes, moved.image, moved.boxes);
+    check(c.exact() && c.masked > 0, "AT-2: a word moved 1 px passes, what changed inside the text mask");
+    sheet.wordX = 20;
+    sheet.dividerX = 121;
+    const auto divider = test::renderWithText(sheet);
+    c = test::compareMasked(golden.image, golden.boxes, divider.image, divider.boxes);
+    check(!c.exact() && c.differing == 80 && c.masked == 0, "AT-2: a divider moved 1 px fails, its two columns counted");
+    const auto diff = test::diffImage(golden.image, golden.boxes, divider.image, divider.boxes);
+    check(diff.getPixelAt(120, 2) == juce::Colour(0xffff2020) && diff.getPixelAt(121, 2) == juce::Colour(0xffff2020),
+          "the diff draws the divider's columns in red");
+    check(test::boxesFrom(test::boxesText(golden.boxes)) == golden.boxes, "the boxes read back from their text");
+    juce::Image twice(juce::Image::ARGB, 400, 80, true, juce::SoftwareImageType{});
+    test::GlyphBoxRecorder recorder(twice);
+    {
+        juce::Graphics g(recorder);
+        g.addTransform(juce::AffineTransform::scale(2.f));
+        sheet.paintEntireComponent(g, true);
+    }
+    check(recorder.boxes.size() == 1 && recorder.boxes[0].getX() >= 2 * golden.boxes[0].getX() - 2 &&
+              recorder.boxes[0].getWidth() >= 2 * golden.boxes[0].getWidth() - 4,
+          "under a 2x zoom the box is in the image's pixels, twice the size");
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -16373,6 +16418,7 @@ int main(int argc, char **argv) {
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
+    trace("textGoldens", [&] { textGoldens(); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
