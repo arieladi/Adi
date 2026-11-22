@@ -11,6 +11,11 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Spectrum layouts in All and Compare
+
+- **PR requested — `mixview/df-m55-spectrum-layouts-lands-after-2026-12-03` `0619d04f`; lands after 3 December.** The All tile follows the Spectrum layout. Compare fills Detail and Extended in its own scale without resetting either source or Hold B, and uses lines for Wide and Device. The pre-fix suite failed the All layout and the two fill checks. The exact Release passed all 454 spectrum component checks, all 24 CTests and the 906/329/7 headless shell checks. Both production units parsed under the CI warning group with zero warnings. The Info consumer remains in Needs Window.
+- **PR requested — updated scheduled cumulative preview.** `mixview/review-scope-lands-after-2026-12-03` now points to `0619d04f`. ZIP SHA-256 `c2c6f6fdb23524137df4f27322e3e9d8bff1a78351620ab23f5896a48908e619`; ADI.exe `6c72eb943e0a5173f6d3215735fd56deffad2da9ee99337ff6bec301d96eb665`. The private retest brief includes the exact all-layout and Hold B sequence. The before-date Release remains `cafd7fde`.
+
 ## 2026-11-22 — Spectrum presentation boundary and sound follow-up
 
 - **Needs Window — DF-M55 Info scale.** The dedicated Spectrum pane exposes all three reference-based layouts through Detail, Extended and Device. All and Compare are the seat's surfaces. In the existing Info fan-out in `src/juce/ui_shell.cpp`, copy the detail view's scale when its spectrum is eligible, alongside its existing source and slope. Keep the hover handoff, compact plot and hidden-demand gate. The detached analyser already copies the selected scale when opened.
