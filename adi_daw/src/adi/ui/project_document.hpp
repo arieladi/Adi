@@ -5,6 +5,7 @@
 #include "adi/sample_slots.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/param_ops.hpp"
+#include "adi/gesture_producers.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
@@ -128,6 +129,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The application's setting, not the project's: not an op and not an undo step. False with
     // `error()` when the session refused it.
     bool setDelayCompensation(bool on);
+    // The parameter's context menu in Live (manual 25.4): one overridden lane follows its envelope
+    // again; the others stay overridden. Session state as above, no undo step. False with `error()`
+    // when the lane was not overridden or the rebuild failed.
+    bool reenableAutomation(std::int64_t laneId);
     // Live's Automation Arm (manual 25.1): whether a control moved while the Arrangement Record
     // button is on becomes automation. The session's switch, on in a new Set as Live's. Automation
     // recording is not wired yet (AU-03), so the session is never told that recording is on.
@@ -159,6 +164,21 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::string message;
     };
     std::optional<TakeLanded> takeLanded();
+    // A mixer drag heard while it moves (MX-23, SRF-02; Live 12 manual 18.1): a fader, a pan or a send
+    // knob, on its track or, when that track is among the selected, on every selected track by the same
+    // move. Begin captures the values where the drag starts; each Value is heard at once, with no op;
+    // End commits ONE transaction of the final values, one undo step named `label`, or nothing when
+    // nothing changed; Cancel (Esc) puts every value back. The engine's gesture session does the work
+    // (`gesture::relativeScalarProducer`); `coordinate` is the control's own value (a fader's dB, a
+    // pan's -1..1). False with `error()` saying why; a drag already running is ended first.
+    // With no `coordinate` the drag begins where the rows stand and is heard from its first move, so a
+    // click that does not move writes nothing.
+    bool beginMixerDrag(const gesture::RelativeScalarSelection &, std::optional<double> coordinate,
+                        const std::string &label);
+    bool mixerDrag(double coordinate);
+    bool endMixerDrag();
+    void cancelMixerDrag();
+    bool mixerDragging() const noexcept { return mixerDrag_ != nullptr; }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
@@ -269,6 +289,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool recording_ = false, landing_ = false;
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
+    // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
+    std::shared_ptr<gesture::Coordinator> coordinator_;
+    std::unique_ptr<gesture::Session> mixerDrag_;
     ParameterFeed feed_;
     // Owner-only. Refresh the pointer even when latency fields still match so
     // an old load of controls is never held after its display changes.

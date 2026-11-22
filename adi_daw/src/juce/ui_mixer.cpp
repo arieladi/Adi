@@ -3,6 +3,7 @@
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/ui/automation_override.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -111,6 +112,9 @@ void PeakHold::paintButton(juce::Graphics &g, bool over, bool down) {
                      held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1));
 }
 MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
+    // The strip takes the keys only during a live drag, for Esc (MX-23); a click does not focus it.
+    setWantsKeyboardFocus(true);
+    setMouseClickGrabsKeyboardFocus(false);
     if (panel.vertical()) {
         // Live's Mixer View: the fader is the ◁ beside the meter, on the meter's scale.
         volume.setSliderStyle(juce::Slider::LinearVertical);
@@ -132,10 +136,13 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         }
     }
     pan.getProperties().set("live.bipolar", true);
+    // A fader drag moves from where it is, not to where it was clicked: a click alone changes nothing.
+    volume.setSliderSnapsToMousePosition(false);
     if (panel.vertical())
         volume.setNormalisableRange(juce::NormalisableRange<double>(
             kFloorDb, kTopDb,
-            [](double, double, double proportion) { return meterLevel(1 - proportion); },
+            // The foot is the floor itself, so the fader reaches silence and -70 maps back to the foot.
+            [](double, double, double proportion) { return proportion <= 0 ? kFloorDb : meterLevel(1 - proportion); },
             [](double, double, double db) { return 1 - meterDepth(db); }));
     else {
         volume.setRange(kFloorDb, kTopDb, .01);
@@ -166,29 +173,42 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         addAndMakeVisible(*s);
         // The wheel only scrolls, as Live (lookfeel.wheelChangesParameters).
         s->setScrollWheelEnabled(false);
-        s->onDragStart = [this] { dragging_ = true; };
     }
-    // A drag is one undo step: it commits when the mouse lets go. Typed and
-    // double-click changes commit at once.
+    // A drag is heard while it moves and is one undo step when the mouse lets go (MX-23, SRF-02): the
+    // document's live gesture, the selected tracks together when this one is among them. Typed and
+    // double-click changes commit at once. Without the live gesture (outside the application) the drag
+    // commits on release, as before.
+    volume.onDragStart = [this] {
+        dragging_ = true;
+        beginLive(gesture::ScalarKind::TrackVolume, track_, {kFloorDb, kTopDb, kSilenceDb}, "Change Track Volume");
+    };
+    pan.onDragStart = [this] {
+        dragging_ = true;
+        beginLive(gesture::ScalarKind::TrackPan, track_, {-1, 1, std::nullopt}, "Change Track Panning");
+    };
     volume.onDragEnd = [this] {
         dragging_ = false;
-        panel_.submit("mixer.setVolume", {{"id", track_}, {"db", writtenVolume(volume.getValue())}},
-                      "Change Track Volume");
+        if (!endLive())
+            panel_.submit("mixer.setVolume", {{"id", track_}, {"db", writtenVolume(volume.getValue())}},
+                          "Change Track Volume");
     };
     pan.onDragEnd = [this] {
         dragging_ = false;
-        panel_.submit("mixer.setPan", {{"id", track_}, {"pan", pan.getValue()}},
-                      "Change Track Panning");
+        if (!endLive())
+            panel_.submit("mixer.setPan", {{"id", track_}, {"pan", pan.getValue()}}, "Change Track Panning");
     };
     volume.onValueChange = [this] {
-        if (!dragging_)
+        if (live_)
+            panel_.root.mixerDrag(volume.getValue());
+        else if (!dragging_)
             panel_.submit("mixer.setVolume", {{"id", track_}, {"db", writtenVolume(volume.getValue())}},
                           "Change Track Volume");
     };
     pan.onValueChange = [this] {
-        if (!dragging_)
-            panel_.submit("mixer.setPan", {{"id", track_}, {"pan", pan.getValue()}},
-                          "Change Track Panning");
+        if (live_)
+            panel_.root.mixerDrag(pan.getValue());
+        else if (!dragging_)
+            panel_.submit("mixer.setPan", {{"id", track_}, {"pan", pan.getValue()}}, "Change Track Panning");
     };
     // Live's Track Delay (manual 18.7): a value box reading the delay in ms to two places, Live's
     // "ms" box beside it (paintDelayUnit); a negative value pre-delays. Hidden until Live's Track
@@ -217,7 +237,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     keepLatency.onClick = [this] { panel_.root.setKeepMonitoringLatency(track_, !keepLatency.getToggleState()); };
     addChildComponent(keepLatency);
     delay.setTitle("Track Delay");
-    delay.setTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
+    setDelayTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
     delay.setScrollWheelEnabled(false);
     delay.onDragStart = [this] { dragging_ = true; };
     delay.onDragEnd = [this] {
@@ -287,14 +307,22 @@ void MixerStrip::bind(std::int64_t id) {
     frame(true);
 }
 void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
+void MixerStrip::setDelayTooltip(const juce::String &tip) {
+    // The box's value label covers the slider and keeps the tooltip it had when it was made: both get it.
+    delay.setTooltip(tip);
+    for (auto *c : delay.getChildren())
+        if (auto *label = dynamic_cast<juce::Label *>(c))
+            label->setTooltip(tip);
+}
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
     // Live makes Track Delay unavailable while Options > Delay Compensation is off (manual 18.7;
     // MX-04); its value stays as stored, and comes back with the switch.
     if (const bool compensated = panel_.root.commands().delayCompensation(); delay.isEnabled() != compensated) {
         delay.setEnabled(compensated);
-        delay.setTooltip(compensated ? "Delays the track's output by this many milliseconds; a negative value pre-delays it."
-                                     : "Track Delay is unavailable while Options > Delay Compensation is off.");
+        setDelayTooltip(compensated ? "Delays the track's output by this many milliseconds; a negative value pre-delays it."
+                                    : "Track Delay is unavailable while Options > Delay Compensation is off.");
+        repaint(); // its "ms" box and title follow
     }
     // A device put on a MIDI track or taken off it may give it an audio mixer or take it away.
     const auto devices = panel_.root.devices.publication ? panel_.root.devices.publication() : nullptr;
@@ -635,7 +663,7 @@ void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).
     const auto b = delay.getBounds();
     const juce::Rectangle<float> r(static_cast<float>(b.getRight() + 2), static_cast<float>(b.getY()), 22.f, 13.f);
-    controls::button(g, r, controls::ButtonState::On, "ms");
+    controls::button(g, r, delay.isEnabled() ? controls::ButtonState::On : controls::ButtonState::DisabledOn, "ms");
 }
 void MixerStrip::commitDelay() {
     // From the CURRENT cell, as every action is (ADR-0201): ms into samples at the project's rate,
@@ -960,18 +988,78 @@ std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
     knob->setTooltip("Sets how much of the track goes to return track " + letter + ".");
     knob->setScrollWheelEnabled(false);
     // A drag is one undo step: it commits when the mouse lets go. A typed value commits at once.
-    knob->onDragStart = [this] { dragging_ = true; };
+    // A send that has its row is dragged live, as the fader is (MX-23); one with none yet is made when
+    // the mouse lets go (its row and id come with the commit).
+    knob->onDragStart = [this, index] {
+        dragging_ = true;
+        const auto current = panel_.root.current();
+        if (current && index < returns_.size())
+            if (const auto *send = findSend(current->sends, track_, returns_[index]))
+                beginLive(gesture::ScalarKind::RoutingGain, send->id, {kSendFloorDb, kSendTopDb, kSendSilenceDb},
+                          "Change Send Level");
+    };
     knob->onDragEnd = [this, index] {
         dragging_ = false;
-        commitSend(index);
+        if (!endLive())
+            commitSend(index);
     };
     knob->onValueChange = [this, index] {
-        if (!dragging_)
+        if (live_)
+            panel_.root.mixerDrag(sends_[index]->getValue());
+        else if (!dragging_)
             commitSend(index);
     };
     knob->addMouseListener(this, false);
     addAndMakeVisible(*knob);
     return knob;
+}
+void MixerStrip::beginLive(gesture::ScalarKind kind, std::int64_t id, gesture::ScalarControlDomain domain,
+                           const std::string &label) {
+    live_ = false;
+    cancelled_ = false;
+    if (!panel_.root.beginMixerDrag)
+        return;
+    // Only a mouse drag: a typed value, a double-click's reset or an accessibility set changes the clicked
+    // control alone, committed as before.
+    if (!juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+        return;
+    // The selected tracks go together when the dragged one is among them (a send by its track's place).
+    std::vector<std::int64_t> selected;
+    const auto picked = panel_.root.arrangement.geometry.selectedTracks(panel_.root.reader());
+    const bool together = std::find(picked.begin(), picked.end(), track_) != picked.end() && picked.size() > 1;
+    if (together && kind != gesture::ScalarKind::RoutingGain)
+        selected = picked;
+    // Begun where the rows stand: heard from the first move, and a click that does not move writes nothing.
+    live_ = panel_.root.beginMixerDrag({kind, id, selected, domain}, std::nullopt, label);
+    if (live_)
+        grabKeyboardFocus(); // Esc during the drag reaches keyPressed
+    else
+        panel_.root.say(panel_.root.error().empty() ? "This control cannot be dragged live." : panel_.root.error());
+}
+bool MixerStrip::endLive() {
+    if (cancelled_) {
+        // Esc put the values back; the release commits nothing, and the controls show the rows again.
+        cancelled_ = false;
+        frame(true);
+        return true;
+    }
+    if (!live_)
+        return false;
+    live_ = false;
+    if (panel_.root.endMixerDrag)
+        panel_.root.endMixerDrag();
+    return true;
+}
+bool MixerStrip::keyPressed(const juce::KeyPress &key) {
+    // Esc during a drag puts every value back (MX-23).
+    if (key == juce::KeyPress::escapeKey && live_) {
+        live_ = false;
+        cancelled_ = true;
+        if (panel_.root.cancelMixerDrag)
+            panel_.root.cancelMixerDrag();
+        return true;
+    }
+    return false;
 }
 void MixerStrip::commitSend(std::size_t index) {
     // From the CURRENT cell, as every action is (ADR-0201).
@@ -1018,6 +1106,10 @@ void MixerStrip::sendMenu(std::size_t index) {
     // A return's sends start off; Live's menu also switches them all on at once (§18.4).
     if (kind_ == "return")
         m.addItem("Enable All Sends", [this] { enableAllSends(); });
+    // Live's Re-Enable Automation for this send's level, owned by its routing row (AU-04).
+    if (const auto current = panel_.root.current())
+        if (const auto *send = findSend(current->sends, track_, returns_[index]))
+            panel_.root.addReenableAutomation(m, laneOf(*current, "routing", send->id, "gain_db"));
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
 }
 juce::PopupMenu MixerStrip::soloMenu() {
@@ -1051,6 +1143,9 @@ void MixerStrip::panMenu() {
     // Live's Split Stereo Pan Mode (ADR-0203 d9) needs a pan mode and two pans per
     // strip in the format and the mixer: the engine's (collab/window.md, N12).
     m.addItem(2, "Split Stereo Pan", false, false);
+    // Live's Re-Enable Automation for the pan (AU-04).
+    if (const auto current = panel_.root.current())
+        panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "pan"));
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
 }
 MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {}

@@ -12,6 +12,8 @@
 
 #include "adi/blob.hpp"
 #include "adi/check.hpp"
+#include "adi/clip_commands.hpp"
+#include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 
@@ -21,6 +23,7 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -91,6 +94,31 @@ void testCleanProject() {
     check(r.errors == 0, "no errors: " + describe(r));
     check(r.warnings == 0, "no warnings: " + describe(r));
     check(r.clean(), "clean() agrees");
+}
+
+void testHistoricalTargets() {
+    Fixture f("historical_targets");
+    if(!f.store)throw std::runtime_error("create historical target project");
+    const auto cut=clip_edit::prepareCutClip(*f.store,5,48000);
+    check(cut.copy.ok && clip_edit::commitPrepared(*f.store,cut.edit).ok &&
+          f.db().execAndGet("SELECT count(*) FROM ops WHERE target_kind='clip' AND target_id=5").getInt()>0,
+          "Cut records a historical target after deleting its clip");
+    check(checkProject(*f.store).clean(),"checking a Cut does not require its historical target to be live");
+    const auto cutZip=f.dir/"cut.zip";
+    const auto exported=f.store->collectAndExport(cutZip);
+    check(exported.ok && fs::is_regular_file(cutZip),"Collect and Export publishes a ZIP after Cut: "+exported.error);
+    check(History(*f.store).undo().ok && f.db().execAndGet("SELECT count(*) FROM clips WHERE id=5").getInt()==1,
+          "Undo still uses the retained Cut history to restore the clip");
+
+    OpRequest create;create.opType="clip.create";create.targetKind="clip";create.targetId=7;
+    create.payload={{"id",7},{"track",1},{"kind","midi"},{"pos",23063040},{"length",5765760}};
+    check(OpJournal(*f.store).commit(create).ok && History(*f.store).undo().ok &&
+          f.db().execAndGet("SELECT count(*) FROM clips WHERE id=7").getInt()==0,
+          "Undo leaves the named clip behind the current history head");
+    check(checkProject(*f.store).clean(),"a retained operation beyond the current head passes the project check");
+    const auto undoZip=f.dir/"undo.zip";
+    const auto written=f.store->collectAndExport(undoZip);
+    check(written.ok && fs::is_regular_file(undoZip),"Collect and Export publishes a ZIP after Undo: "+written.error);
 }
 
 // --- the polymorphic references, which SQLite cannot enforce -------------------
@@ -299,6 +327,63 @@ void testNoInitialTempo() {
     f.db().exec("INSERT INTO tempo_map(pos_ticks, bpm) VALUES (0, 120.0)");
     check(!has(checkProject(*f.store), "time.noInitialTempo"),
           "and clears once a tempo at 0 exists");
+
+    f.db().exec("ALTER TABLE tempo_map RENAME TO unreadable_tempo_map");
+    const auto failedTempo = checkProject(*f.store);
+    check(std::any_of(failedTempo.findings.begin(), failedTempo.findings.end(),
+                      [](const Finding& finding) {
+                          return finding.severity == Severity::Error &&
+                                 finding.code == "time.checkFailed" && finding.where == "tempo_map";
+                      }), "a failed tempo query is reported as an error on tempo_map");
+}
+
+void testClipLengths() {
+    Fixture f("lengths");
+    if (!f.store) throw std::runtime_error("create clip lengths project");
+    f.db().exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) "
+                "VALUES(6,1,'audio',1,1000,0)");
+    f.db().exec("UPDATE clips SET length_ticks=0 WHERE id=5");
+    check(!has(checkProject(*f.store), "time.clipLength"), "zero is a valid native clip length");
+    for (const char* value : {"NULL", "-1"}) {
+        f.db().exec(std::string("UPDATE clips SET length_ticks=") + value + " WHERE id=5");
+        f.db().exec(std::string("UPDATE clips SET length_ns=") + value + " WHERE id=6");
+        const auto report = checkProject(*f.store);
+        for (const char* row : {"clips#5", "clips#6"}) {
+            check(std::any_of(report.findings.begin(), report.findings.end(),
+                              [&](const Finding& finding) {
+                                  return finding.severity == Severity::Error &&
+                                         finding.code == "time.clipLength" && finding.where == row;
+                              }), std::string("rejects native clip length ") + value + " at " + row);
+        }
+    }
+}
+
+void testProjectCycles() {
+    Fixture f("cycles");
+    if (!f.store) throw std::runtime_error("create project cycle fixture");
+    f.db().exec("INSERT INTO tracks(id,kind,name,parent_id) VALUES(2,'group','Bus',NULL)");
+    f.db().exec("UPDATE tracks SET parent_id=2 WHERE id=1");
+    f.db().exec("INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,enabled) VALUES"
+                "(1,'track',2,'track',1,'main',0),(2,'track',2,'track',1,'send',1)");
+    const auto clean = checkProject(*f.store);
+    check(clean.errors == 0, "a group, disabled reverse main and active send check clean");
+
+    f.db().exec("UPDATE tracks SET parent_id=1 WHERE id=2");
+    check(has(checkProject(*f.store), "track.parentCycle"), "rejects an indirect parent cycle");
+    f.db().exec("PRAGMA ignore_check_constraints=ON");
+    f.db().exec("UPDATE tracks SET parent_id=2 WHERE id=2");
+    f.db().exec("PRAGMA ignore_check_constraints=OFF");
+    check(has(checkProject(*f.store), "track.parentCycle"), "rejects a self-parent");
+    f.db().exec("UPDATE tracks SET parent_id=NULL WHERE id=2");
+
+    f.db().exec("UPDATE routing SET enabled=1 WHERE id=1");
+    check(has(checkProject(*f.store), "routing.mainCycle"),
+          "rejects a main output cycle closed by the implicit parent output");
+    f.db().exec("UPDATE tracks SET parent_id=NULL WHERE id=1");
+    f.db().exec("UPDATE routing SET kind='main',src_id=1,dst_id=2 WHERE id=2");
+    check(has(checkProject(*f.store), "routing.mainCycle"), "rejects an explicit main output cycle");
+    f.db().exec("UPDATE routing SET enabled=0 WHERE id=1");
+    check(!has(checkProject(*f.store), "routing.mainCycle"), "disabling a main row breaks the cycle");
 }
 
 void testMediaEmbedding() {
@@ -379,6 +464,7 @@ int main() {
     std::printf("adi_check_tests -- ADR-0029/0033, what SQLite cannot enforce\n\n");
     try {
         testCleanProject();
+        testHistoricalTargets();
         testDanglingPolyRef();
         testExternalKindsAreNotErrors();
         testUnknownKindIsAWarning();
@@ -387,6 +473,8 @@ int main() {
         testOrphanExpression();
         testHistoryChecks();
         testTimeBaseMismatch();
+        testClipLengths();
+        testProjectCycles();
         testNoInitialTempo();
         testMediaEmbedding();
         testRemarkTargets();

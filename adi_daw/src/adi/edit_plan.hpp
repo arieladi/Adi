@@ -41,6 +41,7 @@ struct Move {
     clip_edit::TimePoint position;
 };
 struct ResizeEnd {std::int64_t id=0;clip_edit::TimePoint end;};
+struct Trim {std::int64_t id=0;clip_edit::TimePoint begin;};
 /// Ordinary material editing currently admits main lanes. Scope bounds admit
 /// source/destination extents; only actual incoming spans clear destinations.
 [[nodiscard]] clip_edit::PreparedEdit prepareMove(Store&,const EditScope&,
@@ -48,6 +49,9 @@ struct ResizeEnd {std::int64_t id=0;clip_edit::TimePoint end;};
 /// Keeps the native start fixed; left trim and Crop are separate intents.
 [[nodiscard]] clip_edit::PreparedEdit prepareResizeEnd(Store&,const EditScope&,
     ResizeEnd,const Options&);
+
+/// Keeps the native end and material anchored; audio clamps at source zero.
+[[nodiscard]] clip_edit::PreparedEdit prepareTrim(Store&,const EditScope&,Trim,const Options&);
 
 enum class EffectKind { Removed, Trimmed, Split, Created, Moved, Resized };
 struct MaterialState {
@@ -99,6 +103,7 @@ void freezeImage(Store&,Payload&,const edit::TimeMap&,double);
 void trimFrozenImage(Payload&,std::int64_t nativeBegin,std::int64_t nativeEnd,
                      const edit::TimeMap&,double);
 void resizeFrozenEnd(Payload&,std::int64_t nativeEnd,const edit::TimeMap&,double);
+void trimFrozenStart(Payload&,std::int64_t nativeBegin,const edit::TimeMap&,double);
 void retainImageDetails(edit::RowEdits&,const Payload&);
 }
 } // namespace adi::edit_plan

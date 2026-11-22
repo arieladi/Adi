@@ -13,11 +13,13 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 namespace {
 std::atomic<int> allocations{0};thread_local bool counting=false;
@@ -74,7 +76,7 @@ void catalogueAndHost() {
         check(allocations.load(std::memory_order_relaxed)==0,"canonical built-in processing allocates nothing");
     }
 #if ADI_WITH_PD
-    check(available==19,"all registered native canonical factories are available");
+    check(available==20,"all registered native canonical factories are available");
 #else
     check(available==0,"PD-disabled build advertises no unavailable backend as loadable");
 #endif
@@ -160,8 +162,7 @@ void insertionAndHistory() {
     const auto refused=commitBuiltinInsert(store,stale);
     check(!refused.ok && refused.stale && db.execAndGet("SELECT count(*) FROM devices").getInt()==2,"stale browser result refuses all new rows");
     check(!prepareBuiltinInsert(store,"unknown",1).ok && !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",999).ok &&
-          !prepareBuiltinInsert(store,"org.adidaw.builtin.hybrid-reverb",1).ok &&
-          !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",9,prepared.deviceId).ok,"unknown/unavailable devices, missing track and selection on another track refuse");
+          !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",9,prepared.deviceId).ok,"unknown devices, a missing track and a selection on another track refuse (every catalogue entry is available with Pd; the PD-disabled build refuses them all)");
 #endif
 }
 void thirdPartyPlacement() {
@@ -345,6 +346,54 @@ void playingSession() {
 // DEV-21: OneShot is a loadable instrument, so a MIDI clip sounds. Through
 // the product's own calls: the browser insert (registered as an instrument),
 // the sample slot assignment (#414), an ordinary Session with a MIDI clip.
+// DEV-22: Hybrid Reverb is loadable. Through the product's calls: the browser
+// insert, an impulse response assigned to its slot (#414), an ordinary Session
+// at 48 kHz, the Convolution route alone, fully wet, so a constant 0.25 comes
+// out at 0.25 times the IR's DC gain once the 256-sample partition has passed.
+// Two IRs, each one impulse of 0.5: at the session's rate on its first sample
+// (nothing resampled: exact), and at 44.1 kHz 64 samples in (resampled with its
+// DC gain kept). An impulse on the very first sample of an IR at another rate
+// loses the half of its resampled pulse that falls before time zero.
+void hybridSession() {
+#if ADI_WITH_PD
+    const auto* info=findBuiltin("org.adidaw.builtin.hybrid-reverb");
+    check(info && info->available,"Hybrid Reverb is available in the catalogue");
+    if(!info || !info->available)return;
+    struct Case{std::uint32_t rate;std::size_t at;float tolerance;const char* what;};
+    for(const Case& c:{Case{48000,0,1e-6f,"an IR at the session's rate convolves exactly"},
+                       Case{44100,64,1e-3f,"an IR at 44.1 kHz is resampled to 48 kHz with its DC gain kept"}}) {
+        Project project;auto& store=*project.store;auto& db=store.db();
+        const auto inserted=prepareBuiltinInsert(store,"org.adidaw.builtin.hybrid-reverb",1);
+        check(inserted.ok && commitBuiltinInsert(store,inserted).ok,"the browser inserts Hybrid Reverb on an audio track");
+        const auto ir=project.temporary.path()/"impulse.wav";
+        {
+            std::vector<float> impulse(512,0.f);impulse[c.at]=.5f;
+            audio::WavWriter writer(ir,c.rate,1,audio::WavFormat::Float32);writer.write(impulse.data(),512);writer.close();
+        }
+        const auto assigned=prepareSampleAssignment(store,inserted.deviceId,1,ir,48000,7);
+        if(!assigned.ok)std::printf("assign: %s\n",assigned.error.c_str());
+        check(assigned.ok && commitSampleAssignment(store,assigned).ok,"an impulse response is assigned to Hybrid Reverb's slot as one undo step");
+        for(const auto& [param,norm]:{std::pair<const char*,double>{"1",1.0},{"14",1.0}}) {  // Route: Convolution; Dry/Wet 100 %
+            OpRequest set;set.opType="device.setParam";set.payload={{"dev",inserted.deviceId},{"param",param},{"norm",norm}};
+            check(OpJournal(store).commit(set).ok,"Hybrid Reverb parameter set");
+        }
+        std::vector<float> samples(96000,0.25f);
+        audio::WavWriter writer(project.temporary.path()/"audio.wav",48000,2,audio::WavFormat::Float32);writer.write(samples.data(),48000);writer.close();
+        db.exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(2,'test','audio.wav','wav')");
+        db.exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,1000000000)");
+        db.exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,2,0,48000)");
+        Session session;session.graph().setFadeFrames(0);
+        const bool loaded=session.load(store,withBuiltinDevices(),{2,48000,256});
+        if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
+        check(loaded && session.stats().loaded==1,"the project with Hybrid Reverb loads in an ordinary Session");
+        session.transport().play();
+        std::vector<float> left(256),right(256);float* out[]={left.data(),right.data()};
+        for(int block=0;block<40;++block){(void)session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=256;session.process(io);}
+        std::printf("METRIC Hybrid Reverb, a 0.5 impulse at %u Hz (sample %zu) convolving 0.25 at 48 kHz: %.6f\n",c.rate,c.at,left.back());
+        check(std::abs(left.back()-0.125f)<c.tolerance && std::abs(right.back()-0.125f)<c.tolerance,c.what);
+    }
+#endif
+}
 void instrumentSession() {
 #if ADI_WITH_PD
     const auto* info=findBuiltin("org.adidaw.builtin.oneshot");
@@ -397,5 +446,6 @@ void instrumentSession() {
     // At full velocity, OneShot's default Volume (Live's -12 dB) on the 0.5 sine.
     check(firstSound>=0 && firstSound<256 && std::abs(peak-.5*std::pow(10.,-12./20))<2e-3,"the MIDI clip's note plays the sample through OneShot, at its default -12 dB");
 #endif
+    hybridSession();  // DEV-22
 }
 int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

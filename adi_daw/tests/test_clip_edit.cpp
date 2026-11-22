@@ -87,6 +87,60 @@ void refusalAndCurves() {
     check(p.fade({{"id",7},{"in",{{"ticks",8000000},{"curve",5},{"tension",0.5}}}}),"linear clip fade bound integrates variable tempo");
     check(!p.fade({{"id",7},{"in",{{"ticks",9000000}}}}),"linear clip fade refuses length beyond integrated span");
 }
+void independentFadeHandles() {
+    constexpr std::int64_t q=5765760;
+    Project p;auto& db=p.store->db();
+    db.exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(5765760,60);"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'shape','audio.wav','wav');"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled) VALUES(7,1,96000,0),(9,1,96000,1);"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=250000017,length_ns=750000000 WHERE id=7;"
+            "UPDATE clips SET content_offset_ticks=720720 WHERE id=9;"
+            "INSERT INTO clip_playback_details(clip_id,content_offset_ns) VALUES(7,57000000)");
+    const Payload both={{"in",{{"ticks",q/4},{"startTicks",q/8}}},{"out",{{"ticks",q/4},{"startTicks",q/8}}}};
+    const ClipFadeHandles expected{q/8,q/4};
+    const auto clipById=[](const Snapshot& frame,std::int64_t id)->const ClipNode& {
+        for(const auto& clip:frame.tracks.front()->clips)
+            if(clip->id==id)return *clip;
+        throw std::runtime_error("missing authored fade clip");
+    };
+    auto linear=both;linear["id"]=7;
+    check(p.fade(linear),"offset fade start and end are one edit on a linear clip");
+    auto snapshot=SnapshotBuilder::fromStore(*p.store);
+    check(clipById(*snapshot,7).fadeInHandles==expected && clipById(*snapshot,7).fadeOutHandles==expected,
+          "linear snapshot projects both authored handle pairs across a tempo change");
+    check(db.execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=7 AND "
+          "in_begin_ns=119499983 AND in_end_ns=181999983 AND out_begin_ns=556999983 AND out_end_ns=681999983").getInt()==1,
+          "linear handles pin to the existing physical source offset and exact placement clock");
+    check(p.fade({{"id",7},{"in",{{"startTicks",q/16}}}}),"lower handle can move without restating the peak");
+    auto moved=SnapshotBuilder::fromStore(*p.store,*snapshot);
+    check(clipById(*moved,7).fadeInHandles==ClipFadeHandles{q/16,q/4} && clipById(*moved,7).fadeOutHandles==expected,
+          "moving the lower handle leaves both peaks and the opposite fade fixed");
+    check(History(*p.store).undo().ok,"undo lower handle by itself");
+    auto restored=SnapshotBuilder::fromStore(*p.store,*moved);
+    check(clipById(*restored,7).fadeInHandles==expected && clipById(*restored,7).fadeOutHandles==expected,
+          "undo restores the exact lower handle and unchanged opposite fade");
+    const auto head=OpJournal(*p.store).headSeq();
+    check(!p.fade({{"id",7},{"in",{{"startTicks",0}}},{"out",{{"startTicks",q/4}}}}) &&
+          OpJournal(*p.store).headSeq()==head && SnapshotBuilder::fromStore(*p.store,*restored)->tracks[0]==restored->tracks[0],
+          "a lower handle that reaches its peak refuses the whole edit");
+
+    auto warped=both;warped["id"]=9;
+    check(p.fade(warped) && db.execAndGet("SELECT count(*) FROM clip_warp_fade_domains WHERE clip_id=9 AND "
+          "in_begin_ticks=1441440 AND in_end_ticks=2162160 AND out_begin_ticks=5045040 AND out_end_ticks=5765760").getInt()==1,
+          "Warp keeps its handle pairs in the unrolled musical source clock");
+    check(p.fade({{"id",9},{"out",{{"startTicks",0}}}}),"zero offset puts the selected lower handle back at the edge");
+    auto atEdge=SnapshotBuilder::fromStore(*p.store);
+    check(clipById(*atEdge,9).fadeInHandles==expected && clipById(*atEdge,9).fadeOutHandles==ClipFadeHandles{0,q/4},
+          "resetting one Warp handle leaves its opposite bound alone");
+    check(History(*p.store).undo().ok && History(*p.store).undo().ok &&
+          db.execAndGet("SELECT count(*) FROM clip_warp_fade_domains WHERE clip_id=9").getInt()==0 &&
+          History(*p.store).redo().ok,"Warp history restores row absence and replays the authored bounds");
+    p.store.reset();StoreError error{};p.store=Store::open(p.temporary.path()/"song.adi",error);
+    if(!p.store)throw std::runtime_error(toString(error));
+    const auto reopened=SnapshotBuilder::fromStore(*p.store);
+    check(clipById(*reopened,9).fadeInHandles==expected && clipById(*reopened,9).fadeOutHandles==expected,
+          "reopened Warp clip has both authored handle pairs");
+}
 void clipboardAndSplits() {
     Project p;auto& db=p.store->db();
     db.exec("ALTER TABLE clips ADD COLUMN future_root BLOB NOT NULL DEFAULT X''");
@@ -933,6 +987,71 @@ void twoPointSplitPayloadBounds() {
               "one redo restores the same zero/negative identity and copied material");
     }
 }
+void groupedSplits() {
+    constexpr std::int64_t q=5765760;
+    using clip_edit::ClipSplit;
+    using clip_edit::TimePoint;
+    Project p;auto& db=p.store->db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'midi','Notes');"
+            "INSERT INTO media_files(id,hash_blake3,format) VALUES(1,'split','wav');"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(7,1,48000);"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=500000000 WHERE id=7;"
+            "UPDATE clips SET track_id=22 WHERE id=8;"
+            "UPDATE clips SET alias_of=8,kind='midi',track_id=22 WHERE id=9;"
+            "INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(51,7,'cc',X'0102'),(61,8,'notes',X'0AFE');");
+    const std::array cuts{
+        ClipSplit{7,{1,125000000},{}},
+        ClipSplit{9,{0,q/2},{}},
+        ClipSplit{8,{0,q/4},TimePoint{0,3*q/4}},
+        ClipSplit{8,{0,q/2},{}},
+    };
+    const auto prepared=clip_edit::prepareSplits(*p.store,cuts,48000);
+    check(prepared.edit.ok && prepared.edit.requests.size()==2 && prepared.edit.options.expectHead &&
+          prepared.refused.size()==2 && prepared.refused[0].clipId==9 && prepared.refused[1].clipId==8,
+          "batch captures valid one- and two-point splits and reports alias and duplicate clip refusals");
+    check(db.execAndGet("SELECT count(*) FROM clips").getInt()==3 && db.execAndGet("SELECT count(*) FROM event_streams").getInt()==2,
+          "grouped split preparation leaves every native row unchanged");
+    const auto committed=clip_edit::commitPrepared(*p.store,prepared.edit);
+    check(committed.ok && committed.seqs.size()==2,
+          "both split captures commit together without colliding root or child identities");
+    if(!committed.ok)return;
+    check(db.execAndGet("SELECT count(*) FROM clips").getInt()==6 &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id=9 AND alias_of=8 AND length_ticks=5765760").getInt()==1,
+          "batch only creates its three accepted pieces and leaves the refused alias alone");
+    check(db.execAndGet("SELECT count(*) FROM clips c JOIN clip_playback_details d ON c.id=d.clip_id "
+          "WHERE c.id>9 AND c.track_id=21 AND c.pos_ns=125000000 AND c.length_ns=375000000 AND d.content_offset_ns=125000000").getInt()==1 &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id>9 AND track_id=22 AND pos_ticks IN (1441440,4324320)").getInt()==2,
+          "grouped split retains the separate physical and musical sections and source clocks");
+    check(db.execAndGet("SELECT count(*) FROM event_streams WHERE id>61 AND "
+          "((stream_kind='cc' AND hex(data)='0102') OR (stream_kind='notes' AND hex(data)='0AFE'))").getInt()==3,
+          "each new piece receives its own native child ID and exact source bytes");
+    const auto children=db.execAndGet("SELECT group_concat(id || ':' || clip_id) FROM (SELECT * FROM event_streams ORDER BY id)").getString();
+    const auto undone=History(*p.store).undo();
+    check(undone.ok && undone.opsApplied==2 && undone.txnId==committed.txnId &&
+          db.execAndGet("SELECT count(*) FROM clips").getInt()==3 && db.execAndGet("SELECT count(*) FROM event_streams").getInt()==2,
+          "one Undo restores both originals and removes their new children");
+    const auto redone=History(*p.store).redo();
+    check(redone.ok && redone.opsApplied==2 && redone.txnId==committed.txnId &&
+          db.execAndGet("SELECT group_concat(id || ':' || clip_id) FROM (SELECT * FROM event_streams ORDER BY id)").getString()==children,
+          "one Redo restores both clips with the same captured child identities");
+    const auto onlyAlias=clip_edit::prepareSplits(*p.store,std::span(cuts).subspan(1,1),48000);
+    check(!onlyAlias.edit.ok && onlyAlias.refused.size()==1 && onlyAlias.edit.requests.empty() &&
+          !clip_edit::commitPrepared(*p.store,onlyAlias.edit).ok,"an entirely refused split group records no edit");
+
+    check(History(*p.store).undo().ok,"reset grouped split to verify expected-head publication");
+    const auto stale=clip_edit::prepareSplits(*p.store,cuts,48000);
+    OpRequest rename;rename.opType="track.rename";rename.payload={{"id",21},{"name","Another edit"}};
+    const auto newer=OpJournal(*p.store).commit(rename);
+    check(newer.ok && !clip_edit::commitPrepared(*p.store,stale.edit).ok &&
+          db.execAndGet("SELECT count(*) FROM clips").getInt()==3,"a stale grouped split cannot publish a subset of its pieces");
+
+    db.exec("UPDATE clips SET id=9223372036854775806 WHERE id=9;");
+    const std::array nearLimit{ClipSplit{9223372036854775806LL,{0,q/2},{}},ClipSplit{8,{0,q/2},{}}};
+    const auto finalId=clip_edit::prepareSplits(*p.store,nearLimit,48000);
+    check(finalId.edit.ok && finalId.refused.size()==1 && clip_edit::commitPrepared(*p.store,finalId.edit).ok &&
+          db.execAndGet("SELECT count(*) FROM clips WHERE id=9223372036854775807 AND track_id=22").getInt()==1,
+          "a refused clip leaves the last available identity for the next valid split");
+}
 } // namespace
 
-int main(){try{stateAndSharing();refusalAndCurves();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

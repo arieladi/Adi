@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/render_workers.hpp"
+#include "adi/audio/floating_point_control.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <array>
 #include <atomic>
@@ -24,21 +25,15 @@ namespace adi::engine {
 namespace {
 struct FloatingEnvironment {
     std::fenv_t environment{};
-#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
-    unsigned mxcsr=0;
-#endif
+    audio::FloatingPointControl::Word control=0;
     bool capture() noexcept {
         if(std::fegetenv(&environment)!=0)return false;
-#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
-        mxcsr=_mm_getcsr();
-#endif
+        control=audio::FloatingPointControl::read();
         return true;
     }
     bool apply() const noexcept {
         if(std::fesetenv(&environment)!=0)return false;
-#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
-        _mm_setcsr(mxcsr);
-#endif
+        audio::FloatingPointControl::write(control);
         return true;
     }
 };

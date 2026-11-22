@@ -32,6 +32,7 @@ path asks its owner in its log; the owner answers or lends. No seat edits `.gith
 | devices | device DSP (`src/adi/dsp/**`, `src/adi/pd_builtins/**`, `cmake/devices/**`, `pd/**`) and the Pd tier (`src/juce/pd_*`) |
 | mixview | `src/adi/mix/**`; the Mix View's own `src/juce/ui_mix*` files (`src/juce/ui_mixer.*`, the Mixer, stays the window's); the STACK and the shared analyser (`src/juce/ui_stack.*`, `ui_stack_picker.*`, `ui_analysis.*`); the classic scope (`src/juce/ui_scope_classic.*`, `src/juce/smexoscope/**`); the function hosts (`src/juce/mix_*_host.*`); in `src/adi/ui/`: `shared_analysis.*`, `analysis_comparison.*`, `analysis_palettes.hpp` and `palettes/**`, `spectrum_slope.hpp`, `stack_model.*`, `mix_view_provider.hpp`, `parameter_feed.*` and `focus_scope.hpp`. `ui_stack_picker`, `ui_scope_classic`, `smexoscope`, `mix_compressor_host` and `focus_scope` are so far only on its branches. Its device-key routing (`src/adi/device_key_routes.*`, `device_key_edit.cpp`) until #651 lands, then the engine's; loans: `src/adi/dsp/stereo_envelope_meter.*` (devices lane's tree), `src/adi/engine/main_audition.hpp` (engine's) |
 | clones | `adi_shaper*` wherever they sit; its hunks in shared files are agreed with the devices lane through the logs |
+| gemini (trial, 22 November) | no paths of its own: only the rows win lends it, named in the loans below; branches `gemini/<topic>`, log `collab/gemini.md` on `gemini/log` |
 | win | `.github/**`, `docs/DECISIONS.md`, `docs/PLAN.md`, `docs/DEFERRED.md`, `collab/RESERVATIONS.md`, this file; `src/adi/builtin_catalog.cpp` and `src/juce/builtin_host.cpp`, lent to the devices lane |
 
 Loans, each named in ADR-0248 d3: the engine lends `snapshot.cpp`'s clip projection to engine-win for
@@ -47,7 +48,13 @@ Freeze's extent loop (`src/adi/freeze_commands.cpp`) and Bounce in Place's exten
 (`src/adi/bounce_commands.cpp`) (win, 19 November); while the engine reconciles #677, it lends engine-win
 `src/adi/engine/mpe_input.*` and `mpe_output.cpp`'s `noteOff` for DF-E51 (a) and (b),
 `src/adi/midi_capture.cpp` and `TempoMap::secondsToTicks` in `src/adi/engine/snapshot.cpp` for DF-E45, and
-`src/adi/check.cpp` for DF-E54 (a) (win, 20 November); each owner reviews its part.
+`src/adi/check.cpp` for DF-E54 (a) (win, 20 November; withdrawn the same day, the engine had fixed them);
+for DF-E64 only, the engine lends engine-win `src/adi/engine/clip_playback.cpp`'s read-ahead and the hold on
+`RenderBlock::sourcesReadyAt` (win, 20 November); for its trial, the engine lends the gemini seat
+`src/adi/engine/param_automation.cpp` for DF-E53 and `src/adi/engine/mpe_output.cpp` for DF-E56 (win, 22 November), and for the fixes its review asked (win, 22 November): DF-E53's refusal in `src/adi/automation_lanes.cpp`, its check in `src/adi/check.cpp`, the canonical-form sentence in `docs/format/SPEC.md` §6.3.3, and DF-E56's `src/adi/engine/mpe_output.hpp`;
+for ADI-Shaper's own panel, the window lends the clones seat the device editor factory in `src/juce/ui_main.cpp`
+and the two wrench-visibility checks in `src/juce/ui_devices.cpp`, for its UID only (win, 22 November);
+each owner reviews its part.
 
 Numbers (schema minors, ADRs, register ids, op names, the window's N rows) are reserved in
 `collab/RESERVATIONS.md` before a branch uses them.

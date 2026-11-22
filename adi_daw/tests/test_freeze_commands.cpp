@@ -1,4 +1,7 @@
 #include "adi/digest.hpp"
+#include "adi/bounce_commands.hpp"
+#include "adi/engine/snapshot.hpp"
+#include <algorithm>
 #include "adi/freeze_commands.hpp"
 #include "adi/freeze_state.hpp"
 #include "adi/history.hpp"
@@ -87,6 +90,135 @@ bool heard(engine::Session &session, float gain, float dryGain = 1.0f) {
                 return false;
     return true;
 }
+void mainLaneExtentMatrix() {
+    constexpr std::int64_t rate = 48000, mainFrames = 6 * rate;
+    const auto exactPcm = [](const fs::path &path, std::int64_t expectedFrames) {
+        audio::WavReader reader(path);
+        if (reader.channels() != 2 || reader.sampleRate() != 48000 ||
+            reader.format() != audio::WavFormat::Float32 ||
+            reader.frames() != static_cast<std::uint64_t>(expectedFrames))
+            return false;
+        std::array<float, 8192> samples{};
+        std::uint64_t first = 0;
+        for (;;) {
+            const auto count = reader.read(samples.data(), 4096);
+            if (!count)
+                break;
+            for (std::uint32_t frame = 0; frame < count; ++frame)
+                for (unsigned channel = 0; channel < 2; ++channel) {
+                    const auto expected = first + frame < 6u * 48000u
+                                              ? (channel == 0 ? 0.25f : -0.125f)
+                                              : 0.0f;
+                    if (samples[static_cast<std::size_t>(frame) * 2 + channel] != expected)
+                        return false;
+                }
+            first += count;
+        }
+        return first == static_cast<std::uint64_t>(expectedFrames);
+    };
+    // Eight independent cases: both time bases, standalone/group hierarchy,
+    // and main-only/with a later unmuted take containing nonzero source audio.
+    for (const bool ticks : {false, true})
+        for (const bool group : {false, true})
+            for (const bool take : {false, true}) {
+                test::TempDirectory directory{"freeze_commands", "main_lane_extent"};
+                StoreError error{};
+                auto store = Store::create(directory.path() / "source.adi", error);
+                if (!store)
+                    throw std::runtime_error(toString(error));
+                const std::string label = std::string(ticks ? "ticks/" : "ns/") +
+                                          (group ? "group/" : "track/") + (take ? "take" : "main");
+                const auto expect = [&label](bool ok, const char *message) {
+                    const auto text = label + ": " + message;
+                    check(ok, text.c_str());
+                };
+                auto &db = store->db();
+                db.exec("UPDATE project SET sample_rate=48000;DELETE FROM tempo_map;"
+                        "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+                        "INSERT INTO tracks(id,kind,name,index_in_parent) "
+                        "VALUES(1,'audio','Source',0),(9,'master','Main',1);"
+                        "INSERT INTO mixer_strip(track_id) VALUES(1),(9);");
+                if (group)
+                    db.exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(10,'group','Parent',2);"
+                            "INSERT INTO mixer_strip(track_id) VALUES(10);UPDATE tracks SET parent_id=10 WHERE id=1;");
+                const auto source = directory.path() / "input.wav";
+                {
+                    audio::WavWriter writer(source, 48000, 2, audio::WavFormat::Float32);
+                    std::array<float, 2048> samples{};
+                    for (std::size_t frame = 0; frame < samples.size() / 2; ++frame) {
+                        samples[frame * 2] = 0.25f;
+                        samples[frame * 2 + 1] = -0.125f;
+                    }
+                    for (std::int64_t first = 0; first < mainFrames; first += 1024)
+                        writer.write(samples.data(), static_cast<std::uint32_t>(
+                                                         std::min<std::int64_t>(1024, mainFrames - first)));
+                    writer.close();
+                }
+                OpRequest importRequest;
+                const auto imported = media::prepareImport(*store, source, 1, 0, importRequest);
+                if (!imported.ok || !OpJournal(*store).commit(importRequest).ok)
+                    throw std::runtime_error("main-lane extent media import");
+                engine::TempoMap tempo;
+                tempo.events.push_back({0, 120, 0});
+                const auto addClip = [&](int id, int seconds, bool inTake) {
+                    const auto position = ticks ? tempo.secondsToTicks(seconds)
+                                                : static_cast<std::int64_t>(seconds) * 1000000000;
+                    const auto length = ticks ? tempo.secondsToTicks(6) : std::int64_t{6000000000};
+                    db.exec("INSERT INTO clips(id,track_id,lane_id,kind,time_base," +
+                            std::string(ticks ? "pos_ticks,length_ticks" : "pos_ns,length_ns") +
+                            ") VALUES(" + std::to_string(id) + ",1," + (inTake ? "7" : "NULL") +
+                            ",'audio'," + (ticks ? "0" : "1") + "," + std::to_string(position) + "," +
+                            std::to_string(length) + ");INSERT INTO "
+                            "audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(" +
+                            std::to_string(id) + ",1,0,288000);");
+                };
+                addClip(1, 0, false);
+                if (take) {
+                    db.exec("INSERT INTO lanes(id,track_id,kind,name) VALUES(7,1,'take','Later take');");
+                    addClip(2, 8, true);
+                }
+                const auto verifyRange = [&](std::int64_t seconds) {
+                    const auto before = digestProject(*store).text;
+                    render::FreezeCaptureSpec spec;
+                    spec.tracks = {group ? 10 : 1};
+                    spec.wholeGroups = group;
+                    spec.endSample = seconds * rate;
+                    spec.session = {2, 48000, 256};
+                    auto captured = render::captureFreezeAudio(*store, spec);
+                    expect(captured.ready(), "actual native capture is ready");
+                    if (captured.ready()) {
+                        expect(captured.streams().size() == 1, "one selected freeze endpoint is captured");
+                        if (captured.streams().size() == 1) {
+                            const auto &stream = captured.streams().front();
+                            expect(exactPcm(stream.preFx, spec.endSample),
+                                   "pre-FX PCM contains six exact source seconds then silence");
+                            expect(exactPcm(stream.postFx, spec.endSample),
+                                   "post-FX PCM contains six exact source seconds then silence");
+                        }
+                        const auto frozen = freeze::prepareFreeze(*store, captured, 0, 100);
+                        expect(frozen.ready(), "Freeze extent covers audible main clips without requiring later takes");
+                    }
+                    // Bounce tests the regular source track in both hierarchies;
+                    // whole-group Bounce is not part of this command's contract.
+                    clip_edit::InPlaceBounceOptions options;
+                    options.sourceTrack = 1;
+                    options.clipId = 50;
+                    options.mediaId = 60;
+                    options.job.beginSample = 0;
+                    options.job.endSample = spec.endSample;
+                    options.job.session = spec.session;
+                    options.job.encoding.format = audio::WavFormat::Float32;
+                    options.job.encoding.dither = audio::WavDither::None;
+                    const auto bounced = clip_edit::prepareBounceInPlace(*store, options);
+                    expect(bounced.ready(), "Bounce in Place extent covers audible main clips without requiring later takes");
+                    expect(digestProject(*store).text == before, "both preparations leave original project rows unchanged");
+                };
+                verifyRange(7); // Main at 0..6 s; later take at 8..14 s must not extend it.
+                if (!ticks && !group && take)
+                    verifyRange(14); // Prove the nonzero later take is inaudible even inside the captured range.
+            }
+}
+
 void lifecycle() {
     for (const auto precision : {engine::Precision::Float32, engine::Precision::Float64}) {
         Project p;
@@ -334,12 +466,40 @@ void refusals() {
               !freeze::prepareFreeze(*p.store, captured, 0, 100).ready(),
           "changed history head refuses old document capture");
 }
+
+void mutedMidiDoesNotForward() {
+    Project p;
+    auto& db=p.store->db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(3,'midi','Muted MIDI');"
+            "INSERT INTO mixer_strip(track_id) VALUES(3);"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,muted) "
+            "VALUES(3,3,'midi',0,240240,1)");
+    if(!OpJournal(*p.store).commit(op("note.insert",
+          {{"clip",3},{"note",1},{"start",0},{"dur",120120},{"key",60}})).ok)
+        throw std::runtime_error("write forwarded MIDI fixture note");
+    auto spec=p.spec();
+    spec.tracks={3};
+    Counts counts;
+    const auto muted=render::captureFreezeAudio(*p.store,spec,p.loader(counts));
+    const auto prepared=freeze::prepareFreeze(*p.store,muted,0,100);
+    check(muted.ready() && prepared.ready(),
+          "single-track Freeze accepts muted MIDI without an instrument");
+
+    db.exec("UPDATE clips SET muted=0 WHERE id=3");
+    const auto audible=render::captureFreezeAudio(*p.store,spec,p.loader(counts));
+    const auto refused=freeze::prepareFreeze(*p.store,audible,0,100);
+    check(audible.ready() && !refused.ready() &&
+          refused.error().find("forwarded MIDI stream")!=std::string::npos,
+          "a playable forwarded note still refuses single-track Freeze");
+}
 } // namespace
 int main() {
     try {
+        mainLaneExtentMatrix();
         lifecycle();
         recovery();
         refusals();
+        mutedMidiDoesNotForward();
         warmSession();
         integrity();
         schemaInvalidation();

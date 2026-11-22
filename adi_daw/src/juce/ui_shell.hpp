@@ -3,7 +3,10 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/arm_edits.hpp"
+#include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/export_choices.hpp"
+#include "adi/ui/automation_mode.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
@@ -155,6 +158,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FocusClipView, // Live's Navigate menu: Clip View, Alt/Option+3
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
         ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
+        ExportAudio,       // the File menu's Export Audio/Video (manual 5.2.1), Ctrl/Cmd+Shift+R
         DelayCompensation, // Live's Options > Delay Compensation (manual 18.7; MX-04)
         LastId = DelayCompensation
     };
@@ -358,11 +362,30 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // `reenableAutomation`, which says why in the Status Bar when it refuses. Automation Arm reads
     // `automationArmed` each frame (unset: on, as Live's new Set) and a click sets `armAutomation`.
     // Unset, a click says the switch has no session.
+    // Live's Export Audio/Video (EX-11): the application shows the Export page with these choices, the
+    // render range the selection, else the loop, else the whole song. Unset outside the application.
+    std::function<void(const ExportChoices &)> exportAudio;
+    // The Export page's starting choices, from the frame's snapshot and selection.
+    ExportChoices exportDefaults() const;
+    // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture. The strip begins it
+    // on the control's drag start with its kind and its track or send, and the selected tracks go with
+    // it when the dragged one is among them; each value goes to `mixerDrag`; the release commits one undo
+    // step and Esc cancels. Unset outside the application: the strip commits on release, as before.
+    std::function<bool(const gesture::RelativeScalarSelection &, std::optional<double>, const std::string &)> beginMixerDrag;
+    std::function<bool(double)> mixerDrag;
+    std::function<bool()> endMixerDrag;
+    std::function<void()> cancelMixerDrag;
     std::function<bool()> reenableAutomation;
     // The session follows Options > Delay Compensation (MX-04): set by the application, called when
     // the command toggles the setting. Unset, the setting changes and the session hears it at the next
     // project open.
-    std::function<void(bool)> applyDelayCompensation;
+    std::function<bool(bool)> applyDelayCompensation; // false: refused, and the reason said
+    // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
+    // envelope again; false with the reason said. Session state, no undo step, as the global switch.
+    std::function<bool(std::int64_t)> reenableLane;
+    // The item in a control's context menu while the control has a lane (`lane`, null for none):
+    // available while that lane is overridden, as Live's.
+    void addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane);
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;
     // Arm, monitoring and Arrangement Record (MX-09). The session's rows hold a track's arm and its
@@ -464,6 +487,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
     // undo step); `insertDevice` checks there is a track and says why it cannot.
     std::function<bool(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before)> loadBuiltin;
+    // A VST3 or CLAP plug-in from the Browser onto `track`, in front of `before` or where Live places its
+    // kind (N57, `ProjectDocument::insertPlugin`): one undo step, and the Status Bar says how it went in.
+    // `kindGuessed`: the reference's subtype is the Browser's guess (a VST3 before N58), which a kind the
+    // project already holds for the plug-in overrides. Unset outside the application.
+    std::function<bool(rows::PluginRef, std::int64_t track, std::optional<std::int64_t> before, bool kindGuessed)> loadPlugin;
     bool insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     DeviceChainStrip devices;
     DockResizer dockResizer;
@@ -583,6 +611,21 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool toggleRecord();
     // Selects clip `clip` as a click on it would (a recorded take, once it lands).
     void selectClip(std::int64_t clip);
+    // Clips moved, each to a track and a position (DF-W28, ED-03; Live 12 manual 6.7): one placement by the
+    // engine's planner (`edit_plan::prepareMove`), which clears what each clip lands on in its track as
+    // Live does (the covered part goes, a clip crossing the edge is trimmed or split) under the user's
+    // edit policy, one undo step named `label`. A refusal is said.
+    struct ClipPlace {
+        std::int64_t clip = 0, track = 0, position = 0;
+    };
+    bool placeClips(const std::vector<ClipPlace> &, const char *label);
+    // Live's Automation Mode (AU-01; manual 25.2): each track's Volume envelope drawn on its lane, and its
+    // breakpoints edited there, each edit one undo step. Off in a new window, as Live's.
+    bool automationMode() const noexcept { return automationMode_; }
+    void setAutomationMode(bool on);
+    bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
+    bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
+    bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
@@ -727,6 +770,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
+    bool automationMode_ = false;
     bool infoShown_ = true;
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs

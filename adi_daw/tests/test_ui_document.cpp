@@ -726,6 +726,85 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
           "a take whose device stopped is settled into the project, not lost");
 }
+// MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
+// lands as one undo step; Esc puts it back (Live 12 manual 18.1).
+void mixerDragHeard(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "drag.adi", true, {}, error);
+    check(doc != nullptr, "a project to drag a fader in");
+    if (!doc)
+        return;
+    OpRequest add;
+    add.opType = "track.create";
+    add.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Tone"}};
+    check(doc->ops().submit(add).ok && doc->synchronise(), "a track for the tone");
+    Tone tone;
+    doc->session().setSourcesFor([&](std::int64_t id) {
+        return id == 8 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+    });
+    check(doc->session().rebuild(), "the tone in the graph");
+    doc->prepare(48000, 64);
+    std::array<float, 64> l{}, r{};
+    float *channels[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.out = channels;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    doc->mailbox().post(ui::TransportMailbox::Command::Play);
+    // The level heard: the peak of L over a few blocks, once a frame has settled.
+    const auto heard = [&] {
+        float peak = 0;
+        for (int b = 0; b < 24; ++b) {
+            io.streamTimeSamples = stream;
+            doc->process(io);
+            stream += 64;
+            doc->tick(stream);
+            if (b >= 12)
+                for (const float v : l)
+                    peak = std::max(peak, std::abs(v));
+        }
+        return static_cast<double>(peak);
+    };
+    const auto storedDb = [&] {
+        return doc->store().db().execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id = 8").getDouble();
+    };
+    const double base = heard();
+    const auto ops = doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+    check(base > .05, "the tone is heard at 0 dB");
+    gesture::RelativeScalarSelection fader{gesture::ScalarKind::TrackVolume, 8, {}, {-70, 6, -150}};
+    check(doc->beginMixerDrag(fader, -12, "Change Track Volume") && doc->mixerDragging(), "the fader drag begins");
+    const double dragged = heard();
+    check(std::abs(dragged / base - std::pow(10.0, -12 / 20.0)) < .03 && storedDb() == 0 &&
+              doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == ops,
+          "dragged to -12 dB, it is heard at -12 dB while nothing is written");
+    check(doc->mixerDrag(-24), "further down");
+    check(std::abs(heard() / base - std::pow(10.0, -24 / 20.0)) < .03, "heard at -24 dB as it moves");
+    check(doc->endMixerDrag() && !doc->mixerDragging() && std::abs(storedDb() + 24) < 1e-6 &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Change Track Volume" &&
+              doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == ops + 1,
+          "let go, the final value is one op, one undo step named for the fader");
+    check(std::abs(heard() / base - std::pow(10.0, -24 / 20.0)) < .03, "and stays heard where it was let go");
+    check(doc->ops().undo().ok && doc->synchronise() && storedDb() == 0 && std::abs(heard() / base - 1) < .03,
+          "one Undo puts the fader and the sound back");
+    check(doc->beginMixerDrag(fader, -40, "Change Track Volume"), "another drag");
+    check(heard() / base < .03, "heard at -40 dB");
+    doc->cancelMixerDrag();
+    check(!doc->mixerDragging() && storedDb() == 0 && std::abs(heard() / base - 1) < .03 &&
+              doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == ops + 1,
+          "Esc puts it back: heard at 0 dB again, nothing written");
+    // A drag that ends where it began commits nothing.
+    check(doc->beginMixerDrag(fader, 0, "Change Track Volume") && doc->mixerDrag(-6) && doc->mixerDrag(0) &&
+              doc->endMixerDrag() && doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == ops + 1,
+          "a drag back to where it began is no undo step");
+    // Pan, the same way.
+    gesture::RelativeScalarSelection pan{gesture::ScalarKind::TrackPan, 8, {}, {-1, 1, std::nullopt}};
+    check(doc->beginMixerDrag(pan, .5, "Change Track Panning") && doc->endMixerDrag() &&
+              std::abs(doc->store().db().execAndGet("SELECT pan FROM mixer_strip WHERE track_id = 8").getDouble() - .5) < 1e-9 &&
+              doc->ops().nextUndo()->label == "Change Track Panning",
+          "a pan drag lands as one step too");
+    doc->release();
+}
 void peakSpans() {
     media::MediaPeaks p;
     p.channels = 2;
@@ -778,6 +857,8 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());
+        test::TempDirectory dragDir("ui_document", "drag");
+        mixerDragHeard(dragDir.path());
     }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
