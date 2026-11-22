@@ -648,7 +648,7 @@ void stagedTransformBudget() {
             bounded=staged.advance(1)==1&&staged.workUnits()-before==1&&bounded;
         }
         double error=0.;for(std::size_t i=0;i<size;++i)error=std::max(error,std::abs(input[i]-output[i]));
-        check(bounded&&error<2.e-14,"inverse recombination/permutation/butterflies/normalization/unpack are charged");
+        check(bounded&&error<2.e-14,"inverse recombination, butterflies and output writes are charged");
         const auto before=synchronous.workUnits();synchronous.forward(input,a);
         check(synchronous.workUnits()-before>size,"a synchronous whole FFT exposes all work, not one stage");
         if(size==8) {
@@ -660,6 +660,14 @@ void stagedTransformBudget() {
                 dft=dft&&std::abs(direct-b[k])<2.e-15;
             }
             check(dft,"packed transform agrees with independent direct DFT");
+        }
+        for (const auto partialSize : {size / 2, size / 2 + 1}) {
+            auto padded = input;
+            std::fill(padded.begin() + static_cast<std::ptrdiff_t>(partialSize), padded.end(), 0.);
+            synchronous.forward(padded, a);
+            staged.startForward(std::span<const double>(input).first(partialSize), b);
+            while (staged.busy()) staged.advance(3);
+            check(a == b, "staged forward zero pads an even or odd partial input exactly");
         }
     }
 }
@@ -728,8 +736,11 @@ void firCallbackWorkDistribution() {
     constexpr std::size_t block = 512;
     for (const auto nodes : {std::size_t{1}, f::kNodes}) {
         auto settings = firSettings(1.3);
-        for (std::size_t i = 0; i < settings.nodes.size(); ++i)
-            settings.nodes[i].enabled = i < nodes;
+        settings.externalKey = true;
+        for (std::size_t i = 0; i < nodes; ++i) {
+            settings.nodes[i] = settings.nodes.front();
+            settings.nodes[i].frequencyHz += 550. * static_cast<double>(i);
+        }
         f::Core core;
         core.prepare({192000., static_cast<std::int32_t>(block), 2}, settings);
         const auto partition = static_cast<std::size_t>(core.latencySamples() / 3);
@@ -762,6 +773,11 @@ void firCallbackWorkDistribution() {
         check(least > 0 && most - least <= 1,
               nodes == 1 ? "one enabled node spreads counted FIR work through the entire callback interval" :
                            "ten enabled nodes bound every callback to the same counted FIR work");
+        if (nodes == f::kNodes) {
+            std::printf("  Focus FIR external stereo key, 192 kHz/512, ten nodes: %llu-%llu work units per callback\n",
+                        static_cast<unsigned long long>(least), static_cast<unsigned long long>(most));
+            check(most <= 306000, "ten external-key nodes remove repeated FFT scans at 192 kHz/512");
+        }
     }
 }
 template<class Sample>
