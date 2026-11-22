@@ -2,8 +2,9 @@
 //
 // Live 12's Auto Shift, the core (DEV-22; lands after 3 December): pitch
 // correction to a scale, and a pitch shift, for a monophonic voice. It reads
-// the input's pitch with the Tuner's PitchDetector and moves it by a
-// pitch-synchronous overlap-add on that pitch.
+// the input's pitch with the Tuner's PitchDetector and moves it with a delay
+// line read at the shift's speed, spliced a whole number of the voice's
+// periods at a time.
 //
 //   Correction  on or off.
 //   Root, Scale the scale corrected to: a root (0 = C to 11 = B) and
@@ -17,32 +18,38 @@
 //   Reference   the A4 the scale is tuned to, 410 to 480 Hz.
 //   Dry/Wet     0 to 100 %, gliding over about 10 ms once audio runs.
 //
-// The correction is fed forward: the detector reads the input every quarter
-// window (1,024 samples at 48 kHz) from the last window, and the shift is
-// set again every 64 samples. A reading under the Tuner's clarity threshold
-// holds the last correction and the last period.
+// THE SHIFT. A read tap moves through the delayed input at the shift's ratio
+// (2^(semitones / 12), held within 1/4.5 to 4.5), interpolated, so a tone
+// comes out at its frequency times the ratio and at its own level; its
+// harmonics move with it (there is no formant section yet). The tap's delay
+// drifts by ratio - 1 a sample; once it has drifted half a period from its
+// centre, a second tap takes over a whole number of periods away, the two
+// crossfaded over half a period (a raised cosine). On a periodic input both
+// read the same waveform, so the splice is not heard and nothing in the
+// output steps when the pitch moves. At a ratio of exactly 1 the tap never
+// leaves the centre: the wet signal is the dry one, and Dry/Wet cannot comb.
 //
-// The shift: input marks lie a period P apart on the input; output marks lie
-// P / ratio apart. At each output mark a Hann grain of the input around the
-// input mark nearest the output's own time (one latency back) is laid,
-// H = max(P, P / ratio) to either side (at most 2 P), and the grains are
-// normalised by their summed windows. A steady tone therefore comes out
-// exactly periodic at the shifted pitch, at its own level: nothing in it
-// jumps when the pitch moves, as a delay-line shifter's read taps would.
-// Below an octave down the grains no longer cover each other fully and the
-// output gains a buzz at the grain rate.
+// THE READINGS. The detector reads the input every quarter window (1,024
+// samples at 48 kHz) from the last window (4,096). Each reading waits in a
+// queue until the read tap is within half a hop of the middle of the window
+// it was read from, and only then sets the period the splices use and the
+// correction: a reading is applied to the audio it describes, not to audio
+// heard before it. A reading under the Tuner's clarity threshold holds the
+// last correction and the last period. A voice under 60 Hz is spliced as if
+// it were at 60 Hz.
 //
-// The latency is fixed, and reported: 4.5 times the longest period shifted
-// (that of 60 Hz; a lower voice is shifted as if at 60 Hz), so a grain is
-// always complete before it is heard: 3,608 samples at 48 kHz. The dry
-// signal is delayed with it.
+// THE LATENCY is the tap's centre, fixed and reported, and the dry signal is
+// delayed with it: half a window and half a hop (so a reading is there when
+// the tap arrives), one 64-sample chunk, the farthest the taps stray (4.5
+// times half the longest period) and 8 samples: 4,432 at 48 kHz.
 //
 // WHAT IS NOT LIVE'S YET, and says so: the controls and their ranges, the
 // scale list, the formant and vibrato sections and the MIDI scale input (not
 // built), how fast Live's correction reacts, and its latency wait on a Live
 // 12.4 reading of Auto Shift (the devices log's ONE list). It claims no
-// parity. prepare() allocates and never throws (memory that cannot be had
-// leaves the device inert: its input, no latency); processing does not.
+// parity. prepare() allocates and never throws (memory that cannot be had,
+// or a rate past any host's, leaves the device inert: its input, no
+// latency); processing does not.
 
 #pragma once
 
@@ -64,7 +71,7 @@ public:
     };
     static constexpr Range ranges[Count] = {{0, 1, 1},   {0, 11, 0},   {0, 2, 0},     {0, 100, 100}, {0, 1000, 0},
                                             {-24, 24, 0}, {-50, 50, 0}, {410, 480, 440}, {0, 100, 100}};
-    static constexpr double kClarity = 0.8, kLowestShiftedHz = 60;
+    static constexpr double kClarity = 0.8, kLowestShiftedHz = 60, kHighestRatio = 4.5;
 
     AutoShift();
     void prepare(double sampleRate) noexcept;
@@ -79,22 +86,29 @@ public:
     /// The shift now applied, in semitones: Shift, plus Detune and the
     /// correction in cents.
     [[nodiscard]] double shift() const noexcept;
+    /// The latency the core reports at a rate, from a detector window: half
+    /// the window, half its hop, a chunk, 4.5 half-periods of 60 Hz, 8.
+    [[nodiscard]] static std::size_t latencyFor(double sampleRate, std::size_t window) noexcept;
 
 private:
-    static constexpr std::size_t kChunk = 64;
+    static constexpr std::size_t kChunk = 64, kQueue = 64;
+    struct Reading {
+        double centre = 0, hz = 0;
+        bool clear = false;
+    };
     void retune() noexcept;
-    void grain() noexcept;
+    void adopt(const Reading& r) noexcept;
     [[nodiscard]] double read(const std::vector<float>& ring, double at) const noexcept;
     std::array<double, Count> p_{};
     PitchDetector detector_;
     std::array<float, kChunk> mono_{};
-    std::array<std::vector<float>, 2> in_, acc_;
-    std::vector<float> weight_;
+    std::array<std::vector<float>, 2> in_;
+    std::array<Reading, kQueue> queue_{};
     Glide mix_;
-    std::size_t size_ = 0, latency_ = 0, clock_ = 0;
-    double rate_ = 48000, target_ = 0, current_ = 0, period_ = 240, ratio_ = 1;
-    double outMark_ = 0, inMark_ = 0, longest_ = 800;
-    bool ready_ = false, started_ = false;
+    std::size_t size_ = 0, latency_ = 0, clock_ = 0, pushed_ = 0, head_ = 0, count_ = 0, fade_ = 0, fadeLength_ = 0;
+    double rate_ = 48000, target_ = 0, current_ = 0, period_ = 240, ratio_ = 1, longest_ = 800;
+    double tap_ = 0, old_ = 0;   // the absolute input positions the two taps read
+    bool ready_ = false;
 };
 
 }  // namespace adi::dsp
