@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Clock precision across the weighted historical device
+
+The fixed-order result is 40/873 before and after the clock repair. Restoring all newly measured source-order routes brings the comparison to 43/873 before and after. The earlier 42/873 total used a fixed-order fallback for one program. Its fallback RMS was 0.00143269, its old clock with the restored order was already 0.000996198, and its corrected clock with that order is 0.000996307. No program crossed 0.001 because of the clock change. The earlier group of 81 kept its one match on both routes.
+
+Of 163 enabled programs, thirteen source-order errors fell, eleven rose and 139 were within 0.000001. On the fixed route the counts were twelve lower, nine higher and 142 within tolerance. There were 104 and 105 changed streams respectively. The largest stereo differences were 0.037869 and 0.032713 RMS. All 710 programs without active Crush reopened identically. All 873 files in the old fixed-order baseline were re-rendered and reproduced their archived hashes.
+
+For attribution, the primary comparison preserves the existing jitter calculation on jitter-positive bands. Only zero-jitter bands receive the calibrated clock. On the 101 zero-jitter stage-isolated programs whose original audio changed with Hold, 23 errors fell, 22 rose and 56 were within tolerance. Median residual moved from 0.00119846 to 0.00119736. The integrated zero-jitter kernel reproduced the submitted native core on 11,520,000 stereo frames. The full-rate endpoint and jointly changing the jitter calculation are separate comparisons.
+
 ## 22 November 2026 — What the Width follower holds when its input falls
 
 Independent signed stereo steps show that positive Hold stores the recent input maximum ahead of the attack/release detector. After a one-frame 0.75 transient at 48 kHz and Hold 0.035, the measured envelope rose from 0.74029 through 0.74985 to 0.749998 and 0.75 after the input had fallen. Freezing the current envelope value misses the attack. A descending ramp at 44.1 kHz matched the sliding input maximum to 0.00000006. The strict input/envelope comparison and per-sample rounding also account for the sustained plateau ripple documented in the Hold follower fixtures.
