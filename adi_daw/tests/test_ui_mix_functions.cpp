@@ -29,6 +29,9 @@ using namespace adi;
 using namespace adi::ui;
 namespace adi::ui {
 struct MixFocusTestAccess {
+    static const auto &match(const MixFocus &focus) { return focus.match_; }
+    static auto matchCaption(const MixFocus &focus) { return focus.matchCaption_; }
+    static bool hasMatchPath(const MixFocus &focus) { return !focus.matchPath_.isEmpty(); }
     static bool aligned(const MixFocus &focus) { return focus.scopeRange_ && focus.sum_; }
     static bool waitingForAlignment(const MixFocus &focus) { return focus.alignment_ != MixFocus::Alignment::Ready; }
     static bool independent(const MixFocus &focus) {
@@ -1264,7 +1267,8 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     root.afterEdit = [&] { doc->synchronise(); };
     bool created = true;
     for (auto id : {first, second, added})
-        created = root.submitEdit("track.create", {{"id", id}, {"kind", "audio"}, {"name", "Focus track"}},
+        created = root.submitEdit("track.create", {{"id", id}, {"kind", "audio"},
+                                                    {"name", "Focus " + std::to_string(id)}},
                                   "Create Focus track") && created;
     check(created, "Focus fixture creates three authored channels");
     if (!created) return;
@@ -1424,6 +1428,10 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     broker->pump();
     root.frame();
     check(MixFocusTestAccess::spectraWithoutMask(focus), "Together retains member spectra while withholding a cross-loop mask");
+    focus.select(second);
+    focus.learnMatch.onClick();
+    check(!focus.learnMatch.isEnabled() && !MixFocusTestAccess::match(focus),
+          "Match refuses ambiguous loop data even with two selected spectra");
     check(root.submitEdit("transport.setLoop", {{"on", false}, {"start", 0}, {"end", 3840}}, "Loop Off"),
           "Focus fixture disables the authored Arrangement Loop");
     focus.scope.setToggleState(true, juce::dontSendNotification);
@@ -1489,6 +1497,105 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     check(MixFocusTestAccess::aligned(focus) && !MixFocusTestAccess::sumOverRangeInk(focus) &&
               broker->stats().consumers == afterSum.consumers && broker->stats().taps == afterSum.taps,
           "the over-range title clears on cancellation without another analysis consumer or tap");
+
+    focus.scope.setToggleState(false, juce::dontSendNotification);
+    root.frame();
+    std::array<float, 1024> reference{}, target{};
+    const auto matchedSignal = [&](float targetGain) {
+        for (std::size_t i = 0; i < reference.size(); ++i) {
+            reference[i] = .5f * static_cast<float>(std::sin(
+                2. * std::numbers::pi * 16. * static_cast<double>(i) / static_cast<double>(reference.size())));
+            target[i] = reference[i] * targetGain;
+        }
+    };
+    const auto writeMatch = [&](float gain, bool both = true) {
+        matchedSignal(gain);
+        const auto stamp = driver.position();
+        const auto frames = static_cast<std::int32_t>(reference.size());
+        driver.advance(frames);
+        doc->mailbox().publish(driver);
+        tap->write(reference.data(), reference.data(), frames, stamp, true, driver.revision());
+        if (both)
+            secondTap->write(target.data(), target.data(), frames, stamp, true, driver.revision());
+        broker->pump();
+        root.frame();
+    };
+    writeMatch(.5f);
+    const auto beforeLearn = root.current();
+    const auto processCounts = broker->stats();
+    focus.learnMatch.onClick();
+    const auto held = MixFocusTestAccess::match(focus);
+    check(held && held->main == first && held->target == second && held->deltaDb[16] &&
+              std::abs(*held->deltaDb[16] - 6.0206f) < .02f && MixFocusTestAccess::hasMatchPath(focus) &&
+              MixFocusTestAccess::matchCaption(focus).contains("Focus 72 toward Focus 71"),
+          "explicit Learn shows measured target toward Main after coincident calibrated playback");
+    const auto afterLearn = broker->stats();
+    check(root.current() == beforeLearn && afterLearn.consumers == processCounts.consumers &&
+              afterLearn.taps == processCounts.taps && afterLearn.transforms == processCounts.transforms,
+          "Learn writes no project edit and adds no analysis source or transform");
+    writeMatch(1.f);
+    const auto stillHeld = MixFocusTestAccess::match(focus);
+    check(held && stillHeld && stillHeld->deltaDb == held->deltaDb,
+          "later spectra do not change the learned Match");
+    focus.learnMatch.onClick();
+    const auto relearned = MixFocusTestAccess::match(focus);
+    check(relearned && relearned->deltaDb[16] == 0.f,
+          "only another explicit Learn updates the held curve to a new aligned window");
+    focus.clearMatch.onClick();
+    check(!MixFocusTestAccess::match(focus) && !MixFocusTestAccess::hasMatchPath(focus),
+          "Clear Match only removes the held preview");
+
+    const auto positionBeforeLocate = driver.position();
+    check(doc->mailbox().post(TransportMailbox::Command::Locate, positionBeforeLocate),
+          "queue a same-position Locate while the old spectra are visible");
+    focus.learnMatch.onClick();
+    check(!MixFocusTestAccess::match(focus),
+          "Learn rejects a queued Locate even before an intervening UI frame");
+    if (MixFocusTestAccess::match(focus))
+        focus.clearMatch.onClick();
+    root.frame();
+    check(!focus.learnMatch.isEnabled(), "pending Locate disables the Learn control with no new spectrum");
+
+    doc->mailbox().drain(driver);
+    root.frame();
+    focus.learnMatch.onClick();
+    check(!focus.learnMatch.isEnabled() && !MixFocusTestAccess::match(focus),
+          "acknowledging a same-position Locate still rejects the retained old spectra");
+    if (MixFocusTestAccess::match(focus))
+        focus.clearMatch.onClick();
+
+    const auto locateRevision = driver.revision();
+    check(doc->mailbox().post(TransportMailbox::Command::Stop) &&
+              doc->mailbox().post(TransportMailbox::Command::Play),
+          "queue a playback restart after acknowledging the Locate");
+    doc->mailbox().drain(driver);
+    check(driver.revision() > locateRevision, "playback restarts at a later capture epoch");
+    const auto freshStamp = driver.position();
+    writeMatch(2.f, false);
+    focus.learnMatch.onClick();
+    check(!focus.learnMatch.isEnabled() && !MixFocusTestAccess::match(focus),
+          "reaching the new epoch on only one channel is insufficient for Match");
+    secondTap->write(target.data(), target.data(), static_cast<std::int32_t>(target.size()), freshStamp, true,
+                     driver.revision());
+    broker->pump();
+    root.frame();
+    focus.learnMatch.onClick();
+    const auto afterLocate = MixFocusTestAccess::match(focus);
+    check(focus.learnMatch.isEnabled() && afterLocate && afterLocate->deltaDb[16] &&
+              std::abs(*afterLocate->deltaDb[16] + 6.0206f) < .02f,
+          "both channels can Learn from identical audible windows in a later epoch than the Locate");
+
+    focus.select(first);
+    check(!MixFocusTestAccess::match(focus) && !focus.learnMatch.isEnabled(),
+          "choosing Main as the target drops the old proposal");
+    focus.select(second);
+    focus.learnMatch.onClick();
+    secondTap = std::make_shared<engine::ScopeTap>(48000., 1.);
+    broker->refreshSources();
+    root.frame();
+    check(!MixFocusTestAccess::match(focus) && !focus.learnMatch.isEnabled(),
+          "a replacement tap with the same track ID discards its previous Match before new audio arrives");
+
     driver.play(false);
     doc->mailbox().publish(driver);
     focus.scope.setToggleState(false, juce::dontSendNotification);
