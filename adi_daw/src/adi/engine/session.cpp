@@ -539,25 +539,67 @@ void Session::resolveNewRows(const Store& store) {
     for (const rows::Device& row : model_.devices) {
         if (parkedDevice(row))
             continue;
-        const auto it = byId_.find(row.id);
-        if (it == byId_.end()) {
+        const auto mapped = byId_.find(row.id);
+        if (mapped == byId_.end()) {
             resolveOne(store, row);
             continue;
         }
-        // A row that came BACK -- an undone removal -- finds its instance
-        // waiting, state and all. That is the payoff of retiring rather than
-        // destroying: the undo restores the sound, not a fresh default.
-        Entry& e = entries_[it->second];
-        if (e.retired && e.parked) {
-            // Never resume voices/delay history left in an instance before its
-            // cache was installed. Restore from the preserved project state.
+
+        // Plug-in references are ordered by ID. The reference row itself can
+        // be replaced within the same journal step as the device.
+        const rows::PluginRef* ref = nullptr;
+        if (row.pluginRefId) {
+            const auto found = std::lower_bound(
+                model_.pluginRefs.begin(), model_.pluginRefs.end(), *row.pluginRefId,
+                [](const rows::PluginRef& candidate, std::int64_t id) { return candidate.id < id; });
+            if (found != model_.pluginRefs.end() && found->id == *row.pluginRefId)
+                ref = &*found;
+        }
+        const auto compatible = [&](const Entry& candidate) {
+            return candidate.deviceId == row.id && candidate.resolvedPluginRef == row.pluginRefId &&
+                (ref ? candidate.resolvedFormat == ref->format && candidate.resolvedUid == ref->uid
+                     : candidate.resolvedFormat.empty() && candidate.resolvedUid.empty());
+        };
+
+        const auto previousIndex = mapped->second;
+        const auto retireDisplaced = [&] {
+            // The numeric row remains present, so retireDepartedRows cannot
+            // distinguish these incarnations. Reacquire after a fresh load,
+            // which can grow entries_.
+            auto& previous = entries_[previousIndex];
+            if (!previous.retired) {
+                previous.retired = true;
+                previous.trackId = 0;
+                ++stats_.retired;
+            }
+        };
+
+        auto index = previousIndex;
+        if (!compatible(entries_[index])) {
+            const auto retained = std::find_if(entries_.rbegin(), entries_.rend(), compatible);
+            if (retained == entries_.rend()) {
+                resolveOne(store, row);
+                retireDisplaced();
+                continue;
+            }
+            index = static_cast<std::size_t>(retained.base() - entries_.begin() - 1);
+        }
+
+        Entry& entry = entries_[index];
+        if (entry.retired && entry.parked) {
+            // Unfreeze restores saved state instead of old voices and delays.
             resolveOne(store, row);
+            retireDisplaced();
             continue;
         }
-        if (e.retired) {
-            e.retired = false;
+        if (index != previousIndex)
+            retireDisplaced();
+        if (entry.retired) {
+            // Undo and Redo revive the retained state for the restored identity.
+            entry.retired = false;
             --stats_.retired;
         }
+        mapped->second = index;
     }
 }
 
