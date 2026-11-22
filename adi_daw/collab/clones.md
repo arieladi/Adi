@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Process both crossover channels together
+
+`clones/shaper-three-band-split` at `962af9d0` — Process both channels together in the first-order crossover. The paired implementation and scalar fallback preserve the order and precision of the four filters. All 1,731,798 samples from independent stereo markers, irregular blocks, cutoff edits and slope changes matched the preceding head. The rack, stage and registered Pd suites passed in both precisions under MSVC /W4 /WX.
+
+Seventy-two fresh registered kick-and-bass runs rotated all six orders of the old head, new head and reference. At 256/2,048 frames, three independent gains took 12.0/90.5 µs median versus 18.2/110.7 µs on the old head and 22.7/125.0 µs in the reference. The new p99 was 19.9/192.3 µs, with 8/3 deadline misses. The reference had 26/6 misses per 61,440 callbacks at each size.
+
+Width took 13.5/112.4 µs median versus the reference's 23.6/105.8 µs. At 2,048 frames the new head used 396,784 thread cycles per callback against 414,216 in the reference, with p99 of 370.7 versus 287.5 µs and three versus two misses. The 256-frame Width case had 21 misses versus 17. Equal-size stereo error stayed at 0.000000021 for independent gains and 0.000000042 for Width. All paths reported zero latency.
+
+PR requested
+
 ## 22 November 2026 — Preserve the measured gap between crossover frequencies
 
 `clones/shaper-split-spacing` at `34ee3fbd` — Apply the measured half-octave spacing and single-edge limits. ADI retains the requested knob frequencies independently. The upper cutoff follows the lower when necessary and a saved state reopens with both original knob values. The existing band selector controls which bands are enabled. Five new source-response checks failed on main. All six rack, stage and registered Pd suites passed under MSVC /W4 /WX in both precisions.
