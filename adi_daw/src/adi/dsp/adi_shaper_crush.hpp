@@ -23,7 +23,7 @@ private:
     void updateResolution(float height) noexcept;
     void updateClock(float height) noexcept;
     double noise() noexcept;
-    void quantize(Stereo& sample) noexcept;
+    void quantize(Stereo& sample, double previousLevels, double codeScale) noexcept;
     void hold(Stereo& sample) noexcept;
 
     double rate_ = 0, highpassAmount_ = 0, highpassGain_ = 1;

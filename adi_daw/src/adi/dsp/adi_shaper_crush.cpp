@@ -85,7 +85,7 @@ double AdiShaperCrush::noise() noexcept {
     return .5 * (first - uniform());
 }
 
-void AdiShaperCrush::quantize(Stereo& sample) noexcept {
+void AdiShaperCrush::quantize(Stereo& sample, double previousLevels, double codeScale) noexcept {
     if (bits_ == 1.f) {
         previousQuantInput_ = sample;
         return;
@@ -93,17 +93,18 @@ void AdiShaperCrush::quantize(Stereo& sample) noexcept {
     const double perturbation = dither_ ? noise() / levels_ : 0.0;
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double value = sample[ch] + perturbation;
-        const double before = previousQuantInput_[ch] * levels_;
+        const double before = previousQuantInput_[ch] * previousLevels;
         const double now = value * levels_;
         const double priorCode = std::floor(before + .5);
         const double code = std::floor(now + .5);
         if (code == priorCode) {
             sample[ch] = quantizedGain_ * code;
         } else {
-            // Integrated staircase over the linear transition from before to
-            // now. This centered form avoids subtracting two large primitives.
+            // Find the crossing in code space. The previous output step keeps
+            // its original amplitude when expressed in units of the new step.
+            const double priorOutput = priorCode * codeScale;
             const double residuals = (now - code) + (before - priorCode);
-            const double mean = .5 * ((code + priorCode) + (code - priorCode) * residuals / (now - before));
+            const double mean = .5 * ((code + priorOutput) + (code - priorOutput) * residuals / (now - before));
             sample[ch] = quantizedGain_ * mean;
         }
         previousQuantInput_[ch] = value;
@@ -138,10 +139,15 @@ void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
                                    float resampleHeight) noexcept {
     if (rate_ == 0) return;
     const auto u = sanitized(bitsHeight), r = sanitized(resampleHeight);
-    if (u != bits_) updateResolution(u);
+    const double previousLevels = levels_;
+    double codeScale = 1.0;
+    if (u != bits_) {
+        updateResolution(u);
+        codeScale = levels_ / previousLevels;
+    }
     if (r != clock_) updateClock(r);
     Stereo sample{left, right};
-    quantize(sample);
+    quantize(sample, previousLevels, codeScale);
     hold(sample);
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double difference = sample[ch] - low_[ch];

@@ -65,6 +65,56 @@ void quantizer(Crush& band) {
             near(mono(band, input, height, 1), 0, 1e-8, "measured first threshold");
     }
 }
+void movingResolution() {
+    // Stereo markers measured at 49152 Hz with an abrupt resolution change.
+    // Both channels share the contour and retain their own signed audio history.
+    struct Marker {
+        float bitsBefore, bitsAfter, leftBefore, rightBefore, left, right;
+        double expectedLeft, expectedRight;
+    };
+    constexpr Marker markers[] {
+        {.25f, .75f, .375f, -.625f, -.21875f, .15625f, .084458889, -.225830705},
+        {.25f, .75f, .20f, -.20f, .07f, -.07f, .067350056, -.067350059}, // Same integer codes.
+        {.75f, .25f, .375f, -.625f, -.21875f, .15625f, .063210541, -.192970153},
+        {.75f, .25f, -.4375f, .875f, .8125f, -.3125f, .169565353, .277776586},
+        {1.f, .125f, .375f, -.625f, -.21875f, .15625f, .004737242, -.260156898},
+        {.125f, 1.f, -.4375f, .875f, .8125f, -.3125f, .8125, -.3125}
+    };
+    Crush band;
+    check(band.prepare(49152), "prepare resolution markers");
+    for (const auto& m : markers) {
+        band.reset();
+        UndoHighPass leftMeter(49152), rightMeter(49152);
+        float l = m.leftBefore, r = m.rightBefore;
+        band.processStereo(l, r, m.bitsBefore, 1.f);
+        leftMeter.decode(l);
+        rightMeter.decode(r);
+        l = m.left;
+        r = m.right;
+        band.processStereo(l, r, m.bitsAfter, 1.f);
+        near(leftMeter.decode(l), m.expectedLeft, 2e-6, "moving resolution left");
+        near(rightMeter.decode(r), m.expectedRight, 2e-6, "moving resolution right");
+    }
+
+    // An offset of two integer codes in both samples leaves the random crossing
+    // weight identical between ears. Recover it from the left output and check
+    // the right output against its independently known physical levels.
+    band.reset();
+    band.setDither(true);
+    UndoHighPass leftMeter(49152), rightMeter(49152);
+    float l = -1.f, r = 1.f;
+    band.processStereo(l, r, 0.f, 1.f);
+    leftMeter.decode(l);
+    rightMeter.decode(r);
+    constexpr double newStep = 1.0 / 7.999794;
+    constexpr double levelGain = .96875;
+    l = static_cast<float>(newStep);
+    r = static_cast<float>(3 * newStep);
+    band.processStereo(l, r, .5f, 1.f);
+    const double weight = (leftMeter.decode(l) / levelGain + 1.0) / (newStep + 1.0);
+    near(rightMeter.decode(r), levelGain * (1.0 + weight * (3 * newStep - 1.0)),
+         2e-6, "stereo dither while resolution changes");
+}
 void clock(Crush& band) {
     for (auto [index, first, settled] : std::array<std::array<float, 3>, 2>{{
              {73, .126574f, .251569f}, {74, .124995f, .248431f}}}) {
@@ -157,7 +207,7 @@ void dither(Crush& band) {
 int main() try {
     Crush band;
     check(band.prepare(48000),"prepare band");
-    quantizer(band);clock(band);longClock(band);combined(band);dither(band);
+    quantizer(band);movingResolution();clock(band);longClock(band);combined(band);dither(band);
     check(!band.prepare(std::numeric_limits<double>::infinity()),"invalid sample rate");
     near(mono(band,.321f,.1f,.1f),.321f,0,"invalid-rate dry signal");
     std::puts("ADI-Shaper Crush resolution, antialiasing, hold clock, dither, and DC response passed.");
