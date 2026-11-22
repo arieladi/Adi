@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, EX-02 direct-stem batch expansion
+
+**PR requested** — `engine-win/export-stem-batch` `e44cc77e`, stacked on `a4112b4a` for after 3 December. One current project read previews cardinality, names and source taps. The whole literal list enqueues atomically after validation. Render still samples each job's revision at start. Preview includes existing and batch-reserved names. A later rename cannot cause a batch replacement to overwrite an earlier successful delivery. Strict MSVC passed 463 render and 85 NI Stems checks (native AAC unavailable), including equivalent Main aliases, no partial enqueue, numbering, and last-moment replacement protection.
+
+**Parked EX-02 remainder:** automatic All Individual Tracks selection, ViaMain and MainFxOnly depend on the engine/window contract and the Live reading. The batch accepts the caller's literal track and tap list. Preview is advisory against later external project or destination changes.
+
 ## 2026-11-22, EX-02 direct export signal taps
 
 **PR requested** — `engine-win/export-direct-taps` `a4112b4a` on main `87ea349c`, after 3 December. Direct jobs can pick PreFx, PostFx, PostFader or PostMixer through Session's existing offline graph tap. Legacy PreFader still resolves to wet PostFx, and the run manifest records the actual signal point. Main and NI Stems retain their route checks. MSVC /W4 /WX passed 452 render and 85 NI Stems checks (native AAC unavailable), including dry/wet latency compensation and the current graph's solo behavior.
