@@ -233,6 +233,58 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the eleventh review: 5 findings; one fix reverted, two trade-offs stated, two fixed
+
+Five findings were confirmed and none refuted. Two of them found that the tenth review's Auto Shift fix
+cost more than it bought.
+- **Auto Shift (`devices/auto-shift`, 73e35139).**
+  - The fault: when the dry signal followed the gliding tap (738a1a59), Dry/Wet 0 stopped being the
+    input one reported latency late, for seconds after every correction: 0.73 off on E2. And a ratio
+    leaving 1 mid-glide put shifted audio and a splice click into the dry path for 20 ms.
+  - Reverted. The trade-off it tried to remove is stated in the header instead:
+    - the glide back to the centre takes half a period at 0.1 % (about 1 s at 220 Hz, 6 s at 82 Hz);
+    - until it ends, a Dry/Wet below 100 % combs, fading as the glide ends;
+    - a faster glide is heard as pitch (0.5 % is 8.6 cents);
+    - the dry signal is always the input one latency late.
+  - A check now holds that last guarantee through a correction, sample for sample. 738a1a59 fails it.
+  - `adi_auto_shift_tests` 126.
+- **The detector (`devices/tuner`, 9e314efa).**
+  - The faults: the 5 % onset rule drops accurate readings where it is not needed. An E1 dying in
+    40 ms keeps 4 of 14 readings at 48 kHz. A vibrato under ±80 % tremolo keeps 72 to 89 of 137 hops.
+    The worst error is unchanged in both. The pluck check could not notice lost readings.
+  - The rule stays. A dropped reading holds (the Tuner's display, Auto Shift's correction), while a
+    wrong one is shown or applied, and the low-note onsets need the rule. The trade-off is now stated
+    where the rule is.
+  - The tests now count readings:
+    - the 300 ms pluck must keep 10 or more (it keeps 53 to 58);
+    - deep tremolo must keep half its hops, and ±40 % tremolo nine tenths.
+  - The 40 ms E1 pluck is under two of the window's periods before it dies, and gets no reading at
+    44.1 kHz.
+  - `adi_tuner_tests` 77.
+- **The translator (`devices/amxd-audit`, 00404789).**
+  - The fault: a `set` arriving at run time (through `[r]` or a gate) into a `---` message box with no
+    `$` was still copied into every part.
+  - A `[route set]` now leads such a box too.
+  - `adi_pd_amxd_tests` 139. The plant fails.
+
+**Rounds so far:** 17, 8, 5, 3, then 5 findings. This round's five were two trade-offs, a too-clever fix,
+and one real gap. The reviews have now reached choices rather than faults:
+- Dry/Wet combing against pitch accuracy;
+- readings dropped against readings wrong.
+
+Both are stated in the code and here. Further rounds wait unless a reading or a ruling changes them.
+
+**New heads:**
+- tuner 9e314efa, erosion 10b858ca, vinyl-distortion 8e8c0b4e, filter-delay d231b2c2, dj-filter
+  63103b8a, auto-shift 17619945;
+- spectrum-device bccefac4, live-amp a5966c33, live-cabinet 1c05af51, corpus 42a7d9f4, drum-buss
+  7ff47679, dynamic-tube b3c80c77, grain-delay 39278369, live-pedal 1c7cdac7, roar 331b8ebf,
+  spectral-time 0fbeac6f, spectral-resonator 9a6ea54f;
+- amxd-audit 00404789.
+
+**CTest:** spectral-resonator at 3788b9ff passed 295/295, and amxd-audit at f162ce3b passed 270/270, at 32
+and 64. The heads after those are running.
+
 ## 2026-11-22 — the tenth review: 3 findings, all fixed
 
 This round reviewed only the last round's changes. Three findings were confirmed and one refuted: that
