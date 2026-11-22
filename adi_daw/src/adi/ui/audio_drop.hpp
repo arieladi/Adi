@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include <string_view>
 #include "adi/engine/snapshot.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
@@ -31,6 +32,14 @@ struct DroppedAudio {
     AudioImport import;
 };
 namespace audio_drop_detail {
+// The first id past every live row of a kind and every id a remark still holds for it: `RowIds`' rule
+// (DF-E16), so a deleted clip or track whose remark stays is never given again.
+inline std::int64_t pastRemarks(const engine::Snapshot &snapshot, std::string_view kind, std::int64_t id) noexcept {
+    for (const auto &r : snapshot.remarks)
+        if (r && r->targetKind == kind)
+            id = std::max(id, r->targetId + 1);
+    return id;
+}
 inline std::int64_t newClipId(const engine::Snapshot &snapshot) noexcept {
     std::int64_t id = 1;
     for (const auto &t : snapshot.tracks)
@@ -38,7 +47,14 @@ inline std::int64_t newClipId(const engine::Snapshot &snapshot) noexcept {
             for (const auto &c : t->clips)
                 if (c)
                     id = std::max(id, c->id + 1);
-    return id;
+    return pastRemarks(snapshot, "clip", id);
+}
+inline std::int64_t newTrackId(const engine::Snapshot &snapshot) noexcept {
+    std::int64_t id = 1;
+    for (const auto &t : snapshot.tracks)
+        if (t)
+            id = std::max(id, t->id + 1);
+    return pastRemarks(snapshot, "track", id);
 }
 } // namespace audio_drop_detail
 // Why a file can't be dropped at `track` (0: the drop area, which makes a track); empty when it can.
@@ -90,10 +106,7 @@ inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track,
         }
     // New tracks take the ids after the project's, and stand after its tracks, in order: as Insert
     // Audio Track names one (manual 18.2), '#' shows its number.
-    std::int64_t nextTrack = 1;
-    for (const auto &t : snapshot.tracks)
-        if (t)
-            nextTrack = std::max(nextTrack, t->id + 1);
+    std::int64_t nextTrack = audio_drop_detail::newTrackId(snapshot);
     auto index = static_cast<std::int64_t>(snapshot.tracks.size());
     auto newTrack = [&]() {
         const auto id = nextTrack++;
@@ -136,10 +149,7 @@ inline TrackEdit newAudioTrack(const engine::Snapshot &snapshot, const Recording
     using namespace track_edits_detail;
     constexpr const char *label = "Insert Audio Track";
     TrackEdit edit;
-    std::int64_t id = 1;
-    for (const auto &t : snapshot.tracks)
-        if (t)
-            id = std::max(id, t->id + 1);
+    const auto id = audio_drop_detail::newTrackId(snapshot);
     edit.ops.push_back(op("track.create",
                           {{"id", id}, {"kind", "audio"}, {"name", "# Audio"},
                            {"index", static_cast<std::int64_t>(snapshot.tracks.size())}},
