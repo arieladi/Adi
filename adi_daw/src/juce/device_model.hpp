@@ -288,6 +288,7 @@ public:
     [[nodiscard]] virtual engine::EventFlow eventFlow() const noexcept {
         return engine::EventFlow::Through;
     }
+    [[nodiscard]] virtual std::int32_t segmentQuantum() const noexcept { return 1; }
 
     /// A counter that increases every time this device reports that its
     /// latency moved. ADR-0082's coalescer polls it; ADR-0066 says the
@@ -621,6 +622,7 @@ public:
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
     [[nodiscard]] bool alwaysProcess() const noexcept override { return always_.load(std::memory_order_relaxed); }
     [[nodiscard]] engine::EventFlow eventFlow() const noexcept override;
+    [[nodiscard]] std::int32_t segmentQuantum() const noexcept override { return inst_->segmentQuantum(); }
     /// The instance's answer. Bypass passes through at whichever width the
     /// node is handed, so it does not change the answer.
     [[nodiscard]] bool processesDouble() const noexcept override {

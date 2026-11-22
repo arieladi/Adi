@@ -1134,6 +1134,7 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
                 prepared.ready = true;
             }
         }
+        s.segmentQuantum = s.node ? std::max(1, s.node->segmentQuantum()) : 1;
     }
     for (auto& slot : slots_)
         if (slot.node != nullptr) slot.preparationRevision = slot.node->preparation_.revision;
@@ -1865,9 +1866,28 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
 
     const bool deviceTiming = !bypass && transport && transport->deviceClock &&
                               transport->devicePosition && s.node->wantsDeviceTransport();
-    for (std::int32_t seg = 0, nextBegin = 0; seg < nsplit;) {
+    const auto quantum = s.segmentQuantum;
+    auto* boundaryEvent = s.events.begin();
+    auto* nextEvent = s.events.begin();
+    for (std::int32_t seg = 0, nextBegin = 0;
+         nextBegin < frames && (quantum > 1 || seg < nsplit);) {
         const std::int32_t begin = nextBegin;
-        const std::int32_t boundary = splits_[static_cast<std::size_t>(seg + 1)];
+        auto boundary = frames;
+        if (quantum == 1) {
+            boundary = splits_[static_cast<std::size_t>(seg + 1)];
+        } else {
+            // The node's own note and parameter frames mark the beginning of
+            // their containing tick. Keep the events' original offsets.
+            while (boundaryEvent != s.events.end()) {
+                if (boundaryEvent->frame >= frames) break;
+                const auto tick = (boundaryEvent->frame / quantum) * quantum;
+                if (tick > begin) {
+                    boundary = std::min(tick, frames);
+                    break;
+                }
+                ++boundaryEvent;
+            }
+        }
         std::int32_t end = boundary;
         DeviceTransport devicePosition;
         if (deviceTiming) {
@@ -1878,9 +1898,14 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
                 sample > devicePosition.nextChange - (end - begin)) {
                 end = begin + static_cast<std::int32_t>(devicePosition.nextChange - sample);
             }
+            if (quantum > 1 && end < boundary) {
+                // Clock changes become visible at the following legal tick.
+                const auto nextTick = static_cast<std::int64_t>(end) + (quantum - end % quantum) % quantum;
+                end = static_cast<std::int32_t>(std::min<std::int64_t>(boundary, nextTick));
+            }
         }
         nextBegin = end;
-        if (end == boundary) ++seg;
+        if (quantum == 1 && end == boundary) ++seg;
         const std::int32_t n = end - begin;
 
         // Summing here, for every node, is what makes a group (ADR-0044) a
@@ -1937,15 +1962,11 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
                                 n, stamp, advancing, transportRevision);
         }
 
-        const Event* first = nullptr;
-        std::int32_t count = 0;
-        for (const Event& e : s.events) {
-            if (e.frame >= begin && e.frame < end) {
-                if (first == nullptr) first = &e;
-                ++count;
-            }
-        }
-        nio.events = EventSpan{first, count};
+        while (nextEvent != s.events.end() && nextEvent->frame < begin) ++nextEvent;
+        const auto* first = nextEvent;
+        while (nextEvent != s.events.end() && nextEvent->frame < end) ++nextEvent;
+        if (first != nextEvent)
+            nio.events = EventSpan{first, static_cast<std::int32_t>(nextEvent - first)};
 
         // Keep the dry line warm even while the device runs. Write at graph
         // precision: a bypassed float-only plug-in must not narrow the dry.

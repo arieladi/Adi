@@ -12,6 +12,8 @@
 // caller, which is the property ADR-0036 bought and ADR-0045 extends.
 
 #include "adi/engine/graph.hpp"
+#include "adi/engine/transport.hpp"
+#include "juce/device_model.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2474,6 +2476,139 @@ void testATailIsAskedOnceABlock() {
     eqi(f.asks - before, 8, "eight blocks, eight questions");
 }
 
+void testNodeSegmentQuantum() {
+    section("DEV-13 -- node-local segment quantum preserves whole Pd ticks");
+    class Pattern final : public Node {
+    public:
+        static float sample(std::int32_t at) noexcept {
+            return static_cast<float>((at % 31) - 15) / 16.0f;
+        }
+        void process(const NodeIo& io) noexcept override {
+            for (std::int32_t c = 0; c < io.channels; ++c) {
+                for (std::int32_t f = 0; f < io.frames; ++f) {
+                    const auto at = io.blockOffset + f;
+                    io.out[c][at] = sample(at);
+                }
+            }
+        }
+    };
+    class Tick final : public adi::device::DeviceInstance {
+    public:
+        Tick(std::int32_t quantum, std::int32_t nominal)
+            : quantum_(quantum), delay_(nominal % quantum == 0 ? 0 : quantum) {}
+        [[nodiscard]] const adi::device::DeviceIdentity& identity() const noexcept override { return identity_; }
+        [[nodiscard]] bool loaded() const noexcept override { return true; }
+        [[nodiscard]] std::int32_t segmentQuantum() const noexcept override { return quantum_; }
+        [[nodiscard]] std::int32_t latencySamples() const noexcept override { return delay_; }
+        [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return readsClock; }
+        void process(const NodeIo& io) noexcept override {
+            if (calls < segments.size()) segments[calls++] = io.blockOffset;
+            for (const auto& event : io.events) {
+                eventFrame = event.frame;
+                eventSegment = io.blockOffset;
+                ++eventCount;
+            }
+            for (std::int32_t f = 0; f < io.frames; ++f) {
+                const auto at = io.blockOffset + f;
+                const auto ring = static_cast<std::size_t>(at % 64);
+                for (std::int32_t c = 0; c < io.channels; ++c) {
+                    const auto channel = static_cast<std::size_t>(c);
+                    const float input = io.in ? io.in[c][at] : 0.0f;
+                    io.out[c][at] = delay_ ? history_[channel][ring] : input;
+                    if (delay_) history_[channel][ring] = input;
+                }
+            }
+        }
+        std::array<std::int32_t, 32> segments{};
+        std::size_t calls = 0;
+        bool readsClock = false;
+        std::int32_t eventFrame = -1, eventSegment = -1, eventCount = 0;
+    private:
+        adi::device::DeviceIdentity identity_;
+        std::int32_t quantum_, delay_;
+        std::array<std::array<float, 64>, 2> history_{};
+    };
+    for (const auto buffer : {64, 128, 256, 511}) {
+        for (const auto offset : {1, 63, 64, 65, 127}) {
+            if (offset >= buffer) continue;
+            Pattern source;
+            Tick whole(64, buffer), ordinary(1, buffer);
+            adi::device::DeviceNode wholeNode(whole), ordinaryNode(ordinary);
+            Graph graph;
+            const auto input = graph.addNode(source);
+            const auto tick = graph.addNode(wholeNode);
+            const auto regular = graph.addNode(ordinaryNode);
+            graph.connect(input, tick);
+            graph.connect(input, regular);
+            graph.setOutput(tick);
+            graph.prepare(48000.0, buffer);
+            auto event = heldNote(EventType::NoteOn, 1, 60);
+            event.frame = offset;
+            graph.pushInputEvent(tick, event);
+            graph.pushInputEvent(regular, event);
+            Out output(buffer);
+            graph.process(makeIo(output, buffer));
+            const auto at = (offset / 64) * 64;
+            const auto delay = buffer % 64 ? 64 : 0;
+            check(whole.calls == (at == 0 ? 1U : 2U) && whole.eventCount == 1 &&
+                  whole.eventFrame == offset && whole.eventSegment == at,
+                  "the quantum device receives unchanged frames in each containing tick");
+            const auto regularStart = offset >= graph.floorFrames() ? offset : 0;
+            check(ordinary.calls == (regularStart == 0 ? 1U : 2U) &&
+                  ordinary.eventCount == 1 && ordinary.eventSegment == regularStart,
+                  "the ordinary node keeps its existing split and floor");
+            bool exact = graph.outputLatencyOf(tick) == delay;
+            for (std::int32_t i = 0; i < buffer; ++i)
+                exact = exact && output.l[static_cast<std::size_t>(i)] ==
+                    (i < delay ? 0.0f : Pattern::sample(i - delay));
+            check(exact, "the quantum path nulls against the dry source at its declared delay");
+        }
+    }
+
+    Pattern pattern;
+    Tick whole(64, 256), ordinary(1, 256);
+    ordinary.readsClock = true;
+    adi::device::DeviceNode wholeNode(whole), ordinaryNode(ordinary);
+    Graph graph;
+    const auto input = graph.addNode(pattern);
+    const auto tick = graph.addNode(wholeNode);
+    const auto regular = graph.addNode(ordinaryNode);
+    graph.connect(input, tick);
+    graph.connect(input, regular);
+    graph.setOutput(tick);
+    graph.prepare(48000.0, 256);
+    Transport transport;
+    transport.play();
+    TransportInfo info;
+    info.playing = true;
+    info.deviceClock = &transport;
+    info.devicePosition = [](const void*, std::int64_t sample) noexcept {
+        DeviceTransport position;
+        position.playing = true;
+        if (sample < 1) position.nextChange = 1;
+        return position;
+    };
+    Out output(256);
+    auto io = makeIo(output, 256);
+    io.transport = &info;
+    auto event = heldNote(EventType::NoteOn, 1, 60);
+    event.frame = 1;
+    graph.pushInputEvent(tick, event);
+    graph.process(io);
+    check(ordinary.calls == 2 && ordinary.segments[1] == 1 &&
+          whole.calls == 1 && whole.eventCount == 1 && whole.eventSegment == 0,
+          "the adjacent 1+255 split leaves the quantum node on one whole 256-frame segment");
+    bool exact = true;
+    for (std::int32_t i = 0; i < 256; ++i)
+        exact = exact && output.l[static_cast<std::size_t>(i)] == Pattern::sample(i);
+    check(exact && graph.outputLatencyOf(tick) == 0, "AR5 nulls at the declared zero delay");
+    whole.readsClock = true;
+    whole.calls = 0;
+    graph.process(io);
+    check(whole.calls == 2 && whole.segments[1] == 64,
+          "a quantum device receives a transport update at the next legal tick");
+}
+
 }  // namespace
 
 int main() {
@@ -2528,6 +2663,7 @@ int main() {
         testAForwardedNoteGetsItsOwnSegment();
         testFanInOverflowIsCountedNotAllocated();
         testDeferredOverflowIsCounted();
+        testNodeSegmentQuantum();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;
