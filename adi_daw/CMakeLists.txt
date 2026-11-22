@@ -2127,6 +2127,11 @@ add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
 
+add_executable(adi_mcu_fader_tests tests/test_mcu_faders.cpp)
+target_include_directories(adi_mcu_fader_tests PRIVATE src)
+target_link_libraries(adi_mcu_fader_tests PRIVATE adi_warnings)
+add_test(NAME adi_mcu_fader_tests COMMAND adi_mcu_fader_tests)
+
 
 
 # One file per device owns its DSP, built-in registration unit and tests.
