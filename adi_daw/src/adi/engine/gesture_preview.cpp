@@ -458,8 +458,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->inputSlice.resize(64);
         timing->outputSlice.resize(static_cast<std::size_t>(std::max(64,owner->spec_.channels)));
         timing->outputSlice64.resize(timing->outputSlice.size());
-        for(const auto& event:playback.tempo)timing->tempo.events.push_back({event.posTicks,event.bpm,static_cast<int>(event.curve)});
-        if(timing->tempo.events.empty())timing->tempo.events.push_back({0,120.0,0});
+        timing->tempo = TempoMap::fromRows(playback.tempo);
         auto sample=[&](std::int64_t tick){
             const long double value=static_cast<long double>(timing->tempo.ticksToSeconds(tick))*owner->spec_.sampleRate;
             if(!std::isfinite(value) || value<0 || value>static_cast<long double>(std::numeric_limits<std::int64_t>::max()))

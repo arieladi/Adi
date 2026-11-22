@@ -389,6 +389,7 @@ add_library(adi_core STATIC
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
+    src/adi/engine/tempo_map.cpp
     src/adi/engine/automation_snapshot.cpp
     src/adi/engine/clip_details.cpp
     src/adi/engine/clip_details.cpp

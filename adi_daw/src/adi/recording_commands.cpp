@@ -56,11 +56,11 @@ fs::path reservePublication(const fs::path& parent) {
     throw std::runtime_error("cannot reserve recording publication staging");
 }
 engine::TempoMap tempoOf(Store& store) {
-    engine::TempoMap result;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+    engine::TempoMap result;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
     while(points.executeStep()) {
         const auto at=points.getColumn(0).getInt64();const auto bpm=points.getColumn(1).getDouble();
         if(at<0 || !std::isfinite(bpm) || bpm<=0 || bpm>=1000)throw std::runtime_error("recording placement needs a valid tempo map");
-        result.events.push_back({at,bpm,points.getColumn(2).getInt()});
+        result.events.push_back({at,bpm,points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
     }
     if(result.events.empty() || result.events.front().posTicks!=0)result.events.insert(result.events.begin(),{0,120,0});
     return result;

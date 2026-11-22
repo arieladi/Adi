@@ -89,8 +89,8 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             if(!analysis)throw std::runtime_error(analysis.error==audio::AutoWarpError::NoTempo?"Warp needs a detected beat or an explicit source tempo":"source timing cannot be analyzed with these Warp options");
             const auto markers=audio::writeWarpMap(analysis.markers,frames-analysis.trimFrames);
             if(!markers)throw std::runtime_error("cannot capture Warp markers");
-            engine::TempoMap tempo;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
-            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
+            engine::TempoMap tempo;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
+            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
             if(tempo.events.empty())tempo.events.push_back({0,120,0});
             if(engine::projectWarpAnchors(analysis.markers,tempo,origin,rate).back().outputFrame>0x7fffffffULL)throw std::runtime_error("warped clip exceeds supported duration");
             std::vector<std::uint8_t> bytes(markers.bytes.size());if(!bytes.empty())std::memcpy(bytes.data(),markers.bytes.data(),bytes.size());

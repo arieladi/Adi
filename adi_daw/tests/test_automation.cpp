@@ -120,10 +120,12 @@ void placement() {
     check(tempo, "a tempo change moves a later point: a quarter at 120 then a quarter at 60 is 1.5 s");
 
     rows::Model ramp;
-    ramp.tempo = {{0, 120.0, 0, 0.0}, {kQuarter, 90.0, 1, 0.0}};
-    add(ramp, laneRow(1, 0), {pt(0, 0.0)});
+    ramp.tempo = {{0, 90.0, 1, 0.0}, {4 * kQuarter, 210.0, 0, 0.0}};
+    add(ramp, laneRow(1, 0), {pt(0, 0.0), pt(2 * kQuarter, 1.0)});
     AutomationProgram pr(ramp, 48000.0);
-    check(hasProblem(pr, "tempo ramps") && pr.lane(1) != nullptr, "tempo ramps are reported as ADR-0155 reports them; the lane still compiles");
+    const auto* rampLane = pr.lane(1);
+    check(pr.problems().empty() && rampLane && rampLane->points.size() == 2 && rampLane->points[1].sample == 49039,
+          "a musical automation point lands on the integrated midpoint of the tempo ramp");
 }
 
 // --- evaluation ------------------------------------------------------------------------

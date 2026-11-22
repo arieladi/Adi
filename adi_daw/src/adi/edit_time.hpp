@@ -3,7 +3,7 @@
 #include "adi/engine/snapshot.hpp"
 namespace SQLite {class Database;}
 namespace adi::edit {
-/// The renderer's step tempo map, with checked integer conversions for edits.
+/// The renderer's tempo map, with checked integer conversions for edits.
 /// Construct on the Store owner thread, under the edit's read transaction.
 class TimeMap {
 public:

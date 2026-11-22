@@ -483,11 +483,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(!project) return;
     if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
         throw std::runtime_error("clip playback format outside 44.1-768 kHz integer rate / 1-64 channels / 1-4096 frames");
-    TempoMap tempo;
-    for(const auto& e:project->rows.tempo) tempo.events.push_back({e.posTicks,e.bpm,static_cast<int>(e.curve)});
-    if(tempo.events.empty()) tempo.events.push_back({0,120,0});
-    if(!project->rows.audioClips.empty() && std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
-        impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
+    const auto tempo = TempoMap::fromRows(project->rows.tempo);
     for(const auto& row:timelineClips(project->rows)) {
         // Muted clips do not need a reader or a playable media source.
         if(row.kind!="audio" || row.muted) continue;

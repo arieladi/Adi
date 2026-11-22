@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/play_quantize.hpp"
+#include "adi/engine/snapshot.hpp"
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -23,6 +24,18 @@ using namespace adi::engine;
 int checks=0, failures=0;
 void check(bool ok,const char* name) {++checks;if(!ok){++failures;std::printf("FAIL %s\n",name);}}
 constexpr std::array<PlayTempoPoint,1> steady{{{0,120}}};
+void effectiveRamp() {
+    constexpr auto quarter = adi::textproj::kPPQ;
+    const TempoMap tempo{{{0,90,1}, {4*quarter,210,0}}};
+    check(playQuantizeReleaseOnTempoMap(1,tempo,48000,1920)==49040,
+          "ramp release rounds the integrated two-quarter line up to the first sample");
+    check(playQuantizeReleaseOnTempoMap(49040,tempo,48000,1920)==49040,
+          "the first physical sample of the rounded ramp line is immediate");
+    check(playQuantizeReleaseOnTempoMap(49042,tempo,48000,1920,2)==49042,
+          "ramp lines honor the same two-sample forgiveness window");
+    check(playQuantizeReleaseOnTempoMap(49043,tempo,48000,1920,2)==81341,
+          "just past forgiveness waits for the next integrated line");
+}
 void basic() {
     check(playQuantizeRelease(0,steady,48000,240)==0,"origin is a grid line");
     check(playQuantizeRelease(6000,steady,48000,240)==6000,"sixteenth exact line");
@@ -84,4 +97,4 @@ void invalid() {
     check(!playQuantizeRelease(1,steady,48000,1e300),"unrepresentable release rejected");
 }
 }
-int main() {basic();blocksAndAllocations();invalid();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
+int main() {basic();effectiveRamp();blocksAndAllocations();invalid();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

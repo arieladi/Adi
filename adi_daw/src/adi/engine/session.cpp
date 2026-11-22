@@ -1001,11 +1001,7 @@ bool Session::rebuild() {
     timing->inputSlice.resize(64);
     timing->outputSlice.resize(static_cast<std::size_t>(std::max(64, spec_.channels)));
     timing->outputSlice64.resize(timing->outputSlice.size());
-    // Same construction as MidiClips: TempoMap integrates STEP tempos, even
-    // when a stored event requests a ramp. Do not create a second converter.
-    for (const auto& e : playbackModel_.tempo)
-        timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
-    if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
+    timing->tempo = TempoMap::fromRows(playbackModel_.tempo);
     const auto loopSample = [&](std::int64_t ticks) { return timing->sampleForTick(ticks); };
     timing->loopBegin=loopSample(transportSettings_.loopStartTicks);
     timing->loopEnd=loopSample(transportSettings_.loopEndTicks);
@@ -1143,8 +1139,7 @@ void Session::refreshProblems() {
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
     problems_.insert(problems_.end(), strips_.problems().begin(), strips_.problems().end());
     problems_.insert(problems_.end(), summing_.problems().begin(), summing_.problems().end());
-    // The program's own findings only when there is automation to find them in:
-    // a project with a tempo ramp and no lanes has no automation problem.
+    // The program's findings are relevant when the project has automation lanes.
     if (stripAutomation_ && stripAutomation_->program && !model_.automationLanes.empty()) {
         const auto& found = stripAutomation_->program->problems();
         problems_.insert(problems_.end(), found.begin(), found.end());
@@ -1162,6 +1157,27 @@ bool Session::parkedDevice(const rows::Device &device) const {
     return chain && chain->trackId &&
            (frozenSources_.contains(*chain->trackId) || frozenGroupChildren_.contains(*chain->trackId));
 }
+namespace {
+TempoRampSpan tempoSpan(const rows::TempoEvent& left, const rows::TempoEvent& right) {
+    return left.rampSpan.value_or(TempoRampSpan{left.posTicks, right.posTicks, left.bpm, right.bpm});
+}
+
+void appendAuthoredTempo(std::vector<rows::TempoEvent>& result,
+                         const std::vector<rows::TempoEvent>& authored, std::int64_t boundary) {
+    const auto next = std::upper_bound(authored.begin(), authored.end(), boundary,
+        [](auto tick, const auto& event) { return tick < event.posTicks; });
+    rows::TempoEvent resume{boundary, TempoMap::fromRows(authored).bpmAt(boundary), 0, 0};
+    if (next != authored.begin() && next != authored.end()) {
+        const auto& previous = *std::prev(next);
+        resume.curve = previous.curve;
+        resume.tension = previous.tension;
+        if (resume.curve != 0 && previous.posTicks != boundary) resume.rampSpan = tempoSpan(previous, *next);
+    }
+    result.push_back(resume);
+    result.insert(result.end(), next, authored.end());
+}
+}  // namespace
+
 std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) const {
     if (performedTempo_.empty()) {
         if (spec_.externalTempoBpm) return {rows::TempoEvent{0, *spec_.externalTempoBpm, 0, 0}};
@@ -1171,12 +1187,7 @@ std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) c
     if (authoredResumeAt_) {
         const auto boundary = *authoredResumeAt_;
         std::erase_if(result, [boundary](const auto& event) { return event.posTicks >= boundary; });
-        TempoMap authored;
-        for (const auto& event : model.tempo)
-            authored.events.push_back({event.posTicks, event.bpm, static_cast<int>(event.curve)});
-        result.push_back({boundary, authored.bpmAt(boundary), 0, 0});
-        for (const auto& event : model.tempo)
-            if (event.posTicks > boundary) result.push_back(event);
+        appendAuthoredTempo(result, model.tempo, boundary);
         if (result.size() > 4096)
             throw std::runtime_error("performed tempo history exceeds 4096 boundaries");
     }
@@ -1672,19 +1683,14 @@ bool Session::setExternalTempoAt(const Store& store, std::optional<double> bpm, 
         error_ = "external tempo waits for the active gesture";
         return false;
     }
-    std::vector<rows::TempoEvent> candidate;
-    for (const auto& event : playbackModel_.tempo)
-        if (event.posTicks < tick) candidate.push_back(event);
+    const auto split = std::lower_bound(playbackModel_.tempo.begin(), playbackModel_.tempo.end(), tick,
+        [](const auto& event, auto at) { return event.posTicks < at; });
+    std::vector<rows::TempoEvent> candidate(playbackModel_.tempo.begin(), split);
+    if (!candidate.empty() && split != playbackModel_.tempo.end() && candidate.back().curve != 0)
+        candidate.back().rampSpan = tempoSpan(candidate.back(), *split);
     if (candidate.empty() && tick > 0) candidate.push_back({0, 120, 0, 0});
     if (bpm) candidate.push_back({tick, *bpm, 0, 0});
-    else {
-        TempoMap authored;
-        for (const auto& event : model_.tempo)
-            authored.events.push_back({event.posTicks, event.bpm, static_cast<int>(event.curve)});
-        candidate.push_back({tick, authored.bpmAt(tick), 0, 0});
-        for (const auto& event : model_.tempo)
-            if (event.posTicks > tick) candidate.push_back(event);
-    }
+    else appendAuthoredTempo(candidate, model_.tempo, tick);
     if (candidate.size() > 4096) {
         error_ = "performed tempo history exceeds 4096 boundaries";
         return false;
@@ -2518,20 +2524,35 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce
     const auto& tempo=timing.tempo;const double rate=timing.sampleRate;
     const auto latency=graph_.renderedLatency();
     const double decay=std::exp(-1.0/(0.004*rate));
+    std::int64_t previous = -1, beatTick = 0;
+    double boundary = 0, nextBoundary = 0;
+    bool accented = false;
     for(std::int32_t i=0;i<io.frames;++i) {
         const auto sample=transport_.delayedSample(i,latency);
-        if(sample<0){clickWasPlaying_=false;clickEnvelope_=0;continue;}
-        const auto tick=tempo.secondsToTicks(static_cast<double>(sample)/rate);
-        std::int64_t signature=0,numerator=4,denominator=4;
-        for(const auto& meter:timing.signatures)if(meter.posTicks<=tick){signature=meter.posTicks;numerator=meter.numerator;denominator=meter.denominator;}else break;
-        const auto beatTicks=textproj::kWhole/denominator;
-        const auto beat=(tick-signature)/beatTicks;
-        const auto beatTick=signature+beat*beatTicks;
-        const double boundary=tempo.ticksToSeconds(beatTick)*rate;
+        if (sample < 0) {
+            clickWasPlaying_=false;clickEnvelope_=0;previous=-1;
+            continue;
+        }
+        if (previous < 0 || sample - 1 != previous || static_cast<double>(sample) >= nextBoundary) {
+            const auto tick = tempo.secondsToTicks(static_cast<double>(sample) / rate);
+            const auto nextMeter = std::upper_bound(timing.signatures.begin(), timing.signatures.end(), tick,
+                [](auto at, const auto& meter) { return at < meter.posTicks; });
+            const auto meter = nextMeter == timing.signatures.begin() ? rows::TimeSignature{} : *std::prev(nextMeter);
+            const auto beatTicks = textproj::kWhole / meter.denominator;
+            const auto beat = (tick - meter.posTicks) / beatTicks;
+            beatTick = meter.posTicks + beat * beatTicks;
+            accented = beat % meter.numerator == 0;
+            boundary = tempo.ticksToSeconds(beatTick) * rate;
+            auto nextTick = beatTick + std::min(beatTicks, std::numeric_limits<std::int64_t>::max() - beatTick);
+            if (nextMeter != timing.signatures.end()) nextTick = std::min(nextTick, nextMeter->posTicks);
+            nextBoundary = std::nextafter(tempo.ticksToSeconds(nextTick) * rate,
+                                          -std::numeric_limits<double>::infinity());
+        }
+        previous = sample;
         const bool adjacent=clickWasPlaying_ && sample>0 && clickLastSample_==sample-1;
         const bool atBoundary=std::abs(static_cast<double>(sample)-boundary)<=1.01;
         if((adjacent && beatTick!=clickLastBeat_) || (!adjacent && atBoundary)) {
-            clickPhase_=0;clickEnvelope_=0.2;clickFrequency_=beat%numerator==0?1760:880;
+            clickPhase_=0;clickEnvelope_=0.2;clickFrequency_=accented?1760:880;
         }
         const double click=clickEnvelope_*std::sin(clickPhase_);
         clickPhase_+=2*std::numbers::pi*clickFrequency_/rate;

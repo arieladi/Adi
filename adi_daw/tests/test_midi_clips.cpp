@@ -8,6 +8,7 @@
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/textproj.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -514,6 +515,23 @@ void musical(){
     tempo.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(5765760,60,0)");tempo.load();while(tempo.clock<49000)tempo.render();
     check(tempo.instrument->count==3 && tempo.instrument->heard[0].clock==12000 && tempo.instrument->heard[2].clock==48000,"note duration integrates a tempo change");
 }
+void musicalRamp() {
+    constexpr auto quarter = textproj::kPPQ;
+    constexpr std::array rates{44100.0, 48000.0, 96000.0};
+    constexpr std::array<std::int64_t, 3> starts{56877, 61907, 123813};
+    for (std::size_t n = 0; n < rates.size(); ++n) {
+        Fixture f(rates[n], 512);
+        f.clip(1, 2 * quarter, quarter / 2, 4 * quarter);
+        f.store->db().exec("DELETE FROM tempo_map;"
+            "INSERT INTO tempo_map(pos_ticks,bpm,curve,tension) VALUES(0,90,2,1),(23063040,210,0,0)");
+        f.load();
+        const auto sample = f.session.beginRender().sampleAtTick(2 * quarter);
+        while (f.clock <= starts[n]) f.render();
+        check(sample == starts[n] && f.instrument->count >= 1 &&
+              f.instrument->heard[0].e.type == EventType::NoteOn && f.instrument->heard[0].clock == starts[n],
+              "the transport and real MIDI playback agree at the independent Bezier midpoint sample");
+    }
+}
 void activeFlag() {
     Fixture f(48000,128);f.clip(1,0,240240,5765760);
     auto mute = [&] {
@@ -925,6 +943,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "live-input") liveInput(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "tempo-ramp") musicalRamp(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");

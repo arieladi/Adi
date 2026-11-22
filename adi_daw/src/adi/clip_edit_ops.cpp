@@ -35,13 +35,13 @@ FadeTarget target(OpContext& context,const Payload& payload,bool needSpan) {
         const auto begin=st.getColumn(2).getInt64(),length=st.getColumn(4).getInt64();
         if(begin<0 || length<0 || begin>std::numeric_limits<std::int64_t>::max()-length)throw std::runtime_error("linear fade time is outside range");
         engine::TempoMap tempo;
-        SQLite::Statement points(context.db,"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+        SQLite::Statement points(context.db,"SELECT pos_ticks,bpm,curve,tension FROM tempo_map ORDER BY pos_ticks,id");
         double fastest=120;
         while(points.executeStep()) {
             const auto position=points.getColumn(0).getInt64();const auto bpm=points.getColumn(1).getDouble();
             if(position<0 || !std::isfinite(bpm) || bpm<=0)throw std::runtime_error("fade tempo map is invalid");
             fastest=std::max(fastest,bpm);
-            tempo.events.push_back({position,bpm,points.getColumn(2).getInt()});
+            tempo.events.push_back({position,bpm,points.getColumn(2).getInt(),points.getColumn(3).getDouble()});
         }
         const long double bound=static_cast<long double>(begin+length)/1e9L*fastest*textproj::kPPQ/60;
         if(!std::isfinite(bound) || bound>static_cast<long double>(std::numeric_limits<std::int64_t>::max())-4096)

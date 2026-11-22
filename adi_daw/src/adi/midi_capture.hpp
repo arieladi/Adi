@@ -22,7 +22,7 @@ private:
 };
 // Owner only, one coherent read, no writes/reservations. The explicit source
 // range contains every retained event and ends no later than snapshot.endSample.
-// Source timestamps are independent of project placement. Uses step tempos and
+// Source timestamps are independent of project placement. Uses the tempo map and
 // verifies every placed sample roundtrip. Refuses truncated/ambiguous ownership,
 // expressions and velocities that cannot roundtrip through the existing ANOT
 // bytes. CC values remain double. Native CC initial chase/cross-stream ordering
