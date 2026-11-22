@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — PD-08 project sync-folder status
+
+- PD-08 sync-folder detection — PR requested, `engine-win/project-sync-folder` at `2a2d0f96` from `87ea349c`. Checks the native OneDrive known folder and configured account roots on Windows, or the local CloudDocs directory on macOS. The project lookup uses filesystem identity of its resolved ancestors and chooses the closest root. MSVC settings 338, including direct and nested matches, a sibling prefix, traversal and absent paths. Real OneDrive and macOS iCloud placements were unmeasured. Window-fn owns the status-bar call at project open and Save As. Microsoft Known Folder IDs: https://learn.microsoft.com/windows/win32/shell/knownfolderid
+
 ## 2026-11-22 — EX-12 audio file conversion
 
 - EX-12 file conversion — PR requested, `engine-win/export-file-converter` at `dae10235` on `87ea349c`. Streams existing decodable audio into the shared WAV delivery with the source clock and channel count. Normalization and the quantizer use that delivery path. Verified exact float, seeded PCM, no-clobber publication, cancellation, same-source refusal and input replacement. MSVC: render queue 438, WAV 143, PCM stream 50, normalization 23. The existing symlink case requires Windows privilege. The converter entry point takes one file. Window owns the batch UI; additional formats, conversion rate and After Export fingerprinting need the joined delivery path.
