@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Per-band prefilter before the fractional Crush hold
+
+`clones/shaper-crush-prefilter` at `f0545461` — Add the calibrated eight-pole prefilter before the Crush hold. **Lands after 3 December.** The three independent switches at IDs 874–876 default off. The filter freezes its state while switched off. At a changing cutoff all sixteen poles share one cached coefficient. The capped response, rise and fall, signed stereo, reset and single-channel nonfinite recovery passed. A missing filter, a different rounding order in the pole update, and clearing history on switch-off all failed independent regressions. The rack, Crush and registered native/edited-Pd suites passed at both Pd precisions under MSVC /W4 /WX. With the switch off, 196,608 stereo frames matched the prior binary exactly.
+
+With the prefilter on, registered kick and bass took 31.7/177.5 µs median/p99 at 256 frames and 284.7/966.6 µs at 2,048. The reference took 49.3/85.2 and 354.3/1,981.9 µs. Both missed one deadline at 256 frames and zero at 2,048 in 10,240 callbacks per size. The largest channel RMS error was 0.000000043. With the prefilter off the ADI medians were 26.1 and 199.7 µs, and the earlier stereo recordings reopened exactly. Latency was zero throughout.
+
+Thirteen historical programs enabled the prefilter. Ten weighted source-order outputs changed, from 0.000103 to 0.03103 RMS. Five errors fell, five rose and three were within 0.000001. The fixed-order counts were five lower, four higher and four within tolerance. Of the three prior regressions one improved, one worsened and one was unchanged. The source-order and fixed-order counts remain 42/873 and 40/873. The seven-stage comparison gave five lower, three higher and five within tolerance.
+
+PR requested
+
 ## 22 November 2026 — Preserve the fractional Crush latch through a full-rate plateau
 
 `clones/shaper-crush-endpoint` at `761744fb` — Retain the Crush latch phase through a full-rate plateau. This repairs the existing stage on main. In the cold and 8,192-frame silent-preroll test, the original retained 0.071371 of a cycle when it left the full-rate segment. On the first post-plateau stereo marker the old core gave −0.250000 on the left against the measured +0.110614. A moving contour at full rate emits current audio and retains the interpolated capture. A flat full-rate contour freezes the phase and keeps the latest direct sample. A capped, sub-full rate keeps the interpolation. The new source markers distinguish all three cases. The earlier hold-grid entry described the phase reset in the old ADI implementation. These readings correct the reference behavior and preserve the separate callback-grid fix.
