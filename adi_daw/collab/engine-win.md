@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-04 explicit WAVE speaker layout
+
+- EX-04 WAVEFORMATEXTENSIBLE channel mask — PR requested, `engine-win/export-wav-speaker-mask` at `2b5a5da8` on the shaped-quantizer base `cc3f8060`. An optional speaker mask tags the caller's existing interleaved stream. Zero retains the unnamed layout. A nonzero mask requires one defined position per channel; stereo gets the same extensible header when explicitly tagged. Normalization preserves the mask across its encoding passes. MSVC: WAV 176, render 434, normalization 24, including 5.1 and stereo header bytes, unchanged samples, invalid positions refused before truncation, and masked normalized output. The >4 GiB opt-in case was skipped. Window owns layout selection; the join must apply it to the final delivery channels. Source: https://learn.microsoft.com/en-us/windows/win32/api/mmreg/ns-mmreg-waveformatextensible
+
 ## 2026-11-22 — DEV-25 sustained scanner-reader pause proof
 
 - DEV-25 500 ms reader-pause case — PR requested, `engine-win/scanner-paused-reader-proof` at `b944e252` from `87ea349c`. Native Windows test-only option `adi_scan_process_tests --paused-reader-stress`. The owner suspends its disposable runner thread while an owned child reaches a real blocked stdout write, holds 500 ms, resumes, and verifies the exact bounded 2 MiB payload and success status. MSVC /W4 /WX: 28 ordinary scanner process checks and 200/200 exact paused trials, zero failures. No scanner production changes or live plug-in load. The regular suite keeps its previous runtime. Source: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-suspendthread
