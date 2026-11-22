@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Cumulative Release after Win's #710 landing
+- Merged main `87ea349c69` into `mixview/review-cumulative-20261122` and pushed `73e7b9a8dd`. Kept Main's exact device interface and vtable order when resolving the single merge conflict. The Clip/Limiter and EQ cold-export fixes remain in the joined review build.
+- Windows x64 Release passed 24 named CTests and the 906 Mix View, 329 Arrangement and 7 Appearance software-peer checks. Headless only. The live brief covers cold export, the linked Main meter and Spectrogram Clear.
+- Review build ADI.exe SHA-256 `02e2b47afb4fd77dc06dfe17dad96986d00e0b3c5964c99d49c4343e116a9076`. ZIP SHA-256 `db9613ca11efd1fd736eacdfb97a4675d20169da17817b9c36eace5c024c5b4a`.
+- PR requested — `mixview/review-cumulative-20261122`, exact head `73e7b9a8dd`.
+
 ## 2026-11-22 — Mix View Info follows the Spectrum layout
 
 - **PR requested — `mixview/df-m55-info-spectrum-scale-lands-after-2026-12-03` `ffeebdcb`; lands after 3 December.** The Mix View channel browser's Info spectrum uses the layout chosen in Analysers. Its local Spectrum/Spectrogram choice, selected source and analysis lease are independent. This resolves the earlier Info owner note in the Mix View's own files. The Arrangement Info is a separate work item.
