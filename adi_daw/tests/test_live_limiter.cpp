@@ -324,16 +324,21 @@ void changesWhileRunning() {
               "mode " + std::to_string(mode) + ": after a lowered ceiling, the delayed window peaks at " +
                   std::to_string(20 * std::log10(inside)) + " dB and the next at " +
                   std::to_string(20 * std::log10(after)) + " dB, both at the new ceiling (-36)");
-        // The gain from one sample to the next across the window's end.
+        // The gain from one sample to the next across the window's end: the
+        // pair that straddles it (outputs change + d - 1 and change + d) is
+        // always measured, and its neighbours on either side.
         double jump = 0;
+        bool straddled = false;
         for (std::size_t i = change + d - 4; i < change + d + 4; ++i) {
-            const double a = std::abs(static_cast<double>(full.l[i - d])), b = std::abs(static_cast<double>(full.l[i + 1 - d]));
-            if (a > 0.5 && b > 0.5) {
-                const double before = std::abs(static_cast<double>(y.l[i]) / static_cast<double>(full.l[i - d]));
-                const double next = std::abs(static_cast<double>(y.l[i + 1]) / static_cast<double>(full.l[i + 1 - d]));
+            const double a = static_cast<double>(full.l[i - d]), b = static_cast<double>(full.l[i + 1 - d]);
+            if (std::abs(a) > 1e-3 && std::abs(b) > 1e-3) {
+                const double before = std::abs(static_cast<double>(y.l[i]) / a);
+                const double next = std::abs(static_cast<double>(y.l[i + 1]) / b);
                 jump = std::max(jump, std::abs(std::log(next / before)));
+                straddled = straddled || i == change + d - 1;
             }
         }
+        check(straddled, "mode " + std::to_string(mode) + ": the pair across the window's end is measured");
         check(jump < 0.1, "mode " + std::to_string(mode) + ": no gain step where the delayed window ends (" +
                               std::to_string(20 * jump / std::log(10.0)) + " dB)");
     }
