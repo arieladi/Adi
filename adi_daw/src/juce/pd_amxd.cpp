@@ -837,7 +837,15 @@ private:
         }
         f.inlets = {{0, 0}};
         f.outlets = {{1, 0}};
-        if (dollars) keepArguments(b, f, 0, false);
+        if (dollars) {
+            keepArguments(b, f, 0, false);
+        } else {
+            // A run-time "set" is dropped here too, never copied into every part.
+            const int route = static_cast<int>(f.records.size());
+            f.records.push_back("#X obj " + at(b.x - 60, b.y - 60) + " route set");
+            f.internal.push_back({route, 1, 0, 0});
+            f.inlets[0] = {route, 0};
+        }
         frags_[b.id] = std::move(f);
     }
 

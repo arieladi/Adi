@@ -1098,6 +1098,21 @@ void testStepTenReviewed() {
     // The fifth review: "set" into a message that sends to a ---name is refused.
     check(refusedFor(twoMessages("set 5 6", 0, "bang", "$1 $2; ---foo $1", "message"), "set into a message"),
           "[set 5 6( into [$1 $2; ---foo $1( is refused");
+    // The sixth review: a set that arrives indirectly (here through a gate) at
+    // [1; ---foo 2( is dropped, not copied into the part that feeds ---foo:
+    // the bang that follows sends 1 out and 2 to ---foo, once each.
+    {
+        const std::string json = patcher(
+            {box("obj-1", "loadbang", 100, 10, R"("bang")"), box("obj-2", "set 7", 200, 40, R"("")", "message"),
+             box("obj-7", "gate 1 1", 200, 60, R"("")"), box("obj-3", "bang", 10, 40, R"("")", "message"),
+             box("obj-4", "1; ---foo 2", 10, 80, R"("")", "message"), box("obj-5", "print X", 10, 140, ""),
+             box("obj-6", "r ---foo", 300, 100, R"("")"), box("obj-8", "print X", 300, 140, "")},
+            {line("obj-1", 0, "obj-2", 0), line("obj-1", 0, "obj-3", 0), line("obj-2", 0, "obj-7", 1), line("obj-7", 0, "obj-4", 0),
+             line("obj-3", 0, "obj-4", 0), line("obj-4", 0, "obj-5", 0), line("obj-6", 0, "obj-8", 0)});
+        auto got = sortedPrints(json);
+        std::sort(got.begin(), got.end());
+        check(got == std::vector<std::string>{"X: 1", "X: 2"}, "an indirect set into [1; ---foo 2( is dropped (" + shownAll(got) + ")");
+    }
     check(translateMaxPatcher(patcher({box("obj-1", "biquad~ 1. 0. 0. -1.99979902 0.99980001", 10, 10, kSig)}, {}), AmxdKind::AudioEffect).ok(),
           "a 7.6 Hz resonance of radius 0.9999 translates");
     check(translateMaxPatcher(patcher({box("obj-1", "biquad~ 0.9995373 -1.9990746 0.9995373 -1.999074391 0.999074819", 10, 10, kSig)}, {}),
