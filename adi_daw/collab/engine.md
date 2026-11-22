@@ -36,6 +36,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MI08-MPE, join Gemini's refused-attack fix — PR requested
+
+- Both original requests fast-forward. `engine/mi08-expression-units-current` is `922e275d6862f5f44dc56231663dbf13d6d0beab`, and `engine/mi08-expression-playback-current` is `b755e07e3dcdb6e014bd79f42df798bc7defeee4`. Both incorporate Gemini's exact `0b539fb2`. The router reserves four slots before channel allocation. With one to three slots it leaves the held note's pitch and the note table untouched; with four it accepts the attack. Reviewed Gemini's owned hunks and the five portability patterns.
+- GCC and Clang tested both exact heads, 132 pure router checks each. Joined native source `755eb280` passed all nine GCC headless suites. Native CLAP passed 614 checks with each compiler, and native VST3 passed 132 bus/wire checks and 225 probe checks with each. The Clang host runs use the ABI-compatible GCC core. At 16 frames both adapters retain the 128-release continuity check. CLAP preserves dialect across a segment.
+- The joined, pinned Linux Surge XT 1.3.4 rendered the saved pitch expression at 261.641, 369.900 and 523.062 Hz, all within 0.6 cents, with zero dropped or out-of-range generated events and parameters. One deliberately unmapped ordinary CC retained its single unsupported diagnostic. Windows Surge and Serum 2 rig acceptance stays with Win.
+
 ## 2026-11-22 — PD-04 analysis cache publication — PR requested
 
 - Ready at `da074f14` on `engine/pd04-analysis-publication`, based on main `87ea349c`, for the after-3-December window. The ADIA writer now passes its closed private stage to `replaceFile`. A destination lease refusal leaves the prior complete file in place and removes staging. An installed optional cache remains successful if its parent sync reports a warning.
