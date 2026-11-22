@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <new>
+#include <stdexcept>
 #include <thread>
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -59,8 +60,103 @@ void markWhenReleased(const fs::path& marker,const fs::path& release) {
     while(std::chrono::steady_clock::now()<limit && !fs::exists(release,ignored))std::this_thread::sleep_for(5ms);
     std::ofstream(marker)<<"escaped";
 }
+#if defined(_WIN32)
+class ScanTestEvent {
+public:
+    ScanTestEvent(const std::string& name, bool create) {
+        const std::wstring native(name.begin(), name.end());
+        if (create) {
+            handle = CreateEventW(nullptr, TRUE, FALSE, native.c_str());
+            if (handle && GetLastError() == ERROR_ALREADY_EXISTS) {
+                CloseHandle(handle);
+                handle = nullptr;
+            }
+        } else {
+            handle = OpenEventW(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, native.c_str());
+        }
+        if (!handle) throw std::runtime_error("cannot open fixture event");
+    }
+    ~ScanTestEvent() { CloseHandle(handle); }
+    ScanTestEvent(const ScanTestEvent&) = delete;
+    ScanTestEvent& operator=(const ScanTestEvent&) = delete;
+    HANDLE handle = nullptr;
+};
+
+constexpr auto pipePayloadBytes = 2U * 1024U * 1024U;
+
+int pausedReaderFixture(const std::string& prefix) {
+    ScanTestEvent ready(prefix + ".ready", false);
+    ScanTestEvent go(prefix + ".go", false);
+    ScanTestEvent writing(prefix + ".writing", false);
+    ScanTestEvent done(prefix + ".done", false);
+    const std::string payload(pipePayloadBytes, 'z');
+    if (!SetEvent(ready.handle) || WaitForSingleObject(go.handle, 15000) != WAIT_OBJECT_0 ||
+        !SetEvent(writing.handle)) return 96;
+    if (std::fwrite(payload.data(), 1, payload.size(), stdout) != payload.size() ||
+        std::fflush(stdout) != 0 || !SetEvent(done.handle)) return 97;
+    return 0;
+}
+
+int pausedReaderStress(const fs::path& self) {
+    constexpr int iterations = 200;
+    const auto stem = "Local\\ADI.ScannerPause." + std::to_string(GetCurrentProcessId()) + "." +
+                      std::to_string(GetTickCount64()) + ".";
+    const std::string expected(pipePayloadBytes, 'z');
+    int passed = 0;
+    for (int trial = 0; trial < iterations; ++trial) {
+        const auto prefix = stem + std::to_string(trial);
+        ScanTestEvent ready(prefix + ".ready", true);
+        ScanTestEvent go(prefix + ".go", true);
+        ScanTestEvent writing(prefix + ".writing", true);
+        ScanTestEvent done(prefix + ".done", true);
+        std::atomic<bool> cancel{false};
+        ProcessOptions options;
+        options.timeout = 20s;
+        options.cancel = &cancel;
+        ProcessResult reply;
+        std::jthread owner([&] { reply = runProcess(self, {"--fixture", "paused-reader", prefix}, options); });
+
+        DWORD previous = static_cast<DWORD>(-1);
+        DWORD resume = static_cast<DWORD>(-1);
+        BOOL released = FALSE;
+        DWORD childWriting = WAIT_FAILED;
+        DWORD finishedWhilePaused = WAIT_FAILED;
+        if (WaitForSingleObject(ready.handle, 10000) == WAIT_OBJECT_0) {
+            // Only the runner thread created for this disposable probe. Use
+            // pre-opened handles and bounded native waits until it is resumed.
+            previous = SuspendThread(owner.native_handle());
+            if (previous == 0) {
+                released = SetEvent(go.handle);
+                if (released) {
+                    childWriting = WaitForSingleObject(writing.handle, 5000);
+                    if (childWriting == WAIT_OBJECT_0) finishedWhilePaused = WaitForSingleObject(done.handle, 500);
+                }
+            }
+            if (previous != static_cast<DWORD>(-1)) resume = ResumeThread(owner.native_handle());
+        }
+        const bool blocked = previous == 0 && resume == 1 && released &&
+                             childWriting == WAIT_OBJECT_0 && finishedWhilePaused == WAIT_TIMEOUT;
+        if (!blocked) cancel = true;
+        owner.join();
+        if (blocked && reply.succeeded() && reply.output == expected) {
+            ++passed;
+        } else {
+            std::printf("FAIL: trial %d blocked=%d status=%d stdout=%zu bytes\n", trial + 1,
+                        int(blocked), static_cast<int>(reply.status), reply.output.size());
+        }
+        if ((trial + 1) % 25 == 0) {
+            std::printf("paused reader: %d/%d exact, %d attempted\n", passed, iterations, trial + 1);
+            std::fflush(stdout);
+        }
+    }
+    return passed == iterations ? 0 : 1;
+}
+#endif
 int fixture(int argc, char** argv) {
     const std::string mode = argc > 2 ? argv[2] : "";
+#if defined(_WIN32)
+    if (mode == "paused-reader" && argc == 4) return pausedReaderFixture(argv[3]);
+#endif
     if(mode=="echo") {for(int i=3;i<argc;++i)std::printf("%zu:%s\n",std::strlen(argv[i]),argv[i]);return 0;}
     if(mode=="binary") {const std::array<unsigned char,5> data{0,1,127,128,255};std::fwrite(data.data(),1,data.size(),stdout);return 0;}
     if(mode=="large") {const std::string bytes(2U*1024U*1024U,'z');return std::fwrite(bytes.data(),1,bytes.size(),stdout)==bytes.size()?0:93;}
@@ -229,6 +325,16 @@ void contract(const fs::path& self) {
 } // namespace
 int entry(int argc,char** argv) {
     if(argc>1 && std::strcmp(argv[1],"--fixture")==0)return fixture(argc,argv);
+#if defined(_WIN32)
+    if (argc == 2 && std::strcmp(argv[1], "--paused-reader-stress") == 0) {
+        try {
+            return pausedReaderStress(fs::absolute(fromUtf8(argv[0])));
+        } catch (const std::exception& error) {
+            std::printf("EXCEPTION: %s\n", error.what());
+            return 1;
+        }
+    }
+#endif
     if(argc>1)return 95;
     try {contract(fs::absolute(fromUtf8(argv[0])));}catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
