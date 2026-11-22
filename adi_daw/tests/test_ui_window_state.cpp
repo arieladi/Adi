@@ -201,6 +201,22 @@ void midiPortsCore() {
         pair["in:older"] = {{"sync", true}, {"name", "Keys"}};
         const auto ambiguous = reconcileMidiPorts(pair, {{"in:new", "Keys"}});
         check(!ambiguous, "two records of one name and one new port: neither moves");
+        auto reused = settings::Value::object();
+        reused["in:1"] = {{"track", true}, {"name", "Keys"}};
+        check(!reconcileMidiPorts(reused, {{"in:1", "Pads"}}),
+              "another device at a record's identifier does not rename it, so its own device can still find it");
+        const auto back = reconcileMidiPorts(reused, {{"in:1", "Pads"}, {"in:2", "Keys"}});
+        check(back && back->contains("in:2") && (*back)["in:2"].value("name", std::string()) == "Keys" &&
+                  midiPortSwitches(*back, "in:2").track && !back->contains("in:1"),
+              "the keyboard back on another identifier takes its record from the one the other device now holds");
+        auto swapped = settings::Value::object();
+        swapped["in:1"] = {{"track", true}, {"name", "Keys"}};
+        swapped["in:2"] = {{"mpe", true}, {"name", "Pads"}};
+        const auto both = reconcileMidiPorts(swapped, {{"in:1", "Pads"}, {"in:2", "Keys"}});
+        check(both && (*both)["in:1"].value("name", std::string()) == "Pads" && midiPortSwitches(*both, "in:1").mpe &&
+                  (*both)["in:2"].value("name", std::string()) == "Keys" && midiPortSwitches(*both, "in:2").track &&
+                  settings::validate(*row, *both, why),
+              "two devices that swapped sockets each keep their own record");
     }
     // The ring: in order, refusing when full, counting what it lost.
     MidiEventRing<4> ring;
