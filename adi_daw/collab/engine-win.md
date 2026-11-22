@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-04 Ogg Opus output
+
+- EX-04 Ogg Opus — PR requested, `engine-win/export-ogg-opus` at `f1ebf38b`, stacked on the combined delivery head `032d74de`, after 3 December. Uses pinned BSD-3-Clause libopus 1.6.1 `22244de5a79bd1d6d623c32e72bf1954b56235be` and libopusenc 0.3 `0dba1bea736ab8bb811409dce80c994a00a2ced9`. Family-0 mono/stereo, 48 kHz, VBR with an explicit target bitrate. Native Ogg reread and libopus decode verify packet continuity, pre-skip and final granule trim before delivery. Verified 4201 stereo and 719 mono frames, deterministic output across graph blocks and no PCM dither, plus a six-format group with the same one device load and 4224 processed frames as the WAV control. MSVC: render 490, WAV 171, NI Stems 85 (native AAC unavailable). The tested decoder is the delivery verifier; arbitrary Opus import, non-48 kHz conversion and decoded lossy normalization remain separate. Win owns workflow packaging. Sources: https://www.opus-codec.org/downloads/ and https://www.rfc-editor.org/rfc/rfc7845.html
+
 ## 2026-11-22 — EX-04 one graph run for multiple deliveries
 
 - EX-04 checked delivery group — PR requested, `engine-win/export-multiple-deliveries` at `032d74de`, including shaped quantizer and the AIFF, FLAC, LAME and Vorbis branches, after 3 December. One selected compensated graph stream feeds per-file encoders at the shared output clock. Jointly built with the native dependencies. A WAV/AIFF/FLAC/MP3/Vorbis job loaded its device once and processed 4224 device frames, the same as the single-WAV control (one load, 4224 frames). The authored output was 4201 frames. WAV PCM24, AIFF and FLAC matched bit for bit, and lossy writers checked the decoded length. An occupied WAV increments the whole group. Late collision kept the earlier commit and the competitor's bytes, with per-file states. MSVC: render 484, WAV 171, NI Stems 85 (native AAC unavailable). The codec join disables FLAC's Ogg linkage before declaring the Ogg target. Window controls, common gain, project-rate/mono/loop joining and full cross-platform packaging remain.
