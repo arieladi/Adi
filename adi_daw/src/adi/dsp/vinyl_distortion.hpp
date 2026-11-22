@@ -24,7 +24,9 @@
 //
 // Each band is a constant-peak band pass (RBJ) in double; its states settle
 // on exact 0 below 1e-30. With both distortions' Drive at 0 and Crackle off
-// the output is the input itself.
+// the output is the input itself. The tracing's amount, the pinch's drive
+// and presence, and the crackle's volume glide over about 10 ms once audio
+// runs (dsp/glide.hpp), so moving or switching them does not click.
 //
 // WHAT IS NOT LIVE'S YET, and says so: the ranges and defaults, both
 // distortions' curves and levels, the crackle's shape, size and image, and
@@ -34,6 +36,8 @@
 // It claims no parity. Allocation-free; no latency.
 
 #pragma once
+
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cstddef>
@@ -88,7 +92,8 @@ private:
     std::array<double, Count> p_{};
     Band tracing_, pinch_;
     std::array<double, 2> dcIn_{}, dcOut_{};   ///< the tracing product's DC blocker
-    double rate_ = 48000, dcPole_ = 0, crackle_ = 0, crackleDecay_ = 0, crackleChance_ = 0, crackleLevel_ = 0;
+    double rate_ = 48000, dcPole_ = 0, crackle_ = 0, crackleDecay_ = 0, crackleChance_ = 0;
+    Glide tracing_amount_, pinchDrive_, pinchMix_, crackleLevel_;
     std::uint32_t seed_ = 0x2545F491u;
 };
 

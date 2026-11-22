@@ -52,6 +52,9 @@ void EqThree::prepare(double sampleRate) noexcept {
     for (auto* chain : {&lowLp_, &lowHp_, &midLp_, &midHp_, &allpassLp_, &allpassHp_}) {
         chain->state = {};
     }
+    for (auto& g : gain_) {
+        g.prepare(rate_);
+    }
     update();
 }
 
@@ -76,7 +79,9 @@ void EqThree::update() noexcept {
     linkwitzRiley(allpassLp_.sections, allpassLp_.count, steep, [&](double q) { return lowPass(rate_, high, q); });
     linkwitzRiley(allpassHp_.sections, allpassHp_.count, steep, [&](double q) { return highPass(rate_, high, q); });
     const auto level = [](double db, double on) { return on < 0.5 || db <= -70 ? 0.0 : std::pow(10.0, db / 20); };
-    gain_ = {level(p_[Low], p_[LowOn]), level(p_[Mid], p_[MidOn]), level(p_[High], p_[HighOn])};
+    gain_[0].set(level(p_[Low], p_[LowOn]));
+    gain_[1].set(level(p_[Mid], p_[MidOn]));
+    gain_[2].set(level(p_[High], p_[HighOn]));
 }
 
 void EqThree::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
@@ -85,6 +90,7 @@ void EqThree::process(const float* inL, const float* inR, float* outL, float* ou
     for (std::size_t i = 0; i < frames; ++i) {
         // Both inputs are read before either output is written (a host may
         // hand an output plane that is an input plane).
+        const double low = gain_[0].next(), mid = gain_[1].next(), high = gain_[2].next();
         double x[2];
         for (std::size_t c = 0; c < 2; ++c) {
             x[c] = in[c] && std::isfinite(in[c][i]) ? in[c][i] : 0.0;
@@ -94,8 +100,8 @@ void EqThree::process(const float* inL, const float* inR, float* outL, float* ou
             const double lowBand = lowLp_.run(c, x[c]);
             const double aligned = allpassLp_.run(c, lowBand) + allpassHp_.run(c, lowBand);
             const double rest = lowHp_.run(c, x[c]);
-            const double mid = midLp_.run(c, rest), highBand = midHp_.run(c, rest);
-            const double y = gain_[0] * aligned + gain_[1] * mid + gain_[2] * highBand;
+            const double midBand = midLp_.run(c, rest), highBand = midHp_.run(c, rest);
+            const double y = low * aligned + mid * midBand + high * highBand;
             if (out[c]) {
                 out[c][i] = static_cast<float>(y);
             }
