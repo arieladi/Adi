@@ -650,6 +650,60 @@ void focusBarScopeBroker() {
     companion.reset();
     check(released == 2 && broker.stats().taps == 0, "the last subscriber releases each tap exactly once");
 }
+void focusBarScopeMidDemand() {
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 43;
+    const std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    const std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    unsigned acquires = 0, releases = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        ++acquires;
+        return taps[static_cast<std::size_t>(source.track - 1)];
+    }, [&](Source) { ++releases; }, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 1);
+    if (!lease) { check(false, "Mid uses a regular grouped Focus scope lease"); return; }
+
+    const auto write = [&](std::int64_t stamp, float first, float second) {
+        const float inverted = -first, silent = 0.f;
+        taps[0]->write(&first, &inverted, 1, stamp, true, revision);
+        taps[1]->write(&second, &silent, 1, stamp, true, revision);
+        broker.pump();
+    };
+    lease.setMidRequested(true);
+    check(lease.request({0, 2, rate}, revision), "a Mid bar uses the existing capture request");
+    write(0, .75f, -.5f);
+    check(lease.status() == Status::Pending, "a partial Mid bar is not published");
+    write(1, -.75f, .5f);
+    const auto mid = lease.read();
+    const auto levels = [](const auto &result) {
+        return result && result->projection ? result->projection->sumMidColumns()
+            : std::span<const adi::ui::FocusScopeBarProjection::MidColumn>{};
+    };
+    const auto combined = levels(mid);
+    check(combined.size() == 1 && combined.front().low == -.25 && combined.front().high == .25 &&
+              mid->projection->memberMidColumns(0).front().low == 0. &&
+              mid->projection->memberMidColumns(0).front().high == 0.,
+          "the grouped publication bins signed Mid for members and the sum");
+
+    check(lease.request({2, 2, rate}, revision), "the following bar starts on the same grouped lease");
+    write(2, 1.f, .5f);
+    lease.setMidRequested(false);
+    write(3, -1.f, -.5f);
+    const auto stereo = lease.read();
+    check(stereo && stereo->projection && stereo->projection->sumColumns().size() == 1 &&
+              stereo->projection->memberMidColumns(0).empty() && levels(stereo).empty(),
+          "turning off Mid discards unpublished Mid extrema without restarting the stereo reader");
+    check(levels(mid).size() == 1 && levels(mid).front().high == .25,
+          "an already published Mid snapshot stays immutable when the view changes");
+    check(acquires == 2 && releases == 0 && broker.stats().taps == 2 &&
+              broker.stats().consumers == 1 && broker.stats().transforms == 0,
+          "projection changes use the same two taps and grouped reader without FFT work");
+    lease.reset();
+    check(releases == 2 && broker.stats().taps == 0, "hiding the last grouped reader releases both taps");
+}
+
 void focusBarScopeBrokerBoundaries() {
     using Source = adi::engine::ScopeSource;
     using Status = SharedAnalysis::BarScopeStatus;
@@ -2272,7 +2326,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
