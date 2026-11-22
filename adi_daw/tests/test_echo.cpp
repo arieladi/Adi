@@ -280,8 +280,36 @@ void roomSettles() {
     check(!read, "the Reverb's room settles on exact 0 after silence (no subnormal read)");
 #endif
 }
+// A default Echo with its Reverb at 100 % (Post, the default location) stays
+// bounded and dies away after its input stops: Post colours the output and
+// is not fed back (a found defect: it ran away and held near 15).
+void postReverbDecays() {
+    C c;
+    c.set(C::Reverb, 100);
+    c.prepare(48000);
+    std::vector<float> in(256), l(256), r(256);
+    std::uint32_t seed = 2026u;
+    double loudest = 0, last = 0;
+    for (int b = 0; b < 48000 * 31 / 256; ++b) {
+        const bool signal = b < 48000 / 256;
+        for (auto &v : in) {
+            seed = seed * 1664525u + 1013904223u;
+            v = signal ? static_cast<float>(static_cast<double>(seed >> 8) / 16777216.0 - .5) : 0.f;
+        }
+        c.process(in.data(), in.data(), l.data(), r.data(), in.size());
+        const bool final = b >= 48000 * 30 / 256;
+        for (float v : l) {
+            loudest = std::max(loudest, static_cast<double>(std::abs(v)));
+            if (final) {
+                last = std::max(last, static_cast<double>(std::abs(v)));
+            }
+        }
+    }
+    check(loudest < 2 && last < 1e-3, "a default Echo with Reverb 100 % stays bounded and dies away");
+}
 int main() {
     roomSettles();
+    postReverbDecays();
     measurements();
     transitions();
     partitions();
