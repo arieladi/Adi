@@ -9,6 +9,7 @@
 #include "adi/op_transaction_resources_detail.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -57,7 +58,8 @@ NativeSpliceKnot point(std::int64_t time, double value, std::uint8_t curve = 1,
     return result;
 }
 void stream(Store &store, std::span<const NativeSpliceKnot> points, int base = 0,
-            std::int64_t id = 4, bool clip = false, bool trailer = false) {
+            std::int64_t id = 4, bool clip = false, bool trailer = false,
+            std::int64_t laneId = 2) {
     std::vector<AutomationPoint> raw;
     for (const auto &knot : points)
         raw.push_back(knot.point);
@@ -69,13 +71,14 @@ void stream(Store &store, std::span<const NativeSpliceKnot> points, int base = 0
         bytes.push_back(std::byte{0});
     }
     SQLite::Statement insert(
-        store.db(), "INSERT INTO automation_data(id,lane_id,clip_id,data) VALUES(?,2,?,?)");
+        store.db(), "INSERT INTO automation_data(id,lane_id,clip_id,data) VALUES(?,?,?,?)");
     insert.bind(1, id);
+    insert.bind(2, laneId);
     if (clip)
-        insert.bind(2, 1);
+        insert.bind(3, 1);
     else
-        insert.bind(2);
-    insert.bind(3, bytes.data(), static_cast<int>(bytes.size()));
+        insert.bind(3);
+    insert.bind(4, bytes.data(), static_cast<int>(bytes.size()));
     insert.exec();
 }
 Payload rows(Store &store) {
@@ -85,8 +88,8 @@ Payload rows(Store &store) {
         result.push_back(detail::captureGuardRows(store, table, Payload::object()));
     return result;
 }
-std::vector<SpliceKnot> decoded(Store &store, int base) {
-    const auto row = detail::captureRow(store.db(), "automation_data", "id", 4);
+std::vector<SpliceKnot> decoded(Store &store, int base, std::int64_t dataId = 4) {
+    const auto row = detail::captureRow(store.db(), "automation_data", "id", dataId);
     if (!row)
         throw std::runtime_error("splice data missing");
     const auto &binary = row->at("data").get_binary();
@@ -106,7 +109,8 @@ std::vector<SpliceKnot> decoded(Store &store, int base) {
     }
     SQLite::Statement ranges(
         store.db(), "SELECT record_index,progress_begin,progress_end,source_first,source_last FROM "
-                    "automation_segment_ranges WHERE data_id=4 ORDER BY record_index");
+                    "automation_segment_ranges WHERE data_id=? ORDER BY record_index");
+    ranges.bind(1, dataId);
     while (ranges.executeStep()) {
         const auto index = ranges.getColumn(0).getInt64();
         if (index < 0 || static_cast<std::uint64_t>(index) >= result.size())
@@ -534,6 +538,98 @@ void layouts(const std::filesystem::path &directory) {
               "future malformed or conflicting AAUT layout refuses unchanged");
     }
 }
+void clipboard(const std::filesystem::path &directory) {
+    for (int base = 0; base < 2; ++base) {
+        for (std::uint8_t curve = 0; curve <= 5; ++curve) {
+            const auto name = "clipboard-" + std::to_string(base) + "-" + std::to_string(curve);
+            auto store = project(directory / (name + ".adi"), base);
+            auto &db = store->db();
+            SQLite::Statement lane(
+                db, "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,"
+                    "default_value,min_value,max_value) VALUES(3,'track',1,'second',?,0.25,0,1)");
+            lane.bind(1, base);
+            lane.exec();
+            const std::int64_t unit = base ? 1000000 : textproj::kPPQ / 240;
+            const auto begin = 20 * unit, end = 90 * unit, length = end - begin;
+            // The Hold case includes a real authored step. The other cases
+            // start with an already cropped domain and end inside that curve.
+            const auto middle = curve == 0 ? 50 * unit : 220 * unit;
+            auto originalPoints = std::vector{point(0, 0.12, curve, 17),
+                                              point(middle, 0.88, curve, 31),
+                                              point(300 * unit, 0.26, 1, 61)};
+            if (curve != 0) {
+                originalPoints.front().point.value = engine::curveValue(0.12, 0.88, 0.1, curve, 0.6f);
+                originalPoints[1].point.value = engine::curveValue(0.12, 0.88, 0.9, curve, 0.6f);
+            }
+            stream(*store, originalPoints, base, 4, false, true);
+            stream(*store, std::vector{point(0, 0.34)}, base, 8, true);
+            stream(*store, std::vector{point(0, 0.24, 5, 71), point(300 * unit, 0.73, 1, 99)},
+                   base, 9, false, true, 3);
+            if (curve != 0)
+                db.exec("INSERT INTO automation_segment_ranges(id,data_id,record_index,"
+                        "progress_begin,progress_end,source_first,source_last)"
+                        "VALUES(11,4,0,0.1,0.9,0.12,0.88)");
+            const auto before = rows(*store);
+            const auto sourcePoints = decoded(*store, base);
+            const auto otherPoints = decoded(*store, base, 9);
+            const auto source = program(sourcePoints), other = program(otherPoints);
+            const auto copy = copyEnvelopeRange(*store, 2, begin, end, 48000);
+            if (!copy.material)
+                throw std::runtime_error(copy.error);
+            check(detail::sameSqlValue(rows(*store), before), "clipboard copy leaves rows untouched");
+            check(copy.material->knots.front().point.time == 0 &&
+                      copy.material->knots.back().point.time == length &&
+                      copy.material->knots.front().slice.has_value() == (curve != 0),
+                  "copy owns relative boundaries and the source curve domain");
+            const edit::TimeMap time(db);
+            const auto sample = [&](std::int64_t position) {
+                return static_cast<std::int64_t>(std::llround(
+                    (base ? static_cast<double>(position) * 1e-9 : time.seconds(position)) * 48000));
+            };
+            const auto verify = [&](std::int64_t id, std::int64_t at,
+                                    const engine::AutomationLaneProgram &prior) {
+                const auto outputPoints = decoded(*store, base, id);
+                const auto output = program(outputPoints);
+                const auto first = sample(at), last = sample(at + length);
+                bool correct = true;
+                for (std::int64_t i = 0; i <= sample(310 * unit); ++i) {
+                    const auto expected = i >= first && i < last
+                                              ? engine::valueAt(source, sample(begin) + i - first)
+                                              : engine::valueAt(prior, i);
+                    correct = correct && std::abs(engine::valueAt(output, i) - expected) < 3e-12;
+                }
+                return correct;
+            };
+            const auto clip = detail::captureRow(db, "automation_data", "id", 8);
+            const auto sibling = detail::captureRow(db, "automation_data", "id", 9);
+            auto duplicate = prepareDuplicateEnvelopeRange(*store, 2, begin, end, 48000);
+            check(duplicate.ok && duplicate.requests.size() == 1 &&
+                      OpJournal(*store).commit(duplicate.requests).ok && verify(4, end, source),
+                  "duplicate pastes adjacent source curve and preserves exterior playback");
+            check(detail::sameSqlValue(*clip, *detail::captureRow(db, "automation_data", "id", 8)) &&
+                      detail::sameSqlValue(*sibling, *detail::captureRow(db, "automation_data", "id", 9)),
+                  "duplicate leaves sibling clip and arrangement lane stable");
+            const auto duplicated = rows(*store);
+            History history(*store);
+            check(history.undo().ok && detail::sameSqlValue(rows(*store), before) &&
+                      history.redo().ok && detail::sameSqlValue(rows(*store), duplicated),
+                  "duplicate restores rows exactly through undo and redo");
+            const auto at = 155 * unit;
+            auto paste = preparePasteEnvelopeRange(*store, 3, at, *copy.material, 48000);
+            check(paste.ok && paste.requests.size() == 1 &&
+                      OpJournal(*store).commit(paste.requests).ok && verify(9, at, other),
+                  "frozen copy pastes exact native material into a compatible parameter");
+            check(history.undo().ok && detail::sameSqlValue(rows(*store), duplicated),
+                  "paste undoes exactly, leaving the duplicated source in place");
+            db.exec("UPDATE automation_lanes SET unit='Hz' WHERE id=3");
+            const auto bad = preparePasteEnvelopeRange(*store, 3, at, *copy.material, 48000);
+            const auto overflow = preparePasteEnvelopeRange(
+                *store, 2, std::numeric_limits<std::int64_t>::max(), *copy.material, 48000);
+            check(!bad.ok && bad.requests.empty() && !overflow.ok && overflow.requests.empty(),
+                  "incompatible unit and overflowing destination refuse before commit");
+        }
+    }
+}
 } // namespace
 int main() {
     try {
@@ -545,6 +641,7 @@ int main() {
         layouts(temp.path());
         additionalAdmission(temp.path());
         identities(temp.path());
+        clipboard(temp.path());
     } catch (const std::exception &error) {
         ++failures;
         std::printf("EXCEPTION %s\n", error.what());

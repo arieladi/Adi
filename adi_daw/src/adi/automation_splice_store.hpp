@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/applied_batches.hpp"
 #include "adi/automation_splice.hpp"
 #include "adi/ops.hpp"
 #include <string_view>
@@ -34,4 +35,31 @@ struct EnvelopeSpliceRequest {
 prepareEnvelopeSplice(Store &, std::int64_t laneId, std::int64_t begin, std::int64_t end,
                       std::span<const NativeSpliceKnot> replacement, double sampleRate,
                       std::size_t pointBudget = kSplicePointBudget, EnvelopeSpliceRequest = {});
+
+struct EnvelopeClipboard {
+    // Positions are offsets in the source lane's native clock. The source
+    // contract distinguishes numeric domains and enumerated parameters.
+    AppliedSource source;
+    Payload lane;
+    std::vector<NativeSpliceKnot> knots;
+};
+struct CopiedEnvelope {
+    std::optional<EnvelopeClipboard> material;
+    std::string error;
+};
+/// Owner-thread range Copy/Paste for Arrangement lanes. Numeric values paste
+/// literally into matching clocks, domains and units, subject to target bounds.
+/// Enum values can only return to their captured parameter.
+[[nodiscard]] CopiedEnvelope copyEnvelopeRange(Store &, std::int64_t laneId,
+                                                std::int64_t begin, std::int64_t end,
+                                                double sampleRate);
+[[nodiscard]] PreparedEnvelopeSplice preparePasteEnvelopeRange(Store &, std::int64_t laneId,
+                                                                std::int64_t at,
+                                                                const EnvelopeClipboard &,
+                                                                double sampleRate);
+/// Duplicate pastes a frozen copy immediately after the selected range.
+[[nodiscard]] PreparedEnvelopeSplice prepareDuplicateEnvelopeRange(Store &, std::int64_t laneId,
+                                                                     std::int64_t begin,
+                                                                     std::int64_t end,
+                                                                     double sampleRate);
 } // namespace adi::automation

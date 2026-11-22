@@ -124,24 +124,28 @@ void retainDomain(SplicedKnot &output, std::span<const SpliceKnot> source, std::
     output.knot.slice = engine::CurveSlice{lo, hi, whole.sourceFirst, whole.sourceLast};
     output.rangeOrigin = SpliceOrigin{SplicePart::Original, index};
 }
+void validateSource(std::span<const SpliceKnot> original, double defaultValue, SpliceBounds bounds,
+                    std::size_t pointBudget) {
+    require(pointBudget > 0 && pointBudget <= hardPointLimit && original.size() <= pointBudget,
+            "automation splice point budget exceeded");
+    require(std::isfinite(defaultValue), "automation splice default is not finite");
+    require(bounds.begin.native >= 0 && bounds.begin.native < bounds.end.native &&
+                bounds.begin.sample >= 0 && bounds.begin.sample < bounds.end.sample &&
+                bounds.end.sample <= sampleLimit,
+            "automation splice needs ordered native and sample bounds");
+    validate(original);
+    validateCut(original, bounds.begin);
+    validateCut(original, bounds.end);
+}
 } // namespace
 SplicePlan planEnvelopeSplice(std::span<const SpliceKnot> original, double defaultValue,
                               SpliceBounds bounds, std::span<const SpliceKnot> replacement,
                               std::size_t pointBudget) {
     SplicePlan result;
     try {
-        require(pointBudget > 0 && pointBudget <= hardPointLimit &&
-                    original.size() <= pointBudget && replacement.size() <= pointBudget,
-                "automation splice point budget exceeded");
-        require(std::isfinite(defaultValue), "automation splice default is not finite");
-        require(bounds.begin.native >= 0 && bounds.begin.native < bounds.end.native &&
-                    bounds.begin.sample >= 0 && bounds.begin.sample < bounds.end.sample &&
-                    bounds.end.sample <= sampleLimit,
-                "automation splice needs ordered native and sample bounds");
-        validate(original);
+        validateSource(original, defaultValue, bounds, pointBudget);
+        require(replacement.size() <= pointBudget, "automation splice point budget exceeded");
         validate(replacement);
-        validateCut(original, bounds.begin);
-        validateCut(original, bounds.end);
         require(replacement.size() >= 2 && replacement.front().point.time == bounds.begin.native &&
                     replacement.front().sample == bounds.begin.sample &&
                     replacement.back().point.time == bounds.end.native &&
@@ -185,6 +189,44 @@ SplicePlan planEnvelopeSplice(std::span<const SpliceKnot> original, double defau
         }
         for (std::size_t i = suffix; i < original.size(); ++i)
             result.knots.push_back(retained(original[i], SplicePart::Original, i));
+        result.ok = true;
+    } catch (const std::exception &error) {
+        result.error = error.what();
+        result.knots.clear();
+    }
+    return result;
+}
+SplicePlan planEnvelopeCopy(std::span<const SpliceKnot> original, double defaultValue,
+                             SpliceBounds bounds, std::size_t pointBudget) {
+    SplicePlan result;
+    try {
+        validateSource(original, defaultValue, bounds, pointBudget);
+        const auto first = atNative(original, bounds.begin.native);
+        const auto last = atNative(original, bounds.end.native);
+        const bool exactBegin =
+            first < original.size() && original[first].point.time == bounds.begin.native;
+        const auto count = last - first + (exactBegin ? 1u : 2u);
+        require(count <= pointBudget, "automation clipboard output point budget exceeded");
+        result.knots.reserve(count);
+        if (!exactBegin) {
+            auto start = guard(bounds.begin,
+                               boundaryValue(original, defaultValue, bounds.begin.sample, first), 0);
+            if (first && first < original.size()) {
+                start.knot.point.curve = original[first - 1].point.curve;
+                start.knot.point.tension = original[first - 1].point.tension;
+                retainDomain(start, original, first - 1, bounds.begin.sample,
+                             std::min(bounds.end.sample, original[first].sample));
+            }
+            result.knots.push_back(std::move(start));
+        }
+        for (auto i = first; i < last; ++i) {
+            auto knot = retained(original[i], SplicePart::Original, i);
+            if (i + 1 == last && last < original.size())
+                retainDomain(knot, original, i, original[i].sample, bounds.end.sample);
+            result.knots.push_back(std::move(knot));
+        }
+        result.knots.push_back(
+            guard(bounds.end, boundaryValue(original, defaultValue, bounds.end.sample, last), 1));
         result.ok = true;
     } catch (const std::exception &error) {
         result.error = error.what();

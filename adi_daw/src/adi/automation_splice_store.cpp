@@ -58,6 +58,51 @@ Envelope decode(const Payload &row, int base, const edit::TimeMap &time, double 
     result.trailer.assign(bytes.begin() + static_cast<std::ptrdiff_t>(end), bytes.end());
     return result;
 }
+std::optional<Payload> globalStream(const Payload &data) {
+    std::optional<Payload> row;
+    for (const auto &candidate : data) {
+        if (!candidate.at("clip_id").is_null())
+            continue;
+        require(!row, "automation lane has multiple global streams");
+        row = candidate;
+    }
+    return row;
+}
+void decodeRanges(Envelope &envelope, const Payload &ranges) {
+    for (const auto &range : ranges) {
+        const auto ordinal = integer(range.at("record_index"));
+        require(ordinal >= 0 && static_cast<std::uint64_t>(ordinal) + 1 < envelope.knots.size() &&
+                    range.at("clip_id").is_null(),
+                "automation curve range has no outgoing segment");
+        const auto index = static_cast<std::size_t>(ordinal);
+        require(envelope.ranges.emplace(index, range).second, "duplicate automation curve range");
+        envelope.knots.at(index).slice =
+            engine::CurveSlice{range.at("progress_begin"), range.at("progress_end"),
+                               range.at("source_first"), range.at("source_last")};
+    }
+}
+void validateLane(const Payload &lane) {
+    const auto base = integer(lane.at("time_base"));
+    require(base == 0 || base == 1, "automation lane clock is unknown");
+    require(lane.at("owner_kind") != "clip", "splice needs a global automation lane");
+}
+void validateRate(double rate) {
+    require(std::isfinite(rate) && rate > 0 && rate <= 768000,
+            "automation splice needs a supported session sample rate");
+}
+void validateClipboardTarget(Store &store, const EnvelopeClipboard &clipboard, const Payload &lane) {
+    const auto &origin = clipboard.lane;
+    for (const auto *field : {"time_base", "value_domain", "unit"})
+        require(origin.at(field) == lane.at(field),
+                "automation clipboard needs matching clocks, value domains and units");
+    if (origin.at("value_domain") == "enum") {
+        require(clipboard.source.sameConnection(appliedSource(store)),
+                "enum automation can only be pasted back into its source parameter");
+        for (const auto *field : {"id", "owner_kind", "owner_id", "param_ref", "min_value", "max_value"})
+            require(origin.at(field) == lane.at(field),
+                    "enum automation can only be pasted back into its source parameter");
+    }
+}
 Payload encode(const Envelope &envelope, const std::vector<SplicedKnot> &knots) {
     require(knots.size() <= std::numeric_limits<std::uint32_t>::max(),
             "automation record count exhausted");
@@ -73,17 +118,17 @@ Payload encode(const Envelope &envelope, const std::vector<SplicedKnot> &knots) 
 }
 } // namespace
 
-PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, std::int64_t begin,
+static PreparedEnvelopeSplice prepareSplice(Store &store, std::int64_t laneId, std::int64_t begin,
                                              std::int64_t end,
                                              std::span<const NativeSpliceKnot> replacement,
                                              double rate, std::size_t budget,
-                                             EnvelopeSpliceRequest intent) {
+                                             EnvelopeSpliceRequest intent,
+                                             const EnvelopeClipboard *clipboard = nullptr) {
     PreparedEnvelopeSplice result;
     try {
         require(!audio::onAudioThread, "automation splice belongs off the audio callback");
         require(!store.readOnly(), "project is read-only");
-        require(std::isfinite(rate) && rate > 0 && rate <= 768000,
-                "automation splice needs a supported session sample rate");
+        validateRate(rate);
         require(budget > 0 && budget <= (1u << 23) && replacement.size() <= budget,
                 "automation splice point budget is invalid");
         require(!intent.dataId || *intent.dataId > 0, "automation data ID must be positive");
@@ -94,10 +139,10 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
         const auto head = OpJournal(store).headSeq();
         const auto lane = detail::captureRow(db, "automation_lanes", "id", laneId);
         require(lane.has_value(), "automation lane is missing");
-        const auto base64 = integer(lane->at("time_base"));
-        require(base64 == 0 || base64 == 1, "automation lane clock is unknown");
-        const auto base = static_cast<int>(base64);
-        require(lane->at("owner_kind") != "clip", "splice needs a global automation lane");
+        validateLane(*lane);
+        if (clipboard)
+            validateClipboardTarget(store, *clipboard, *lane);
+        const auto base = lane->at("time_base").get<int>();
         OpTransactionInputs inputs;
         inputs.rowGuards.push_back({"automation_lanes", {{"id", laneId}}, lane});
         const auto data = detail::captureGuardRows(store, "automation_data", {{"lane_id", laneId}});
@@ -107,13 +152,7 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
              detail::captureGuardRows(store, "tempo_map", Payload::object())});
         const edit::TimeMap time(db);
         clip_edit::CopyIds ids(db);
-        std::optional<Payload> row;
-        for (const auto &candidate : data) {
-            if (!candidate.at("clip_id").is_null())
-                continue;
-            require(!row, "automation lane has multiple global streams");
-            row = candidate;
-        }
+        auto row = globalStream(data);
         Envelope original;
         std::int64_t dataId = 0;
         if (row) {
@@ -125,19 +164,7 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
                 detail::captureGuardRows(store, "automation_segment_ranges", {{"data_id", dataId}});
             inputs.rowSetGuards.push_back(
                 {"automation_segment_ranges", {{"data_id", dataId}}, ranges});
-            for (const auto &range : ranges) {
-                const auto ordinal = integer(range.at("record_index"));
-                require(ordinal >= 0 &&
-                            static_cast<std::uint64_t>(ordinal) + 1 < original.knots.size() &&
-                            range.at("clip_id").is_null(),
-                        "automation curve range has no outgoing segment");
-                const auto index = static_cast<std::size_t>(ordinal);
-                require(original.ranges.emplace(index, range).second,
-                        "duplicate automation curve range");
-                original.knots.at(index).slice =
-                    engine::CurveSlice{range.at("progress_begin"), range.at("progress_end"),
-                                       range.at("source_first"), range.at("source_last")};
-            }
+            decodeRanges(original, ranges);
         } else {
             if (intent.dataId) {
                 dataId = *intent.dataId;
@@ -263,5 +290,103 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
         result.requests.clear();
     }
     return result;
+}
+PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId,
+                                             std::int64_t begin, std::int64_t end,
+                                             std::span<const NativeSpliceKnot> replacement,
+                                             double rate, std::size_t budget,
+                                             EnvelopeSpliceRequest intent) {
+    return prepareSplice(store, laneId, begin, end, replacement, rate, budget, intent);
+}
+
+CopiedEnvelope copyEnvelopeRange(Store &store, std::int64_t laneId, std::int64_t begin,
+                                  std::int64_t end, double rate) {
+    try {
+        require(!audio::onAudioThread, "automation clipboard belongs off the audio callback");
+        validateRate(rate);
+        auto &db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        auto lane = detail::captureRow(db, "automation_lanes", "id", laneId);
+        require(lane.has_value(), "automation lane is missing");
+        validateLane(*lane);
+        const auto base = lane->at("time_base").get<int>();
+        const edit::TimeMap time(db);
+        const SpliceBounds bounds{{begin, sampleAt(time, base, begin, rate)},
+                                  {end, sampleAt(time, base, end, rate)}};
+        Envelope envelope;
+        const auto data = detail::captureGuardRows(
+            store, "automation_data", {{"lane_id", laneId}, {"clip_id", nullptr}});
+        if (data.size() > 1)
+            throw std::runtime_error("automation lane has multiple global streams");
+        if (!data.empty()) {
+            const auto &row = data.front();
+            envelope = decode(row, base, time, rate, kSplicePointBudget);
+            const auto ranges = detail::captureGuardRows(
+                store, "automation_segment_ranges", {{"data_id", row.at("id")}});
+            decodeRanges(envelope, ranges);
+        }
+        const auto copy = planEnvelopeCopy(envelope.knots, lane->at("default_value"), bounds);
+        require(copy.ok, copy.error.c_str());
+        EnvelopeClipboard result{appliedSource(store), std::move(*lane), {}};
+        result.knots.reserve(copy.knots.size());
+        for (const auto &entry : copy.knots) {
+            auto point = entry.knot.point;
+            point.time -= begin;
+            point.point_id = 0;
+            result.knots.push_back({point, entry.knot.slice});
+        }
+        return {std::move(result), {}};
+    } catch (const std::exception &error) {
+        return {{}, error.what()};
+    }
+}
+
+static PreparedEnvelopeSplice preparePaste(Store &store, std::int64_t laneId, std::int64_t at,
+                                            const EnvelopeClipboard &clipboard, double rate,
+                                            std::string_view label) {
+    try {
+        require(!audio::onAudioThread, "automation clipboard belongs off the audio callback");
+        require(clipboard.knots.size() >= 2 && clipboard.knots.size() <= kSplicePointBudget &&
+                    clipboard.knots.front().point.time == 0,
+                "automation clipboard must include both range boundaries");
+        const auto length = clipboard.knots.back().point.time;
+        require(at >= 0 && length > 0 && at <= std::numeric_limits<std::int64_t>::max() - length,
+                "automation clipboard destination exceeds native clock range");
+        auto incoming = clipboard.knots;
+        for (auto &knot : incoming) {
+            require(knot.point.time >= 0 && knot.point.time <= length,
+                    "automation clipboard point is outside the copied range");
+            knot.point.time += at;
+        }
+        return prepareSplice(store, laneId, at, at + length, incoming, rate, kSplicePointBudget,
+                             {{}, label}, &clipboard);
+    } catch (const std::exception &error) {
+        return {false, error.what(), {}};
+    }
+}
+
+PreparedEnvelopeSplice preparePasteEnvelopeRange(Store &store, std::int64_t laneId,
+                                                std::int64_t at,
+                                                const EnvelopeClipboard &clipboard, double rate) {
+    return preparePaste(store, laneId, at, clipboard, rate, "Paste Automation");
+}
+
+PreparedEnvelopeSplice prepareDuplicateEnvelopeRange(Store &store, std::int64_t laneId,
+                                                     std::int64_t begin, std::int64_t end,
+                                                     double rate) {
+    try {
+        require(!audio::onAudioThread, "automation clipboard belongs off the audio callback");
+        auto &db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        auto copy = copyEnvelopeRange(store, laneId, begin, end, rate);
+        require(copy.material.has_value(), copy.error.c_str());
+        return preparePaste(store, laneId, end, *copy.material, rate, "Duplicate Automation");
+    } catch (const std::exception &error) {
+        return {false, error.what(), {}};
+    }
 }
 } // namespace adi::automation

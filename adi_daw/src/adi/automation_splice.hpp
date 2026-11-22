@@ -58,4 +58,9 @@ inline constexpr std::size_t kSplicePointBudget = 1u << 20;
                                             double defaultValue, SpliceBounds,
                                             std::span<const SpliceKnot> replacement,
                                             std::size_t pointBudget = kSplicePointBudget);
+/// Extract the original material for [begin,end), including its incoming end
+/// value and any partial curve domains needed to paste it elsewhere.
+[[nodiscard]] SplicePlan planEnvelopeCopy(std::span<const SpliceKnot> original,
+                                          double defaultValue, SpliceBounds,
+                                          std::size_t pointBudget = kSplicePointBudget);
 } // namespace adi::automation
