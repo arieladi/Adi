@@ -226,6 +226,12 @@ Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU bu
 - Strict Linux GCC 14 and Clang 19 each passed 1,394 checks across note transforms, note diffs and overlap ops. The new cases cover selection order and subset, full-width IDs and signed ticks, malformed selection and tick overflow. Checked the Nov 20 patterns.
 - Parked the Humanize control's grid span and Groove Pool on A6M-022 and Win's project-table reservation. MI-07's Arpeggiate ordering waits on the shared Arpeggiator and A-T02. AU-09's pass and Freeze Trim wiring wait on the AU-03 landing and AT-11.
 
+### 22 November — TM-IC-04 exact OpenTimelineIO time
+
+- PR requested for `engine/tm-ic04-otio-exact-time` at `1980d55a1780a0025cce34360ab6b14e3f56d500`, stacked on `ba6109f0`. OTIO RationalTime.1 and TimeRange.1 read and write exact signed integer values and reduced fractions. The common NTSC spellings use denominator 1001. The writer rejects rationals it cannot represent on the wire, and nanosecond conversion uses the caller's explicit rounding.
+- Strict Linux GCC 14 and Clang 19 each passed 83 checks. The pinned upstream sample audit round-tripped all 458 time objects and 219 ranges across 12 JSON timelines. One upstream stress fixture uses non-JSON Infinity and NaN tokens in metadata and was reported as unsupported at the JSON boundary. Checked the Nov 20 patterns. [OpenTimelineIO samples](https://github.com/AcademySoftwareFoundation/OpenTimelineIO/tree/f101411e11968d3255488f4aaccf041d965a2148/tests/sample_data)
+- Project mutation and loss-report wiring remain parked on TM-IC-03 shared rules, additive frame-rate persistence and the window. Linear OTIO document handling can proceed independently. AAF project I/O still needs the shared converter and EX-04 writers.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
