@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/flac_writer.hpp"
 #include "adi/render/after_export.hpp"
 #include "adi/render/delivery_src.hpp"
 #include "adi/render/mp3_writer.hpp"
