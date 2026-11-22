@@ -36,6 +36,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PD-04 analysis cache publication — PR requested
+
+- Ready at `da074f14` on `engine/pd04-analysis-publication`, based on main `87ea349c`, for the after-3-December window. The ADIA writer now passes its closed private stage to `replaceFile`. A destination lease refusal leaves the prior complete file in place and removes staging. An installed optional cache remains successful if its parent sync reports a warning.
+- Strict Linux GCC and Clang passed six suites and 648 checks each. The coverage includes a held destination, stage cleanup, successful retry, preserving unknown sections, rebuilding corrupt data and the common publisher's own failure boundaries. Checked Win's five portability patterns.
+- **Parked, engine-win/Win:** After this caller changes, engine-win can remove the unused `replaceCacheFile` declaration and definition in its publication files. Dead-session stage cleanup still needs the PD-05 lease and Win's held integration. PD-11 and EX-01 use engine-win's existing settings and export work. The earlier native WAVE tags reader also belongs in the after-3-December window.
+
 ## 2026-11-22 — TM-MD-04 native WAVE metadata — PR requested
 
 - Ready at `d59778d7728d060314acb772986e705c6259d011` on `engine/tm-md04-wave-metadata`, based on main `87ea349c`. The read-only native decoder now returns ACID tempo, root, meter and shot hints, separate instrument and sampler roots, validated half-open source loops, and bounded UTF-8 RIFF INFO. It scans the container without decoding audio or writing to the source, caps read and allocation work, and refuses cancellation and audio-thread use before opening a file.
