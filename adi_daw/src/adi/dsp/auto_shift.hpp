@@ -16,7 +16,8 @@
 //   Detune      -50 to +50 cents, after the correction (with it, the shift
 //               may pass a semitone: it is never clamped).
 //   Reference   the A4 the scale is tuned to, 410 to 480 Hz.
-//   Dry/Wet     0 to 100 %: the Shifter's Mix.
+//   Dry/Wet     0 to 100 %, gliding over about 10 ms once audio runs (the
+//               Shifter runs fully wet; the mix is Auto Shift's own).
 //
 // The correction is fed forward: the detector reads the input, every quarter
 // window (1,024 samples at 48 kHz), from the last window, and the Shifter is
@@ -37,6 +38,7 @@
 
 #pragma once
 
+#include "adi/dsp/glide.hpp"
 #include "adi/dsp/pitch_detector.hpp"
 #include "adi/dsp/shifter.hpp"
 
@@ -71,7 +73,9 @@ public:
     [[nodiscard]] double shift() const noexcept;
     /// The Shifter's window for a tone at `hz`, in ms: half of it a whole
     /// number of the tone's periods, nearest kWindowMs / 2.
-    [[nodiscard]] static double windowFor(double hz) noexcept;
+    /// `periods` is the count in use, kept until the reading is more than
+    /// three quarters of a period from it, and updated.
+    [[nodiscard]] static double windowFor(double hz, double& periods) noexcept;
 
 private:
     static constexpr std::size_t kChunk = 64;
@@ -79,7 +83,9 @@ private:
     std::array<double, Count> p_{};
     PitchDetector detector_;
     Shifter shifter_;
-    std::array<float, kChunk> mono_{}, left_{}, right_{};
+    std::array<float, kChunk> mono_{}, left_{}, right_{}, wetL_{}, wetR_{};
+    Glide mix_;
+    double periods_ = 0;
     std::size_t clock_ = 0;
     double rate_ = 48000, target_ = 0, current_ = 0, window_ = kWindowMs;
 };

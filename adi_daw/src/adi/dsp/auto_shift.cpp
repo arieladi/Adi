@@ -19,8 +19,12 @@ void AutoShift::prepare(double sampleRate) {
     rate_ = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
     detector_.prepare(rate_);
     shifter_.prepare(rate_);
+    shifter_.set(Shifter::Mix, 100);
+    mix_.prepare(rate_);
+    mix_.set(p_[DryWet] / 100);
     target_ = current_ = 0;
     window_ = kWindowMs;
+    periods_ = 0;
     clock_ = 0;
     retune();
 }
@@ -34,7 +38,7 @@ void AutoShift::set(Param p, double v) noexcept {
     const bool whole = index == Correction || index == Root || index == Scale;
     p_[static_cast<std::size_t>(index)] = std::clamp(whole ? std::round(v) : v, r.low, r.high);
     if (index == DryWet) {
-        shifter_.set(Shifter::Mix, p_[DryWet]);
+        mix_.set(p_[DryWet] / 100);
     }
     retune();
 }
@@ -70,17 +74,26 @@ void AutoShift::retune() noexcept {
     shifter_.set(Shifter::Window, window_);
 }
 
-double AutoShift::windowFor(double hz) noexcept {
+double AutoShift::windowFor(double hz, double& periods) noexcept {
     // Half the window spans a whole number of the input's periods, the
     // number nearest kWindowMs / 2: the Shifter's two taps, half a window
     // apart, then read the same phase of the tone and its level holds
     // through every crossfade. (A fixed 50 ms put them in antiphase for
     // tones near (k + 1/2) / 25 ms, 420 or 460 Hz, and the tone fell 40 dB
     // at each crossfade's middle.)
+    //
+    // The count of periods keeps its value until the reading is more than
+    // three quarters of a period from it: a tone near half way between two
+    // counts (220 Hz is 5.5 periods in 25 ms) would otherwise flip between
+    // them with the reading's last decimals, and each flip moves the window,
+    // and with it the Shifter's taps, by a whole period.
     if (!(hz > 0) || !std::isfinite(hz)) {
         return kWindowMs;
     }
-    const double period = 1000 / hz, periods = std::max(1.0, std::round(kWindowMs / 2 / period));
+    const double period = 1000 / hz, ideal = kWindowMs / 2 / period;
+    if (periods < 1 || std::abs(ideal - periods) > 0.75) {
+        periods = std::max(1.0, std::round(ideal));
+    }
     return std::clamp(2 * periods * period, Shifter::ranges[Shifter::Window].low, Shifter::ranges[Shifter::Window].high);
 }
 
@@ -92,7 +105,7 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
             double hz = 0, clarity = 0;
             const bool clear = detector_.estimate(hz, clarity) && clarity >= kClarity;
             if (clear) {
-                window_ = windowFor(hz);   // with the correction off too: Shift needs it
+                window_ = windowFor(hz, periods_);   // with the correction off too: Shift needs it
             }
             if (p_[Correction] < 0.5) {
                 target_ = 0;
@@ -119,7 +132,16 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
             mono_[i] = 0.5f * (left_[i] + right_[i]);
         }
         detector_.push(mono_.data(), n);
-        shifter_.process(left_.data(), right_.data(), outL ? outL + at : left_.data(), outR ? outR + at : right_.data(), n);
+        shifter_.process(left_.data(), right_.data(), wetL_.data(), wetR_.data(), n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const double mix = mix_.next();
+            if (outL) {
+                outL[at + i] = static_cast<float>(left_[i] + (wetL_[i] - left_[i]) * mix);
+            }
+            if (outR) {
+                outR[at + i] = static_cast<float>(right_[i] + (wetR_[i] - right_[i]) * mix);
+            }
+        }
         at += n;
         clock_ += n;
     }
