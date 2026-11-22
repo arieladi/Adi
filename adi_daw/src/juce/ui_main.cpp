@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/host_dispatch.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
@@ -215,8 +216,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // Live's Export Audio/Video (EX-11; manual 5.2.1): the page with the choices, Export asks for a file,
     // and the render runs on a worker of its own while the window works on. The renderer (render::renderWav)
     // opens the project's file read-only on its own connection, so it reads the project as committed.
-    // Devices are made on the message thread, as a session makes them; a project with a VST3 or CLAP
-    // device waits for the engine's render worker (EX-11's engine half), and is refused with that reason.
+    // The render Session owns its plug-ins on the message thread and processes on the worker.
     void openExport(const ExportChoices &initial) {
         if (exportWindow_) {
             // Shown again while it is up or rendering; one Escape or the close button hid is made afresh,
@@ -263,18 +263,6 @@ class AdiApplication final : public juce::JUCEApplication,
     void chooseExportFile(const ExportChoices &c) {
         if (chooser_ || render_.joinable() || !document_)
             return;
-        // A plug-in of another maker cannot be rendered here yet.
-        {
-            SQLite::Statement q(document_->store().db(),
-                                "SELECT count(*) FROM devices d JOIN plugin_refs r ON r.id = d.plugin_ref_id "
-                                "WHERE r.format <> 'internal'");
-            if (q.executeStep() && q.getColumn(0).getInt() > 0) {
-                if (exportPage_)
-                    exportPage_->showDone("A project with VST3 or CLAP plug-ins renders once the engine's render "
-                                          "worker is on main (EX-11).");
-                return;
-            }
-        }
         const auto project = juce::File(juce::String::fromUTF8(media::pathUtf8(document_->store().path()).c_str()));
         chooser_ = std::make_unique<juce::FileChooser>("Export Audio", project.getParentDirectory().getChildFile(
                                                                            project.getFileNameWithoutExtension() + ".wav"),
@@ -328,44 +316,17 @@ class AdiApplication final : public juce::JUCEApplication,
         auto alive = renderAlive_;
         if (exportPage_)
             exportPage_->showProgress(0);
-        // Each device is made on the message thread and handed back; Cancel or Quit stops the wait.
-        engine::DeviceLoader made = [this, alive, stop = renderStop_.get_token()](const engine::DeviceRequest &rq,
-                                                                                  std::string &error) {
-            if (stop.stop_requested() || !alive->load()) {
-                error = "the export was stopped";
-                return std::unique_ptr<device::DeviceInstance>{};
-            }
-            // Only ADI's own devices render here; another maker's plug-in waits for the engine's render
-            // worker, whatever the project held when Export was pressed.
-            if (rq.ref == nullptr || rq.ref->format != "internal") {
-                error = "A project with VST3 or CLAP plug-ins renders once the engine's render worker is on main (EX-11).";
-                return std::unique_ptr<device::DeviceInstance>{};
-            }
-            // The posted call owns copies of what it reads: the render's rows may be gone when it runs.
-            auto row = std::make_shared<rows::Device>(*rq.device);
-            auto ref = std::make_shared<rows::PluginRef>(*rq.ref);
-            engine::DeviceRequest owned = rq;
-            owned.device = row.get();
-            owned.ref = ref.get();
-            auto promise = std::make_shared<std::promise<std::unique_ptr<device::DeviceInstance>>>();
-            auto future = promise->get_future();
-            auto why = std::make_shared<std::string>();
-            juce::MessageManager::callAsync([this, alive, stop, owned, row, ref, promise, why] {
-                std::unique_ptr<device::DeviceInstance> instance;
-                if (alive->load() && !stop.stop_requested())
-                    instance = loader_.fn()(owned, *why);
-                promise->set_value(std::move(instance));
-            });
-            while (future.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready)
-                if (stop.stop_requested() || !alive->load()) {
-                    error = "the export was stopped";
-                    return std::unique_ptr<device::DeviceInstance>{};
-                }
-            error = *why;
-            return future.get();
-        };
+        auto host = std::make_shared<render::HostDispatch>();
+        renderHost_ = host;
+        auto completed = std::make_shared<std::promise<void>>();
+        renderDone_ = completed->get_future();
         render::Control control;
         control.stop = renderStop_.get_token();
+        control.onHost = [host](std::function<void()> action) {
+            host->invoke(std::move(action), [host] {
+                juce::MessageManager::callAsync([host] { (void)host->service(); });
+            });
+        };
         control.progress = [this, alive](render::JobId, std::uint64_t written, std::uint64_t total) {
             const double fraction = total > 0 ? static_cast<double>(written) / static_cast<double>(total) : 0.0;
             juce::MessageManager::callAsync([this, alive, fraction] {
@@ -373,16 +334,19 @@ class AdiApplication final : public juce::JUCEApplication,
                     exportPage_->showProgress(fraction);
             });
         };
-        render_ = std::thread([this, alive, job = std::move(job), made, control, stop = renderStop_.get_token()] {
-            auto result = render::renderWav(job, made, control);
+        render_ = std::thread([this, alive, completed, job = std::move(job),
+                               made = loader_.fn(), control, stop = renderStop_.get_token()]() mutable {
+            auto result = render::renderWav(std::move(job), std::move(made), std::move(control));
             // A Cancel while devices were made reads as the cancel it is.
             if (stop.stop_requested() && result.state != render::JobState::Completed)
                 result.state = render::JobState::Cancelled;
-            juce::MessageManager::callAsync([this, alive, result] {
+            completed->set_value();
+            juce::MessageManager::callAsync([this, alive, result = std::move(result)] {
                 if (!alive->load())
                     return;
                 if (render_.joinable())
                     render_.join();
+                renderHost_.reset();
                 std::string message;
                 if (result.state == render::JobState::Completed)
                     message = "Exported " + media::pathUtf8(result.output.filename()) + ".";
@@ -400,8 +364,11 @@ class AdiApplication final : public juce::JUCEApplication,
     void stopRender() {
         renderStop_.request_stop();
         renderAlive_->store(false);
-        if (render_.joinable())
+        if (render_.joinable()) {
+            renderHost_->wait(renderDone_);
             render_.join();
+        }
+        renderHost_.reset();
         renderAlive_ = std::make_shared<std::atomic<bool>>(true);
     }
     // The plug-in catalogue's service (DF-W34): engine-win's discovery jobs (N58), started, read and
@@ -1379,6 +1346,8 @@ class AdiApplication final : public juce::JUCEApplication,
     ExportPage *exportPage_ = nullptr;
     std::thread render_;
     std::stop_source renderStop_;
+    std::shared_ptr<render::HostDispatch> renderHost_;
+    std::future<void> renderDone_;
     std::shared_ptr<std::atomic<bool>> renderAlive_ = std::make_shared<std::atomic<bool>>(true);
     std::unique_ptr<UndoHistoryWindow> historyWindow_; // shows the main root's list; goes before it
 };
