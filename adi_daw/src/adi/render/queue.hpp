@@ -172,12 +172,14 @@ struct Control {
     std::stop_token stop;
     // Work in sample frames; NI Stems spans five encoded streams.
     std::function<void(JobId, std::uint64_t written, std::uint64_t total)> progress;
-    // Called between blocks, on the same thread as the loader and the runner.
-    // Hosts with a message-thread contract must be run on that thread (or in
-    // a dedicated render process). This does not negotiate plugin offline mode.
+    // Called between blocks on the host owner.
     std::function<void()> serviceHost;
     // Per-call, off-callback diagnostic hooks; only the final user output.
     media::PublishHooks publicationHooks{};
+    // Synchronously execute on the host owner, including shutdown after a
+    // cancelled job. Without it the caller is the owner. Rendering always
+    // processes on the caller's thread and never overlaps an owner action.
+    std::function<void(std::function<void()>)> onHost{};
 };
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,

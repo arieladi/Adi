@@ -213,24 +213,6 @@ inline double peak(const Stereo &a, std::size_t from, std::size_t to) {
             worst = std::max(worst, std::abs(static_cast<double>(a.at(c, i))));
     return worst;
 }
-// The Export page's loader rule (ui_main.cpp, `startRender`): only ADI's own devices render; another
-// maker's plug-in waits for the engine's render worker (EX-11).
-inline constexpr const char *kExportRefusal =
-    "A project with VST3 or CLAP plug-ins renders once the engine's render worker is on main (EX-11).";
-inline engine::DeviceLoader exportLoader(engine::DeviceLoader made) {
-    return [made = std::move(made)](const engine::DeviceRequest &rq, std::string &error) {
-        if (rq.ref == nullptr || rq.ref->format != "internal") {
-            error = kExportRefusal;
-            return std::unique_ptr<device::DeviceInstance>{};
-        }
-        return made(rq, error);
-    };
-}
-// The Export page's check before it asks for a file (ui_main.cpp, `chooseExportFile`).
-inline bool exportPrecheckRefuses(ui::ProjectDocument &doc) {
-    return scalar(doc, "SELECT count(*) FROM devices d JOIN plugin_refs r ON r.id = d.plugin_ref_id "
-                       "WHERE r.format <> 'internal'") > 0;
-}
 // A query's rows as one text, for comparing a project before closing and after reopening.
 inline std::string rowsText(ui::ProjectDocument &doc, const std::string &sql, int *count = nullptr) {
     SQLite::Statement q(doc.store().db(), sql);

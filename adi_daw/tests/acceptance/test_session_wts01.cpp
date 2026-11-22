@@ -727,15 +727,9 @@ void step7(Session &s, Report &report) {
     choices.normalize = false;
     const auto refusals = ui::exportRefusals(choices);
     const auto exportTo = [&](ui::ProjectDocument &d, const char *name) {
-        render::Result result;
-        if (exportPrecheckRefuses(d)) {
-            result.state = render::JobState::Failed;
-            result.error = kExportRefusal;
-            return result;
-        }
         const auto current = d.view().current();
         return render::renderWav(ui::exportJob(choices, d.store().path(), s.temp.path() / name, *current->tempo),
-                                 exportLoader(device::withBuiltinDevices()));
+                                 device::withBuiltinDevices());
     };
     const auto a = exportTo(doc, "A.wav");
     const std::array<const char *, 7> tables{
@@ -807,7 +801,7 @@ void step7(Session &s, Report &report) {
         auto spec = job.session;
         spec.performanceState = false;
         spec.exporting = true;
-        if (store && session.load(*store, exportLoader(device::withBuiltinDevices()), spec)) {
+        if (store && session.load(*store, device::withBuiltinDevices(), spec)) {
             session.transport().loop(0, 0, false);
             session.transport().locate(0);
             session.transport().play();
