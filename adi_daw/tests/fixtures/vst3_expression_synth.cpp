@@ -60,6 +60,8 @@
 //
 // Built only against Steinberg's VST3 SDK (MIT, 2025), the copy JUCE carries.
 // No JUCE code is used or linked.
+// MX-32: set ADI_VST3_CHANNEL_CONTEXT_LOG to capture channel names as UTF-16
+// code units and the transmitted color value from a real host.
 
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
@@ -68,6 +70,7 @@
 #include <pluginterfaces/base/ibstream.h>
 #include <pluginterfaces/base/ipluginbase.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
+#include <pluginterfaces/vst/ivstchannelcontextinfo.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivstevents.h>
@@ -85,6 +88,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iomanip>
+#include <mutex>
+#include <sstream>
 #include <thread>
 #include "scanner_case_controls.hpp"
 
@@ -123,6 +129,8 @@ constexpr auto kSlowBlockFor = std::chrono::milliseconds(300);
 /// Plugin objects alive: one per instance a host created and has not yet
 /// released all the way. `adiFixtureLiveSynths` reads it.
 std::atomic<int> g_liveSynths{0};
+std::atomic<std::uint64_t> g_nextContextInstance{1};
+std::mutex g_contextReceipts;
 /// setActive and setupProcessing calls made under a process call.
 std::atomic<int> g_overlaps{0};
 /// Process calls inside a plugin now, across every plugin object.
@@ -170,6 +178,7 @@ struct Voice {
 class Synth final : public IComponent,
                     public IAudioProcessor,
                     public IEditController,
+                    public ChannelContext::IInfoListener,
                     public IMidiMapping,
                     public INoteExpressionController,
                     public INoteExpressionPhysicalUIMapping {
@@ -198,6 +207,8 @@ public:
             *obj = static_cast<IAudioProcessor*>(this);
         else if (FUnknownPrivate::iidEqual(queried, IEditController::iid))
             *obj = static_cast<IEditController*>(this);
+        else if (FUnknownPrivate::iidEqual(queried, ChannelContext::IInfoListener::iid))
+            *obj = static_cast<ChannelContext::IInfoListener*>(this);
         else if (FUnknownPrivate::iidEqual(queried, IMidiMapping::iid) && variant_ != Variant::NoteExpr)
             *obj = static_cast<IMidiMapping*>(this);
         else if (FUnknownPrivate::iidEqual(queried, INoteExpressionController::iid) && variant_ == Variant::NoteExpr)
@@ -219,6 +230,47 @@ public:
     // --- IPluginBase (shared by IComponent and IEditController) ------------
     tresult PLUGIN_API initialize(FUnknown*) override { return kResultOk; }
     tresult PLUGIN_API terminate() override { setComponentHandler(nullptr); return kResultOk; }
+
+    tresult PLUGIN_API setChannelContextInfos(IAttributeList* attributes) override {
+        if (!attributes)
+            return kInvalidArgument;
+        try {
+            const auto path = scanner_case::environment("ADI_VST3_CHANNEL_CONTEXT_LOG");
+            if (path.empty())
+                return kResultOk;
+            String128 name{};
+            const auto hasName = attributes->getString(ChannelContext::kChannelNameKey, name,
+                static_cast<uint32>(sizeof(name))) == kResultTrue;
+            int64 color = 0;
+            const auto hasColor = attributes->getInt(ChannelContext::kChannelColorKey, color) == kResultTrue;
+            std::ostringstream receipt;
+            receipt << "instance=" << contextInstance_ << " name_utf16=";
+            if (hasName) {
+                receipt << std::hex << std::setfill('0');
+                for (const auto code : name) {
+                    if (code == 0)
+                        break;
+                    receipt << std::setw(4) << static_cast<std::uint16_t>(code);
+                }
+                receipt << std::dec;
+            } else {
+                receipt << '-';
+            }
+            receipt << " color=";
+            if (hasColor)
+                receipt << color;
+            else
+                receipt << '-';
+            receipt << '\n';
+            const std::lock_guard lock(g_contextReceipts);
+            std::ofstream out(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::app);
+            out << receipt.str();
+            out.close();
+            return out ? kResultOk : kResultFalse;
+        } catch (...) {
+            return kResultFalse;
+        }
+    }
 
     // --- IComponent ------------------------------------------------------------
     tresult PLUGIN_API getControllerClassId(TUID) override { return kResultFalse; }   // we ARE it
@@ -667,6 +719,7 @@ private:
     }
 
     Variant variant_;
+    const std::uint64_t contextInstance_ = g_nextContextInstance.fetch_add(1, std::memory_order_relaxed);
     const std::thread::id ownerThread_ = std::this_thread::get_id();
     std::atomic<uint32> refs_{1};
     IComponentHandler* handler_ = nullptr;   ///< the host's, held with a reference
