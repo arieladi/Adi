@@ -943,7 +943,7 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     if (e.eventComponent == &pan || e.eventComponent == &panLeft || e.eventComponent == &panRight)
-        panMenu();
+        panMenu(e.eventComponent);
     else
         panel_.contextMenu(e.getScreenPosition());
 }
@@ -1070,8 +1070,20 @@ void MixerStrip::beginLive(gesture::ScalarKind kind, std::int64_t id, gesture::S
     std::vector<std::int64_t> selected;
     const auto picked = panel_.root.arrangement.geometry.selectedTracks(panel_.root.reader());
     const bool together = std::find(picked.begin(), picked.end(), track_) != picked.end() && picked.size() > 1;
-    if (together && kind != gesture::ScalarKind::RoutingGain)
-        selected = picked;
+    if (together && kind != gesture::ScalarKind::RoutingGain) {
+        // A pan drag moves the selected tracks whose pan is the one dragged: a split half the split
+        // tracks', the pan the stereo tracks' (MX-02); a track in the other mode keeps its stored value.
+        const bool splitKind = kind == gesture::ScalarKind::TrackPanLeft || kind == gesture::ScalarKind::TrackPanRight;
+        const bool panKind = splitKind || kind == gesture::ScalarKind::TrackPan;
+        const auto current = panel_.root.current();
+        for (const auto id : picked) {
+            const auto *t = current ? current->findTrack(id) : nullptr;
+            if (!panKind || (t != nullptr && (t->panMode == "split") == splitKind))
+                selected.push_back(id);
+        }
+        if (selected.size() < 2)
+            selected.clear();
+    }
     // Begun where the rows stand: heard from the first move, and a click that does not move writes nothing.
     live_ = panel_.root.beginMixerDrag({kind, id, selected, domain}, std::nullopt, label);
     if (live_)
@@ -1180,7 +1192,7 @@ void SoloButton::mouseUp(const juce::MouseEvent &e) {
     if (!e.mods.isPopupMenu())
         juce::TextButton::mouseUp(e);
 }
-void MixerStrip::panMenu() {
+void MixerStrip::panMenu(const juce::Component *source) {
     juce::PopupMenu m;
     // Live's pan modes (manual 18.1; ADR-0203 d9; MX-02): the one in use ticked, a choice one undo step.
     const auto mode = [safe = SafePointer<MixerStrip>(this)](const char *name) {
@@ -1195,16 +1207,12 @@ void MixerStrip::panMenu() {
         if (!split)
             mode("split");
     });
-    // Live's Re-Enable Automation for the pan, or for each split pan (AU-04).
-    if (const auto current = panel_.root.current()) {
-        if (!split_)
-            panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "pan"));
-        else {
-            panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "panLeft"));
-            panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "panRight"));
-        }
-    }
-    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(split_ ? static_cast<juce::Component *>(&panLeft) : &pan));
+    // Live's Re-Enable Automation for the pan clicked (AU-04): the pan, or the split half right-clicked.
+    const char *param = !split_ ? "pan" : source == &panRight ? "panRight" : "panLeft";
+    if (const auto current = panel_.root.current())
+        panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, param));
+    const juce::Component *target = !split_ ? &pan : source == &panRight ? &panRight : &panLeft;
+    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(const_cast<juce::Component *>(target)));
 }
 MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {}
 bool MixerPanel::submit(const std::string &op, Payload payload, const char *label) {

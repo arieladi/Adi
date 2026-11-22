@@ -172,7 +172,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void paintDelayUnit(juce::Graphics &) const;
     // The Mixer View strip's meter, under its fader.
     juce::Rectangle<int> meterArea() const noexcept;
-    void panMenu();
+    void panMenu(const juce::Component *source = nullptr);
     void sendMenu(std::size_t index);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
     // Live's MIDI meter on a track with no instrument, at the head of the meter's column.

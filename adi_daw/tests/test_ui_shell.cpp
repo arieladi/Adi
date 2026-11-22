@@ -10741,22 +10741,55 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
         check(three->splitPan() && three->panLeft.isVisible() && three->panRight.isVisible() && !three->pan.isVisible() &&
                   std::abs(three->panLeft.getValue() + 1) < 1e-9 && std::abs(three->panRight.getValue() - 1) < 1e-9,
               "two pans in the pan's place, at 50L and 50R");
+        const auto opsBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
         press();
         three->panLeft.onDragStart();
         three->panLeft.setValue(-.2, juce::dontSendNotification);
         three->panLeft.onValueChange();
+        check(document->mixerDragging() && (document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == opsBefore,
+              "while the left pan moves it is heard and nothing is written");
         letGo();
         three->panLeft.onDragEnd();
         root.frame();
         const auto *t = root.current()->findTrack(4);
         check(t != nullptr && std::abs(t->panLeft + .2) < 1e-9 && std::abs(t->panRight - 1) < 1e-9 &&
-                  root.undoTitle(false) == "Undo Change Track Panning",
+                  root.undoTitle(false) == "Undo Change Track Panning" && !document->mixerDragging(),
               "a left-pan drag moves the left pan only, one step");
+        press();
+        three->panRight.onDragStart();
+        three->panRight.setValue(.6, juce::dontSendNotification);
+        three->panRight.onValueChange();
+        check(document->mixerDragging(), "the right pan is dragged live too");
+        letGo();
+        three->panRight.onDragEnd();
+        root.frame();
+        t = root.current()->findTrack(4);
+        check(t != nullptr && std::abs(t->panRight - .6) < 1e-9 && std::abs(t->panLeft + .2) < 1e-9,
+              "a right-pan drag moves the right pan only, one step");
         three->panRight.setValue(.4, juce::sendNotificationSync);
         root.frame();
         t = root.current()->findTrack(4);
-        check(t != nullptr && std::abs(t->panRight - .4) < 1e-9, "a typed right pan commits at once");
-        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo");
+        check(t != nullptr && std::abs(t->panRight - .4) < 1e-9 && std::abs(t->panLeft + .2) < 1e-9,
+              "a typed right pan commits at once, the left one kept");
+        // 2 MIDI (stereo) and 3 Audio (split) selected: a split-half drag leaves 2 MIDI's stored pans alone.
+        sel.track = 3;
+        sel.toTrack = 4;
+        root.frame();
+        press();
+        three->panLeft.onDragStart();
+        three->panLeft.setValue(-.5, juce::dontSendNotification);
+        three->panLeft.onValueChange();
+        letGo();
+        three->panLeft.onDragEnd();
+        root.frame();
+        check(std::abs(root.current()->findTrack(4)->panLeft + .5) < 1e-9 &&
+                  std::abs(root.current()->findTrack(3)->panLeft + 1) < 1e-9,
+              "with a stereo track selected beside it, a left-pan drag moves the split track's only");
+        sel.track = sel.toTrack = 0;
+        root.frame();
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo) &&
+                  root.command(AppCommands::Undo) && root.command(AppCommands::Undo),
+              "undo");
         root.frame();
         check(!three->splitPan() && three->pan.isVisible() && !three->panLeft.isVisible(), "Stereo Pan again: the one pan");
     }
