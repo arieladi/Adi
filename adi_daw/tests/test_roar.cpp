@@ -328,7 +328,59 @@ void glides() {
     }
 }
 
+/// The review of e94e310a: a change of Shape with a Bias left the offset
+/// stale (a thump from silence), and a change of routing reset stage 1
+/// even when it had been running (a 0.29 step).
+void reviewed() {
+    struct Swap {
+        int from, to;
+    };
+    for (const Swap w : {Swap{R::Fold, R::Diode}, Swap{R::Tube, R::Diode}, Swap{R::BitCrusher, R::Diode}}) {
+        R r;
+        r.set(R::stage(0, R::StageShape), w.from);
+        r.set(R::stage(0, R::StageAmount), 0);
+        r.set(R::stage(0, R::StageBias), -100);
+        r.prepare(kRate);
+        const std::vector<float> quiet(48000, 0.f);
+        std::vector<float> l(48000), rr(48000);
+        r.process(quiet.data(), quiet.data(), l.data(), rr.data(), quiet.size());
+        r.set(R::stage(0, R::StageShape), w.to);
+        r.process(quiet.data(), quiet.data(), l.data(), rr.data(), quiet.size());
+        double peak = 0;
+        for (float v : l) {
+            peak = std::max(peak, static_cast<double>(std::abs(v)));
+        }
+        check(peak < 1e-9, "a change of Shape with Bias -100 over silence: silence (" + std::to_string(peak) + ")");
+    }
+    // Single to Serial and to Parallel under a tone: stage 1 carries on.
+    for (int to : {R::Serial, R::Parallel}) {
+        R r;
+        r.set(R::stage(0, R::StageShape), R::Tube);
+        r.set(R::stage(0, R::StageAmount), 0);
+        r.set(R::stage(0, R::StageFilter), R::LowPass);
+        r.set(R::stage(0, R::StageFreq), 2000);
+        for (std::size_t s = 1; s < 3; ++s) {
+            r.set(R::stage(s, R::StageShape), R::Tube);
+            r.set(R::stage(s, R::StageAmount), 0);
+        }
+        r.prepare(kRate);
+        const auto x = sine(110, 96000, 0.3);
+        std::vector<float> l(x.size()), rr(x.size());
+        constexpr std::size_t at = 48109;
+        r.process(x.data(), x.data(), l.data(), rr.data(), at);
+        r.set(R::RoutingParam, to);
+        r.process(x.data() + at, x.data() + at, l.data() + at, rr.data() + at, x.size() - at);
+        double settled = 0;
+        for (std::size_t i = 24000; i < 48000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        const double step = std::abs(l[at] - l[at - 1]);
+        check(step <= 1.5 * settled + 0.01, "Single to routing " + std::to_string(to) + " under a tone: stage 1 carries on (" + std::to_string(step) + ")");
+    }
+}
+
 int main() {
+    reviewed();
     glides();
     routings();
     feedback();

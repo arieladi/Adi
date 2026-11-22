@@ -32,8 +32,9 @@
 // With every shape quiet, no Bias, no crusher and no feedback, the device is
 // linear: its response is the routing of the stages' filters, levels and DC
 // blockers, which the test checks per routing, and with feedback the loop's
-// own response. A change of Routing restarts every stage from silence, so a
-// stage that sat idle does not replay its old state. Input, each stage's
+// own response. A change of Routing restarts every stage that sat idle from
+// silence, so it does not replay an old state; a stage that was running
+// carries on, so the change does not click. Input, each stage's
 // Bias and Level, Feedback, Output and Dry/Wet glide over about 10 ms once
 // audio runs, each Amount (up to 36 dB of drive) over 50 ms (dsp/glide.hpp).
 //
