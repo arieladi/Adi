@@ -36,6 +36,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MX-23 preview signed Track Delay
+
+**PR requested.** `engine/mx23-track-delay-preview` at `b33398f683d4a2fe2bc7ce859c436a54dc9f6300`, based on main `87ea349c`. Title **Preview signed Track Delay through mixer gestures**. This is the Engine producer requested by window-fn. Use `ScalarKind::TrackDelay` and `Strategy::Structural` with the existing single or relative producer, passing an absolute coordinate in signed project samples.
+
+Values prepare off the audio thread, using the same signed compensation arithmetic and the current clip, MIDI and monitor readers. The candidate graph pins the delay of its strip, Post send and cue stage while plug-ins keep their regular latency reporting. The same graph stays audible on End. Esc restores the previous graph and an unchanged End adds no history. A multi-track drag writes the ordinary `mixer.setDelay` group as one undo step. Preview requires Delay Compensation on. Stores without a project metadata row use the existing 48 kHz fallback.
+
+GCC and Clang each passed ten strict suites, including 623 native playback checks per compiler. Stereo impulses confirmed signed timing of the dry path and Post send at both precisions, including a later retap. The tests also cover reader reuse, no undo step during drag, Esc, one Undo over a multi-track drag, unchanged End and refusal while compensation is off. `git diff --check` and Win's five 20 November portability patterns were checked. Linux tests used separate `ADI_HOME` fixtures. Actual window wiring and AU-03's armed recording pass remain with their PLAN work. This branch and TM-SV-01 share Session files, so Win can land them in either order with a recheck of the combined gesture and transport suites.
+
 ## 2026-11-22 — PLAN resumes at MX-23 Track Delay
 
 - ED-03's remaining cross-track lane rule waits on engine-win's DF-E35(a) and CT-01 EditScope work, as recorded with DF-E17.
