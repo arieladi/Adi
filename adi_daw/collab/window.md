@@ -101,6 +101,37 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-22, late night, window lane — queue items 16 to 18 written; WTS-01's window half; WIN-09's older checks fixed
+
+All pushed, each gating in turn after the six in the entry below. Each gets its "PR requested" when its gate passes.
+
+**Item 16, WIN-05, `window/shortcut-sets`** (on `window/shortcut-ids`, `b06ba9e1`).
+- **Layouts:** under a Hebrew (SI-1452) or Russian layout, a key that is no command's runs as the Latin key at its place, so Ctrl/Cmd+Z undoes and Z and X zoom.
+- **Key sets:** the Shortcuts page's Import and Export move a key set between platforms in canonical chord text. A file that is not a key set, or a chord no one can read, is refused and named; the keys of a command this build lacks are kept.
+- **Test:** `shortcutSets`.
+- **AWAITING:** the A5W-015 Live reading.
+
+**Item 17, WIN-06, `window/command-palette`** (on `window/shortcut-ids`, `3dd97b94`).
+- **The matcher:** fzy, ported to UTF-32 and JUCE-free in `adi/ui/fuzzy_match.hpp` (MIT, attributed). fzy's 24 tests pass with their exact scores (`fzyCases`, window_state); Hebrew matches as it is.
+- **The palette:** `src/juce/ui_palette.*`, on Ctrl/Cmd+P, a new command `view.command-palette`. It lists every command with its key, ranked; one that cannot run now is dimmed with why. "hsb" ranks Hide/Show Browser first; Enter runs, Esc and a lost focus dismiss.
+- **V/:** lists ADI's devices, and Enter inserts one on the selected track as one undo step (`commandPalette`). The plug-ins under V/ follow, once the Browser's list is reachable from the root.
+- **Key-map goldens:** the new command changes them; the goldens follow whichever of `window/function-keys`' and this branch's lands second.
+
+**Item 18, WTS-03, `window/text-goldens`** (from main, `9381fbee`): the first half.
+- **Built:** `tests/ui_golden_text.hpp`'s `GlyphBoxRecorder` keeps each run of glyphs' box in the image's pixels. `compareMasked` compares outside both renders' boxes and `diffImage` shows the difference. AT-2 passes in `textGoldens`: a word moved 1 px passes, a divider moved 1 px fails, and the boxes read back.
+- **Parked:** the font experiment and the eight goldens recorded again with their text both need CI's three legs.
+- **For win:** where are AT-1 and AT-24 defined? This lane finds only the ADR-0232 d9 line.
+
+**WTS-01, the window's half, `window/launch-isolation`** (from main, `f4065789`; the next unbuilt PLAN row of this lane).
+- **Its own instance:** `--smoke-output` and `--control-test` launches run beside an ordinary ADI instead of handing it their command line, and the running copy ignores such a line.
+- **Quiet:** the window shows without taking the foreground (`AdiWindow::quiet`) and reports to stderr.
+- **ADI_HOME:** `--control-test` without `ADI_HOME` exits 2. Its gate also runs that against the built app.
+- **For win:** a smoke run without `ADI_HOME` only warns, because `ui.yml`'s native smoke step does not set it. Please set `ADI_HOME` there (e.g. `$env:ADI_UI_BUILD/home`), and the smoke then refuses without it as well. The control API is WTS-05's.
+
+**WIN-09's gate** found three older shell checks that list the menu bar, the commands' tail and the Alt letters. They now know Help (`4af48b01`), and the branch gates again.
+
+---
+
 ## 2026-11-22, late night, window lane — queue item 8: WIN-01 (PR requested)
 
 **Item 8, WIN-01. PR requested.** Branch `window/function-keys`, head `724851f5`. Title: **adi_daw: window: the function keys do functions; a golden of every preset's key map (WIN-01, ADR-0209 d9)**. Body: [`collab/window/pr-bodies/window-function-keys.md`](window/pr-bodies/window-function-keys.md).
