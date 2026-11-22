@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/automation_lanes.hpp"
+#include "adi/audio/io_audit.hpp"
+#include "adi/edit_rows.hpp"
+#include "adi/op_transaction_resources_detail.hpp"
 #include "adi/blob.hpp"
 #include "adi/automation_range_rows.hpp"
 #include "adi/row_capture.hpp"
+#include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <array>
 #include <cmath>
 #include <climits>
@@ -237,5 +242,68 @@ OpRequest clearLane(std::int64_t id) { return request("automation.clearLane",id)
 OpRequest setLaneEnabled(std::int64_t id,bool value) { auto r=request("automation.setLaneEnabled",id); r.payload["value"]=value; return r; }
 OpRequest setLaneVisible(std::int64_t id,bool value) { auto r=request("automation.setLaneVisible",id); r.payload["value"]=value; return r; }
 OpRequest setDefaultValue(std::int64_t id,double value) { auto r=request("automation.setDefaultValue",id); r.payload["value"]=value; return r; }
+PreparedEnvelopeClear prepareClearEnvelopes(Store &store, std::int64_t laneId,
+                                           std::optional<std::int64_t> clipId) {
+    PreparedEnvelopeClear result;
+    try {
+        if (audio::onAudioThread || store.readOnly())
+            throw std::runtime_error("Clear Envelope needs a writable document owner");
+        if (laneId <= 0 || (clipId && *clipId <= 0))
+            throw std::runtime_error("Clear Envelope needs positive lane and clip identities");
+        auto &db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        const auto head = OpJournal(store).headSeq();
+        const auto lane = detail::captureRow(db, "automation_lanes", "id", laneId);
+        if (!lane)
+            throw std::runtime_error("Clear Envelope lane is missing");
+        OpTransactionInputs inputs;
+        inputs.rowGuards.push_back({"automation_lanes", {{"id", laneId}}, lane});
+        Payload filter = {{"lane_id", laneId}};
+        if (clipId) {
+            const auto clip = detail::captureRow(db, "clips", "id", *clipId);
+            if (!clip)
+                throw std::runtime_error("Clear Envelope clip is missing");
+            inputs.rowGuards.push_back({"clips", {{"id", *clipId}}, clip});
+            filter["clip_id"] = *clipId;
+        }
+        const auto streams = detail::captureGuardRows(store, "automation_data", filter);
+        if (streams.empty()) {
+            result.ok = true;
+            return result;
+        }
+        inputs.rowSetGuards.push_back({"automation_data", filter, streams});
+        edit::RowEdits edits(db);
+        for (const auto &stream : streams) {
+            const auto dataId = number(stream.at("id"));
+            const Payload rangeFilter = {{"data_id", dataId}};
+            const auto ranges = detail::captureGuardRows(store, "automation_segment_ranges", rangeFilter);
+            for (const auto &range : ranges)
+                edits.set("automation_segment_ranges", number(range.at("id")), std::nullopt);
+            inputs.rowSetGuards.push_back({"automation_segment_ranges", rangeFilter, ranges});
+            edits.set("automation_data", dataId, std::nullopt);
+        }
+
+        OpRequest op;
+        op.opType = "arranger.splice";
+        op.payload = {{"id", 0}, {"changes", edits.changes()}};
+        op.label = clipId ? "Clear Envelope" : "Delete Automation";
+        op.targetKind = "automation";
+        op.targetId = laneId;
+        OpContext context{store, db};
+        if (!edit::validateRows(context, op.payload, result.error))
+            return result;
+        op.capturedTransaction = CapturedTransactionAccess::seal(appliedSource(store), head,
+                                                                {op}, std::move(inputs));
+        if (read)
+            read->commit();
+        result.request.emplace(std::move(op));
+        result.ok = true;
+    } catch (const std::exception &error) {
+        result.error = error.what();
+    }
+    return result;
+}
 std::span<const OpDescriptor> laneDescriptors() { return ops; }
 } // namespace adi::automation

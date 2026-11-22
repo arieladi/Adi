@@ -22,5 +22,15 @@ OpRequest clearLane(std::int64_t id);
 OpRequest setLaneEnabled(std::int64_t id, bool enabled);
 OpRequest setLaneVisible(std::int64_t id, bool visible);
 OpRequest setDefaultValue(std::int64_t id, double value);
+struct PreparedEnvelopeClear {
+    bool ok = false;
+    std::string error;
+    std::optional<OpRequest> request;
+};
+// A clip selects one envelope. An absent clip selects all envelopes of the
+// addressed lane, including Arrangement. Lane metadata stays editable.
+// Success with no request means the selected envelopes were already absent.
+[[nodiscard]] PreparedEnvelopeClear prepareClearEnvelopes(
+    Store &, std::int64_t lane, std::optional<std::int64_t> clip = {});
 std::span<const OpDescriptor> laneDescriptors();
 } // namespace adi::automation

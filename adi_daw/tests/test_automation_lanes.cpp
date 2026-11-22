@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
+#include "adi/automation_edits.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/blob.hpp"
 #include "adi/digest.hpp"
+#include "adi/engine/automation.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -104,8 +106,95 @@ void run() {
     bad.id=4;bad.ownerKind="project";
     check(journal.commit(automation::createLane(bad)).ok,"project owner supported");
 }
+void clearEnvelopes() {
+    const test::TempDirectory temp("automation", "clear-envelopes");
+    auto store = project(temp.path() / "clear.adi");
+    auto &db = store->db();
+    db.exec("UPDATE clips SET length_ticks=5765760 WHERE id=1;"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ticks,length_ticks) "
+            "VALUES(2,1,'audio',0,5765760,5765760);"
+            "ALTER TABLE automation_data ADD COLUMN future_blob BLOB NOT NULL DEFAULT X'0123';"
+            "ALTER TABLE automation_segment_ranges ADD COLUMN future_text TEXT NOT NULL DEFAULT 'slice';");
+    OpJournal journal(*store);
+    automation::LaneSpec volume;
+    volume.id = 2;
+    volume.ownerId = 1;
+    volume.paramRef = "volume";
+    auto pan = volume;
+    pan.id = 3;
+    pan.paramRef = "pan";
+    const auto write = [&](std::int64_t id, std::int64_t lane, Payload clip, double value) {
+        return journal.commit(automation::writePoints(id, lane, std::move(clip), Payload::array({
+            {{"id", 1}, {"time", 0}, {"value", value}, {"curve", 1}, {"tension", 0}},
+            {{"id", 2}, {"time", 10000}, {"value", value}, {"curve", 1}, {"tension", 0}}
+        }))).ok;
+    };
+    if (!journal.commit(automation::createLane(volume)).ok ||
+        !journal.commit(automation::createLane(pan)).ok ||
+        !write(10, 2, nullptr, 0.25) || !write(11, 2, 1, 0.75) ||
+        !write(12, 2, 2, 0.5) || !write(13, 3, nullptr, 0.625))
+        throw std::runtime_error("cannot prepare Clear Envelope fixture");
+    db.exec("INSERT INTO automation_segment_ranges"
+            "(id,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last,future_text) "
+            "VALUES(40,11,1,0,0.25,0.75,0.75,0.75,'opaque slice');"
+            "UPDATE automation_data SET future_blob=X'a90300' WHERE id=11;");
+    const auto before = digestProject(*store).text;
+    const auto values = [&] {
+        const auto program = engine::compileAutomation(rows::readModel(*store), 48000.0);
+        const auto *lane = program->lane(2);
+        if (!lane)
+            throw std::runtime_error("cannot compile the envelope fixture");
+        return std::pair{engine::valueAt(*lane, 1200), engine::valueAt(*lane, 26000)};
+    };
+    check(values() == std::pair{0.75, 0.5}, "two real clip envelopes mask the Arrangement");
+    auto clear = automation::prepareClearEnvelopes(*store, 2, 1);
+    check(clear.ok && clear.request && clear.request->label == "Clear Envelope" &&
+              digestProject(*store).text == before,
+          "capture of the explicitly named envelope writes no data");
+    if (!clear.request)
+        throw std::runtime_error(clear.error);
+    db.exec("UPDATE automation_segment_ranges SET source_last=0.5 WHERE id=40;");
+    const auto changed = digestProject(*store).text;
+    check(!journal.commit(*clear.request).ok && digestProject(*store).text == changed,
+          "changed range metadata with the same head refuses the captured clear");
+    db.exec("UPDATE automation_segment_ranges SET source_last=0.75 WHERE id=40;");
+    clear = automation::prepareClearEnvelopes(*store, 2, 1);
+    if (!clear.request || !journal.commit(*clear.request).ok)
+        throw std::runtime_error("the fresh clip envelope clear failed: " + clear.error);
+    check(values() == std::pair{0.25, 0.5} &&
+              db.execAndGet("SELECT count(*) FROM automation_data WHERE id=11").getInt() == 0 &&
+              db.execAndGet("SELECT count(*) FROM automation_segment_ranges WHERE id=40").getInt() == 0,
+          "the targeted clip plays the Arrangement and its sibling keeps its own envelope");
+    const auto absent = automation::prepareClearEnvelopes(*store, 2, 1);
+    check(absent.ok && !absent.request, "clearing an absent envelope has no undo entry");
+    check(!automation::prepareClearEnvelopes(*store, 999, 1).ok &&
+              !automation::prepareClearEnvelopes(*store, 2, 999).ok,
+          "missing lane or clip identities are reported");
+    const auto clearedClip = digestProject(*store).text;
+    History history(*store);
+    check(history.undo().ok && digestProject(*store).text == before &&
+              history.redo().ok && digestProject(*store).text == clearedClip &&
+              history.undo().ok,
+          "one Undo and Redo preserve the exact stream, ranges, and future columns");
+    const auto all = automation::prepareClearEnvelopes(*store, 2);
+    if (!all.request || !journal.commit(*all.request).ok)
+        throw std::runtime_error("cannot delete the addressed parameter automation: " + all.error);
+    check(all.request->label == "Delete Automation" &&
+              db.execAndGet("SELECT count(*) FROM automation_data WHERE lane_id=2").getInt() == 0 &&
+              db.execAndGet("SELECT count(*) FROM automation_data WHERE lane_id=3").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM automation_lanes").getInt() == 2,
+          "Delete Automation removes all streams for one parameter and retains both lane definitions");
+    check(history.undo().ok && digestProject(*store).text == before,
+          "one Undo restores the complete addressed parameter automation");
+    db.exec("CREATE TABLE future_automation_child(id INTEGER PRIMARY KEY, data_id INTEGER "
+            "REFERENCES automation_data(id) ON DELETE CASCADE);"
+            "INSERT INTO future_automation_child VALUES(1,11);");
+    check(!automation::prepareClearEnvelopes(*store, 2, 1).ok &&
+              db.execAndGet("SELECT count(*) FROM future_automation_child").getInt() == 1,
+          "an unknown cascading reference prevents loss of future data");
+}
 } // namespace
 int main() {
-    try {run();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
+    try {run();clearEnvelopes();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }
