@@ -774,6 +774,39 @@ void driveAndCrush() {
           && result[1] == .1875f, "Crush at zero mix is undelayed and bit exact");
 }
 
+void holdRateFromMeasuredSteps() {
+    Shaper rack;
+    constexpr auto band = Band::Mid;
+    rack.prepare(48000);
+    rack.set(Shaper::CrushOn, 1);
+    rack.set(Shaper::holdFollowerParam(band, Control::On), 1);
+    rack.set(Shaper::holdFollowerParam(band, Control::Mode), 1);
+    rack.set(Shaper::holdFollowerParam(band, Control::Amount), 80);
+    rack.set(Shaper::holdFollowerParam(band, Control::Attack), 20);
+    rack.set(Shaper::holdFollowerParam(band, Control::Release), 11);
+    for (int j = 0; j < 8; ++j)
+        rack.set(Shaper::modParam(Stage::Crush, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + j)), 75);
+
+    // First rising and falling frames were read using signed half-scale steps.
+    constexpr float rise = .02554094791f, fall = .99948495626f;
+    adi::dsp::AdiShaperCrush clock;
+    (void)clock.prepare(48000);
+    float envelope = 0;
+    double worst = 0;
+    for (int i = 0; i < 8192; ++i) {
+        const float level = (i % 997 < 431) ? .75f : .0625f;
+        float left = (i & 1) ? level : -level;
+        float right = level * static_cast<float>((i * 37) % 113 - 56) / 64.f;
+        const auto actual = one(rack, left, right);
+        if (level > envelope) envelope += rise * (level - envelope);
+        else envelope *= fall;
+        const float height = .75f * (envelope * (2.f * .8f));
+        clock.processStereo(left, right, 1.f, height);
+        worst = std::max(worst, static_cast<double>(std::max(std::abs(actual[0] - left), std::abs(actual[1] - right))));
+    }
+    check(worst < 1e-7, "Hold clock follows the measured rise, fall and physical Multiply amount");
+}
+
 // A unity-amount detector supplies the time trajectory. Apply the measured
 // signed mapping separately, then give that height to a standalone Crush.
 enum class DetectorTap { Selected, AlwaysLinked, RawDeviceInput };
@@ -925,6 +958,7 @@ int main() {
         holdFollowerOracle(true, true, false, mask, DetectorTap::AlwaysLinked);
         holdFollowerOracle(true, true, false, mask, DetectorTap::RawDeviceInput);
     }
+    holdRateFromMeasuredSteps();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }
