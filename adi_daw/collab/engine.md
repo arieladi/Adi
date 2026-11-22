@@ -36,6 +36,18 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PLAN TM-IC-01, integer time conversion and SMPTE labels
+
+**PR requested** after the 3 December gate for `engine/tm-ic01-integer-timecode` at `ba6109f0e05d730e9f02142abaad3e8add5cdc72`, based on `87ea349c`. ADR-0234 keeps the integer conversion and timecode. The implementation uses rational caller-supplied scales with explicit Exact, Floor or Nearest, supports the full signed 64-bit range and uses the exact NTSC ratios. No FilmCraft clock or link table. Drop-frame supports 29.97 and 59.94, rejects skipped labels and bounds each timecode to one day. Longer timelines keep their day count separately. Samples, nanoseconds, video frame indices and rational musical conversions share the same arithmetic. Tempo-map integration and on-wire MTC belong to their callers.
+
+Strict GCC 14 and Clang 19 each passed 902 checks across time base, time edits and clip edits. All 7,768,224 actual drop-frame indices in both 24-hour formats round-tripped, including minute, tenth-minute, hour and day transitions. An independent Python arbitrary-precision oracle matched 100,525 signed conversion cases, including both signed endpoints and products beyond 64 bits. The API uses portable integer operations. Native MSVC was unavailable for this branch.
+
+TM-IC-01's persistent drop-frame setting waits on Win's additive table reservation. TM-IC-03 and the IC-01 converter wait on the converter ADR and the `extension.write` / `extension.delete` and MI-08 reservations; TM-IC-04 then needs those shared interchange rules and EX-04 delivery support. TM-IC-05 / EX-10 waits on TM-MD-01 and the native post-AAC gate.
+
+### FOR THE DIRECTOR
+
+- TM-IC-01 project timecode persistence. Recommend Win reserve the additive table for the project drop-frame flag after the integer API, preserving the established project frame rate and origin fields.
+
 ## 2026-11-22 — PLAN TM-FC-01, Post FX bounce and editable mixer settings
 
 **PR requested** after the 3 December gate for `engine/tm-fc01-bounce-mixer` at `8bc053ca28743ad0695808ffe52352eabbae2cd4`. Stack joins range mute `d1146559` and in-place insert removal `6689b97c` at `f75567f4`. The join resolves their shared audition helper and keeps the range and device loader arguments.
