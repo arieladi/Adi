@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/shared_analysis.hpp"
 #include "adi/mix/clip/Values.hpp"
 #include "adi/store_rows.hpp"
 #include "juce/builtin_host.hpp"
@@ -151,6 +152,69 @@ void bypassedClaim(bool full) {
     check(session.graph().currentGraph() && session.graph().currentGraph()->latencySamples() == offered,
           "the pinned graph retains the advertised delay while bypassed");
     check(dry && *dry < 2.e-5, "bypassed node actually outputs coherent compensated dry");
+
+    // Exercise the analyser's production attachment alongside the direct probes.
+    {
+        using Analysis = ui::SharedAnalysis;
+        using Point = engine::ScopePoint;
+        using Tap = engine::ScopeTap;
+        const auto &broker = doc->analysis();
+        const auto idle = broker->stats();
+        Analysis::Request scopeIn{2, Point::DeviceInput, frames, Analysis::Channel::Left};
+        scopeIn.device = shown.id;
+        scopeIn.outputs = Analysis::Scope;
+        auto scopeOut = scopeIn;
+        scopeOut.point = Point::DeviceOutput;
+        auto inputView = broker->acquire(scopeIn);
+        auto outputView = broker->acquire(scopeOut);
+        auto spectrum = broker->acquireDeviceSpectrum({2, shown.id, frames, Analysis::DeviceSpectrumRequest::Channel::Left});
+        for (int i = 0; i < 6; ++i) {
+            cycle(1);
+            broker->pump();
+        }
+        const auto input = inputView.read(), output = outputView.read();
+        const auto stats = broker->stats();
+        check(input && output && spectrum.read() == output && stats.taps == idle.taps + 2 &&
+                  stats.domains == idle.domains + 2 && stats.spectralPlans == idle.spectralPlans + 1,
+              "the Document's real device Scope and Spectrum share one output picture and spectral plan");
+
+        const auto inputTap = trackInput.tap(), outputTap = trackOutput.tap();
+        const bool valid = input && output && inputTap && outputTap &&
+            output->scopeLeft.size() == static_cast<std::size_t>(frames) &&
+            output->scopeRight.size() == static_cast<std::size_t>(frames);
+        check(valid && input->request.source() == scopeIn.source() && output->request.source() == scopeOut.source() &&
+                  input->generation == inputTap->generation() && output->generation == outputTap->generation() &&
+                  input->advancing && output->advancing &&
+                  input->transportRevision == session.transport().revision() &&
+                  output->transportRevision == input->transportRevision &&
+                  input->firstStamp - output->firstStamp == offered,
+              "the real device's declared latency reaches both broker pictures as heard time");
+        if (valid) {
+            auto inCursor = inputTap->cursorAtEnd(), outCursor = outputTap->cursorAtEnd();
+            inCursor.next = input->firstSequence - offered;
+            outCursor.next = output->firstSequence;
+            std::array<float, frames> inLeft{}, inRight{}, outLeft{}, outRight{};
+            const auto heard = inputTap->read(inCursor, inLeft, inRight);
+            const auto observed = outputTap->read(outCursor, outLeft, outRight);
+            check(observed.status == Tap::ReadStatus::Ready && observed.frames == frames &&
+                      observed.firstStamp == output->firstStamp &&
+                      std::ranges::equal(outLeft, output->scopeLeft) && std::ranges::equal(outRight, output->scopeRight),
+                  "the broker's output waveform retains the physical tap's samples and stamp");
+            bool sameAtHeardTime = heard.status == Tap::ReadStatus::Ready && heard.frames == frames &&
+                heard.firstStamp == output->firstStamp;
+            bool heardTone = false;
+            for (std::size_t i = 0; i < outLeft.size(); ++i) {
+                heardTone = heardTone || std::abs(outLeft[i]) > .1f;
+                sameAtHeardTime = sameAtHeardTime &&
+                    std::abs(inLeft[i] - outLeft[i]) < 2.e-5f && std::abs(inRight[i] - outRight[i]) < 2.e-5f;
+            }
+            check(heardTone && sameAtHeardTime, "the bypass waveform and delayed input agree at the same heard sample");
+        }
+        spectrum.reset(); outputView.reset(); inputView.reset();
+        check(broker->stats().taps == idle.taps && broker->stats().consumers == idle.consumers &&
+                  trackInput.tap() == inputTap && trackOutput.tap() == outputTap,
+              "closing the analyser releases its demand while the direct observers keep their physical taps");
+    }
 
     const auto authored = [&](const std::string &param, double normalized, const char *label) {
         OpRequest op;
