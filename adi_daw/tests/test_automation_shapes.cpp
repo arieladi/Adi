@@ -4,6 +4,8 @@
 #include "adi/automation_lanes.hpp"
 #include "adi/automation_edits.hpp"
 #include "adi/digest.hpp"
+#include "adi/edit_time.hpp"
+#include "adi/engine/automation.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -88,7 +90,9 @@ void run() {
     check(OpJournal(*s).commit(writePoints(3,2,nullptr,outside)).ok,"existing outside and selected points");
     const auto before=bytes(*s);spec.start=100;spec.end=1100;
     prepared=prepareShapeInsertion(*s,3,2,std::nullopt,spec,error);
-    check(prepared && prepared->requests.size()==2,"selected points produce one atomic delete/write batch");
+    check(prepared && prepared->requests.size()==1 && prepared->requests.front().capturedTransaction &&
+              prepared->requests.front().label == "Insert Automation Shape",
+          "selected points and both guards share one sealed splice");
     if(!prepared)return;
     check(commitShapeInsertion(*s,*prepared).ok,"replace selected range");
     const auto after=bytes(*s);StreamReader<AutomationPoint> r(after,FourCC::Automation);
@@ -112,7 +116,7 @@ void run() {
     sqlite3_trace_v2(consistent->db().getHandle(),SQLITE_TRACE_STMT,
         [](unsigned,void* context,void* statement,void*)->int {
             auto& t=*static_cast<Trace*>(context);const char* sql=sqlite3_sql(static_cast<sqlite3_stmt*>(statement));
-            if(!t.fired && sql && std::string_view(sql).starts_with("SELECT min_value,max_value,time_base")) {
+            if(!t.fired && sql && std::string_view(sql).starts_with("SELECT * FROM \"automation_lanes\" WHERE")) {
                 t.fired=true;
                 try {t.committed=OpJournal(*t.writer).commit(writePoints(3,2,nullptr,Payload::array({point(88,500,0.2)}))).ok;}
                 catch(...){t.committed=false;}
@@ -127,5 +131,72 @@ void run() {
     const auto client=s->clientId();s->setClientId("11111111111111111111111111111111");
     check(!commitShapeInsertion(*s,*prepared).ok,"changed open-client identity refused");s->setClientId(client);
 }
+void preservesPlayedExterior() {
+    const test::TempDirectory temp("automation", "guarded-shapes");
+    constexpr double rate = 48000;
+    for (int clock : {0, 1}) {
+        for (int curve = 0; curve <= 5; ++curve) {
+            auto store = project(temp.path() / ("shape-" + std::to_string(clock) + "-" +
+                                                std::to_string(curve) + ".adi"));
+            if (clock == 1)
+                store->db().exec("UPDATE automation_lanes SET time_base=1");
+            else
+                store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES "
+                                 "(10,0,120),(11,1000000,88),(12,2000000,141)");
+            const std::int64_t unit = clock == 0 ? 10000 : 1000000;
+            auto first = point(1, 0, 0.25);
+            first["curve"] = curve;
+            first["tension"] = 0.6;
+            const auto inserted = OpJournal(*store).commit(writePoints(
+                3, 2, nullptr, Payload::array({first, point(2, 300 * unit, 0.75)})));
+            if (!inserted.ok)
+                throw std::runtime_error(inserted.error);
+            const auto before = engine::compileAutomation(rows::readModel(*store), rate);
+            const auto digest = digestProject(*store).text;
+            const auto *original = before->lane(2);
+            if (!original)
+                throw std::runtime_error("cannot compile original shape lane");
+            ShapeSpec spec;
+            spec.shape = Shape::Triangle;
+            spec.start = 75 * unit;
+            spec.end = 225 * unit;
+            spec.low = 0.125;
+            spec.high = 0.9375;
+            const edit::TimeMap time(store->db());
+            const auto sampleAt = [&](std::int64_t position) {
+                const double seconds = clock == 0 ? time.seconds(position)
+                                                   : static_cast<double>(position) * 1e-9;
+                return std::llround(seconds * rate);
+            };
+            std::string error;
+            const auto prepared = prepareShapeInsertion(*store, 3, 2, std::nullopt, spec, error, rate);
+            if (!prepared)
+                throw std::runtime_error(error);
+            const auto result = commitShapeInsertion(*store, *prepared);
+            if (!result.ok)
+                throw std::runtime_error(result.error);
+            const auto after = engine::compileAutomation(rows::readModel(*store), rate);
+            const auto *shape = after->lane(2);
+            if (!shape)
+                throw std::runtime_error("cannot compile the stored shape");
+            const auto start = sampleAt(spec.start), end = sampleAt(spec.end);
+            double errorMax = 0;
+            for (std::int64_t sample = 0; sample <= sampleAt(300 * unit) + 4; ++sample) {
+                if (sample < start || sample >= end)
+                    errorMax = std::max(errorMax, std::abs(engine::valueAt(*original, sample) -
+                                                           engine::valueAt(*shape, sample)));
+            }
+            check(errorMax < 1e-9, "every exterior sample keeps its authored curve");
+            check(engine::valueAt(*shape, start) == spec.low &&
+                      engine::valueAt(*shape, sampleAt(150 * unit)) == spec.high,
+                  "a real compiled lane plays the selected shape at its authored knots");
+            const auto afterDigest = digestProject(*store).text;
+            History history(*store);
+            check(history.undo().ok && digestProject(*store).text == digest &&
+                      history.redo().ok && digestProject(*store).text == afterDigest,
+                  "points and retained curve ranges undo and redo exactly");
+        }
+    }
+}
 } // namespace
-int main(){try{run();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{run();preservesPlayedExterior();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

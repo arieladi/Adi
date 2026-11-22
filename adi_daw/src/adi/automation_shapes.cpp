@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/automation_shapes.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/automation_edits.hpp"
+#include "adi/automation_splice_store.hpp"
 #include "adi/engine/curves.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
@@ -151,12 +153,43 @@ std::optional<PreparedShape> prepareAutomationWrite(Store& store,std::int64_t da
     } catch(const std::exception& e) { error=e.what();return std::nullopt; }
 }
 std::optional<PreparedShape> prepareShapeInsertion(Store& store,std::int64_t data,std::int64_t lane,
-    std::optional<std::int64_t> clip,const ShapeSpec& spec,std::string& error) {
+    std::optional<std::int64_t> clip,const ShapeSpec& spec,std::string& error,
+    std::optional<double> sessionRate) {
     try {
+        if (audio::onAudioThread)
+            throw std::runtime_error("automation shape belongs off the audio callback");
         const auto points=generateShape(spec);
-        auto prepared=prepareAutomationWrite(store,data,lane,clip,points,error);
-        if(prepared)for(auto& request:prepared->requests)request.label="Insert Automation Shape";
-        return prepared;
+        constexpr const char *label = "Insert Automation Shape";
+        if (clip) {
+            auto prepared = prepareAutomationWrite(store, data, lane, clip, points, error);
+            if (prepared) {
+                for (auto &request : prepared->requests)
+                    request.label = label;
+            }
+            return prepared;
+        }
+
+        auto &db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        const auto head = OpJournal(store).headSeq();
+        const double rate = sessionRate ? *sessionRate
+                                       : db.execAndGet("SELECT sample_rate FROM project WHERE id=1").getDouble();
+        std::vector<NativeSpliceKnot> replacement;
+        replacement.reserve(points.size());
+        for (const auto &point : points)
+            replacement.push_back({point, {}});
+        auto splice = prepareEnvelopeSplice(store, lane, spec.start, spec.end, replacement, rate,
+                                           kSplicePointBudget, {data, label});
+        if (!splice.ok) {
+            error = std::move(splice.error);
+            return std::nullopt;
+        }
+        if (read)
+            read->commit();
+        error.clear();
+        return PreparedShape{std::move(splice.requests), head, &store, store.clientId()};
     }catch(const std::exception& e){error=e.what();return std::nullopt;}
 }
 CommitResult commitShapeInsertion(Store& store,const PreparedShape& p) {
