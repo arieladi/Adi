@@ -24,7 +24,11 @@
 // four overlaps sum to 1.5). A bin delayed by d frames is the input delayed
 // by d x 512 samples, exactly. The device's latency is one window, 2,048
 // samples, reported, and the dry signal is delayed with it. prepare()
-// allocates the frames and never throws; processing does not.
+// allocates the frames and never throws: when memory cannot be had the
+// device is inert, passing its input with no latency reported. Processing
+// does not allocate. An input sample is bounded at 1e6 (120 dB over full
+// scale), so no window's transform can overflow into the feedback's history.
+// Dry/Wet glides over about 10 ms once audio runs (dsp/glide.hpp).
 //
 // WHAT IS NOT LIVE'S YET, and says so: Spectral Time's resolution choices,
 // its pitch shift, stereo spread, sync and the freeze's retrigger and fade,
@@ -34,6 +38,7 @@
 
 #pragma once
 
+#include "adi/dsp/glide.hpp"
 #include "adi/dsp/spectrum.hpp"
 
 #include <array>
@@ -57,7 +62,7 @@ public:
     void prepare(double sampleRate) noexcept;
     void set(Param, double) noexcept;
     [[nodiscard]] double value(Param p) const noexcept { return p_[static_cast<std::size_t>(p)]; }
-    [[nodiscard]] int latency() const noexcept { return static_cast<int>(kSize); }
+    [[nodiscard]] int latency() const noexcept { return ready_ ? static_cast<int>(kSize) : 0; }
     void process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept;
     /// Bin k's delay as set, in frames, for tests.
     [[nodiscard]] std::size_t delay(std::size_t k) const noexcept { return delays_[k]; }
@@ -78,7 +83,8 @@ private:
     std::vector<std::size_t> delays_;
     std::vector<float> sprayDraw_;
     std::size_t frames_ = 0, written_ = 0, frameIndex_ = 0;
-    double rate_ = 48000, feedback_ = 0, wet_ = 0.5;
+    double rate_ = 48000, feedback_ = 0;
+    Glide wet_;
     bool frozen_ = false, ready_ = false;
 };
 
