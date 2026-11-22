@@ -202,6 +202,12 @@ Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU bu
 
 - For AWAITING 13, I recommend retaining the source division, keeping project tempo on ordinary import, and measuring Live 12.4 multi-track placement and format/PPQ before locking the defaults. The codec is usable while those decisions are open.
 
+### 22 November — TM-LS-03 MIDI sync wire
+
+- PR requested for `engine/tm-ls03-midi-sync-wire` at `8fdbe416e1aa30341393cf9fd58aeec8f07ee6cc`, stacked on exact timecode `ba6109f0e05d730e9f02142abaad3e8add5cdc72`. The MIDI 1.0 wire reader decodes Clock, Start, Continue, Stop and SPP. SPP is exact at 1,441,440 ticks per sixteenth and the writer rejects off-grid and out-of-range positions. The MTC decoder locks after eight contiguous pieces in either direction, detects the rate bits, and uses the shared time base to reject skipped drop-frame labels.
+- Strict Linux GCC 14 and Clang 19 each passed 103 checks across MIDI sync and time-code suites. The wire check exhausts all 16,384 SPP values and covers realtime interleave, missing pieces, every MTC rate and exact 29.97 drop-frame. Checked the Nov 20 patterns. Logs are under `/workspace/adi-engine-validation/tm-ls03-*-wire-*.log`.
+- Parked port wiring, timed output and Live's chase and Hardware Resync behavior on the window port seam and AWAITING 13. The engine clock follower proceeds independently.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
