@@ -27,6 +27,16 @@ const double logStep = 2 * std::log(holdRatio) / clockIntervals;
 float sanitized(float height) noexcept {
     return std::isfinite(height) ? std::clamp(height, 0.f, 1.f) : 1.f;
 }
+
+double integratedCode(double before, double now) noexcept {
+    const double priorCode = std::floor(before + .5);
+    const double code = std::floor(now + .5);
+    if (code == priorCode) return code;
+    // Average the staircase over the signed interval without subtracting
+    // large antiderivatives at its two ends.
+    const double residuals = (now - code) + (before - priorCode);
+    return .5 * ((code + priorCode) + (code - priorCode) * residuals / (now - before));
+}
 } // namespace
 
 bool AdiShaperCrush::prepare(double sampleRate) noexcept {
@@ -43,7 +53,16 @@ void AdiShaperCrush::reset() noexcept {
     bits_ = clock_ = -1;
     phase_ = 0;
     seed_ = 0x297a04b3u;
+    previousPerturbation_ = 0.;
     previousQuantInput_ = previousHoldInput_ = held_ = low_ = {};
+}
+
+void AdiShaperCrush::setBias(float normalized) noexcept {
+    if (!std::isfinite(normalized)) return;
+    const float bias = std::clamp(normalized, 0.f, 1.f);
+    if (bias == bias_) return;
+    bias_ = bias;
+    if (bits_ >= 0.f) updateQuantizerGain();
 }
 
 void AdiShaperCrush::updateResolution(float height) noexcept {
@@ -51,8 +70,21 @@ void AdiShaperCrush::updateResolution(float height) noexcept {
     const double u = height;
     const double u2 = u * u, u4 = u2 * u2, u8 = u4 * u4, u16 = u8 * u8;
     levels_ = 1.0 + linearLevelRange * u + (totalLevelRange - linearLevelRange) * (u16 * u16);
-    const double remaining = 1.0 - u;
-    quantizedGain_ = (1.0 - .25 * remaining * remaining * remaining) / levels_;
+    updateQuantizerGain();
+}
+
+void AdiShaperCrush::updateQuantizerGain() noexcept {
+    const double remaining = 1.0 - bits_;
+    double numerator = 1.0 - .25 * remaining * remaining * remaining;
+    if (bias_ == 0.f) {
+        biasInput_ = 0.;
+    } else {
+        const double remainder3 = remaining * remaining * remaining;
+        const double skew = static_cast<double>(bias_) * remainder3;
+        numerator -= .25 * skew * skew * skew;
+        biasInput_ = .499 * static_cast<double>(bias_) / levels_;
+    }
+    quantizedGain_ = numerator / levels_;
 }
 
 void AdiShaperCrush::updateClock(float height) noexcept {
@@ -88,26 +120,24 @@ double AdiShaperCrush::noise() noexcept {
 void AdiShaperCrush::quantize(Stereo& sample) noexcept {
     if (bits_ == 1.f) {
         previousQuantInput_ = sample;
+        previousPerturbation_ = 0.;
         return;
     }
-    const double perturbation = dither_ ? noise() / levels_ : 0.0;
+    // Bias is specified in codes. Keep it with each sample so a change at the
+    // next frame integrates from the previous input and its original bias.
+    const double perturbation = dither_ ? biasInput_ + noise() / levels_ : biasInput_;
+    // With biased dither, subtract the same staircase driven only by the
+    // perturbation. Both channels share this reference and silence stays quiet.
+    const double zeroCode = dither_ && bias_ != 0.f ?
+        integratedCode(previousPerturbation_ * levels_, perturbation * levels_) : 0.;
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double value = sample[ch] + perturbation;
         const double before = previousQuantInput_[ch] * levels_;
         const double now = value * levels_;
-        const double priorCode = std::floor(before + .5);
-        const double code = std::floor(now + .5);
-        if (code == priorCode) {
-            sample[ch] = quantizedGain_ * code;
-        } else {
-            // Integrated staircase over the linear transition from before to
-            // now. This centered form avoids subtracting two large primitives.
-            const double residuals = (now - code) + (before - priorCode);
-            const double mean = .5 * ((code + priorCode) + (code - priorCode) * residuals / (now - before));
-            sample[ch] = quantizedGain_ * mean;
-        }
+        sample[ch] = quantizedGain_ * (integratedCode(before, now) - zeroCode);
         previousQuantInput_[ch] = value;
     }
+    previousPerturbation_ = perturbation;
 }
 
 void AdiShaperCrush::hold(Stereo& sample) noexcept {

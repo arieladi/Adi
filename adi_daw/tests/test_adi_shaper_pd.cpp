@@ -100,6 +100,43 @@ void cachedPdTransport(const std::string& directory, bool native) {
     }
 }
 
+void quantizerBiasPd(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    adi::device::PdLatencyReceiver latency;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    std::string error;
+    check(path.open(latency, error), "open biased quantizer");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    check(path.sendParameter(Shaper::CrushOn + 1, 1), "enable Crush");
+    for (int n = 0; n < 8; ++n) {
+        const auto point = static_cast<Shaper::ModControl>(Shaper::Primary1 + n);
+        const int id = Shaper::modParam(Shaper::Stage::Crush, Shaper::Band::Mid, point) + 1;
+        check(path.sendParameter(id, 0), "select lowest resolution");
+    }
+    check(path.sendParameter(866, 75), "select 75 percent bias");
+    std::array<float, 64> inL{}, inR{}, outL{}, outR{};
+    const float* in[]{inL.data(), inR.data()};
+    float* out[]{outL.data(), outR.data()};
+    adi::engine::NodeIo io;
+    io.in = in; io.out = out; io.channels = 2; io.frames = 64;
+    path.process(io);
+    inL.fill(.43f); inR.fill(-.38f);
+    std::fill(inL.begin() + 16, inL.begin() + 32, -.71f);
+    std::fill(inR.begin() + 16, inR.begin() + 32, .91f);
+    path.process(io);
+    struct Tap { int frame; double left, right; };
+    constexpr std::array taps{Tap{0, .45574504, 0.}, Tap{1, .64351350, 0.},
+        Tap{16, .15879554, .39158368}, Tap{17, -.01331603, .64359742}, Tap{32, .15884674, .37855777}};
+    for (const auto& t : taps) {
+        check(std::abs(outL[t.frame] - (crossed ? t.right : t.left)) < 3e-6 &&
+              std::abs(outR[t.frame] - (crossed ? t.left : t.right)) < 3e-6,
+              "quantizer bias reaches both channels in native and editable Pd");
+    }
+}
+
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
                   bool crushOn = false) {
     using Engine = adi::device::LibPdEngine;
@@ -266,17 +303,38 @@ void automationKeepsTheClock() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 418, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    for (int band = 0; band < 3; ++band) {
+        const auto id = std::to_string(865 + band);
+        check(device->paramAt(415 + band) && device->paramAt(415 + band)->id == id
+              && device->getParam(id).real == 0, "three stable quantizer biases default to zero");
+    }
+    const auto savedBias = [&] {
+        auto source = open();
+        set(*source, 865, 0.);
+        set(*source, 866, .75);
+        set(*source, 867, 1.);
+        return source->saveState("state");
+    }();
+    check(device->loadState("state", savedBias) && device->getParam("865").real == 0
+          && device->getParam("866").real == 75 && device->getParam("867").real == 100,
+          "each band's quantizer bias round-trips independently");
+    device = open();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
     // Restore an actual earlier-format parameter map, with no Filter or Sweep keys.
     auto state = adi::Payload::from_cbor(device->saveState("state"));
     for (int id = 134; id <= 415; ++id) state.at("params").erase(std::to_string(id));
+    for (const auto* group : {"params", "real"}) {
+        if (state.contains(group))
+            for (int id = 865; id <= 867; ++id) state.at(group).erase(std::to_string(id));
+    }
     device = open();
-    check(device->loadState("state", adi::Payload::to_cbor(state)), "restore earlier curve and width");
+    set(*device, 866, 1.);
+    check(device->loadState("state", adi::Payload::to_cbor(state)) && device->getParam("866").real == 0, "restore earlier curve and width");
     check(device->getParam("134").real == 0 && device->getParam("209").real == 0,
           "earlier sessions open with both optional stages disabled");
 
@@ -379,6 +437,8 @@ int main() try {
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");
     const auto editedDir = edited.path().string();
+    quantizerBiasPd(ADI_SHAPER_PATCH_DIR, false);
+    quantizerBiasPd(editedDir, true);
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);
