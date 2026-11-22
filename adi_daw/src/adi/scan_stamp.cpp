@@ -29,9 +29,10 @@ bool module(const std::filesystem::path& relative) {
     const auto name=lower(utf8(relative.filename()));
     const auto extension=lower(utf8(relative.extension()));
     const auto generic=relative.generic_u8string();
+    const auto layout=lower({generic.begin(),generic.end()});
     return name=="moduleinfo.json" || extension==".vst3" || extension==".clap" ||
            extension==".dll" || extension==".so" || extension==".dylib" ||
-           generic.starts_with(u8"Contents/MacOS/");
+           layout.starts_with("contents/macos/");
 }
 void appendFile(std::string& into,const std::filesystem::path& path,
                 const std::filesystem::path& relative) {

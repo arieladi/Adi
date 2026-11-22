@@ -144,6 +144,26 @@ void transactionalRecheck() {
           "a module reappearing after preflight is statted again and retains its success row");
 }
 std::string bytes(const fs::path& path){std::ifstream in(path,std::ios::binary);return {std::istreambuf_iterator<char>(in),{}};}
+void canonicalSpellingAndRootSeparator() {
+    Fixture f;
+    const auto oldName=f.clap/"OldName.clap",newName=f.clap/"oldname.clap";
+    const auto intermediate=f.clap/"rename-in-progress";
+    write(oldName);
+    f.success("clap",oldName);
+    fs::rename(oldName,intermediate);
+    fs::rename(intermediate,newName);
+    f.success("clap",newName);
+    const auto missing=f.clap/"gone.clap";
+    f.success("clap",missing);
+    ScanPruneRequest request;
+    request.roots={{"clap",f.clap/""}};
+    request.discoveryComplete=true;
+    if(!bindScanPruneRoots(request))throw std::runtime_error("could not bind root with trailing separator");
+    const auto result=pruneMissingScans(f.file,request);
+    check(result && result.cacheRowsRemoved==2 && !f.cached("clap",oldName) &&
+          !f.cached("clap",missing) && f.cached("clap",newName),
+          "a root with a separator prunes missing keys and obsolete case-only spellings only");
+}
 void waitsForRegistryReader() {
     using namespace std::chrono_literals;
     Fixture f;
@@ -198,8 +218,10 @@ void legacyNoMigration() {
           "unexpected failure view is not mistaken for a genuine early-v3 no-op");
 }
 #if defined(_WIN32)
-bool junction(const fs::path& link,const fs::path& target) {
-    const auto print=fs::canonical(target).wstring(),substitute=L"\\??\\"+print;
+bool junction(const fs::path& link,const fs::path& target,bool trailing=false) {
+    auto print=fs::canonical(target).wstring();
+    if(trailing)print+=L'\\';
+    const auto substitute=L"\\??\\"+print;
     struct Data {DWORD tag=IO_REPARSE_TAG_MOUNT_POINT;WORD bytes=0,reserved=0;
         WORD substituteOffset=0,substituteBytes=0,printOffset=0,printBytes=0;wchar_t names[2048]{};} data;
     static_assert(offsetof(Data,names)==16);
@@ -224,14 +246,15 @@ void movedAliasParent() {
 }
 void danglingAlias() {
     Fixture f;const auto target=f.clap/"gone-target",alias=f.clap/"dangling.clap",other=f.clap/"unrelated.clap";
-    fs::create_directory(target);f.success("clap",target);f.success("clap",other);
-    if(!junction(alias,target))throw std::runtime_error("owned dangling junction setup failed");
+    const auto child=target/"old.clap";
+    fs::create_directory(target);f.success("clap",target);f.success("clap",child);f.success("clap",other);
+    if(!junction(alias,target,true))throw std::runtime_error("owned dangling junction setup failed");
     fs::remove(target);
     const auto result=pruneMissingScans(f.file,f.request());
     if(!result || result.cacheRowsRemoved!=1 || !f.cached("clap",target) || f.cached("clap",other))
         std::printf("dangling diagnostic: status=%d removed=%llu target=%d other=%d error=%s\n",static_cast<int>(result.status),
             static_cast<unsigned long long>(result.cacheRowsRemoved),f.cached("clap",target)?1:0,f.cached("clap",other)?1:0,result.error.c_str());
-    check(result && result.cacheRowsRemoved==1 && f.cached("clap",target) && !f.cached("clap",other),
+    check(result && result.cacheRowsRemoved==1 && f.cached("clap",target) && f.cached("clap",child) && !f.cached("clap",other),
           "confirmed dangling candidate alias preserves its canonical target but does not prevent unrelated cleanup");
     fs::remove(alias);
 }
@@ -257,7 +280,7 @@ void rootRebind() {
 }
 #endif
 } // namespace
-int main(){try{staleAndProtected();noWriteAndPartial();transactionalRecheck();waitsForRegistryReader();legacyNoMigration();
+int main(){try{staleAndProtected();noWriteAndPartial();transactionalRecheck();canonicalSpellingAndRootSeparator();waitsForRegistryReader();legacyNoMigration();
 #if defined(_WIN32)
 movedAliasParent();danglingAlias();rootRebind();
 #endif
