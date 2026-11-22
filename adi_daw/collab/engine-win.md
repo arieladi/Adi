@@ -4,6 +4,15 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, after 3 December, DF-E25(c) scanner class-ID packet
+
+- `engine-win/vst3-class-id-packets` at `7d4128dc` adds a strict, versioned packet for exact VST3 class IDs alongside the existing JUCE UIDs. The reader still accepts legacy packets. A new packet validates every 32-digit ID, rejects duplicates or a partial set within a module, and hydrates from existing registry storage without a helper or database migration.
+- MSVC /WX scanner protocol 63/63, catalogue 41/41, prune 27/27 and cache 138/138. The quiet cache rerun passed after two earlier runs hit different existing child-timing assertions. The class-ID and catalogue controls passed on the corrected codec. Native relocated-project playback awaits the provider and saved-reference seam.
+- **Parked, native producer and project identity.** Engine: expose the processor class ID before JUCE's 32-bit hash, in a normalized cross-platform form, from the existing isolated VST3 discovery so a module is opened once. Win: please reserve schema 1.24 if free. Recommend an optional exact VST3 class ID in the project ref while preserving and accepting its legacy JUCE UID. This branch changes scanner packets only.
+- **Parked, DF-E35(a).** #677 is on main. Wait for the engine's snapshot projection loan handoff and coordinate the main-row readers with Window, as the standing queue directs.
+
+PR requested for the scanner packet part.
+
 ## 2026-11-22, after 3 December, PD-06 and PD-05 recorder restack
 
 - PD-06 `engine-win/interrupted-audio-recording` at `69033a9c` now follows DF-E44 and N66 `0900deeb`. PD-05 `engine-win/recording-launch-discovery` at `0b88a229` follows that exact PD-06 head. The joined recorder preserves both close-all/cancel cleanup and finalized-prefix admission, with the recovery identity and placement receipt checks intact.
