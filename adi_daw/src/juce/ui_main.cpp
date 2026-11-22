@@ -153,7 +153,19 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // The MIDI ports (SRF-05): listed and opened by the Settings' MIDI Ports; never in a smoke run.
         if (smokeOutput_ == juce::File{}) {
-            midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); });
+            // A port's record keeps its name, and follows the port to a new identifier (N61): written and
+            // saved as a switch is.
+            midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); },
+                                                        [this](const settings::Value &ports) {
+                                                            std::string why;
+                                                            if (!settings_->set("midi.ports", ports,
+                                                                                {settings::Actor::User, {},
+                                                                                 juce::Time::currentTimeMillis() * 1000},
+                                                                                why))
+                                                                return false;
+                                                            (void)settings_->save(why);
+                                                            return true;
+                                                        });
             midiPorts_->setFeed(&midiFeed_);
             midiPorts_->onInputsChanged = [this] {
                 if (document_)

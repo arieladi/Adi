@@ -32,12 +32,15 @@
 namespace adi::ui {
 class MidiPortHost final : private juce::ump::EndpointsListener {
   public:
-    // `ports` reads the `midi.ports` record as the Settings hold it now.
-    explicit MidiPortHost(std::function<settings::Value()> ports);
+    // `ports` reads the `midi.ports` record as the Settings hold it now. `write`, when given, writes it back
+    // when a listing brought it up to date (N61): each listed port's name kept with its record, and a record
+    // moved to a port's new identifier; true when the Settings took it. Without it the record is only read.
+    using Writer = std::function<bool(const settings::Value &)>;
+    explicit MidiPortHost(std::function<settings::Value()> ports, Writer write = {});
     struct Port;
     // For tests: a host over a fixed list of ports, their switches read from the record as the system's
     // are; it opens nothing and follows no hot-plug.
-    MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed);
+    MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed, Writer write = {});
     ~MidiPortHost() override;
     MidiPortHost(const MidiPortHost &) = delete;
     MidiPortHost &operator=(const MidiPortHost &) = delete;
@@ -76,7 +79,9 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
   private:
     struct Input;
     void endpointsChanged() override;
+    settings::Value reconciled(const std::vector<Port> &listed);
     std::function<settings::Value()> read_;
+    Writer write_;
     bool fixed_ = false;
     std::vector<Port> fixedPorts_;
     std::optional<juce::ump::Session> session_; // none for a fixed list
