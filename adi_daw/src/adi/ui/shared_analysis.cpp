@@ -2,6 +2,7 @@
 #include "shared_analysis.hpp"
 #include "adi/dsp/masking.hpp"
 #include "adi/dsp/spectrum_average.hpp"
+#include "adi/dsp/true_peak.hpp"
 #include "adi/ui/focus_lag.hpp"
 #include "adi/ui/focus_scope.hpp"
 #include <algorithm>
@@ -566,6 +567,38 @@ class SpectrumLevelHistory {
         }
     }
 };
+
+class SpectrumTruePeakHistory {
+  public:
+    SpectrumTruePeakHistory(double rate, std::int64_t admission) : admission_(admission) {
+        for (auto &meter : meters_) meter.prepare(rate, 1);
+    }
+    void reset() noexcept {
+        for (auto &meter : meters_) meter.reset();
+        hasSamples_ = false;
+    }
+    void startAt(std::int64_t admission) noexcept { admission_ = admission; reset(); }
+
+    void advance(std::int64_t first, std::span<const float> left, std::span<const float> right) noexcept {
+        const auto begin = static_cast<std::size_t>(std::clamp(admission_ - first,
+            std::int64_t{0}, static_cast<std::int64_t>(left.size())));
+        if (begin == left.size()) return;
+        const std::array input{left.data() + begin, right.data() + begin};
+        const auto frames = static_cast<int>(left.size() - begin);
+        for (std::size_t channel = 0; channel < meters_.size(); ++channel)
+            meters_[channel].process(&input[channel], 1, frames);
+        hasSamples_ = true;
+    }
+    std::optional<std::array<double, 2>> reading() const noexcept {
+        if (!hasSamples_) return {};
+        return std::array{meters_[0].peak(), meters_[1].peak()};
+    }
+
+  private:
+    std::array<dsp::TruePeakMeter, 2> meters_;
+    std::int64_t admission_;
+    bool hasSamples_ = false;
+};
 } // namespace
 struct SharedAnalysis::SpectrumBlockAverage {
     // Worker and owner mutations hold the domain mutex. Readers see immutable snapshots.
@@ -670,6 +703,9 @@ struct SharedAnalysis::Domain {
     std::size_t spectrumLevelUsers = 0;
     std::unique_ptr<SpectrumLevelHistory> spectrumLevelHistory;
     std::atomic<bool> spectrumLevelsActive{false}, spectrumLevelsParkedSettled{true};
+    std::size_t spectrumTruePeakUsers = 0;
+    std::unique_ptr<SpectrumTruePeakHistory> spectrumTruePeakHistory;
+    std::atomic<bool> spectrumTruePeakActive{false};
     std::atomic<bool> balanceParkedSettled{true};
     std::size_t balanceUsers = 0;
     std::vector<std::shared_ptr<SpectrumBlockAverage>> blockAverages;
@@ -964,6 +1000,7 @@ struct SharedAnalysis::Domain {
         }
         spectrumLevelsActive.store(static_cast<bool>(spectrumLevelHistory), std::memory_order_release);
         spectrumLevelsParkedSettled.store(!spectrumLevelHistory, std::memory_order_release);
+        if (spectrumTruePeakUsers) prepareSpectrumTruePeak();
         dirty.store(true, std::memory_order_release);
     }
     void changeSpectrumLevelDemand(bool enabled) noexcept {
@@ -971,6 +1008,28 @@ struct SharedAnalysis::Domain {
             if (++spectrumLevelUsers == 1) prepareSpectrumLevels();
         } else if (--spectrumLevelUsers == 0) {
             prepareSpectrumLevels();
+        }
+    }
+    void prepareSpectrumTruePeak() noexcept {
+        spectrumTruePeakHistory.reset();
+        if (spectrumLevelHistory && spectrumLevelHistory->completed)
+            spectrumLevelHistory->completed->truePeak.reset();
+        if (spectrumTruePeakUsers && spectrumLevelHistory && tap) {
+            try {
+                spectrumTruePeakHistory = std::make_unique<SpectrumTruePeakHistory>(tap->sampleRate(), tap->written());
+                spectrumLevelsParkedSettled.store(false, std::memory_order_release);
+            } catch (...) { /* Sample statistics remain available. */ }
+        }
+        spectrumTruePeakActive.store(static_cast<bool>(spectrumTruePeakHistory), std::memory_order_release);
+    }
+    void changeSpectrumTruePeakDemand(bool enabled) noexcept {
+        if (enabled) {
+            if (++spectrumTruePeakUsers == 1) {
+                catchUpParkedSilence();
+                prepareSpectrumTruePeak();
+            }
+        } else if (--spectrumTruePeakUsers == 0) {
+            prepareSpectrumTruePeak();
         }
     }
     std::shared_ptr<SpectrumBlockAverage> admitBlockAverage(
@@ -1010,6 +1069,7 @@ struct SharedAnalysis::Domain {
                 spectrumLevelHistory->reset();
                 spectrumLevelsParkedSettled.store(false, std::memory_order_release);
             }
+            if (spectrumTruePeakHistory) spectrumTruePeakHistory->reset();
             resetAverageForGap();
             // A discontinuity clears the history but cannot admit older
             // samples from the same tap. A replacement tap uses startAt().
@@ -1058,6 +1118,7 @@ struct SharedAnalysis::Domain {
             spectrumLevelHistory->startAt(cursor.next);
             spectrumLevelsParkedSettled.store(false, std::memory_order_release);
         }
+        if (spectrumTruePeakHistory) spectrumTruePeakHistory->startAt(cursor.next);
         activateAverage(sequence);
         activateMaximum(sequence);
         activateSigma(sequence);
@@ -1109,6 +1170,10 @@ struct SharedAnalysis::Domain {
             spectrumLevelHistory.reset();
             spectrumLevelsActive.store(false, std::memory_order_release);
             spectrumLevelsParkedSettled.store(true, std::memory_order_release);
+        }
+        if (!bits && spectrumTruePeakHistory) {
+            spectrumTruePeakHistory.reset();
+            spectrumTruePeakActive.store(false, std::memory_order_release);
         }
         if (!(bits & PhaseBands)) phaseBandPlan.reset();
         if (!(bits & Strip) && strip) {
@@ -1409,6 +1474,8 @@ struct SharedAnalysis::Domain {
         if (spectrumLevelHistory) {
             if (newWindow) {
                 spectrumLevelHistory->completeWindow();
+                if (spectrumTruePeakHistory && spectrumLevelHistory->completed)
+                    spectrumLevelHistory->completed->truePeak = spectrumTruePeakHistory->reading();
                 spectrumLevelsParkedSettled.store(spectrumLevelHistory->completed && spectrumLevelHistory->silent(),
                                                   std::memory_order_release);
             }
@@ -2269,7 +2336,7 @@ struct SharedAnalysis::State {
               const std::shared_ptr<CumulativeHistory> &cumulative,
               const std::shared_ptr<SpectrumBlockAverage> &blockAverage,
               const std::shared_ptr<CumulativeAverageHistory> &cumulativeAverage, bool balanceEnabled,
-              bool spectrumLevelsEnabled) noexcept {
+              bool spectrumLevelsEnabled, bool spectrumTruePeakEnabled) noexcept {
         ownerOnly();
         bool detach = false;
         const auto key = domain->request.source();
@@ -2281,6 +2348,7 @@ struct SharedAnalysis::State {
             if (domain->consumers) {
                 std::lock_guard domainLock(domain->mutex);
                 if (balanceEnabled) domain->changeBalanceDemand(false);
+                if (spectrumTruePeakEnabled) domain->changeSpectrumTruePeakDemand(false);
                 if (spectrumLevelsEnabled) domain->changeSpectrumLevelDemand(false);
                 domain->dropCumulative(cumulative);
                 domain->dropBlockAverage(blockAverage);
@@ -2435,8 +2503,9 @@ struct SharedAnalysis::State {
                 samples += static_cast<std::size_t>(read.frames);
                 if (d.spectrumLevelHistory) {
                     const auto frames = static_cast<std::size_t>(read.frames);
-                    d.spectrumLevelHistory->advance(read.firstSequence, std::span(readLeft).first(frames),
-                                                    std::span(readRight).first(frames));
+                    const auto left = std::span(readLeft).first(frames), right = std::span(readRight).first(frames);
+                    d.spectrumLevelHistory->advance(read.firstSequence, left, right);
+                    if (d.spectrumTruePeakHistory) d.spectrumTruePeakHistory->advance(read.firstSequence, left, right);
                 }
                 for (std::int32_t i = 0; i < read.frames; ++i) {
                     d.ringLeft[d.position] = readLeft[static_cast<std::size_t>(i)];
@@ -2572,7 +2641,8 @@ SharedAnalysis::Lease::Lease(Lease &&other) noexcept
     : state_(std::move(other.state_)), domain_(std::move(other.domain_)), cumulative_(std::move(other.cumulative_)),
       spectrumBlockAverage_(std::move(other.spectrumBlockAverage_)), cumulativeAverage_(std::move(other.cumulativeAverage_)),
       outputs_(std::exchange(other.outputs_, 0)), balanceEnabled_(std::exchange(other.balanceEnabled_, false)),
-      spectrumLevelsEnabled_(std::exchange(other.spectrumLevelsEnabled_, false)) {}
+      spectrumLevelsEnabled_(std::exchange(other.spectrumLevelsEnabled_, false)),
+      spectrumTruePeakEnabled_(std::exchange(other.spectrumTruePeakEnabled_, false)) {}
 SharedAnalysis::Lease &SharedAnalysis::Lease::operator=(Lease &&other) noexcept {
     if (this != &other) {
         reset();
@@ -2584,14 +2654,17 @@ SharedAnalysis::Lease &SharedAnalysis::Lease::operator=(Lease &&other) noexcept 
         outputs_ = std::exchange(other.outputs_, 0);
         balanceEnabled_ = std::exchange(other.balanceEnabled_, false);
         spectrumLevelsEnabled_ = std::exchange(other.spectrumLevelsEnabled_, false);
+        spectrumTruePeakEnabled_ = std::exchange(other.spectrumTruePeakEnabled_, false);
     }
     return *this;
 }
 void SharedAnalysis::Lease::reset() noexcept {
     if (domain_) if (auto state = state_.lock())
-        state->drop(domain_, outputs_, cumulative_, spectrumBlockAverage_, cumulativeAverage_, balanceEnabled_, spectrumLevelsEnabled_);
+        state->drop(domain_, outputs_, cumulative_, spectrumBlockAverage_, cumulativeAverage_, balanceEnabled_,
+                    spectrumLevelsEnabled_, spectrumTruePeakEnabled_);
     balanceEnabled_ = false;
     spectrumLevelsEnabled_ = false;
+    spectrumTruePeakEnabled_ = false;
     cumulativeAverage_.reset();
     spectrumBlockAverage_.reset();
     cumulative_.reset(); domain_.reset(); state_.reset(); outputs_ = 0;
@@ -2667,8 +2740,21 @@ void SharedAnalysis::Lease::setSpectrumLevelsEnabled(bool enabled) noexcept {
     state->ownerOnly();
     const std::lock_guard lock(domain_->mutex);
     if (enabled) domain_->catchUpParkedSilence();
+    else if (spectrumTruePeakEnabled_) {
+        domain_->changeSpectrumTruePeakDemand(false);
+        spectrumTruePeakEnabled_ = false;
+    }
     domain_->changeSpectrumLevelDemand(enabled);
     spectrumLevelsEnabled_ = enabled;
+}
+void SharedAnalysis::Lease::setSpectrumTruePeakEnabled(bool enabled) noexcept {
+    if (enabled == spectrumTruePeakEnabled_ || !spectrumLevelsEnabled_ || !domain_) return;
+    const auto state = state_.lock();
+    if (!state || !domain_->active.load(std::memory_order_acquire)) return;
+    state->ownerOnly();
+    const std::lock_guard lock(domain_->mutex);
+    domain_->changeSpectrumTruePeakDemand(enabled);
+    spectrumTruePeakEnabled_ = enabled;
 }
 bool SharedAnalysis::Lease::restartSpectrumLevels() noexcept {
     const auto state = state_.lock();
@@ -2679,7 +2765,9 @@ bool SharedAnalysis::Lease::restartSpectrumLevels() noexcept {
     // The expanded Spectrum owns this interval. Keep any normal Spectrum
     // readers and the last immutable window on the existing source timeline.
     domain_->catchUpParkedSilence();
-    domain_->spectrumLevelHistory->startAt(domain_->tap->written());
+    const auto admission = domain_->tap->written();
+    domain_->spectrumLevelHistory->startAt(admission);
+    if (domain_->spectrumTruePeakHistory) domain_->spectrumTruePeakHistory->startAt(admission);
     domain_->spectrumLevelsParkedSettled.store(false, std::memory_order_release);
     return true;
 }
@@ -3135,6 +3223,7 @@ SharedAnalysis::Stats SharedAnalysis::stats() const {
                                 static_cast<std::size_t>(domain->phaseBandPlan != nullptr);
         result.stereoBalanceHistories += static_cast<std::size_t>(domain->balanceActive.load(std::memory_order_acquire));
         result.spectrumLevelHistories += static_cast<std::size_t>(domain->spectrumLevelsActive.load(std::memory_order_acquire));
+        result.spectrumTruePeakHistories += static_cast<std::size_t>(domain->spectrumTruePeakActive.load(std::memory_order_acquire));
         result.droppedHistoryColumns += domain->droppedHistory.load(std::memory_order_relaxed);
     }
     result.historyBytes = state_->historyBudget->bytes.load(std::memory_order_acquire);

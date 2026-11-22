@@ -60,6 +60,7 @@ class SharedSpectrumView final : public juce::Component,
     void enablePhaseBands();
     void setStereoBalanceEnabled(bool) noexcept;
     void setSpectrumLevelsEnabled(bool) noexcept;
+    void setSpectrumTruePeakEnabled(bool) noexcept;
     void setSource(engine::ScopePoint, std::int64_t device = 0);
     engine::ScopePoint point() const noexcept { return point_; }
     void setChannel(SharedAnalysis::Channel);
@@ -182,6 +183,7 @@ class SharedSpectrumView final : public juce::Component,
     bool phaseBandsEnabled_ = false;
     bool stereoBalanceEnabled_ = false;
     bool spectrumLevelsEnabled_ = false;
+    bool spectrumTruePeakEnabled_ = false;
     SpectrumOverlayProfile overlayProfile_ = SpectrumOverlayProfile::Standard;
     double overviewRate_ = 0.;
     std::int32_t overviewFftSize_ = 1024, activeSpectrumFftSize_ = 1024;

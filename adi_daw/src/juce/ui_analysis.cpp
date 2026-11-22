@@ -461,6 +461,11 @@ void SharedSpectrumView::setSpectrumLevelsEnabled(bool value) noexcept {
     spectrumLevelsEnabled_ = value;
     lease_.setSpectrumLevelsEnabled(value && supportsSpectrumOverlays(mode_));
 }
+void SharedSpectrumView::setSpectrumTruePeakEnabled(bool value) noexcept {
+    if (spectrumTruePeakEnabled_ == value) return;
+    spectrumTruePeakEnabled_ = value;
+    lease_.setSpectrumTruePeakEnabled(value && spectrumLevelsEnabled_ && supportsSpectrumOverlays(mode_));
+}
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
     releaseSpectrumOverlays();
@@ -942,8 +947,11 @@ void SharedSpectrumView::updateDemand() noexcept {
             try {
                 lease_ = broker_->acquire(request);
                 if (supportsSpectrumOverlays(mode_)) {
+                    if (spectrumLevelsEnabled_) {
+                        lease_.setSpectrumLevelsEnabled(true);
+                        if (spectrumTruePeakEnabled_) lease_.setSpectrumTruePeakEnabled(true);
+                    }
                     if (stereoBalanceEnabled_) lease_.setStereoBalanceEnabled(true);
-                    if (spectrumLevelsEnabled_) lease_.setSpectrumLevelsEnabled(true);
                 }
                 sourcePosition_ = lease_.sourcePosition();
                 clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;

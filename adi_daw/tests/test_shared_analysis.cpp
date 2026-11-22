@@ -4,6 +4,7 @@
 #include "adi/ui/focus_lag.hpp"
 #include "adi/ui/focus_scope.hpp"
 #include "adi/dsp/spectrum_average.hpp"
+#include "adi/dsp/true_peak.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/store.hpp"
@@ -3731,7 +3732,120 @@ void restartParkedSpectrumLevels() {
           "first same-stamp monitoring after a parked Reset retains the original hop and a fresh statistics denominator");
 }
 
-void parkedSpectrumLevels() {
+void spectrumTruePeak() {
+    constexpr int window = 480, hop = 240, toneFrames = 4 * hop;
+    constexpr std::uint64_t revision = 63;
+    constexpr std::array chunks{61, 317, 7, 179, 396};
+    const float toneLeft = 1.2f * std::sqrt(.5f), toneRight = .65f * std::sqrt(.5f);
+    for (const int rate : {44100, 48000, 96000, 192000}) {
+        Fixture f;
+        f.tap = std::make_shared<ScopeTap>(static_cast<double>(rate), .25);
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window, SharedAnalysis::Channel::Left};
+        request.hopSize = hop;
+        request.window = adi::dsp::Window::Rectangular;
+        auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+        raw.setSpectrumTruePeakEnabled(true);
+        levels.setSpectrumLevelsEnabled(true);
+        std::array<float, toneFrames> left{}, right{};
+        std::int64_t stamp = 0;
+        const auto write = [&](const float *l, const float *r, int count) {
+            f.tap->write(l, r, count, stamp, true, revision);
+            stamp += count;
+        };
+        const auto constant = [&](int frames, float l, float r) {
+            left.fill(l); right.fill(r);
+            write(left.data(), right.data(), frames);
+        };
+        constant(window, .25f, .125f);
+        f.broker.pump();
+        const auto initial = raw.read();
+        check(initial && initial->spectrumLevels && !initial->spectrumLevels->truePeak &&
+                  f.broker.stats().spectrumTruePeakHistories == 0,
+              "True Peak is off by default and a Raw lease cannot enable a levels observer's true peak");
+
+        constant(hop, 1.5f, -1.75f); // old programme remains unread when True Peak is enabled
+        levels.setSpectrumTruePeakEnabled(true);
+        f.broker.pump();
+        const auto baseline = raw.read();
+        const auto measured = f.broker.stats();
+        check(baseline && baseline->spectrumLevels &&
+                  (!baseline->spectrumLevels->truePeak || *baseline->spectrumLevels->truePeak == std::array{0., 0.}) &&
+                  baseline->spectrumLevels->samplePeak == std::array{1.5f, 1.75f} &&
+                  baseline->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{hop, hop} &&
+                  measured.spectrumTruePeakHistories == 1 && measured.taps == 1 && measured.spectralPlans == 1,
+              "opting into True Peak fences off buffered old programme without restarting sample statistics");
+
+        adi::dsp::TruePeakMeter leftOracle, rightOracle;
+        leftOracle.prepare(rate, 1); rightOracle.prepare(rate, 1);
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            const auto sign = (i % 4 < 2) ? 1.f : -1.f;
+            left[i] = sign * toneLeft; right[i] = sign * toneRight;
+        }
+        const float *leftLane = left.data(), *rightLane = right.data();
+        leftOracle.process(&leftLane, 1, toneFrames);
+        rightOracle.process(&rightLane, 1, toneFrames);
+        int cursor = 0;
+        for (const int count : chunks) {
+            write(left.data() + cursor, right.data() + cursor, count);
+            cursor += count;
+            f.broker.pump();
+        }
+        const auto peaked = levels.read();
+        const auto afterTone = f.broker.stats();
+        const auto programmes = window + hop + toneFrames;
+        const auto integratedL = std::sqrt((window * .0625 + hop * 2.25 +
+            toneFrames * static_cast<double>(toneLeft) * toneLeft) / programmes);
+        const auto integratedR = std::sqrt((window * .015625 + hop * 3.0625 +
+            toneFrames * static_cast<double>(toneRight) * toneRight) / programmes);
+        check(peaked && peaked == raw.read() && peaked->spectrumLevels && peaked->spectrumLevels->truePeak &&
+                  *peaked->spectrumLevels->truePeak == std::array{leftOracle.peak(), rightOracle.peak()} &&
+                  peaked->spectrumLevels->samplePeak == std::array{1.5f, 1.75f} &&
+                  peaked->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{hop, hop} &&
+                  near(peaked->spectrumLevels->integratedRms[0], integratedL, 1.e-9) &&
+                  near(peaked->spectrumLevels->integratedRms[1], integratedR, 1.e-9) &&
+                  afterTone.taps == measured.taps && afterTone.spectralPlans == measured.spectralPlans &&
+                  afterTone.transforms == measured.transforms + toneFrames / hop,
+              "irregular writes produce canonical per-channel True Peak without an extra FFT or altered sample history");
+        check(toneLeft < 1.f && (rate >= 176400 ?
+                  leftOracle.peak() == toneLeft && rightOracle.peak() == toneRight :
+                  leftOracle.peak() > 1.05 && leftOracle.peak() < 1.3 && rightOracle.peak() > toneRight),
+              "Fs/4 creates an intersample over on L below 176.4 kHz and follows the canonical high-rate sample path");
+
+        const bool reset = levels.restartSpectrumLevels();
+        check(reset && raw.read() == peaked && f.broker.stats().spectrumTruePeakHistories == 1,
+              "local statistics Reset preserves the running Raw result and the opted-in observer");
+        constant(hop, 0.f, 0.f);
+        f.broker.pump();
+        const auto quiet = raw.read();
+        check(peaked && quiet && quiet->spectrumLevels && quiet->spectrumLevels->truePeak &&
+                  *quiet->spectrumLevels->truePeak == std::array{0., 0.} &&
+                  quiet->spectrumLevels->samplePeak == std::array{0.f, 0.f} &&
+                  quiet->peak[0] == toneLeft && quiet->sourceEpoch == peaked->sourceEpoch,
+              "Reset clears FIR and held state, even while the overlapping Raw window still contains the old tone");
+
+        constant(hop, .125f, .25f);
+        f.broker.pump();
+        levels.setSpectrumTruePeakEnabled(false);
+        constant(hop, .0625f, .125f);
+        f.broker.pump();
+        const auto disabled = raw.read();
+        check(disabled && disabled->spectrumLevels && !disabled->spectrumLevels->truePeak &&
+                  disabled->spectrumLevels->samplePeak == std::array{.125f, .25f} &&
+                  f.broker.stats().spectrumTruePeakHistories == 0 && f.broker.stats().spectrumLevelHistories == 1,
+              "disabling True Peak frees only that observer's meter and keeps held sample history");
+
+        levels.setSpectrumTruePeakEnabled(true);
+        const auto shown = f.broker.stats();
+        levels.reset();
+        const auto hidden = f.broker.stats();
+        check(shown.spectrumTruePeakHistories == 1 && hidden.spectrumTruePeakHistories == 0 &&
+                  hidden.spectrumLevelHistories == 0 && hidden.taps == 1 && hidden.spectralPlans == 1 &&
+                  f.acquireCalls == 1 && f.releaseCalls == 0,
+              "hiding the levels view drops both optional histories while an ordinary Raw reader shares the tap");
+    }
+}
+
+void parkedSpectrumLevels(bool withTruePeak) {
     constexpr int window = 480, hop = 240, block = 401, blocks = 33;
     constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
     Fixture parked, reference;
@@ -3741,6 +3855,7 @@ void parkedSpectrumLevels() {
     request.fftSize = window; request.hopSize = hop;
     auto levels = parked.broker.acquire(request), continuous = reference.broker.acquire(request);
     levels.setSpectrumLevelsEnabled(true); continuous.setSpectrumLevelsEnabled(true);
+    levels.setSpectrumTruePeakEnabled(withTruePeak); continuous.setSpectrumTruePeakEnabled(withTruePeak);
     const std::array<float, window> zeros{};
     std::array<float, window> live;
     live.fill(.5f);
@@ -3756,6 +3871,7 @@ void parkedSpectrumLevels() {
     }
     const auto idle = parked.broker.stats();
     check(parked.tap->oldest() > window && start && start->spectrumLevels && levels.read() == start &&
+              start->spectrumLevels->truePeak.has_value() == withTruePeak &&
               idle.cursorReads == settled.cursorReads && idle.analysisWindows == settled.analysisWindows &&
               idle.transforms == settled.transforms && idle.publications == settled.publications,
           "an exact-zero level interval stays parked without further reads or publications at a ring wrap");
@@ -3772,6 +3888,8 @@ void parkedSpectrumLevels() {
               resumed->spectrumLevels->samplePeak == oracle->spectrumLevels->samplePeak &&
               resumed->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{} &&
               resumed->spectrumLevels->sampleClips == oracle->spectrumLevels->sampleClips &&
+              resumed->spectrumLevels->truePeak.has_value() == withTruePeak &&
+              resumed->spectrumLevels->truePeak == oracle->spectrumLevels->truePeak &&
               resumed->spectrumLevels->maxCrestDb.front() > 0.,
           "parked levels count the omitted zeros for the exact uninterrupted RMS and crest on wake");
 }
@@ -5066,7 +5184,7 @@ int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); parkedSpectrumLevels(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

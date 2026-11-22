@@ -5,6 +5,7 @@
 #include "adi/ui/window_state.hpp"
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <map>
 
 namespace adi::ui {
@@ -344,9 +345,13 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
 };
 
 class MixAnalysers::SpectrumStatistics final : public juce::Component {
+    using Picture = std::shared_ptr<const SharedAnalysis::Result>;
+
   public:
     SpectrumStatistics() {
-        setInterceptsMouseClicks(false, false);
+        setInterceptsMouseClicks(false, true);
+        for (auto *label : {&balance_, &correlation_, &integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_})
+            label->setInterceptsMouseClicks(false, false);
         balance_.setTitle("RMS Balance");
         balance_.setTooltip("Left and right RMS balance over the most recent two seconds of the primary Spectrum source.");
         correlation_.setTitle("Stereo Correlation");
@@ -363,11 +368,15 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         sampleClips_.setTitle("Sample Clips");
         sampleClips_.setTooltip("Number of left and right samples with magnitude above full scale in this level interval.");
         for (auto *label : {&integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_}) addChildComponent(*label);
+        truePeak_.setTitle("Spectrum True Peak");
+        truePeak_.setTooltip("Show held true peak for each channel. Sample clip counts remain visible.");
+        truePeak_.onClick = [this] { if (onTruePeakChanged) onTruePeakChanged(); };
+        addChildComponent(truePeak_);
         refreshAppearance();
     }
 
-    void present(const std::shared_ptr<const SharedAnalysis::Result> &window) {
-        if (!window.owner_before(last_) && !last_.owner_before(window)) return;
+    void present(const Picture &window) {
+        if (samePicture(window, last_)) return;
         last_ = window;
         juce::String balance("--"), correlation("--");
         if (window && window->balanceRms2s) {
@@ -387,23 +396,34 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         }
         balance_.setText("RMS balance " + balance, juce::dontSendNotification);
         correlation_.setText("Correlation " + correlation, juce::dontSendNotification);
-        if (levelRowsVisible_)
-            presentLevels(window && !window.owner_before(levelsBeforeAdmission_) &&
-                          !levelsBeforeAdmission_.owner_before(window) ? nullptr : window.get());
+        if (levelRowsVisible_) presentLevels(window);
     }
 
-    void setLevelRowsVisible(bool visible, const std::shared_ptr<const SharedAnalysis::Result> &current) {
+    std::function<void()> onTruePeakChanged;
+    bool truePeakRequested() const noexcept { return levelRowsVisible_ && truePeak_.getToggleState(); }
+    void updateTruePeakReadout(const Picture &current) {
+        const bool enabled = truePeak_.getToggleState();
+        if (enabled) truePeakBeforeAdmission_ = current;
+        else truePeakBeforeAdmission_.reset();
+        samplePeak_.setTitle(enabled ? "True Peak" : "Sample Peak");
+        samplePeak_.setTooltip(enabled ? "Highest left and right reconstructed peaks in this true peak interval."
+                                      : "Highest left and right sample peaks in this level interval.");
+        presentLevels(current);
+    }
+
+    void setLevelRowsVisible(bool visible, const Picture &current) {
         if (levelRowsVisible_ == visible) return;
         levelRowsVisible_ = visible;
         if (visible) {
             // The curve can remain on screen when a new level interval is admitted.
             // Its old integrated readings do not belong to the new interval.
             levelsBeforeAdmission_ = current;
-            presentLevels(nullptr);
+            presentLevels({});
         } else {
             levelsBeforeAdmission_.reset();
         }
         for (auto *label : {&integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_}) label->setVisible(visible);
+        truePeak_.setVisible(visible);
     }
 
     void refreshAppearance() {
@@ -426,22 +446,32 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         placeRow(area.removeFromTop(look::mixChannelRowHeight), balance_, correlation_);
         if (levelRowsVisible_) {
             placeRow(area.removeFromTop(look::mixChannelRowHeight), integratedRms_, maxCrest_);
+            truePeak_.setBounds(area.removeFromLeft(look::mixChannelLevelWidth + look::fieldHeight));
+            area.removeFromLeft(look::gap);
             placeRow(area, samplePeak_, sampleClips_);
         }
     }
     void visibilityChanged() override { if (!isShowing()) present({}); }
 
   private:
-    void presentLevels(const SharedAnalysis::Result *window) {
+    static bool samePicture(const Picture &picture, const std::weak_ptr<const SharedAnalysis::Result> &reference) noexcept {
+        return !picture.owner_before(reference) && !reference.owner_before(picture);
+    }
+
+    void presentLevels(const Picture &window) {
+        const bool showTruePeak = truePeak_.getToggleState();
         std::array<juce::String, 2> rms{"--", "--"}, crest{"--", "--"};
         std::array<juce::String, 2> peak{"--", "--"}, clips{"--", "--"};
-        if (window && window->spectrumLevels) {
+        if (window && window->spectrumLevels && !samePicture(window, levelsBeforeAdmission_)) {
             const auto &levels = *window->spectrumLevels;
+            const bool truePeakReady = levels.truePeak && !samePicture(window, truePeakBeforeAdmission_);
             const auto text = [](double db) { return juce::String(std::abs(db) < .05 ? 0. : db, 1); };
             for (std::size_t channel = 0; channel < rms.size(); ++channel) {
-                const auto samplePeak = levels.samplePeak[channel];
-                if (std::isfinite(samplePeak) && samplePeak > 0.f) {
-                    const double db = 20. * std::log10(static_cast<double>(samplePeak));
+                const double peakValue = showTruePeak
+                    ? (truePeakReady ? (*levels.truePeak)[channel] : 0.)
+                    : static_cast<double>(levels.samplePeak[channel]);
+                if (std::isfinite(peakValue) && peakValue > 0.) {
+                    const double db = 20. * std::log10(peakValue);
                     peak[channel] = juce::String(db >= .05 ? "+" : "") + text(db);
                 }
                 clips[channel] = juce::String(static_cast<juce::uint64>(levels.sampleClips[channel]));
@@ -455,13 +485,15 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         integratedRms_.setText("Integrated RMS  L " + rms[0] + "  R " + rms[1] + " dBFS",
                                juce::dontSendNotification);
         maxCrest_.setText("Max crest  L " + crest[0] + "  R " + crest[1] + " dB", juce::dontSendNotification);
-        samplePeak_.setText("Sample peak  L " + peak[0] + "  R " + peak[1] + " dBFS", juce::dontSendNotification);
+        samplePeak_.setText((showTruePeak ? "True peak  L " : "Sample peak  L ") + peak[0] + "  R " + peak[1] +
+                            (showTruePeak ? " dBTP" : " dBFS"), juce::dontSendNotification);
         sampleClips_.setText("Sample clips  L " + clips[0] + "  R " + clips[1], juce::dontSendNotification);
     }
 
     juce::Label balance_, correlation_, integratedRms_, maxCrest_, samplePeak_, sampleClips_;
+    juce::ToggleButton truePeak_{"TP"};
     std::optional<std::pair<ThemeId, DensityId>> appearance_;
-    std::weak_ptr<const SharedAnalysis::Result> last_, levelsBeforeAdmission_;
+    std::weak_ptr<const SharedAnalysis::Result> last_, levelsBeforeAdmission_, truePeakBeforeAdmission_;
     bool levelRowsVisible_ = false;
 };
 
@@ -469,6 +501,10 @@ MixAnalysers::MixAnalysers() {
     table_ = std::make_unique<Table>(*this);
     compare_ = std::make_unique<Compare>(*this);
     spectrumStatistics_ = std::make_unique<SpectrumStatistics>();
+    spectrumStatistics_->onTruePeakChanged = [this] {
+        spectrumStatistics_->updateTruePeakReadout(detail.view.snapshot());
+        detail.view.setSpectrumTruePeakEnabled(spectrumStatistics_->truePeakRequested());
+    };
     setTitle("Analysers");
     pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Classic Scope", "Phase", "Loudness", "Analysis",
                          "1 s Average", "Compare"}, 1);
@@ -765,7 +801,9 @@ void MixAnalysers::resized() {
         area.getHeight() >= look::mixInfoHeight + 3 * look::mixChannelRowHeight;
     spectrumStatistics_->setVisible(showStatistics);
     spectrumStatistics_->setLevelRowsVisible(showLevels, detail.view.snapshot());
-    detail.view.setSpectrumLevelsEnabled(showLevels);
+    if (showLevels) detail.view.setSpectrumLevelsEnabled(true);
+    detail.view.setSpectrumTruePeakEnabled(spectrumStatistics_->truePeakRequested());
+    if (!showLevels) detail.view.setSpectrumLevelsEnabled(false);
     detail.view.setStereoBalanceEnabled(showStatistics);
     if (showStatistics)
         spectrumStatistics_->setBounds(area.removeFromBottom((showLevels ? 3 : 1) * look::mixChannelRowHeight));

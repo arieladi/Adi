@@ -2415,6 +2415,97 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         pages.followSelection(false);
         root.frame();
 
+        const auto findTruePeak = [](const auto &walk, juce::Component &node) -> juce::ToggleButton * {
+            if (auto *button = dynamic_cast<juce::ToggleButton *>(&node);
+                button && button->getTitle() == "Spectrum True Peak") return button;
+            for (auto *child : node.getChildren())
+                if (auto *button = walk(walk, *child)) return button;
+            return nullptr;
+        };
+        auto *truePeakSwitch = findTruePeak(findTruePeak, pages);
+        check(truePeakSwitch && truePeakSwitch->isShowing() && truePeakSwitch->getButtonText() == "TP" &&
+                  !truePeakSwitch->getToggleState() && broker->stats().spectrumTruePeakHistories == 0,
+              "expanded Spectrum offers an accessible TP switch that starts off without analysis demand");
+        if (truePeakSwitch) {
+            const auto truePeak = [&] { return statistic("True Peak"); };
+            const auto changeTruePeak = [&](bool enabled) {
+                truePeakSwitch->setToggleState(enabled, juce::dontSendNotification);
+                if (truePeakSwitch->onClick) truePeakSwitch->onClick();
+                root.frame();
+            };
+            const auto *peakLabel = findLabel(findLabel, pages, "Sample Peak");
+            auto *statsPanel = truePeakSwitch->getParentComponent();
+            check(peakLabel && statsPanel &&
+                      statsPanel->getComponentAt(truePeakSwitch->getBounds().getCentre()) == truePeakSwitch &&
+                      !statsPanel->getComponentAt(peakLabel->getBounds().getCentre()),
+                  "the statistics switch receives clicks and the readout stays mouse-transparent");
+            const auto sendInterSample = [&] {
+                const auto tap = tapFor(main);
+                if (!tap) return false;
+                constexpr std::array quadrature{.8f, .8f, -.8f, -.8f};
+                std::vector<float> signal(static_cast<std::size_t>(overviewFft));
+                for (std::size_t i = 0; i < signal.size(); ++i) signal[i] = quadrature[i % quadrature.size()];
+                tap->write(signal.data(), signal.data(), overviewFft, tap->written(), true, stereoRevision);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+                return true;
+            };
+            ++stereoRevision;
+            const bool wroteWarm = sendInterSample();
+            const auto peakBaseline = broker->stats();
+            const bool wroteOff = sendInterSample();
+            const auto off = broker->stats();
+            const auto samplePicture = pages.detail.view.snapshot();
+            const auto uncounted = sampleClips();
+            check(wroteWarm && wroteOff && samplePicture &&
+                      samplePeak() == "Sample peak  L -1.9  R -1.9 dBFS" && uncounted == "Sample clips  L 0  R 0",
+                  "the quarter-rate fixture stays below full scale at its sample points");
+            changeTruePeak(true);
+            const auto on = broker->stats();
+            check(truePeak().contains("--") && truePeak().endsWith("dBTP") && samplePeak().isEmpty() &&
+                      sampleClips() == uncounted && pages.detail.view.snapshot() == samplePicture &&
+                      on.spectrumTruePeakHistories == 1 && on.taps == off.taps && on.domains == off.domains &&
+                      on.consumers == off.consumers && on.spectralPlans == off.spectralPlans && on.transforms == off.transforms,
+                  "enabling True Peak preserves the Raw picture, sample clips and existing demand while waiting");
+            const bool wroteOn = sendInterSample();
+            const auto analysed = broker->stats();
+            check(wroteOn && truePeak().contains("L +") && truePeak().contains("R +") && truePeak().endsWith("dBTP") &&
+                      sampleClips() == uncounted && off.transforms > peakBaseline.transforms &&
+                      analysed.transforms - on.transforms == off.transforms - peakBaseline.transforms,
+                  "True Peak detects an intersample overshoot with the same FFT count and zero clipped samples");
+            changeTruePeak(false);
+            check(truePeak().isEmpty() && samplePeak() == "Sample peak  L -1.9  R -1.9 dBFS" &&
+                      sampleClips() == uncounted && broker->stats().spectrumTruePeakHistories == 0,
+                  "switching off releases True Peak and immediately restores the held Sample Peak");
+            changeTruePeak(true);
+            check(truePeak().contains("--") && sampleClips() == uncounted,
+                  "re-enabling cannot show a True Peak value from an earlier interval");
+            const bool wroteFresh = sendInterSample();
+            const auto heldText = truePeak();
+            const auto frozenPicture = pages.detail.view.snapshot();
+            freeze(true);
+            check(wroteFresh && heldText.contains("L +") && truePeak() == heldText && truePeakSwitch->getToggleState() &&
+                      !pages.detail.view.subscribed() && broker->stats().spectrumTruePeakHistories == 0 &&
+                      pages.detail.view.snapshot() == frozenPicture,
+                  "Freeze retains True Peak values and switch state while releasing its analysis");
+            freeze(false);
+            check(truePeakSwitch->getToggleState() && truePeak().contains("--") &&
+                      broker->stats().spectrumTruePeakHistories == 1,
+                  "resuming keeps True Peak enabled and waits for fresh audio");
+            const bool wroteResumed = sendInterSample();
+            const auto beforeCompact = pages.detail.view.snapshot();
+            pages.setBounds(fullBounds.withWidth(firstRowWidth));
+            root.frame();
+            check(wroteResumed && beforeCompact && !truePeakSwitch->isShowing() && truePeakSwitch->getToggleState() &&
+                      truePeak().isEmpty() && pages.detail.view.snapshot() == beforeCompact &&
+                      broker->stats().spectrumTruePeakHistories == 0,
+                  "the compact layout releases True Peak without changing its choice or Raw picture");
+            pages.setBounds(fullBounds);
+            root.frame();
+            check(truePeakSwitch->isShowing() && truePeakSwitch->getToggleState() && truePeak().contains("--") &&
+                      broker->stats().spectrumTruePeakHistories == 1,
+                  "reopening the full layout retains the True Peak choice and starts with no old measurement");
+        }
         pages.setVisible(false);
         const auto hidden = broker->stats();
         for (int frame = 0; frame < 4; ++frame) { root.frame(); broker->pump(); }
@@ -2424,8 +2515,16 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                   hiddenIdle.transforms == hidden.transforms && hiddenIdle.publications == hidden.publications &&
                   hiddenIdle.stereoBalanceHistories == 0 && hiddenIdle.spectrumLevelHistories == 0 &&
                   integratedRms().isEmpty() && maxCrest().isEmpty() && samplePeak().isEmpty() &&
-                  sampleClips().isEmpty(),
+                  sampleClips().isEmpty() && hiddenIdle.spectrumTruePeakHistories == 0 &&
+                  (!truePeakSwitch || (!truePeakSwitch->isShowing() && truePeakSwitch->getToggleState())),
               "a hidden Spectrum exposes no readouts and adds no worker activity");
+        if (truePeakSwitch) {
+            pages.setVisible(true);
+            root.frame();
+            check(truePeakSwitch->isShowing() && truePeakSwitch->getToggleState() &&
+                      statistic("True Peak").contains("--") && broker->stats().spectrumTruePeakHistories == 1,
+                  "reshowing the Spectrum restores the session's True Peak choice with fresh-only data");
+        }
     }
     detachPeer();
 }

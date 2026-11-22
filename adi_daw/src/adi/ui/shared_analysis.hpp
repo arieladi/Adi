@@ -99,6 +99,7 @@ class SharedAnalysis final {
         std::array<double, 2> integratedRms{}, maxCrestDb{};
         std::array<float, 2> samplePeak{};
         std::array<std::uint64_t, 2> sampleClips{};
+        std::optional<std::array<double, 2>> truePeak;
     };
     struct Result {
         Request request;
@@ -178,6 +179,7 @@ class SharedAnalysis final {
         std::uint64_t successfulEnqueues = 0;
         std::size_t stereoBalanceHistories = 0;
         std::size_t spectrumLevelHistories = 0;
+        std::size_t spectrumTruePeakHistories = 0;
     };
     class Lease {
       public:
@@ -212,6 +214,7 @@ class SharedAnalysis final {
         std::shared_ptr<const RealtimeSigmaResult> readRealtimeSigma() const noexcept;
         void setStereoBalanceEnabled(bool) noexcept;
         void setSpectrumLevelsEnabled(bool) noexcept;
+        void setSpectrumTruePeakEnabled(bool) noexcept;
         bool restartSpectrumLevels() noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
         std::shared_ptr<const StripResult> readStrip() const noexcept;
@@ -231,7 +234,7 @@ class SharedAnalysis final {
         std::shared_ptr<SpectrumBlockAverage> spectrumBlockAverage_;
         std::shared_ptr<CumulativeAverageHistory> cumulativeAverage_;
         std::uint32_t outputs_ = 0;
-        bool balanceEnabled_ = false, spectrumLevelsEnabled_ = false;
+        bool balanceEnabled_ = false, spectrumLevelsEnabled_ = false, spectrumTruePeakEnabled_ = false;
         friend class SharedAnalysis;
     };
     // A continuous acquisition has its own sequence cursor. The physical tap
