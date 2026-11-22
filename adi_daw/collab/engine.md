@@ -36,6 +36,21 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-28 Main loudness and LD7 readout, lands after 3 December
+
+Branch `engine/dev28-main-loudness-meter` at `f8308a5554f65d5e4b3be7bdb2077aa150c20053`, from `87ea349c`. Suggested PR title **Measure Main with the shared loudness meter**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev28-main-loudness-meter)
+
+Main measures its final audio with `dsp::LoudnessMeter`. The LD7 snapshot publishes M, S, I, true peak, range, max M/S, validity flags, run state and format identity together. Existing clients retain the original four readings, including negative infinity for an empty true-peak hold. The snapshot pairs the shared system's numeric value with its validity flag. Format adoption, reset, explicit pause, missing channels and excessive wide samples preserve the live callback contract. Each float sample is widened once in owner-allocated storage.
+
+GCC 14 and Clang 19 built with warnings as errors. Main Loudness 72, Session, Gain Stage, Normalization and Control Projection passed under both. The unchanged shared Meter 87 and FFmpeg oracle 6 passed under both. The standalone Main parity proof passed 164 checks per compiler across the synthesized Tech 3341 and 3342 cases. The Main suite covers float and double, sparse output, extreme input, reset, pause, format adoption, concurrent validity and no callback allocations. Reviewed the five Win portability patterns.
+
+Paired Release measurement at 48 kHz used a pinned core, five alternating runs of 13,000 callbacks, the production driver’s denormal mode, stereo silence and a repeated sine. At 64 frames, float audio changed from 6.932 to 7.003 microseconds of thread CPU per callback and double audio from 6.810 to 6.880. At 128 frames the same values were 13.780 to 13.600 and 13.679 to 14.095. All tested 64, 128 and 512 frame cases fell between −3.7% and +3.9%. These figures measure the meter in isolation on the cloud host.
+
+- Auto Gain Stage LUFS waits for Win’s selection-under-400-ms rule.
+- Window can adopt `readout().snapshot()` for the complete LD7 view and explicit run/pause. Agree the landing order with `engine/empty-project-cost`, whose old meter implementation is replaced here.
+
+PR requested
+
 ## 2026-11-22 — DEV-13 native Pd join verified
 
 The scratch join of `engine/dev13-node-segment-quantum` `59453a16` and `devices/pd-block-quantum` `b8ff1a6e` passed 758 strict GCC checks. The real Pd device rendered five callbacks per combination at 64, 128, 256 and 511 frames with all admissible offsets among 1, 63, 64, 65 and 127. Both channels nulled at the declared adapter delay, with exact segment call counts and zero unexpected fallbacks. The device declared zero at 64, 128 and 256, and one 64-sample block at 511. The first probe had used the stock fixture's synthetic latency report. The successful run used an isolated identity fixture reporting zero own delay.
