@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/clip_edit_ops.hpp"
 #include "adi/edit_rows.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/engine/snapshot.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -54,6 +55,43 @@ FadeTarget target(OpContext& context,const Payload& payload,bool needSpan) {
 const Payload& selected(const Payload& payload) {
     return payload.contains("_restore")?payload.at("_restore").at("sides"):payload;
 }
+void pinFadeDomain(OpContext& context,std::int64_t id,std::size_t side,std::int64_t peak,std::int64_t zero) {
+    SQLite::Statement clip(context.db,
+        "SELECT c.time_base,c.pos_ticks,c.length_ticks,c.pos_ns,c.length_ns,c.content_offset_ticks,"
+        "COALESCE(a.warp_enabled,0),p.content_offset_ns FROM clips c "
+        "LEFT JOIN audio_clips a ON a.clip_id=c.id LEFT JOIN clip_playback_details p ON p.clip_id=c.id WHERE c.id=?");
+    clip.bind(1,id);
+    if(!clip.executeStep())throw std::runtime_error("fade target is missing");
+    const edit::TimeMap time(context.db);
+    const bool musical=clip.getColumn(0).getInt()==0;
+    const auto beginNs=musical?time.nanos(clip.getColumn(1).getInt64()):clip.getColumn(3).getInt64();
+    const auto origin=musical?clip.getColumn(1).getInt64():time.ticks(beginNs);
+    const auto endNs=musical?time.nanos(edit::addTime(origin,clip.getColumn(2).getInt64())):
+        edit::addTime(beginNs,clip.getColumn(4).getInt64());
+    const auto endTick=musical?edit::addTime(origin,clip.getColumn(2).getInt64()):time.ticks(endNs);
+    const auto span=endTick-origin;
+    const auto offset=clip.getColumn(5).getInt64();
+    const bool warp=clip.getColumn(6).getInt()!=0;
+    const auto sourceTime=[&](std::int64_t fromLeft) {
+        if(warp)return edit::addTime(offset,fromLeft);
+        // Linear placement edges need their stored nanoseconds, including
+        // the sub-tick remainder lost by the display's musical projection.
+        const auto at=fromLeft==0?beginNs:fromLeft==span?endNs:
+            std::clamp(time.nanos(edit::addTime(origin,fromLeft)),beginNs,endNs);
+        const auto sourceOffset=clip.getColumn(7).isNull()?time.duration(origin,offset):clip.getColumn(7).getInt64();
+        return edit::addTime(sourceOffset,at-beginNs);
+    };
+    const auto first=sourceTime(side==0?zero:span-peak);
+    const auto last=sourceTime(side==0?peak:span-zero);
+    if(first<0 || last<=first)throw std::runtime_error("fade handles have no extent in the source clock");
+    const std::string table=warp?"clip_warp_fade_domains":"clip_playback_details";
+    const std::string suffix=warp?"_ticks":"_ns";
+    const std::string prefix=sides[side];
+    const std::string begin=prefix+"_begin"+suffix,end=prefix+"_end"+suffix;
+    SQLite::Statement update(context.db,"INSERT INTO "+table+"(clip_id,"+begin+","+end+") VALUES(?,?,?) "
+        "ON CONFLICT(clip_id) DO UPDATE SET "+begin+"=excluded."+begin+","+end+"=excluded."+end);
+    update.bind(1,id);update.bind(2,first);update.bind(3,last);update.exec();
+}
 bool fadeInverse(OpContext& context,const Payload& payload,Payload& inverse,std::string& error) {
     try {
         const auto clip=target(context,payload,false);const auto& edits=selected(payload);
@@ -81,13 +119,15 @@ bool fadeApply(OpContext& context,const Payload& payload,std::string& error) {
         const auto& edits=selected(payload);bool any=false;
         for(std::size_t side=0;side<sides.size();++side)if(edits.contains(sides[side])) {
             const auto& edit=edits.at(sides[side]);
-            if(!edit.is_object() || (!edit.contains("ticks") && !edit.contains("curve") && !edit.contains("tension")))
-                throw std::runtime_error("fade side needs ticks, curve or tension");
+            if(!edit.is_object() || (!edit.contains("ticks") && !edit.contains("startTicks") && !edit.contains("curve") && !edit.contains("tension")))
+                throw std::runtime_error("fade side needs ticks, startTicks, curve or tension");
             for(auto it=edit.begin();it!=edit.end();++it)
-                if(it.key()!="ticks" && it.key()!="curve" && it.key()!="tension")throw std::runtime_error("unknown fade field");
+                if(it.key()!="ticks" && it.key()!="startTicks" && it.key()!="curve" && it.key()!="tension")throw std::runtime_error("unknown fade field");
             const auto ticks=edit.contains("ticks")?detail::signedInteger(edit.at("ticks")):clip.ticks[side];
+            const auto start=edit.contains("startTicks")?detail::signedInteger(edit.at("startTicks")):0;
             const auto curve=edit.contains("curve")?detail::signedInteger(edit.at("curve")):clip.curves[side];
             if(!restoring && (ticks<0 || ticks>clip.span || curve<0 || curve>5))throw std::runtime_error("fade length or curve is outside range");
+            if(start<0 || (start>0 && start>=ticks))throw std::runtime_error("fade start must be before the fade peak");
             if(edit.contains("tension") && !edit.at("tension").is_null()) {
                 const auto& value=edit.at("tension");
                 if(!value.is_number() || !std::isfinite(value.get<double>()) || std::abs(value.get<double>())>1)
@@ -103,6 +143,7 @@ bool fadeApply(OpContext& context,const Payload& payload,std::string& error) {
                 reset.bind(1,clip.id);reset.exec();
                 SQLite::Statement resetWarp(context.db,"UPDATE clip_warp_fade_domains SET "+prefix+"_begin_ticks=NULL,"+prefix+"_end_ticks=NULL WHERE clip_id=?");
                 resetWarp.bind(1,clip.id);resetWarp.exec();
+                if(start>0)pinFadeDomain(context,clip.id,side,ticks,start);
             }
             if(!restoring && edit.contains("tension")) {
                 SQLite::Statement insert(context.db,"INSERT OR IGNORE INTO clip_playback_details(clip_id) VALUES(?)");insert.bind(1,clip.id);insert.exec();
@@ -256,7 +297,7 @@ const std::array<OpDescriptor,5> descriptors={{
     {"clip.split","Split a clip with captured source clocks",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,splitApply<false>,splitInverse<false>,"clip.join"},
     {"clip.join","Restore the pieces of a captured split",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,splitApply<true>,splitInverse<true>,"clip.split"},
     {"clip.duplicate","Paste a captured independent clip",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,duplicateApply,duplicateInverse,"clip.delete"},
-    {"clip.setFades","Set audio clip fade lengths and continuous curvature",Scope::Edit,EngineImpact::Snapshot,fields,false,false,fadeApply,fadeInverse,""}
+    {"clip.setFades","Set audio clip fade handles and continuous curvature",Scope::Edit,EngineImpact::Snapshot,fields,false,false,fadeApply,fadeInverse,""}
 }};
 }
 std::span<const OpDescriptor> clipEditOps(){return descriptors;}

@@ -3,11 +3,15 @@
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <limits>
+#include <numbers>
 #include <type_traits>
+#include <utility>
 
 using namespace adi;
 namespace {
@@ -64,6 +68,73 @@ template<class Sample> void splitAudio(double rate, int channels) {
     check(peakError < 2e-7, "actual canonical band gain reaches audio rather than a dry stand-in");
     whole->release(); split->release();
 }
+template<class Sample> void externalDynamics() {
+    enum class Key { Absent, Silent, Tone, Removed };
+    struct Case { bool external, dynamic; Key key; bool reducing; };
+    constexpr std::array cases{
+        Case{false, true, Key::Absent, true},
+        Case{false, true, Key::Silent, true},
+        Case{false, true, Key::Tone, true},
+        Case{false, false, Key::Tone, false},
+        Case{true, true, Key::Tone, true},
+        Case{true, true, Key::Silent, false},
+        Case{true, true, Key::Absent, false},
+        Case{true, true, Key::Removed, false},
+        Case{true, false, Key::Tone, false},
+    };
+    constexpr int frames = 256;
+    constexpr double rate = 48000.;
+    const auto programme = std::pow(10., -.9);
+    for (const auto& test : cases) {
+        auto device = make();
+        const auto set = [&](const char* id, double value) {
+            return device && device->setParam(id, device::ParamValue::fromNormalized(value));
+        };
+        const auto ready = set("9", 1.) && set("17", test.dynamic ? 1. : 0.) && set("15", .3) &&
+                           set("1", test.external ? 1. : 0.);
+        check(ready, "native EQ dynamics controls can be set through the actual device");
+        if (!ready) continue;
+        device->prepare(rate, frames);
+        std::array<Sample, frames> l{}, r{}, k{};
+        std::array<const Sample*, 2> input{l.data(), r.data()}, key{k.data(), k.data()};
+        std::array<Sample*, 2> output{l.data(), r.data()};
+        engine::NodeIo io;
+        io.channels = 2;
+        io.frames = frames;
+        io.sampleRate = rate;
+        io.configuredLatency = device->latencySamples();
+        double inEnergy = 0., outEnergy = 0., beforeIn = 0., beforeOut = 0.;
+        for (int block = 0; block < 650; ++block) {
+            const bool connected = test.key != Key::Absent && (test.key != Key::Removed || block < 200);
+            if constexpr (std::is_same_v<Sample, double>) {
+                io.in64 = input.data(); io.out64 = output.data(); io.sidechain64 = connected ? key.data() : nullptr;
+            } else {
+                io.in = input.data(); io.out = output.data(); io.sidechain = connected ? key.data() : nullptr;
+            }
+            const bool beforeRemoval = test.key == Key::Removed && block >= 150 && block < 200;
+            for (std::size_t frame = 0; frame < l.size(); ++frame) {
+                const auto sample = static_cast<double>(block * frames) + static_cast<double>(frame);
+                const auto tone = std::sin(sample * 2. * std::numbers::pi * 1000. / rate);
+                l[frame] = r[frame] = static_cast<Sample>(programme * tone);
+                k[frame] = static_cast<Sample>(test.key == Key::Silent ? 0. : .5 * tone);
+                if (block > 550) inEnergy += static_cast<double>(l[frame]) * l[frame];
+                if (beforeRemoval) beforeIn += static_cast<double>(l[frame]) * l[frame];
+            }
+            io.renderBlock = static_cast<std::uint64_t>(block + 1);
+            device->process(io);
+            for (const auto sample : l) {
+                if (block > 550) outEnergy += static_cast<double>(sample) * sample;
+                if (beforeRemoval) beforeOut += static_cast<double>(sample) * sample;
+            }
+        }
+        const auto gain = 10. * std::log10(outEnergy / inEnergy);
+        if (test.key == Key::Removed)
+            check(10. * std::log10(beforeOut / beforeIn) < -10., "connected external key reduces before disconnection");
+        const auto expected = test.reducing ? gain < -10. : std::abs(gain) < .01;
+        check(expected, "external missing/silent key settles static while a real selected key reduces");
+        device->release();
+    }
+}
 void documentAuthority() {
     test::TempDirectory temp("mix_eq_pipeline", "document");
     std::string error;
@@ -109,13 +180,87 @@ void documentAuthority() {
           std::abs(doc->session().instanceFor(shown.id)->getParam("14").real - 6) < 1e-5,
           "placement undo is one transaction and preserves the previous band gain edit");
     check(!doc->addMixFunction(mix::Function::Eq, 2), "second native EQ is refused in same channel");
-    check(!doc->addMixFunction(mix::Function::Compressor, 2), "unlinked functions remain honestly unavailable");
+    check(!doc->addMixFunction(mix::Function::Deesser, 2), "unlinked functions remain honestly unavailable");
+}
+void pairedBandGesture() {
+    test::TempDirectory temp("mix_eq_pipeline", "paired-band");
+    std::string error;
+    auto doc = ui::ProjectDocument::open(temp.path() / "song.adi", true, device::withBuiltinDevices(), error);
+    check(doc && doc->addMixFunction(mix::Function::Eq, 2), "paired gesture opens a native EQ document");
+    if (!doc) return;
+    doc->tick(0);
+    const auto publication = doc->parameterFeed().current();
+    const auto found = std::find_if(publication->begin(), publication->end(), [](const auto& d) {
+        return d.uid == "org.adidaw.mix.eq" && d.available;
+    });
+    if (found == publication->end()) { check(false, "paired gesture has a runtime identity"); return; }
+    const auto shown = *found;
+    const auto value = [&](const char* id) { return doc->session().instanceFor(shown.id)->getParam(id).normalized; };
+    const auto operations = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto transactions = [&] { return doc->store().db().execAndGet("SELECT count(DISTINCT txn_id) FROM ops").getInt(); };
+    using E = engine::ParameterPairEvent;
+    using K = engine::ParamEventKind;
+    const engine::ParameterPair origin{{{"13", value("13")}, {"14", value("14")}}};
+    const engine::ParameterPair final{{{"13", .62}, {"14", .67}}};
+    std::shared_ptr<const gesture::OwnerToken> owner;
+    auto edit = [&](E kind, const engine::ParameterPair& positions) {
+        return doc->parameterPairGestureExpected(shown.id, positions, kind, shown.runtime, shown.instance, owner);
+    };
+    auto matches = [&](const engine::ParameterPair& positions) {
+        return std::abs(value("13") - positions[0].second) < 1e-6 &&
+               std::abs(value("14") - positions[1].second) < 1e-6;
+    };
+    const auto before = operations(), initialTransactions = transactions();
+    check(edit(E::Begin, origin) && owner && edit(E::Value, final) && matches(final) && operations() == before,
+          "paired live edit previews both values without journaling");
+    check(!doc->parameterGestureExpected(shown.id, "14", K::Begin, .67, shown.runtime, shown.instance),
+          "a scalar edit cannot grab the gain of a held paired edit");
+    check(edit(E::End, final) && !owner && matches(final) &&
+          operations() == before + 4 && transactions() == initialTransactions + 1 && doc->pendingParameterGestures().empty(),
+          "paired End writes both first-touch openers and final values in one transaction");
+    const auto undone = doc->ops().undo();
+    doc->tick(1);
+    check(undone.ok && matches(origin), "one Undo restores both original coordinates");
+    const auto redone = doc->ops().redo();
+    doc->tick(2);
+    check(redone.ok && matches(final), "one Redo restores both edited coordinates");
+    const auto settled = operations();
+    check(edit(E::Begin, final) && edit(E::Value, origin) && matches(origin) &&
+          edit(E::Cancel, origin) && !owner && matches(final) && operations() == settled,
+          "cancel restores the pair and leaves no history row");
+    check(edit(E::Begin, final) && edit(E::Value, origin) && matches(origin),
+          "paired capture can be abandoned with both preview coordinates audible");
+    owner.reset();
+    doc->tick(3);
+    check(matches(final) && operations() == settled && doc->pendingParameterGestures().empty(),
+          "the owner pump restores a pair if its surface disappears before Cancel");
+    const engine::ParameterPair readback{{{"13", value("13")}, {"14", value("14")}}};
+    check(edit(E::Begin, readback) && edit(E::End, readback) && !owner && operations() == settled,
+          "a click at the EQ's float readback adds no undo entry");
+    auto invalid = origin;
+    invalid[1].second = std::numeric_limits<double>::quiet_NaN();
+    check(edit(E::Begin, final) && !edit(E::Value, invalid) && !owner && matches(final) &&
+          operations() == settled && doc->pendingParameterGestures().empty(),
+          "a rejected second coordinate writes neither value and cancels the pair");
+    // The preview applies rows inside a rollback scope. Refuse the second
+    // durable journal insertion so this checks rollback after the first one.
+    doc->store().db().exec("CREATE TRIGGER refuse_pair_gain BEFORE INSERT ON ops "
+                           "WHEN NEW.op_type='device.setParam' AND (SELECT count(*) FROM ops) > " +
+                           std::to_string(settled) + " BEGIN SELECT RAISE(ABORT,'refuse gain'); END");
+    check(edit(E::Begin, final) && edit(E::Value, origin) && matches(origin) &&
+          !edit(E::End, origin) && !owner && matches(final) && operations() == settled &&
+          doc->pendingParameterGestures().empty(),
+          "a journal refusal on gain rolls back frequency and restores both audible values");
+    doc->store().db().exec("DROP TRIGGER refuse_pair_gain");
 }
 } // namespace
 int main() {
     for (double rate : {44100., 48000., 96000.})
         for (int channels : {1, 2}) { splitAudio<float>(rate, channels); splitAudio<double>(rate, channels); }
+    externalDynamics<float>();
+    externalDynamics<double>();
     documentAuthority();
+    pairedBandGesture();
     std::printf("mix EQ pipeline: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

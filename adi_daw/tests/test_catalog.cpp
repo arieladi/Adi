@@ -340,6 +340,35 @@ void testTempoAndRouting() {
     check(h.undo().ok, "undo disconnect");
     check(scalarInt(s, "SELECT src_id FROM routing WHERE id=?", 1) == 1,
           "the capture restored the connection's source");
+    const auto beforeDuplicate = j.count();
+    check(!run(j, "routing.connect",
+               {{"id", 2}, {"srcKind", "track"}, {"src", 1}, {"dstKind", "track"},
+                {"dst", 2}, {"kind", "main"}}, err) &&
+              err.find("already has an enabled main output") != std::string::npos &&
+              j.count() == beforeDuplicate,
+          "connecting a second enabled main route refuses atomically");
+    const Payload captured = {{"id", 3}, {"src_kind", "track"}, {"src_id", 1},
+                              {"dst_kind", "track"}, {"dst_id", 2}, {"kind", "main"}};
+    const auto beforeCaptured = j.count();
+    check(!run(j, "routing.connect",
+               {{"id", 3}, {"srcKind", "track"}, {"src", 1}, {"dstKind", "track"},
+                {"dst", 2}, {"kind", "main"}, {"row", captured}}, err) &&
+              err.find("already has an enabled main output") != std::string::npos &&
+              j.count() == beforeCaptured,
+          "a captured main row's default is also subject to duplicate protection");
+    s.db().exec("DELETE FROM routing WHERE id=3; "
+                "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,enabled) "
+                "VALUES(2,'track',1,'track',2,'main',0) ON CONFLICT(id) DO UPDATE SET enabled=0");
+    check(!run(j, "routing.setEnabled", {{"id", 2}, {"enabled", true}}, err) &&
+              scalarInt(s, "SELECT enabled FROM routing WHERE id=?", 2) == 0,
+          "enabling a disabled duplicate refuses");
+    check(run(j, "routing.setEnabled", {{"id", 1}, {"enabled", false}}, err) &&
+              run(j, "routing.setEnabled", {{"id", 2}, {"enabled", true}}, err),
+          "an alternate route can be enabled after the old one is disabled");
+    s.db().exec("UPDATE routing SET enabled=1 WHERE id=1");
+    check(run(j, "routing.disconnect", {{"id", 2}}, err) && h.undo().ok &&
+              scalarInt(s, "SELECT enabled FROM routing WHERE id=?", 2) == 1,
+          "undo restores an already stored duplicate for deterministic legacy replay");
 }
 
 // --- ephemeral, for real this time ------------------------------------------------

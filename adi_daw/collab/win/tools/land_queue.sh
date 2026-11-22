@@ -1,6 +1,10 @@
 #!/bin/sh
 # usage: land_queue.sh N... -- land PRs in order. A PR is refreshed (close/reopen) so its CI uses
 # main's current workflow; when it conflicts with main the queue stops with "CONFLICT N" for win.
+# It never cancels a run on main (19 November): the loop that cancelled main runs of older heads
+# meant the heavy macOS legs, which run only on main, did not finish for eight merges in a row.
+# ci.yml and ui.yml no longer cancel main's runs either; GitHub keeps one waiting run per branch,
+# so a landing burst ends in a finished run on main's newest head.
 R=arieladi/Adi
 SP="$(cd "$(dirname "$0")" && pwd)"
 for n in "$@"; do
@@ -11,8 +15,5 @@ for n in "$@"; do
   sh "$SP/land_top.sh" $n || { echo "STOP $n"; exit 1; }
   [ "$(gh pr view $n --repo $R --json state --jq .state)" = MERGED ] && echo "$(date +%H:%M) $n merged" || { echo "STOP $n not merged"; exit 1; }
   sleep 30
-  # cancel only main runs of OLDER heads; the run on the merge just made is main's proof
-  sha=$(gh pr view $n --repo $R --json mergeCommit --jq .mergeCommit.oid)
-  for r in $(gh run list --repo $R --branch main --limit 8 --json databaseId,status,workflowName,headSha --jq ".[]|select(.status!=\"completed\" and .headSha!=\"$sha\" and (.workflowName==\"adi_daw\" or .workflowName==\"Step 7 UI\"))|.databaseId"); do gh run cancel $r --repo $R >/dev/null 2>&1; done
 done
 echo "QUEUE DONE"

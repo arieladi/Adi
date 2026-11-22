@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
-# Framework-free continuous acquisition; not linked into the audio graph/UI.
+# Framework-free acquisition for the demand-driven analyser worker.
 add_library(adi_triggered_scope STATIC src/adi/dsp/triggered_scope.cpp)
+target_link_libraries(adi_core PRIVATE adi_triggered_scope)
 target_include_directories(adi_triggered_scope PUBLIC src)
 target_compile_features(adi_triggered_scope PUBLIC cxx_std_20)
 target_link_libraries(adi_triggered_scope PRIVATE adi_warnings)

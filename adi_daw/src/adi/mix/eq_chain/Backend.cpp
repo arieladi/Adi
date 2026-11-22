@@ -107,6 +107,13 @@ struct Backend::Impl {
                  std::int32_t configured) noexcept {
         if (!prepared.load(std::memory_order_acquire))
             return false;
+        if (mode == OwnerMode::Offline) {
+            // No concurrent owner exists in this explicit non-realtime mode.
+            // Complete available work before pinning this segment's physical
+            // block. Splits retain the same block admission rules as live.
+            if (!core.requestConfiguration(settings)) return false;
+            static_cast<void>(service());
+        }
         const auto block = core.beginBlock(physicalBlock, configured, settings);
         const bool result = core.process(main, key, keyChannels, frames, settings, block);
         const auto plan = core.pendingPlan();

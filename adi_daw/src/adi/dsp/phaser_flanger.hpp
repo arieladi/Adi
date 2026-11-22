@@ -54,8 +54,11 @@ class PhaserFlanger {
         std::vector<float> ring;
     };
     std::array<Lane, 2> lane_;
-    std::array<double, Count> p_{0, 4,   1000, 50, 0, 3, 0, 0.5, 4,  1,   0, 180, 0, 0, 0,
-                                 0, 0.2, 8,    50, 0, 0, 0, 0,   10, 200, 0, 120, 0, 0, 50};
+    // Live 12.4's Phaser-Flanger default (DEV-22, read from its default preset):
+    // 2 notches at 400 Hz, Spread 35 %, LFO 0.149 Hz triangle at 75 %, duty 10 %,
+    // envelope on (1 ms / 120 ms), Safe Bass 80 Hz, all wet.
+    std::array<double, Count> p_{0, 2,   400, 35.15625, 0, 2.5, 0, 0.1486274302, 4, 1, 0, 0, 0, 10, 0,
+                                 0, 0.5, 8,   75,       0, 0,   1, 0,            1, 120, 0, 80, 0, 0, 100};
     double rate_ = 48000, bpm_ = 120;
     std::size_t write_ = 0;
 };

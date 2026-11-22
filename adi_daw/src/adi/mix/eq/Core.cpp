@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
+#include "Preview.hpp"
+#include "../filters/FlushDenormals.hpp"
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4100 4127 4334 5030)
 #endif
 #include <Source/SpectralDynamics.h>
+#include <Source/ResponsePlot.h>
 #include <ThirdParty/ZLEqualizer/source/zlp/controller.hpp>
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -14,11 +17,44 @@
 #include <cmath>
 #include <stdexcept>
 #include <vector>
-#if defined(_M_X64) || defined(__SSE2__)
-#include <xmmintrin.h>
-#endif
 
 namespace adi::mix::eq {
+DesignPreview designPreview(const Settings &settings, double sampleRate) {
+    DesignPreview result;
+    if (!(sampleRate >= 8000)) return result;
+    plot::ResponsePlotGrid<DesignPreview::points> grid;
+    grid.updateDesign(std::log(10.0), std::log(30000.0), sampleRate);
+    for (const auto &band : settings.bands) {
+        if (settings.bypass || band.status != Status::On) continue;
+        const bool cut = band.shape == Shape::LowCut || band.shape == Shape::HighCut;
+        const auto route = static_cast<std::size_t>(band.route);
+        const adi_eq_dsp::filter::FilterParameters parameters{
+            static_cast<adi_eq_dsp::filter::FilterType>(band.shape), band.order, band.frequencyHz,
+            std::clamp(band.gainDb * settings.gainScalePercent * .01f, -30.f, 30.f),
+            band.q * (cut ? std::numbers::sqrt2 * .5 : 1.0)};
+        std::array<float, DesignPreview::points> values{};
+        if (cut && band.fractionalSlope >= 0) {
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                const auto gain = plot::ResponsePlotFilter::fractionalDesignMagnitude(grid.frequencies[i],
+                    band.frequencyHz, band.fractionalSlope, band.q, band.shape == Shape::LowCut);
+                values[i] = static_cast<float>(20 * std::log10(std::max(gain, 1.e-6)));
+            }
+        } else {
+            plot::ResponsePlotFilter(parameters, sampleRate, plot::ResponsePlotFilter::Model::Design)
+                .calculate(grid, values);
+        }
+        result.visible[route] = true;
+        for (std::size_t i = 0; i < values.size(); ++i) result.decibels[route][i] += values[i];
+    }
+    const bool lr = result.visible[1] || result.visible[2], ms = result.visible[3] || result.visible[4];
+    result.visible = {!lr && !ms, lr, lr, ms, ms};
+    for (std::size_t route = 1; route < result.visible.size(); ++route)
+        if (result.visible[route])
+            for (std::size_t i = 0; i < DesignPreview::points; ++i)
+                result.decibels[route][i] += result.decibels[0][i];
+    return result;
+}
+
 namespace {
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 static_assert(std::atomic<int>::is_always_lock_free);
@@ -41,13 +77,6 @@ bool samePlan(const Settings &a, const Settings &b) noexcept {
     return a.structure == b.structure && a.lookaheadMs == b.lookaheadMs &&
            a.spectralResolution == b.spectralResolution && spectral(a) == spectral(b);
 }
-struct FlushDenormals {
-#if defined(_M_X64) || defined(__SSE2__)
-    unsigned previous = _mm_getcsr();
-    FlushDenormals() { _mm_setcsr(previous | 0x8040U); }
-    ~FlushDenormals() { _mm_setcsr(previous); }
-#endif
-};
 } // namespace
 bool valid(const Settings &s) noexcept {
     if (static_cast<unsigned>(s.structure) > 5 || static_cast<unsigned>(s.spectralResolution) > 2 ||
@@ -108,6 +137,10 @@ Settings pinPlanSettings(Settings controls, const Settings &plan) noexcept {
             }
     return controls;
 }
+// Promise and token share one atomic so withdrawal and publication cannot both win.
+static constexpr std::uint64_t promisedLatencyBit = std::uint64_t{1} << 63;
+static constexpr std::uint64_t maxOfferSerial = (promisedLatencyBit >> 32) - 1;
+
 struct Core::Implementation {
     adi_eq_zlp::Controller controller;
     ADISharedEqSpectralDynamics spectralEngine;
@@ -132,12 +165,18 @@ struct Core::Implementation {
                                   static_cast<ADISharedEqSpectralDynamics::Resolution>(s.spectralResolution))
                             : 0);
     }
-    void consider(const Settings &desired) noexcept {
-        if (pending.load(std::memory_order_relaxed) || samePlan(active, desired))
+    void consider(const Settings &desired, bool canWithdraw = false) noexcept {
+        auto currentOffer = pending.load(std::memory_order_relaxed);
+        if (currentOffer) {
+            if (canWithdraw && !(currentOffer & promisedLatencyBit) && samePlan(active, desired))
+                pending.compare_exchange_strong(currentOffer, 0, std::memory_order_acq_rel);
+            return;
+        }
+        if (samePlan(active, desired))
             return;
         offer = desired;
-        if (++offerSerial == 0)
-            ++offerSerial;
+        if (++offerSerial > maxOfferSerial)
+            offerSerial = 1;
         const auto samples = static_cast<std::uint32_t>(planLatency(desired));
         pending.store((offerSerial << 32) | samples, std::memory_order_release);
     }
@@ -321,17 +360,23 @@ struct Core::Implementation {
         for (int ch = 0; ch < keyChannels; ++ch)
             if (key[ch] == nullptr)
                 return false;
-        [[maybe_unused]] FlushDenormals flush;
+        [[maybe_unused]] filters::FlushDenormals flush;
         consider(desired);
         const auto s = pinned(desired);
         apply(s);
-        const bool external = s.externalSidechain && keyChannels > 0, bypass = forced || s.bypass;
+        const bool bypass = forced || s.bypass;
+        const bool missingExternalKey = s.externalSidechain && keyChannels == 0;
         for (int offset = 0; offset < frames;) {
             const int count = std::min(spec.maximumFrames, frames - offset);
             for (int ch = 0; ch < 2; ++ch) {
                 const auto channel = static_cast<std::size_t>(ch);
                 const auto *input = main[std::min(ch, spec.channels - 1)] + offset;
-                const auto *detector = external ? key[std::min(ch, keyChannels - 1)] + offset : input;
+                if (missingExternalKey) {
+                    std::copy_n(input, count, mainPointers[channel]);
+                    std::fill_n(keyPointers[channel], count, 0.);
+                    continue;
+                }
+                const auto *detector = s.externalSidechain ? key[std::min(ch, keyChannels - 1)] + offset : input;
                 for (int i = 0; i < count; ++i) {
                     mainPointers[channel][i] = static_cast<double>(input[i]);
                     keyPointers[channel][i] = static_cast<double>(detector[i]);
@@ -413,14 +458,26 @@ std::int32_t Core::maximumLatencySamples() const noexcept {
     return implementation->prepared ? implementation->maximumLatency : 0;
 }
 LatencyChange Core::pendingLatencyChange() const noexcept {
-    const auto token = implementation->pending.load(std::memory_order_acquire);
+    const auto token = implementation->pending.load(std::memory_order_acquire) & ~promisedLatencyBit;
     return {token, static_cast<std::int32_t>(token & 0xffffffffU)};
+}
+LatencyChange Core::promiseLatencyChange() noexcept {
+    auto &pending = implementation->pending;
+    auto current = pending.load(std::memory_order_acquire);
+    if (!current) return {};
+    const auto token = current & ~promisedLatencyBit;
+    const auto promised = token | promisedLatencyBit;
+    if (current == promised ||
+        pending.compare_exchange_strong(current, promised, std::memory_order_acq_rel) ||
+        current == promised)
+        return {token, static_cast<std::int32_t>(token & 0xffffffffU)};
+    return {};
 }
 bool Core::requestConfiguration(const Settings &s) noexcept {
     auto &i = *implementation;
     if (!i.prepared || !valid(s))
         return false;
-    i.consider(s);
+    i.consider(s, true);
     return true;
 }
 BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, const Settings &s,
@@ -429,19 +486,26 @@ BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, c
     if (!i.prepared || !valid(s) || configured < 0)
         return {};
     if (physical && physical == i.lastPhysical) {
-        i.consider(s);
+        i.consider(s, admitPending && configured == i.committedLatency.load(std::memory_order_relaxed));
         return i.blockAdmitted ? BlockContext{i.generation, i.block} : BlockContext{};
     }
     i.lastPhysical = physical;
     ++i.block;
     i.blockAdmitted = false;
-    const auto pending = i.pending.load(std::memory_order_acquire);
+    auto pending = i.pending.load(std::memory_order_acquire);
+    auto committed = i.committedLatency.load(std::memory_order_relaxed);
+    // A return to the active settings can withdraw an unread offer even if
+    // both plans share one PDC. A racing promise wins the same atomic decision.
+    if (admitPending && pending && configured == committed && !(pending & promisedLatencyBit) &&
+        samePlan(i.active, s) && i.pending.compare_exchange_strong(pending, 0, std::memory_order_acq_rel))
+        pending = 0;
     if (admitPending && pending && configured == static_cast<std::int32_t>(pending & 0xffffffffU)) {
         i.active = i.offer;
-        i.committedLatency.store(configured, std::memory_order_release);
+        committed = configured;
+        i.committedLatency.store(committed, std::memory_order_release);
         i.pending.store(0, std::memory_order_release);
     }
-    if (configured != i.committedLatency.load(std::memory_order_relaxed))
+    if (configured != committed)
         return {};
     i.consider(s);
     i.blockAdmitted = true;

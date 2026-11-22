@@ -215,6 +215,94 @@ void manualAdmission() {
               manual.ownerLoopVisits == 0 && manual.ownerWaitReturns == 0,
           "manual completion retains latency and has no threaded loop or wait observations");
 }
+void revertedUnadvertisedPlan() {
+    for (const bool focusChange : {false, true}) {
+        auto initial = bell();
+        initial.focusEnabled = focusChange;
+        auto stale = initial, latest = initial;
+        if (focusChange) {
+            stale.focus.engine = focus::Engine::Fir;
+            latest.focus.phaseMode = focus::PhaseMode::Rotation;
+            latest.focus.rotationDegrees = 60.;
+        } else {
+            stale.eq.lookaheadMs = 2.f;
+            latest.eq.lookaheadMs = 3.f;
+        }
+        const int staleLatency = focusChange ? 12288 : 96;
+        const int latestLatency = focusChange ? 1024 : 144;
+        for (const bool advertised : {false, true}) {
+            chain::Backend backend(chain::OwnerMode::Manual), control(chain::OwnerMode::Manual);
+            backend.prepare({48000, frames, 2}, initial);
+            control.prepare({48000, frames, 2}, initial);
+            Audio<double> a, b;
+            const Audio<double> *noKey = nullptr;
+            auto oldLatencyCall = [&](std::uint64_t block, const chain::Settings &requested) {
+                a.signal(block); b = a;
+                return run(backend, a, noKey, requested, block, 0) &&
+                       run(control, b, noKey, initial, block, 0) && a == b;
+            };
+            check(oldLatencyCall(1, stale) && backend.serviceOwnerOnce(),
+                  "aggregate prepares the original request without altering the active audio");
+            backend.pumpMainThread();
+            check(backend.advertisedLatency() == 0, "owner completion alone does not promise PDC");
+            std::uint64_t block = 2;
+            if (advertised) {
+                check(oldLatencyCall(block++, stale), "audio still uses the prior graph while offering PDC");
+                backend.pumpMainThread();
+                check(backend.advertisedLatency() == staleLatency, "Main receives a complete offered graph latency");
+            }
+            check(oldLatencyCall(block++, initial), "restoring active controls retains the original audio history");
+            backend.pumpMainThread();
+            if (advertised) {
+                check(backend.advertisedLatency() == staleLatency,
+                      "a promised aggregate stays intact until the host supplies that PDC");
+                a.signal(block);
+                check(run(backend, a, noKey, initial, block, staleLatency),
+                      "the old advertised bank remains available to its promised callback");
+            } else {
+                check(backend.advertisedLatency() == 0,
+                      "restoring active settings never publishes an unadvertised stale aggregate");
+                check(oldLatencyCall(block++, latest) && backend.serviceOwnerOnce(),
+                      "a retired aggregate and its child offers release the owner for a new request");
+                check(oldLatencyCall(block++, latest), "a new offer preserves old audio while PDC is pending");
+                backend.pumpMainThread();
+                check(backend.advertisedLatency() == latestLatency,
+                      "the new EQ or Focus offer reaches Main without admitting the abandoned latency");
+                a.signal(block);
+                check(run(backend, a, noKey, latest, block, latestLatency),
+                      "new configured latency admits a complete plan after retiring the previous one");
+            }
+        }
+    }
+}
+void revertOnSplitBeforePublication() {
+    auto initial = bell(), stale = initial;
+    initial.focusEnabled = stale.focusEnabled = true;
+    stale.focus.engine = focus::Engine::Fir;
+    chain::Backend backend(chain::OwnerMode::Manual);
+    backend.prepare({48000, frames, 2}, initial);
+    Audio<double> a;
+    const Audio<double> *noKey = nullptr;
+    a.signal(1);
+    check(run(backend, a, noKey, stale, 1, 0, 0, 17) && backend.serviceOwnerOnce(),
+          "owner can finish preparing an offer within a physical callback");
+    check(run(backend, a, noKey, initial, 1, 0, 17, 47),
+          "the reverted split retains the callback's original processing context");
+    backend.pumpMainThread();
+    check(backend.advertisedLatency() == 0, "a reverted split suppresses a previously unseen offer");
+    a.signal(2);
+    check(run(backend, a, noKey, initial, 2, 0),
+          "next physical callback retires the suppressed offer without a PDC change");
+    a.signal(3);
+    check(run(backend, a, noKey, stale, 3, 0) && backend.serviceOwnerOnce(),
+          "selecting the abandoned Focus settings again starts fresh owner work");
+    a.signal(4);
+    check(run(backend, a, noKey, stale, 4, 0), "the newly prepared offer can now be advertised");
+    backend.pumpMainThread();
+    a.signal(5);
+    check(backend.advertisedLatency() == 12288 && run(backend, a, noKey, stale, 5, 12288),
+          "repicking the same Focus configuration admits its newly offered plan");
+}
 void workerLifecycle() {
     auto settings = bell();
     chain::Backend backend;
@@ -497,6 +585,8 @@ void failuresAndValidation() {
 } // namespace
 int main() {
     manualAdmission();
+    revertedUnadvertisedPlan();
+    revertOnSplitBeforePublication();
     workerLifecycle();
     scalarControlsStayIdle();
     threeActorConvergence();

@@ -1,0 +1,16 @@
+#pragma once
+
+#include <juce_gui_basics/juce_gui_basics.h>
+
+class TextElement : public juce::Component
+{
+public:
+    TextElement() {}
+    void paint(juce::Graphics& g) override;
+    void setValue(float x);
+
+private:
+    float value = 0.0f;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TextElement)
+};

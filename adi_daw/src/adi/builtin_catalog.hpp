@@ -1,19 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ops.hpp"
+#include "adi/store_rows.hpp"
 #include <span>
 #include <string_view>
 namespace adi {
+namespace engine { enum class RouteChoice : std::uint8_t; }
 struct BuiltinInfo {
     std::string_view uid,name,category,group;
     int inputs=2;
     bool available=false,midi=false;
+    /// Consumes notes (EventFlow::Consume) and is registered as an instrument (DEV-21).
+    bool instrument=false;
+    // Ask the graph for the exact musical position of each render segment.
+    bool usesTransportPosition=false;
+    // Its audio is held while a whole state applies. (Every built-in now
+    // reopens a parameter its state omits at the default: DF-E57.)
+    bool resetMissingParameters=false;
 };
 [[nodiscard]] std::span<const BuiltinInfo> builtinCatalog() noexcept;
 [[nodiscard]] const BuiltinInfo* findBuiltin(std::string_view uid) noexcept;
 /// Canonical compiled canvas, never the working directory or an installed
 /// user-editable file. Empty when this build cannot host the device.
 [[nodiscard]] std::string_view builtinCanvas(std::string_view uid) noexcept;
+/// The parameter and sample declarations: the canvas for a Pd-backed device,
+/// the Sampler's declaration text (not a canvas) for the Sampler (DEV-21).
+[[nodiscard]] std::string_view builtinDeclarations(std::string_view uid) noexcept;
 struct PreparedBuiltinInsert {
     bool ok=false;
     std::string error,sourceFile;
@@ -21,8 +33,16 @@ struct PreparedBuiltinInsert {
     std::vector<OpRequest> requests;
     CommitOptions options;
 };
+// A document reserves IDs belonging to runtimes retained for Undo.
 [[nodiscard]] PreparedBuiltinInsert prepareBuiltinInsert(Store&,std::string_view uid,
-    std::int64_t track,std::optional<std::int64_t> beforeDevice={});
+    std::int64_t track,std::optional<std::int64_t> beforeDevice={},std::int64_t retainedDeviceId=0);
+struct PluginInsertOptions {
+    bool replaceInstrument = false;
+    std::optional<engine::RouteChoice> expressionRoute;
+};
+[[nodiscard]] PreparedBuiltinInsert preparePluginInsert(Store&,const rows::PluginRef&,std::int64_t track,
+    std::optional<std::int64_t> beforeDevice={},const PluginInsertOptions& = {},
+    std::int64_t retainedDeviceId=0);
 [[nodiscard]] CommitResult commitBuiltinInsert(Store&,const PreparedBuiltinInsert&,Actor=Actor::User);
 std::span<const OpDescriptor> builtinReferenceOps();
 }

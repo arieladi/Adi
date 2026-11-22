@@ -182,10 +182,37 @@ void partitions() {
     c.prepare(48000);
     check(render(c, input) == input, "zero mix exact dry");
 }
+// DEV-22: Live 12.4's Chorus-Ensemble at its browser default, measured by the
+// director's research at 48 kHz with an impulse of 0.5 left and -0.25 right:
+// the output's first sample is 0.7071 of the input on both sides -- the dry
+// path at an equal-power 50 % -- and the response sums to 1.4211 of it.
+void liveDefault() {
+    C c;
+    c.prepare(48000);
+    std::vector<float> l(4800, 0.f), r(4800, 0.f), ol(4800), orr(4800);
+    l[0] = .5f;
+    r[0] = -.25f;
+    for (std::size_t i = 0; i < l.size(); i += 64)
+        c.process(l.data() + i, r.data() + i, ol.data() + i, orr.data() + i, 64);
+    check(std::abs(ol[0] / .5 - 0.7071078420) < 2e-6 && std::abs(orr[0] / -.25 - 0.7071078420) < 2e-6,
+          "Live default: the first sample is 0.7071 of the impulse on both sides (equal-power 50 %)");
+    double sum = 0;
+    for (float v : ol) sum += v;
+    std::printf("Live default: response sum %.4f of the impulse (Live 1.4211)\n", sum / .5);
+    check(std::abs(sum / .5 - 1.4211482820) < 0.01, "Live default: the response sums to 1.4211 within 0.01");
+    C half;
+    half.set(C::Mix, 50);
+    half.set(C::Mode, 2);   // Vibrato ignores Mix: all wet, nothing dry
+    half.prepare(48000);
+    std::vector<float> vl(256), vr(256);
+    half.process(l.data(), r.data(), vl.data(), vr.data(), 256);
+    check(vl[0] == 0.f, "Vibrato is all wet: no dry sample at 0");
+}
 } // namespace
 int main() {
     measurements();
     partitions();
+    liveDefault();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

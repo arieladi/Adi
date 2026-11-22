@@ -27,8 +27,44 @@
 // Channels are LINKED: one gain for all of them, so a peak on the left does not
 // move the stereo image by ducking only the left.
 //
-// Allocation-free after `prepare`. Latency is exactly the lookahead, and the
+// process() is allocation-free after `prepare`; processOffline() is not (the
+// export worker's call, below). Latency is exactly the lookahead, and the
 // device wrapping this must report it -- which is what ADR-0095 exists for.
+//
+// TRUE PEAK, OFF BY DEFAULT (DEV-29 c, EX-05 LD5). A sample-peak brickwall
+// lets a sine at a quarter of the rate, sampled 45 degrees off its crest,
+// leave 3 dB over the ceiling between the samples. With setTruePeak(true) the
+// detector is the meter's own interpolator (TruePeakMeter::design, BS.1770
+// Annex 2's rate rule) -- upsample, then hold the largest value -- and the
+// target for audio sample a is ceiling / the largest interpolated value within
+// kTruePeakSpread samples of it, so every sample that builds an over between
+// the samples is turned down by at least what that over needs. The detector
+// reads 8 samples behind the input and the spread adds kTruePeakSpread, so
+// the latency is the lookahead plus truePeakDelay() -- whole samples, and
+// reported. The sample-peak guarantee above still holds exactly (a true peak
+// is never below the sample peak); between the samples, where the gain moves
+// inside the interpolator's span, a residue is left: under 0.001 dB with a
+// lookahead of 64 samples or more and under 0.05 dB with none, on the tests'
+// noise, bursts and doublets. Those are readings by the Annex's interpolator,
+// the one the detector shares; an ideal reconstruction of the same output
+// reads higher where that interpolator reads low (EX4: +0.15 dB on the
+// quarter-rate sine at 45 degrees, +1.6 dB on +12 dB white noise; see the
+// independent reference in tests/test_dsp.cpp). The encoded check after dither stays the final
+// gate (the refine loop in NormalizationCapture is the engine's). Below the ceiling the output is the
+// input, delayed, bit for bit. From 176.4 kHz the Annex oversamples by 1 and
+// the mode is the sample-peak limiter with no added delay.
+//
+// NON-FINITE INPUT (EX4). A NaN or an infinity is read as silence, by the
+// detector and in the delayed audio alike: it cannot leave as a non-finite
+// sample or poison the gain, and the output is exactly that of the same
+// programme with silence there.
+//
+// OFFLINE (EX4). processOffline() runs a whole programme: the latency is
+// dropped from the front and silence pushed through the back, so the output
+// has the input's length and lines up with it, sample for sample -- below the
+// ceiling it is the input, bit for bit. That is the export's stage.
+//
+// float or double audio; the delay line is double either way.
 
 #pragma once
 
@@ -55,16 +91,46 @@ public:
     /// Retained in seconds across prepare(), including a sample-rate change.
     void setReleaseSeconds(double s) noexcept;
 
-    [[nodiscard]] int latencySamples() const noexcept { return lookahead_; }
+    /// DEV-29 c: detect TRUE peak rather than sample peak. Off by default.
+    /// Resets the state and changes the latency: the caller reports it.
+    void setTruePeak(bool on) noexcept;
+    [[nodiscard]] bool truePeak() const noexcept { return truePeak_; }
+    /// The samples true-peak detection adds to the lookahead at the prepared
+    /// rate: TruePeakMeter::kDelay + kTruePeakSpread when the rate is
+    /// oversampled, else 0.
+    [[nodiscard]] int truePeakDelay() const noexcept { return tpDelay_; }
+    static constexpr int kTruePeakSpread = 2;
+
+    [[nodiscard]] int latencySamples() const noexcept {
+        return lookahead_ + (truePeak_ ? tpDelay_ : 0);
+    }
     [[nodiscard]] double ceiling() const noexcept { return ceiling_; }
     /// The gain applied to the last sample produced, for metering and tests.
     [[nodiscard]] double lastGain() const noexcept { return lastGain_; }
 
     /// Audio thread. `in` and `out` may be the same buffers.
     void process(const float* const* in, float* const* out, int frames) noexcept;
+    void process(const double* const* in, double* const* out, int frames) noexcept;
+
+    /// OFFLINE, an export worker's call (it allocates a block of scratch): a
+    /// whole programme of `frames` on the prepared channels, from silence. The
+    /// latency is trimmed and the tail flushed, so out[c][i] is the limited
+    /// in[c][i] and the length is the input's. `in` and `out` may be the same
+    /// buffers. Exactly process() over the input then latencySamples() of
+    /// silence, with the first latencySamples() outputs dropped.
+    void processOffline(const float* const* in, float* const* out, std::int64_t frames);
+    void processOffline(const double* const* in, double* const* out, std::int64_t frames);
 
 private:
     void reset() noexcept;
+    template <class Sample>
+    void run(const Sample* const* in, Sample* const* out, int frames) noexcept;
+    /// True-peak mode: reads the current frame from frame_ (already finite),
+    /// returns the target gain for the
+    /// sample truePeakDelay() behind it.
+    double truePeakTarget() noexcept;
+    template <class Sample>
+    void runOffline(const Sample* const* in, Sample* const* out, std::int64_t frames);
 
     double sr_ = 48000.0;
     int channels_ = 0;
@@ -74,8 +140,23 @@ private:
     double releaseSeconds_ = 0.05;
     double releaseCoef_ = 0.0;
 
-    // The delayed audio: one ring per channel, maxLookahead + 1 long.
-    std::vector<float> delay_;
+    // True peak: the interpolator, each channel's last kTapsPerPhase inputs,
+    // and the last 2 * spread + 1 segment peaks.
+    bool truePeak_ = false;
+    int factor_ = 1;
+    int tpDelay_ = 0;
+    std::vector<double> taps_;
+    std::vector<double> history_;
+    int historyHead_ = 0;
+    double segments_[2 * kTruePeakSpread + 1] = {};
+    int segmentHead_ = 0;
+
+    // The frame being processed, each sample finite (non-finite read as 0).
+    std::vector<double> frame_;
+
+    // The delayed audio: one ring per channel, maxLookahead + truePeakDelay
+    // + 1 long.
+    std::vector<double> delay_;
     int ring_ = 1;
     int writeIdx_ = 0;
 

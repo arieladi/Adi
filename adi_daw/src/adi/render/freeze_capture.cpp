@@ -61,12 +61,51 @@ std::string identity(Store &store) {
             return q.getColumn(2).getString();
     throw std::runtime_error("freeze capture needs a file-backed project");
 }
-void backup(Store &source, const fs::path &path, std::stop_token stop) {
+void backup(Store &source, const fs::path &path, const std::set<std::int64_t> &selected,
+            bool wholeGroups, std::stop_token stop) {
     SQLite::Database copy(media::pathUtf8(path), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
     {
         SQLite::Backup capture(copy, source.db());
         if (capture.executeStep() != SQLITE_DONE)
             throw std::runtime_error("freeze project backup is busy or incomplete");
+    }
+    copy.exec("CREATE TEMP TABLE freeze_tracks(id INTEGER PRIMARY KEY)");
+    SQLite::Statement select(copy, "INSERT INTO freeze_tracks VALUES(?)");
+    for (const auto track : selected) {
+        select.bind(1, track);
+        select.exec();
+        select.reset();
+    }
+    if (wholeGroups) {
+        copy.exec(R"sql(
+            WITH RECURSIVE members(id) AS (
+                SELECT id FROM freeze_tracks
+                UNION
+                SELECT t.id FROM tracks t JOIN members m ON t.parent_id = m.id
+            )
+            INSERT OR IGNORE INTO freeze_tracks SELECT id FROM members
+        )sql");
+    }
+    std::set<std::int64_t> inactive;
+    for (const auto &[root, members] : freeze::groups(copy)) {
+        (void)root;
+        for (const auto &member : members)
+            inactive.insert(member.id);
+    }
+    // The private Session still builds the project graph. Scope its live audio
+    // clips to the requested tracks. Parked material stays intact for the
+    // existing caches' source fingerprints.
+    SQLite::Statement unrelated(copy, "SELECT id FROM tracks WHERE frozen=0 "
+                                       "AND id NOT IN (SELECT id FROM freeze_tracks)");
+    SQLite::Statement mute(copy, "UPDATE clips SET muted=1 WHERE track_id=? "
+                                  "AND kind='audio' AND lane_id IS NULL AND muted=0");
+    while (unrelated.executeStep()) {
+        const auto id=unrelated.getColumn(0).getInt64();
+        if (inactive.contains(id))
+            continue;
+        mute.bind(1, id);
+        mute.exec();
+        mute.reset();
     }
     const auto folder = media::projectFolder(source);
     SQLite::Statement files(copy,
@@ -75,7 +114,8 @@ void backup(Store &source, const fs::path &path, std::stop_token stop) {
         const auto original = folder / media::pathFromUtf8(files.getColumn(1).getString());
         // Keep the source project's fallback, rather than rebasing relative
         // media against the private backup's staging directory.
-        const auto chosen = fs::exists(original) || files.getColumn(2).isNull()
+        std::error_code inspection;
+        const auto chosen = fs::exists(original, inspection) || files.getColumn(2).isNull()
                                 ? original
                                 : media::pathFromUtf8(files.getColumn(2).getString());
         SQLite::Statement update(copy, "UPDATE media_files SET rel_path=NULL,abs_path_hint=? WHERE id=?");
@@ -83,17 +123,13 @@ void backup(Store &source, const fs::path &path, std::stop_token stop) {
         update.bind(2, files.getColumn(0).getInt64());
         update.exec();
     }
-    // Pin the active project's audio assets into the private generation before
+    // Pin the selected audio assets and existing caches into the private generation before
     // loading any reader. A later external edit cannot change half a render.
-    std::set<std::int64_t> inactive;
-    for (const auto &[root, members] : freeze::groups(copy)) {
-        (void)root;
-        for (const auto &member : members)
-            inactive.insert(member.id);
-    }
     std::set<std::int64_t> assets;
     SQLite::Statement clips(copy, "SELECT a.media_id,c.track_id FROM audio_clips a JOIN clips c ON "
-                                  "c.id=a.clip_id JOIN tracks t ON t.id=c.track_id WHERE t.frozen=0");
+                                  "c.id=a.clip_id JOIN tracks t ON t.id=c.track_id "
+                                  "JOIN freeze_tracks s ON s.id=c.track_id "
+                                  "WHERE t.frozen=0 AND c.kind='audio' AND c.lane_id IS NULL AND c.muted=0");
     while (clips.executeStep())
         if (!inactive.contains(clips.getColumn(1).getInt64()))
             assets.insert(clips.getColumn(0).getInt64());
@@ -194,7 +230,7 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
         {
             SQLite::Transaction read(store.db(), SQLite::TransactionBehavior::DEFERRED);
             data->head = OpJournal(store).headSeq();
-            backup(store, captured, control.stop);
+            backup(store, captured, selected, spec.wholeGroups, control.stop);
             read.commit();
         }
         StoreError error{};
