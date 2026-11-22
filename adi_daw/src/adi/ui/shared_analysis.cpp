@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "shared_analysis.hpp"
 #include "adi/dsp/spectrum_average.hpp"
+#include "adi/ui/focus_lag.hpp"
 #include "adi/ui/focus_scope.hpp"
 #include <algorithm>
 #include <atomic>
@@ -962,6 +963,13 @@ struct SharedAnalysis::BarScopeDomain {
     std::shared_ptr<FocusScopeBarProjection> projection;
 };
 
+struct SharedAnalysis::FocusLagJob {
+    FocusLagRequest request;
+    std::array<std::uint64_t, 2> bindings{};
+    FocusLagStatus status = FocusLagStatus::Pending; // guarded by State::mutex
+    std::optional<FocusLagPreview> preview{};
+};
+
 struct SharedAnalysis::State {
     struct Tap {
         std::shared_ptr<const engine::ScopeTap> value;
@@ -1014,7 +1022,7 @@ struct SharedAnalysis::State {
         tap.value = std::move(next);
         if (replaced) {
             tap.freshSequence = tap.value == discovered ? firstSequence : (tap.value ? tap.value->written() : 0);
-            ++tap.binding;
+            tap.binding = ++nextTapBinding;
             bindSource(key, tap);
             if (!refresh) refreshBarSources();
         }
@@ -1042,6 +1050,43 @@ struct SharedAnalysis::State {
         for (const auto &bar : bars) bindBarSources(*bar);
     }
     std::size_t jobCount() const noexcept { return domains.size() + captures.size() + bars.size(); }
+    const Tap *lagTap(const FocusScopeBarSource &source) const noexcept {
+        const auto found = taps.find(source.source);
+        if (found == taps.end() || !found->second.domains || !found->second.value ||
+            !focus_lag_detail::validSource(source, found->second.value->generation())) return nullptr;
+        return &found->second;
+    }
+    bool lagBindingsCurrent(const FocusLagJob &job) const noexcept {
+        if (closed) return false;
+        for (std::size_t i = 0; i < job.bindings.size(); ++i) {
+            const auto *tap = lagTap(job.request.sources[i]);
+            if (!tap || tap->binding != job.bindings[i]) return false;
+        }
+        return true;
+    }
+    void runFocusLag(const std::shared_ptr<FocusLagJob> &job) noexcept {
+        std::array<std::shared_ptr<const engine::ScopeTap>, 2> sources;
+        {
+            std::lock_guard lock(mutex);
+            if (focusLag != job) return;
+            if (!lagBindingsCurrent(*job)) {
+                job->status = FocusLagStatus::Refused;
+                focusLag.reset();
+                return;
+            }
+            for (std::size_t i = 0; i < sources.size(); ++i) sources[i] = lagTap(job->request.sources[i])->value;
+        }
+        const auto preview = focusFindLagOnTaps(job->request, sources);
+        std::lock_guard lock(mutex);
+        if (focusLag != job) return; // owner cancelled while processing
+        if (preview && lagBindingsCurrent(*job)) {
+            job->preview = preview;
+            job->status = FocusLagStatus::Ready;
+        } else {
+            job->status = FocusLagStatus::Refused;
+        }
+        focusLag.reset();
+    }
     // A failed first attach may already hold an external lease. Drop our
     // bookkeeping before calling the owner, which may query the broker.
     void abandonFirstAttach(engine::ScopeSource key, std::unique_lock<std::mutex> &lock) noexcept {
@@ -1140,7 +1185,8 @@ struct SharedAnalysis::State {
         // Never audio-reachable. Shutdown waits before releasing owner callbacks.
         std::lock_guard run(runMutex);
         std::unique_lock stateLock(mutex);
-        if (closed || !workPending()) return 0;
+        const auto lag = focusLag;
+        if (closed || (!lag && !workPending())) return 0;
         using Job = std::variant<std::shared_ptr<Domain>, std::shared_ptr<CaptureDomain>, std::shared_ptr<BarScopeDomain>>;
         std::array<Job, kMaxDomains> jobs;
         std::size_t count = 0, done = 0, windows = 0, samples = 0, reads = 0;
@@ -1253,6 +1299,7 @@ struct SharedAnalysis::State {
         transforms.fetch_add(done, std::memory_order_relaxed);
         cursorReads.fetch_add(reads, std::memory_order_relaxed);
         analysisWindows.fetch_add(windows, std::memory_order_relaxed);
+        if (lag) runFocusLag(lag);
         return done;
     }
     AcquireSourceTap acquire;
@@ -1265,6 +1312,8 @@ struct SharedAnalysis::State {
     std::vector<std::shared_ptr<CaptureDomain>> captures;
     std::vector<std::shared_ptr<BarScopeDomain>> bars;
     std::map<engine::ScopeSource, Tap> taps;
+    std::shared_ptr<FocusLagJob> focusLag;
+    std::uint64_t nextTapBinding = 0;
     std::size_t consumers = 0, nextJob = 0, barMembers = 0;
     bool closed = false;
     std::atomic<bool> queued{false};
@@ -1447,6 +1496,70 @@ void SharedAnalysis::BarScopeLease::reset() noexcept {
     state_.reset();
 }
 
+SharedAnalysis::FocusLagLease::FocusLagLease(std::weak_ptr<State> state, std::shared_ptr<FocusLagJob> job)
+    : state_(std::move(state)), job_(std::move(job)) {}
+SharedAnalysis::FocusLagLease::~FocusLagLease() { reset(); }
+SharedAnalysis::FocusLagLease::FocusLagLease(FocusLagLease &&) noexcept = default;
+SharedAnalysis::FocusLagLease &SharedAnalysis::FocusLagLease::operator=(FocusLagLease &&other) noexcept {
+    if (this != &other) { reset(); state_ = std::move(other.state_); job_ = std::move(other.job_); }
+    return *this;
+}
+SharedAnalysis::FocusLagLease::operator bool() const noexcept { return job_ && !state_.expired(); }
+SharedAnalysis::FocusLagStatus SharedAnalysis::FocusLagLease::status() const noexcept {
+    const auto state = state_.lock();
+    if (!state || !job_) return FocusLagStatus::Idle;
+    state->ownerOnly();
+    std::lock_guard lock(state->mutex);
+    return state->lagBindingsCurrent(*job_) ? job_->status : FocusLagStatus::Refused;
+}
+std::shared_ptr<const FocusLagPreview> SharedAnalysis::FocusLagLease::read() const noexcept {
+    const auto state = state_.lock();
+    if (!state || !job_) return {};
+    state->ownerOnly();
+    std::lock_guard lock(state->mutex);
+    if (!job_->preview || !state->lagBindingsCurrent(*job_)) return {};
+    // The alias keeps only the completed tiny job alive, never a physical tap.
+    return {job_, &*job_->preview};
+}
+void SharedAnalysis::FocusLagLease::reset() noexcept {
+    if (job_) if (const auto state = state_.lock()) {
+        state->ownerOnly();
+        std::lock_guard lock(state->mutex);
+        if (state->focusLag == job_) state->focusLag.reset();
+    }
+    job_.reset();
+    state_.reset();
+}
+
+SharedAnalysis::FocusLagLease SharedAnalysis::requestFocusLag(const FocusLagRequest &request) {
+    state_->ownerOnly();
+    if (!focus_lag_detail::requestedEnd(request)) return {};
+    std::shared_ptr<FocusLagJob> job;
+    {
+        std::lock_guard lock(state_->mutex);
+        if (state_->closed || state_->focusLag) return {};
+        const auto *main = state_->lagTap(request.sources[0]);
+        const auto *target = state_->lagTap(request.sources[1]);
+        if (!main || !target || main->value == target->value || main->value->sampleRate() != target->value->sampleRate() ||
+            !focus_lag_detail::validRate(request, main->value->sampleRate())) return {};
+        try { job = std::make_shared<FocusLagJob>(FocusLagJob{request, {main->binding, target->binding}}); }
+        catch (const std::bad_alloc &) { return {}; }
+        state_->focusLag = job;
+    }
+    if (mode_ == Mode::Worker) {
+        try { Scheduler::instance().request(state_); }
+        catch (...) {
+            state_->queued.store(false, std::memory_order_release);
+            std::lock_guard lock(state_->mutex);
+            if (state_->focusLag == job) {
+                job->status = FocusLagStatus::Refused;
+                state_->focusLag.reset();
+            }
+        }
+    }
+    return FocusLagLease(state_, std::move(job));
+}
+
 SharedAnalysis::SharedAnalysis(AcquireSourceTap a, ReleaseSourceTap r, Mode mode, std::size_t historyByteLimit)
     : state_(std::make_shared<State>(std::move(a), std::move(r), historyByteLimit)), mode_(mode) {}
 SharedAnalysis::SharedAnalysis(AcquireTap a, ReleaseTap r, Mode mode, std::size_t historyByteLimit)
@@ -1466,6 +1579,7 @@ void SharedAnalysis::shutdown() noexcept {
         std::lock_guard lock(state_->mutex);
         if (state_->closed) return;
         state_->closed = true;
+        state_->focusLag.reset();
         for (auto &[key, domain] : state_->domains) {
             (void)key; domain->active.store(false, std::memory_order_release);
             domain->releaseUnused(0); domain->publishResult({});
@@ -1634,7 +1748,7 @@ void SharedAnalysis::refreshSources(bool forceEpoch) {
         state_->resolveTap(key, tap, state_->maximumFft(key), true);
         if (!forceEpoch || previous != tap.value) continue;
         tap.freshSequence = tap.value ? tap.value->written() : 0;
-        ++tap.binding;
+        tap.binding = ++state_->nextTapBinding;
         state_->bindSource(key, tap);
     }
     state_->refreshBarSources();
@@ -1651,7 +1765,7 @@ void SharedAnalysis::requestFrame() noexcept {
         refreshSources();
         {
             std::lock_guard lock(state_->mutex);
-            if (state_->closed || !state_->workPending()) return;
+            if (state_->closed || (!state_->focusLag && !state_->workPending())) return;
         }
         Scheduler::instance().request(state_);
     } catch (...) { state_->queued.store(false, std::memory_order_release); }
