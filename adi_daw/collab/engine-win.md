@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, EX-02 direct export signal taps
+
+**PR requested** — `engine-win/export-direct-taps` `a4112b4a` on main `87ea349c`, after 3 December. Direct jobs can pick PreFx, PostFx, PostFader or PostMixer through Session's existing offline graph tap. Legacy PreFader still resolves to wet PostFx, and the run manifest records the actual signal point. Main and NI Stems retain their route checks. MSVC /W4 /WX passed 452 render and 85 NI Stems checks (native AAC unavailable), including dry/wet latency compensation and the current graph's solo behavior.
+
+**Needs engine:** actual PostFader and PostMixer both followed another track's solo in the ordinary audio-strip fixture. A solo-independent PostFader tap, ViaMain's audibility override, and MainFxOnly need an engine decision or hunk. The queue uses the existing tap rather than substituting send or solo semantics.
+
 ## 2026-11-22, after the standing queue
 
 - **Parked DEV-26 native acceptance:** the installed ADI-Q binary is 0.2.2. ADI-L and ADI-Clip were absent from the installed VST3 directory. The exact three workstation builds are needed for the PLAN acceptance; the scanner and normal plug-in path already have code.
