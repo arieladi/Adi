@@ -400,6 +400,81 @@ void creationAndSignedRows() {
           "signed SQL clip and stream identities stay valid while note IDs remain full uint64");
 }
 
+void sameTransactionNewClips() {
+    Fixture f("new_clips");
+    auto& store = *f.store;
+    store.db().exec("ALTER TABLE event_streams ADD COLUMN future BLOB NOT NULL DEFAULT X'0080FF'");
+    const auto original = digestProject(store).text;
+    const auto added = rawRecord(native(maximumId, 17, 7));
+    notes::Diff diff;
+    diff.added.push_back(added);
+    const auto create = [](std::int64_t id, const char* kind = "midi") {
+        OpRequest request;
+        request.opType = "clip.create";
+        request.payload = {{"id", id}, {"track", 2}, {"kind", kind},
+                           {"pos", 0}, {"length", 960}};
+        return request;
+    };
+    notes::Snapshot missing;
+    {
+        WriteCounter writes(store, -7);
+        SQLite::Transaction outer(store.db(), SQLite::TransactionBehavior::DEFERRED);
+        missing = notes::captureNotesForNewClip(store, 50, -7);
+        check(missing.ok && missing.clip() == 50 && missing.creationId() == -7 &&
+              !missing.hasStream() && missing.from() == "absent" &&
+              missing.sourceFile() == sqlite3_db_filename(store.db().getHandle(), "main") &&
+              writes.allWrites == 0 &&
+              sqlite3_get_autocommit(store.db().getHandle()) == 0,
+              "new clip capture retains its owner, absent stream and signed ID without writing");
+        outer.commit();
+    }
+    const auto first = notes::prepareDiff(missing, diff);
+    const auto second = notes::prepareDiff(notes::captureNotesForNewClip(store, 51, 0), diff);
+    const auto duplicate = notes::prepareDiff(notes::captureNotesForNewClip(store, 51, -7), diff);
+    const auto empty = notes::prepareDiff(missing, {});
+    require(first.ok && first.requests.size() == 1 && second.ok && second.requests.size() == 1 &&
+            duplicate.ok && duplicate.requests.size() == 1, "prepare new clip notes");
+    check(empty.ok && empty.requests.empty() && first.options.expectHead.has_value() &&
+          !*first.options.expectHead && second.options.expectHead == first.options.expectHead,
+          "new clip preparation retains the null head while an empty diff emits no operation");
+    check(!notes::captureNotesForNewClip(store, 1, 9).ok,
+          "a preexisting clip cannot be captured as new");
+
+    auto journal = OpJournal(store);
+    const std::array reversed{first.requests.front(), create(50)};
+    const std::array wrongKind{create(50, "audio"), first.requests.front()};
+    const std::array collision{create(50), first.requests.front(), create(51), duplicate.requests.front()};
+    check(!journal.commit(reversed, first.options).ok &&
+          !journal.commit(wrongKind, first.options).ok &&
+          !journal.commit(collision, first.options).ok &&
+          journal.count() == 0 && digestProject(store).text == original,
+          "wrong order, wrong parent kind and a late duplicate stream roll back the entire clip batch");
+
+    const std::array ordered{create(50), first.requests.front(), create(51), second.requests.front()};
+    {
+        WriteCounter writes(store, -7);
+        check(journal.commit(ordered, first.options).ok && writes.targetWrites == 1,
+              "clip creation and its canonical notes commit together with one stream write");
+    }
+    require(f.maybeBlob(50).has_value() && f.maybeBlob(51).has_value(),
+            "both newly created clips own a Note stream");
+    check(f.blob(50) == envelope({added}) && f.blob(51) == envelope({added}) &&
+          store.db().execAndGet("SELECT count(*) FROM event_streams WHERE id IN(-7,0) "
+                                "AND future=X'0080FF'").getInt() == 2,
+          "new clips retain exact ANOT bytes and complete native default rows");
+    check(!notes::captureNotesForNewClip(store, 52, 0).ok,
+          "an occupied stream ID refuses without creating a clip");
+    const auto committed = digestProject(store).text;
+    check(History(store).undo().ok && !f.maybeBlob(50) && !f.maybeBlob(51) &&
+          digestProject(store).text == original,
+          "one Undo removes both newly created clips and their streams");
+    check(History(store).redo().ok && digestProject(store).text == committed,
+          "one Redo recreates both clips and the exact stream rows");
+    const auto stale = journal.commit(collision, first.options);
+    check(!stale.ok && stale.stale && digestProject(store).text == committed,
+          "the captured head prevents reusing a take batch after the journal moved");
+}
+
 void numericAndMalformed() {
     notes::NoteValues good;
     good.start = -9; good.duration = 3; good.id = maximumId;
@@ -948,12 +1023,13 @@ void lateFailures() {
 }
 } // namespace
 int main() {
-    const std::array<std::pair<const char*, void (*)()>, 10> cases = {{
+    const std::array<std::pair<const char*, void (*)()>, 11> cases = {{
         {"immutable and pure", immutableAndPure}, {"10,000 notes", tenThousandOneWrite},
         {"future and expressions", futureAndExpressions}, {"creation", creationAndSignedRows},
         {"numeric and malformed", numericAndMalformed}, {"stale guards", staleGuards},
         {"coherent capture", coherentOwnerCapture}, {"SQL storage classes", sqlStorageClassGuards},
         {"seeded commits", runNoteDiffSeeds},
+        {"same-transaction new clips", sameTransactionNewClips},
         {"late failures", lateFailures}}};
     for (const auto& [name, run] : cases) {
         try { run(); }
