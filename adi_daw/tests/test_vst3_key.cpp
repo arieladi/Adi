@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Owned SDK fixture only. No editor, desktop input or audio device.
+#include "adi/ui/project_document.hpp"
 #include "juce/vst3_host.hpp"
 #include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <stdexcept>
@@ -18,6 +21,181 @@ void check(bool yes, const char *label) {
 std::filesystem::path native(const std::string &s) {
     return std::filesystem::path(std::u8string(s.begin(), s.end()));
 }
+struct KeyProbe {
+    double (*first)();
+    double (*last)();
+    int (*channels)();
+    int (*inPlace)();
+
+    bool silent() const { return channels() == 0 && first() == 0. && last() == 0.; }
+    bool stereoKey(double left, double right) const {
+        return channels() == 2 && first() == left && last() == right;
+    }
+};
+
+class StereoConstant final : public engine::Node {
+  public:
+    StereoConstant(float left, float right) : levels_{left, right} {}
+    void process(const engine::NodeIo &io) noexcept override {
+        for (std::int32_t ch = 0; ch < io.channels; ++ch)
+            std::fill_n(io.out[ch] + io.blockOffset, io.frames, levels_[static_cast<std::size_t>(ch)]);
+    }
+  private:
+    std::array<float, 2> levels_;
+};
+
+class KeyHalfGain final : public device::DeviceInstance {
+  public:
+    static constexpr auto uid = "test.adidaw.key-half-gain";
+    const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+    bool loaded() const noexcept override { return true; }
+    void process(const engine::NodeIo &io) noexcept override {
+        for (std::int32_t channel = 0; channel < io.channels; ++channel) {
+            auto *output = io.out[channel] + io.blockOffset;
+            const auto *input = io.in && io.in[channel] ? io.in[channel] + io.blockOffset : nullptr;
+            if (input)
+                std::transform(input, input + io.frames, output, [](float sample) { return .5f * sample; });
+            else
+                std::fill_n(output, io.frames, 0.f);
+        }
+    }
+  private:
+    const device::DeviceIdentity identity_{"internal", uid, "Key Half Gain", "", ""};
+};
+
+void documentContract(device::Vst3Host &host, const juce::PluginDescription &description,
+                      const KeyProbe &keyProbe) {
+    constexpr std::int64_t keyTrack = 2, programmeTrack = 3, recipientId = 30;
+    constexpr std::int32_t frames = 256;
+    const auto identity = device::identityOf(description);
+    test::TempDirectory temp("vst3_key", "document_dormant_aux");
+    const auto file = temp.path() / "dormant-aux.adi";
+    {
+        StoreError status{};
+        auto store = Store::create(file, status);
+        if (!store) throw std::runtime_error(toString(status));
+        store->db().exec("INSERT INTO tracks(id,kind,name) VALUES "
+                         "(1,'master','Main'),(2,'audio','Key'),(3,'audio','Programme');"
+                         "INSERT INTO device_chains(id,track_id,name) VALUES (2,2,'Key FX'),(3,3,'Devices');");
+        SQLite::Statement scale(store->db(),
+            "INSERT INTO plugin_refs(id,format,uid,name) VALUES (76,'internal',?,'Key Half Gain')");
+        scale.bind(1, KeyHalfGain::uid);
+        scale.exec();
+        SQLite::Statement ref(store->db(),
+            "INSERT INTO plugin_refs(id,format,uid,name) VALUES (77,'vst3',?,?)");
+        ref.bind(1, identity.uid);
+        ref.bind(2, identity.name);
+        ref.exec();
+        store->db().exec("INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) "
+                         "VALUES (20,2,0,76,'Key Half Gain'),(30,3,0,77,'Dormant auxiliary');");
+    }
+
+    // The real host adapter receives the discovered owned module via the
+    // document's usual loader, without scanning other plug-ins.
+    const engine::DeviceLoader loader = [&](const engine::DeviceRequest &request, std::string &error)
+        -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && request.ref->format == "internal" && request.ref->uid == KeyHalfGain::uid)
+            return std::make_unique<KeyHalfGain>();
+        if (!request.ref || request.ref->format != identity.format || request.ref->uid != identity.uid) {
+            error = "Unexpected device in the dormant auxiliary fixture";
+            return {};
+        }
+        return host.makeDevice(description, request.sampleRate, request.maxFrames, error);
+    };
+    StereoConstant key(.5f, .75f), programme(.125f, .25f);
+    const auto prepare = [&](ui::ProjectDocument &document) {
+        auto &session = document.session();
+        session.setSourcesFor([&](std::int64_t track) {
+            if (track == keyTrack) return std::vector<engine::Node *>{&key};
+            if (track == programmeTrack) return std::vector<engine::Node *>{&programme};
+            return std::vector<engine::Node *>{};
+        });
+        session.graph().setFadeFrames(0);
+        document.prepare(48000., frames);
+        return document.mailbox().post(ui::TransportMailbox::Command::Play);
+    };
+    using Audio = std::array<std::array<float, frames>, 2>;
+    const auto render = [](ui::ProjectDocument &document) {
+        Audio output{};
+        std::array<float *, 2> planes{output[0].data(), output[1].data()};
+        engine::AudioIo io;
+        io.out = planes.data();
+        io.numOut = 2;
+        io.frames = frames;
+        document.process(io);
+        return output;
+    };
+    const auto routed = [&](ui::ProjectDocument &document, const char *tap) {
+        const auto &routes = document.session().model().routing;
+        return routes.size() == 1 && routes.front().srcId == keyTrack &&
+               routes.front().dstId == recipientId && routes.front().keyTap == tap;
+    };
+    const auto presented = [](ui::ProjectDocument &document) {
+        const auto publication = document.parameterFeed().current();
+        const auto found = std::find_if(publication->begin(), publication->end(),
+            [](const ui::DevicePanelData &panel) { return panel.id == recipientId; });
+        if (found == publication->end()) throw std::runtime_error("The fixture device panel was not published");
+        return *found;
+    };
+
+    std::string error;
+    auto document = ui::ProjectDocument::open(file, false, loader, error);
+    if (!document) throw std::runtime_error(error);
+    check(prepare(*document), "the document audio callback accepts a queued Play");
+    document->tick(1);
+    auto *device = dynamic_cast<device::Vst3Device *>(document->session().instanceFor(recipientId));
+    if (!device) throw std::runtime_error("The document did not load the owned VST3 adapter");
+    check(device->usingRawProcessor() && device->sidechainInputChannels() == 2,
+          "the real graph has a declared but initially dormant stereo auxiliary bus");
+    const auto baseline = render(*document);
+    check(keyProbe.silent() && keyProbe.inPlace() == 1 &&
+              std::all_of(baseline[0].begin(), baseline[0].end(), [](float sample) { return sample > 0.f; }) &&
+              std::all_of(baseline[1].begin(), baseline[1].end(), [](float sample) { return sample > 0.f; }),
+          "programme plays through the actual SDK callback with the dormant key closed");
+
+    check(document->setDeviceKey(presented(*document), keyTrack, "post_fx") && routed(*document, "post_fx"),
+          "assigning the key through ProjectDocument commits the intended post-FX route");
+    const auto assigned = render(*document);
+    check(keyProbe.stereoKey(.25, .375) && assigned == baseline,
+          "the first callback after assigning a dormant key receives the post-FX samples and unchanged programme");
+    const auto configuredActivations = device->activations();
+    const auto *timelineReader = document->session().clips();
+    document->tick(2);
+    check(device->activations() == configuredActivations && document->session().clips() == timelineReader,
+          "the receipt drain does not activate or rebuild the just-configured key bus again");
+
+    check(document->setDeviceKey(presented(*document), keyTrack, "pre_fx") && routed(*document, "pre_fx"),
+          "a retap changes the stored source tap without changing bus width");
+    const auto retapped = render(*document);
+    check(keyProbe.stereoKey(.5, .75) && retapped == baseline && device->activations() == configuredActivations &&
+              document->session().clips() == timelineReader,
+          "a retap with the same auxiliary shape preserves the SDK, timeline reader and programme");
+
+    check(document->setDeviceKey(presented(*document), {}, "pre_fx") && document->session().model().routing.empty(),
+          "removing the route from the document clears just its key");
+    (void)render(*document);
+    check(keyProbe.silent(), "the first callback after removal closes the default-inactive auxiliary again");
+    check(document->ops().undo().ok && document->synchronise() && routed(*document, "pre_fx"),
+          "one Undo restores the complete pre-FX key route");
+    (void)render(*document);
+    check(keyProbe.stereoKey(.5, .75), "Undo reopens the dormant bus and restores the pre-FX key samples");
+    check(document->ops().redo().ok && document->synchronise() && document->session().model().routing.empty(),
+          "one Redo removes the route again");
+    (void)render(*document);
+    check(keyProbe.silent(), "Redo closes the auxiliary bus again");
+
+    check(document->ops().undo().ok && document->synchronise() && routed(*document, "pre_fx"),
+          "leave the authored route for a clean reopen");
+    document->release();
+    document.reset();
+    auto reopened = ui::ProjectDocument::open(file, false, loader, error);
+    if (!reopened) throw std::runtime_error(error);
+    check(routed(*reopened, "pre_fx") && prepare(*reopened), "the reopened project reads the stored route");
+    (void)render(*reopened);
+    check(keyProbe.stereoKey(.5, .75), "first reopened audio callback hears the stored pre-FX key without a new edit");
+    reopened->release();
+}
+
 void contract() {
     test::TempDirectory temp("vst3_key", "owned");
     scan::Config config;
@@ -160,6 +338,12 @@ void contract() {
                   defaultActive ? "default-active aux carries silence after route removal"
                                 : "default-inactive aux is deactivated after route removal");
         }
+    const auto descriptions = list.getTypes();
+    const auto stereo = std::find_if(descriptions.begin(), descriptions.end(), [](const auto &description) {
+        return description.name == "ADI Test NoteExpr";
+    });
+    if (stereo == descriptions.end()) throw std::runtime_error("Owned stereo auxiliary fixture unavailable");
+    documentContract(host, *stereo, {first, last, channels, inPlace});
 }
 } // namespace
 int main() {
