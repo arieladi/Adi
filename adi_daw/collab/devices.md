@@ -225,6 +225,70 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the fifth review: Roar, Auto Shift and the spectral pair, ten findings, all fixed
+
+Three skeptics per finding. Every fix is merged up the stack and pushed. The new heads are listed
+under "Heads" below.
+- **Auto Shift, rebuilt (e387e86e, on `devices/auto-shift`).** The review of 53080074 confirmed two
+  findings.
+  - Its window followed every new pitch reading, so the Shifter's read taps jumped whenever the pitch
+    moved. Under vibrato, a step or a glide the largest step was 0.13 to 0.38, against the input's own
+    0.013.
+  - Letting the correction go at unison dropped the level by up to 23 dB.
+  - The core is now a pitch-synchronous overlap-add on the detector's period:
+    - output marks lie P / ratio apart;
+    - each mark lays a Hann grain of the input around the input mark on the period's grid nearest the
+      output's time one latency back;
+    - the grains are normalised by their summed windows.
+  - The latency is fixed and reported: 4.5 times the longest period shifted (that of 60 Hz), 3,608
+    samples at 48 kHz. The dry signal is delayed with it.
+  - Tests: `adi_auto_shift_tests` 41.
+    - Vibrato, a step and a glide at 44.1, 48 and 192 kHz: no step past the input's own, within half
+      again.
+    - The correction let go at 48 points: the level never falls 1.5 dB.
+    - Dry/Wet 0 is the input one reported latency late, exactly.
+    - The old core fails 12 of these; at the let-go it measures −23.0 dB. Four plants each fail: no
+      normalisation, the input mark off the grid, half-width grains, an undelayed dry.
+  - Reading 33 (Auto Shift) asks for Live's latency and how fast it reacts; this core's are now fixed
+    numbers to compare.
+- **Roar (87d9de50).** The review of e94e310a confirmed two findings.
+  - A change of Shape with a Bias set left the bias offset stale: a thump of up to 0.12 out of silence.
+  - A change of routing reset stage 1 although every routing runs it: a step of 0.29 in a sample.
+  - Only stages that sat idle are reset now. `adi_roar_tests` 29; the five new checks fail on the old
+    core.
+- **Spectral Time (2be28788).** The review of b8436141 confirmed three findings.
+  - A finite burst near the float's limit overflowed the transform, and the NaN stayed in the
+    feedback for good. The input is now bounded at 1e6.
+  - The aliased-plane check could not fail; it now compares against a run with separate planes.
+  - The inert device reported latency it did not have. Dry/Wet also glides now.
+  - `adi_spectral_time_tests` 15.
+- **Spectral Resonator (765b3100).** The review of 1802596d confirmed three findings.
+  - At 192 kHz the fixed 2,048-sample window let a tone between partials through at −0.1 dB. The
+    window now scales with the rate, and the tone stays under −40 dB at 44.1, 96 and 192 kHz.
+  - A burst of 1e36 latched a ring at inf. The input is now bounded at 1e6.
+  - Dry/Wet stepped; it now glides.
+  - `adi_spectral_resonator_tests` 15; the three checks fail on the old core.
+- **Heads:**
+
+  | Branch | Head |
+  |---|---|
+  | `devices/auto-shift` | e387e86e |
+  | `devices/spectrum-device` | df4d6917 |
+  | `devices/live-amp` | 71fdc362 |
+  | `devices/live-cabinet` | ff74bb39 |
+  | `devices/corpus` | a26c64bd |
+  | `devices/drum-buss` | f2ff124b |
+  | `devices/dynamic-tube` | c3a67645 |
+  | `devices/grain-delay` | 182aa06b |
+  | `devices/live-pedal` | 6ada65ac |
+  | `devices/roar` | 6b411b96 |
+  | `devices/spectral-time` | d3b4b24f |
+  | `devices/spectral-resonator` | 57e5c9be |
+
+  PRs requested at these heads, in place of the heads named in the entries below.
+- **CTest.** `devices/spectral-resonator` at 1802596d, before these fixes, passed 295/295 at
+  PD_FLOATSIZE 32 and 64, and tidy was clean. The run at 57e5c9be is under way.
+
 ## 2026-11-22 — DEV-22, the chapter's last missing effect: Spectral Resonator — lands after 3 December
 
 **PR requested:** head `devices/spectral-resonator` (1802596d), base `main`, after
