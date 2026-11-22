@@ -176,6 +176,16 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // they differ from what it holds (false with why when the write fails).
     settings::Value userKeys() const;
     bool storeUserKeys(std::string &why);
+    // WIN-05: the Latin key at a non-Latin layout's letter (Hebrew SI-1452, Russian JCUKEN), with its
+    // modifiers, so Ctrl/Cmd+Z undoes and Z zooms whatever layout types; none for a key that is Latin
+    // already or in neither table. Key dispatch tries it when the key as typed is no command's.
+    static std::optional<juce::KeyPress> latinKey(const juce::KeyPress &);
+    // WIN-05: the key set as a file, the same on every platform (chords in canonical text):
+    // {"format": "adi-shortcuts", "version": 1, "preset": ..., "overrides": {stable id: [chords]}}.
+    // Import refuses a file that is not one and a chord it cannot read, naming it; it writes the preset
+    // and the overrides, then reloads.
+    bool exportShortcuts(const juce::File &, std::string &why) const;
+    bool importShortcuts(const juce::File &, std::string &why);
     bool key(const juce::KeyPress &, AdiRootComponent &);
     void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
@@ -287,13 +297,17 @@ class ShortcutsPage final : public juce::Component, private juce::ChangeListener
     const std::string &error() const noexcept { return error_; }
     // Writes the user's keys now (the change message comes later, on the message loop).
     void store();
-    static constexpr int kHeight = 440, kErrorHeight = 20;
+    // WIN-05: Import and Export of the key set, under the editor (a file chooser each).
+    juce::TextButton importButton{"Import..."}, exportButton{"Export..."};
+    static constexpr int kHeight = 440, kErrorHeight = 20, kFootHeight = 28;
 
   private:
     void changeListenerCallback(juce::ChangeBroadcaster *) override;
+    void say(const std::string &);
     AppCommands &commands_;
     juce::KeyMappingEditorComponent editor_;
     std::string error_;
+    std::unique_ptr<juce::FileChooser> chooser_;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).

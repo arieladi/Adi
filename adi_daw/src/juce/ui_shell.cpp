@@ -128,11 +128,110 @@ bool AppCommands::storeUserKeys(std::string &why) {
         return true;
     return settings_.set("shortcuts.overrides", keys, {}, why) && settings_.save(why);
 }
+namespace {
+// The Latin letter at each letter of the Hebrew (SI-1452) and Russian (JCUKEN) layouts' keys.
+struct LayoutKey {
+    juce::juce_wchar letter;
+    char latin;
+};
+constexpr LayoutKey kLayoutKeys[] = {
+    // Hebrew
+    {0x05E7, 'e'}, {0x05E8, 'r'}, {0x05D0, 't'}, {0x05D8, 'y'}, {0x05D5, 'u'}, {0x05DF, 'i'}, {0x05DD, 'o'},
+    {0x05E4, 'p'}, {0x05E9, 'a'}, {0x05D3, 's'}, {0x05D2, 'd'}, {0x05DB, 'f'}, {0x05E2, 'g'}, {0x05D9, 'h'},
+    {0x05D7, 'j'}, {0x05DC, 'k'}, {0x05DA, 'l'}, {0x05E3, ';'}, {0x05D6, 'z'}, {0x05E1, 'x'}, {0x05D1, 'c'},
+    {0x05D4, 'v'}, {0x05E0, 'b'}, {0x05DE, 'n'}, {0x05E6, 'm'}, {0x05EA, ','}, {0x05E5, '.'},
+    // Russian, lower case (upper case folds to it first)
+    {0x0439, 'q'}, {0x0446, 'w'}, {0x0443, 'e'}, {0x043A, 'r'}, {0x0435, 't'}, {0x043D, 'y'}, {0x0433, 'u'},
+    {0x0448, 'i'}, {0x0449, 'o'}, {0x0437, 'p'}, {0x0445, '['}, {0x044A, ']'}, {0x0444, 'a'}, {0x044B, 's'},
+    {0x0432, 'd'}, {0x0430, 'f'}, {0x043F, 'g'}, {0x0440, 'h'}, {0x043E, 'j'}, {0x043B, 'k'}, {0x0434, 'l'},
+    {0x0436, ';'}, {0x044D, '\''}, {0x044F, 'z'}, {0x0447, 'x'}, {0x0441, 'c'}, {0x043C, 'v'}, {0x0438, 'b'},
+    {0x0442, 'n'}, {0x044C, 'm'}, {0x0431, ','}, {0x044E, '.'}};
+} // namespace
+std::optional<juce::KeyPress> AppCommands::latinKey(const juce::KeyPress &k) {
+    auto letter = k.getTextCharacter() != 0 ? k.getTextCharacter() : static_cast<juce::juce_wchar>(k.getKeyCode());
+    if (letter >= 0x0410 && letter <= 0x042F)
+        letter += 0x20; // Russian upper case
+    for (const auto &l : kLayoutKeys)
+        if (l.letter == letter)
+            return juce::KeyPress(l.latin, k.getModifiers(), 0);
+    return std::nullopt;
+}
+bool AppCommands::exportShortcuts(const juce::File &file, std::string &why) const {
+    const settings::Value set{{"format", "adi-shortcuts"},
+                              {"version", 1},
+                              {"preset", settings_.get("shortcuts.preset")},
+                              {"overrides", userKeys()}};
+    if (!file.replaceWithText(juce::String::fromUTF8(set.dump(2).c_str()), false, false, "\n")) {
+        why = "The key set could not be written to " + file.getFullPathName().toStdString() + ".";
+        return false;
+    }
+    return true;
+}
+bool AppCommands::importShortcuts(const juce::File &file, std::string &why) {
+    settings::Value set;
+    try {
+        set = settings::Value::parse(file.loadFileAsString().toStdString());
+    } catch (const std::exception &) {
+        why = file.getFileName().toStdString() + " is not a key set.";
+        return false;
+    }
+    if (!set.is_object() || set.value("format", "") != "adi-shortcuts" || !set.contains("overrides") ||
+        !set["overrides"].is_object()) {
+        why = file.getFileName().toStdString() + " is not a key set.";
+        return false;
+    }
+    if (set.value("version", 0) != 1) {
+        why = file.getFileName().toStdString() + " is a key set of another version.";
+        return false;
+    }
+    for (const auto &[stable, chords] : set["overrides"].items()) {
+        if (!chords.is_array()) {
+            why = stable + " in " + file.getFileName().toStdString() + " holds no list of keys.";
+            return false;
+        }
+        for (const auto &chord : chords)
+            if (!chord.is_string() || !parseChord(chord.get<std::string>())) {
+                why = "The key " + chord.dump() + " for " + stable + " cannot be read.";
+                return false;
+            }
+    }
+    if (const auto preset = set.find("preset"); preset != set.end() && preset->is_string())
+        if (!settings_.set("shortcuts.preset", *preset, {}, why))
+            return false;
+    if (!settings_.set("shortcuts.overrides", set["overrides"], {}, why) || !settings_.save(why))
+        return false;
+    reload();
+    return true;
+}
 ShortcutsPage::ShortcutsPage(AppCommands &commands)
     : commands_(commands), editor_(*commands.manager.getKeyMappings(), true) {
     editor_.setColour(juce::KeyMappingEditorComponent::backgroundColourId, look::panel);
     editor_.setColour(juce::KeyMappingEditorComponent::textColourId, look::text);
     addAndMakeVisible(editor_);
+    for (auto *b : {&importButton, &exportButton})
+        addAndMakeVisible(*b);
+    importButton.setTooltip("Reads a key set exported from ADI on any computer.");
+    exportButton.setTooltip("Writes your keys to a file another computer's ADI can import.");
+    importButton.onClick = [this] {
+        chooser_ = std::make_unique<juce::FileChooser>("Import a key set", juce::File(), "*.json");
+        chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [this](const juce::FileChooser &fc) {
+                                  if (fc.getResult() == juce::File())
+                                      return;
+                                  std::string why;
+                                  say(commands_.importShortcuts(fc.getResult(), why) ? std::string() : why);
+                              });
+    };
+    exportButton.onClick = [this] {
+        chooser_ = std::make_unique<juce::FileChooser>("Export your keys", juce::File("ADI Shortcuts.json"), "*.json");
+        chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this](const juce::FileChooser &fc) {
+                                  if (fc.getResult() == juce::File())
+                                      return;
+                                  std::string why;
+                                  say(commands_.exportShortcuts(fc.getResult(), why) ? std::string() : why);
+                              });
+    };
     commands_.manager.getKeyMappings()->addChangeListener(this);
     setSize(560, kHeight);
 }
@@ -145,15 +244,24 @@ void ShortcutsPage::paint(juce::Graphics &g) {
     g.drawText(juce::String::fromUTF8(error_.c_str()), getLocalBounds().removeFromBottom(kErrorHeight).reduced(17, 0),
                juce::Justification::centredLeft, true);
 }
-void ShortcutsPage::resized() { editor_.setBounds(getLocalBounds().withTrimmedBottom(kErrorHeight)); }
-void ShortcutsPage::store() {
-    std::string why;
-    const bool ok = commands_.storeUserKeys(why);
-    const std::string said = ok ? std::string() : "Your keys were not saved: " + why;
+void ShortcutsPage::resized() {
+    auto area = getLocalBounds().withTrimmedBottom(kErrorHeight);
+    auto foot = area.removeFromBottom(kFootHeight).reduced(17, 3);
+    exportButton.setBounds(foot.removeFromRight(90));
+    foot.removeFromRight(8);
+    importButton.setBounds(foot.removeFromRight(90));
+    editor_.setBounds(area);
+}
+void ShortcutsPage::say(const std::string &said) {
     if (said != error_) {
         error_ = said;
         repaint();
     }
+}
+void ShortcutsPage::store() {
+    std::string why;
+    const bool ok = commands_.storeUserKeys(why);
+    say(ok ? std::string() : "Your keys were not saved: " + why);
 }
 void ShortcutsPage::changeListenerCallback(juce::ChangeBroadcaster *) { store(); }
 namespace {
@@ -1013,8 +1121,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
         info.setActive(false);
 }
-bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
+bool AppCommands::key(const juce::KeyPress &typed, AdiRootComponent &root) {
     activate(root);
+    // A non-Latin layout's letter that is no command's is the Latin key at its place (WIN-05).
+    auto key = typed;
+    if (manager.getKeyMappings()->findCommandForKeyPress(key) == 0)
+        if (const auto latin = latinKey(key))
+            key = *latin;
     // F, G, K and B are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
     if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); id >= FoldToNotes && id <= DrawMode)

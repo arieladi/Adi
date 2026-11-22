@@ -12471,6 +12471,63 @@ void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
     check(!undo.defaultKeypresses.isEmpty() && keysOf(AppCommands::Undo).size() == static_cast<std::size_t>(undo.defaultKeypresses.size()),
           "with no overrides Undo has the key map's keys again");
 }
+// WIN-05: under a Hebrew or Russian layout the Latin key at a letter's place runs its command (Ctrl/Cmd+Z
+// undoes, Z and X zoom); a key set exported on one platform imports on another (its chords are canonical
+// text); a file that is not a key set, or holds a chord no one can read, is refused and named.
+void shortcutSets(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string why;
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    commands.reload();
+    const auto *mappings = commands.manager.getKeyMappings();
+    const auto run = [&](juce::juce_wchar letter, int mods) {
+        const juce::KeyPress typed(static_cast<int>(letter), juce::ModifierKeys(mods), letter);
+        if (const int direct = mappings->findCommandForKeyPress(typed); direct != 0)
+            return direct;
+        const auto latin = AppCommands::latinKey(typed);
+        return latin ? mappings->findCommandForKeyPress(*latin) : 0;
+    };
+    const int cmd = juce::ModifierKeys::commandModifier;
+    check(run(0x05D6, cmd) == AppCommands::Undo, "under a Hebrew layout Ctrl/Cmd+Z (the key of zayin) undoes");
+    check(run(0x05D6, 0) == AppCommands::ZoomToSelection && run(0x05E1, 0) == AppCommands::ZoomBack,
+          "and Z and X (zayin, samekh) zoom");
+    check(run(0x044F, cmd) == AppCommands::Undo && run(0x042F, cmd) == AppCommands::Undo && run(0x0447, 0) == AppCommands::ZoomBack,
+          "under a Russian layout too, in either case");
+    check(!AppCommands::latinKey(juce::KeyPress('z')) && !AppCommands::latinKey(juce::KeyPress(0x4E2D)),
+          "a Latin key, and a letter of neither table, are left as typed");
+    // A set exported on Windows: canonical chords, Cmd the command key.
+    const auto windowsSet = juce::File(juce::String((dir / "windows-shortcuts.json").string()));
+    windowsSet.replaceWithText(R"({"format": "adi-shortcuts", "version": 1, "preset": "cubase",
+        "overrides": {"view.browser": ["Cmd+Alt+F9"], "edit.undo": [], "help.not-here-yet": ["F9"]}})");
+    check(commands.importShortcuts(windowsSet, why), ("a key set exported on Windows imports: " + why).c_str());
+    const auto browserKeys = mappings->getKeyPressesAssignedToCommand(AppCommands::ToggleBrowser);
+    check(browserKeys.size() == 1 && browserKeys[0].getKeyCode() == juce::KeyPress::F9Key &&
+              browserKeys[0].getModifiers() == juce::ModifierKeys(cmd | juce::ModifierKeys::altModifier) &&
+              mappings->getKeyPressesAssignedToCommand(AppCommands::Undo).isEmpty() &&
+              settings.get("shortcuts.preset") == "cubase" && settings.get("shortcuts.overrides").contains("help.not-here-yet"),
+          "with this platform's command key, its preset, and the keys of a command this build lacks kept");
+    const auto exported = juce::File(juce::String((dir / "exported-shortcuts.json").string()));
+    check(commands.exportShortcuts(exported, why), ("the set exports: " + why).c_str());
+    auto back = settings::Value::parse(exported.loadFileAsString().toStdString());
+    check(back["format"] == "adi-shortcuts" && back["version"] == 1 && back["preset"] == "cubase" &&
+              back["overrides"]["view.browser"] == settings::Value::array({"Cmd+Alt+F9"}) && back["overrides"]["edit.undo"].empty(),
+          "the exported file holds the preset and the user's keys in canonical text");
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    commands.reload();
+    check(commands.importShortcuts(exported, why) &&
+              mappings->getKeyPressesAssignedToCommand(AppCommands::ToggleBrowser).size() == 1,
+          "and imports back as it was");
+    const auto bad = juce::File(juce::String((dir / "bad-shortcuts.json").string()));
+    bad.replaceWithText("[1, 2]");
+    check(!commands.importShortcuts(bad, why) && why.find("not a key set") != std::string::npos, "a file that is not a key set is refused");
+    bad.replaceWithText(R"({"format": "adi-shortcuts", "version": 1, "overrides": {"edit.redo": ["Hyper+"]}})");
+    check(!commands.importShortcuts(bad, why) && why.find("edit.redo") != std::string::npos &&
+              mappings->getKeyPressesAssignedToCommand(AppCommands::ToggleBrowser).size() == 1,
+          "a chord no one can read is refused and named, and nothing changes");
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    commands.reload();
+}
 void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
 #if JUCE_MAC
     const char *family = "mac";
@@ -15771,6 +15828,7 @@ int main(int argc, char **argv) {
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
+    trace("shortcutSets", [&] { shortcutSets(commands, settings, temp.path()); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
