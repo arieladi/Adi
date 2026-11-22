@@ -808,6 +808,15 @@ private:
             return;
         }
         if (connected(b, false, 1)) return refuse(b, "message", "setting a message that sends to a device-local name is not translated");
+        // "set" replaces the whole box, its ";" parts too, in Max; split into
+        // parts here it cannot. A "set" (or a [prepend set]) feeding the box
+        // is refused; one made at run time is dropped.
+        const bool setFed = messageInto(b, 0, "set") || std::any_of(lines_.begin(), lines_.end(), [&](const Line& l) {
+            if (l.dst != b.id || l.inlet != 0) return false;
+            const auto w = words(boxes_[index_.at(l.src)].text);
+            return w.size() >= 2 && w[0] == "prepend" && w[1] == "set";
+        });
+        if (setFed) return refuse(b, "message", "a set into a message that sends to a device-local name is not translated");
         Fragment f;
         const int n = static_cast<int>(parts.size());
         std::string t = "t";
@@ -828,14 +837,14 @@ private:
         }
         f.inlets = {{0, 0}};
         f.outlets = {{1, 0}};
-        if (dollars) keepArguments(b, f, 0);
+        if (dollars) keepArguments(b, f, 0, false);
         frags_[b.id] = std::move(f);
     }
 
     /// A Max message box keeps what its $ arguments last took: a bang sends
     /// them again. A Pd message box keeps nothing. So a number or list on
     /// its way in is also stored in a [list], which a bang sends instead.
-    void keepArguments(const Box& b, Fragment& f, int target) {
+    void keepArguments(const Box& b, Fragment& f, int target, bool settable = true) {
         // Everything but a bang or a "set" is made a list ([list] keeps a
         // message's first word as its first element, where Pd's message box
         // would drop it), goes on, and is stored: the box sends the same now
@@ -855,7 +864,7 @@ private:
         f.internal.push_back({asList, 0, both, 0});
         f.internal.push_back({both, 1, store, 1});
         f.internal.push_back({both, 0, target, 0});
-        f.internal.push_back({route, 1, again, 0});
+        if (settable) f.internal.push_back({route, 1, again, 0});
         f.internal.push_back({again, 0, again + 1, 0});
         f.internal.push_back({again + 1, 0, target, 0});
         f.inlets[0] = {route, 0};
