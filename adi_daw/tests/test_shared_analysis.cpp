@@ -150,10 +150,43 @@ void stripReusesRawSpectrum() {
     check(window && summary && summary->endSequence == 2560 && summary->firstStamp == window->firstStamp &&
               summary->spectrumDbfs[0] == *std::max_element(window->binsDbfs.begin(), window->binsDbfs.begin() + 5),
           "the strip projects the first shared completed raw FFT at or after its 50-millisecond boundary");
+    const auto settled = f.broker.stats();
     strip.reset();
+    check(f.broker.pump() == 0 && raw.read() == window,
+          "closing the last Strip retains the raw analyzer's completed publication");
+    const auto idle = f.broker.stats();
+    check(idle.taps == 1 && idle.consumers == 1 && idle.workerPasses == settled.workerPasses &&
+              idle.cursorReads == settled.cursorReads && idle.analysisWindows == settled.analysisWindows &&
+              idle.transforms == settled.transforms && idle.publications == settled.publications,
+          "closing a shared Strip in an idle hop needs no worker, cursor, FFT or publication");
+
+    SharedAnalysis::Request scopeRequest{1};
+    scopeRequest.outputs = SharedAnalysis::Scope;
+    auto waitingScope = f.broker.acquire(scopeRequest);
+    auto transientStrip = f.broker.acquireStrip(1);
+    transientStrip.reset();
+    const auto pending = f.broker.stats();
+    f.broker.pump();
+    const auto projected = waitingScope.read();
+    check(projected && window && projected->windowSerial == window->windowSerial &&
+              projected->scopeLeft.size() == 1024 && f.broker.stats().publications == pending.publications + 1 &&
+              f.broker.stats().transforms == pending.transforms,
+          "closing Strip preserves an already pending projection for another consumer");
+
+    auto reopened = f.broker.acquireStrip(1);
+    check(reopened && !reopened.readStrip(), "reopening Strip starts without the old publication");
     f.tap->write(audio.data(), audio.data(), 256, 2560, true, 1);
     check(f.broker.pump() == 1 && f.broker.stats().transforms == 8 && f.broker.stats().taps == 1,
-          "hiding the strip leaves the compatible raw analyzer running");
+          "the compatible raw analyzer keeps its next hop and reuses one tap");
+    f.tap->write(audio.data(), audio.data(), 2048, 2816, true, 1);
+    f.broker.pump();
+    check(!reopened.readStrip(), "a reopened Strip waits through raw hops before its next 50 milliseconds");
+    f.tap->write(audio.data(), audio.data(), 256, 4864, true, 1);
+    f.broker.pump();
+    const auto next = reopened.readStrip();
+    check(next && next != summary && next->endSequence == 5120 &&
+              f.broker.stats().transforms == 17 && f.broker.stats().taps == 1 && f.acquireCalls == 1,
+          "Strip restarts at its next fresh boundary without a new tap or FFT plan");
 }
 
 void stripWorkerBudget() {

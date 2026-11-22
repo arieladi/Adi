@@ -636,7 +636,10 @@ struct SharedAnalysis::Domain {
             if (outputUsers[i]) unionBits |= 1u << i;
         }
         outputs.store(unionBits, std::memory_order_release);
-        if (previous != unionBits) dirty.store(true, std::memory_order_release);
+        // Strip owns a separate publication. Without it, the remaining readers
+        // can keep the completed window and any existing pending projection.
+        const bool onlyStripRemoved = !add && unionBits != 0 && (previous ^ unionBits) == Strip;
+        if (previous != unionBits && !onlyStripRemoved) dirty.store(true, std::memory_order_release);
     }
     void appendHistory(Column column) {
         if (columns.size() == maxHistoryColumns) columns.erase(columns.begin());
