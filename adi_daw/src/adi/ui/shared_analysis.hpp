@@ -206,7 +206,13 @@ class SharedAnalysis final {
         engine::ScopeSource a, b;
         FocusScopeChannels fold = FocusScopeChannels::Stereo;
         std::uint64_t selection = 0;
+        bool spectrum = false;
         bool operator==(const ScopeDifference &) const = default;
+    };
+    struct ScopeDifferenceSpectrum {
+        ScopeDifference source;
+        std::int32_t fftSize = 0;
+        std::vector<float> binsDbfs;
     };
     enum class BarScopeStatus { Idle, Pending, Ready, Missed };
     struct BarScopeResult {
@@ -215,6 +221,11 @@ class SharedAnalysis final {
         double sampleRate = 0.;
         std::uint64_t transportRevision = 0;
         std::shared_ptr<const FocusScopeBarProjection> projection;
+        std::optional<ScopeDifferenceSpectrum> residual;
+        // Empty bins in a matching result mean the selected residual is zero.
+        [[nodiscard]] const ScopeDifferenceSpectrum *differenceSpectrum(const ScopeDifference &expected) const noexcept {
+            return residual && residual->source == expected ? &*residual : nullptr;
+        }
     };
     class BarScopeLease {
       public:

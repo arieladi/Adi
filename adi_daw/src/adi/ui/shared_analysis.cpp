@@ -5,6 +5,7 @@
 #include "adi/ui/focus_scope.hpp"
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <condition_variable>
@@ -832,6 +833,126 @@ struct SharedAnalysis::CaptureDomain {
         }
     }
 };
+namespace {
+struct DifferenceResidualPlans {
+    static constexpr auto planSlots = static_cast<std::size_t>(
+        std::bit_width(static_cast<unsigned>(SharedAnalysis::kMaxFftSize)));
+    std::array<std::unique_ptr<dsp::Spectrum>, planSlots> plans;
+    std::vector<float> rightMagnitudes;
+
+    dsp::Spectrum *plan(std::int32_t fftSize) {
+        auto &entry = plans[static_cast<std::size_t>(std::countr_zero(static_cast<unsigned>(fftSize)))];
+        if (!entry) {
+            auto prepared = std::make_unique<dsp::Spectrum>(fftSize);
+            if (!prepared->valid()) return nullptr;
+            entry = std::move(prepared);
+        }
+        return entry.get();
+    }
+};
+
+class DifferenceResidualFrame {
+  public:
+    void clear() noexcept { source_.reset(); }
+
+    void prepare(const FocusScopeRange &range, std::span<const FocusScopeBarSource> sources,
+                 const std::optional<SharedAnalysis::ScopeDifference> &difference) noexcept {
+        clear();
+        if (!difference || !difference->spectrum || range.frames < 32) return;
+        const auto find = [&](engine::ScopeSource source) {
+            return std::ranges::find(sources, source, &FocusScopeBarSource::source);
+        };
+        const auto a = find(difference->a), b = find(difference->b);
+        if (a == sources.end() || b == sources.end() || a == b) return;
+
+        constexpr auto maximum = static_cast<std::size_t>(SharedAnalysis::kMaxFftSize);
+        // Aim for about 6 Hz per bin while limiting the work to one supported
+        // power-of-two frame at the end of the existing bar.
+        const auto wanted = static_cast<std::size_t>(std::clamp(std::ceil(range.sampleRate / 6.), 32.,
+                                                                static_cast<double>(maximum)));
+        const auto size = std::min(std::bit_floor(std::min(range.frames, maximum)), std::bit_ceil(wanted));
+        try {
+            samples_[0].resize(size);
+            if (difference->fold == FocusScopeChannels::Stereo) samples_[1].resize(size);
+        } catch (...) {
+            return; // Keep the waveform available if spectrum storage fails.
+        }
+        pair_ = {static_cast<std::size_t>(a - sources.begin()), static_cast<std::size_t>(b - sources.begin())};
+        first_ = range.frames - size;
+        occupied_ = {};
+        source_ = difference;
+    }
+
+    void append(std::span<const FocusScopeBarBlock> blocks, std::size_t first, std::size_t count) noexcept {
+        if (!source_ || first + count <= first_) return;
+        const auto begin = first < first_ ? first_ - first : 0;
+        for (std::size_t i = begin; i < count; ++i) {
+            const auto a = focusBarSample(blocks[pair_[0]], i), b = focusBarSample(blocks[pair_[1]], i);
+            const auto left = a[0] - b[0], right = a[1] - b[1];
+            const auto at = first + i - first_;
+            switch (source_->fold) {
+            case FocusScopeChannels::Stereo: store(1, at, right); store(0, at, left); break;
+            case FocusScopeChannels::Left: store(0, at, left); break;
+            case FocusScopeChannels::Right: store(0, at, right); break;
+            case FocusScopeChannels::Mid: case FocusScopeChannels::Side:
+                store(0, at, focusScopeFoldSample(source_->fold, left, right));
+                break;
+            }
+        }
+    }
+
+    [[nodiscard]] bool needsTransform() const noexcept {
+        return source_ && (occupied_[0] || occupied_[1]);
+    }
+
+    std::optional<SharedAnalysis::ScopeDifferenceSpectrum> analyse(DifferenceResidualPlans &cache,
+                                                                    std::size_t &transforms) const noexcept {
+        if (!source_) return {};
+        SharedAnalysis::ScopeDifferenceSpectrum result{*source_, static_cast<std::int32_t>(samples_[0].size()), {}};
+        if (!needsTransform()) return result;
+        try {
+            auto *const plan = cache.plan(result.fftSize);
+            if (!plan) return {};
+            const auto bins = static_cast<std::size_t>(plan->bins());
+            result.binsDbfs.resize(bins);
+            auto &primary = result.binsDbfs;
+            if (occupied_[0]) { plan->analyse(samples_[0], primary); ++transforms; }
+            if (source_->fold == FocusScopeChannels::Stereo) {
+                auto &other = cache.rightMagnitudes;
+                other.resize(bins);
+                if (occupied_[1]) { plan->analyse(samples_[1], other); ++transforms; }
+                else std::ranges::fill(other, 0.f);
+                for (std::size_t i = 0; i < bins; ++i) {
+                    const auto l = static_cast<double>(primary[i]), r = static_cast<double>(other[i]);
+                    primary[i] = static_cast<float>(std::sqrt((l * l + r * r) * .5));
+                }
+            }
+            if (!std::ranges::all_of(primary, [](float value) { return std::isfinite(value); })) return {};
+            std::ranges::transform(primary, primary.begin(), dsp::toDbfs);
+        } catch (...) {
+            return {};
+        }
+        return result;
+    }
+
+  private:
+    void store(std::size_t channel, std::size_t at, double value) noexcept {
+        // Subtract and fold in double before the same PFFFT input guard as
+        // the other spectra. Finite float operands can overflow their difference.
+        constexpr auto limit = static_cast<double>(spectralSampleLimit);
+        const auto sample = static_cast<float>(std::clamp(value, -limit, limit));
+        samples_[channel][at] = sample;
+        occupied_[channel] = occupied_[channel] || sample != 0.f;
+    }
+
+    std::optional<SharedAnalysis::ScopeDifference> source_;
+    std::array<std::vector<float>, 2> samples_;
+    std::array<std::size_t, 2> pair_{};
+    std::array<bool, 2> occupied_{};
+    std::size_t first_ = 0;
+};
+} // namespace
+
 struct SharedAnalysis::BarScopeDomain {
     static constexpr std::size_t chunkFrames = 256;
     static constexpr std::array<float, chunkFrames> silence{};
@@ -853,6 +974,7 @@ struct SharedAnalysis::BarScopeDomain {
 
     void invalidateProjection() noexcept {
         projection.reset();
+        residualFrame.clear();
         result.store({});
         if (status.load() != BarScopeStatus::Idle) status.store(BarScopeStatus::Missed);
         waiting.store(0);
@@ -892,6 +1014,7 @@ struct SharedAnalysis::BarScopeDomain {
         end = *finish;
         expectedRevision = revision = expected;
         projection.reset();
+        residualFrame.clear();
         result.store({});
         waiting.store(0);
         status.store(BarScopeStatus::Pending);
@@ -903,10 +1026,21 @@ struct SharedAnalysis::BarScopeDomain {
     }
 
     void setDifferenceRequested(std::optional<ScopeDifference> requested) noexcept {
-        const std::lock_guard lock(differenceMutex);
-        if (requested == requestedDifference) return;
-        requestedDifference = requested;
-        differenceVersion.fetch_add(1, std::memory_order_release);
+        bool changeSpectrum = false;
+        std::uint64_t version = 0;
+        {
+            const std::lock_guard lock(differenceMutex);
+            if (requested == requestedDifference) return;
+            changeSpectrum = (requested && requested->spectrum) || (requestedDifference && requestedDifference->spectrum);
+            requestedDifference = requested;
+            version = differenceVersion.fetch_add(1, std::memory_order_release) + 1;
+        }
+        if (!changeSpectrum) return;
+        // An old spectrum is no longer a valid completed bar for this request.
+        // Leave an in-flight bar to drop its comparison at the next worker pass.
+        const std::lock_guard lock(mutex);
+        if (status.load() == BarScopeStatus::Ready && seenDifferenceVersion != version)
+            invalidateProjection();
     }
 
     void pollDifferenceRequest() noexcept {
@@ -917,6 +1051,7 @@ struct SharedAnalysis::BarScopeDomain {
             seenDifferenceVersion = differenceVersion.load(std::memory_order_relaxed);
         }
         if (projection) projection->discardDifference();
+        residualFrame.clear();
     }
 
     // On the owner this runs under State::mutex, which also protects tap rebinding.
@@ -997,17 +1132,37 @@ struct SharedAnalysis::BarScopeDomain {
         return count != 0;
     }
 
-    bool process(std::size_t &reads, std::size_t &samples) noexcept {
+    bool publish(DifferenceResidualPlans &cache, std::size_t &windows, std::size_t &transforms) {
+        if (!active.load()) return false;
+        if (residualFrame.needsTransform()) {
+            if (windows >= kMaxWindowsPerFrame) return false;
+            ++windows;
+        }
+        const auto version = seenDifferenceVersion;
+        auto residual = residualFrame.analyse(cache, transforms);
+        pollDifferenceRequest();
+        if (seenDifferenceVersion != version) residual.reset();
+        if (!active.load()) return false;
+        result.store(std::make_shared<BarScopeResult>(BarScopeResult{range.first, range.frames,
+            range.sampleRate, revision, std::move(projection), std::move(residual)}));
+        status.store(BarScopeStatus::Ready);
+        return true;
+    }
+
+    bool process(std::size_t &reads, std::size_t &samples, DifferenceResidualPlans &cache,
+                 std::size_t &windows, std::size_t &transforms) noexcept {
         std::lock_guard lock(mutex);
         if (!needsWork()) return false;
         waiting.store(0);
         const auto readLimit = std::min(kMaxReadsPerFrame, reads + kMaxReadsPerFrame / 2);
         try {
             while (active.load()) {
-                const auto first = range.first + static_cast<std::int64_t>(projection ? projection->frames() : 0);
+                pollDifferenceRequest();
+                if (projection && projection->complete()) return publish(cache, windows, transforms);
+                const auto captured = projection ? projection->frames() : 0;
+                const auto first = range.first + static_cast<std::int64_t>(captured);
                 std::size_t count = 0;
                 if (!prepareDisplayBlocks(first, reads, readLimit, samples, count)) return false;
-                pollDifferenceRequest();
                 const auto fold = monoRequested.load(std::memory_order_relaxed);
                 const auto phase = phaseRequested.load(std::memory_order_relaxed);
                 if (!projection) {
@@ -1018,6 +1173,7 @@ struct SharedAnalysis::BarScopeDomain {
                         invalidate();
                         return false;
                     }
+                    residualFrame.prepare(range, identities, difference);
                 } else {
                     projection->retainMono(fold);
                     projection->retainPhase(phase);
@@ -1030,12 +1186,7 @@ struct SharedAnalysis::BarScopeDomain {
                     block.right = block.right.first(count);
                 }
                 if (!projection->append(blocks)) { invalidate(); return false; }
-                if (!projection->complete()) continue;
-                if (!active.load()) return false;
-                result.store(std::make_shared<BarScopeResult>(BarScopeResult{range.first, range.frames,
-                    range.sampleRate, revision, std::move(projection)}));
-                status.store(BarScopeStatus::Ready);
-                return true;
+                residualFrame.append(blocks, captured, count);
             }
         } catch (...) {
             invalidate();
@@ -1064,6 +1215,7 @@ struct SharedAnalysis::BarScopeDomain {
     std::atomic<std::uint64_t> differenceVersion{0};
     std::uint64_t seenDifferenceVersion = 0;
     std::shared_ptr<FocusScopeBarProjection> projection;
+    DifferenceResidualFrame residualFrame;
 };
 
 struct SharedAnalysis::FocusLagJob {
@@ -1304,7 +1456,7 @@ struct SharedAnalysis::State {
         for (std::size_t j = 0; j < count && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame; ++j) {
             const auto &job = jobs[(start + j) % count];
             if (const auto *bar = std::get_if<std::shared_ptr<BarScopeDomain>>(&job)) {
-                if ((*bar)->process(reads, samples)) publications.fetch_add(1, std::memory_order_relaxed);
+                if ((*bar)->process(reads, samples, residualPlans, windows, done)) publications.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
             if (const auto *scopeJob = std::get_if<std::shared_ptr<CaptureDomain>>(&job)) {
@@ -1415,6 +1567,7 @@ struct SharedAnalysis::State {
     std::map<Request, std::shared_ptr<Domain>> domains;
     std::vector<std::shared_ptr<CaptureDomain>> captures;
     std::vector<std::shared_ptr<BarScopeDomain>> bars;
+    DifferenceResidualPlans residualPlans; // serialized by the existing worker's runMutex
     std::map<engine::ScopeSource, Tap> taps;
     std::shared_ptr<FocusLagJob> focusLag;
     std::uint64_t nextTapBinding = 0;
