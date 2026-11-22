@@ -479,7 +479,6 @@ endif()
 target_include_directories(adi_core SYSTEM PUBLIC "${ADI_THIRD_PARTY}/clap/include")
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
-include(cmake/VorbisExport.cmake)
 include(cmake/LameExport.cmake)
 target_sources(adi_core PRIVATE src/adi/render/aiff_writer.cpp)
 target_sources(adi_core PRIVATE src/adi/render/flac_writer.cpp)
@@ -500,6 +499,10 @@ if(EXISTS "${ADI_FLAC_SOURCE}/CMakeLists.txt")
     target_link_libraries(adi_core PRIVATE FLAC::FLAC)
     target_compile_definitions(adi_core PRIVATE ADI_HAVE_FLAC=1)
 endif()
+
+# Native FLAC sees only its configured dependencies. libFLAC 1.5.0 links an
+# already-declared Ogg target even when its WITH_OGG build option is off.
+include(cmake/VorbisExport.cmake)
 
 # PUBLIC: dsp/spectrum.cpp includes pffft.h, and nothing else in the tree does.
 target_link_libraries(adi_core PRIVATE adi_pffft)

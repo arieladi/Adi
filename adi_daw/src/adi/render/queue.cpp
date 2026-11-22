@@ -125,6 +125,44 @@ std::string containerSuffix(ExportContainer type) {
     return type == ExportContainer::OggVorbis ? ".ogg" : std::string(".") + containerName(type);
 }
 
+void validateEncoding(const Job& j, const Encoding& encoding) {
+    if (encoding.format != audio::WavFormat::Float32 && encoding.format != audio::WavFormat::Pcm16 && encoding.format != audio::WavFormat::Pcm24)
+        throw std::invalid_argument("unsupported export sample encoding");
+    if (!audio::validDither(encoding.dither))
+        throw std::invalid_argument("unsupported export dither");
+    (void)containerName(encoding.container);
+    if (encoding.container == ExportContainer::Aiff && (j.niStems || j.exactWavFilename))
+        throw std::invalid_argument("AIFF export requires a template filename and an ordinary render source");
+    if (encoding.container == ExportContainer::Flac) {
+        if (j.niStems || j.exactWavFilename || j.session.channels > 8 || encoding.format == audio::WavFormat::Float32)
+            throw std::invalid_argument("FLAC export requires PCM16 or PCM24, 1..8 channels and a template name");
+        if (!flacExportAvailable()) throw std::runtime_error("FLAC export requires the pinned libFLAC build");
+    }
+    if (encoding.container == ExportContainer::Mp3) {
+        const auto rate = j.session.sampleRate;
+        if ((rate != 32000 && rate != 44100 && rate != 48000) || j.session.channels > 2 ||
+            j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
+            throw std::invalid_argument("MP3 needs one or two channels, 32/44.1/48 kHz, a template name and Normalize Off");
+        if (!mp3ExportAvailable()) throw std::runtime_error("MP3 export requires the pinned LAME build");
+    }
+    if (encoding.container == ExportContainer::OggVorbis) {
+        const auto rate = j.session.sampleRate;
+        if (rate < 8000 || rate > 192000 || j.session.channels > 2 ||
+            !std::isfinite(encoding.vorbisQuality) || encoding.vorbisQuality < -0.1f ||
+            encoding.vorbisQuality > 1.0f ||
+            j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
+            throw std::invalid_argument("Vorbis needs one or two channels, 8-192 kHz, quality -0.1 to 1, a template name and Normalize Off");
+        if (!vorbisExportAvailable()) throw std::runtime_error("Ogg Vorbis export requires the pinned Xiph build");
+    }
+}
+
+std::string deliveryName(const std::string& base, const DeliverySpec& delivery) {
+    auto name = base + delivery.nameSuffix + containerSuffix(delivery.encoding.container);
+    if (portableName(name) != name) throw std::invalid_argument("Invalid export delivery filename");
+    validateOutputName(media::pathFromUtf8(name));
+    return name;
+}
+
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
     if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
@@ -140,33 +178,21 @@ void validate(const Job& j) {
     if (j.regionId && *j.regionId <= 0) throw std::invalid_argument("region ID must be positive");
     if (j.source.trackId < 0 || (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
         throw std::invalid_argument("invalid direct stem source or tap");
-    if (j.encoding.format != audio::WavFormat::Float32 && j.encoding.format != audio::WavFormat::Pcm16 && j.encoding.format != audio::WavFormat::Pcm24)
-        throw std::invalid_argument("unsupported export sample encoding");
-    if (!audio::validDither(j.encoding.dither))
-        throw std::invalid_argument("unsupported export dither");
-    (void)containerName(j.encoding.container);
-    if (j.encoding.container == ExportContainer::Aiff && (j.niStems || j.exactWavFilename))
-        throw std::invalid_argument("AIFF export requires a template filename and an ordinary render source");
-    if (j.encoding.container == ExportContainer::Flac) {
-        if (j.niStems || j.exactWavFilename || j.session.channels > 8 || j.encoding.format == audio::WavFormat::Float32)
-            throw std::invalid_argument("FLAC export requires PCM16 or PCM24, 1..8 channels and a template name");
-        if (!flacExportAvailable()) throw std::runtime_error("FLAC export requires the pinned libFLAC build");
-    }
-    if (j.encoding.container == ExportContainer::Mp3) {
-        const auto rate = j.session.sampleRate;
-        if ((rate != 32000 && rate != 44100 && rate != 48000) || j.session.channels > 2 ||
-            j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
-            throw std::invalid_argument("MP3 needs one or two channels, 32/44.1/48 kHz, a template name and Normalize Off");
-        if (!mp3ExportAvailable()) throw std::runtime_error("MP3 export requires the pinned LAME build");
-    }
-    if (j.encoding.container == ExportContainer::OggVorbis) {
-        const auto rate = j.session.sampleRate;
-        if (rate < 8000 || rate > 192000 || j.session.channels > 2 ||
-            !std::isfinite(j.encoding.vorbisQuality) || j.encoding.vorbisQuality < -0.1f ||
-            j.encoding.vorbisQuality > 1.0f ||
-            j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
-            throw std::invalid_argument("Vorbis needs one or two channels, 8-192 kHz, quality -0.1 to 1, a template name and Normalize Off");
-        if (!vorbisExportAvailable()) throw std::runtime_error("Ogg Vorbis export requires the pinned Xiph build");
+    if (j.deliveries.empty()) {
+        validateEncoding(j, j.encoding);
+    } else {
+        if (j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off) {
+            throw std::invalid_argument("Multiple deliveries require a template source with Normalize Off");
+        }
+        const auto base = resolveName(j.nameTemplate, {"project", "master", "group", "120", 1, "region"});
+        std::set<std::string> names;
+        for (const auto& delivery : j.deliveries) {
+            validateEncoding(j, delivery.encoding);
+            const auto name = deliveryName(base, delivery);
+            if (!names.insert(foldedFilename(media::pathFromUtf8(name))).second) {
+                throw std::invalid_argument("Multiple deliveries resolve to the same filename");
+            }
+        }
     }
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
@@ -199,6 +225,103 @@ struct Stage {
     Stage(const Stage&) = delete;
     Stage& operator=(const Stage&) = delete;
 };
+void prepareGroupIncrement(std::vector<Result>& files, const fs::path& directory) {
+    if (!fs::is_directory(directory)) throw std::runtime_error("export directory does not exist");
+    std::set<std::string> occupants;
+    std::uint64_t entries = 0;
+    for (const auto& entry : fs::directory_iterator(directory)) {
+        if (entries == std::numeric_limits<std::uint64_t>::max() - 2) {
+            throw std::runtime_error("export directory has too many entries");
+        }
+        ++entries;
+        occupants.insert(foldedFilename(entry.path()));
+    }
+    const auto available = [&](const fs::path& path) {
+        return !occupants.contains(foldedFilename(path)) && !occupiedNative(path);
+    };
+    if (std::ranges::all_of(files, [&](const Result& file) { return available(file.output); })) return;
+
+    std::vector<fs::path> candidate;
+    candidate.reserve(files.size());
+    // Each existing file can occupy at most one ordinary numbered group.
+    // The extra candidate also allows a native alias at the original spelling.
+    for (std::uint64_t offset = 0; offset <= entries; ++offset) {
+        candidate.clear();
+        for (const auto& file : files) {
+            auto name = file.output.stem();
+            name += media::pathFromUtf8(" (" + std::to_string(offset + 2) + ")");
+            name += file.output.extension();
+            auto path = directory / name;
+            validateOutputName(path);
+            if (!available(path)) break;
+            candidate.push_back(std::move(path));
+        }
+        if (candidate.size() == files.size()) {
+            for (std::size_t i = 0; i < files.size(); ++i) files[i].output = std::move(candidate[i]);
+            return;
+        }
+    }
+    throw std::runtime_error("export collision set changed during preflight; retry");
+}
+
+class DeliverySink {
+public:
+    DeliverySink(const fs::path& folder, const std::string& stem, const Job& job,
+                 const Encoding& encoding, std::uint64_t total, std::uint64_t counter)
+        : encoding_(encoding), seed_(encoding.ditherSeed ^ counter) {
+        const auto rate = static_cast<unsigned>(job.session.sampleRate);
+        const auto channels = job.session.channels;
+        output_ = folder / (stem + containerSuffix(encoding_.container));
+        pcm_ = folder / (stem + ".wav");
+        if (encoding_.container == ExportContainer::Mp3) {
+            mp3_ = std::make_unique<Mp3Writer>(output_, rate, static_cast<unsigned>(channels), total);
+        } else if (encoding_.container == ExportContainer::OggVorbis) {
+            vorbis_ = std::make_unique<VorbisWriter>(output_, rate, static_cast<unsigned>(channels),
+                                                      total, encoding_.vorbisQuality);
+        } else if (job.normalization.mode == NormalizeMode::Off) {
+            wav_ = std::make_unique<audio::WavWriter>(pcm_, rate, static_cast<std::uint16_t>(channels),
+                encoding_.format, nullptr, std::uint64_t{1} << 32, encoding_.dither, seed_);
+        } else {
+            normalization_ = std::make_unique<NormalizationCapture>(folder / (stem + ".f64"),
+                rate, channels, job.normalization);
+        }
+    }
+
+    [[nodiscard]] bool requiresFloat32Range() const noexcept {
+        return wav_ && encoding_.format == audio::WavFormat::Float32;
+    }
+
+    void append(std::span<const double> pcm, std::uint32_t frames) {
+        if (mp3_) mp3_->write(pcm, frames);
+        else if (vorbis_) vorbis_->write(pcm, frames);
+        else if (normalization_) normalization_->append(pcm, frames);
+        else wav_->write(pcm.data(), frames);
+    }
+
+    std::optional<NormalizationReport> finish(const std::function<void()>& service) {
+        std::optional<NormalizationReport> report;
+        if (mp3_) mp3_->finish(service);
+        else if (vorbis_) vorbis_->finish(service);
+        else if (normalization_) report = normalization_->finish(pcm_, encoding_.format,
+                                                                   encoding_.dither, seed_, service);
+        else wav_->close();
+        if (encoding_.container == ExportContainer::Aiff) encodeStagedAiff(pcm_, output_, service);
+        if (encoding_.container == ExportContainer::Flac) encodeStagedFlac(pcm_, output_, service);
+        return report;
+    }
+
+    [[nodiscard]] const fs::path& output() const noexcept { return output_; }
+
+private:
+    Encoding encoding_;
+    std::uint64_t seed_;
+    fs::path pcm_, output_;
+    std::unique_ptr<audio::WavWriter> wav_;
+    std::unique_ptr<NormalizationCapture> normalization_;
+    std::unique_ptr<Mp3Writer> mp3_;
+    std::unique_ptr<VorbisWriter> vorbis_;
+};
+
 std::int64_t addLatency(std::int64_t position, std::int64_t latency) {
     if (latency > 0 && position > std::numeric_limits<std::int64_t>::max() - latency)
         throw std::invalid_argument("export range plus latency overflows");
@@ -543,13 +666,34 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 job.session.sampleRate, job.regionId, names};
             snapshot.commit();
         }
-        const auto container = job.encoding.container;
-        const auto extension = containerSuffix(container);
-        const auto filename = job.exactWavFilename ? *job.exactWavFilename :
-            resolveName(job.nameTemplate, names) + extension;
-        result.output = job.directory / media::pathFromUtf8(filename);
-        detail::prepareOutput(result,job.collision,extension.c_str(),"export destination already exists");
-        if(prepared)prepared(result);
+        std::vector<Result> preparedFiles;
+        if (job.deliveries.empty()) {
+            const auto extension = containerSuffix(job.encoding.container);
+            const auto filename = job.exactWavFilename ? *job.exactWavFilename :
+                resolveName(job.nameTemplate, names) + extension;
+            result.output = job.directory / media::pathFromUtf8(filename);
+            detail::prepareOutput(result, job.collision, extension.c_str(), "export destination already exists");
+            if (prepared) prepared(result);
+        } else {
+            const auto base = resolveName(job.nameTemplate, names);
+            std::set<std::string> reserved;
+            for (const auto& delivery : job.deliveries) {
+                const auto extension = containerSuffix(delivery.encoding.container);
+                Result file;
+                file.output = job.directory / media::pathFromUtf8(deliveryName(base, delivery));
+                if (job.collision != Collision::Increment) {
+                    detail::prepareOutput(file, job.collision, extension.c_str(), "export destination already exists");
+                }
+                if (!reserved.insert(foldedFilename(file.output)).second) {
+                    throw std::runtime_error("Multiple deliveries resolve to the same destination");
+                }
+                preparedFiles.push_back(std::move(file));
+            }
+            if (job.collision == Collision::Increment) prepareGroupIncrement(preparedFiles, job.directory);
+            for (const auto& file : preparedFiles) {
+                result.deliveries.push_back({file.output, JobState::Pending, {}, {}});
+            }
+        }
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
         const auto endpoint = session.offlineOutput(job.source.trackId, job.source.tap);
@@ -575,31 +719,22 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             if (!wide.empty()) dp[c] = wide.data() + c * block;
         }
         Stage stage(job.directory, result);
-        const bool mp3 = container == ExportContainer::Mp3;
-        const bool vorbis = container == ExportContainer::OggVorbis;
-        const auto staged = stage.path / ("render" + (mp3 || vorbis ? extension : ".wav"));
-        std::unique_ptr<Mp3Writer> mp3Writer;
-        std::unique_ptr<VorbisWriter> vorbisWriter;
-        std::unique_ptr<audio::WavWriter> writer;
-        std::unique_ptr<NormalizationCapture> normalized;
-        if (mp3)
-            mp3Writer = std::make_unique<Mp3Writer>(staged, static_cast<unsigned>(job.session.sampleRate),
-                                                    static_cast<unsigned>(channels), total);
-        else if (vorbis)
-            vorbisWriter = std::make_unique<VorbisWriter>(staged, static_cast<unsigned>(job.session.sampleRate),
-                static_cast<unsigned>(channels), total, job.encoding.vorbisQuality);
-        else if(job.normalization.mode==NormalizeMode::Off)
-            writer=std::make_unique<audio::WavWriter>(staged,static_cast<std::uint32_t>(job.session.sampleRate),
-                static_cast<std::uint16_t>(channels),job.encoding.format,nullptr,std::uint64_t{1}<<32,
-                job.encoding.dither,job.encoding.ditherSeed^counter);
-        else normalized=std::make_unique<NormalizationCapture>(stage.path/"capture.f64",static_cast<std::uint32_t>(job.session.sampleRate),job.session.channels,job.normalization);
-        auto write=[&](std::uint32_t frames) {
+        std::vector<DeliverySink> sinks;
+        if (job.deliveries.empty()) {
+            sinks.emplace_back(stage.path, "render", job, job.encoding, total, counter);
+        } else {
+            sinks.reserve(job.deliveries.size());
+            for (std::size_t index = 0; index < job.deliveries.size(); ++index) {
+                cancellation(control);
+                sinks.emplace_back(stage.path, "delivery" + std::to_string(index), job,
+                                   job.deliveries[index].encoding, total, counter);
+            }
+        }
+        const bool checkFloatRange = std::ranges::any_of(sinks, &DeliverySink::requiresFloat32Range);
+        auto write = [&](std::uint32_t frames) {
             const std::span<const double> samples(interleaved.data(), static_cast<std::size_t>(frames) * channels);
-            if (mp3Writer) mp3Writer->write(samples, frames);
-            else if (vorbisWriter) vorbisWriter->write(samples, frames);
-            else if (normalized) normalized->append(samples, frames);
-            else writer->write(samples.data(), frames);
-            result.framesWritten+=frames;
+            for (auto& sink : sinks) sink.append(samples, frames);
+            result.framesWritten += frames;
         };
         auto progress = [&] {
             if (control.progress) control.progress(id, result.framesWritten, total);
@@ -652,7 +787,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             for (std::int32_t f = 0; f < frames; ++f) for (std::size_t c = 0; c < channels; ++c) {
                 const auto i = static_cast<std::size_t>(f);
                 const double value = dp.empty() ? static_cast<double>(fp[c][i]) : dp[c][i];
-                if (!std::isfinite(value) || (writer && job.encoding.format == audio::WavFormat::Float32 &&
+                if (!std::isfinite(value) || (checkFloatRange &&
                     std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
                     throw std::runtime_error("nonfinite or out-of-range audio during export");
                 if (at + f >= first)
@@ -670,17 +805,35 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         const auto serviceEncoding = [&] {
             cancellation(control); if (control.serviceHost) control.serviceHost(); cancellation(control);
         };
-        if (mp3Writer) mp3Writer->finish(serviceEncoding);
-        else if (vorbisWriter) vorbisWriter->finish(serviceEncoding);
-        else if (normalized) result.normalization = normalized->finish(staged, job.encoding.format, job.encoding.dither,
-                                                                       job.encoding.ditherSeed ^ counter, serviceEncoding);
-        else writer->close();
-        cancellation(control);
-        const auto deliver = stage.path / ("render" + extension);
-        if (container == ExportContainer::Flac) encodeStagedFlac(staged, deliver, serviceEncoding);
-        if (container == ExportContainer::Aiff) encodeStagedAiff(staged, deliver, serviceEncoding);
-        cancellation(control);
-        detail::publishVerifiedOutput(deliver, result, control, "export destination already exists");
+        if (preparedFiles.empty()) {
+            result.normalization = sinks.front().finish(serviceEncoding);
+            cancellation(control);
+            detail::publishVerifiedOutput(sinks.front().output(), result, control, "export destination already exists");
+        } else {
+            // Complete every encoder before the first destination is visible.
+            // All files have the same captured source and input verification.
+            for (auto& sink : sinks) {
+                cancellation(control);
+                (void)sink.finish(serviceEncoding);
+            }
+            verifyMedia(*result.mediaVerification, control);
+            for (std::size_t index = 0; index < sinks.size(); ++index) {
+                cancellation(control);
+                auto& file = preparedFiles[index];
+                auto& report = result.deliveries[index];
+                try {
+                    detail::publishOutput(sinks[index].output(), file, control.publicationHooks,
+                                          "export destination already exists");
+                    report.state = file.state;
+                    report.publication = std::move(file.publication);
+                } catch (const std::exception& error) {
+                    report.state = JobState::Failed;
+                    report.error = error.what();
+                    throw;
+                }
+            }
+            result.state = JobState::Completed;
+        }
     } catch (const Cancelled&) {
         result.state = JobState::Cancelled;
     } catch (const std::exception& e) {
@@ -808,6 +961,15 @@ std::string serializeRunManifest(const RunReport& run) {
                 profile["effective_dither"] = "none";
                 profile["vorbis_vbr_quality"] = job.encoding.vorbisQuality;
             }
+            if (!job.deliveries.empty()) {
+                profile["container"] = "multiple";
+                profile.erase("wav_encoding");
+                profile.erase("dither");
+                profile.erase("dither_seed");
+                profile.erase("effective_dither");
+                profile.erase("mp3_bit_rate_kbps");
+                profile.erase("vorbis_vbr_quality");
+            }
             if (job.niStems) {
                 profile["ni_stems"] = {{"bit_rate_per_stream", job.niStems->bitRate}, {"stems", Json::array()}};
                 for (const auto& stem : job.niStems->stems)
@@ -821,6 +983,25 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"region_id", job.regionId ? Json(*job.regionId) : Json(nullptr)}}},
                 {"requested_profile", std::move(profile)}};
             if (job.exactWavFilename) item["job"]["exact_wav_filename"] = *job.exactWavFilename;
+            if (!job.deliveries.empty()) {
+                auto& specs = item["job"]["deliveries"] = Json::array();
+                for (const auto& delivery : job.deliveries) {
+                    const auto& encoding = delivery.encoding;
+                    Json spec{{"container", containerName(encoding.container)}, {"name_suffix", delivery.nameSuffix}};
+                    if (encoding.container == ExportContainer::Mp3) {
+                        spec["bit_rate_kbps"] = 320;
+                    } else if (encoding.container == ExportContainer::OggVorbis) {
+                        spec["vbr_quality"] = encoding.vorbisQuality;
+                    } else {
+                        spec["pcm_format"] = encoding.format == audio::WavFormat::Float32 ? "float32" :
+                            (encoding.format == audio::WavFormat::Pcm16 ? "pcm16" : "pcm24");
+                        spec["dither"] = encoding.format == audio::WavFormat::Float32 ? "none" :
+                            audio::ditherName(encoding.dither);
+                        spec["dither_seed"] = encoding.ditherSeed;
+                    }
+                    specs.push_back(std::move(spec));
+                }
+            }
         }
         if (member.result) {
             const auto& result = *member.result;
@@ -828,6 +1009,16 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"error", result.error}, {"publication", nullptr}, {"stage_cleanup", nullptr},
                 {"normalization", nullptr},
                 {"resolved_snapshot", nullptr}, {"ni_stem_snapshots", Json::array()}, {"media_verification", nullptr}};
+            if (!result.deliveries.empty()) {
+                auto& files = value["deliveries"] = Json::array();
+                for (const auto& file : result.deliveries) {
+                    Json publication = nullptr;
+                    if (file.publication) publication = {{"durability_confirmed", file.publication->durabilityConfirmed},
+                        {"used_fallback", file.publication->usedFallback}, {"warning", file.publication->warning}};
+                    files.push_back({{"output", media::pathUtf8(file.output)}, {"state", stateName(file.state)},
+                                     {"publication", std::move(publication)}, {"error", file.error}});
+                }
+            }
             if(result.replacement) {
                 const auto& binding=*result.replacement;
                 value["replacement_preflight"]={{"target",media::pathUtf8(binding.target)},

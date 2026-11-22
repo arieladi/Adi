@@ -37,6 +37,10 @@ struct Encoding {
     ExportContainer container = ExportContainer::Wav;
     float vorbisQuality = 0.5f;
 };
+struct DeliverySpec {
+    Encoding encoding;
+    std::string nameSuffix;
+};
 struct NiStem {
     Source source;
     std::string name;
@@ -64,6 +68,9 @@ struct Job {
     // The complete literal WAV filename chosen by the single-export save
     // dialog. It includes .wav, bypasses templates, and uses Fail or Replace.
     std::optional<std::string> exactWavFilename;
+    // Empty preserves the ordinary one-file contract. Nonempty deliveries share
+    // one graph render and the same output clock, range and channel layout.
+    std::vector<DeliverySpec> deliveries{};
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
@@ -117,6 +124,12 @@ struct ReplacementBinding {
     std::string blake3; // Detect in-place edits as well as changed native identity.
     std::vector<std::string> foldedNames; // Exact spellings in the colliding set.
 };
+struct DeliveryResult {
+    std::filesystem::path output;
+    JobState state = JobState::Pending;
+    std::optional<PublicationReport> publication{};
+    std::string error;
+};
 struct Result {
     JobState state = JobState::Pending;
     std::filesystem::path output;
@@ -141,6 +154,7 @@ struct Result {
     // Present only for explicit Replace, including an absent preflight target.
     // This is a run-local observation, not a reservation or reusable permission.
     std::optional<ReplacementBinding> replacement{};
+    std::vector<DeliveryResult> deliveries{};
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct RunMember {

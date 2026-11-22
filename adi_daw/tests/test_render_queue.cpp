@@ -1548,6 +1548,126 @@ void runManifests() {
     check(incompleteDoc["planned_count"]==2 && incompleteDoc["capture_complete"]==false && incompleteDoc["members"].empty(),
           "incomplete capture is explicit, never an apparently complete empty run");
 }
+void multipleDeliveries() {
+    const auto contents = [](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    Fixture f;
+    f.effect();
+    auto job = f.job("several");
+    job.endSample = job.beginSample + 4201;
+    job.session.precision = Precision::Float64;
+    auto pcm = job.encoding;
+    pcm.format = audio::WavFormat::Pcm24;
+    pcm.dither = audio::WavDither::Shaped2;
+    pcm.ditherSeed = 603;
+    auto aiff = pcm;
+    aiff.container = ExportContainer::Aiff;
+    job.deliveries = {{pcm, ""}, {aiff, ""}};
+#if defined(ADI_HAVE_FLAC)
+    auto flac = pcm;
+    flac.container = ExportContainer::Flac;
+    const auto flacIndex = job.deliveries.size();
+    job.deliveries.push_back({flac, ""});
+#endif
+    if (mp3ExportAvailable()) {
+        auto mp3 = pcm;
+        mp3.container = ExportContainer::Mp3;
+        job.deliveries.push_back({mp3, ""});
+    }
+    if (vorbisExportAvailable()) {
+        auto vorbis = pcm;
+        vorbis.container = ExportContainer::OggVorbis;
+        job.deliveries.push_back({vorbis, ""});
+    }
+
+    std::uint64_t processed = 0;
+    int loads = 0;
+    struct CountedDelay final : Delay {
+        explicit CountedDelay(std::uint64_t& count) : frames(count) {}
+        void process(const NodeIo& io) noexcept override {
+            frames += static_cast<std::uint64_t>(io.frames);
+            Delay::process(io);
+        }
+        std::uint64_t& frames;
+    };
+    auto loader = [&](const DeviceRequest&, std::string&) {
+        ++loads;
+        return std::make_unique<CountedDelay>(processed);
+    };
+    Queue queue;
+    queue.add(job);
+    queue.run(loader);
+    const auto result = queue.snapshot().front().result;
+    check(result.state == JobState::Completed && result.deliveries.size() == job.deliveries.size() &&
+          result.framesWritten == 4201 && f.noStage(),
+          result.error.empty() ? "write all requested verified files from one job" : result.error.c_str());
+    if (result.state != JobState::Completed) return;
+    const auto batchFrames = processed;
+    const auto batchLoads = loads;
+    auto baseline = job;
+    baseline.deliveries.clear();
+    baseline.encoding = pcm;
+    baseline.nameTemplate = "one-graph-reference";
+    const auto once = renderWav(baseline, loader);
+    const auto referenceFrames = processed - batchFrames;
+    std::printf("Multi-delivery graph: %d load(s), %llu device frames; single: %d, %llu\n",
+                batchLoads, static_cast<unsigned long long>(batchFrames), loads - batchLoads,
+                static_cast<unsigned long long>(referenceFrames));
+    check(once.state == JobState::Completed && batchLoads == 1 && loads - batchLoads == 1 &&
+          batchFrames > 0 && batchFrames == referenceFrames,
+          "all deliveries share the same one graph run as a single compensated delivery");
+    check(std::ranges::all_of(result.deliveries, [](const auto& file) {
+        return file.state == JobState::Completed && file.publication.has_value();
+    }), "each delivery has its own publication outcome");
+
+    audio::WavReader wav(result.deliveries[0].output);
+    std::vector<float> expected(8402);
+    check(wav.read(expected.data(), 4201) == 4201 &&
+          equivalentAiff(result.deliveries[1].output, expected, 2, pcm.format),
+          "simultaneous WAV and AIFF carry identical dithered sample values");
+#if defined(ADI_HAVE_FLAC)
+    FlacReadback flacReadback{2, 24, 0, expected};
+    check(equivalentFlac(result.deliveries[flacIndex].output, flacReadback),
+          "simultaneous FLAC carries the identical seeded WAV PCM");
+#endif
+    const auto manifest = nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["job"]["deliveries"].size() == job.deliveries.size() &&
+          manifest["members"][0]["result"]["deliveries"].size() == job.deliveries.size(),
+          "manifest records the requested formats and per-file outcomes");
+
+    auto collision = job;
+    collision.deliveries = {{pcm, "-Mix"}, {pcm, "-mix"}};
+    check(renderWav(collision, loader).state == JobState::Failed && loads == 2,
+          "duplicate folded names refuse before loading the graph");
+    collision.nameTemplate = "late-collision";
+    collision.deliveries = {{pcm, ""}, {aiff, ""}};
+    Control control;
+    control.publicationHooks.rename = [](const fs::path& source, const fs::path& target) {
+        if (target.extension() == ".aiff") {
+            std::ofstream(target, std::ios::binary) << "late arrival";
+        }
+        return nativeExclusiveRename(source, target);
+    };
+    const auto partial = renderWav(collision, loader, control);
+    check(partial.state == JobState::Failed && partial.deliveries.size() == 2 &&
+          partial.deliveries[0].state == JobState::Completed && partial.deliveries[0].publication &&
+          partial.deliveries[1].state == JobState::Failed && !partial.deliveries[1].publication &&
+          contents(partial.deliveries[1].output) == "late arrival" && f.noStage(),
+          "late collision records the earlier commit and preserves the competing file");
+    collision.collision = Collision::Increment;
+    collision.nameTemplate = "number-group";
+    std::ofstream(collision.directory / "number-group.wav", std::ios::binary) << "existing";
+    const auto incremented = renderWav(collision, loader);
+    check(incremented.state == JobState::Completed && incremented.deliveries.size() == 2 &&
+          incremented.deliveries[0].output.filename() == "number-group (2).wav" &&
+          incremented.deliveries[1].output.filename() == "number-group (2).aiff" &&
+          contents(collision.directory / "number-group.wav") == "existing" &&
+          !fs::exists(collision.directory / "number-group.aiff"),
+          "one occupied filename increments the entire delivery group");
+}
+
 void mediaIdentities() {
     {
         // Synthetic wide IDs isolate truncation from whichever filesystem the
@@ -1767,7 +1887,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
