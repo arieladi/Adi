@@ -8,7 +8,7 @@ device PRs do not conflict on one shared log file.
 ## FOR THE DIRECTOR
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 33 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 34 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -157,6 +157,9 @@ method); Live's files and renders stay in the director's research.
     list, the Strength and Smooth ranges, the formant and vibrato sections).
     - A 446 Hz sine through it at its defaults: the output's pitch, and how fast the correction comes.
     - Its reported latency.
+34. **Spectrum (the device's controls, after 3 December).** A fresh Spectrum, every control as shown
+    (Block's default, Refresh's and Avg's ranges, the Graph and Scale choices). Avg 4 on a tone that
+    starts: how the reading rises over the first analyses. How long Max holds a peak.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -171,6 +174,27 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — PLAN DEV-22: Spectrum as a track device, the lane's side — lands after 3 December
+
+**PR requested:** head `devices/spectrum-device` (a4ec9d18), base `main`, after `devices/auto-shift`.
+- **What it is.**
+  - `dsp::SpectrumDevice` passes the signal untouched.
+  - It turns Block, Channel, Refresh and Avg into the settings for the shared analyser: the FFT size,
+    the channel, the hop, and the averager's decay, so that each analysis moves the average 1/Avg of
+    the way.
+  - The analysis runs on the Mix View's shared analyser (ADR-0183 d7, MX-12, MX-30). The device runs
+    no FFT of its own (CTL-07).
+  - `pd/devices/Spectrum.md` is the contract and the hand-off: the tap at the device's place, the
+    worker, the view, and no analysis while the panel is hidden.
+- **Tests:**
+  - `adi_spectrum_device_tests` 22. Driven with the device's settings, the analyser reads a sine of
+    0.5 at −6.02 dBFS at three sizes. L+R reads one side at half. Avg 4 gives 1 − (3/4)^k after k
+    analyses. Pass-through and no allocation.
+  - parity max error 0;
+  - the catalogue holds 36 built-ins.
+- **Needs the Mix View seat (not this seat's path):** the tap and the worker of §4.
+- **Reading 34, added to the ONE list.**
 
 ## 2026-11-22 — the Shifter takes a non-finite input as silence (found building Auto Shift)
 
