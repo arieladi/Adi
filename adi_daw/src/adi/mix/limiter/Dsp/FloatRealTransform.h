@@ -58,7 +58,7 @@ template <std::size_t length> class FloatRealTransform
         {
             auto value = index;
             std::size_t reversed = 0;
-            for (int bit = 0; bit < std::bit_width(length) - 1; ++bit)
+            for (std::size_t bit = 0; bit < static_cast<std::size_t>(std::bit_width(length) - 1); ++bit)
             {
                 reversed = 2 * reversed + (value & 1);
                 value >>= 1;
