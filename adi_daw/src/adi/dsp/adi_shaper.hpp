@@ -85,6 +85,7 @@ class AdiShaper {
         bool linear = false, constant = true;
         void update() noexcept;
         [[nodiscard]] float at(std::uint64_t position) const noexcept;
+        [[nodiscard]] float returnAt(std::uint64_t position, std::uint64_t step) const noexcept;
     };
     struct CurveBand {
         Contour primary, secondary;

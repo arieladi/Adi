@@ -459,6 +459,24 @@ float AdiShaper::Contour::at(std::uint64_t position) const noexcept {
     return points[index] + fraction * differences[index];
 }
 
+float AdiShaper::Contour::returnAt(std::uint64_t position, std::uint64_t step) const noexcept {
+    if (linear && !constant && step != 0) {
+        // A linear return may touch zero between samples. Assign a crossed
+        // node to its nearest frame so transport resync and callback size
+        // cannot skip it. Inspect the authored height, including tiny
+        // positive minima that must preserve the tail.
+        constexpr auto segment = std::uint64_t{1} << 61;
+        const auto begin = position - step / 2;
+        const auto crossings = (step >> 61) + (((begin % segment) + (step % segment)) >> 61);
+        auto node = static_cast<std::size_t>(begin >> 61);
+        for (std::uint64_t i = 0; i < crossings; ++i) {
+            node = (node + 1) % points.size();
+            if (points[node] == 0.f) return 0.f;
+        }
+    }
+    return at(position);
+}
+
 void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
     const auto previous = samples[index];
     // A preceding stage can overflow even with finite rack input. Do not put
@@ -497,7 +515,9 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             } else if constexpr (kind == Stage::Sweep) {
                 sweeps_[index].processStereo(l, r, primary, band.secondary.at(p));
             } else if constexpr (kind == Stage::Reverb) {
-                reverb_[index].processStereo(l, r, primary, band.secondary.at(p), band.blend != 0.f);
+                auto& room = reverb_[index];
+                const float ret = room.clearsTails() ? band.secondary.returnAt(p, band.step) : band.secondary.at(p);
+                room.processStereo(l, r, primary, ret, band.blend != 0.f);
             } else {
                 crush_[index].processStereo(l, r, primary, band.secondary.at(p));
             }

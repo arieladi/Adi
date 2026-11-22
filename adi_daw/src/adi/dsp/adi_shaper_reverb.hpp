@@ -16,6 +16,7 @@ class AdiShaperReverb {
     void setWidth(float width) noexcept;
     void setPredelay(float position, double bpm) noexcept;
     void setClearTails(bool clear) noexcept { clearTails_ = clear; }
+    [[nodiscard]] bool clearsTails() const noexcept { return clearTails_; }
     // Wet only. The band mixer applies the measured overlapping dry/wet laws.
     void processStereo(float& l, float& r, float send, float ret, bool wetAudible = true) noexcept;
 

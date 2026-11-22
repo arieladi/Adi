@@ -767,6 +767,52 @@ void driveAndCrush() {
     check(rack.latency() == 0 && std::bit_cast<std::uint32_t>(result[0]) == std::bit_cast<std::uint32_t>(negativeZero)
           && result[1] == .1875f, "Crush at zero mix is undelayed and bit exact");
 }
+void reverbReturnCrossings() {
+    constexpr int frames = 145000;
+    std::vector<float> input(frames), left(frames), right(frames);
+    std::uint32_t rng = 13;
+    for (auto& sample : input) {
+        rng = rng * 1664525U + 1013904223U;
+        sample = static_cast<float>(rng >> 8) * 0x1p-24f - .5f;
+    }
+    auto render = [&](int block, double bpm, float minimum, bool clear) {
+        Shaper rack;
+        rack.prepare(48000);
+        rack.tempo(bpm);
+        rack.set(Shaper::ReverbOn, 1.f);
+        rack.set(Shaper::modParam(Stage::Reverb, Band::Mid, Shaper::ModMix), 50.f);
+        rack.set(Shaper::modParam(Stage::Reverb, Band::Mid, Shaper::SecondaryCurve), 1.f);
+        rack.set(Shaper::modParam(Stage::Reverb, Band::Mid, Shaper::Secondary1), minimum);
+        rack.set(Shaper::reverbParam(Band::Mid, Shaper::RoomClearTails), clear ? 1.f : 0.f);
+        for (int pos = 0; pos < frames; pos += block) {
+            const auto count = static_cast<std::size_t>(std::min(block, frames - pos));
+            rack.sync(pos * bpm / (60. * 48000.));
+            rack.process(input.data() + pos, input.data() + pos, left.data() + pos, right.data() + pos, count);
+        }
+        return left;
+    };
+    const auto rms = [](const auto& a, const auto& b) {
+        double sum = 0;
+        for (std::size_t i = 96000; i < a.size(); ++i) {
+            const double d = static_cast<double>(a[i]) - b[i];
+            sum += d * d;
+        }
+        return std::sqrt(sum / static_cast<double>(a.size() - 96000));
+    };
+    for (const double bpm : {120., 119.73}) {
+        const auto smaller = render(256, bpm, 0, true);
+        const auto larger = render(2048, bpm, 0, true);
+        const auto retained = render(256, bpm, 0, false);
+        const double blockDifference = rms(smaller, larger), cleared = rms(smaller, retained);
+        std::printf("Reverb zero crossing at %.2f BPM, block RMS %.9g, cleared RMS %.9g\n",
+                    bpm, blockDifference, cleared);
+        check(blockDifference < 2e-7, "clearing at a return node is independent of host block size");
+        check(cleared > .0001, "a zero return node between consecutive samples also clears the tail");
+    }
+    const auto quietMinimum = render(256, 120., .0001f, true);
+    check(quietMinimum == render(256, 120., .0001f, false), "a positive return minimum preserves the tail");
+}
+
 void reverbReturnMix() {
     Shaper legacy;
     for (int id = Shaper::BaseCount; id < Shaper::ReverbOn; ++id) {
@@ -837,6 +883,7 @@ int main() {
     driveDryAndLatency();
     driveAndCrush();
     reverbReturnMix();
+    reverbReturnCrossings();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }
