@@ -4,6 +4,47 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 5 (BENCH): Release empty-project callback cost on main and engine/empty-project-cost
+
+**For the engine seat.** Release build (`-DCMAKE_BUILD_TYPE=Release`, GCC 12.2.0 `-O3 -DNDEBUG`, `-DADI_BUILD_BENCHMARKS=ON -DADI_ACCEPTANCE=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`, 48 kHz stereo; `-DADI_WERROR=OFF` because GCC 12 `-O3` emits libstdc++ `-Wrestrict`/`-Wmaybe-uninitialized`/`-Wstringop-overflow` alongside DF-M62 `FloatRealTransform.h:61`). Deadlines: 1333.33 µs at 64 frames, 2666.67 µs at 128 frames.
+
+### 1. `main` (`abbc32ab`)
+
+- `adi_block_benchmark --self-test`: **PASS** (`quantiles, strict deadline and empty-input rejection and timing partition`).
+- `adi_block_benchmark` on `main` does not yet carry `--empty-project`; empty factory New on `main` was measured via `adi_builtin_realtime_tests` (`[breakdown] an empty New project`) and the graph/loudness fixtures via `adi_block_benchmark`:
+
+| Fixture (`main` `abbc32ab`) | Frames | Callbacks | p50 (µs) | p50 (% dl) | p99 (µs) | p99 (% dl) | Max / recurring (µs) | Notes |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| Empty New project (`adi_builtin_realtime_tests`) | 64 | RT suite | 88.48 | 6.64% | 105.40 | 7.91% | 115.63 (recurring) | 0 allocations |
+| Empty New project (`adi_builtin_realtime_tests`) | 128 | RT suite | 175.30 | 6.57% | 214.05 | 8.03% | 205.88 (recurring) | 0 allocations |
+| `--loudness` 2 ch | 64 | 4000 | 5.485 | 0.41% | 8.948 | 0.67% | 14.901 (max) | 0 dropouts |
+| `--loudness` 2 ch | 128 | 4000 | 10.711 | 0.40% | 16.008 | 0.60% | 25.594 (max) | 0 dropouts |
+| `--breakdown` `silence-heavy` (6 proc / 315 skip) | 64 | 1000 | 13.085 | 0.98% | 19.833 | 1.49% | 25.413 (max) | body p50 0.462 µs, resid p50 12.617 µs |
+| `--breakdown` `silence-heavy` (6 proc / 315 skip) | 128 | 1000 | 13.230 | 0.50% | 21.130 | 0.79% | 36.843 (max) | body p50 0.525 µs, resid p50 12.699 µs |
+| `--breakdown` `active-64` (321 proc / 0 skip) | 64 | 1000 | 50.164 | 3.76% | 74.220 | 5.57% | 722.874 (max) | body p50 17.037 µs, resid p50 33.131 µs |
+| `--breakdown` `active-64` (321 proc / 0 skip) | 128 | 1000 | 59.372 | 2.23% | 75.567 | 2.83% | 91.358 (max) | body p50 22.291 µs, resid p50 37.093 µs |
+
+### 2. `engine/empty-project-cost` (`899a3a26`) vs paired stock `main_loudness.cpp` (`ac07be74`)
+
+- `adi_loudness_tests` on `899a3a26`: **PASS — 87 checks, 0 failures**.
+- `adi_block_benchmark --self-test` on `899a3a26`: **PASS**.
+- `adi_block_benchmark --empty-project --iterations 4000` (32-bit stereo, Pd enabled, 31 nodes: 2.0 processed / 29.0 suspended per block). Medians across 3 runs (max shown as range across the 3 runs):
+
+| Case (`--empty-project`, 4000 cb × 3) | Build | p50 (µs) | p50 (% dl) | p99 (µs) | p99 (% dl) | Max across 3 runs (µs) | Dropouts |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 64 frames, stopped | Stock loudness (`ac07be74`) | 88.527 | 6.64% | 107.216 | 8.04% | 115.181 – 1778.170 | 1, 0, 0 |
+| 64 frames, stopped | `engine/empty-project-cost` (`899a3a26`) | 81.357 | 6.10% | 122.992 | 9.22% | 1147.751 – 2099.248 | 0, 2, 0 |
+| 64 frames, playing | Stock loudness (`ac07be74`) | 88.569 | 6.64% | 115.360 | 8.65% | 186.202 – 1245.057 | 0, 0, 0 |
+| 64 frames, playing | `engine/empty-project-cost` (`899a3a26`) | 81.332 | 6.10% | 97.421 | 7.31% | 115.765 – 174.605 | 0, 0, 0 |
+| 128 frames, stopped | Stock loudness (`ac07be74`) | 176.182 | 6.61% | 220.947 | 8.29% | 261.623 – 1759.139 | 0, 0, 0 |
+| 128 frames, stopped | `engine/empty-project-cost` (`899a3a26`) | 160.304 | 6.01% | 182.613 | 6.85% | 249.179 – 258.697 | 0, 0, 0 |
+| 128 frames, playing | Stock loudness (`ac07be74`) | 176.306 | 6.61% | 202.158 | 7.58% | 288.919 – 332.438 | 0, 0, 0 |
+| 128 frames, playing | `engine/empty-project-cost` (`899a3a26`) | 160.024 | 6.00% | 181.107 | 6.79% | 228.559 – 260.031 | 0, 0, 0 |
+
+Delta on GCC 12.2 `-O3`: `899a3a26` cuts median empty-project callback cost by **~7.2 µs (-8.1%)** at 64 frames and **~16.0 µs (-9.1%)** at 128 frames, matching the standalone 2-channel `--loudness` cost (~5.5 µs at 64 frames, ~10.7 µs at 128 frames) plus Main wrapper overhead. Occasional >1 ms single-block spikes on the first stopped case reflect shared-VM preemption (also present on stock).
+
+---
+
 ## 2026-11-22 — Queue item 4 (PD64): full headless ctest at `PD_FLOATSIZE=64` vs `PD_FLOATSIZE=32` on GCC 12.2 and Clang 14.0.6
 
 **Scope:**
