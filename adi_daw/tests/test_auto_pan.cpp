@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <limits>
 #include <new>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -157,7 +158,36 @@ void blocksAndRobustness() {
 
 }  // namespace
 
+/// Amount moved under a tone glides: the largest step while it moves stays
+/// within the signal's own, before or after (a step of the depth jumped).
+void glides() {
+    P p;
+    p.set(P::Amount, 0);
+    p.set(P::Rate, 0.5);
+    p.prepare(48000);
+    std::vector<float> x(96000), l(96000), r(96000);
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        x[i] = static_cast<float>(0.4 * std::sin(2 * std::numbers::pi * 110 * static_cast<double>(i) / 48000));
+    }
+    constexpr std::size_t at = 48109;   // the tone's peak
+    p.process(x.data(), x.data(), l.data(), r.data(), at);
+    p.set(P::Amount, 100);
+    p.process(x.data() + at, x.data() + at, l.data() + at, r.data() + at, x.size() - at);
+    double moving = 0, settled = 0;
+    for (std::size_t i = at; i < at + 4800; ++i) {
+        moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+    }
+    for (std::size_t i = 24000; i < 48000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+    }
+    for (std::size_t i = 72000; i < 96000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+    }
+    check(moving <= 1.5 * settled, "Amount glides: no step past the signal's own (" + std::to_string(moving) + " against " + std::to_string(settled) + ")");
+}
+
 int main() {
+    glides();
     motion();
     rates();
     blocksAndRobustness();

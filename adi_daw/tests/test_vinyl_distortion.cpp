@@ -279,8 +279,9 @@ void reviewed() {
         check(l == s && r == minus, "Stereo pinch on a pure side signal: its mid is silence, and nothing is added");
     }
     // Moving Tracing Drive under a steady tone makes no thump: the output
-    // less its input, averaged over 1 ms (a whole cycle of the tone and of
-    // its second harmonic), stays near 0 after the move.
+    // less its input, averaged over 20 ms (whole cycles of the tone and of
+    // its second harmonic, long beside Drive's 10 ms glide), stays near 0
+    // after the move; the old thump was 0.48 decaying over 30 ms.
     {
         V v;
         v.set(V::TracingDrive, 0);
@@ -292,12 +293,12 @@ void reviewed() {
         v.set(V::TracingDrive, 1);
         v.process(s.data() + 48000, s.data() + 48000, l.data() + 48000, r.data() + 48000, 9600);
         double worst = 0;
-        for (std::size_t i = 48000; i + 48 <= s.size(); ++i) {
+        for (std::size_t i = 48000; i + 960 <= s.size(); i += 12) {
             double sum = 0;
-            for (std::size_t k = 0; k < 48; ++k) {
+            for (std::size_t k = 0; k < 960; ++k) {
                 sum += static_cast<double>(l[i + k]) - s[i + k];
             }
-            worst = std::max(worst, std::abs(sum / 48));
+            worst = std::max(worst, std::abs(sum / 960));
         }
         check(worst < 0.01, "Tracing Drive moved from 0 to 1 under a tone: no low thump (" + std::to_string(worst) + ")");
     }
@@ -318,7 +319,45 @@ void reviewed() {
     }
 }
 
+/// Tracing Drive, and the pinch switched on, under a tone glide: the
+/// largest step while they move stays within the signal's own, before or
+/// after.
+void glides() {
+    struct Move {
+        V::Param param;
+        double from, to;
+        const char* what;
+    };
+    for (const Move m : {Move{V::TracingDrive, 0, 1, "Tracing Drive"}, Move{V::PinchOn, 0, 1, "Pinch switched on"}}) {
+        V v;
+        v.set(V::PinchDrive, 0.6);
+        v.set(V::TracingFreq, 1100);
+        v.set(V::PinchFreq, 1100);
+        v.set(m.param, m.from);
+        v.prepare(kRate);
+        const auto x = sine(1100, 96000, 0.5);
+        std::vector<float> l(x.size()), r(x.size());
+        constexpr std::size_t at = 48011;   // the tone's peak
+        v.process(x.data(), x.data(), l.data(), r.data(), at);
+        v.set(m.param, m.to);
+        v.process(x.data() + at, x.data() + at, l.data() + at, r.data() + at, x.size() - at);
+        double moving = 0, settled = 0;
+        for (std::size_t i = at; i < at + 4800; ++i) {
+            moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 24000; i < 48000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 72000; i < 96000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        check(moving <= 1.5 * settled, std::string(m.what) + " glides: no step past the signal's own (" + std::to_string(moving) + " against " +
+                                           std::to_string(settled) + ")");
+    }
+}
+
 int main() {
+    glides();
     reviewed();
     tracing();
     pinch();

@@ -67,11 +67,17 @@ void FilterDelay::prepare(double sampleRate) noexcept {
     }
     write_ = 0;
     glide_ = 1 - std::exp(-1 / (0.050 * rate_ / 5));   // about 50 ms to arrive
+    for (auto& line : lines_) {
+        for (auto* g : {&line.gainL, &line.gainR, &line.feedback, &line.on}) {
+            g->prepare(rate_);
+        }
+    }
+    dry_.prepare(rate_);
     for (std::size_t l = 0; l < kLines; ++l) {
         update(l);
         lines_[l].current = lines_[l].target;
     }
-    dry_ = level(p_[Dry]);
+    dry_.set(level(p_[Dry]));
 }
 
 void FilterDelay::set(Param p, double v) noexcept {
@@ -84,7 +90,7 @@ void FilterDelay::set(Param p, double v) noexcept {
     const bool whole = index != static_cast<std::size_t>(Dry) && (field == On || field == Filter || field == Sync || field == Sixteenths);
     p_[index] = std::clamp(whole ? std::round(v) : v, r.low, r.high);
     if (index == static_cast<std::size_t>(Dry)) {
-        dry_ = level(p_[Dry]);
+        dry_.set(level(p_[Dry]));
     } else {
         update(index / Fields);
     }
@@ -103,7 +109,7 @@ void FilterDelay::tempo(double bpm) noexcept {
 void FilterDelay::update(std::size_t l) noexcept {
     auto& line = lines_[l];
     const auto at = [&](Field f) { return p_[l * Fields + static_cast<std::size_t>(f)]; };
-    line.on = at(On) >= 0.5;
+    line.on.set(at(On) >= 0.5 ? 1.0 : 0.0);
     line.filter = at(Filter) >= 0.5;
     // A constant-peak band pass, its width in octaves (RBJ).
     const double f = std::min(at(Freq), 0.45 * rate_), w = 2 * std::numbers::pi * f / rate_;
@@ -113,10 +119,10 @@ void FilterDelay::update(std::size_t l) noexcept {
     line.a2 = (1 - alpha) / a0;
     const double seconds = at(Sync) >= 0.5 ? at(Sixteenths) * 15 / bpm_ : at(Time) / 1000;
     line.target = std::clamp(std::round(seconds * rate_), 1.0, kMaxSeconds * rate_);
-    line.feedback = at(Feedback) / 100;
+    line.feedback.set(at(Feedback) / 100);
     const double theta = (at(Pan) + 50) / 100 * std::numbers::pi / 2, gain = level(at(Volume));
-    line.gainL = gain * std::cos(theta);
-    line.gainR = gain * std::sin(theta);
+    line.gainL.set(gain * std::cos(theta));
+    line.gainR.set(gain * std::sin(theta));
 }
 
 void FilterDelay::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
@@ -125,10 +131,10 @@ void FilterDelay::process(const float* inL, const float* inR, float* outL, float
         for (std::size_t i = 0; i < frames; ++i) {
             const double l = inL && std::isfinite(inL[i]) ? inL[i] : 0.0, r = inR && std::isfinite(inR[i]) ? inR[i] : 0.0;
             if (outL) {
-                outL[i] = static_cast<float>(dry_ * l);
+                outL[i] = static_cast<float>(dry_.value * l);
             }
             if (outR) {
-                outR[i] = static_cast<float>(dry_ * r);
+                outR[i] = static_cast<float>(dry_.value * r);
             }
         }
         return;
@@ -138,7 +144,8 @@ void FilterDelay::process(const float* inL, const float* inR, float* outL, float
         // hand an output plane that is an input plane).
         const double l = inL && std::isfinite(inL[i]) ? inL[i] : 0.0, r = inR && std::isfinite(inR[i]) ? inR[i] : 0.0;
         const double feeds[kLines] = {l, 0.5 * (l + r), r};
-        double yl = dry_ * l, yr = dry_ * r;
+        const double dry = dry_.next();
+        double yl = dry * l, yr = dry * r;
         for (std::size_t k = 0; k < kLines; ++k) {
             auto& line = lines_[k];
             line.current += (line.target - line.current) * glide_;
@@ -152,7 +159,7 @@ void FilterDelay::process(const float* inL, const float* inR, float* outL, float
             if (frac > 0) {
                 y += frac * (static_cast<double>(line.ring[index(whole + 1)]) - y);
             }
-            const double into = (line.on ? feeds[k] : 0.0) + line.feedback * y;
+            const double into = line.on.next() * feeds[k] + line.feedback.next() * y;
             double v = into;
             if (line.filter) {
                 v = line.b0 * into + line.s1;
@@ -160,8 +167,8 @@ void FilterDelay::process(const float* inL, const float* inR, float* outL, float
                 line.s2 = settle(-line.b0 * into - line.a2 * v);
             }
             line.ring[write_] = static_cast<float>(settle(v));
-            yl += line.gainL * y;
-            yr += line.gainR * y;
+            yl += line.gainL.next() * y;
+            yr += line.gainR.next() * y;
         }
         if (outL) {
             outL[i] = static_cast<float>(yl);
