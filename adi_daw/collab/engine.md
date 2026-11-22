@@ -36,6 +36,13 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PLAN resumes at MX-23 Track Delay
+
+- ED-03's remaining cross-track lane rule waits on engine-win's DF-E35(a) and CT-01 EditScope work, as recorded with DF-E17.
+- ED-04 Crop and AU-05 wait on the DF-E38 Live readings. ED-05 follows ED-04 in PLAN.
+- MI-03 waits for the director-approved Clip View design. MI-02's remaining overlap precedence follows the Live reading recorded with its existing versioned kernel.
+- MX-23's Track Delay preview is the next available Engine piece in M2. Window-fn requested the producer in its standing queue.
+
 ## 2026-11-22 — DEV-14 / DF-E40(b) parked
 
 Pd reset and MIDI-effect patches wait on Win's ADR for patch kinds, Consume semantics and [clone] voice ownership.
