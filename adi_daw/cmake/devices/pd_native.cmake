@@ -71,6 +71,7 @@ if(ADI_WITH_PD)
     adi_embed_native_pd(djFilter "pd/devices/DJ Filter.pd")
     adi_embed_native_pd(autoShift "pd/devices/Auto Shift.pd")
     adi_embed_native_pd(spectrumDevice "pd/devices/Spectrum.pd")
+    adi_embed_native_pd(liveAmp "pd/devices/Amp.pd")
     string(APPEND ADI_NATIVE_PD_HEADER "} // namespace adi::device::canonical\n")
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/adi_native_pd_patches.hpp"
         CONTENT "${ADI_NATIVE_PD_HEADER}")
