@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
 #include "knobs_device.hpp"
@@ -689,8 +690,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(doc->ops().canUndo() && doc->ops().undo().ok && doc->synchronise() &&
               db.execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
           "one Undo takes the whole take back");
-    // A capture that ends on its own while recording (here a locate mid-take: a discontinuity) ends the
-    // recording on the next tick, says why, and leaves no private take behind.
+    // A locate mid-take lands the recorded prefix and reports why recording stopped.
     const auto before = std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{});
     check(doc->startRecording(0, 1, true) && doc->recording(), "Record while playing");
     for (int b = 0; b < 4; ++b) {
@@ -698,6 +698,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
         doc->process(io);
         stream += 64;
     }
+    const auto heldInput = in;
     doc->mailbox().post(ui::TransportMailbox::Command::Locate, 48000);
     std::optional<ui::ProjectDocument::TakeLanded> failed;
     for (int i = 0; i < 5000 && !failed; ++i) {
@@ -709,8 +710,27 @@ void arrangementRecord(const std::filesystem::path &dir) {
         if (!failed)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    check(failed && !failed->ok && failed->message.find("jumped") != std::string::npos && !doc->recording(),
-          "a locate mid-take ends the recording at once and says the take was not kept");
+    check(failed && failed->ok && failed->clips.size() == 1 &&
+              failed->message.find("Kept the audio") != std::string::npos &&
+              failed->message.find("jumped") != std::string::npos && !doc->recording(),
+          "a locate mid-take ends recording, warns about the discontinuity and places the prefix");
+    if (failed && failed->ok && failed->clips.size() == 1) {
+        SQLite::Statement path(db, "SELECT m.rel_path FROM audio_clips a JOIN media_files m ON m.id=a.media_id "
+                                   "WHERE a.clip_id=?");
+        path.bind(1, failed->clips.front());
+        if (!path.executeStep())
+            throw std::runtime_error("placed recording has no media");
+        audio::WavReader saved(media::projectFolder(doc->store()) / media::pathFromUtf8(path.getColumn(0).getString()));
+        std::array<float, 256> samples{};
+        bool exact = saved.frames() == samples.size() &&
+                     saved.read(samples.data(), static_cast<std::uint32_t>(samples.size())) == samples.size();
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            exact = exact && samples[i] == heldInput[i % heldInput.size()];
+        check(exact, "the placed WAV contains exactly the four blocks accepted before the locate");
+        check(doc->ops().undo().ok && doc->synchronise() &&
+                  db.execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
+              "one Undo removes the whole interrupted take");
+    }
     check(std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{}) == before,
           "and leaves no private take in the project's folder");
     // The device stopped while a take lands: settled when the document is told the driver is gone.

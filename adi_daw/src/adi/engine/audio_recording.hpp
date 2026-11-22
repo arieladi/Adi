@@ -59,6 +59,7 @@ public:
     [[nodiscard]] const std::string& sourceProject()const noexcept{return sourceProject_;}
     [[nodiscard]] const std::optional<AudioRecordingLoop>& loopSpec()const noexcept{return loop_;}
     [[nodiscard]] std::span<const RecordedPass> passes()const noexcept{return passes_;}
+    [[nodiscard]] bool hasAttachableAudio()const noexcept;
     void discard(); // owner thread, after recording has finished
     // Owner/worker only. Creates a private Float32 WAV, preserving snapshot
     // bits, for the existing prepareCommit/commit publication and undo path.
@@ -72,6 +73,7 @@ private:
     std::string sourceProject_;
     std::optional<AudioRecordingLoop> loop_;
     std::vector<RecordedPass> passes_;
+    bool finalizedPrefix_=false;
     friend class AudioInputRecorder;
 };
 /// Optional off-callback writer adapter. The default is an actual WavWriter.

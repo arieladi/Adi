@@ -14,6 +14,18 @@
 namespace adi::engine {
 namespace fs=std::filesystem;
 struct AudioRecordingResult::Files {fs::path directory;};
+bool AudioRecordingResult::hasAttachableAudio()const noexcept {
+    if(frames==0)return false;
+    switch(failure) {
+    case RecordingFailure::None:return true;
+    case RecordingFailure::Overflow:
+    case RecordingFailure::MissingInput:
+    case RecordingFailure::BlockSize:
+    case RecordingFailure::Discontinuity:
+    case RecordingFailure::PassLimit:return finalizedPrefix_;
+    default:return false;
+    }
+}
 const fs::path& AudioRecordingResult::directory()const noexcept {static const fs::path empty;return files_?files_->directory:empty;}
 void AudioRecordingResult::discard(){if(audio::onAudioThread)throw std::runtime_error("discard recording off callback");if(files_){fs::remove_all(files_->directory);files_.reset();}}
 namespace {
@@ -50,6 +62,7 @@ struct Job {
     std::atomic<bool> stopWriter{false},done{false},transportEnded{false};
     std::thread worker;
     std::string error;
+    bool finalized=false; // written before publishing done
     bool discardRequested=false; // owner only; cancellation also discards failed takes
     // Callback-owned continuity state; observed only after its quiescence.
     bool begun=false;
@@ -86,6 +99,7 @@ struct Job {
                 }
             }
             for(auto& writer:writers)writer->close();
+            finalized=true;
         } catch(const std::exception& exception){error=exception.what();fail(RecordingFailure::Io);}
         catch(...){error="recording writer failed";fail(RecordingFailure::Io);}
         done.store(true,std::memory_order_release);
@@ -223,6 +237,7 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     if(job->worker.joinable())job->worker.join();
     AudioRecordingResult result;result.failure=job->failure.load(std::memory_order_acquire);result.error=job->error;result.sampleRate=job->spec.sampleRate;
     result.frames=job->written.load(std::memory_order_acquire);result.startSample=job->firstSample.load(std::memory_order_acquire);result.tracks=job->tracks;
+    result.finalizedPrefix_=job->finalized;
     result.sourceProject_=job->spec.sourceProject;
     result.loop_=job->spec.loop;
     result.passes_.assign(job->passes.begin(),job->passes.begin()+static_cast<std::ptrdiff_t>(job->passCount));

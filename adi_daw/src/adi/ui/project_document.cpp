@@ -1070,10 +1070,9 @@ std::string recordingFailure(const engine::AudioRecordingResult &r) {
 } // namespace
 void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     TakeLanded outcome;
-    if (result.failure != engine::RecordingFailure::None) {
-        outcome.message = "The take was not kept: " + recordingFailure(result) + ".";
-        // Nothing recovers a failed capture yet, so its private files go with it rather than stay hidden in
-        // the project's folder.
+    const auto interruption = recordingFailure(result);
+    if (!result.hasAttachableAudio()) {
+        outcome.message = "The take was not kept: " + interruption + ".";
         result.discard();
         landed_ = std::move(outcome);
         return;
@@ -1108,7 +1107,10 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     }
     synchronise();
     outcome.ok = true;
-    outcome.message = result.tracks.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(result.tracks.size()) + " takes.";
+    if (!interruption.empty())
+        outcome.message = "Kept the audio recorded before the interruption: " + interruption + ".";
+    else
+        outcome.message = result.tracks.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(result.tracks.size()) + " takes.";
     landed_ = std::move(outcome);
 }
 } // namespace adi::ui
