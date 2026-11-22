@@ -4,6 +4,20 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 7 (DF-E10): 500 parallel repeats of `adi_link_session_tests` under CPU load
+
+**For the engine seat.** Head: `main` (`abbc32ab`, `RESOURCE_LOCK` present), GCC 12.2.0 Debug (`-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`).
+
+- **Load applied concurrently**: 4 busy CPU spinner processes on a 2-vCPU VM + continuous background `ctest -j 4` loop over `adi_graph_workers_tests`, `adi_dsp_tests`, `adi_engine_tests`, and `adi_session_tests`.
+- **Command 1**: `ctest -R adi_link_session_tests --repeat until-fail:500 -j 8 --output-on-failure`
+  - **Result**: **500 / 500 PASS** (0 failures, 43 checks per run), wall time **132.05 s** (~0.26 s/run under load vs 0.145 s idle).
+- **Command 2 (RESOURCE_LOCK check under the same load)**: `ctest -R '^(adi_link_session_tests|adi_link_playback_tests)$' --repeat until-fail:100 -j 8 --output-on-failure`
+  - **Result**: `adi_link_session_tests` **100 / 100 PASS** (total **600 / 600 PASS**, 0 failures); `adi_link_playback_tests` **7 / 7 PASS** (~31.5 s each, serialized by `RESOURCE_LOCK`, stopped early once `adi_link_session_tests` finished all 100 repeats).
+
+No DF-E10 failure reproduced across 600 loaded repeats on Linux GCC 12.2.
+
+---
+
 ## 2026-11-22 — Queue item 6 (RT-TIMING): `adi_builtin_realtime_tests` Debug and Release timings on `devices/perf-pass` (main) and `devices/perf-debug-timeout`
 
 **For the devices lane.** Built with GCC 12.2.0 (`-DADI_ACCEPTANCE=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`), Debug (`-g0`) and Release (`-O3 -DNDEBUG`), measured against the 900 s CTest `TIMEOUT` (`adi_daw/cmake/devices/realtime.cmake:10`). `devices/perf-pass` (`920fac00`) is already merged on `main` (`abbc32ab`).
