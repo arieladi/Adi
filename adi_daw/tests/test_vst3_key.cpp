@@ -267,8 +267,10 @@ void contract() {
     const auto readLegacyMidi = reinterpret_cast<ReadLegacyMidi>(module.getFunction("adiFixtureReadLegacyMidi"));
     const auto mappedMemberBend = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureMappedMemberBend"));
     const auto readNoteWire = reinterpret_cast<ReadNoteWire>(module.getFunction("adiFixtureReadNoteWire"));
-    if (!first || !last || !channels || !inPlace || !completedProcessCalls ||
-        !readLegacyMidi || !mappedMemberBend || !readNoteWire)
+    auto auxiliaryBuffersValid = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureAuxiliaryBuffersValid"));
+    auto auxiliarySinkSilent = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureAuxiliarySinkSilent"));
+    if (!first || !last || !channels || !inPlace || !auxiliaryBuffersValid || !auxiliarySinkSilent ||
+        !completedProcessCalls || !readLegacyMidi || !mappedMemberBend || !readNoteWire)
         throw std::runtime_error("owned fixture observations unavailable");
     const auto types = list.getTypes();
     const auto expression = std::find_if(types.begin(), types.end(),
@@ -288,6 +290,7 @@ void contract() {
                 throw std::runtime_error(error);
             device::Vst3Device d(std::move(instance), device::identityOf(desc));
             const bool mono = desc.name.containsIgnoreCase("Plain");
+            const bool additionalBuses = desc.name.containsIgnoreCase("NoteExpr");
             const bool defaultActive = mono;
             const int keyWidth = mono ? 1 : 2;
             check(d.sidechainInputChannels() == keyWidth,
@@ -347,6 +350,9 @@ void contract() {
                       last() == (mono ? 17. / 32 : .5),
                   "exact mono/stereo key segment reaches the aux bus at native/narrowed precision");
             check(inPlace()==1,"aux delivery retains the main in-place SDK fast path");
+            if (additionalBuses) {
+                check(auxiliaryBuffersValid() == 1, "four inputs and three outputs cover silent, inactive and sink buses");
+            }
             const auto programmeExact = [&] {
                 for (std::size_t i = 0; i < 32; ++i) {
                     const bool inside = i >= 7 && i < 18;
@@ -382,6 +388,10 @@ void contract() {
                   "clearing the key preserves the entire programme array exactly");
             check(first() == 0 && last() == 0,
                   "disconnected key is silent, not stale data or programme");
+            if (additionalBuses) {
+                check(auxiliaryBuffersValid() == 1, "additional buffers stay distinct with a disconnected key");
+                check(auxiliarySinkSilent() == 1, "auxiliary sink starts clear on the next segment");
+            }
             const auto connectedShape = d.preparationShapeEpoch();
             check(d.configureSidechain(false), "owner can disable a formerly requested key");
             check((d.preparationShapeEpoch() == connectedShape) == defaultActive,
@@ -393,6 +403,9 @@ void contract() {
                                 : "disconnecting a requested dormant key prepares the changed layout once");
             d.process(io);
             check(inPlace()==1 && programmeExact(),"removing the key retains in-place processing and exact full programme arrays");
+            if (additionalBuses) {
+                check(auxiliaryBuffersValid() == 1, "dormant key leaves the later active auxiliary slot addressable");
+            }
             check(channels() == (defaultActive ? keyWidth : 0) && first() == 0 && last() == 0,
                   defaultActive ? "default-active aux carries silence after route removal"
                                 : "default-inactive aux is deactivated after route removal");
