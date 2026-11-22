@@ -17,6 +17,28 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Seven registered stages on stereo kick and bass
+
+For DEV-31, each side processed the same stereo input at 48 kHz, the same selected settings and 98,304 warm-up frames. Each timing used five trials of 2,048 callbacks and each audio comparison used 192,000 stereo frames. The registered 415-control device used the seven stage sources, external and canvas on main at `87ea349c`. The comparison host’s prepare-only lock difference falls outside the timed callback. Table entries are median callback durations in microseconds.
+
+| Stage | ADI at 256 | Reference at 256 | ADI at 2,048 | Reference at 2,048 |
+|---|---:|---:|---:|---:|
+| Volume, three bands | 20.9 | 42.1 | 161.6 | 245.5 |
+| Width | 4.7 | 20.3 | 46.5 | 117.7 |
+| Pan | 3.3 | 31.5 | 26.2 | 158.7 |
+| Filter | 19.8 | 55.4 | 143.5 | 349.2 |
+| Sweep | 13.6 | 26.1 | 106.9 | 122.8 |
+| Drive | 61.3 | 96.6 | 518.3 | 728.1 |
+| Crush | 27.0 | 41.2 | 199.1 | 228.7 |
+
+ADI used fewer median processing-thread cycles and less median elapsed time in all fourteen cells. At 2,048 frames the Sweep p99 was 149.2 µs against 148.9 µs. Across seven settings and 71,680 callbacks per side at each size, ADI/reference missed 3/2 deadlines at 256 and 1/0 at 2,048. This measures individual settings under the available scheduling load.
+
+Both sides reported 16 frames for Drive. Width and Pan reported 0 frames in ADI and 16 in the reference. All other selected settings reported zero in both. After alignment, stereo residual RMS stayed below 0.000000082 for Volume, Width, Filter and Crush, 0.00000179 for Sweep and 0.0000354 for Drive. Main’s hard Pan transient differed by 0.009065/0.004984 RMS, so the stock Pan speed is a comparison with differing transition audio. The separate Pan correction has its own waveform test.
+
+We repeated the same cells with the two pushed repairs. At 256 and 2,048 frames, the registered Pan on `5c554c59` measured median/p99 14.7/27.0 and 118.3/225.0 µs. The reference measured 31.5/35.1 and 158.7/252.6 µs. With the reference’s 16-frame delay removed, the registered Pan residual reached 0.00002511 L and 0.00005084 R. Both block sizes produced the same ADI samples. The optimized Drive on `44de27f0` measured 43.1/77.0 and 335.7/523.5 µs against the reference’s 96.6/159.4 and 728.1/1,056.0. Drive retained 16 frames of latency, matched the stock capture byte for byte and missed zero deadlines in these single-device runs.
+
+PR requested
+
 ## 22 November 2026 — Registered Crush verification and Volume retrigger cost
 
 For Win, `clones/shaper-crush-hold-grid` (`9925a705`) also passed the full rack, dedicated Crush and registered native/edited Pd suites in both signal precisions. This finding affects the existing stage on main. Win can schedule its review independently of the new stages.
