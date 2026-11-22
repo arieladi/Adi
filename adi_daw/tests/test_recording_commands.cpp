@@ -79,6 +79,59 @@ struct Fixture {
         return result;
     }
 };
+void saveAsRecoveryContract() {
+    Fixture fixture;
+    auto& store=*fixture.store;
+    AudioRecordingSpec stale;
+    stale.workFolder=fixture.temporary.path();
+    stale.sampleRate=48000;stale.maxFrames=128;stale.ringFrames=4096;stale.targets={{21,{0}}};
+    std::string error;
+    if(!recording::configureRecovery(store,stale,error))throw std::runtime_error(error);
+    Session session;
+    if(!session.load(store,{},SessionSpec{2,48000,128}))throw std::runtime_error(session.error());
+    const auto successor=fixture.temporary.path()/"successor.adi";
+    const auto saved=store.saveAs(successor);
+    if(!saved.ok || !session.refresh(store))throw std::runtime_error(saved.ok?session.error():saved.error);
+    AudioRecordingSpec fresh=stale;
+    if(!recording::configureRecovery(store,fresh,error))throw std::runtime_error(error);
+    check(fresh.sourceProject!=stale.sourceProject && std::filesystem::equivalent(store.path(),successor),
+          "Save As switches the Store to the successor and configures a distinct recording path");
+    const auto finalize=[&](bool discard) {
+        session.recording().stop(discard);
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(std::chrono::steady_clock::now()<deadline) {
+            if(auto result=session.recording().poll(true))return *result;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        throw std::runtime_error("Save As recorder did not stop");
+    };
+    const bool acceptedStale=session.startRecording(stale,error);
+    check(!acceptedStale && error.find("different project")!=std::string::npos,
+          "recording options saved before Save As are refused");
+    if(acceptedStale) {
+        auto discarded=finalize(true);
+        if(auto cleanup=discarded.discard())throw std::runtime_error(cleanup.message());
+    }
+    const bool acceptedFresh=session.startRecording(fresh,error);
+    check(acceptedFresh,error.empty()?"fresh successor recovery options are accepted":error.c_str());
+    if(!acceptedFresh)return;
+    session.transport().locate(512);
+    session.transport().play();
+    std::array<float,128> input{},left{},right{};
+    for(std::size_t i=0;i<input.size();++i)input[i]=Fixture::sample(i);
+    const float* channels[]{input.data()};
+    float* output[]{left.data(),right.data()};
+    AudioIo io;io.in=channels;io.numIn=1;io.out=output;io.numOut=2;io.frames=128;
+    session.process(io);
+    auto captured=finalize(false);
+    check(captured.failure==RecordingFailure::None && captured.sourceProject()==fresh.sourceProject &&
+          captured.frames==input.size() && !captured.recordingId().empty(),
+          "the new project's recording receipt points to the successor");
+    const std::array<recording::ClipIds,1> ids={{{901,902,"After Save As"}}};
+    auto ready=recording::prepareCommit(store,captured,ids);
+    check(ready.ok && recording::commit(store,ready).ok && History(store).undo().ok,
+          "the successor places its take and can undo it");
+}
 void publicationStagingOwnership() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
@@ -821,6 +874,11 @@ void recoverAfterProcessExit(const std::filesystem::path& executable) {
 int main(int argc,char** argv){try{
     if(argc==4 && std::string_view(argv[1])=="--crash-recording")
         return crashRecordingChild(media::pathFromUtf8(argv[2]),media::pathFromUtf8(argv[3]));
+    if(argc==2 && std::string_view(argv[1])=="--save-as-recovery-contract") {
+        saveAsRecoveryContract();
+        std::printf("%d checks, %d failures\n",checks,failures);
+        return failures?1:0;
+    }
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
