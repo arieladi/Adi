@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-04 joined project clock and mono delivery
+
+- EX-04 SoXR and mono integration — PR requested, `engine-win/export-delivery-project-rate` at `1d859703`, on the tested five-format group `032d74de` plus the rate and mono topics, after 3 December. One compensated project-rate stream resamples once, folds if selected, then feeds each encoder at the same delivery clock and channel layout. Native tests verified WAV and AIFF decoded identically at 44.1 kHz from a 48 kHz effect graph, both output 2301 frames, and the mono group preserved the equal-channel reference after SRC. MSVC 504 render, 171 WAV, and 85 NI Stems metadata checks (native AAC unavailable). The mono law is an explicit ADI choice pending Live measurement. Legacy direct rate stays the default. This stack still needs the separate Opus/readback and loop/tail joins for a single landing head.
+
 ## 2026-11-22 — EX-04 explicit WAVE speaker layout
 
 - EX-04 WAVEFORMATEXTENSIBLE channel mask — PR requested, `engine-win/export-wav-speaker-mask` at `2b5a5da8` on the shaped-quantizer base `cc3f8060`. An optional speaker mask tags the caller's existing interleaved stream. Zero retains the unnamed layout. A nonzero mask requires one defined position per channel; stereo gets the same extensible header when explicitly tagged. Normalization preserves the mask across its encoding passes. MSVC: WAV 176, render 434, normalization 24, including 5.1 and stereo header bytes, unchanged samples, invalid positions refused before truncation, and masked normalized output. The >4 GiB opt-in case was skipped. Window owns layout selection; the join must apply it to the final delivery channels. Source: https://learn.microsoft.com/en-us/windows/win32/api/mmreg/ns-mmreg-waveformatextensible
