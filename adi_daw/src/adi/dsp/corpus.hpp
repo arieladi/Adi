@@ -29,7 +29,8 @@
 // in its T60, and at any rate a hit of a given length rings at the same
 // level. The resonance passes a tanh, so a tone held at a mode (which builds
 // up by the mode's Q) stays under full scale. A mode at or above 0.45 of the
-// rate is silent. States settle on exact 0 below 1e-30.
+// rate is silent. States settle on exact 0 below 1e-30. Gain, Bleed and
+// Dry/Wet glide over about 10 ms once audio runs (dsp/glide.hpp).
 //
 // WHAT IS NOT LIVE'S YET, and says so: the models' ratios beyond the
 // textbook ones, every law above, the ranges and defaults, and the
@@ -38,6 +39,8 @@
 // list). It claims no parity. Allocation-free; no latency.
 
 #pragma once
+
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cmath>
@@ -78,7 +81,8 @@ private:
     void update() noexcept;
     std::array<double, Count> p_{};
     std::array<Mode, kModes> mode_{};
-    double rate_ = 48000, gain_ = 1, bleed_ = 0, wet_ = 1;
+    double rate_ = 48000;
+    Glide gain_, bleed_, wet_;
 };
 
 }  // namespace adi::dsp
