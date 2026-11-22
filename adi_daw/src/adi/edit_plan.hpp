@@ -58,6 +58,11 @@ struct Trim {std::int64_t id=0;clip_edit::TimePoint begin;};
 [[nodiscard]] clip_edit::PreparedEdit prepareDelete(Store&,const EditScope&,
     std::span<const std::int64_t> clips,const Options&);
 
+/// Copy a covered range of one explicit take into its track's main lane.
+/// Scope must name both lanes on that track. This is one clip-only splice.
+[[nodiscard]] clip_edit::PreparedEdit prepareCompTake(Store&, const EditScope&,
+    std::int64_t takeClip, const Options&);
+
 enum class EffectKind { Removed, Trimmed, Split, Created, Moved, Resized };
 struct MaterialState {
     std::int64_t id=0;
