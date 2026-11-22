@@ -14,24 +14,30 @@ constexpr double linearLevelRange = 14.0 * totalLevelRange / 32768.0;
 constexpr float logMinimum = 5.45864868f;
 constexpr float logSpan = 5.24067688f;
 constexpr float frequencyOffset = 225.96f;
-constexpr unsigned cellsPerUnit = 64;
-constexpr unsigned firstCell = static_cast<unsigned>(logMinimum * cellsPerUnit);
-constexpr unsigned lastCell = static_cast<unsigned>((logMinimum + logSpan) * cellsPerUnit);
-const auto exponent = [] {
-    std::array<double, lastCell - firstCell + 1> table{};
-    for (unsigned cell = firstCell; cell <= lastCell; ++cell)
-        table[cell - firstCell] = std::exp(static_cast<double>(cell) / cellsPerUnit);
+constexpr unsigned clockPartBits = 7;
+constexpr unsigned clockHighShift = 2 * clockPartBits;
+constexpr unsigned clockPartMask = (1u << clockPartBits) - 1;
+constexpr unsigned firstCell = static_cast<unsigned>(logMinimum * 0x1p21f) >> clockHighShift;
+constexpr unsigned lastCell = static_cast<unsigned>((logMinimum + logSpan) * 0x1p21f) >> clockHighShift;
+
+template <std::size_t N>
+std::array<double, N> clockFactors(unsigned first, double unit) noexcept {
+    std::array<double, N> table{};
+    for (std::size_t i = 0; i < N; ++i)
+        table[i] = std::exp((static_cast<double>(i) + first) * unit);
     return table;
-}();
+}
+const auto clockHigh = clockFactors<lastCell - firstCell + 1>(firstCell, 0x1p-7);
+const auto clockMiddle = clockFactors<clockPartMask + 1>(0, 0x1p-14);
+const auto clockLow = clockFactors<clockPartMask + 1>(0, 0x1p-21);
 
 float clockExponential(float logFrequency) noexcept {
-    const auto cell = static_cast<unsigned>(logFrequency * cellsPerUnit);
-    const double d = static_cast<double>(logFrequency) - static_cast<double>(cell) / cellsPerUnit;
-    // d is below 1/64. The fifth-order remainder gives the same rounded
-    // exponential throughout the float input range without an audio-rate exp.
-    const double tail = 1.0 / 6.0 + d * (1.0 / 24.0 + d / 120.0);
-    const double factor = 1.0 + d * (1.0 + d * (.5 + d * tail));
-    return static_cast<float>(exponent[cell - firstCell] * factor);
+    // The calibrated binary32 log frequencies are exact multiples of 2^-21.
+    // Splitting that integer into three parts keeps the shared tables below 8 KiB.
+    const auto ticks = static_cast<unsigned>(logFrequency * 0x1p21f);
+    const auto cell = (ticks >> clockHighShift) - firstCell;
+    return static_cast<float>(clockHigh[cell] * clockMiddle[(ticks >> clockPartBits) & clockPartMask] *
+                              clockLow[ticks & clockPartMask]);
 }
 
 float sanitized(float height) noexcept {
@@ -77,7 +83,7 @@ void AdiShaperCrush::updateClock(float height) noexcept {
     const volatile float scaled = logSpan * height;
     const float hz = clockExponential(logMinimum + scaled) - frequencyOffset;
     step_ = static_cast<float>(std::min(static_cast<double>(hz) / rate_, 1.0));
-    period_ = step_ > 0.f ? 1.0 / step_ : 0.0;
+    period_ = 0.0; // Recompute on the first capture at this rate.
 }
 
 double AdiShaperCrush::noise() noexcept {
@@ -132,6 +138,7 @@ void AdiShaperCrush::hold(Stereo& sample) noexcept {
         sample = held_;
         phase_ = next;
     } else {
+        if (period_ == 0.0) period_ = 1.0 / step_;
         const double fraction = std::clamp((1.0 - phase_) * period_, 0.0, 1.0);
         for (unsigned ch = 0; ch < 2; ++ch) {
             const double captured = previousHoldInput_[ch] +
