@@ -339,6 +339,45 @@ void gaplessCycleRenders() {
           first.output.filename() == "Part one.wav" && second.output.filename() == "Part two.wav",
           "gapless deliveries carry one revision, individual region names and a shared exact boundary");
 
+    if (deliverySrcAvailable()) {
+        auto reduced = job;
+        reduced.nameTemplate = "32k-{region}";
+        reduced.ratePolicy = ExportRatePolicy::ProjectThenDownsample;
+        reduced.session.sampleRate = 32000;
+        reduced.encoding.speakerMask = 3;
+        reduced.encoding.dither = audio::WavDither::Shaped1;
+        auto whole = reduced;
+        whole.nameTemplate = "32k-continuous";
+        whole.beginSample = 0;
+        whole.endSample = 171;
+        const auto reference = read(renderWav(whole, echo), 171, 32000, audio::WavFormat::Pcm24);
+        Control control;
+        control.fingerprintDelivery = true;
+        loads = 0;
+        const auto downsampled = renderGaplessWav(reduced, selected, echo, control);
+        check(downsampled.state == JobState::Completed && downsampled.regions.size() == 2 && loads == 1,
+              downsampled.error.empty() ? "cycle export resamples the continuous capture once" : downsampled.error.c_str());
+        if (downsampled.state == JobState::Completed && downsampled.regions.size() == 2) {
+            const auto& one = downsampled.regions[0];
+            const auto& two = downsampled.regions[1];
+            auto joined = read(one, 85, 32000, audio::WavFormat::Pcm24);
+            const auto remainder = read(two, 86, 32000, audio::WavFormat::Pcm24);
+            joined.insert(joined.end(), remainder.begin(), remainder.end());
+            check(!joined.empty() && joined == reference, "cycle slicing preserves the resampled, quantized PCM exactly");
+            check(one.snapshot && two.snapshot && one.snapshot->graphSampleRate == 48000 &&
+                  two.snapshot->graphSampleRate == 48000 && one.deliveryBlake3 && two.deliveryBlake3 &&
+                  *one.deliveryBlake3 == media::blake3File(one.output).hex &&
+                  *two.deliveryBlake3 == media::blake3File(two.output).hex,
+                  "cycle receipts retain the original graph clock and final file digests");
+            std::ifstream file(two.output, std::ios::binary);
+            file.seekg(40);
+            std::array<unsigned char, 4> mask{};
+            file.read(reinterpret_cast<char*>(mask.data()), static_cast<std::streamsize>(mask.size()));
+            check(file.good() && mask == std::array<unsigned char, 4>{3, 0, 0, 0},
+                  "cycle output preserves the speaker mask after slicing");
+        }
+    }
+
     job.nameTemplate = "tail-{region}";
     auto tail = job;
     tail.tail = {TailMode::Fixed, 1};
