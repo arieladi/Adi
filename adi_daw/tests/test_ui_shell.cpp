@@ -12352,51 +12352,95 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
 // WIN-01: the default key map of every shortcut preset, as text the same on every platform family,
 // against its golden (ADI_UI_REFERENCES/keymap-<preset>-<family>.txt; --write-references writes it,
 // and each run leaves keymap-<preset>-<family>-actual.txt in the working directory),
-// with no key bound to two commands. Then F4, headless: the Mix View opens once and no track's
+// with no key bound to two commands, its chords in WIN-04's canonical text. Then F4, headless: the Mix View opens once and no track's
 // activator changes (MX-14), as F4 was also Activate Track 4 before.
-namespace keymap_golden {
-std::string keyText(const juce::KeyPress &k) {
-    std::string out;
-    const auto mods = k.getModifiers();
-    if (mods.isCommandDown())
-        out += "Cmd+";
-#if JUCE_MAC
-    if ((mods.getRawFlags() & juce::ModifierKeys::ctrlModifier) != 0)
-        out += "Ctrl+";
-#endif
-    if (mods.isAltDown())
-        out += "Alt+";
-    if (mods.isShiftDown())
-        out += "Shift+";
-    const int code = k.getKeyCode();
-    struct Named {
-        int code;
-        const char *name;
+// WIN-04: every command has one stable text id and a Live menu category; a chord's canonical text
+// reads back as the same key; the user's keys (shortcuts.overrides) are on top after every reload,
+// so a Settings change keeps them and a preset switch keeps them over its own keys; and the record
+// is written only when the keys differ from what it holds.
+void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
+    std::set<std::string> seen;
+    bool ids = true, categories = true;
+    juce::Array<juce::CommandID> all;
+    commands.getAllCommands(all);
+    for (const auto id : all) {
+        const char *stable = AppCommands::stableId(id);
+        if (stable == nullptr || !seen.insert(stable).second || AppCommands::commandFor(stable) != id)
+            ids = false;
+        if (std::string(AppCommands::category(id)) == "ADI")
+            categories = false;
+    }
+    check(ids && seen.size() == static_cast<std::size_t>(all.size()), "every command has one stable id, and it names the command back");
+    check(categories, "every command has a Live menu category");
+    check(AppCommands::stableId(AppCommands::ToggleBrowser) == std::string("view.browser") &&
+              AppCommands::stableId(AppCommands::Redo) == std::string("edit.redo"),
+          "the stable ids read as the plan's: view.browser, edit.redo");
+    check(AppCommands::commandFor("view.nothing") == 0, "an unknown stable id names no command");
+    std::string why;
+    bool roundTrip = true;
+    for (const char *preset : {"live", "cubase", "bitwig"}) {
+        settings.set("shortcuts.preset", std::string(preset), {}, why);
+        commands.reload();
+        for (const auto id : all) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            for (const auto &k : info.defaultKeypresses) {
+                const auto back = AppCommands::parseChord(AppCommands::chordText(k));
+                if (!back || !(*back == k) || back->getModifiers() != k.getModifiers())
+                    roundTrip = false;
+            }
+        }
+    }
+    check(roundTrip, "every default chord of every preset reads back from its text as the same key");
+    check(!AppCommands::parseChord("Cmd+") && !AppCommands::parseChord("Hyper+Q"), "a chord text with no key reads as none");
+    const auto keysOf = [&](int id) {
+        std::vector<std::string> out;
+        for (const auto &k : commands.manager.getKeyMappings()->getKeyPressesAssignedToCommand(id))
+            out.push_back(AppCommands::chordText(k));
+        return out;
     };
-    static const Named named[] = {
-        {juce::KeyPress::spaceKey, "Space"},       {juce::KeyPress::escapeKey, "Esc"},
-        {juce::KeyPress::returnKey, "Return"},     {juce::KeyPress::tabKey, "Tab"},
-        {juce::KeyPress::deleteKey, "Delete"},     {juce::KeyPress::backspaceKey, "Backspace"},
-        {juce::KeyPress::insertKey, "Insert"},     {juce::KeyPress::upKey, "Up"},
-        {juce::KeyPress::downKey, "Down"},         {juce::KeyPress::leftKey, "Left"},
-        {juce::KeyPress::rightKey, "Right"},       {juce::KeyPress::pageUpKey, "PageUp"},
-        {juce::KeyPress::pageDownKey, "PageDown"}, {juce::KeyPress::homeKey, "Home"},
-        {juce::KeyPress::endKey, "End"},           {juce::KeyPress::F1Key, "F1"},
-        {juce::KeyPress::F2Key, "F2"},             {juce::KeyPress::F3Key, "F3"},
-        {juce::KeyPress::F4Key, "F4"},             {juce::KeyPress::F5Key, "F5"},
-        {juce::KeyPress::F6Key, "F6"},             {juce::KeyPress::F7Key, "F7"},
-        {juce::KeyPress::F8Key, "F8"},             {juce::KeyPress::F9Key, "F9"},
-        {juce::KeyPress::F10Key, "F10"},           {juce::KeyPress::F11Key, "F11"},
-        {juce::KeyPress::F12Key, "F12"},           {juce::KeyPress::numberPadAdd, "Num+"},
-        {juce::KeyPress::numberPadSubtract, "Num-"}};
-    for (const auto &n : named)
-        if (n.code == code)
-            return out + n.name;
-    if (code > 32 && code < 127)
-        return out + static_cast<char>(code >= 'a' && code <= 'z' ? code - 'a' + 'A' : code);
-    return out + "#" + std::to_string(code);
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    auto overrides = settings::Value::object();
+    overrides["view.browser"] = {"Cmd+Shift+F9"};
+    overrides["edit.undo"] = settings::Value::array();
+    overrides["view.nothing"] = {"F9"};
+    check(settings.set("shortcuts.overrides", overrides, {}, why), "the overrides set");
+    commands.reload();
+    check(keysOf(AppCommands::ToggleBrowser) == std::vector<std::string>{"Cmd+Shift+F9"}, "the user's key replaces Show Browser's");
+    check(keysOf(AppCommands::Undo).empty(), "an empty list leaves Undo with no key");
+    check(!keysOf(AppCommands::Redo).empty(), "a command without an override keeps the key map's keys");
+    settings.set("lookfeel.followMode", std::string("scroll"), {}, why);
+    commands.reload();
+    check(keysOf(AppCommands::ToggleBrowser) == std::vector<std::string>{"Cmd+Shift+F9"} && keysOf(AppCommands::Undo).empty(),
+          "the user's keys survive a Settings change");
+    juce::ApplicationCommandInfo redo(AppCommands::Redo);
+    settings.set("shortcuts.preset", std::string("cubase"), {}, why);
+    commands.reload();
+    commands.getCommandInfo(AppCommands::Redo, redo);
+    std::vector<std::string> cubaseRedo;
+    for (const auto &k : redo.defaultKeypresses)
+        cubaseRedo.push_back(AppCommands::chordText(k));
+    check(keysOf(AppCommands::ToggleBrowser) == std::vector<std::string>{"Cmd+Shift+F9"} && keysOf(AppCommands::Undo).empty(),
+          "a preset switch keeps the user's keys on top");
+    check(keysOf(AppCommands::Redo) == cubaseRedo, "and the other commands take the new preset's keys");
+    auto stored = settings.get("shortcuts.overrides");
+    stored.erase("view.nothing");
+    check(commands.userKeys() == stored, "the keys that differ from the key map are the user's");
+    settings.set("shortcuts.overrides", stored, {}, why);
+    check(commands.storeUserKeys(why) && settings.get("shortcuts.overrides") == stored, "unchanged keys write nothing new");
+    commands.manager.getKeyMappings()->addKeyPress(AppCommands::Redo, *AppCommands::parseChord("Cmd+Alt+F9"));
+    check(commands.storeUserKeys(why), ("a changed key is written: " + why).c_str());
+    const auto written = settings.get("shortcuts.overrides");
+    check(written.contains("edit.redo") && written.size() == 3, "the record now holds Redo's keys beside the other two");
+    commands.reload();
+    const auto redoKeys = keysOf(AppCommands::Redo);
+    check(std::find(redoKeys.begin(), redoKeys.end(), "Cmd+Alt+F9") != redoKeys.end(), "and they come back after a reload");
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    settings.set("lookfeel.followMode", std::string("page"), {}, why);
+    commands.reload();
+    check(keysOf(AppCommands::Undo).size() == 1, "with no overrides Undo has its one key again");
 }
-} // namespace keymap_golden
 void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
 #if JUCE_MAC
     const char *family = "mac";
@@ -12416,7 +12460,7 @@ void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const 
             commands.getCommandInfo(id, info);
             std::string keys;
             for (const auto &k : info.defaultKeypresses) {
-                const auto t = keymap_golden::keyText(k);
+                const auto t = AppCommands::chordText(k);
                 keys += (keys.empty() ? "" : ", ") + t;
                 byKey[t].push_back(info.shortName.toStdString());
             }
@@ -15696,6 +15740,7 @@ int main(int argc, char **argv) {
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
+    trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
