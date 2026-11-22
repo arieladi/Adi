@@ -2,7 +2,9 @@
 
 #include "adi/engine/mpe_output.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace adi::engine {
 
@@ -99,9 +101,25 @@ bool noteExpressionOut(const Event& in, const ExpressionCaps& caps, MpeOut& out)
                     break;
                 case ExpressionDim::Gain:
                     out.exprType = typeId(Vst3NoteExprType::Volume);
+                    if (in.paramId == kNativeNoteExpressionUnits) {
+                        if (!std::isfinite(in.value)) return false;
+                        // CLAP wants linear gain up to four. VST3 normalizes
+                        // that same range, placing unity at one quarter.
+                        constexpr double maxDb = 12.041199826559248;
+                        const auto linear = std::pow(10.0, std::min(in.value, maxDb) / 20.0);
+                        out.plain = std::clamp(linear, std::numeric_limits<double>::min(), 4.0);
+                        out.value = out.plain / 4.0;
+                        return true;
+                    }
+                    out.plain = clampUnit(in.value);
                     break;
                 case ExpressionDim::Pan:
                     out.exprType = typeId(Vst3NoteExprType::Pan);
+                    if (in.paramId == kNativeNoteExpressionUnits) {
+                        if (!std::isfinite(in.value)) return false;
+                        out.plain = out.value = clampUnit((in.value + 1.0) * 0.5);
+                        return true;
+                    }
                     break;
                 default:
                     return false;             // plugin-defined: no VST3 type to name

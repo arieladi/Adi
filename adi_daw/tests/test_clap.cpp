@@ -172,6 +172,19 @@ void testEventListCarriesNoteIdAndDouble() {
     check(clipNote && liveNote && livePitch && clipNote->note_id != liveNote->note_id &&
           liveNote->note_id == livePitch->note_id, "CLAP keeps overlapping live and clip note IDs distinct");
     check(sizeof(x->value) == 8, "the expression value is 8 bytes");
+
+    auto gain=expr(7,ExpressionDim::Gain,6.020599913279624);
+    auto pan=expr(7,ExpressionDim::Pan,-0.5);
+    gain.paramId=pan.paramId=engine::kNativeNoteExpressionUnits;
+    list.clear();
+    check(list.add(noteOn(7, 60, 0.75)) && list.add(gain) && list.add(pan),
+          "CLAP accepts a note and its authored AEXP values");
+    const auto* volume = reinterpret_cast<const clap_event_note_expression_t*>(list.at(1));
+    const auto* balance = reinterpret_cast<const clap_event_note_expression_t*>(list.at(2));
+    check(volume && volume->expression_id==CLAP_NOTE_EXPRESSION_VOLUME && volume->note_id==7 &&
+          std::abs(volume->value-2.0)<1e-14,"CLAP volume uses the authored linear amplitude above unity");
+    check(balance && balance->expression_id==CLAP_NOTE_EXPRESSION_PAN && balance->value==0.25,
+          "CLAP pan converts signed AEXP to the SDK's left-to-right range");
 }
 
 void testModulationIsItsOwnEvent() {
