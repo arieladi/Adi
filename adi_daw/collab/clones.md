@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Internal envelope follower for each Width band
+
+`clones/shaper-width-follower` at `a1b02971` — Port the per-band Width envelope follower. **Lands after 3 December.** IDs 727–753 control Add/Multiply, amount, depth, offset, threshold, attack, hold and release independently in three bands. Older states restore the follower switched off, including when recalled over a running instance.
+
+The Add side-gain oracle passed within 0.000048. Attack follows 100u³ ms and hold follows 500u² ms. On 192,000 stereo kick-and-bass frames at 48 kHz, peak absolute error was 0.00000056625 at both 256 and 2,048 frames. Stereo RMS error was 0.00000009135 and 0.00000009122 respectively, after aligning each independent reference capture to its recorded start frame. MSVC /W4 /WX passed the full rack DSP and registered native/edited Pd comparisons at both signal precisions.
+
+In nine trials of 1,024 callbacks, median-trial native DSP p50/p99 was 9.8/14.4 µs at 256 frames and 76.4/191.1 µs at 2,048. Neither run missed a deadline. Both reported zero latency.
+
+PR requested
+
 ## 22 November 2026 — Keep the moving Crush hold clock continuous across blocks
 
 `clones/shaper-crush-hold-grid` at `9925a705` — Keep the moving Crush hold clock continuous across audio blocks. **Lands after 3 December.** The preset comparison found a dependence on callback size upstream of the room. An independent broadband test isolated the moving hold-rate control on Crush. The full-rate bypass resets the capture phase. At a contour boundary, the former evaluator could take that reset in one buffer partition and miss it in another.
