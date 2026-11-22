@@ -26,9 +26,14 @@ Every FFT pack/recombination element, permutation scan, butterfly,
 normalization/unpack element, complex product, complex sum, overlap add and
 cursor transition is charged. With `L=log2(p)`, a forward transform costs
 `3p + L(p/2) + L+5` units and an inverse costs a further `p` units.
-Every job visits four streams and all ten node slots. Only nodes present in
-the union of the current and previous capture masks add the per-node
-products, inverse and overlap work.
+An external key can require four streams, each visiting all ten node slots.
+Only nodes present in the union of the current and previous capture masks
+add the per-node products, inverse and overlap work. If the key is the
+unmodified programme throughout a capture, its forward spectrum shares the
+programme transform. When both contributing partitions can use that spectrum,
+they also share the inverse transform. The job still accumulates the result
+into each output ring separately so an older independent-key tail survives
+a route change.
 
 The job accounts for both capture edges before dividing its exact work by
 `p`. Its quotient and remainder spread that work over the next `p` actual
