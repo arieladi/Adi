@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-12 After Export for an individual delivery
+
+- EX-12 selected-file import — PR requested, `engine-win/export-after-multiple` at `4b3153e2`, combining the guarded After Export command with the five-format delivery group. When requested, all staged digests are taken before publication and exposed only per successful output. The owner can import the selected file through the existing one-step command, with a fresh digest check and the same undo behavior. Real WAV+AIFF test chose the AIFF, committed one clip to the target track, and one Undo restored the prior head and left both deliveries byte-exact. Strict MSVC: render 498, history 148, material 29. Window owns file selection and dispatch. Opus import still awaits a decoder.
+
 ## 2026-11-22 — EX-04 joined project clock and mono delivery
 
 - EX-04 SoXR and mono integration — PR requested, `engine-win/export-delivery-project-rate` at `1d859703`, on the tested five-format group `032d74de` plus the rate and mono topics, after 3 December. One compensated project-rate stream resamples once, folds if selected, then feeds each encoder at the same delivery clock and channel layout. Native tests verified WAV and AIFF decoded identically at 44.1 kHz from a 48 kHz effect graph, both output 2301 frames, and the mono group preserved the equal-channel reference after SRC. MSVC 504 render, 171 WAV, and 85 NI Stems metadata checks (native AAC unavailable). The mono law is an explicit ADI choice pending Live measurement. Legacy direct rate stays the default. This stack still needs the separate Opus/readback and loop/tail joins for a single landing head.
