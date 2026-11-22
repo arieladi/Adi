@@ -381,6 +381,27 @@ void gaplessCycleRenders() {
         }
     }
 
+    auto corrupt = job;
+    corrupt.nameTemplate = "corrupt-{region}";
+    Control damage;
+    bool truncated = false;
+    damage.serviceHost = [&] {
+        if (truncated) return;
+        for (const auto& entry : fs::directory_iterator(job.directory)) {
+            if (!media::pathUtf8(entry.path().filename()).starts_with(".adi-render-") ||
+                !fs::exists(entry.path() / "slice-1.wav")) continue;
+            // A later slice exists, so the first writer has already closed.
+            fs::resize_file(entry.path() / "slice-0.wav", 12);
+            truncated = true;
+            return;
+        }
+    };
+    const auto refused = renderGaplessWav(corrupt, selected, echo, damage);
+    check(truncated && refused.state == JobState::Failed && refused.error.find("staged PCM") != std::string::npos &&
+          !fs::exists(job.directory / "corrupt-Part one.wav") &&
+          !fs::exists(job.directory / "corrupt-Part two.wav") && f.noStage(),
+          "a truncated cycle slice fails the shared readback before any file publishes");
+
     job.nameTemplate = "tail-{region}";
     auto tail = job;
     tail.tail = {TailMode::Fixed, 1};

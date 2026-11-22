@@ -349,6 +349,38 @@ void prepareGroupIncrement(std::vector<Result>& files, const fs::path& directory
     throw std::runtime_error("export collision set changed during preflight; retry");
 }
 
+void verifyPcmDelivery(const fs::path& file, ExportContainer container, unsigned rate,
+                       unsigned channels, std::uint64_t frames,
+                       const std::function<void()>& service) {
+    if (service) service();
+    auto input = audio::openPcmStream(file);
+    if (!input.ready()) throw std::runtime_error("Cannot decode staged PCM delivery: " + input.error);
+    const auto& info = input.stream->info();
+    const auto source = container == ExportContainer::Aiff ? audio::SourceFormat::Aiff :
+        (container == ExportContainer::Flac ? audio::SourceFormat::Flac : audio::SourceFormat::Riff);
+    if (info.format != source || info.sampleRate != rate || info.channels != channels ||
+        info.frames != frames) {
+        throw std::runtime_error("Decoded PCM header disagrees with the render");
+    }
+    std::vector<float> samples(4096u * channels);
+    while (true) {
+        if (service) service();
+        const auto read = input.stream->read(samples);
+        if (read.status == audio::PcmReadStatus::End) break;
+        if (read.status != audio::PcmReadStatus::Frames) {
+            throw std::runtime_error("Cannot verify staged PCM delivery: " + input.stream->error());
+        }
+        const auto decoded = std::span<const float>(samples).first(
+            static_cast<std::size_t>(read.frames) * channels);
+        if (std::ranges::any_of(decoded, [](float sample) { return !std::isfinite(sample); })) {
+            throw std::runtime_error("Decoded PCM delivery contains a nonfinite sample");
+        }
+    }
+    if (input.stream->framesRead() != frames) {
+        throw std::runtime_error("Decoded PCM length disagrees with the render");
+    }
+}
+
 class DeliverySink {
 public:
     DeliverySink(const fs::path& folder, const std::string& stem, const Job& job,
@@ -404,43 +436,15 @@ public:
         else wav_->close();
         if (encoding_.container == ExportContainer::Aiff) encodeStagedAiff(pcm_, output_, service);
         if (encoding_.container == ExportContainer::Flac) encodeStagedFlac(pcm_, output_, service);
-        if (!mp3_ && !vorbis_ && !opus_) verifyPcm(service);
+        if (!mp3_ && !vorbis_ && !opus_) {
+            verifyPcmDelivery(output_, encoding_.container, rate_, channels_, writtenFrames_, service);
+        }
         return report;
     }
 
     [[nodiscard]] const fs::path& output() const noexcept { return output_; }
 
 private:
-    void verifyPcm(const std::function<void()>& service) const {
-        if (service) service();
-        auto input = audio::openPcmStream(output_);
-        if (!input.ready()) throw std::runtime_error("Cannot decode staged PCM delivery: " + input.error);
-        const auto& info = input.stream->info();
-        const auto source = encoding_.container == ExportContainer::Aiff ? audio::SourceFormat::Aiff :
-            (encoding_.container == ExportContainer::Flac ? audio::SourceFormat::Flac : audio::SourceFormat::Riff);
-        if (info.format != source || info.sampleRate != rate_ || info.channels != channels_ ||
-            info.frames != writtenFrames_) {
-            throw std::runtime_error("Decoded PCM header disagrees with the render");
-        }
-        std::vector<float> samples(4096u * channels_);
-        while (true) {
-            if (service) service();
-            const auto read = input.stream->read(samples);
-            if (read.status == audio::PcmReadStatus::End) break;
-            if (read.status != audio::PcmReadStatus::Frames) {
-                throw std::runtime_error("Cannot verify staged PCM delivery: " + input.stream->error());
-            }
-            const auto decoded = std::span<const float>(samples).first(
-                static_cast<std::size_t>(read.frames) * channels_);
-            if (std::ranges::any_of(decoded, [](float sample) { return !std::isfinite(sample); })) {
-                throw std::runtime_error("Decoded PCM delivery contains a nonfinite sample");
-            }
-        }
-        if (input.stream->framesRead() != writtenFrames_) {
-            throw std::runtime_error("Decoded PCM length disagrees with the render");
-        }
-    }
-
     Encoding encoding_;
     std::uint64_t seed_;
     unsigned rate_;
@@ -1340,6 +1344,11 @@ std::vector<fs::path> stageGaplessSlices(const fs::path& directory, const Result
     std::vector<float> pcm(static_cast<std::size_t>(input.channels()) * block);
     std::vector<fs::path> stages;
     stages.reserve(regions.size());
+    const auto service = [&] {
+        cancellation(control);
+        if (control.serviceHost) control.serviceHost();
+        cancellation(control);
+    };
     std::uint64_t sliced = 0;
     for (auto& region : regions) {
         const auto& snapshot = *region.snapshot;
@@ -1351,9 +1360,7 @@ std::vector<fs::path> stageGaplessSlices(const fs::path& directory, const Result
         audio::WavWriter writer(target, input.sampleRate(), input.channels(), input.format(), nullptr,
                                 std::uint64_t{1} << 32, audio::WavDither::None, 0, speakerMask);
         for (std::uint64_t copied = 0; copied < frames;) {
-            cancellation(control);
-            if (control.serviceHost) control.serviceHost();
-            cancellation(control);
+            service();
             const auto count = static_cast<std::uint32_t>((std::min)(static_cast<std::uint64_t>(block), frames - copied));
             if (input.read(pcm.data(), count) != count) throw std::runtime_error("Incomplete gapless PCM capture");
             writer.write(pcm.data(), count);
@@ -1367,6 +1374,10 @@ std::vector<fs::path> stageGaplessSlices(const fs::path& directory, const Result
     }
     if (sliced != input.frames() || sliced != continuous.framesWritten)
         throw std::runtime_error("Gapless slices did not consume the continuous capture");
+    for (std::size_t i = 0; i < stages.size(); ++i) {
+        verifyPcmDelivery(stages[i], ExportContainer::Wav, input.sampleRate(), input.channels(),
+                          regions[i].framesWritten, service);
+    }
     return stages;
 }
 } // namespace
