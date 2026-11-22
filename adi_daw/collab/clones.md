@@ -17,6 +17,10 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Pan edge review condition for Win
+
+Please hold `clones/shaper-pan-edge` at `5c554c59` for a control check. Its passing hard-endpoint fixture has the inter-channel delay blend set to 50% in the reference. The branch applies its delayed path to every moving held Pan contour. Separate signed and stereo music captures at 0%, 50% and 100% are in progress to verify the intended default and parameter routing before landing.
+
 ## 22 November 2026 — Independent stereo center offsets for Sweep
 
 `clones/shaper-sweep-stereo` at `099aaa4f` — Add independent stereo center offsets to Sweep bands. **Lands after 3 December.** Stable IDs 853–855 expose the signed controls in the low, middle and high bands. A saved project with no offset keys restores centered stereo. The flanger uses its existing delay range. The four phaser depths reach lower and higher frequencies with spread, including the measured limit just below Nyquist.
