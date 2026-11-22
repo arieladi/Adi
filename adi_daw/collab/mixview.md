@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 pinned Realtime Average
+
+The Spectrum trace menu offers Realtime Average for the primary and pinned tracks. It uses the broker's existing one-second linear-magnitude average and the current prepared-rate Overview FFT profile. Switching between Realtime and Realtime Average retains the view's own taps and plans. The dedicated 1 s Average page keeps its 1,024-point view, and Compare keeps any held reference.
+
+The missing trace choice failed first. All 422 Mix Functions checks now pass. They cover the first-hop coefficient, both plotted averaged peaks, physical tap retention without observer leases, unchanged-frame counters, raw restoration, the dedicated page and Compare Hold. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed all three changed units. Clang reported zero diagnostics in both implementation units.
+
+Release ZIP SHA-256 `11b6218ef2725fbce5dbd4ee9eb7f9879cbf226d2df423bcbd32e60698031b83`. EXE SHA-256 `12ca3cf801fa73a9d0f79289e03220247b95d58fb1b2e99af7bb0edf7b04301e`. The brief covers the timed response, Freeze, seek and held Compare. Timed CPU still waits for the quiet window.
+
+PR requested — `mixview/mx21-pinned-spectrum-realtime-average-lands-after-2026-12-03` at `7e4af735825d175fb62488cf0bbd839f2650050c`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 Extended logarithmic display grid
 
 Dense Extended traces use up to 1,024 logarithmic cells. Each occupied cell keeps its strongest displayed bin. Interior empty cells interpolate between measured frequencies and both ends stop at the measured limits. Sparse profiles keep their direct path. The grid is display-only and reused with each view's existing immutable publication.
