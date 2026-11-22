@@ -225,6 +225,15 @@ std::map<std::int64_t, IndividualSendTap> readIndividualSendTaps(const SQLite::D
     return result;
 }
 
+void requireNewSendSourceTrack(const SQLite::Database& db, std::int64_t source) {
+    SQLite::Statement track(db, "SELECT kind FROM tracks WHERE id=?");
+    track.bind(1, source);
+    if (!track.executeStep()) throw std::runtime_error("send source track missing");
+    const auto kind = track.getColumn(0).getString();
+    if (kind == "master") throw std::runtime_error("Main cannot be the source of a send");
+    if (kind == "vca") throw std::runtime_error("a VCA track cannot be the source of a send");
+}
+
 bool allowedSendToGroupedReturn(const SQLite::Database& db, std::int64_t source,
                                 std::int64_t destination, std::optional<std::int64_t> movedTrack,
                                 std::optional<std::int64_t> newParent) {
@@ -350,7 +359,8 @@ PreparedReturnSend prepareSendToReturn(Store& store,std::int64_t routingId,std::
     try {
         if(store.readOnly() || routingId<=0 || sourceTrack<=0)throw std::runtime_error("invalid new send or read-only project");
         auto& db=store.db();std::optional<SQLite::Transaction> transaction;if(sqlite3_get_autocommit(db.getHandle())!=0)transaction.emplace(db,SQLite::TransactionBehavior::DEFERRED);
-        target(db,returnTrack);SQLite::Statement source(db,"SELECT 1 FROM tracks WHERE id=?");source.bind(1,sourceTrack);if(!source.executeStep())throw std::runtime_error("send source track missing");
+        target(db, returnTrack);
+        requireNewSendSourceTrack(db, sourceTrack);
         if (!allowedSendToGroupedReturn(db, sourceTrack, returnTrack))
             throw std::runtime_error("the source must be inside the group that owns this return");
         const auto tap=readReturnSendTaps(store).at(returnTrack);result.sourceFile=fileIdentity(db);result.options.expectHead.emplace(OpJournal(store).headSeq());

@@ -730,6 +730,8 @@ std::optional<Payload> recordedRoutingInverse(const OpContext& c, std::string_vi
 
 bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        if (!c.replay && p.at("kind") == "send" && p.at("srcKind") == "track")
+            requireNewSendSourceTrack(c.db, detail::signedInteger(p.at("src")));
         if (p.at("kind") == "send" && p.at("srcKind") == "track" && p.at("dstKind") == "track" &&
             !allowedSendToGroupedReturn(c.db, p.at("src").get<std::int64_t>(), p.at("dst").get<std::int64_t>())) {
             err = "the source must be inside the group that owns this return";
