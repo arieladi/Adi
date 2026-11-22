@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/vorbis_writer.hpp"
+#include "adi/audio/pcm_stream.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
@@ -15,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <span>
@@ -503,6 +506,57 @@ void multichannelStem() {
     bool exact=true;
     for(int i=0;i<866;++i)for(int c=0;c<6;++c) exact=exact && decoded[static_cast<std::size_t>(6*i+c)]==source(137+i,c);
     check(exact,"every multichannel stem sample survives planar capture and interleaving");
+}
+void vorbisDelivery() {
+    Fixture f;
+    auto job = f.job("vorbis");
+    job.encoding.container = ExportContainer::OggVorbis;
+    job.session.precision = Precision::Float64;
+    job.endSample = job.beginSample + 4201;
+    if (!vorbisExportAvailable()) {
+        const auto missing = renderWav(job, {});
+        check(missing.state == JobState::Failed && missing.error.find("pinned Xiph") != std::string::npos &&
+              f.noStage(), "builds without the Xiph libraries explain Vorbis refusal before staging");
+        return;
+    }
+    const auto first = renderWav(job, {});
+    check(first.state == JobState::Completed && first.output.extension() == ".ogg" &&
+          first.framesWritten == 4201, first.error.empty() ? "Vorbis publishes at its native suffix" : first.error.c_str());
+    if (first.state != JobState::Completed) return;
+    auto pcm = audio::openPcmStream(first.output);
+    check(pcm.ready() && pcm.stream->info().format == audio::SourceFormat::Ogg &&
+          pcm.stream->info().sampleRate == 48000 && pcm.stream->info().channels == 2 &&
+          pcm.stream->info().frames == 4201, "Ogg reports exactly the requested stereo duration");
+    const auto readFile = [](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    job.nameTemplate = "vorbis-repartitioned";
+    job.session.maxFrames = 103;
+    job.encoding.dither = audio::WavDither::None;
+    job.encoding.ditherSeed = 7282;
+    const auto again = renderWav(job, {});
+    check(again.state == JobState::Completed && readFile(first.output) == readFile(again.output),
+          "Vorbis bytes ignore PCM dither and remain stable across graph block partitions");
+    job.nameTemplate = "vorbis-low-quality";
+    job.encoding.vorbisQuality = 0.0f;
+    const auto low = renderWav(job, {});
+    check(low.state == JobState::Completed && readFile(first.output) != readFile(low.output),
+          "the VBR quality choice reaches the Vorbis encoder");
+    job.nameTemplate = "vorbis-mono";
+    job.session.channels = 1;
+    job.session.sampleRate = 44100;
+    job.endSample = job.beginSample + 719;
+    const auto mono = renderWav(job, {});
+    check(mono.state == JobState::Completed && mono.framesWritten == 719 && f.noStage(),
+          mono.error.empty() ? "short mono renders keep the actual duration" : mono.error.c_str());
+    job.encoding.vorbisQuality = 1.1f;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "unknown VBR quality is refused before staging");
+    job.encoding.vorbisQuality = 0.5f;
+    job.normalization.mode = NormalizeMode::Peak;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "Vorbis normalization waits for decoded-output measurement");
 }
 void regionStems() {
     Fixture f;
@@ -1474,7 +1528,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); vorbisDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

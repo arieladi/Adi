@@ -27,12 +27,15 @@ struct Source {
     std::int64_t trackId = 0; // zero selects the project's master at render start
     engine::OfflineTap tap = engine::OfflineTap::PostFader;
 };
+enum class ExportContainer { Wav, OggVorbis };
 struct Encoding {
     audio::WavFormat format = audio::WavFormat::Pcm24;
     audio::WavDither dither = audio::WavDither::Triangular;
     // Mixed with the stable enqueue ordinal. Retry is reproducible; different
     // jobs get separate streams. Float32 ignores dither without adding noise.
     std::uint64_t ditherSeed = 0;
+    ExportContainer container = ExportContainer::Wav;
+    float vorbisQuality = 0.5f;
 };
 struct NiStem {
     Source source;
