@@ -166,6 +166,10 @@ void metadataAndMapping() {
         if(p)check(d->getParam(p->id).real==p->defaultValue.real,"default getter matches descriptor bits");
     }
     check(identity&&metadata,"stable ordered IDs and explicit band/section identity");
+    // The neutral sleep proof compares these exactly; FMA contraction once made
+    // Gain Scale's default 100.000008 on arm64.
+    check(d->getParam("3").real==0&&d->getParam("4").real==100&&d->getParam("8").real==0,
+          "neutral global defaults survive the normalized round trip exactly");
     check(d->paramAt(10)->name=="Band 1 Shape"&&d->paramAt(724)->name=="Band 24 Fractional Slope"&&
           d->paramAt(729)->name=="Spectral Resolution","flat selectors retain unambiguous authored band names");
     check(!d->paramAt(-1)&&!d->paramAt(730)&&!d->getParam("730").hasReal,"analyzer control excluded");

@@ -239,11 +239,11 @@ public:
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
     [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
-    [[nodiscard]] virtual bool canProcessOnWorker() const noexcept { return false; }
     [[nodiscard]] virtual bool needsBypassTransition(std::int32_t /*configuredLatency*/) noexcept { return false; }
     virtual void processBypassTransition(const engine::NodeIo&) noexcept {}
     /// Actual graph suspension transition, on the same serialized audio owner.
     virtual void didSuspend() noexcept {}
+    [[nodiscard]] virtual bool canProcessOnWorker() const noexcept { return false; }
 
     /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
     /// default: the device is handed float in every graph, converted either

@@ -1226,9 +1226,12 @@ void focusMatchWindows() {
     std::fill(b.binsDbfs.begin(), b.binsDbfs.end(), adi::dsp::kDbFloor);
     check(!focusReadMatch(a, b), "no measurable overlap leaves Match empty");
 }
+// File scope: GCC refuses a local variable, even a static constexpr one, in
+// the lambda's default argument below ([dcl.fct.default]).
+constexpr std::uint64_t focusLagRevision = 19;
 void focusLagPreviewRequests() {
     using namespace adi::ui;
-    static constexpr std::uint64_t revision = 19;
+    constexpr std::uint64_t revision = focusLagRevision;
     SharedAnalysis::Result main, target;
     main.request.track = 81;
     main.generation = 42;
@@ -1246,7 +1249,7 @@ void focusLagPreviewRequests() {
     const std::array heads{SharedAnalysis::Lease::SourcePosition{42, 11200},
                            SharedAnalysis::Lease::SourcePosition{43, 9120}};
     const auto plan = [&](const SharedAnalysis::Result *a, const SharedAnalysis::Result *b,
-                          std::int64_t heard = 15400, std::uint64_t settled = revision) {
+                          std::int64_t heard = 15400, std::uint64_t settled = focusLagRevision) {
         return focusLagPreviewRequest({a, b}, heads, settled, heard);
     };
 
@@ -1323,7 +1326,7 @@ void focusLagPreviewRequests() {
     invalid.sampleRate = 44100.;
     check(!plan(&main, &invalid), "different device rates are refused");
 
-    for (const auto pair : {std::pair{44100., 882}, std::pair{96000., 1920}, std::pair{192000., 2016}}) {
+    for (const auto &pair : {std::pair{44100., 882}, std::pair{96000., 1920}, std::pair{192000., 2016}}) {
         auto fastMain = main, fastTarget = target;
         fastMain.sampleRate = fastTarget.sampleRate = pair.first;
         const auto faster = plan(&fastMain, &fastTarget);
