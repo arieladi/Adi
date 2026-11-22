@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Procedural Noise for the built-in ADI-Shaper
+
+`clones/shaper-noise-port` at `5e9b063d` — Port calibrated procedural Noise to ADI-Shaper. **Lands after 3 December.** IDs 536–625 hold the three bands and their controls. The original 415 IDs keep their meanings. A sparse project recalls with Noise off, including when loaded over a running instance with Noise enabled. The stage uses ADI’s procedural pink source.
+
+The white generator runs at 44.1 kHz with interpolation. At 48 kHz, 2,097,152 stereo frames gave RMS 0.022350 and 0.022321, L/R correlation 0.000676, and 95 percent of energy below 21,234.375 Hz on both channels. The 256- and 2,048-frame captures matched byte for byte. The public suite also checks exact mono agreement, filtering, pitch, gain, wet-only behavior and independent seed state. The registered native and edited Pd paths, DSP and state suites passed under MSVC /W4 /WX at both Pd precisions.
+
+On stereo kick and bass, five alternating wet/bypassed pairs of 2,048 callbacks used the 505-control registered device. White's median callback was 22.1 µs at 256 frames and 174.7 µs at 2,048. Pink took 36.0 and 244.3 µs. The incremental cost over bypass was 0.345/0.317 percent of one audio deadline for White and 0.576/0.481 percent for pink. Latency remained zero. The respective p99s were 36.9/1,409.0 µs and 60.6/790.4 µs during concurrent activity.
+
+PR requested
+
 ## 22 November 2026 — Measured stereo cutoff offset for Filter
 
 Filter accounted for 12 of the 39 preset regressions that reversed on exactly one stage removal. A separate impulse experiment found a control missing from the seven-stage device. With identical input on both channels and a single low-pass band, the reference distributes its cutoff differently to L and R. For a bipolar setting x from −1 to +1, the left offset is 60x|x| semitones and the right offset has the opposite sign. Each cutoff stays within the original ten-octave frequency range, about 20.6 Hz to 21.1 kHz. The default is centered.
