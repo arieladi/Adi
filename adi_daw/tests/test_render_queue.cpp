@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -587,6 +588,88 @@ void flacExports() {
     check(missing.state == JobState::Failed && missing.error.find("libFLAC") != std::string::npos && f.noStage(),
           "source-free builds explain FLAC unavailability before staging");
 #endif
+}
+
+std::uint32_t readAiffBigEndian(std::istream& file, unsigned bytes) {
+    std::uint32_t value = 0;
+    for (unsigned i = 0; i < bytes; ++i) {
+        const auto next = file.get();
+        if (next == std::char_traits<char>::eof()) throw std::runtime_error("unexpected AIFF EOF");
+        value = (value << 8U) | static_cast<std::uint32_t>(next);
+    }
+    return value;
+}
+
+bool equivalentAiff(const fs::path& path, std::span<const float> samples,
+                    unsigned channels, audio::WavFormat format) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file || samples.empty()) return false;
+    const auto readInteger = [&](unsigned n) { return readAiffBigEndian(file, n); };
+    const auto fourcc = [&](std::string_view id) {
+        char text[4]{};
+        return bool(file.read(text, 4)) && std::string_view(text, 4) == id;
+    };
+    const bool floating = format == audio::WavFormat::Float32;
+    const unsigned bytes = floating ? 4U : (format == audio::WavFormat::Pcm24 ? 3U : 2U);
+    const auto dataBytes = samples.size() * bytes;
+    const bool padding = (dataBytes & 1U) != 0;
+    if (!fourcc("FORM") || readInteger(4) != dataBytes + (floating ? 64U : 46U) + padding ||
+        !fourcc(floating ? "AIFC" : "AIFF")) return false;
+    if (floating && (!fourcc("FVER") || readInteger(4) != 4 || readInteger(4) != 0xa2805140))
+        return false;
+    if (!fourcc("COMM") || readInteger(4) != (floating ? 24U : 18U) ||
+        readInteger(2) != channels || readInteger(4) != samples.size() / channels ||
+        readInteger(2) != bytes * 8 || readInteger(2) != 0x400e ||
+        readInteger(4) != 0xbb800000 || readInteger(4) != 0) return false; // ext80 48000 Hz
+    if (floating && (!fourcc("fl32") || readInteger(2) != 0)) return false;
+    if (!fourcc("SSND") || readInteger(4) != dataBytes + 8 ||
+        readInteger(4) != 0 || readInteger(4) != 0) return false;
+    const auto mask = floating ? 0xffffffffU : ((std::uint32_t{1} << (bytes * 8)) - 1);
+    for (float sample : samples) {
+        const auto expected = floating ? std::bit_cast<std::uint32_t>(sample) :
+            static_cast<std::uint32_t>(static_cast<std::int32_t>(std::ldexp(sample, static_cast<int>(bytes * 8 - 1)))) & mask;
+        if (readInteger(bytes) != expected) return false;
+    }
+    return (!padding || readInteger(1) == 0) && file.peek() == std::char_traits<char>::eof();
+}
+
+void aiffExports() {
+    Fixture f;
+    auto j = f.job("aiff");
+    j.encoding.container = ExportContainer::Aiff;
+    j.encoding.dither = audio::WavDither::Shaped3;
+    j.encoding.ditherSeed = 1234;
+    j.endSample = j.beginSample + 4201;
+    for (const auto format : {audio::WavFormat::Pcm16, audio::WavFormat::Pcm24, audio::WavFormat::Float32}) {
+        j.encoding.format = format;
+        j.nameTemplate = "aiff-" + std::to_string(static_cast<int>(format));
+        auto wave = j;
+        wave.encoding.container = ExportContainer::Wav;
+        const auto expected = read(renderWav(wave, {}), 4201, 48000, format);
+        const auto result = renderWav(j, {});
+        check(result.state == JobState::Completed && result.output.extension() == ".aiff" && f.noStage(),
+              result.error.empty() ? "AIFF publishes the resolved file" : result.error.c_str());
+        check(expected.size() == 8402 && equivalentAiff(result.output, expected, 2, format),
+              "AIFF decodes to the exact same seed-quantized WAV PCM or Float32 bits");
+    }
+    j.nameTemplate = "mono-odd";
+    j.encoding.format = audio::WavFormat::Pcm24;
+    j.session.channels = 1;
+    j.endSample = j.beginSample + 5;
+    auto wave = j;
+    wave.encoding.container = ExportContainer::Wav;
+    const auto mono = renderWav(wave, {});
+    audio::WavReader monoReference(mono.output);
+    std::vector<float> expected(5);
+    const auto odd = renderWav(j, {});
+    check(monoReference.channels() == 1 && monoReference.read(expected.data(), 5) == 5 &&
+          odd.state == JobState::Completed && equivalentAiff(odd.output, expected, 1, j.encoding.format),
+          "odd-length mono PCM24 uses one padding byte outside SSND");
+    j.exactWavFilename = "literal.wav";
+    check(renderWav(j, {}).state == JobState::Failed && f.noStage(), "AIFF rejects exact-WAV mode");
+    j.exactWavFilename.reset();
+    j.encoding.format = static_cast<audio::WavFormat>(99);
+    check(renderWav(j, {}).state == JobState::Failed && f.noStage(), "AIFF rejects unsupported encodings");
 }
 
 void regionStems() {
@@ -1579,7 +1662,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

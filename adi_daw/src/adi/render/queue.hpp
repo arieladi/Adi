@@ -27,7 +27,7 @@ struct Source {
     std::int64_t trackId = 0; // zero selects the project's master at render start
     engine::OfflineTap tap = engine::OfflineTap::PostFader;
 };
-enum class ExportContainer { Wav, Flac };
+enum class ExportContainer { Wav, Flac, Aiff };
 struct Encoding {
     audio::WavFormat format = audio::WavFormat::Pcm24;
     audio::WavDither dither = audio::WavDither::Triangular;

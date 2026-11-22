@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/render/queue.hpp"
+#include "adi/render/aiff_writer.hpp"
 #include "adi/render/flac_writer.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
@@ -107,6 +108,19 @@ std::string portableName(std::string name) {
     return name;
 }
 
+const char* containerName(ExportContainer type) {
+    switch (type) {
+    case ExportContainer::Wav: return "wav";
+    case ExportContainer::Flac: return "flac";
+    case ExportContainer::Aiff: return "aiff";
+    }
+    throw std::invalid_argument("unknown export container");
+}
+
+std::string containerSuffix(ExportContainer type) {
+    return std::string(".") + containerName(type);
+}
+
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
     if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
@@ -126,8 +140,9 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export sample encoding");
     if (!audio::validDither(j.encoding.dither))
         throw std::invalid_argument("unsupported export dither");
-    if (j.encoding.container != ExportContainer::Wav && j.encoding.container != ExportContainer::Flac)
-        throw std::invalid_argument("unknown export container");
+    (void)containerName(j.encoding.container);
+    if (j.encoding.container == ExportContainer::Aiff && (j.niStems || j.exactWavFilename))
+        throw std::invalid_argument("AIFF export requires a template filename and an ordinary render source");
     if (j.encoding.container == ExportContainer::Flac) {
         if (j.niStems || j.exactWavFilename || j.session.channels > 8 || j.encoding.format == audio::WavFormat::Float32)
             throw std::invalid_argument("FLAC export requires PCM16 or PCM24, 1..8 channels and a template name");
@@ -508,8 +523,8 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 job.session.sampleRate, job.regionId, names};
             snapshot.commit();
         }
-        const bool flac = job.encoding.container == ExportContainer::Flac;
-        const char* extension = flac ? ".flac" : ".wav";
+        const auto container = job.encoding.container;
+        const auto extension = containerSuffix(container);
         const auto filename = job.exactWavFilename ? *job.exactWavFilename :
             resolveName(job.nameTemplate, names) + extension;
         result.output = job.directory / media::pathFromUtf8(filename);
@@ -624,10 +639,12 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         });
         else writer->close();
         cancellation(control);
-        const auto deliver = flac ? stage.path / "render.flac" : staged;
-        if (flac) encodeStagedFlac(staged, deliver, [&] {
+        const auto deliver = stage.path / ("render" + extension);
+        const auto serviceEncoding = [&] {
             cancellation(control); if (control.serviceHost) control.serviceHost(); cancellation(control);
-        });
+        };
+        if (container == ExportContainer::Flac) encodeStagedFlac(staged, deliver, serviceEncoding);
+        if (container == ExportContainer::Aiff) encodeStagedAiff(staged, deliver, serviceEncoding);
         cancellation(control);
         detail::publishVerifiedOutput(deliver, result, control, "export destination already exists");
     } catch (const Cancelled&) {
@@ -736,7 +753,7 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"delay_compensation", job.session.delayCompensation},
                 {"external_tempo_bpm", optionalNumber(job.session.externalTempoBpm)},
                 {"container", job.niStems ? "ni_stems_mp4" :
-                    (job.encoding.container == ExportContainer::Flac ? "flac" : "wav")},
+                    containerName(job.encoding.container)},
                 {"wav_encoding", job.encoding.format == audio::WavFormat::Float32 ? "float32" :
                     (job.encoding.format == audio::WavFormat::Pcm16 ? "pcm16" : "pcm24")},
                 {"dither", audio::ditherName(job.encoding.dither)},
