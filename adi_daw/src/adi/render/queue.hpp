@@ -15,9 +15,9 @@
 namespace adi::render {
 using JobId = std::uint64_t;
 enum class JobState { Pending, Running, Completed, Failed, Cancelled };
-// Single-delivery policies. Replace needs a separate identity-bound opt-in
-// contract and is not available through this API yet.
-enum class Collision { Fail, Increment };
+// Single-delivery policies. Replace binds the requested ordinary file at
+// preflight; an absent endpoint uses atomic no-clobber publication instead.
+enum class Collision { Fail, Increment, Replace };
 
 // ADR-0071/0205: application job state, never project operations. This first
 // runner exports direct wet sources as WAV, or NI Stems through niStems. Noise
@@ -58,6 +58,9 @@ struct Job {
     std::optional<NiStems> niStems = {};
     Normalization normalization{};
     Collision collision = Collision::Fail;
+    // The complete literal WAV filename chosen by the single-export save
+    // dialog. It includes .wav, bypasses templates, and uses Fail or Replace.
+    std::optional<std::string> exactWavFilename;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
@@ -105,6 +108,12 @@ struct MediaVerification {
     bool startComplete = false;
     bool publicationVerified = false;
 };
+struct ReplacementBinding {
+    std::filesystem::path target;
+    std::optional<media::FileIdentity> existing{};
+    std::string blake3; // Detect in-place edits as well as changed native identity.
+    std::vector<std::string> foldedNames; // Exact spellings in the colliding set.
+};
 struct Result {
     JobState state = JobState::Pending;
     std::filesystem::path output;
@@ -126,6 +135,9 @@ struct Result {
     // A private staging directory could not be completely removed. Delivery
     // already committed, if any, and the primary state and error still stand.
     std::optional<StageCleanupFailure> stageCleanup{};
+    // Present only for explicit Replace, including an absent preflight target.
+    // This is a run-local observation, not a reservation or reusable permission.
+    std::optional<ReplacementBinding> replacement{};
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct RunMember {
@@ -179,6 +191,10 @@ struct Control {
 void validateNiStems(const Job&);
 namespace detail {
 struct Cancelled {};
+// NI binds its final delivery after Main metadata/name resolution, before any
+// Main audio is processed. Ordinary callers use renderWav without this hook.
+Result renderWavPrepared(Job, engine::DeviceLoader, Control, JobId, std::uint64_t,
+                        const std::function<void(const Result&)>&);
 void discardStage(std::filesystem::path&&, std::optional<StageCleanupFailure>&) noexcept;
 void retainIntermediateMedia(Result& delivery, Result& intermediate);
 void publishVerifiedOutput(const std::filesystem::path& stage, Result&, const Control&,
@@ -186,12 +202,15 @@ void publishVerifiedOutput(const std::filesystem::path& stage, Result&, const Co
 // Select once before rendering/encoding the final delivery. Increment inserts
 // " (2)", " (3)", ... before the complete suffix. Never renumbers at publication.
 // Compare complete filenames with pinned Unicode composition/case folding,
-// plus native lookup for aliases. One directory inventory per preflight.
+// plus native lookup for aliases. Fail/Increment use one candidate inventory.
 // The caller sets result.output to its original complete filename first.
+// Replace separately binds the requested ordinary file and collision spellings;
+// absent targets retain no-clobber behavior, fold-only alternate names refuse.
 void prepareOutput(Result&, Collision, const char* suffix, const char* collisionMessage);
 // Shared WAV/NI commit point. Allocate warning storage before publication;
-// recheck folded collisions first; a later race is covered only by native
-// no-clobber semantics, not a cross-process folded-name reservation.
+// recheck folded collisions first. Replace also checks its preflight identity
+// and contents under the exclusive lease. No cross-process namespace CAS or
+// folded-name reservation is claimed; see ENGINE-EXPORT-QUEUE.md.
 // nothing after successful publication can throw and turn it into Failed.
 void publishOutput(const std::filesystem::path& stage, Result&, media::PublishHooks,
                    const char* collisionMessage);

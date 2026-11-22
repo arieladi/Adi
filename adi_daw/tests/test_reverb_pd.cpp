@@ -109,6 +109,9 @@ void run() {
     check(latency.latencySamples() == 0, "Reverb reports zero intrinsic latency");
     check(engine.sendParameter(27, 0), "Stereo parameter routes to external");
     check(engine.sendParameter(31, 100), "Dry/Wet routes to external");
+    // The far-bin floor below is for the plain tank: Live's default Spin and
+    // Chorus (DEV-22) modulate the delays, whose interpolation is not at 1e-7.
+    check(engine.sendParameter(5, 0) && engine.sendParameter(17, 0), "Spin and Chorus off for the floor");
     std::array<float, 64> l{}, r{}, ol{}, orr{};
     std::array<const float *, 2> in{l.data(), r.data()};
     std::array<float *, 2> out{ol.data(), orr.data()};

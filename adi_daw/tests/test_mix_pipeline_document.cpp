@@ -85,5 +85,11 @@ int main(){
         check(offline->latencySamples()>limiterLatency&&offline->getParam("7").normalized==online,
               "export quality is prepared before audio and preserves online control");offline->release();
     }
+    check(edit(*doc,shown,"0",.1),"Limiter input edit has a history title");
+    const auto limiterTitle=History(doc->store()).nextUndo()->label;
+    check(edit(*doc,shown,std::to_string(21+mix::clip::input),.6),"Clip input edit has a history title");
+    const auto clipTitle=History(doc->store()).nextUndo()->label;
+    check(!limiterTitle.empty() && limiterTitle!=clipTitle && clipTitle.find("Clip")!=std::string::npos,
+        "Clip and Limiter input gains have distinct page-aware Undo labels");
     doc->release();std::printf("pipeline document: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }

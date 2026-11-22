@@ -33,7 +33,7 @@ void LiveDelay::prepare(double sr) {
     rate_ = std::isfinite(sr) && sr > 0 ? sr : 48000;
     for (auto &l : lanes_) {
         l.ring.assign(static_cast<std::size_t>(rate_ * 21) + 8, 0);
-        l.current = l.old = l.target = l.low = l.high = 0;
+        l.current = l.old = l.target = l.hp1 = l.hp2 = l.lp1 = l.lp2 = 0;
         l.fade = 1;
     }
     write_ = 0;
@@ -169,11 +169,19 @@ void LiveDelay::process(const float *inL, const float *inR, float *outL, float *
                 const double center = p[Freq] * std::exp2(4 * p[LfoFilter] / 100 * lfo);
                 const double lo = std::clamp(center * std::exp2(-p[Width] / 2), 10., rate_ * 0.45);
                 const double hi = std::clamp(center * std::exp2(p[Width] / 2), lo, rate_ * 0.49);
-                lane.low += (value - lane.low) * (1 - std::exp(-2 * std::numbers::pi * lo / rate_));
-                const double highpassed = value - lane.low;
-                lane.high +=
-                    (highpassed - lane.high) * (1 - std::exp(-2 * std::numbers::pi * hi / rate_));
-                value = lane.high;
+                // DEV-22: 12 dB/oct each side, as Live 12.4's Delay measures (at
+                // 71 Hz its loop filter turns the phase +79 degrees; one pole
+                // gives +41): a Butterworth high-pass then low-pass, TPT SVFs.
+                const auto svf = [&](double x, double fc, double &i1, double &i2, bool highpass) {
+                    constexpr double k = std::numbers::sqrt2;
+                    const double g = std::tan(std::numbers::pi * fc / rate_), a1 = 1 / (1 + g * (g + k)),
+                                 a2 = g * a1, a3 = g * a2;
+                    const double v3 = x - i2, v1 = a1 * i1 + a2 * v3, v2 = i2 + a2 * i1 + a3 * v3;
+                    i1 = 2 * v1 - i1;
+                    i2 = 2 * v2 - i2;
+                    return highpass ? x - k * v1 - v2 : v2;
+                };
+                value = svf(svf(value, lo, lane.hp1, lane.hp2, true), hi, lane.lp1, lane.lp2, false);
             }
             lane.ring[write_] = static_cast<float>(value);
             const double mix = p[Mix] / 100;

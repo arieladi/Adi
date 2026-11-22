@@ -35,6 +35,12 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     // Other keys go on to the device, so the left and right arrows still move between devices.
     bool keyPressed(const juce::KeyPress &) override;
     bool returnToDefault();
+    // Live's parameter context menu (manual 25.4; AU-04): Re-Enable Automation while the parameter's
+    // lane is overridden. A right-click on the knob or the control's labels opens it.
+    void mouseDown(const juce::MouseEvent &) override;
+    void showMenu();
+    // The device's plug-in format, which names its parameters' lanes (`engine::automationParamRef`).
+    std::string format;
     // Live's device column at 100 %: the name, a knob, the value under it.
     static constexpr int kWidth = 58, kHeight = 54;
     std::int64_t device;
@@ -50,6 +56,7 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     const panel::Record *record = nullptr;
     double defaultValue = 0;
     juce::Label name, value;
+    int presentedMenuId_ = 0;
     std::int32_t menuSteps_ = 0;
     std::vector<std::string> menuLabels_;
 };
@@ -224,7 +231,11 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     bool editExpected(const DevicePanelData &, const std::string &, engine::ParamEventKind, double);
     bool validExpected(const DevicePanelData &) const;
     bool action(const std::string &, Payload);
+    // Native functions remove with Undo; ordinary plug-ins retain bypass.
+    bool setEnabledExpected(const DevicePanelData &, bool);
     juce::PopupMenu functionMenu();
+    // Explicit target and lifetime for another visible surface, without selecting its channel.
+    juce::PopupMenu functionMenuFor(std::int64_t, std::function<bool()> ownerCurrent);
     bool hasFunction(mix::Function) const;
     bool dropFunction(DevicePanelView &, std::optional<std::int64_t> before);
     void cancelFunctionInteractions();
@@ -265,6 +276,8 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
                        const engine::DeviceRuntimeToken &, std::uint64_t)> guardedGesture;
     std::function<bool(std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t)> targetCurrent;
     std::function<bool(const std::string &, Payload)> submit;
+    std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;
+    std::function<bool(const DevicePanelData&,const DeviceKeyChoice&)> setKey;
     std::function<mix::Availability(mix::Function)> functionAvailability;
     std::function<bool(mix::Function, std::int64_t track)> addFunction;
     std::function<bool(const DevicePanelData &, std::int64_t track,

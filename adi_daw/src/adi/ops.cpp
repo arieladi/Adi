@@ -9,6 +9,7 @@
 
 #include "adi/history_compaction.hpp"
 #include "adi/history_roots.hpp"
+#include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -18,8 +19,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <regex>
+#include <set>
 #include <stdexcept>
+#include <utility>
 
 namespace adi {
 
@@ -54,6 +58,51 @@ std::string_view typeName(FieldType t) {
     return "?";
 }
 
+
+// The Window already submits an Ungroup as parent moves, optional ordering
+// writes, then deletion of the empty group. Capture every peer's destination
+// on the first move so its send pruning sees the full forest. Keep all
+// submitted operations and sequence IDs in the journal.
+std::optional<Payload> captureUngroupPeers(SQLite::Database& db, std::span<const OpRequest> ops) {
+    if (ops.size() < 3 || ops.front().opType != "track.setParent" ||
+        ops[1].opType != "track.setParent" || ops.back().opType != "track.delete")
+        return std::nullopt;
+    const auto groupId = detail::signedInteger(ops.back().payload.at("id"));
+    SQLite::Statement group(db, "SELECT parent_id FROM tracks WHERE id=? AND kind='group'");
+    group.bind(1, groupId);
+    if (!group.executeStep()) return std::nullopt;
+    const auto parentColumn = group.getColumn(0);
+    const auto parent = parentColumn.isNull() ? Payload(nullptr) : Payload(parentColumn.getInt64());
+
+    std::set<std::int64_t> lifted;
+    Payload companions = Payload::array();
+    std::size_t next = 0;
+    for (; next + 1 < ops.size() && ops[next].opType == "track.setParent"; ++next) {
+        const auto& op = ops[next];
+        const auto& payload = op.payload;
+        if (op.runtimeProof || payload.contains("companions") || payload.contains("groupedSends"))
+            return std::nullopt;
+        const auto id = detail::signedInteger(payload.at("id"));
+        const auto destination = payload.contains("parent") ? payload.at("parent") : Payload(nullptr);
+        if (destination != parent || !lifted.insert(id).second)
+            return std::nullopt;
+        if (next != 0) companions.push_back({{"id", id}, {"parent", destination}});
+    }
+    for (; next + 1 < ops.size(); ++next)
+        if (ops[next].opType != "track.reorder" || ops[next].runtimeProof)
+            return std::nullopt;
+    if (ops.back().runtimeProof) return std::nullopt;
+
+    SQLite::Statement children(db, "SELECT id FROM tracks WHERE parent_id=?");
+    children.bind(1, groupId);
+    while (children.executeStep())
+        if (lifted.erase(children.getColumn(0).getInt64()) == 0)
+            return std::nullopt;
+    if (!lifted.empty()) return std::nullopt;
+    auto first = ops.front().payload;
+    first["companions"] = std::move(companions);
+    return first;
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -451,8 +500,33 @@ CommitResult OpJournal::commitCaptured(std::span<const OpRequest> reqs, const Ap
     return commitImpl(reqs, options, &source, &inputs);
 }
 
+CommitResult OpJournal::commitGrouped(std::span<const OpRequest> reqs,
+    std::span<const std::size_t> groupEnds, const CommitOptions& options) {
+    CommitResult result;
+    if (groupEnds.empty() || groupEnds.back() != reqs.size()) {
+        result.error = "Undo groups must cover the complete batch";
+        return result;
+    }
+    std::size_t previous = 0;
+    for (const auto end : groupEnds) {
+        if (end <= previous || end > reqs.size()) {
+            result.error = "Undo group ends must increase within the batch";
+            return result;
+        }
+        previous = end;
+    }
+    for (const auto& request : reqs) {
+        if (request.capturedTransaction) {
+            result.error = "sealed captured packets need their own transaction admission";
+            return result;
+        }
+    }
+    return commitImpl(reqs, options, nullptr, nullptr, groupEnds);
+}
+
 CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const CommitOptions& options,
-    const AppliedSource* expectedSource, const OpTransactionInputs* inputs) {
+    const AppliedSource* expectedSource, const OpTransactionInputs* inputs,
+    std::span<const std::size_t> groupEnds) {
     CommitResult r;
     if (detail::appliedDispatchActive(store_)) { r.error = "reentrant journal commit during applied-batch delivery"; return r; }
     if (!gesture::detail::mutationAllowed(store_, r.error)) return r;
@@ -478,6 +552,16 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             return r;
         }
         descs.push_back(d);
+    }
+    std::size_t first = 0;
+    for (const auto end : groupEnds) {
+        bool undoable = false;
+        for (; first < end; ++first)
+            undoable = undoable || (!descs[first]->ephemeral && descs[first]->buildInverse);
+        if (!undoable) {
+            r.error = "every Undo group needs an undoable operation";
+            return r;
+        }
     }
 
     auto& db = store_.db();
@@ -509,9 +593,21 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
         }
         if (reqs.empty()) { r.ok = true; return r; }
 
-        const std::int64_t txnId =
-            db.execAndGet("SELECT IFNULL(MAX(txn_id), 0) + 1 FROM ops").getInt64();
-        r.txnId = txnId;
+        const auto lastTxn = db.execAndGet("SELECT IFNULL(MAX(txn_id), 0) FROM ops").getInt64();
+        const auto groups = groupEnds.empty() ? std::size_t{1} : groupEnds.size();
+        if (lastTxn < 0 || std::cmp_greater(groups, std::numeric_limits<std::int64_t>::max() - lastTxn)) {
+            r.error = "journal transaction IDs are exhausted";
+            return r;
+        }
+        const auto firstTxn = lastTxn + 1;
+        auto txnId = firstTxn;
+        std::vector<std::int64_t> seqs;
+        seqs.reserve(reqs.size());
+        std::vector<std::int64_t> groupTxnIds;
+        if (!groupEnds.empty()) {
+            groupTxnIds.reserve(groups);
+            groupTxnIds.push_back(firstTxn);
+        }
         const std::int64_t ts = nowUtcMicros();
 
         // Where we are in the tree. New ops hang off this.
@@ -538,12 +634,10 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
         // SPEC §8.2: "Undoing and then doing something new does not destroy the
         // branch you left; it forks."
         //
-        // A fork is detectable here and nowhere else: if the head already has a
-        // non-ephemeral child, we are committing from a position that is not the
-        // tip, which means an undo happened and this work diverges from what
-        // followed. Save the abandoned line as a branch BEFORE writing, or it
-        // becomes unreachable the moment the new op takes its place in redo.
-        {
+        // An edit at a head that already has an undoable child diverts redo.
+        // Preserve the abandoned line before writing. Performance-only batches
+        // add audit rows outside the tree, so the redo line stays reachable.
+        if (std::any_of(descs.begin(), descs.end(), [](const OpDescriptor* d) { return !d->ephemeral; })) {
             SQLite::Statement kids(db,
                 "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND op_type<>'history.root' AND "
                 "  ((? IS NULL AND parent_seq IS NULL) OR parent_seq = ?) "
@@ -565,17 +659,33 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
                 }
                 SQLite::Statement mk(db,
                     "INSERT INTO op_branches(name, head_seq, created_utc, is_current, "
-                    "created_by) VALUES (?,?,?,0,'system')");
-                mk.bind(1, "forked at " + std::to_string(head ? *head : 0));
+                    "created_by) SELECT ?,?,?,0,'system' "
+                    "WHERE NOT EXISTS (SELECT 1 FROM op_branches WHERE is_current=0 AND head_seq=?)");
+                mk.bind(1, "forked at " + std::to_string(head.value_or(0)));
                 mk.bind(2, tip);
                 mk.bind(3, ts);
+                mk.bind(4, tip);
                 mk.exec();
             }
         }
 
+        std::size_t group = 0;
+        std::size_t groupStart = 0;
         for (std::size_t i = 0; i < reqs.size(); ++i) {
+            if (!groupEnds.empty() && i == groupEnds[group]) {
+                ++group;
+                groupStart = i;
+                groupTxnIds.push_back(++txnId);
+            }
             const auto& q = reqs[i];
             const auto* d = descs[i];
+            // Sealed packets keep exactly the operations previewed by their owner.
+            std::optional<Payload> ungroup;
+            if (i == groupStart && !expectedSource) {
+                const auto end = groupEnds.empty() ? reqs.size() : groupEnds[group];
+                ungroup = captureUngroupPeers(db, reqs.subspan(i, end - i));
+            }
+            const auto& payload = ungroup ? *ungroup : q.payload;
 
             // The inverse is built from the state ABOUT TO BE OVERWRITTEN, so
             // it must run before apply (OPS.md §6.1). If it cannot produce a
@@ -584,7 +694,7 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             bool haveInverse = false;
             if (d->buildInverse && !d->ephemeral) {
                 std::string err;
-                if (!d->buildInverse(ctx, q.payload, inverse, err)) {
+                if (!d->buildInverse(ctx, payload, inverse, err)) {
                     r.error = q.opType + ": cannot build inverse: " + err;
                     return r;   // Transaction dtor rolls back
                 }
@@ -592,12 +702,12 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             }
 
             std::string err;
-            if (!d->apply(ctx, q.payload, err)) {
+            if (!d->apply(ctx, payload, err)) {
                 r.error = q.opType + ": " + err;
                 return r;
             }
 
-            const auto payloadBytes = encodePayload(q.payload);
+            const auto payloadBytes = encodePayload(payload);
             std::vector<std::byte> inverseBytes;
             if (haveInverse) inverseBytes = encodePayload(inverse);
 
@@ -607,7 +717,7 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             // not. Keeping them out of the chain is what makes "skip" free
             // rather than a filter every walk has to remember.
             std::vector<std::byte> selBytes;
-            const bool wantSel = (i == 0) && q.selBefore.has_value();
+            const bool wantSel = (i == groupStart) && q.selBefore.has_value();
             if (wantSel) selBytes = encodePayload(*q.selBefore);
 
             SQLite::Statement st(db,
@@ -635,7 +745,7 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
                 st.bind(13);
             st.exec();
             const std::int64_t seq = db.getLastInsertRowid();
-            r.seqs.push_back(seq);
+            seqs.push_back(seq);
 
             SQLite::Statement clock(db,
                 "INSERT INTO op_clocks(seq, client_id, lamport) VALUES (?,?,?)");
@@ -643,9 +753,8 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             clock.bind(2, store_.clientId());
             clock.bind(3, ++lamport);
             clock.exec();
-            if (!applied.append(store_, q.opType, d->name, q.payload, seq, txnId, false, err, q.runtimeProof)) {
+            if (!applied.append(store_, q.opType, d->name, payload, seq, txnId, false, err, q.runtimeProof)) {
                 r.error = "cannot capture applied operation: " + err;
-                r.seqs.clear();
                 return r;
             }
             if (!d->ephemeral) head = seq;   // the chain advances; ephemeral does not
@@ -670,9 +779,8 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
         // ADR-0153: the caller's last word, still inside the transaction.
         if (options.beforeCommit) {
             std::string err;
-            if (!options.beforeCommit(db, txnId, err)) {
+            if (!options.beforeCommit(db, firstTxn, err)) {
                 r.error = err.empty() ? std::string("the commit hook refused") : err;
-                r.seqs.clear();
                 return r;   // rolls back the ops, their rows and the hook's writes
             }
         }
@@ -690,18 +798,19 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
         auto delivery = applied.finish(store_, headSeq(), appliedError);
         if (!delivery) {
             r.error = "cannot capture applied batch: " + appliedError;
-            r.seqs.clear();
             return r;
         }
         txn.commit();
         freeze::remember(store_);
+        r.txnId = firstTxn;
+        r.seqs = std::move(seqs);
+        r.groupTxnIds = std::move(groupTxnIds);
         r.ok = true;
         if (!reqs.empty()) CapturedTransactionAccess::durable(reqs.front().capturedTransaction, r.txnId);
         delivery->publish(); // noexcept; observer failure cannot falsify SQL success
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
-        r.seqs.clear();
         return r;
     }
 }

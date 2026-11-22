@@ -3,6 +3,7 @@
 #include "Filters.hpp"
 #include "Mailbox.hpp"
 #include "Transform.hpp"
+#include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -20,6 +21,7 @@ namespace {
 using Complex = std::complex<double>;
 std::atomic<std::uint64_t> nextPreparationEpoch{1};
 bool within(double x,double lo,double hi) noexcept { return std::isfinite(x)&&x>=lo&&x<=hi; }
+double finiteSample(double sample) noexcept { return std::isfinite(sample) ? sample : 0.; }
 bool phaseActive(const Settings &s) noexcept {
     return (s.phaseMode==PhaseMode::Match && s.matchAmount>0.) ||
         (s.phaseMode==PhaseMode::Rotation && s.rotationDegrees!=0. && std::abs(s.rotationDegrees)!=180.);
@@ -288,13 +290,19 @@ struct Core::Impl {
         if(mailbox.publish(s)==0) return false;
         lastRequested=s;return true;
     }
+    void withdraw(std::uint64_t token) noexcept {
+        if(!token||pendingToken.load(std::memory_order_acquire)!=token) return;
+        lastRequested=slots[static_cast<std::size_t>(activeSlot)].coefficients.settings;
+        published.store(activeSlot,std::memory_order_release);
+        pendingToken.store(0,std::memory_order_release);
+    }
     bool service() {
         if(!prepared || pendingToken.load(std::memory_order_acquire)!=0) return false;
         Settings s;std::uint64_t version=0;
         if(!mailbox.read(s,version)||version==ready.load(std::memory_order_acquire)) return false;
-        // This owner's previous nonzero token can become zero only through
-        // acquire-observed audio admission. Thus published is the immutable
-        // admitted plan, and any other bank/off-phase storage is dormant.
+        // Audio clears a nonzero token only after admission or after restoring
+        // published to the active slot at a physical-block reversion. In both
+        // cases the owner sees the admitted plan here.
         const int current=published.load(std::memory_order_acquire);
         for(int index=0;index<static_cast<int>(slots.size());++index) {
             if(index==current) continue;
@@ -319,7 +327,7 @@ struct Core::Impl {
         if(!prepared||!valid(s)) return {};
         // A delayed control publication cannot invalidate a usable audio plan.
         // lastRequested advances only on success, so a later call retries it.
-        static_cast<void>(request(s));
+        const bool requested=request(s);
         if(block!=0&&block==physical)
             return configured==activeLatency.load(std::memory_order_acquire)?BlockContext{generation,serial,epoch}:BlockContext{};
         physical=block;++serial;
@@ -332,14 +340,24 @@ struct Core::Impl {
             }
             if(held) {
                 const auto &plan=slot.coefficients;
-                if(plan.version>applied.load(std::memory_order_relaxed)&&
-                   pendingToken.load(std::memory_order_acquire)==plan.version&&
-                   latencyFor(plan.settings,spec.sampleRate)==configured) {
+                const bool outstanding=plan.version>applied.load(std::memory_order_relaxed)&&
+                    pendingToken.load(std::memory_order_acquire)==plan.version;
+                const auto offeredLatency=latencyFor(plan.settings,spec.sampleRate);
+                if(outstanding&&offeredLatency==configured) {
                     slots[static_cast<std::size_t>(activeSlot)].readers.fetch_sub(1,std::memory_order_release);
                     activeSlot=next;applied.store(plan.version,std::memory_order_release);++generation;
                     activeLatency.store(configured,std::memory_order_release);
                     if(pendingToken.load(std::memory_order_acquire)==plan.version) pendingToken.store(0,std::memory_order_release);
-                } else slot.readers.fetch_sub(1,std::memory_order_release);
+                } else {
+                    // No aggregate hold and no new PDC: the user returned to
+                    // the active configuration while this latency was still unused.
+                    const auto version=plan.version;
+                    const bool revert=outstanding&&requested&&
+                        configured==activeLatency.load(std::memory_order_acquire)&&
+                        sameConfiguration(s,slots[static_cast<std::size_t>(activeSlot)].coefficients.settings);
+                    slot.readers.fetch_sub(1,std::memory_order_release);
+                    if(revert)withdraw(version);
+                }
             }
         }
         if(configured!=activeLatency.load(std::memory_order_acquire))return {};
@@ -498,15 +516,22 @@ struct Core::Impl {
         stats.firWorkUnits+=used;stats.firMaxSampleWork=std::max(stats.firMaxSampleWork,used);
         return used;
     }
-    bool launchFir() noexcept {
-        if(firStage!=FirStage::Idle) {++stats.firDeadlineMisses;return false;}
+    void launchFir() noexcept {
+        if(firStage!=FirStage::Idle) {
+            ++stats.firDeadlineMisses;
+            // Keep the source clock and dry delay intact. Abandon unfinished
+            // work at this capture boundary, before it can write late output.
+            // The preceding spectrum no longer belongs to the adjacent capture.
+            firTransform.cancel();
+            releaseFirTag(jobTag);
+            releaseFirTag(previousTag);
+        }
         jobTag=captureTag;captureTag={};jobTimeBank=captureBank;captureBank=1-captureBank;
         jobSpectrumBank=1-previousSpectrumBank;jobOutput=firCursor+1+p;
         jobStream=jobNode=jobIndex=0;firStage=FirStage::ForwardStart;firFill=0;
         ++stats.firJobsStarted;
         // Retain the diagnostic's original h-sample source-hop unit.
         if((firCursor+1)%h==0)++stats.filterHops;
-        return true;
     }
     template<class Sample> bool process(Sample *const *main,const Sample *const *key,std::int32_t keyChannels,
         std::int32_t frames,const Settings &s,BlockContext context) noexcept {
@@ -538,6 +563,7 @@ struct Core::Impl {
                 for(std::size_t c=0;c<2;++c) main[c][frame]=static_cast<Sample>(static_cast<double>(main[c][frame])*gain*sign);
             stats.processedFrames+=static_cast<std::uint64_t>(frames);return true;
         }
+        [[maybe_unused]] filters::FlushDenormals flush;
         std::array<double,kNodes> thresholds{},attacks{},releases{},midWeight{},sideWeight{};
         bool anySolo=false;
         for(std::size_t b=0;b<kNodes;++b) {
@@ -554,14 +580,18 @@ struct Core::Impl {
                 iir[c][b].configure(plan.iir[b],plan.settings.nodes[b].frequencyHz,plan.settings.nodes[b].q);
         }
         for(std::int32_t frame=0;frame<frames;++frame) {
-            const double left=static_cast<double>(main[0][frame])*inGain,right=static_cast<double>(main[1][frame])*inGain;
+            const double left=finiteSample(main[0][frame])*inGain;
+            const double right=finiteSample(main[1][frame])*inGain;
             std::array<double,2> x{left+right,left-right},k{};
             const bool present=!s.externalKey||keyChannels>0;
             if(!s.externalKey) k=x;
-            else if(keyChannels==1) k={static_cast<double>(key[0][frame])*keyGain,static_cast<double>(key[0][frame])*keyGain};
-            else if(keyChannels==2) {
-                const double kl=static_cast<double>(key[0][frame])*keyGain,kr=static_cast<double>(key[1][frame])*keyGain;
-                k={kl+kr,kl-kr};
+            else if(keyChannels>0) {
+                const double kl=finiteSample(key[0][frame])*keyGain;
+                if(keyChannels==1) k={kl,kl};
+                else {
+                    const double kr=finiteSample(key[1][frame])*keyGain;
+                    k={kl+kr,kl-kr};
+                }
             }
             std::array<bool,2> keyValid{keyGuard[0].observe(k[0],present),keyGuard[1].observe(k[1],present)};
             if(runPhase) {
@@ -592,7 +622,7 @@ struct Core::Impl {
                             y[c]-=(1.-std::pow(10.,appliedGain*.05))*band*s.wet;
                     }
                 }
-                if(++firFill==p&&!launchFir())return false;
+                if(++firFill==p)launchFir();
                 ++firCursor;
                 stats.firCaptureVersion=captureTag.version;stats.firCaptureMask=captureTag.mask;
                 stats.firJobVersion=jobTag.version;stats.firJobMask=jobTag.mask;
@@ -626,6 +656,7 @@ Core::~Core()=default;
 void Core::prepare(PrepareSpec spec,const Settings &s){impl_->prepare(spec,s);}
 void Core::reset(const Settings &s){impl_->prepare(impl_->spec,s);}
 bool Core::requestConfiguration(const Settings &s) noexcept{return impl_->request(s);}
+void Core::withdrawUnpromisedOffer(std::uint64_t token) noexcept{impl_->withdraw(token);}
 bool Core::serviceConfiguration(){return impl_->service();}
 ConfigurationStatus Core::configurationStatus() const noexcept {
     return {impl_->mailbox.sequence.load(std::memory_order_acquire),impl_->ready.load(std::memory_order_acquire),impl_->applied.load(std::memory_order_acquire)};
