@@ -36,6 +36,21 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-18 event transform phase, lands after DEV-17 and 3 December
+
+Branch `engine/dev18-event-transforms` at `4e7495537cc04b8816e2c52eb624fe5456281d6e`, stacked on `4af8d018`. Suggested PR title **Transform gathered MIDI events before graph segmentation**. [Compare](https://github.com/arieladi/Adi/compare/engine/dev17-note-identity...engine/dev18-event-transforms)
+
+The graph invokes each transform after gathering its input in topological order. It passes notes separately from addressed parameter events, preserves callback-relative frames and collects split points after transforming. The usual DeviceNode forwards the device's transform and ownership acknowledgements. Bypass releases the effect's generated notes and keeps its clock and incoming note stream. Stop, seek and loop wrap release notes and withdraw queued attacks. A surviving generator keeps its delayed releases across publication. A departing generator delivers held and already queued releases to the nearest surviving transform or consumer before its publication retires.
+
+GCC 14 and Clang 19 passed six suites with warnings as errors. Graph 16,476, Graph Workers 92, MIDI Clips 519, MIDI Clock Continuity 125, Gesture Playback 569 and Session 214. The timing fixture ports #207's exhaustive block-size method, covering every integer size from 32 to 4,096 with identical notes and zero observed callback allocations. It exercises chained DeviceNode transforms, native owner acknowledgement, bypass, stop, seek, an in-block loop wrap, removal and reintroduction, and delayed releases on both sides of a publication. Reviewed against Win's five portability patterns.
+
+| Seat | Needs |
+|---|---|
+| win | Reserve the DEV-18 phase and lifecycle ADR. |
+| devices | Bind the MIDI effect kernels through DeviceInstance. The Pd kind and reset policy still follows DEV-14. |
+
+PR requested
+
 ## 2026-11-22 — DEV-17 note identity, lands after 3 December
 
 Branch `engine/dev17-note-identity` at `4af8d0188553bd7b4b7ba261180069d3b1829047`, from `ac07be74`. Suggested PR title **Keep graph note ownership distinct through native plug-in hosts**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev17-note-identity)
