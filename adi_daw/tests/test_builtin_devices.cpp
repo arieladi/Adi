@@ -113,6 +113,25 @@ void paramsAndState() {
     auto restored=load("org.adidaw.builtin.utility");
     check(restored->loadState("state",saved) && restored->getParam("11").normalized==instance->getParam("11").normalized,"stored state restores parameter intent exactly");
     check(!restored->setExpressionRoute(RouteChoice::NoteExpression) && restored->setExpressionRoute(RouteChoice::MpeMidi),"format route supports its declared MIDI boundary");
+    // DF-E57: a partial state (a newer version's added parameters, a partial
+    // preset) resets what it omits to the default, not to the value before.
+    {
+        auto device=load("org.adidaw.builtin.utility");
+        check(device->setParam("11",ParamValue::fromNormalized(0.8)) && device->setParam("12",ParamValue::fromNormalized(0.9)),
+              "two parameters moved from their defaults");
+        const auto held=device->getParam("12").normalized;
+        auto partial=Payload::from_cbor(device->saveState("state"));
+        // Omitted everywhere the state can carry it: its position, its real value, its unit.
+        for(const char* part:{"params","real","units"}) {
+            if(partial.contains(part)) {
+                partial[part].erase("11");
+            }
+        }
+        check(device->loadState("state",Payload::to_cbor(partial)),"a state without one parameter loads");
+        check(std::abs(device->getParam("11").normalized-device->findParam("11")->defaultValue.normalized)<1e-6 &&
+              device->getParam("12").normalized==held,
+              "the omitted parameter returns to its default; the one the state holds keeps its value (DF-E57)");
+    }
 #endif
 }
 void insertionAndHistory() {
@@ -289,6 +308,45 @@ void automationEvents() {
     check(instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"the knob moves to +3 dB");
     run(60);
     check(std::abs(output[0][63]-0.25f*std::pow(10.0f,3.0f/20))<2e-5f,"a knob change after automation is heard");
+    // DF-E61: the stored value goes A to B and back to A with no audio
+    // between (two edits in one period: two clicks, an Undo and a Redo). The
+    // value in force is the lane's +6 dB; the knob's A must be heard again.
+    const float knob=0.25f*std::pow(10.0f,3.0f/20);
+    const auto stateAtKnob=instance->saveState("state");
+    const auto automateUp=[&] {
+        events[0].frame=0;events[0].type=EventType::ParamValue;events[0].value=126.0/155;
+        io.events=EventSpan{events,1};run(1);io.events={};run(60);
+        return std::abs(output[0][63]-up)<2e-5f;
+    };
+    check(automateUp(),"the lane moves the gain to +6 dB again");
+    check(instance->setParam("11",ParamValue::fromNormalized(120.0/155)) &&
+              instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"the knob goes to 0 dB and back to +3 dB in one period");
+    run(60);
+    check(std::abs(output[0][63]-knob)<2e-5f,"the knob's +3 dB is heard, not the lane's +6 dB (DF-E61)");
+    check(automateUp(),"the lane moves the gain to +6 dB once more");
+    check(instance->setParam("11",ParamValue::fromNormalized(120.0/155)) && instance->loadState("state",stateAtKnob),
+          "the knob goes to 0 dB, then a state holding +3 dB loads, in one period");
+    run(60);
+    check(std::abs(output[0][63]-knob)<2e-5f,"the state's +3 dB is heard (DF-E61, through loadState)");
+    // Both edits by states alone: 0 dB, then +3 dB, in one period.
+    check(instance->setParam("11",ParamValue::fromNormalized(120.0/155)),"the knob goes to 0 dB, to save a state there");
+    const auto stateAtZero=instance->saveState("state");
+    check(instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"and back to +3 dB");
+    check(automateUp(),"the lane moves the gain to +6 dB again, over the stored +3 dB");
+    check(instance->loadState("state",stateAtZero) && instance->loadState("state",stateAtKnob),
+          "a state at 0 dB, then one at +3 dB, load in one period");
+    run(60);
+    check(std::abs(output[0][63]-knob)<2e-5f,"the second state's +3 dB is heard (DF-E61, states alone)");
+    // A write that leaves the stored value as it was is no edit: the lane's
+    // value stays in force (a preset reload, a drag that ends where it began).
+    check(automateUp(),"the lane moves the gain to +6 dB a third time");
+    check(instance->setParam("11",ParamValue::fromNormalized(123.0/155)),"the knob is set to the +3 dB it already holds");
+    run(60);
+    check(std::abs(output[0][63]-up)<2e-5f,"an unchanged stored value leaves the lane's +6 dB in force");
+    // A new format restarts the core from the stored values: the knob's +3 dB
+    // is in force again until the lane's next value, as before DF-E61.
+    instance->prepare(44100,64);run(60);
+    check(std::abs(output[0][63]-knob)<2e-5f,"after a new sample rate the stored +3 dB is in force again");
 #endif
 }
 #if ADI_WITH_PD
