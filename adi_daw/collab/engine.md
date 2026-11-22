@@ -260,6 +260,11 @@ Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU bu
 - PR requested for `engine/srf08-mcu-lcd-feedback` at `961a0cb47997ba0fee238d9faa20266990957d77`, stacked on MCU and HUI wire. Format two addressed LCD rows as seven-bit data and send at most one contiguous SysEx patch per dirty row. Successful sends advance only their own baseline. Failed writes retry and reconnect sends the complete frame. MCU and Extender have independent device headers. [REAPER MCU wire reference](https://github.com/justinfrankel/reaper-sdk/blob/61cc0d4ada1e4d8438186ed8ba5e5f9d72b148b9/reaper-plugins/reaper_csurf/csurf_mcu.cpp)
 - Strict Linux GCC 14 and Clang 19 each passed 29 checks. New cases verify exact offsets, mixed acknowledgement, Extender separation, label clearing and full reconnect. Checked the Nov 20 patterns.
 
+### 22 November — SRF-08 MCU and HUI V-Pots
+
+- PR requested for `engine/srf08-mcu-vpot-wire` at `5f41d14d4e891f20485d78c0f3b36ddccc887770`, stacked on MCU LCD feedback `961a0cb4`. Decode raw six-bit turn magnitudes with the two surfaces' opposite polarities. Encode ring modes, positions and the MCU center LED, and suppress unchanged updates once the output has confirmed them. [Ardour ring reference](https://github.com/Ardour/ardour/blob/0f45032f6dbe636b8cfa21fd274d4ebf4ce2c48d/libs/surfaces/mackie/pot.cc) · [DrivenByMoss HUI reference](https://github.com/git-moss/DrivenByMoss/blob/824f8740ad01d468e6053ff58cc70170d9ef6308/src/main/java/de/mossgrabers/controller/mackie/hui/controller/HUIControlSurface.java)
+- Strict Linux GCC 14 and Clang 19 each passed 36 checks, including all 2,016 strip/protocol/polarity movements, ring mode bytes, failed send and reconnect. Checked the Nov 20 patterns.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
