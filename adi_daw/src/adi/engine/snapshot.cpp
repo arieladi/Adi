@@ -88,6 +88,7 @@ void projectFadeHandles(ClipNode& clip,const TempoMap& tempo,std::int64_t offset
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
         a.kind != b.kind || a.role != b.role || a.recording != b.recording || a.returnSendTap != b.returnSendTap || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
+        a.recordArmed != b.recordArmed || a.monitorMode != b.monitorMode || a.inputRef != b.inputRef ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
         a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
         a.clips.size() != b.clips.size() ||
@@ -452,7 +453,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             "SELECT t.id, t.name, t.muted, t.soloed, "
             "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0), "
             "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color, IFNULL(m.delay_samples,0), " +
-            std::string(hasRole?"t.role ":"NULL ")+ ", t.frozen, t.freeze_media_id, f.track_id "
+            std::string(hasRole?"t.role ":"NULL ")+ ", t.frozen, t.freeze_media_id, f.track_id, "
+            "t.record_armed, t.monitor_mode, t.input_ref "
             "FROM tracks t LEFT JOIN mixer_strip m ON m.track_id = t.id LEFT JOIN frozen_renders f ON f.track_id=t.id "
             "ORDER BY t.index_in_parent, t.id");
         while (st.executeStep()) {
@@ -478,6 +480,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             if (!st.getColumn(13).isNull())
                 t.freezeMediaId = st.getColumn(13).getInt64();
             t.freezeMode = !st.getColumn(14).isNull() ? "wet" : t.frozen ? "unverified" : "";
+            t.recordArmed = st.getColumn(15).getInt() != 0;
+            t.monitorMode = st.getColumn(16).getInt64();
+            if (!st.getColumn(17).isNull())
+                t.inputRef = st.getColumn(17).getString();
             if (groupRoots.contains(t.id))
                 t.freezeMode = "group";
             if (groupOwners.contains(t.id)) {

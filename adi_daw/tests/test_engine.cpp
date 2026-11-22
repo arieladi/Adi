@@ -360,6 +360,46 @@ void testWindowMetadata() {
 
 // --- tempo ----------------------------------------------------------------------------
 
+void testRecordingSnapshot() {
+    section("N64: record controls are published as track values");
+    Scratch project("recording-snapshot");
+    if (!project.store) throw std::runtime_error("create recording snapshot fixture");
+    auto& store=*project.store;
+    store.db().exec("INSERT INTO tracks(id,kind) VALUES(1,'audio'),(2,'midi')");
+    const auto initial=SnapshotBuilder::fromStore(store);
+    const auto* original=initial->findTrack(1);
+    if (!original) throw std::runtime_error("read source track");
+    check(!original->recordArmed && original->monitorMode==0 && !original->inputRef,
+          "record controls preserve the stored Off and SQL NULL defaults");
+    const auto change=[&](const Snapshot& previous,const char* operation,Payload payload) {
+        OpRequest request;
+        request.opType=operation;
+        request.payload=std::move(payload);
+        const auto result=OpJournal(store).commit(request);
+        if (!result.ok) throw std::runtime_error(result.error);
+        return SnapshotBuilder::fromStore(store,previous);
+    };
+    const auto armed=change(*initial,"track.setArm",{{"id",1},{"armed",true}});
+    const auto monitored=change(*armed,"track.setMonitorMode",{{"id",1},{"mode",1}});
+    const auto empty=change(*monitored,"track.setInput",{{"id",1},{"input",""}});
+    check(armed->findTrack(1)!=original && armed->findTrack(1)->recordArmed &&
+          !original->recordArmed,"an Arm edit replaces only the current track node");
+    check(monitored->findTrack(1)!=armed->findTrack(1) &&
+          monitored->findTrack(1)->monitorMode==1 && armed->findTrack(1)->monitorMode==0,
+          "monitor mode participates in immutable track sharing");
+    check(empty->findTrack(1)!=monitored->findTrack(1) && empty->findTrack(1)->inputRef=="" &&
+          !monitored->findTrack(1)->inputRef,"input reference distinguishes empty text from SQL NULL");
+    check(initial->findTrack(2)==empty->findTrack(2) &&
+          SnapshotBuilder::fromStore(store,*empty)->findTrack(1)==empty->findTrack(1),
+          "unchanged record controls reuse their track node");
+
+    const auto bound=change(*empty,"track.setInput",{{"id",1},{"input","audio:external:2"}});
+    check(bound->findTrack(1)->inputRef=="audio:external:2",
+          "the snapshot exposes the saved input reference");
+    check(History(store).undo().ok && SnapshotBuilder::fromStore(store,*bound)->findTrack(1)->inputRef=="",
+          "undo republishes the previous input reference");
+}
+
 void testTrackDelaySnapshot() {
     Scratch scratch("track_delay_snapshot");auto& store=*scratch.store;
     store.db().exec("INSERT INTO project(id,sample_rate) VALUES(1,96000);"
@@ -703,6 +743,7 @@ int main() {
         testWindowMetadata();
         testSendSnapshots();
         testTrackDelaySnapshot();
+        testRecordingSnapshot();
         testTempoConversion();
         testSnapshotFromRealProject();
         testLinearClipSnapshot();
