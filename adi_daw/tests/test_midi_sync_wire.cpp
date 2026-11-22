@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/sync/midi_sync_wire.hpp"
+#include "adi/sync/midi_clock_follower.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <tuple>
 
@@ -94,11 +97,80 @@ void timecodeWire() {
     check(!decoder.locked() && !decoder.receive(quarter(4, 3)) &&
               !decoder.receive(QuarterFrame{0xf1, 0x80}), "port reset and malformed messages clear previous assembly");
 }
+
+void clockFollower() {
+    MidiClockFollower follower;
+    constexpr std::uint64_t start = std::uint64_t{1} << 62;
+    constexpr std::uint64_t pulse = 20'833'333;
+    follower.pulse(start);
+    bool cold = true;
+    for (std::uint64_t i = 1; i < 6; ++i) {
+        follower.pulse(start + i * pulse);
+        cold = cold && !follower.estimate(start + i * pulse);
+    }
+    const auto lockedAt = start + 6 * pulse;
+    follower.pulse(lockedAt);
+    const auto stable = follower.estimate(lockedAt);
+    check(cold && stable && std::abs(stable->bpm - 120.0) < 1e-5 &&
+              std::abs(stable->phaseErrorNanoseconds) < 1e-5,
+          "one-sixteenth warm-up yields exact tempo at a large monotonic timestamp");
+    follower.pulse(lockedAt);
+    follower.pulse(lockedAt - 1);
+    follower.pulse(lockedAt + 100);
+    const auto afterStrays = follower.estimate(lockedAt + 100);
+    check(afterStrays && stable && afterStrays->bpm == stable->bpm &&
+              !follower.estimate(lockedAt - 1),
+          "duplicates, reordered timestamps and physically implausible spikes cannot disturb the loop");
+    check(follower.estimate(lockedAt + pulse).has_value() &&
+              !follower.estimate(lockedAt + 2 * pulse), "stale estimates expire without waiting for another message");
+    follower.pulse(lockedAt + 2 * pulse);
+    check(!follower.estimate(lockedAt + 2 * pulse), "a lost pulse restarts acquisition without a tempo step");
+    for (std::uint64_t i = 3; i <= 8; ++i)
+        follower.pulse(lockedAt + i * pulse);
+    const auto recovered = follower.estimate(lockedAt + 8 * pulse);
+    check(recovered && std::abs(recovered->bpm - 120.0) < 1e-5,
+          "a contiguous clock resumes after a dropout");
+    follower.reset();
+    check(!follower.estimate(lockedAt + 8 * pulse), "disconnect clears phase, tempo and old port timestamps");
+}
+
+void clockTempoStep() {
+    MidiClockFollower follower;
+    constexpr std::uint64_t base = std::uint64_t{1} << 62;
+    constexpr std::array<int, 9> jitter{0, -1'000'000, 750'000, -600'000, 900'000,
+                                        250'000, -950'000, 1'000'000, -350'000};
+    double ideal = 2'000'000.0;
+    double settled120 = 0, settled121 = 0, worstPhase = 0;
+    bool remainedLocked = true;
+    for (std::size_t i = 0; i < 480; ++i) {
+        const double bpm = i < 240 ? 120.0 : 121.0;
+        ideal += 2'500'000'000.0 / bpm;
+        const auto now = base + static_cast<std::uint64_t>(std::llround(ideal) + jitter[i % jitter.size()]);
+        follower.pulse(now);
+        const auto estimate = follower.estimate(now);
+        if (i < 16)
+            continue;
+        remainedLocked = remainedLocked && estimate.has_value();
+        if (!estimate)
+            continue;
+        if (i >= 150 && i < 240)
+            settled120 += estimate->bpm / 90.0;
+        if (i >= 390)
+            settled121 += estimate->bpm / 90.0;
+        if (i >= 390)
+            worstPhase = std::max(worstPhase, std::abs(estimate->phaseErrorNanoseconds));
+    }
+    check(remainedLocked && std::abs(settled120 - 120.0) < 0.02 &&
+              std::abs(settled121 - 121.0) < 0.02 && worstPhase < 2'000'000.0,
+          "clock follows a 120-to-121 BPM step under plus or minus 1 ms timestamp jitter");
+}
 } // namespace
 
 int main() {
     clockWire();
     timecodeWire();
+    clockFollower();
+    clockTempoStep();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
