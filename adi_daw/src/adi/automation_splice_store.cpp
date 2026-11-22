@@ -76,7 +76,8 @@ Payload encode(const Envelope &envelope, const std::vector<SplicedKnot> &knots) 
 PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, std::int64_t begin,
                                              std::int64_t end,
                                              std::span<const NativeSpliceKnot> replacement,
-                                             double rate, std::size_t budget) {
+                                             double rate, std::size_t budget,
+                                             EnvelopeSpliceRequest intent) {
     PreparedEnvelopeSplice result;
     try {
         require(!audio::onAudioThread, "automation splice belongs off the audio callback");
@@ -85,6 +86,7 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
                 "automation splice needs a supported session sample rate");
         require(budget > 0 && budget <= (1u << 23) && replacement.size() <= budget,
                 "automation splice point budget is invalid");
+        require(!intent.dataId || *intent.dataId > 0, "automation data ID must be positive");
         auto &db = store.db();
         std::optional<SQLite::Transaction> read;
         if (sqlite3_get_autocommit(db.getHandle()) != 0)
@@ -116,6 +118,8 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
         std::int64_t dataId = 0;
         if (row) {
             dataId = integer(row->at("id"));
+            require(!intent.dataId || *intent.dataId == dataId,
+                    "automation data address differs from the lane's stream");
             original = decode(*row, base, time, rate, budget);
             const auto ranges =
                 detail::captureGuardRows(store, "automation_segment_ranges", {{"data_id", dataId}});
@@ -135,7 +139,13 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
                                        range.at("source_first"), range.at("source_last")};
             }
         } else {
-            dataId = ids.next("automation_data");
+            if (intent.dataId) {
+                dataId = *intent.dataId;
+                require(!detail::captureRow(db, "automation_data", "id", dataId),
+                        "automation data ID is already used");
+            } else {
+                dataId = ids.next("automation_data");
+            }
             inputs.rowGuards.push_back({"automation_data", {{"id", dataId}}, std::nullopt});
             original.header = {
                 static_cast<std::uint32_t>(FourCC::Automation), 1, sizeof(AutomationPoint), 0,
@@ -240,7 +250,7 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
         OpRequest request;
         request.opType = "arranger.splice";
         request.payload = {{"id", 0}, {"changes", changes}};
-        request.label = "Replace Automation";
+        request.label = intent.label;
         request.targetKind = "automation";
         request.targetId = laneId;
         result.requests.push_back(std::move(request));

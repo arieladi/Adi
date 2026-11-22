@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/automation_splice.hpp"
 #include "adi/ops.hpp"
+#include <string_view>
 
 namespace adi::automation {
 /// Absolute positions in the destination lane's declared native clock. No
@@ -14,6 +15,10 @@ struct PreparedEnvelopeSplice {
     bool ok = false;
     std::string error;
     std::vector<OpRequest> requests;
+};
+struct EnvelopeSpliceRequest {
+    std::optional<std::int64_t> dataId;
+    std::string_view label = "Replace Automation";
 };
 /// Owner-thread storage adapter for AU05. Explicit incoming values include
 /// begin and end; no move/copy/delete material policy is selected here. Captures
@@ -28,5 +33,5 @@ struct PreparedEnvelopeSplice {
 [[nodiscard]] PreparedEnvelopeSplice
 prepareEnvelopeSplice(Store &, std::int64_t laneId, std::int64_t begin, std::int64_t end,
                       std::span<const NativeSpliceKnot> replacement, double sampleRate,
-                      std::size_t pointBudget = kSplicePointBudget);
+                      std::size_t pointBudget = kSplicePointBudget, EnvelopeSpliceRequest = {});
 } // namespace adi::automation
