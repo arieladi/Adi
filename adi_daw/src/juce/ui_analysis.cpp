@@ -121,17 +121,52 @@ juce::Colour analysisPaletteColour(std::size_t palette, std::uint8_t sample, boo
     return original[currentThemeIndex()][reverse ? 255u - sample : sample];
 }
 struct SharedSpectrumView::ScaledSpectrum {
+    static constexpr std::size_t extendedCellCount = 1024;
+    struct LogCell {
+        float x = 0.f;
+        std::size_t first = 0, end = 0;
+        float fraction = 0.f;
+    };
+
     // Store unit coordinates so resizing and repainting never rewalk the bins.
     double rate = 0.;
     int size = 0;
     SpectrumScale scale = SpectrumScale::Wide;
     std::size_t count = 0, firstBin = 0;
     std::vector<float> x;
+    std::vector<LogCell> cells;
     juce::Path line, fill;
+
+    void prepareLogCells(const SpectrumAxis &axis, double hzPerBin) {
+        const auto cellFor = [](float unit) {
+            const auto cell = static_cast<std::size_t>(std::clamp(unit, 0.f, 1.f) * extendedCellCount);
+            return std::min(cell, extendedCellCount - 1);
+        };
+        const auto firstCell = cellFor(x.front()), lastCell = cellFor(x.back());
+        const auto lastBin = firstBin + x.size() - 1;
+        cells.reserve(lastCell - firstCell + 1);
+        std::size_t bin = 0;
+        for (auto cell = firstCell; cell <= lastCell; ++cell) {
+            const auto centre = (static_cast<double>(cell) + .5) / static_cast<double>(extendedCellCount);
+            const auto position = cell == firstCell ? x.front() :
+                                  cell == lastCell ? x.back() : static_cast<float>(centre);
+            const auto begin = bin;
+            while (bin < x.size() && cellFor(x[bin]) == cell) ++bin;
+            if (bin != begin) {
+                cells.push_back({position, firstBin + begin, firstBin + bin, 0.f});
+            } else {
+                const auto hz = axis.lowHz * std::exp(centre * axis.logWidth);
+                const auto fractional = std::clamp(hz / hzPerBin, static_cast<double>(firstBin), static_cast<double>(lastBin));
+                const auto lower = std::min(static_cast<std::size_t>(fractional), lastBin - 1);
+                cells.push_back({position, lower, lower, static_cast<float>(fractional - static_cast<double>(lower))});
+            }
+        }
+    }
 
     void setFormat(SpectrumScale nextScale, double nextRate, int nextSize, std::size_t nextCount) {
         if (nextScale == scale && nextRate == rate && nextSize == size && nextCount == count) return;
         x.clear();
+        cells.clear();
         if (std::isfinite(nextRate) && nextRate > 0 && nextSize > 0) {
             auto axis = spectrumAxis(nextScale);
             const auto hzPerBin = nextRate / nextSize;
@@ -145,6 +180,8 @@ struct SharedSpectrumView::ScaledSpectrum {
                 if (x.empty()) firstBin = i;
                 x.push_back(axis.x(hz));
             }
+            if (nextScale == SpectrumScale::Extended && x.size() > extendedCellCount)
+                prepareLogCells(axis, hzPerBin);
         }
         scale = nextScale; rate = nextRate; size = nextSize; count = nextCount;
     }
@@ -155,15 +192,35 @@ struct SharedSpectrumView::ScaledSpectrum {
         if (x.size() < 2) return;
         const auto &axis = spectrumAxis(scale);
         const bool filled = fillTrace && spectrumScaleHasFill(scale);
-        for (std::size_t i = 0; i < x.size(); ++i) {
-            const auto bin = firstBin + i;
-            const auto y = axis.y(bins[bin] + (offsets.empty() ? 0.f : offsets[bin]));
-            if (i == 0) {
-                line.startNewSubPath(x[i], y);
-                if (filled) fill.startNewSubPath(x[i], y);
+        const auto valueAt = [&](std::size_t bin) { return bins[bin] + (offsets.empty() ? 0.f : offsets[bin]); };
+        bool first = true;
+        const auto append = [&](float position, float value) {
+            const auto y = axis.y(value);
+            if (first) {
+                first = false;
+                line.startNewSubPath(position, y);
+                if (filled) fill.startNewSubPath(position, y);
             } else {
-                line.lineTo(x[i], y);
-                if (filled) fill.lineTo(x[i], y);
+                line.lineTo(position, y);
+                if (filled) fill.lineTo(position, y);
+            }
+        };
+        if (cells.empty()) {
+            for (std::size_t i = 0; i < x.size(); ++i) append(x[i], valueAt(firstBin + i));
+        } else {
+            const auto availableValue = [&](std::size_t bin) {
+                const auto value = valueAt(bin);
+                return std::isfinite(value) ? value : static_cast<float>(axis.bottomDb);
+            };
+            for (const auto &cell : cells) {
+                auto value = availableValue(cell.first);
+                if (cell.first == cell.end) {
+                    value = std::lerp(value, availableValue(cell.first + 1), cell.fraction);
+                } else {
+                    for (auto bin = cell.first + 1; bin < cell.end; ++bin)
+                        value = std::max(value, availableValue(bin));
+                }
+                append(cell.x, value);
             }
         }
         if (filled) {

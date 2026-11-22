@@ -24,6 +24,11 @@ struct SharedSpectrumViewTestAccess {
     static auto capture(const SharedSpectrumView &view) { return view.captureShown_; }
     static std::size_t offsetCount(const SharedSpectrumView &view) { return view.spectrumProjection_.offsets().size(); }
     static bool hasScaledPlot(const SharedSpectrumView &view) { return static_cast<bool>(view.scaledSpectrum_); }
+    static void projectSpectrum(SharedSpectrumView &view, std::shared_ptr<const SharedAnalysis::Result> result) {
+        view.shown_ = std::move(result);
+        view.updateSpectrumProjection();
+        view.updateScaledSpectrum();
+    }
     static bool hasRaster(const SharedSpectrumView &view) { return static_cast<bool>(view.raster_); }
     static juce::String cursorText(const SharedSpectrumView &view) {
         if (view.spectrumCursorPosition_) {
@@ -1437,6 +1442,53 @@ void spectrumDetailScale() {
           "20 kHz axis is fixed while the trace stops at Nyquist on a lower-rate source");
 }
 
+void spectrumExtendedGridGeometry() {
+    using namespace adi::ui;
+    SharedSpectrumView view;
+    view.setSize(8192, 320);
+    view.setSpectrumScale(SharedSpectrumView::SpectrumScale::Extended);
+
+    constexpr double rate = 48000.;
+    constexpr int size = 8192;
+    auto window = std::make_shared<SharedAnalysis::Result>();
+    window->request.track = 1;
+    window->request.fftSize = size;
+    window->sampleRate = rate;
+    window->binsDbfs.assign(size / 2 + 1, -90.f);
+    window->binsDbfs[2] = -20.f;
+    window->binsDbfs[3] = -84.f;
+    window->binsDbfs[2051] = -12.f;
+    window->binsDbfs.back() = -24.f;
+    SharedSpectrumViewTestAccess::projectSpectrum(view, window);
+
+    const auto picture = softwarePicture(view);
+    const float width = static_cast<float>(picture.getWidth()) - 10.f - 18.f - look::fontCaption * 3.f;
+    const float height = static_cast<float>(picture.getHeight()) - 10.f - 16.f - 29.f - look::fontCaption;
+    const auto xAt = [width](double unit) { return juce::roundToInt(5. + (width - 1.f) * unit); };
+    const auto xHz = [xAt](double hz) { return xAt(std::log(hz / 10.) / std::log(3000.)); };
+    const auto filled = [&](int x, float db) {
+        const auto y = juce::roundToInt(21.f - (height - 1.f) * db / 100.f);
+        return picture.getPixelAt(x, y) != look::display;
+    };
+
+    // Bin 2051 shares its cell with several quiet bins and lands near its right edge.
+    // Only moving the undiluted peak to the cell's centre paints this column at -23 dB.
+    const auto projected = xAt(906.5 / 1024.);
+    const auto raw = xHz(2051. * rate / size);
+    check(raw - projected >= 3 && filled(projected, -23.f) && !filled(raw, -23.f),
+          "a crowded Extended cell retains its narrow peak and draws it at the log cell centre");
+
+    // Cell 46's centre is 14.38456 Hz. Its dB interpolation from the two
+    // neighbouring FFT bins is about -49.12 rather than the old log segment's -52.4.
+    const auto lowGap = xAt(46.5 / 1024.);
+    check(filled(lowGap, -51.3f) && !filled(lowGap, -47.f) && !filled(xHz(11.), -37.f),
+          "an empty interior log cell interpolates at its centre while the unavailable low end stays empty");
+
+    const auto boundary = xHz(rate * .5);
+    check(filled(boundary - 2, -61.f) && !filled(boundary + 4, -61.f),
+          "a final partial cell preserves its peak and ends at the actual Nyquist limit");
+}
+
 void spectrumExtendedScale() {
     using namespace adi::ui;
     using Scale = SharedSpectrumView::SpectrumScale;
@@ -1466,7 +1518,10 @@ void spectrumExtendedScale() {
     const auto unchanged = [&](const auto &stats) {
         const auto now = f.broker->stats();
         return now.transforms == stats.transforms && now.publications == stats.publications &&
-            now.cursorReads == stats.cursorReads && now.consumers == stats.consumers && now.taps == stats.taps;
+            now.cursorReads == stats.cursorReads && now.consumers == stats.consumers && now.taps == stats.taps &&
+            now.workerPasses == stats.workerPasses && now.frameRequests == stats.frameRequests &&
+            now.spectralPlans == stats.spectralPlans && now.analysisWindows == stats.analysisWindows &&
+            now.domains == stats.domains;
     };
     check(pane.view.spectrumScale() == Scale::Extended && source && source == pane.view.snapshot() &&
               source == sibling.snapshot() && f.acquired == 1 && unchanged(before),
@@ -1488,6 +1543,15 @@ void spectrumExtendedScale() {
         grid = grid && extended.getPixelAt(x(37.), y(level)) != look::display &&
             extended.getPixelAt(x(37.), y(level) + 2) == look::display;
     check(grid, "Extended paints 10 dB divisions on the shared plot");
+    pane.setSize(420, 360);
+    const auto resized = softwarePicture(pane.view);
+    pane.frame(f.broker, 1, 1);
+    check(pane.view.snapshot() == source && samePixels(resized, softwarePicture(pane.view)) &&
+              unchanged(before),
+          "Extended resize and repeated paints reuse the same raw frame and worker plan");
+    pane.setSize(640, 360);
+    check(samePixels(extended, softwarePicture(pane.view)) && unchanged(before),
+          "restoring Extended size restores the same fixed-grid picture without worker work");
 
     pane.view.freeze(true);
     const auto held = f.broker->stats();
@@ -2696,7 +2760,7 @@ int main() {
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedScale();
+          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedGridGeometry(); spectrumExtendedScale();
           pinnedSpectrumWaitsForHeardPrimary();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
           classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixAnalyserPages();
