@@ -671,6 +671,34 @@ void reviewedFourth() {
         check(worst < 2, std::to_string(n.hz) + " Hz " + std::to_string(static_cast<int>(n.off)) +
                              " cents, then in tune, corrected: no block more than 2 cents off (worst " + std::to_string(worst) + ")");
     }
+    // The fifth review: at 0.1 % the glide takes seconds on a low note, and
+    // Dry/Wet combed until it ended. Now the dry signal reads the tap while it
+    // glides: E2 and E1 30 cents flat for a second, then in tune, corrected,
+    // at Dry/Wet 50 %: from 100 ms after the in-tune audio comes out, no
+    // half-second block is 0.5 dB off the input's level.
+    for (const double note : {82.41, 41.2}) {
+        S s;
+        s.set(S::DryWet, 50);
+        s.prepare(kRate);
+        const std::size_t total = 48000 * 5;
+        std::vector<float> x(total);
+        double phase = 0;
+        for (std::size_t i = 0; i < total; ++i) {
+            x[i] = static_cast<float>(0.4 * std::sin(phase));
+            phase += 2 * std::numbers::pi * (i < 48000 ? note * std::exp2(-0.3 / 12) : note) / kRate;
+        }
+        const auto y = render(s, x, 256);
+        double worst = 0;
+        for (std::size_t from = 48000 + static_cast<std::size_t>(s.latency()) + 4800; from + 24000 <= total; from += 24000) {
+            double e = 0;
+            for (std::size_t i = from; i < from + 24000; ++i) {
+                e += static_cast<double>(y[i]) * y[i];
+            }
+            worst = std::max(worst, std::abs(20 * std::log10(std::sqrt(e / 24000) / (0.4 / std::sqrt(2.0)))));
+        }
+        check(worst < 0.5, std::to_string(note) + " Hz flat, then in tune, corrected, Dry/Wet 50 %: every half second within 0.5 dB (worst " +
+                               std::to_string(worst) + " dB)");
+    }
     // Shift +4 (a ratio exactly at the first band's top) with Detune moving
     // between +1 and -1 cent every 64 samples for 3 s: the tap moves between
     // copies once, not on every move.
