@@ -17,6 +17,37 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Stage contributions to the 81 preset regressions
+
+For Win, the private bank has 873 stereo comparisons at 48 kHz. The count below 0.001 stereo RMS was 37 before band Trim and 39 after Trim. Eighty-one individual programs became worse. We opened two fresh instances of each original, then repeated the comparison after disabling each active stage separately. That gave 400 one-stage removals. The source and ADI were latency-aligned for each take. We counted a change only when it exceeded both 0.000001 RMS and twice the difference between the two fresh baseline measurements.
+
+| Stage removed | Programs using it | Detectable change in the Trim result | Trim regression reversed |
+|---|---:|---:|---:|
+| Volume | 77 | 65 | 9 |
+| Width | 27 | 20 | 0 |
+| Pan | 30 | 23 | 1 |
+| Filter | 58 | 49 | 17 |
+| Sweep | 19 | 10 | 2 |
+| Drive | 35 | 29 | 8 |
+| Crush | 15 | 11 | 1 |
+| Time | 41 | 34 | 6 |
+| Pitch | 16 | 16 | 6 |
+| Noise | 31 | 14 | 3 |
+| Reverb | 16 | 3 | 0 |
+| Reference dynamics stage | 35 | 26 | 11 |
+
+Fifty-one of the 81 regressions reversed on at least one removal. Thirty-nine reversed on exactly one, eleven on two, and one on three. One original result fell inside the fresh-instance repeat tolerance. Each removal keeps every other stage in that program active.
+
+The terminal Reverb port was measurable on 31 programs. Eight improved and 23 worsened. All five in the 81-regression subset worsened. The threshold count stayed at 39. Another 131 had effects after the room, and one terminal program required band solo. For Noise, 216 programs selected recordings outside the procedural port. We rendered the other 32 twice at both 256 and 2,048 frames, with the representable processors in their original order, switching only Noise on or off. Ten improved, 20 worsened and two stayed within 0.000001. None crossed 0.001. Of the four in the 81-regression subset, one improved, two worsened and one stayed within tolerance. Two chains had every original stage represented. The other 30 had documented omissions. Changing block size moved the measured increment by at most 0.0000000171 RMS.
+
+The repaired Reverb also has an original-order comparison for 162 programs. Forty-nine improved, 112 worsened and one stayed within tolerance. One program crossed from 0.00337921 to 0.000433949 RMS, bringing the below-threshold count in this cohort from one to two. Two of the 16 Trim-regression programs improved. Thirteen chains contained every original stage. The greatest change in the incremental result between 256 and 2,048 frames was 0.0000000303. Noise and Reverb overlap on eleven programs.
+
+Two further comparisons used the seven-stage core from main, the same eight-point curves on each side and the source’s rendered audio. Switching on the measured internal Width follower changed six eligible programs. One improved, two worsened and three were within 0.000001. One additional program used automatic release. Replaying the saved order changed the sequence of represented stages for 410 programs. Of these, 124 improved, 134 worsened, and 152 were within 0.000001. Two stayed below 0.001 in both cases. Of 49 programs from the Trim-regression group, eleven improved and 17 worsened. These seven-stage figures have their own baseline and cannot be added to the 39 from the earlier editor build.
+
+Of the paired bank, 44 programs request audio retrigger on an audible Volume band. Twenty-six select an external key and 18 use the internal input. Ten internal programs used the measured detector settings. Their original-order A/B gave two improvements and eight increases at both buffer sizes, with zero threshold crossings. Two chains contained every original stage. The one program from the 81 regressions rose from 0.1568630 to 0.2046753 RMS. We compensated each following clock for upstream delay and aligned the dry output before the master blend. Changing block size moved this incremental result by at most 0.000000000448.
+
+PR requested
+
 ## 22 November 2026 — Recall the order of the seven landed stages
 
 `clones/shaper-stage-ranks` at `1719f64e` — Recall the processing order of the seven shaper stages. **Lands after 3 December.** Stable IDs 716–722 address ranks independently. Equal ranks retain the persistent stage identity order. A project saved before ranks existed reopens with the original processing order, including when recalled over a reordered instance.
