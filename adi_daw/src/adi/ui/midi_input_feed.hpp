@@ -109,9 +109,15 @@ class MidiInputFeed {
             }
         }
         reading_.store(-1, std::memory_order_release);
-        // Time order across the ports; a port's own order where the times are equal.
-        std::stable_sort(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(pending_),
-                         [](const MidiPortEvent &a, const MidiPortEvent &b) { return a.timeMs < b.timeMs; });
+        // Time order across the ports; a port's own order where the times are equal. In place and stable:
+        // `std::stable_sort` may allocate, which the audio thread must not, and a block holds a few events.
+        for (std::size_t i = 1; i < pending_; ++i) {
+            const auto e = buffer_[i];
+            std::size_t j = i;
+            for (; j > 0 && e.timeMs < buffer_[j - 1].timeMs; --j)
+                buffer_[j] = buffer_[j - 1];
+            buffer_[j] = e;
+        }
         const std::int64_t first = blockStart, lastSample = blockStart + std::max<std::int32_t>(frames, 1) - 1;
         for (std::size_t i = 0; i < pending_; ++i) {
             const auto &e = buffer_[i];
