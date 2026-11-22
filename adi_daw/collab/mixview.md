@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Mix View Info follows the Spectrum layout
+
+- **PR requested — `mixview/df-m55-info-spectrum-scale-lands-after-2026-12-03` `ffeebdcb`; lands after 3 December.** The Mix View channel browser's Info spectrum uses the layout chosen in Analysers. Its local Spectrum/Spectrogram choice, selected source and analysis lease are independent. This resolves the earlier Info owner note in the Mix View's own files. The Arrangement Info is a separate work item.
+- The unmodified Release failed exactly the Info layout assertion through a real fake-peer frame. The corrected build passed all 327 function checks, including an unchanged spectrum publication and plan. All 24 CTests and headless shell suites (906/329/7) passed. Both touched translation units compiled on MSVC with /W4 /WX and zero warnings, and the production unit passed the CI Clang warning group.
+- **PR requested — scheduled cumulative preview.** `mixview/review-scope-lands-after-2026-12-03` now points to `ffeebdcb`. ZIP SHA-256 `c0d286826a00e145d56bd76bcdd979027d9c8d9b5a3fc6fc8a85af374fbe1910`; ADI.exe `7b0442f758f553d34f417f23bc032327b1ca08b342aef529cc3670394717ebc2`. The private brief includes the All, Compare and actual channel-browser Info checks. Live checks remain with win.
+
 ## 2026-11-22 — Spectrum layouts in All and Compare
 
 - **PR requested — `mixview/df-m55-spectrum-layouts-lands-after-2026-12-03` `0619d04f`; lands after 3 December.** The All tile follows the Spectrum layout. Compare fills Detail and Extended in its own scale without resetting either source or Hold B, and uses lines for Wide and Device. The pre-fix suite failed the All layout and the two fill checks. The exact Release passed all 454 spectrum component checks, all 24 CTests and the 906/329/7 headless shell checks. Both production units parsed under the CI warning group with zero warnings. The Info consumer remains in Needs Window.
