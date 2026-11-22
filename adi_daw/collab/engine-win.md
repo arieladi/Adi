@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-03 / EX-04: tails on the common render and file clock
+
+**Lands after 3 December.** `engine-win/export-windowed-delivery` `cd89d843` on `export-metered-brickwall` `f6f82169`. Compensated input and tail bounds stay on the graph clock. Shortening an Until Silent tail passes the exact delivered count to SoXR and to each independent codec readback. Fixed tail adds 64 samples at 32 kHz. Continuous 48 kHz reference agrees with the shortened tail, output WAV and AIFF agree sample for sample after shared 48 to 32 kHz SRC, and MP3, Vorbis and Opus verify their actual shortened lengths. Loop renders still write only the compensated second pass. Native MSVC: 597 render, 176 WAV, 35 normalization and 85 NI metadata checks. Raw `D:/adi-engine-win-build/20261120/engine-loans/export-windowed-delivery-rerun.log`. The initial compile caught an MSVC shadowing warning in the fixture, fixed before the green run. Live's nonzero first-lap start remains for the director. PR requested.
+
 ## 2026-11-22 — EX-05: verified brickwall on the shared export stack
 
 **Lands after 3 December.** `engine-win/export-metered-brickwall` `f6f82169`, after `export-metered-delivery` `44c7c13f` and the devices limiter base in #706. The optional double LookaheadLimiter follows the selected normalization target and precedes the seeded quantizer. The report carries the requested target, captured and decoded measurements and whether the brickwall acted. Encoded crest stayed at or below its ceiling with exact duration, low-level unmodified and Peak mode fixtures retained byte identity. Native MSVC: 561 render, 176 WAV and 35 normalization checks, all passed. Raw `D:/adi-engine-win-build/20261120/engine-loans/export-metered-brickwall.log`. The supplied DSP programme API holds a whole planar capture in memory when active. Long multi-channel peak memory and cancellation inside a single offline limiter call remain open. PR requested.
