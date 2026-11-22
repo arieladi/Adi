@@ -117,7 +117,7 @@ class MidiInputFeed {
             }
             const std::size_t share = (kMaxPerBlock - pending_) / (n - j);
             MidiPortEvent e;
-            for (std::size_t taken = 0; taken < share && s.ring->pop(e); ++taken) {
+            for (std::size_t popped = 0; popped < share && s.ring->pop(e); ++popped) {
                 if (!s.track)
                     continue; // Remote only: no track hears it
                 e.port = s.port;
