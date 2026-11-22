@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Live crossover frequency changes have three smoothing poles
+
+The lower and upper edges use three equal one-pole smoothers in series on normalized log frequency. Per sample, the coefficient is 1 − exp(−72.02133 / sample rate). A newly opened device starts at its supplied frequency. When automation changes the target while audio is running, the first pole follows the target, the second follows the first and the third follows the second. An edit during the transition starts from the current states.
+
+At the start of a callback and each further 512-frame slice inside it, compare the previous third-pole value with its target. If the absolute normalized difference is at most 1/16,384, emit the target and hold all three internal states. The next edit resumes from those held states. Values immediately below, at and above the threshold distinguish the inclusive comparison. The measurement host delivered its scripted edits on callback boundaries; the smoothing starts when the device receives the edit.
+
+Two independent stereo measurement methods covered both edges, startup, reversals, irregularly placed events and six rates from 16 to 192 kHz. Across 27 in-band holdouts the largest full-stream error was 0.000000047 RMS. A 16 kHz case starting above Nyquist showed a separate coefficient-precision effect. The 47-capture private suite also distinguishes the 512-frame slice from a 1,024-frame slice at a host size of 1,501.
+
 ## 22 November 2026 — Crossover spacing and the two end positions
 
 With the ten-octave reference control, the upper cutoff stays at least five percentage points above the lower one. This is half an octave, or a frequency ratio of √2. The lower control has priority up to 95%, about 14,917.24 Hz. At the other end the lowest upper cutoff is about 29.1352 Hz. Independent signed stereo impulses covered 24 pairs at each of 44.1, 48 and 96 kHz. At 48/48% and 48/48.001% the effective controls were 48/53%. Separate two-band recordings reproduced these results across all nine slope pairs.
