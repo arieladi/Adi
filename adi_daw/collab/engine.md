@@ -36,6 +36,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PLAN AU-03, automation write-pass boundaries
+
+**PR requested** after the 3 December gate for `engine/au03-write-pass-boundaries` at `c85c9f3463592df295d44d5c39f714c3d3cdc735`, based on `87ea349c`. The recorder has explicit Touch and Latch modes. Latch keeps the released value at its recorded time, holds it until a new touch, and carries it across loop or locate boundaries. The transport producer supplies both native boundary positions. Stop closes the last open pass. A re-touch stays in that pass. A gap after release stores a Hold knot, so the next touch does not create an unplayed ramp. Existing Touch callers keep their release behavior.
+
+Strict GCC 14 and Clang 19 each passed four suites and 345 checks. Two loop wraps, retouch, forward locate and Stop kept their exact native clocks. The loss of the restarted Begin preserves the already completed pass and discards the affected one. Backward old-clock input invalidated the whole pass. Producer allocation count was zero. The completed pass used the current native writer and retained its Hold, Undo and Redo bytes.
+
+Window-fn and the transport owner retain the Arm/control binding, sample boundary dispatch and Punch gate. The measured Live mouse latch in its loop is available through explicit Latch. ADR-0124 groups a completed pass as one Undo. Shared exterior pass guards and bounded thinning are separate engine changes.
+
 ## 2026-11-22 — PLAN AU-02, guarded Arrangement Insert Shape
 
 **PR requested** after the 3 December gate for `engine/au02-guarded-insert-shape` at `8e44fe5281b68e0c8b5014b548fd1b156e581f4a`, based on `87ea349c`. Arrangement Insert Shape uses the shared envelope splice with both guard points and native sliced curves. The shape plays from the selection start up to its end. The old curve plays again at the end. The requested automation data ID is retained, and the committed edit is one sealed Undo step named Insert Automation Shape. A caller can pass its session rate; the project rate is the default. The separately addressed clip point path and recording producer keep their established contracts.
