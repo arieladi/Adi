@@ -11,6 +11,7 @@ add_subdirectory(src/adi/mix/focus)
 add_subdirectory(src/adi/mix/eq_chain)
 add_subdirectory(src/adi/mix/compressor)
 add_subdirectory(src/adi/mix/filters)
+add_subdirectory(src/adi/mix/gate)
 add_subdirectory(src/adi/mix/key_eq)
 add_subdirectory(src/adi/mix/clean_key)
 add_subdirectory(src/adi/mix/opto)
@@ -69,3 +70,7 @@ target_link_libraries(adi_mix_clean_key_tests PRIVATE adi_mix_clean_key adi_warn
 add_test(NAME adi_mix_clean_key_tests COMMAND adi_mix_clean_key_tests)
 
 adi_add_opto_gain_tests()
+
+add_executable(adi_mix_gate_tests tests/test_mix_gate.cpp)
+target_link_libraries(adi_mix_gate_tests PRIVATE adi_mix_gate adi_warnings)
+add_test(NAME adi_mix_gate_tests COMMAND adi_mix_gate_tests)
