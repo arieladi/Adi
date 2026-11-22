@@ -15,15 +15,40 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <new>
 #include <numbers>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace {
+thread_local bool auditingStackDemandIds = false;
+thread_local unsigned stackDemandIdAllocations = 0;
+}
+void *operator new(std::size_t bytes) {
+    if (auditingStackDemandIds && bytes == sizeof(std::int64_t)) ++stackDemandIdAllocations;
+    if (auto *memory = std::malloc(bytes ? bytes : 1)) return memory;
+    throw std::bad_alloc();
+}
+void *operator new[](std::size_t bytes) { return operator new(bytes); }
+void *operator new(std::size_t bytes, const std::nothrow_t &) noexcept {
+    try { return operator new(bytes); }
+    catch (...) { return nullptr; }
+}
+void *operator new[](std::size_t bytes, const std::nothrow_t &tag) noexcept { return operator new(bytes, tag); }
+void operator delete(void *memory) noexcept { std::free(memory); }
+void operator delete[](void *memory) noexcept { std::free(memory); }
+void operator delete(void *memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void *memory, std::size_t) noexcept { std::free(memory); }
+void operator delete(void *memory, const std::nothrow_t &) noexcept { std::free(memory); }
+void operator delete[](void *memory, const std::nothrow_t &) noexcept { std::free(memory); }
 
 using namespace adi;
 using namespace adi::ui;
@@ -1225,8 +1250,20 @@ void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &d
     int acquisitions = 0;
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
                           document->views(), document->sessionState(), "stack-limiter-reduction");
-    root.devices.publication = [&] { return document->parameterFeed().current(); };
-    root.devices.parameterDemand = [&](const void *owner, const auto &ids) { document->setParameterDemand(owner, ids); };
+    bool auditFrame = false;
+    unsigned publicationReads = 0, demandUpdates = 0;
+    std::size_t demandedCount = 0;
+    root.devices.publication = [&] {
+        if (auditFrame && ++publicationReads == 2) auditingStackDemandIds = false;
+        auto picture = document->parameterFeed().current();
+        if (auditFrame && publicationReads == 1) auditingStackDemandIds = true;
+        return picture;
+    };
+    root.devices.parameterDemand = [&](const void *owner, const auto &ids) {
+        ++demandUpdates;
+        demandedCount = ids.size();
+        document->setParameterDemand(owner, ids);
+    };
     root.state().mixView = true;
     root.state().mixViewTab = static_cast<int>(MixViewPanel::Tab::Stack);
     root.arrangement.geometry.selection.track = 2;
@@ -1255,6 +1292,29 @@ void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &d
     check(found != nullptr, "the reduction plot lives in the existing Stack device card");
     if (!found) return;
     juce::Component::SafePointer<DevicePanelView> card(found);
+    surface.frameAt(root.reader(), 505);
+    const auto steadyUpdates = demandUpdates;
+    bool demandScanReached = true;
+    stackDemandIdAllocations = 0;
+    auditFrame = true;
+    for (const auto at : {506, 507, 508, 509}) {
+        // Bracket the demand scan before the second publication read, so card text and
+        // rendering allocations do not contribute to the per-device allocation count.
+        publicationReads = 0;
+        surface.frameAt(root.reader(), at);
+        auditingStackDemandIds = false;
+        demandScanReached = demandScanReached && publicationReads >= 2;
+    }
+    auditFrame = false;
+    const bool sameCard = card && locate(locate, surface) == card.getComponent();
+    if (!demandScanReached || demandUpdates != steadyUpdates || demandedCount != 1 || !sameCard)
+        std::printf("STACK idle fixture: demand scan reached=%d, last reads=%u, demand=%u/%u, IDs=%zu, same card=%d\n",
+                    demandScanReached, publicationReads, demandUpdates, steadyUpdates, demandedCount, sameCard);
+    if (stackDemandIdAllocations != 0)
+        std::printf("STACK idle device-ID allocations: %u\n", stackDemandIdAllocations);
+    check(demandScanReached && demandUpdates == steadyUpdates && demandedCount == 1 && sameCard,
+          "unchanged Stack frames keep the same view and native parameter demand");
+    check(stackDemandIdAllocations == 0, "the steady Stack demand scan allocates no temporary device IDs");
     const auto paint = [](DevicePanelView &panel) {
         juce::Image image(juce::Image::RGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType());
         juce::Graphics g(image);
@@ -1293,12 +1353,15 @@ void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &d
     surface.model().setBaseHeight(184, 980);
     surface.frameAt(root.reader(), 1330);
     check(mailbox->observed() && acquisitions == 2, "re-expansion reacquires an empty observation");
+    const auto beforeFold = demandUpdates;
     root.devices.fold(device);
     surface.frameAt(root.reader(), 1360);
     check(!mailbox->observed(), "folded Limiter has no reduction subscription");
+    check(demandUpdates == beforeFold + 1 && demandedCount == 0, "folding releases parameter demand once");
     root.devices.fold(device);
     surface.frameAt(root.reader(), 1600);
     check(mailbox->observed() && acquisitions == 3, "unfolding reopens one subscription");
+    check(demandUpdates == beforeFold + 2 && demandedCount == 1, "unfolding restores parameter demand once");
     surface.filterChannels(std::nullopt);
     surface.setSize(1200, 165);
     surface.frameAt(root.reader(), 1640);
