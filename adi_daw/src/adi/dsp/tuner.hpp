@@ -47,8 +47,8 @@ public:
     };
 
     Tuner();
-    /// Message thread: allocates the detector's window.
-    void prepare(double sampleRate);
+    /// Message thread: allocates the detector's window; never throws.
+    void prepare(double sampleRate) noexcept;
     void set(Param, double) noexcept;
     [[nodiscard]] double value(Param p) const noexcept { return p_[static_cast<std::size_t>(p)]; }
     [[nodiscard]] int latency() const noexcept { return 0; }
