@@ -164,7 +164,35 @@ void blocksAndRobustness() {
 
 }  // namespace
 
+/// Output moved at a tone's peak glides: the largest step while it moves
+/// stays within the signal's own, before or after.
+void glides() {
+    E e;
+    e.set(E::Output, -15);
+    e.prepare(48000);
+    std::vector<float> x(96000), l(96000), r(96000);
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        x[i] = static_cast<float>(0.4 * std::sin(2 * std::numbers::pi * 110 * static_cast<double>(i) / 48000));
+    }
+    constexpr std::size_t at = 48109;   // the tone's peak
+    e.process(x.data(), x.data(), l.data(), r.data(), at);
+    e.set(E::Output, 6);
+    e.process(x.data() + at, x.data() + at, l.data() + at, r.data() + at, x.size() - at);
+    double moving = 0, settled = 0;
+    for (std::size_t i = at; i < at + 4800; ++i) {
+        moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+    }
+    for (std::size_t i = 24000; i < 48000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+    }
+    for (std::size_t i = 72000; i < 96000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+    }
+    check(moving <= 1.5 * settled, "Output glides: no step past the signal's own (" + std::to_string(moving) + " against " + std::to_string(settled) + ")");
+}
+
 int main() {
+    glides();
     bands();
     blocksAndRobustness();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
