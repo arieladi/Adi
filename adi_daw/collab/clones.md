@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Manual input modulation of the Crush Hold rate
+
+The clones seat takes the per-band Hold follower in the ADI-Shaper DSP, Pd canvas and device tests. Controls 877–903 cover each band's enable, mode, amount, depth, offset, threshold, attack, hold and release. An older state restores all three followers off. This addition lands after 3 December. The three copies use the same manual detector law as Width.
+
+The original takes the louder absolute channel in the band. With current envelope E, normalized base height B, amount A and depth D in {2, 4, 8}, Add applies B + D(2A−1)E and Multiply applies BDAE. Offset moves this result by twice its normalized departure from halfway, followed by limiting to [0,1]. At base 0.5, amount 0.39, depth 2 and sustained half-scale, Add yields about 0.28. At base 0.5 and amount 0.8, Multiply yields about 0.4. A signed full-band stereo fixture discriminated the current frame from either adjacent frame at three sample rates. The falling response and positive-window retention use the separate Width acceptance fixtures above.
+
+Tests must cover both signs of Add, Multiply, offsets, threshold, different band inputs, flat and moving base contours, equal-state native and Pd renders, old-state recall, and registered kick and bass at 256 and 2,048 frames. Automatic release, other detector filter settings and soft knees need separate readings.
+
 ## 22 November 2026 — Clock precision across the weighted historical device
 
 The fixed-order result is 40/873 before and after the clock repair. Restoring all newly measured source-order routes brings the comparison to 43/873 before and after. The earlier 42/873 total used a fixed-order fallback for one program. Its fallback RMS was 0.00143269, its old clock with the restored order was already 0.000996198, and its corrected clock with that order is 0.000996307. No program crossed 0.001 because of the clock change. The earlier group of 81 kept its one match on both routes.
