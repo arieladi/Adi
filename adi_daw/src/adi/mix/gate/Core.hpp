@@ -17,10 +17,12 @@ enum class Status {
     InvalidBuffers,
     AllocationFailed
 };
+enum class ProcessingContract { Incremental, CompleteRequests };
 struct PrepareSpec {
     double sampleRate = 48000;
     std::int32_t maximumFrames = 512;
     std::int32_t mainChannels = 2;
+    ProcessingContract contract = ProcessingContract::Incremental;
 };
 struct BlockContext {
     std::uint64_t epoch = 0, sequence = 0;
@@ -50,7 +52,9 @@ class Core final {
     [[nodiscard]] Status prepare(const PrepareSpec &, const Settings & = {}) noexcept;
     // Stopped processing restart at the same float-rounded rate/layout. Keeps
     // settings and adaptive caches, resets signal histories as reset does.
-    // Capacity may change without allocation. Refusal preserves the old stream.
+    // Incremental capacity changes do not allocate. CompleteRequests stages
+    // scratch growth before committing. Contract changes require fresh prepare.
+    // Refusal or allocation failure preserves the entire old stream.
     [[nodiscard]] Status reprepare(const PrepareSpec &) noexcept;
     // Clears holds, hysteresis and block context; envelope baselines are applied
     // at the next processed sample. Adaptive lookup/coefficient caches survive.
@@ -77,6 +81,19 @@ class Core final {
     [[nodiscard]] Status process(const BlockContext &, std::int32_t offset, std::int32_t frames,
                                  double *const *main, const double *const *key, std::int32_t keyChannels,
                                  const Settings &) noexcept;
+
+    // CompleteRequests only: one complete, currently available graph request.
+    // Pointers start at this request; no subsequent input is read. This need not
+    // be an entire hardware callback. The caller owns request boundaries: each
+    // starts the adaptive cadence at zero, and splitting a request can change
+    // its full-span near-baseline alias decision. No partition-invariance claim.
+    // Captures the full key before main writes. Buffer/sample rules above apply.
+    // An aliased envelope preserves its pending reset and adaptive history.
+    // Mixing this entry with beginBlock/process is refused without mutation.
+    [[nodiscard]] Status processRequest(std::int32_t frames, float *const *main, const float *const *key,
+                                        std::int32_t keyChannels, const Settings &) noexcept;
+    [[nodiscard]] Status processRequest(std::int32_t frames, double *const *main, const double *const *key,
+                                        std::int32_t keyChannels, const Settings &) noexcept;
 
   private:
     struct Impl;
