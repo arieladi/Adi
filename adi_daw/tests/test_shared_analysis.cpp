@@ -3424,6 +3424,91 @@ void spectrumLevels() {
           "hiding the final Spectrum releases the shared tap and level history");
 }
 
+void spectrumSamplePeaksAndClips() {
+    constexpr int window = 480, hop = window / 2;
+    constexpr auto extreme = std::numeric_limits<float>::max();
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window, SharedAnalysis::Channel::Left};
+    request.hopSize = hop;
+    auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+    request.outputs = SharedAnalysis::Meters;
+    auto meters = f.broker.acquire(request);
+    std::array<float, window> left{}, right{};
+    const auto write = [&](int count, std::int64_t stamp, std::uint64_t revision = 1) {
+        f.tap->write(left.data(), right.data(), count, stamp, true, revision);
+    };
+    const auto agrees = [](const auto &picture, std::array<float, 2> peak, std::array<std::uint64_t, 2> clips) {
+        return picture && picture->spectrumLevels && picture->spectrumLevels->samplePeak == peak &&
+               picture->spectrumLevels->sampleClips == clips;
+    };
+
+    left.fill(1.5f);
+    right.fill(-4.f);
+    write(window, 0);
+    levels.setSpectrumLevelsEnabled(true);
+    f.broker.pump();
+    const auto excluded = raw.read();
+    const auto before = f.broker.stats();
+    check(excluded && !excluded->spectrumLevels && excluded->clippedSamples == 2 * window,
+          "held sample levels exclude unread audio already at the writer when admitted");
+
+    left.fill(.25f);
+    right.fill(.5f);
+    left[0] = 1.f;
+    left[1] = -1.f;
+    left[3] = 1.125f;
+    left[4] = -extreme;
+    left[5] = std::numeric_limits<float>::quiet_NaN();
+    left[6] = std::numeric_limits<float>::infinity();
+    right[0] = -1.f;
+    right[1] = -1.25f;
+    right[7] = std::nextafter(1.f, 0.f);
+    right[8] = -std::numeric_limits<float>::infinity();
+    write(hop, window);
+    f.broker.pump();
+    const auto peak = levels.read();
+    check(agrees(peak, {extreme, 1.25f}, {2, 1}) && peak == raw.read(),
+          "held sample levels preserve the finite peak per lane and count each strict over once");
+    check(peak && peak == meters.read() && peak->clippedSamples == 2 * hop + 6 && peak->nonFiniteSamples == 3,
+          "current-window Meters still count both full-scale polarities and exclude invalid samples");
+
+    left.fill(.25f);
+    right.fill(.5f);
+    write(window, window + hop);
+    f.broker.pump();
+    const auto held = levels.read();
+    const auto after = f.broker.stats();
+    check(agrees(held, {extreme, 1.25f}, {2, 1}) && held->clippedSamples == 0,
+          "the level interval holds its peak and count after hot samples leave the overlapping FFT window");
+    check(after.taps == before.taps && after.domains == before.domains &&
+              after.spectralPlans == before.spectralPlans && after.transforms == before.transforms + 3,
+          "sample level statistics reuse the active tap, domain and one transform per audible hop");
+
+    right.fill(-1.f);
+    write(window, 10000, 2);
+    f.broker.pump();
+    const auto sought = levels.read();
+    check(agrees(sought, {.25f, 1.f}, {0, 0}) && held && sought->sourceEpoch > held->sourceEpoch &&
+              sought->clippedSamples == window,
+          "the new transport interval clears held peaks and strict overs while Meters still counts equality");
+
+    levels.setSpectrumLevelsEnabled(false);
+    left.fill(1.5f);
+    right.fill(-4.f);
+    write(hop, 10000 + window, 2);
+    f.broker.pump();
+    const auto disabled = raw.read();
+    check(disabled && !disabled->spectrumLevels && f.broker.stats().spectrumLevelHistories == 0,
+          "turning off the last sample-level reader drops the held statistics while Spectrum stays live");
+    levels.setSpectrumLevelsEnabled(true);
+    left.fill(.125f);
+    right.fill(.25f);
+    write(hop, 10000 + window + hop, 2);
+    f.broker.pump();
+    check(agrees(levels.read(), {.125f, .25f}, {0, 0}),
+          "a new statistics request after disable starts at its own writer fence");
+}
+
 void parkedSpectrumLevels() {
     constexpr int window = 480, hop = 240, block = 401, blocks = 33;
     constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
@@ -3461,6 +3546,10 @@ void parkedSpectrumLevels() {
               resumed->sourceEpoch == start->sourceEpoch && resumed->overrunCount == start->overrunCount &&
               resumed->spectrumLevels->integratedRms == oracle->spectrumLevels->integratedRms &&
               resumed->spectrumLevels->maxCrestDb == oracle->spectrumLevels->maxCrestDb &&
+              resumed->spectrumLevels->samplePeak == std::array{.5f, .5f} &&
+              resumed->spectrumLevels->samplePeak == oracle->spectrumLevels->samplePeak &&
+              resumed->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{} &&
+              resumed->spectrumLevels->sampleClips == oracle->spectrumLevels->sampleClips &&
               resumed->spectrumLevels->maxCrestDb.front() > 0.,
           "parked levels count the omitted zeros for the exact uninterrupted RMS and crest on wake");
 }
@@ -4754,7 +4843,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedWindowHopPhase(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); parkedSpectrumLevels(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); parkedSpectrumLevels(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -97,6 +97,8 @@ class SharedAnalysis final {
     };
     struct SpectrumLevels {
         std::array<double, 2> integratedRms{}, maxCrestDb{};
+        std::array<float, 2> samplePeak{};
+        std::array<std::uint64_t, 2> sampleClips{};
     };
     struct Result {
         Request request;

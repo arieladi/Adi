@@ -2135,6 +2135,8 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         const auto correlation = [&] { return statistic("Stereo Correlation"); };
         const auto integratedRms = [&] { return statistic("Integrated RMS"); };
         const auto maxCrest = [&] { return statistic("Max Crest"); };
+        const auto samplePeak = [&] { return statistic("Sample Peak"); };
+        const auto sampleClips = [&] { return statistic("Sample Clips"); };
         std::uint64_t stereoRevision = 4;
         const auto sendLevels = [&](float left, float right, bool newEpoch = false) {
             const auto tap = tapFor(main);
@@ -2151,7 +2153,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         pages.setPage(Page::Spectrum);
         choose(false);
         check(balance().isEmpty() && correlation().isEmpty() && integratedRms().isEmpty() && maxCrest().isEmpty() &&
-                  broker->stats().spectrumLevelHistories == 0,
+                  samplePeak().isEmpty() && sampleClips().isEmpty() && broker->stats().spectrumLevelHistories == 0,
               "ordinary Spectrum has no pinned readouts or level history");
         choose(true);
         const auto plan = broker->stats();
@@ -2167,6 +2169,10 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         check(observedRms.contains("L -6.0") && observedRms.contains("R -12.0") &&
                   observedCrest.contains("L 0.0") && observedCrest.contains("R 0.0"),
               "the expanded pinned second row shows stereo integrated dBFS and maximum crest");
+        const auto observedPeak = samplePeak(), observedClips = sampleClips();
+        check(observedPeak == "Sample peak  L -6.0  R -12.0 dBFS" &&
+                  observedClips == "Sample clips  L 0  R 0",
+              "expanded Spectrum reports both held sample peaks and clip counts");
         const auto published = broker->stats();
         check(published.consumers == plan.consumers && published.taps == plan.taps &&
                   published.domains == plan.domains && published.spectralPlans == plan.spectralPlans &&
@@ -2180,6 +2186,23 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
 
         const auto fullBounds = pages.getBounds();
         const auto fullBottom = pages.detail.getBottom();
+        const auto shortHeight = 2 * look::border + look::fieldHeight + look::gap +
+                                 look::mixInfoHeight + 2 * look::mixChannelRowHeight;
+        pages.setBounds(fullBounds.withHeight(shortHeight));
+        root.frame();
+        const auto shortLayout = broker->stats();
+        check(balance() == observedBalance && correlation() == observedCorrelation &&
+                  integratedRms().isEmpty() && maxCrest().isEmpty() && samplePeak().isEmpty() &&
+                  sampleClips().isEmpty() && shortLayout.stereoBalanceHistories == 1 &&
+                  shortLayout.spectrumLevelHistories == 0 && shortLayout.taps == statisticsIdle.taps &&
+                  shortLayout.consumers == statisticsIdle.consumers && shortLayout.transforms == statisticsIdle.transforms &&
+                  pages.detail.view.snapshot() == picture,
+              "a shorter Spectrum keeps balance and correlation and drops both level rows and their history");
+        pages.setBounds(fullBounds);
+        root.frame();
+        check(samplePeak().contains("--") && sampleClips().contains("--") &&
+                  pages.detail.view.snapshot() == picture && broker->stats().spectrumLevelHistories == 1,
+              "the taller layout starts a fresh shared level interval while retaining the Spectrum picture");
         const auto firstRowWidth = 2 * look::mixChannelMinWidth + look::gap + 2 * look::border;
         pages.setBounds(fullBounds.withWidth(firstRowWidth));
         root.frame();
@@ -2189,8 +2212,9 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                   oneRow.spectrumLevelHistories == 0 && oneRow.taps == statisticsIdle.taps &&
                   oneRow.consumers == statisticsIdle.consumers && oneRow.transforms == statisticsIdle.transforms &&
                   oneRow.spectralPlans == statisticsIdle.spectralPlans && pages.detail.view.snapshot() == picture &&
-                  pages.detail.getBottom() == fullBottom + look::mixChannelRowHeight,
-              "the intermediate width keeps balance and correlation and releases the second row alone");
+                  pages.detail.getBottom() == fullBottom + 2 * look::mixChannelRowHeight &&
+                  samplePeak().isEmpty() && sampleClips().isEmpty(),
+              "the intermediate width keeps balance and correlation and releases the shared level readings");
         pages.setBounds(fullBounds.withWidth(look::mixChannelMinWidth));
         root.frame();
         const auto compact = broker->stats();
@@ -2203,13 +2227,15 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         root.frame();
         check(!observedBalance.isEmpty() && balance() == observedBalance && correlation() == observedCorrelation &&
                   integratedRms().contains("--") && maxCrest().contains("--") &&
+                  samplePeak().contains("--") && sampleClips().contains("--") &&
                   pages.detail.view.snapshot() == picture && broker->stats().spectrumLevelHistories == 1,
               "expanding the panel preserves its picture while admitting a fresh level interval");
         bool wroteReopened = true;
         for (int block = 0; block < 4; ++block) wroteReopened = sendLevels(.5f, -.25f) && wroteReopened;
         const auto reopenedPicture = pages.detail.view.snapshot();
         check(wroteReopened && reopenedPicture && reopenedPicture != picture &&
-                  integratedRms() == observedRms && maxCrest() == observedCrest,
+                  integratedRms() == observedRms && maxCrest() == observedCrest &&
+                  !observedPeak.isEmpty() && samplePeak() == observedPeak && sampleClips() == observedClips,
               "new audio restores the level values after the row reopens");
 
         const auto freeze = [&](bool value) {
@@ -2223,11 +2249,13 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                   pages.detail.view.snapshot() == reopenedPicture && !observedBalance.isEmpty() &&
                   balance() == observedBalance && correlation() == observedCorrelation &&
                   !observedRms.isEmpty() && integratedRms() == observedRms && maxCrest() == observedCrest &&
+                  !observedPeak.isEmpty() && samplePeak() == observedPeak && sampleClips() == observedClips &&
                   broker->stats().spectrumLevelHistories == 0,
               "Freeze preserves the same statistics and releases their existing Spectrum demand");
         freeze(false);
         check(!balance().contains("L 6.0") && !correlation().contains("-1.00") &&
-                  !integratedRms().contains("-6.0") && !maxCrest().contains("0.0"),
+                  !integratedRms().contains("-6.0") && !maxCrest().contains("0.0") &&
+                  samplePeak().contains("--") && sampleClips().contains("--"),
               "resuming clears frozen numbers until a fresh Spectrum window arrives");
         const bool wroteAligned = sendLevels(.25f, .5f);
         check(wroteAligned && balance().contains("R 6.0") && correlation().contains("+1.00"),
@@ -2238,6 +2266,38 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         const bool wroteQuiet = sendLevels(0.f, 0.f, true);
         check(wroteQuiet && balance().contains("--") && correlation().contains("--"),
               "a fresh silent epoch has neither a balance direction nor stereo correlation");
+
+        if (const auto tap = tapFor(main)) {
+            std::vector<float> left(static_cast<std::size_t>(overviewFft), .25f), right(left);
+            left[0] = right[0] = 1.f;
+            left[16] = right[16] = -1.f;
+            left[26] = 1.25f;
+            left[30] = -1.5f;
+            right[26] = -2.f;
+            tap->write(left.data(), right.data(), overviewFft, tap->written(), true, stereoRevision);
+            for (int pass = 0; pass < 12; ++pass) broker->pump();
+            root.frame();
+            const auto clippedPeak = samplePeak(), clippedCount = sampleClips();
+            check(clippedPeak == "Sample peak  L +3.5  R +6.0 dBFS" &&
+                      clippedCount == "Sample clips  L 2  R 1",
+                  "sample clipping counts each strict overshoot once, including negative samples, with unity excluded");
+            const bool wroteQuieter = sendLevels(.125f, .25f);
+            const auto quietPicture = pages.detail.view.snapshot();
+            check(wroteQuieter && quietPicture && quietPicture->peak[0] == .125f && quietPicture->peak[1] == .25f &&
+                      !clippedPeak.isEmpty() && samplePeak() == clippedPeak && sampleClips() == clippedCount,
+                  "sample peaks and clip counts remain held after louder samples leave the Spectrum window");
+            choose(false);
+            check(samplePeak().isEmpty() && sampleClips().isEmpty() && broker->stats().spectrumLevelHistories == 0,
+                  "turning off pinned Spectrum drops its held sample statistics");
+            choose(true);
+            check(samplePeak().contains("--") && sampleClips().contains("--"),
+                  "reopening pinned Spectrum waits for data from a fresh sample interval");
+            check(sendLevels(.125f, .25f) && samplePeak() == "Sample peak  L -18.1  R -12.0 dBFS" &&
+                      sampleClips() == "Sample clips  L 0  R 0",
+                  "the reopened level interval does not keep peaks or clips from the old one");
+        } else {
+            check(false, "the sample statistics oracle has its primary source");
+        }
 
         const bool balanceSourceSelected = select(pages.sourceBox, "Pinned 12");
         const bool infoWasVisible = commands.infoView();
@@ -2314,7 +2374,8 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                   !attached(first) && !attached(wide) && hiddenIdle.workerPasses == hidden.workerPasses &&
                   hiddenIdle.transforms == hidden.transforms && hiddenIdle.publications == hidden.publications &&
                   hiddenIdle.stereoBalanceHistories == 0 && hiddenIdle.spectrumLevelHistories == 0 &&
-                  integratedRms().isEmpty() && maxCrest().isEmpty(),
+                  integratedRms().isEmpty() && maxCrest().isEmpty() && samplePeak().isEmpty() &&
+                  sampleClips().isEmpty(),
               "a hidden Spectrum exposes no readouts and adds no worker activity");
     }
     detachPeer();

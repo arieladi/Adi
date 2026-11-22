@@ -358,8 +358,11 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         integratedRms_.setTooltip("Left and right integrated RMS since this level interval began.");
         maxCrest_.setTitle("Max Crest");
         maxCrest_.setTooltip("Highest left and right crest factors in this level interval.");
-        addChildComponent(integratedRms_);
-        addChildComponent(maxCrest_);
+        samplePeak_.setTitle("Sample Peak");
+        samplePeak_.setTooltip("Highest left and right sample peaks in this level interval.");
+        sampleClips_.setTitle("Sample Clips");
+        sampleClips_.setTooltip("Number of left and right samples with magnitude above full scale in this level interval.");
+        for (auto *label : {&integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_}) addChildComponent(*label);
         refreshAppearance();
     }
 
@@ -384,14 +387,14 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         }
         balance_.setText("RMS balance " + balance, juce::dontSendNotification);
         correlation_.setText("Correlation " + correlation, juce::dontSendNotification);
-        if (levelRowVisible_)
+        if (levelRowsVisible_)
             presentLevels(window && !window.owner_before(levelsBeforeAdmission_) &&
                           !levelsBeforeAdmission_.owner_before(window) ? nullptr : window.get());
     }
 
-    void setLevelRowVisible(bool visible, const std::shared_ptr<const SharedAnalysis::Result> &current) {
-        if (levelRowVisible_ == visible) return;
-        levelRowVisible_ = visible;
+    void setLevelRowsVisible(bool visible, const std::shared_ptr<const SharedAnalysis::Result> &current) {
+        if (levelRowsVisible_ == visible) return;
+        levelRowsVisible_ = visible;
         if (visible) {
             // The curve can remain on screen when a new level interval is admitted.
             // Its old integrated readings do not belong to the new interval.
@@ -400,15 +403,14 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         } else {
             levelsBeforeAdmission_.reset();
         }
-        integratedRms_.setVisible(visible);
-        maxCrest_.setVisible(visible);
+        for (auto *label : {&integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_}) label->setVisible(visible);
     }
 
     void refreshAppearance() {
         const std::pair appearance{look::themeId(), look::densityId()};
         if (appearance_ == appearance) return;
         appearance_ = appearance;
-        for (auto *label : {&balance_, &correlation_, &integratedRms_, &maxCrest_}) {
+        for (auto *label : {&balance_, &correlation_, &integratedRms_, &maxCrest_, &samplePeak_, &sampleClips_}) {
             label->setFont(look::font(look::fontCaption));
             label->setColour(juce::Label::textColourId, look::textDim);
         }
@@ -422,17 +424,27 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         };
         auto area = getLocalBounds();
         placeRow(area.removeFromTop(look::mixChannelRowHeight), balance_, correlation_);
-        if (levelRowVisible_) placeRow(area, integratedRms_, maxCrest_);
+        if (levelRowsVisible_) {
+            placeRow(area.removeFromTop(look::mixChannelRowHeight), integratedRms_, maxCrest_);
+            placeRow(area, samplePeak_, sampleClips_);
+        }
     }
     void visibilityChanged() override { if (!isShowing()) present({}); }
 
   private:
     void presentLevels(const SharedAnalysis::Result *window) {
         std::array<juce::String, 2> rms{"--", "--"}, crest{"--", "--"};
+        std::array<juce::String, 2> peak{"--", "--"}, clips{"--", "--"};
         if (window && window->spectrumLevels) {
             const auto &levels = *window->spectrumLevels;
             const auto text = [](double db) { return juce::String(std::abs(db) < .05 ? 0. : db, 1); };
             for (std::size_t channel = 0; channel < rms.size(); ++channel) {
+                const auto samplePeak = levels.samplePeak[channel];
+                if (std::isfinite(samplePeak) && samplePeak > 0.f) {
+                    const double db = 20. * std::log10(static_cast<double>(samplePeak));
+                    peak[channel] = juce::String(db >= .05 ? "+" : "") + text(db);
+                }
+                clips[channel] = juce::String(static_cast<juce::uint64>(levels.sampleClips[channel]));
                 const auto magnitude = levels.integratedRms[channel];
                 if (!std::isfinite(magnitude) || magnitude <= 0.) continue;
                 rms[channel] = text(20. * std::log10(magnitude));
@@ -443,12 +455,14 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         integratedRms_.setText("Integrated RMS  L " + rms[0] + "  R " + rms[1] + " dBFS",
                                juce::dontSendNotification);
         maxCrest_.setText("Max crest  L " + crest[0] + "  R " + crest[1] + " dB", juce::dontSendNotification);
+        samplePeak_.setText("Sample peak  L " + peak[0] + "  R " + peak[1] + " dBFS", juce::dontSendNotification);
+        sampleClips_.setText("Sample clips  L " + clips[0] + "  R " + clips[1], juce::dontSendNotification);
     }
 
-    juce::Label balance_, correlation_, integratedRms_, maxCrest_;
+    juce::Label balance_, correlation_, integratedRms_, maxCrest_, samplePeak_, sampleClips_;
     std::optional<std::pair<ThemeId, DensityId>> appearance_;
     std::weak_ptr<const SharedAnalysis::Result> last_, levelsBeforeAdmission_;
-    bool levelRowVisible_ = false;
+    bool levelRowsVisible_ = false;
 };
 
 MixAnalysers::MixAnalysers() {
@@ -748,13 +762,13 @@ void MixAnalysers::resized() {
     const bool showStatistics = hasPinnedSpectrum_ && showsTrace &&
         area.getWidth() >= 2 * look::mixChannelMinWidth + look::gap && area.getHeight() >= 2 * look::mixChannelRowHeight;
     const bool showLevels = showStatistics && area.getWidth() >= 2 * look::mixChannelMaxWidth + look::gap &&
-        area.getHeight() >= look::mixInfoHeight + 2 * look::mixChannelRowHeight;
+        area.getHeight() >= look::mixInfoHeight + 3 * look::mixChannelRowHeight;
     spectrumStatistics_->setVisible(showStatistics);
-    spectrumStatistics_->setLevelRowVisible(showLevels, detail.view.snapshot());
+    spectrumStatistics_->setLevelRowsVisible(showLevels, detail.view.snapshot());
     detail.view.setSpectrumLevelsEnabled(showLevels);
     detail.view.setStereoBalanceEnabled(showStatistics);
     if (showStatistics)
-        spectrumStatistics_->setBounds(area.removeFromBottom((showLevels ? 2 : 1) * look::mixChannelRowHeight));
+        spectrumStatistics_->setBounds(area.removeFromBottom((showLevels ? 3 : 1) * look::mixChannelRowHeight));
     if (page_ == Page::Analysis) { table_->setBounds(area); return; }
     if (page_ == Page::Compare) { compare_->setBounds(area); return; }
     if (page_ != Page::All) { detail.setBounds(area); return; }

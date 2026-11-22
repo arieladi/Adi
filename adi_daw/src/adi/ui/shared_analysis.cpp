@@ -482,9 +482,11 @@ class SpectrumLevelHistory {
     std::uint64_t frames_ = 0;
     Stereo integrated_{}, rolling_{}, crest_{1., 1.}, crestSquared_{1., 1.};
     std::array<std::size_t, 2> rollingNonzero_{};
+    std::array<float, 2> samplePeak_{};
+    std::array<std::uint64_t, 2> sampleClips_{};
 
-    static double power(float sample) noexcept {
-        return std::isfinite(sample) ? static_cast<double>(sample) * sample : 0.;
+    static float magnitude(float sample) noexcept {
+        return std::isfinite(sample) ? std::abs(sample) : 0.f;
     }
 
   public:
@@ -500,6 +502,7 @@ class SpectrumLevelHistory {
         position_ = 0; frames_ = 0;
         integrated_ = {}; rolling_ = {}; crest_ = {1., 1.}; crestSquared_ = {1., 1.};
         rollingNonzero_ = {}; completed.reset();
+        samplePeak_ = {}; sampleClips_ = {};
     }
     void startAt(std::int64_t admission) noexcept { admission_ = admission; reset(); }
     bool silent() const noexcept { return integrated_[0] == 0. && integrated_[1] == 0.; }
@@ -523,12 +526,16 @@ class SpectrumLevelHistory {
             std::int64_t{0}, static_cast<std::int64_t>(left.size())));
         for (std::size_t i = begin; i < left.size(); ++i) {
             const auto previous = frames_ < powers_.size() ? Stereo{} : powers_[position_];
-            const Stereo next{power(left[i]), power(right[i])};
-            powers_[position_] = next;
-            if (++position_ == powers_.size()) position_ = 0;
+            const std::array amplitude{magnitude(left[i]), magnitude(right[i])};
+            auto &next = powers_[position_];
             ++frames_;
             const auto count = static_cast<double>(frames_);
             for (std::size_t c = 0; c < next.size(); ++c) {
+                const float peak = amplitude[c];
+                const double power = static_cast<double>(peak) * peak;
+                next[c] = power;
+                samplePeak_[c] = std::max(samplePeak_[c], peak);
+                sampleClips_[c] += static_cast<std::uint64_t>(peak > 1.f);
                 integrated_[c] += next[c];
                 rollingNonzero_[c] -= static_cast<std::size_t>(previous[c] > 0.);
                 rollingNonzero_[c] += static_cast<std::size_t>(next[c] > 0.);
@@ -544,12 +551,15 @@ class SpectrumLevelHistory {
                     }
                 }
             }
+            if (++position_ == powers_.size()) position_ = 0;
         }
     }
 
     void completeWindow() noexcept {
         if (frames_ == 0) return;
         completed.emplace();
+        completed->samplePeak = samplePeak_;
+        completed->sampleClips = sampleClips_;
         for (std::size_t c = 0; c < integrated_.size(); ++c) {
             completed->integratedRms[c] = std::sqrt(integrated_[c] / static_cast<double>(frames_));
             completed->maxCrestDb[c] = 20. * std::log10(crest_[c]);
