@@ -98,6 +98,9 @@ using EventSourceFn = std::function<std::optional<EventSourceBinding>(const Node
 /// is `tap`, unless the send's own node plays what comes after it: the
 /// session's Post send plays its source's strip, so it reads before the strip.
 using TapFn = std::function<Node*(std::int64_t trackId, Tap tap)>;
+using DeviceKeyFn = std::function<Node*(std::int64_t deviceId)>;
+// nullopt = unavailable; an engaged null pointer = the track junction.
+using KeyTapFn = std::function<std::optional<Node*>(std::int64_t trackId, Tap tap)>;
 
 /// The node a send plays through, by its routing row (ADR-0203 d3): its
 /// level, pan and switch. Caller-owned and kept across rebuilds, as a strip
@@ -141,6 +144,9 @@ struct RealizeOptions {
 
     /// Unset means every tap is the chain's tail.
     TapFn tapFor;
+    // Unlike sends, keys use the real Post Mixer endpoint, including solo.
+    KeyTapFn keyTapFor;
+    DeviceKeyFn keyDeviceFor;
 
     /// Unset means no send can be made, and each is named.
     SendFn sendFor;
@@ -212,7 +218,12 @@ public:
         std::int64_t toTrack = 0;
         std::uint8_t bus = 0;
         std::uint32_t wire = 0;
+        std::int64_t routing = 0, device = 0;
+        std::uint8_t tap = 0;
         friend bool operator<(const EdgeKey& a, const EdgeKey& b) noexcept {
+            if (a.routing != b.routing) return a.routing < b.routing;
+            if (a.device != b.device) return a.device < b.device;
+            if (a.tap != b.tap) return a.tap < b.tap;
             if (a.fromTrack != b.fromTrack) return a.fromTrack < b.fromTrack;
             if (a.toTrack != b.toTrack) return a.toTrack < b.toTrack;
             if (a.bus != b.bus) return a.bus < b.bus;

@@ -13,8 +13,9 @@ struct PreparedFunctionEdit {
 // Adds one function at the root chain's function tail. EQ precedes that tail, Limiter follows
 // it, and newly added middle functions preserve addition order before Limiter. Existing manual
 // positions are never moved to impose a default. Availability is supplied by the actual factory.
+// The owner also supplies any device identity retained beyond the current SQL rows, such as for Undo.
 [[nodiscard]] PreparedFunctionEdit prepareFunctionInsert(Store &, Function, std::int64_t track,
-                                                        bool engineAvailable);
+                                                        bool engineAvailable, std::int64_t retainedDeviceId = 0);
 // Moves an existing native function inside the same owning channel, including among ordinary
 // devices. An absent before target appends to the root chain. Identity/state are not recreated.
 [[nodiscard]] PreparedFunctionEdit prepareFunctionMove(Store &, std::int64_t device,

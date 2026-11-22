@@ -124,7 +124,16 @@ struct Index::Impl {
     std::jthread worker;
     WorkerStats counts;
     bool active = false;
-    void enqueue(const Key& key) { if (queued.insert(key).second) queue.push_back(key); }
+    void enqueue(const Key& key) {
+        const auto [position, inserted] = queued.insert(key);
+        if (!inserted) return;
+        try {
+            queue.push_back(key);
+        } catch (...) {
+            queued.erase(position);
+            throw;
+        }
+    }
     void run(std::stop_token stop) {
         const bool priority = lowerWorkerPriority();
         std::unique_lock lock(mutex); counts.lowPriority = priority;
@@ -262,14 +271,39 @@ ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std
         struct Item { std::string path,key; Metadata meta; };
         std::vector<Item> items; std::set<std::string> keys;
         report();
-        for (const auto& file : fs::recursive_directory_iterator(start)) {
+        std::vector<fs::directory_iterator> directories;
+        directories.emplace_back(start);
+        const fs::directory_iterator end;
+        while (!directories.empty()) {
             checkpoint();
-            ++progress.visited;
+            auto& parent = directories.back();
+            if (parent == end) {
+                directories.pop_back();
+                continue;
+            }
+            const auto file = *parent;
             std::error_code ec;
-            const bool isLink = file.is_symlink(ec);
-            const bool gone = vanished(ec, "is_symlink", file.path());
-            const bool regular = !gone && !isLink && file.is_regular_file(ec);
-            if (gone || isLink || vanished(ec, "is_regular_file", file.path()) || !regular) {
+            parent.increment(ec);
+            (void)vanished(ec, "read directory", file.path().parent_path());
+            ++progress.visited;
+            const auto status = file.symlink_status(ec);
+            if (vanished(ec, "file status", file.path())) {
+                report();
+                continue;
+            }
+            if (fs::is_directory(status)) {
+                report();
+                // Recheck after the observer. A removed child must not close
+                // its surviving parent iterator or follow a replacement symlink.
+                const auto current = fs::symlink_status(file.path(), ec);
+                if (!vanished(ec, "directory status", file.path()) && fs::is_directory(current)) {
+                    fs::directory_iterator child(file.path(), ec);
+                    if (!vanished(ec, "open directory", file.path()) && child != end)
+                        directories.push_back(std::move(child));
+                }
+                continue;
+            }
+            if (!fs::is_regular_file(status)) {
                 report();
                 continue;
             }
@@ -349,9 +383,23 @@ ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std
             const auto key=prior.getColumn(0).getString();
             if (!keys.contains(key)) { missing.reset(); missing.bind(1,volume.id); missing.bind(2,key); missing.exec(); }
         }
-        checkpoint();
-        tx.commit();
-        for (const auto& key : pending) impl_->enqueue(key);
+        // Stage the fallible queue writes before commit, while the worker is
+        // excluded by the database mutex. A refusal removes only these jobs.
+        const auto beforeQueue=impl_->queue.size();
+        try {
+            for (const auto& key : pending) {
+                checkpoint();
+                impl_->enqueue(key);
+            }
+            checkpoint();
+            tx.commit();
+        } catch (...) {
+            while (impl_->queue.size() > beforeQueue) {
+                impl_->queued.erase(impl_->queue.back());
+                impl_->queue.pop_back();
+            }
+            throw;
+        }
         result.ok=true; impl_->cv.notify_all(); return result;
     } catch (const ScanCancelled &) {
         // The transaction and mutex have already unwound. These are committed

@@ -6,9 +6,18 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <bitset>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+
+// physical() must return a default exactly (Gain Scale -100 + 300 * (200/300)
+// is 100 only when the product rounds before the add), so no fused
+// multiply-adds; cmake/mix_cores.cmake also passes -ffp-contract=off, because
+// GCC ignores this pragma.
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
 
 namespace adi::device {
 namespace {
@@ -176,28 +185,45 @@ public:
     }
     const DeviceIdentity& identity() const noexcept override {return identity_;}
     bool loaded() const noexcept override {return true;}
+    std::string_view processingIssue() const noexcept override {return backend_->processingIssue();}
     bool processesDouble() const noexcept override {return backend_->supportsDouble();}
+    void willBeHanded(engine::Precision width) override { handedWidth_=width; }
     void prepare(double rate,std::int32_t maximum) override {
-        const ReactivationGate::Hold hold(gate_);
         if(!std::isfinite(rate)||rate<=0||maximum<=0)throw std::invalid_argument("Invalid EQ prepare format");
         // A replacement graph may prepare this same retained device again.
         // That is not an authored reset: preserve its running filter/detector
         // history, pending latency plan and audio-side parameter application.
         // Explicit release and actual format changes still call Core.prepare.
-        if(prepared_&&rate==sampleRate_&&maximum==maximum_) {
+        if(prepared_&&rate==sampleRate_&&maximum==maximum_&&preparedWidth_==handedWidth_) {
             publishLatency(backend_->advertisedLatency());return;
         }
+        const ReactivationGate::Hold hold(gate_);
         prepared_=false;
+        tailRevision_.store(0, std::memory_order_release);
         refresh();backend_->prepare(rate,maximum,channels_,settings(cached_));
-        sampleRate_=rate;maximum_=maximum;prepared_=true;publishLatency(backend_->advertisedLatency());
+        sampleRate_=rate;maximum_=maximum;preparedWidth_=handedWidth_;prepared_=true;publishLatency(backend_->advertisedLatency());
     }
-    void release() override {const ReactivationGate::Hold hold(gate_);prepared_=false;backend_->release();}
+    void release() override {
+        const ReactivationGate::Hold hold(gate_);
+        prepared_=false;
+        tailRevision_.store(0, std::memory_order_release);
+        backend_->release();
+    }
+    void setOffline(bool offline) noexcept override { offline_.store(offline, std::memory_order_release); }
+    std::int64_t tailSamples() const noexcept override {
+        const auto proof = tailRevision_.load(std::memory_order_acquire);
+        if (proof && proof - 1 == revision_.load(std::memory_order_acquire) &&
+            !offline_.load(std::memory_order_acquire))
+            return 0;
+        return engine::kInfiniteTail;
+    }
     std::int32_t latencySamples() const noexcept override {return latency_.load(std::memory_order_acquire);}
     std::uint64_t latencyEpoch() const noexcept override {return latencyEpoch_.load(std::memory_order_acquire);}
     void pumpMainThread() override {
         if(!prepared_)return;
         backend_->pumpMainThread(settings(readValues()));publishLatency(backend_->advertisedLatency());
     }
+    std::int32_t sidechainInputChannels() const noexcept override {return channels_;}
     void process(const engine::NodeIo& io) noexcept override {
         const ReactivationGate::Pass pass(gate_);
         if(io.frames<=0||io.blockOffset<0)return;
@@ -231,6 +257,24 @@ public:
         if(i==count||readOnly(i)||!std::isfinite(value.normalized)||value.normalized<0||value.normalized>1)return false;
         values_[i].store(physical(i,value.normalized),std::memory_order_release);
         revision_.fetch_add(1,std::memory_order_release);return true;
+    }
+    bool supportsParameterPair(const ParameterPair& pair) const noexcept override {
+        return bandPair(indexFor(pair[0].first), indexFor(pair[1].first));
+    }
+    bool setParameterPair(const ParameterPair& pair) override {
+        const auto first = indexFor(pair[0].first);
+        const auto second = indexFor(pair[1].first);
+        const auto valid = [](double value) { return std::isfinite(value) && value >= 0.0 && value <= 1.0; };
+        if (!bandPair(first, second) || !valid(pair[0].second) || !valid(pair[1].second))
+            return false;
+        // The existing snapshot fence also covers an overlapping refresh from
+        // an earlier revision. DSP observes both values in one settings update.
+        stateVersion_.fetch_add(1, std::memory_order_acq_rel);
+        values_[first].store(physical(first, pair[0].second), std::memory_order_release);
+        values_[second].store(physical(second, pair[1].second), std::memory_order_release);
+        stateVersion_.fetch_add(1, std::memory_order_release);
+        revision_.fetch_add(1, std::memory_order_release);
+        return true;
     }
     std::string paramText(const std::string& id,double n) const override {
         const auto i=indexFor(id);if(i==count||!std::isfinite(n)||n<0||n>1)return {};
@@ -287,12 +331,20 @@ public:
         }catch(const std::exception&){return false;}
     }
 private:
+    static bool bandPair(std::size_t first, std::size_t second) noexcept {
+        const auto lower = std::min(first, second);
+        return lower >= globals && lower + 1 < extensionFirst &&
+               (lower - globals) % legacyBandFields == Frequency && std::max(first, second) == lower + 1;
+    }
     template<class Sample>void run(const engine::NodeIo& io,const Sample* const* input,Sample* const* output,
                                    const Sample* const* side,const q::Settings& desired) noexcept {
         std::array<Sample*,2> main{};std::array<const Sample*,2> key{};
         for(int ch=0;ch<channels_;++ch) {
             const auto c=static_cast<std::size_t>(ch);
-            if(!output[ch])return;
+            if (!output[ch]) {
+                tailRevision_.store(0, std::memory_order_release);
+                return;
+            }
             main[c]=output[ch]+io.blockOffset;
             const auto* source=input&&input[ch]?input[ch]+io.blockOffset:nullptr;
             if(source!=main[c]){if(source)std::copy_n(source,io.frames,main[c]);else std::fill_n(main[c],io.frames,Sample{});}
@@ -300,6 +352,11 @@ private:
         }
         backend_->process(main.data(),side?key.data():nullptr,side?channels_:0,io.frames,desired,
                           io.renderBlock,io.configuredLatency);
+        // Only the audio owner publishes the revision just processed. A newer
+        // owner edit invalidates that witness and wakes even on silent input.
+        const auto proof = !io.exporting && backend_->provesZeroTail() ? cachedRevision_ + 1 : 0;
+        if (tailRevision_.load(std::memory_order_relaxed) != proof)
+            tailRevision_.store(proof, std::memory_order_release);
     }
     Values readValues() const noexcept {
         Values result{};for(std::size_t i=0;i<count;++i)result[i]=values_[i].load(std::memory_order_acquire);return result;
@@ -315,10 +372,13 @@ private:
     }
     int channels_;double sampleRate_=0;std::int32_t maximum_=0;std::unique_ptr<mix::EqProcessingBackend> backend_;
     DeviceIdentity identity_;ReactivationGate gate_;bool prepared_=false;
+    engine::Precision handedWidth_=engine::Precision::Float32,preparedWidth_=engine::Precision::Float32;
     std::array<ParamDescriptor,count> descriptors_;std::array<std::atomic<float>,count> values_{};
     Values cached_{};std::uint64_t cachedRevision_=0;
     std::atomic<std::uint64_t> stateVersion_{0},revision_{0},latencyEpoch_{0};
     std::atomic<std::int32_t> latency_{0};Payload extra_=Payload::object();
+    std::atomic<std::uint64_t> tailRevision_{0};
+    std::atomic<bool> offline_{false};
 };
 } // namespace
 std::unique_ptr<DeviceInstance> makeMixEqFunction(const engine::DeviceRequest& request,std::string& error,
@@ -330,6 +390,29 @@ std::unique_ptr<DeviceInstance> makeMixEqFunction(const engine::DeviceRequest& r
     try {error.clear();return std::make_unique<EqDevice>(*request.ref,request.channels,std::move(backend));}
     catch(const std::exception& e){error=e.what();return {};}
 }
+std::optional<mix::eq::Settings> publishedMixEqSettings(std::span<const panel::Record> records) {
+    if (records.size() < count) return std::nullopt;
+    Values values{};
+    std::bitset<count> received;
+    for (const auto &r : records) {
+        const auto i = indexFor(r.id);
+        if (i == count) continue; // other pages in the serial device
+        if (r.missing || !std::isfinite(r.playing)) return std::nullopt;
+        values[i] = physical(i, r.playing);
+        received.set(i);
+    }
+    if (!received.all()) return std::nullopt;
+    return settings(values);
+}
+
+std::optional<MixEqCompanionEdit> mixEqNodeValue(std::size_t band, EqNodeAxis axis, float value) {
+    if (band >= q::bandCount || !std::isfinite(value)) return {};
+    const auto i = globals + band * legacyBandFields + (axis == EqNodeAxis::Frequency ? Frequency : Gain);
+    const auto &range = spec(i);
+    const auto n = normalized(range, std::clamp(value, range.low, range.high));
+    return MixEqCompanionEdit{std::to_string(i), ParamValue::withReal(n, physical(i, n))};
+}
+
 std::vector<MixEqCompanionEdit> mixEqCompanionEdits(const DeviceInstance& device,const std::string& id,
                                                  const ParamValue& desired) {
     const auto* info=mix::functionForReference(device.identity().format,device.identity().uid);

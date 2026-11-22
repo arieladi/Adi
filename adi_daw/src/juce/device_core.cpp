@@ -3,6 +3,7 @@
 // See device_core.hpp for why this file has no JUCE in it.
 
 #include "juce/device_core.hpp"
+#include "adi/audio/floating_point_control.hpp"
 
 namespace adi::device {
 
@@ -136,6 +137,7 @@ void DeviceCore::process(float* const* out, std::int32_t numOut,
     io.frames = frames;
     io.streamTimeSamples = streamTime_;
 
+    const audio::ScopedFlushDenormals flush;
     proc_->process(io);
 
     streamTime_ += frames;

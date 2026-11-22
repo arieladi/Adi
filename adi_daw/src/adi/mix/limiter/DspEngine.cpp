@@ -364,8 +364,9 @@ struct DspEngine::Implementation
     }
 
     void process(float* const* main, const float* const* sidechain, int frames, const EngineSettings& configuration,
-                 BlockContext blockContext) noexcept
+                 BlockContext blockContext, BlockReduction* measuredReduction) noexcept
     {
+        if (measuredReduction) *measuredReduction = {};
         if (main == nullptr || active == nullptr || frames <= 0) return;
         for (int channel = 0; channel < channels; ++channel) if (main[channel] == nullptr) return;
         const auto settings = validated(configuration);
@@ -392,6 +393,7 @@ struct DspEngine::Implementation
         }
         std::array<const float*, channelCapacity> input{}, detector{}, meteredOutput{};
         std::array<float*, channelCapacity> output{};
+        BlockReduction observed{0.f, measuredReduction != nullptr};
         try
         {
             for (int offset = 0; offset < frames; offset += capacity)
@@ -421,7 +423,7 @@ struct DspEngine::Implementation
                 }
                 const auto paused = pauseMeters.load(std::memory_order_relaxed);
                 const auto captureDisplay = displayHistory.beginBlock(paused);
-                const auto decay = static_cast<float>(std::exp(-count / (0.3 * rate)));
+                const auto decay = paused ? 0.f : static_cast<float>(std::exp(-count / (0.3 * rate)));
                 if (!paused)
                     for (int channel = 0; channel < channels; ++channel)
                     {
@@ -433,10 +435,21 @@ struct DspEngine::Implementation
                     }
                 updateInstance(*active, settings);
                 active->chain.setDisplayBuffer(captureDisplay ? active->display.data() : nullptr);
-                if (!active->chain.process(input.data(), active->pointers.data(), count, sidechain ? detector.data() : nullptr))
+                const auto processed = active->chain.process(input.data(), active->pointers.data(), count, sidechain ? detector.data() : nullptr);
+                if (!processed)
                     for (int channel = 0; channel < channels; ++channel) std::fill_n(active->pointers[static_cast<std::size_t>(channel)], count, 0.0f);
                 if (active->chain.needsKernelService()) notifyBackground();
-                auto gainReduction = active->chain.getGainReductionDb();
+                if (observed.available)
+                {
+                    float peakLoss = 0.f;
+                    // A pending replacement is warmed and can be mixed with a
+                    // different set of delayed samples. Neither peak alone
+                    // describes the actual transition.
+                    observed.available = processed && replacement == nullptr && active->key == key
+                        && active->chain.readPeakReduction(count, peakLoss);
+                    observed.peakLoss = std::max(observed.peakLoss, peakLoss);
+                }
+                auto gainReduction = paused ? 0.f : active->chain.getGainReductionDb();
                 if (replacement != nullptr)
                 {
                     updateInstance(*replacement, settings);
@@ -444,7 +457,7 @@ struct DspEngine::Implementation
                     if (!replacement->chain.process(input.data(), replacement->pointers.data(), count, sidechain ? detector.data() : nullptr))
                         for (int channel = 0; channel < channels; ++channel) std::fill_n(replacement->pointers[static_cast<std::size_t>(channel)], count, 0.0f);
                     if (replacement->chain.needsKernelService()) notifyBackground();
-                    gainReduction = std::max(gainReduction, replacement->chain.getGainReductionDb());
+                    if (!paused) gainReduction = std::max(gainReduction, replacement->chain.getGainReductionDb());
                 }
                 const auto changesLatency = replacement != nullptr
                     && replacement->chain.getLatencySamples() != active->chain.getLatencySamples();
@@ -504,6 +517,7 @@ struct DspEngine::Implementation
                 if (!paused) meters.gainReduction = gainReduction;
                 meterOutput(meteredOutput.data(), count, decay, paused);
             }
+            if (measuredReduction && observed.available) *measuredReduction = observed;
         }
         catch (...)
         {
@@ -582,9 +596,9 @@ void DspEngine::process(float* const* main, const float* const* sidechain, int f
     process(main, sidechain, frames, settings, beginBlock());
 }
 void DspEngine::process(float* const* main, const float* const* sidechain, int frames, const EngineSettings& settings,
-                        BlockContext blockContext) noexcept
+                        BlockContext blockContext, BlockReduction* measuredReduction) noexcept
 {
-    implementation->process(main, sidechain, frames, settings, blockContext);
+    implementation->process(main, sidechain, frames, settings, blockContext, measuredReduction);
 }
 int DspEngine::latencySamples() const noexcept { return implementation->latency.load(std::memory_order_acquire); }
 DspEngine::LatencyChange DspEngine::pendingLatencyChange() const noexcept

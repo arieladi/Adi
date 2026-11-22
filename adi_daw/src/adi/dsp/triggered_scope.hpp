@@ -45,6 +45,7 @@ class TriggeredScope final {
     // Optional original normalized equations; changes only acquisition controls
     // in output. Invalid input preserves output. Not an ADI factory preset.
     static bool mapNormalized(const Normalized &, Settings &output) noexcept;
+    static bool validSettings(const Settings &) noexcept;
     // Owner-stopped replacement; failure preserves the complete previous stream.
     bool prepare(const Settings &) noexcept;
     bool prepared() const noexcept;

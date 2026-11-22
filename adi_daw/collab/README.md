@@ -6,9 +6,9 @@ before your first commit, and re-read it if you have been away.
 
 ## Roster
 
-As of 19 November 2026 (ADR-0208, ADR-0236, ADR-0246 d4 and d5, ADR-0247 d5, ADR-0248 d3 and d14).
+As of 19 November 2026 (ADR-0208, ADR-0236, ADR-0246 d4 and d5, ADR-0247 d5, ADR-0248 d3 and d14, ADR-0249 d8).
 Each seat writes only its own log, on its own log branch; win lands the logs with the seat's work.
-The window-fn row is a proposal to the director: it exists only once he starts it (ADR-0248 d14).
+The window-fn seat runs since 19 November (ADR-0248 d14); its split with the window lane is ruled by win on 22 November (below).
 
 | Seat | Runs as | Log | Branches | Owns, in short |
 |---|---|---|---|---|
@@ -19,19 +19,22 @@ The window-fn row is a proposal to the director: it exists only once he starts i
 | **window** | Claude, a cloud session | `collab/window.md` on `window/log` | `window/<topic>` | the window (LANES §1, §3b) |
 | **mixview** | Codex, on the director's PC | `collab/mixview.md` on `mixview/log` | `mixview/<topic>` | the Mix View (ADR-0236) |
 | **clones** | Codex, on the director's PC | `collab/clones.md` on `clones/log` | `clones/<topic>` | ADI-Shaper and the measured contracts of OScope 2 and PsyScope Pro (ADR-0247 d5) |
-| **window-fn** (proposed) | not started; a second window seat if the director starts it (ADR-0248 d14) | `collab/window-fn.md` on `window-fn/log` | `window-fn/<topic>` | the window's function rows: recording, MIDI input, export, plug-in loading, faders heard while dragging; the window lane keeps the look work. Its paths are agreed with the window lane before it starts; until then the window lane takes both, function first |
+| **window-fn** | Claude, a cloud session (since 19 November, ADR-0248 d14) | `collab/window-fn.md` on `window-fn/log` | `window-fn/<topic>` | the window's function rows: commands, keys, gestures, undo steps and the wiring from the window to the engine (recording, MIDI input, export, plug-in loading, faders heard while dragging); it changes no look |
 
 **Who owns which paths** (ADR-0248 d3). One owner per shared path. A seat that needs another seat's
 path asks its owner in its log; the owner answers or lends. No seat edits `.github/**`: it asks win.
 
 | Seat | Paths |
 |---|---|
-| engine | `src/juce/vst3_host.*`, `src/juce/clap_host.*`, `src/adi/builtin_insert.cpp`, the graph and the plan (`src/adi/engine/graph.*`, `src/adi/engine/plan.*`), `src/adi/engine/snapshot.*`, and the rest of the engine LANES §1 gives it |
-| engine-win | the scanner (`src/adi/plugin_scanner.*`, `src/adi/scan_process.*`, `src/juce/plugin_scan_host.cpp`), the registry (`src/adi/plugin_registry.*`), the catalogue API of `src/juce/juce_device_loader.*` (N58), the settings (`src/adi/settings/**`), publication (`src/adi/media/publish_file.*`) and the export queue (`src/adi/render/queue.*`, `src/adi/render/ni_stems.cpp`) |
+| engine | `src/juce/vst3_host.*`, `src/juce/clap_host.*`, `src/adi/builtin_insert.cpp`, the graph and the plan (`src/adi/engine/graph.*`, `src/adi/engine/plan.*`), `src/adi/engine/snapshot.*`, `src/adi/device_copy.*` (ADR-0249 d8; the window keeps `ProjectDocument::pasteDevice`), and the rest of the engine LANES §1 gives it |
+| engine-win | the scanner (`src/adi/plugin_scanner.*`, `src/adi/scan_process.*`, `src/juce/plugin_scan_host.cpp`), the registry (`src/adi/plugin_registry.*`), the catalogue API of `src/juce/juce_device_loader.*` (N58), the settings (`src/adi/settings/**`), publication (`src/adi/media/publish_file.*`) and the export queue (`src/adi/render/queue.*`, `src/adi/render/ni_stems.cpp`, and since 22 November `src/adi/render/normalization.*` and the export file writers of EX-04); the recording half of MX-09 |
 | window | `src/adi/ui/**` and `src/juce/ui_*`, less the Mix View's files in its row below; the theme and the density (`src/adi/ui/theme.*`, `density.*`), the Control Bar (`src/juce/ui_controlbar.*`), the MIDI port host of SRF-05 (`src/juce/app_midi_ports.*`) and the Export page of EX-11 |
+| window-fn | the same paths as the window, split by item, not by path (win, 22 November): window-fn takes the function rows, the window lane keeps the look (from the agreed sheets, ADR-0243), the shell and the test kit (WIN-01 and the shell rows are the window lane's). A file both seats touch is edited by each for its own items; the second branch to land merges main, and each names the other's items it touched in its log |
 | devices | device DSP (`src/adi/dsp/**`, `src/adi/pd_builtins/**`, `cmake/devices/**`, `pd/**`) and the Pd tier (`src/juce/pd_*`) |
 | mixview | `src/adi/mix/**`; the Mix View's own `src/juce/ui_mix*` files (`src/juce/ui_mixer.*`, the Mixer, stays the window's); the STACK and the shared analyser (`src/juce/ui_stack.*`, `ui_stack_picker.*`, `ui_analysis.*`); the classic scope (`src/juce/ui_scope_classic.*`, `src/juce/smexoscope/**`); the function hosts (`src/juce/mix_*_host.*`); in `src/adi/ui/`: `shared_analysis.*`, `analysis_comparison.*`, `analysis_palettes.hpp` and `palettes/**`, `spectrum_slope.hpp`, `stack_model.*`, `mix_view_provider.hpp`, `parameter_feed.*` and `focus_scope.hpp`. `ui_stack_picker`, `ui_scope_classic`, `smexoscope`, `mix_compressor_host` and `focus_scope` are so far only on its branches. Its device-key routing (`src/adi/device_key_routes.*`, `device_key_edit.cpp`) until #651 lands, then the engine's; loans: `src/adi/dsp/stereo_envelope_meter.*` (devices lane's tree), `src/adi/engine/main_audition.hpp` (engine's) |
 | clones | `adi_shaper*` wherever they sit; its hunks in shared files are agreed with the devices lane through the logs |
+| gemini (trial, 22 November) | no paths of its own: only the rows win lends it, named in the loans below; branches `gemini/<topic>`, log `collab/gemini.md` on `gemini/log` |
+| a tool | `tools/**`: the seat whose code the tool drives (`tools/benchmark_blocks.cpp` is the engine's); `src/adi/audio/**` is the engine's (win, 22 November) |
 | win | `.github/**`, `docs/DECISIONS.md`, `docs/PLAN.md`, `docs/DEFERRED.md`, `collab/RESERVATIONS.md`, this file; `src/adi/builtin_catalog.cpp` and `src/juce/builtin_host.cpp`, lent to the devices lane |
 
 Loans, each named in ADR-0248 d3: the engine lends `snapshot.cpp`'s clip projection to engine-win for
@@ -39,8 +42,21 @@ DF-E35 once #677 has landed; win lends the devices lane `src/adi/builtin_catalog
 `makeBuiltinDevice`'s instrument dispatch and `src/juce/builtin_host.cpp`'s value mapping; for DF-M60
 (a) and (b) only, the engine lends the Mix View seat `builtin_insert.cpp`'s choice of a new id,
 `Session::resolveNewRows` and `Session::refreshDeviceKeys` (`src/adi/engine/session.cpp`), and the
-window lends it `ProjectDocument::pasteDevice` (`src/adi/ui/project_document.cpp`); each owner
-reviews its part.
+window lends it `ProjectDocument::pasteDevice` and, for DF-M60 (a), the retiree detach loop of
+`ProjectDocument::synchronise` (`src/adi/ui/project_document.cpp`); for Focus Match's stale-capture
+guard only, the window lends it the command-drain block of `src/adi/ui/window_state.hpp` and one
+pass-through accessor in `src/juce/ui_shell.hpp`; for DF-E35 (b) only, the engine lends engine-win
+Freeze's extent loop (`src/adi/freeze_commands.cpp`) and Bounce in Place's extent query
+(`src/adi/bounce_commands.cpp`) (win, 19 November); while the engine reconciles #677, it lends engine-win
+`src/adi/engine/mpe_input.*` and `mpe_output.cpp`'s `noteOff` for DF-E51 (a) and (b),
+`src/adi/midi_capture.cpp` and `TempoMap::secondsToTicks` in `src/adi/engine/snapshot.cpp` for DF-E45, and
+`src/adi/check.cpp` for DF-E54 (a) (win, 20 November; withdrawn the same day, the engine had fixed them);
+for DF-E64 only, the engine lends engine-win `src/adi/engine/clip_playback.cpp`'s read-ahead and the hold on
+`RenderBlock::sourcesReadyAt` (win, 20 November); for its trial, the engine lends the gemini seat
+`src/adi/engine/param_automation.cpp` for DF-E53 and `src/adi/engine/mpe_output.cpp` for DF-E56 (win, 22 November), and for the fixes its review asked (win, 22 November): DF-E53's refusal in `src/adi/automation_lanes.cpp`, its check in `src/adi/check.cpp`, the canonical-form sentence in `docs/format/SPEC.md` §6.3.3, and DF-E56's `src/adi/engine/mpe_output.hpp`;
+for ADI-Shaper's own panel, the window lends the clones seat the device editor factory in `src/juce/ui_main.cpp`
+and the two wrench-visibility checks in `src/juce/ui_devices.cpp`, for its UID only (win, 22 November);
+each owner reviews its part.
 
 Numbers (schema minors, ADRs, register ids, op names, the window's N rows) are reserved in
 `collab/RESERVATIONS.md` before a branch uses them.
@@ -316,6 +332,9 @@ subject, say so in your log instead of writing it twice.
 | 0246 | win | `win/seats-1119` | ADR-0245's two additions measured and three sentences corrected; a second engine seat on Windows; the devices lane again; every seat works until its limit (director) | used |
 | 0247 | win | `win/adr-0247` | the take lanes sheet and the return-inside-a-group sheet agreed; the parked questions answered; the clones lane and ADI-Shaper; Focus's two answers; Shifter keeps Live's way (director) | used |
 | 0248 | win | `win/steer-1119` | the steering of 19 November: fix before new; one usable session first for two weeks; who owns what; reservations; landing windows; the director's answers of 19 November (win; d2 confirmed by the director) | used |
+| 0249 | win | `win/adr-0249-racks-forward` | racks, macros and modulation right after 3 December; Live's Beat Repeat the first device for his glitch-effect racks; his own rack presets read-only; the seats' parts, `device_copy.*` to the engine (director; d8's placements win's) | used |
+| 0250 | win | `win/adr-0249-racks-forward` | an interrupted recording comes back (Q-I); Live's three Pow-r slots are Shaped 1, 2 and 3 (Q-J) (director) | used |
+| 0251 | win | `win/adr-0251-classic-scope` | the classic scope keeps its source's own images and is named Classic Scope (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
