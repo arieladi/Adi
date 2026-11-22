@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Lower the cost of moving and stationary crossovers
+
+`clones/shaper-split-slew` at `ef2ca023` — Choose the stationary or moving renderer once per stage callback. While an edge moves, evaluate its frequency coefficient from one shared 18 KiB polynomial table. The cap and out-of-table frequencies use their analytic values. Cold setup and the transition to a settled frequency keep the original calculation.
+
+All six suites passed in both Pd precisions under MSVC /W4 /WX. Two steep-slope stereo cases cover entering the frequency cap during an edit, settling, falling and reversing at 22.05 and 32 kHz. Reusing old coefficients failed ten sampled assertions. Lowering the cap from 0.49 to 0.48 of the sample rate failed four. A separate six-rate comparison against the direct function covered 6,041,352 sample values. All stationary values matched exactly. One value after a cutoff resumed differed by 0.0000000000291.
+
+The first registered 48 kHz kick-and-bass comparison of this head measured a lower-edge sweep at 19.2/146.3 µs median for 256/2,048 frames, against 41.4/325.6 on `a5560662` and 78.0/467.5 in the reference. Each value covers 10,240 callbacks. The three-run comparison also measures an upper-edge sweep, an interrupted reversal, and the stationary control.
+
+PR requested
+
 ## 22 November 2026 — Resonant peak Filter in the registered device
 
 `clones/shaper-filter-peak` at `966700ee` — Add an independent resonant peak switch to each Filter band. **Lands after 3 December.** The 415 original host parameters keep their positions and ranges. Sparse states restore all three new switches to off, including when loaded over an active peak. Three suites passed under MSVC /W4 /WX at each Pd precision. Native and edited Pd passed live switching of every band and changes to its underlying mode. A band-pass substitution failed both new acoustic tests. The signed peak impulses matched reference readings within 0.00000204 of a unit impulse over three sample rates.
