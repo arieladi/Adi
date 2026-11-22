@@ -6,6 +6,7 @@
 #include "adi/render/mp3_writer.hpp"
 #include "adi/render/opus_writer.hpp"
 #include "adi/render/vorbis_writer.hpp"
+#include "adi/audio/pcm_stream.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -301,8 +302,10 @@ class DeliverySink {
 public:
     DeliverySink(const fs::path& folder, const std::string& stem, const Job& job,
                  const Encoding& encoding, int channels, std::uint64_t total, std::uint64_t counter)
-        : encoding_(encoding), seed_(encoding.ditherSeed ^ counter) {
-        const auto rate = static_cast<unsigned>(job.session.sampleRate);
+        : encoding_(encoding), seed_(encoding.ditherSeed ^ counter),
+          rate_(static_cast<unsigned>(job.session.sampleRate)),
+          channels_(static_cast<unsigned>(channels)), expectedFrames_(total) {
+        const auto rate = rate_;
         output_ = folder / (stem + containerSuffix(encoding_.container));
         pcm_ = folder / (stem + ".wav");
         if (encoding_.container == ExportContainer::Mp3) {
@@ -332,9 +335,13 @@ public:
         else if (opus_) opus_->write(pcm, frames);
         else if (normalization_) normalization_->append(pcm, frames);
         else wav_->write(pcm.data(), frames);
+        writtenFrames_ += frames;
     }
 
     std::optional<NormalizationReport> finish(const std::function<void()>& service) {
+        if (expectedFrames_ != 0 && writtenFrames_ != expectedFrames_) {
+            throw std::runtime_error("Encoder received an incomplete input range");
+        }
         std::optional<NormalizationReport> report;
         if (mp3_) mp3_->finish(service);
         else if (vorbis_) vorbis_->finish(service);
@@ -344,14 +351,49 @@ public:
         else wav_->close();
         if (encoding_.container == ExportContainer::Aiff) encodeStagedAiff(pcm_, output_, service);
         if (encoding_.container == ExportContainer::Flac) encodeStagedFlac(pcm_, output_, service);
+        if (!mp3_ && !vorbis_ && !opus_) verifyPcm(service);
         return report;
     }
 
     [[nodiscard]] const fs::path& output() const noexcept { return output_; }
 
 private:
+    void verifyPcm(const std::function<void()>& service) const {
+        if (service) service();
+        auto input = audio::openPcmStream(output_);
+        if (!input.ready()) throw std::runtime_error("Cannot decode staged PCM delivery: " + input.error);
+        const auto& info = input.stream->info();
+        const auto source = encoding_.container == ExportContainer::Aiff ? audio::SourceFormat::Aiff :
+            (encoding_.container == ExportContainer::Flac ? audio::SourceFormat::Flac : audio::SourceFormat::Riff);
+        if (info.format != source || info.sampleRate != rate_ || info.channels != channels_ ||
+            info.frames != writtenFrames_) {
+            throw std::runtime_error("Decoded PCM header disagrees with the render");
+        }
+        std::vector<float> samples(4096u * channels_);
+        while (true) {
+            if (service) service();
+            const auto read = input.stream->read(samples);
+            if (read.status == audio::PcmReadStatus::End) break;
+            if (read.status != audio::PcmReadStatus::Frames) {
+                throw std::runtime_error("Cannot verify staged PCM delivery: " + input.stream->error());
+            }
+            const auto decoded = std::span<const float>(samples).first(
+                static_cast<std::size_t>(read.frames) * channels_);
+            if (std::ranges::any_of(decoded, [](float sample) { return !std::isfinite(sample); })) {
+                throw std::runtime_error("Decoded PCM delivery contains a nonfinite sample");
+            }
+        }
+        if (input.stream->framesRead() != writtenFrames_) {
+            throw std::runtime_error("Decoded PCM length disagrees with the render");
+        }
+    }
+
     Encoding encoding_;
     std::uint64_t seed_;
+    unsigned rate_;
+    unsigned channels_;
+    std::uint64_t expectedFrames_;
+    std::uint64_t writtenFrames_ = 0;
     fs::path pcm_, output_;
     std::unique_ptr<audio::WavWriter> wav_;
     std::unique_ptr<NormalizationCapture> normalization_;
