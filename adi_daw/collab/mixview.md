@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — DF-M35 and DF-M3, native Clean audio verification
+
+The exact cumulative Release at `88bab8b9` passed nine saved A/B pairs through the ordinary native compressor loader. All 18 output arrays matched the direct-core replays byte for byte across 4,049,152 stereo frames. The measured programme residual stayed below 2.99e-8 peak and 1.31e-9 RMS. The playback replay includes recorded automation events, retargets, reset/wake and reprepare. The test matched the reported zero latency.
+
+The audio and exact hashes are in the private comparison receipt. Win owns the listening check. Native EQ, Clip, Limiter and their serial reference comparisons remain in the DF-M3 queue.
+
 ## 2026-11-22 — DF-M36, keep Clean active during a graph rebuild
 
 **PR requested.** `mixview/df-m36-compressor-noop-20261122` at `8b861a32` from current main. Same-format preparation returns before taking the reactivation hold. A private detail accessor lets the regression exercise the real gate without adding work to the audio path.
