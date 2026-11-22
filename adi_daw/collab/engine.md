@@ -72,6 +72,18 @@ Parked MI-04 Split, Chop and Join on the MI-08 expression write reservation and 
 
 - MI-04 automatic Invert axis. I recommend testing an asymmetric three-note selection and a single selected note in Live. Use the middle of the selected pitch extent if the outer notes swap and the single note stays put. The engine already accepts any explicit axis.
 
+### 22 November — MI-04 and MI-06 scale-degree transposition
+
+**PR requested** for `engine/mi04-step-scale-degrees` at `c3b8664762cbcc2255616849ce0a30b0954bcd82`, stacked on MI-04 Pitch Invert. ScaleContext can move a resolved member forward or backward through the authored degree IDs and repeating periods with no allocation. The native selection utility applies that to in-scale notes via one existing note.applyDiff and keeps expression, timing and stable IDs. Off-scale selection refuses atomically; Fit to Scale is already available as a separate command.
+
+GCC 14 and Clang 19 strict builds each passed 1,180 checks across four suites. Tests cover both wrap directions, sparse IDs and a tritave, signed bounds, callback allocation audit, unequal pitch steps, and byte-exact Undo/Redo.
+
+Parked the automatic handling of off-scale transposition and degree inversion pending the Live reading. Parked RE-03 on the Info Text side-table and op reservation and Live's object/preset census. TM-WT-02's native interior marker edits can proceed on the existing AWRP codec. Reserve the four documented audioClip marker op names and the existing TM-WT-02 settings/transients minor before journal registration.
+
+### FOR THE DIRECTOR
+
+- MI-04 off-scale scale-degree motion. Check C-sharp moving one degree up and down within C major and whether Invert repairs off-scale notes. I recommend keeping Fit to Scale explicit until those rules are measured.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
