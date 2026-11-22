@@ -21,22 +21,27 @@
 // THE SHIFT. A read tap moves through the delayed input at the shift's ratio
 // (2^(semitones / 12), held within 1/4.5 to 4.5), interpolated, so a tone
 // comes out at its frequency times the ratio and at its own level; its
-// harmonics move with it (there is no formant section yet). Shifting up, the
-// tap reads a copy of the input low-passed below the new Nyquist (an eighth-
-// order Butterworth at 0.45 of the rate over the ratio), so what folds back
-// is far down. The tap's delay drifts by ratio - 1 a sample; once it has drifted
+// harmonics move with it (there is no formant section yet). Shifting up past
+// a ratio of 1.05, the tap reads a copy of the input low-passed below the
+// new Nyquist: seven copies are kept, each through a fixed eighth-order
+// Butterworth at 0.45 of the rate over the top of its band of ratios (every
+// four semitones, to 4.5), so the copy read is always filtered for its band
+// and no filter is ever retuned while it runs. A step down a band waits
+// until the ratio is 2 % under it, so a ratio that hovers moves nothing. The tap's delay drifts by ratio - 1 a sample; once it has drifted
 // half a period from its centre, a second tap takes over a whole number of
 // periods away, the two crossfaded over a quarter period (a raised cosine),
 // the ratio held while they fade. On a periodic input both read the same
 // waveform, so the splice is not heard and nothing in the output steps when
-// the pitch moves. At a ratio of exactly 1 the tap returns to the centre (a
+// the pitch moves. At a ratio of 1 (a shift within 0.2 cents counts as one,
+// so an in-tune note under Correction does) the tap returns to the centre (a
 // whole number of periods, then gliding at 0.5 % speed, under 9 cents, for
 // what is left) and stays there: the wet signal is the dry one, and Dry/Wet
 // cannot comb.
 //
 // THE READINGS. The detector reads the input every quarter window (1,024
 // samples at 48 kHz) from the last window (4,096); above 48 kHz it reads the
-// input averaged down to 48 kHz or less, so its cost does not grow with the
+// input averaged down to 48 kHz or less (by the least whole factor that
+// does it), so its cost does not grow with the
 // rate. Each reading waits in a queue until the read tap is within half a
 // hop of the middle of the window it was read from, and only then sets the
 // period the splices use and the correction: a reading is applied to the
@@ -104,6 +109,8 @@ public:
     [[nodiscard]] double longestDelay() const noexcept { return farthest_; }
     [[nodiscard]] std::size_t window() const noexcept { return detector_.window() * decimation_; }
     [[nodiscard]] double detectorRate() const noexcept { return rate_ / static_cast<double>(decimation_); }
+    /// For tests: how many times the tap has moved between copies.
+    [[nodiscard]] std::size_t bandChanges() const noexcept { return switches_; }
 
 private:
     static constexpr std::size_t kChunk = 64, kQueue = 64;
@@ -127,21 +134,32 @@ private:
         }
     };
     void retune() noexcept;
-    void lowpass() noexcept;
+    void design() noexcept;
+    /// The copy a tap at the current ratio reads: -1 the input itself (to a
+    /// ratio of 1.05, where nothing folds back below 20 kHz), else the band
+    /// whose top holds the ratio; a step down waits until the ratio is 2 %
+    /// under the band's floor.
+    [[nodiscard]] int band() const noexcept;
     void adopt(const Reading& r) noexcept;
     [[nodiscard]] double read(const std::vector<float>& ring, double at) const noexcept;
     std::array<double, Count> p_{};
     PitchDetector detector_;
     std::array<float, kChunk> mono_{};
-    std::array<std::vector<float>, 2> in_, low_;
-    std::array<std::array<Biquad, 4>, 2> filter_{};
+    static constexpr std::size_t kBands = 7;
+    static constexpr std::array<double, kBands> kTops = {1.2599210498948732, 1.5874010519681994, 2.0, 2.5198420997897464,
+                                                         3.1748021039363987, 4.0, 4.5};
+    std::array<std::vector<float>, 2> in_;
+    std::array<std::array<std::vector<float>, 2>, kBands> low_;
+    std::array<std::array<std::array<Biquad, 4>, 2>, kBands> filter_{};
     std::array<Reading, kQueue> queue_{};
     Glide mix_;
     std::size_t size_ = 0, latency_ = 0, clock_ = 0, pushed_ = 0, head_ = 0, count_ = 0, fade_ = 0, fadeLength_ = 0;
     std::size_t decimation_ = 1, gathered_ = 0, filled_ = 0;
     double rate_ = 48000, target_ = 0, current_ = 0, period_ = 240, ratio_ = 1, speed_ = 1, longest_ = 1600, sum_ = 0;
-    double tap_ = 0, old_ = 0, shortest_ = 0, farthest_ = 0, cutoffRatio_ = 0;
-    bool ready_ = false, lowTap_ = false, lowOld_ = false;
+    double tap_ = 0, old_ = 0, shortest_ = 0, farthest_ = 0;
+    int band_ = -1, oldBand_ = -1;
+    std::size_t switches_ = 0;
+    bool ready_ = false;
 };
 
 }  // namespace adi::dsp

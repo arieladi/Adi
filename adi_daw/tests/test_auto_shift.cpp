@@ -531,6 +531,104 @@ void reviewedAgain() {
     }
 }
 
+/// A Hann-windowed amplitude over `n` samples from `from`.
+static double shortAmplitude(const std::vector<float>& y, std::size_t from, std::size_t n, double hz) {
+    std::complex<double> sum = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double w = 0.5 - 0.5 * std::cos(2 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(n));
+        sum += w * static_cast<double>(y[from + i]) * std::polar(1.0, -2 * std::numbers::pi * hz * static_cast<double>(i) / kRate);
+    }
+    return std::abs(sum) * 4 / static_cast<double>(n);
+}
+
+/// The review of 9aaf8b10 (three skeptics each): a low-pass retuned while
+/// it ran burst up to +15 dB when the ratio fell; the copy was filtered for
+/// the ratio when written, so a shift up aliased fully for one latency; an
+/// in-tune note under Correction never gave a ratio of exactly 1, so the tap
+/// stayed off the centre (and the copies flickered); 88.2 kHz was not
+/// decimated.
+void reviewedThird() {
+    // Shift changes that fall: the output never rises past the input's peak.
+    struct Change {
+        double from, to, then;
+    };
+    for (const Change c : {Change{24, 2, 2}, Change{19, 0, 12}, Change{24, -5, 12}, Change{12, 2, 2}}) {
+        S s;
+        s.set(S::Correction, 0);
+        s.set(S::Shift, c.from);
+        s.prepare(kRate);
+        const auto x = sine(200, 48000 * 3, 0.5);
+        std::vector<float> l(x.size()), r(x.size());
+        double peak = 0;
+        for (std::size_t at = 0; at < x.size(); at += 64) {
+            if (at == 48000) {
+                s.set(S::Shift, c.to);
+            }
+            if (at == 48000 + 960) {
+                s.set(S::Shift, c.then);
+            }
+            s.process(x.data() + at, x.data() + at, l.data() + at, r.data() + at, 64);
+        }
+        for (std::size_t i = 48000; i < x.size(); ++i) {
+            peak = std::max(peak, static_cast<double>(std::abs(l[i])));
+        }
+        check(peak <= 0.5 * 1.06, "Shift " + std::to_string(static_cast<int>(c.from)) + " to " + std::to_string(static_cast<int>(c.to)) + " then " +
+                                      std::to_string(static_cast<int>(c.then)) + ": no burst (peak " + std::to_string(peak) + ", the input's 0.5)");
+    }
+    // 200 Hz and 15 kHz, Shift 0 then +12: the 15 kHz partial's alias (18 kHz)
+    // is as low just after the change as it is later.
+    {
+        std::vector<float> x(48000 * 4);
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            const double t = static_cast<double>(i) / kRate;
+            x[i] = static_cast<float>(0.5 * std::sin(2 * std::numbers::pi * 200 * t) + 0.3 * std::sin(2 * std::numbers::pi * 15000 * t));
+        }
+        S s;
+        s.set(S::Correction, 0);
+        s.prepare(kRate);
+        std::vector<float> l(x.size()), r(x.size());
+        s.process(x.data(), x.data(), l.data(), r.data(), 96000);
+        s.set(S::Shift, 12);
+        s.process(x.data() + 96000, x.data() + 96000, l.data() + 96000, r.data() + 96000, x.size() - 96000);
+        const double soon = shortAmplitude(l, 96000 + 256, 4096, 18000), later = shortAmplitude(l, x.size() - 8192, 4096, 18000);
+        check(soon < 0.3 / 100 && later < 0.3 / 100, "Shift 0 then +12 on a 15 kHz partial: its alias at 18 kHz is " +
+                                                        std::to_string(20 * std::log10(soon / 0.3 + 1e-12)) + " dB just after, " +
+                                                        std::to_string(20 * std::log10(later / 0.3 + 1e-12)) + " dB later");
+    }
+    // A3 30 cents flat for a second, then A3 in tune for four, corrected, at
+    // Dry/Wet 50 %: the last second is the input's level, and the tap moved
+    // between copies at most once while in tune.
+    for (const std::size_t extra : {0u, 3313u, 6626u}) {
+        S s;
+        s.set(S::DryWet, 50);
+        s.prepare(kRate);
+        const std::size_t first = 48000 + extra, n = first + 48000 * 4;
+        std::vector<float> x(n);
+        double phase = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            x[i] = static_cast<float>(0.4 * std::sin(phase));
+            phase += 2 * std::numbers::pi * (i < first ? 220 * std::exp2(-0.3 / 12) : 220.0) / kRate;
+        }
+        std::vector<float> l(n), r(n);
+        s.process(x.data(), x.data(), l.data(), r.data(), first + 48000);
+        const std::size_t moved = s.bandChanges();
+        s.process(x.data() + first + 48000, x.data() + first + 48000, l.data() + first + 48000, r.data() + first + 48000, n - first - 48000);
+        double e = 0;
+        for (std::size_t i = n - 48000; i < n; ++i) {
+            e += static_cast<double>(l[i]) * l[i];
+        }
+        const double level = 20 * std::log10(std::sqrt(e / 48000) / (0.4 / std::sqrt(2.0)));
+        check(std::abs(level) < 0.05 && s.bandChanges() - moved <= 1,
+              "A3 flat, then in tune, corrected, Dry/Wet 50 % (" + std::to_string(extra) + "): the input's level (" + std::to_string(level) + " dB), " +
+                  std::to_string(s.bandChanges() - moved) + " moves between copies");
+    }
+    {
+        S s;
+        s.prepare(88200);
+        check(s.detectorRate() == 44100, "at 88.2 kHz the detector runs at " + std::to_string(s.detectorRate()) + " Hz");
+    }
+}
+
 void shifted() {
     // A 220 Hz sine at every Shift comes out at 220 x the ratio, at its own
     // level within 0.5 dB, and nothing is left at 220 Hz.
@@ -647,6 +745,7 @@ void shifted() {
 }
 
 int main() {
+    reviewedThird();
     reviewedAgain();
     shifted();
     moving();
