@@ -16,6 +16,7 @@
 #include "adi/dsp/overdrive.hpp"
 #include "adi/dsp/phaser_flanger.hpp"
 #include "adi/dsp/live_compressor.hpp"
+#include "adi/dsp/dynamic_tube.hpp"
 #include "adi/dsp/drum_buss.hpp"
 #include "adi/dsp/corpus.hpp"
 #include "adi/dsp/live_cabinet.hpp"
@@ -586,6 +587,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::liveCabinet)) return create<dsp::LiveCabinet>(patchText, 2);
         if (sameCanvas(patchText, canonical::corpus)) return create<dsp::Corpus>(patchText, 2);
         if (sameCanvas(patchText, canonical::drumBuss)) return create<dsp::DrumBuss>(patchText, 2);
+        if (sameCanvas(patchText, canonical::dynamicTube)) return create<dsp::DynamicTube>(patchText, 2);
     }
     return nullptr;
 }
