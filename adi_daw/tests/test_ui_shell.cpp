@@ -9830,7 +9830,7 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
 // at its own size, never scaled, and a second closes it; one window at a time unless Ctrl/Cmd or
 // Multiple Plug-In Windows; Ctrl/Cmd+Alt+P hides and shows them all; Auto-Hide shows only the
 // selected track's; the opener's error and the editor's reach the Status Bar.
-void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
+void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "plugin-windows.adi", true, test::knobsLoader(), error);
     check(document != nullptr, "a project for the plug-in windows");
@@ -10008,6 +10008,43 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
     check(!host.contains(key3) && host.contains(key5) && !panels[0]->wrench.getToggleState(),
           "and the next collect closes it, the wrench unlit");
     editorGone = false;
+    // WIN-03: a plug-in's window is an owned one: no task bar button, minimised and back with the main
+    // window, closed by Esc when the plug-in leaves the key; the Mix View's window is a normal one.
+    {
+        check(host.owned(key5) && !host.taskbarButton(key5), "a plug-in's window is owned, with no task bar button");
+        host.ownerMinimised(true);
+        check(host.withOwner(key5) && host.contains(key5) && host.shown(key5), "the main window minimised takes it down, open still");
+        host.ownerMinimised(false);
+        check(!host.withOwner(key5), "and brings it back");
+        host.ownerToFront();
+        auto *window = host.window(key5);
+        auto *keys = dynamic_cast<juce::KeyListener *>(window);
+        check(keys != nullptr && keys->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey), window), "Esc reaching its window closes it");
+        host.collect();
+        root.frame();
+        check(!host.contains(key5), "gone at the next collect");
+        juce::Component dock, content;
+        dock.addAndMakeVisible(content);
+        content.setBounds(0, 0, 200, 100);
+        check(host.detach("Mix View test", 0, content, dock) && !host.owned("Mix View test") &&
+                  host.taskbarButton("Mix View test"),
+              "a moved-out view, as the Mix View's, is a normal window with its task bar button");
+        host.close("Mix View test");
+        // Auto-Open Plug-In Windows: a plug-in added opens its window once the feed shows it.
+        host.closeAll(false);
+        root.pluginAdded(3);
+        root.frame();
+        check(host.contains(key3), "Auto-Open Plug-In Windows: a plug-in added opens its window");
+        host.closeAll(false);
+        std::string offWhy;
+        check(settings.set("plugins.autoOpenWindows", false, {}, offWhy), "Auto-Open off");
+        commands.reload();
+        root.pluginAdded(3);
+        root.frame();
+        check(!host.contains(key3), "with Auto-Open off, adding a plug-in opens nothing");
+        settings.set("plugins.autoOpenWindows", true, {}, offWhy);
+        commands.reload();
+    }
     host.closeAll(false);
     refuse = "This VST3 has no editor";
     check(!root.togglePluginWindow(3, false) && root.error() == refuse && !host.contains(key3),
@@ -13244,7 +13281,7 @@ int main(int argc, char **argv) {
         mixChannelToolSearch(commands, temp.path());
         mixStackViewReopen(commands, temp.path());
         mixViewShell(commands, temp.path(), true);
-        pluginWindows(commands, temp.path());
+        pluginWindows(commands, settings, temp.path());
         std::printf("%d checks, %d failures (Mix View fake-peer components)\n", checks, failures);
         return failures ? 1 : 0;
     }
@@ -16397,7 +16434,7 @@ int main(int argc, char **argv) {
     trace("newProject", [&] { newProject(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
-    trace("pluginWindows", [&] { pluginWindows(commands, temp.path()); });
+    trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });

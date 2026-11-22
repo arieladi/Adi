@@ -57,6 +57,7 @@ void AppCommands::reload() {
     zoomOnSelection_ = flag(settings_, "lookfeel.zoomOnSelection", true);
     multiplePluginWindows_ = flag(settings_, "plugins.multipleWindows", false);
     autoHidePluginWindows_ = flag(settings_, "plugins.autoHideWindows", true);
+    autoOpenPluginWindows_ = flag(settings_, "plugins.autoOpenWindows", true);
     pluginWindowsOnTop_ = flag(settings_, "plugins.editorsAlwaysOnTop", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
     wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
@@ -1079,7 +1080,28 @@ bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
     devices.repaint();
     return true;
 }
+void AdiRootComponent::pluginAdded(std::int64_t device) {
+    if (!commands_.autoOpenPluginWindows() || pluginHost == nullptr || !pluginEditor)
+        return;
+    autoOpen_ = device;
+    autoOpenFrames_ = 60;
+}
 void AdiRootComponent::followPluginWindows() {
+    // Auto-Open (WIN-03): the added plug-in's window, once the feed knows its track and name for the
+    // title. One the feed never shows within the frames given is let go.
+    if (autoOpen_ != 0) {
+        const auto feed = devices.publication ? devices.publication() : nullptr;
+        bool known = false;
+        if (feed)
+            for (const auto &d : *feed)
+                if (d.id == autoOpen_)
+                    known = d.plugin;
+        if (known || --autoOpenFrames_ <= 0) {
+            const auto device = std::exchange(autoOpen_, 0);
+            if (known && pluginHost != nullptr && !pluginHost->contains(pluginWindowKey(device)))
+                togglePluginWindow(device, false); // one with no editor says so, as its wrench would
+        }
+    }
     // Auto-Hide Plug-In Windows (manual 23.3.1.1): only the selected track's show; Show/Hide
     // Plug-In Windows hides them all. Always on top follows the setting.
     if (pluginHost == nullptr)
@@ -4045,7 +4067,16 @@ void AdiWindow::parentSizeChanged() {
     if (!isFullScreen() && keepReachable(*this))
         place.moved();
 }
+void AdiWindow::broughtToFront() {
+    DocumentWindow::broughtToFront();
+    // The owned windows stay above the main window (WIN-03).
+    if (root_->pluginHost != nullptr)
+        root_->pluginHost->ownerToFront();
+}
 void AdiWindow::minimisationStateChanged(bool minimised) {
+    // The owned windows go down and come back with it (WIN-03).
+    if (root_->pluginHost != nullptr)
+        root_->pluginHost->ownerMinimised(minimised);
     root_->infoSpectrum.suspend(minimised);
     root_->devices.suspendParameters(minimised);
     if (root_->mixViewPanel.getParentComponent() == root_) {

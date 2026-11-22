@@ -83,6 +83,9 @@ struct FloatingHost::Entry {
     std::string key;
     std::int64_t device = 0;
     bool closing = false, scaled = true, hidden = false, onTop = false;
+    // WIN-03: an owned window (a plug-in's editor, a device's view) goes with the main window: no task
+    // bar button, minimised and back with it, above it. The Mix View's window is a normal one.
+    bool ownedKind = false, byOwner = false;
     std::string title; // the window's title, where it is not the key
     std::uint64_t drains = 0;
     juce::Component::SafePointer<juce::Component> component, dock;
@@ -93,12 +96,16 @@ struct FloatingHost::Entry {
     struct Window final : juce::DocumentWindow, juce::KeyListener {
         Window(FloatingHost &host, Entry &entry)
             : DocumentWindow(entry.title.empty() ? entry.key : entry.title, look::ink,
-                             entry.scaled ? allButtons : (closeButton | minimiseButton), host.native_),
+                             entry.scaled ? allButtons : (closeButton | minimiseButton), false),
               h(host),
               e(entry), clock(this, [this](double) {
                   followTooltips(*this, h.commands_, tips, tipDelayMs);
                   h.frame(e.key);
               }) {
+            // On the desktop here, not in the base's constructor, so the kind's style flags are this
+            // window's own.
+            if (host.native_)
+                addToDesktop(getDesktopWindowStyleFlags());
             setResizable(true, false);
             addKeyListener(this);
             // Tooltips are on in every native window (ADR-0203 d12), as the main one, and
@@ -107,7 +114,19 @@ struct FloatingHost::Entry {
         }
         using juce::DocumentWindow::keyPressed;
         using juce::DocumentWindow::keyStateChanged;
+        int getDesktopWindowStyleFlags() const override {
+            auto flags = DocumentWindow::getDesktopWindowStyleFlags();
+            if (e.ownedKind)
+                flags &= ~juce::ComponentPeer::windowAppearsOnTaskbar;
+            return flags;
+        }
         bool keyPressed(const juce::KeyPress &k, juce::Component *) override {
+            // Esc closes an owned window, when it reaches the window: a plug-in that takes the key
+            // keeps it (WIN-03).
+            if (e.ownedKind && k == juce::KeyPress(juce::KeyPress::escapeKey)) {
+                closeButtonPressed();
+                return true;
+            }
             // The zoom keys zoom this window; every other key is the main window's.
             const auto id = h.commands_.manager.getKeyMappings()->findCommandForKeyPress(k);
             if (e.zoomed && (id == AppCommands::ZoomIn || id == AppCommands::ZoomOut)) {
@@ -179,6 +198,22 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
         raw->window->setResizable(false, false);
         if (const auto kept = states_.loadFloating(key); !kept.monitor.empty())
             raw->window->setTopLeftPosition(restoreFloating(kept, currentMonitors()).getTopLeft());
+        else if (const auto screens = currentMonitors(); !screens.empty()) {
+            // Never placed: cascaded off the windows already open, from the main display's corner (WIN-03).
+            auto home = screens.front();
+            for (const auto &m : screens)
+                if (m.main) {
+                    home = m;
+                    break;
+                }
+            std::vector<place::Rect> others;
+            for (const auto &[k, other] : entries_)
+                if (other.get() != raw && other->window)
+                    others.push_back(toPlace(other->window->getBounds()));
+            const auto corner = home.usable.getPosition() + juce::Point<int>(2 * place::kCascade, 2 * place::kCascade);
+            const auto start = toPlace(raw->window->getBounds().withPosition(corner));
+            raw->window->setTopLeftPosition(fromPlace(place::cascade(start, others, toPlace(home.usable))).getTopLeft());
+        }
         if (native_)
             raw->window->setVisible(true);
         save(*raw, true);
@@ -239,6 +274,7 @@ bool FloatingHost::openView(const std::string &key, std::int64_t id,
     e->owned = std::move(component);
     e->onFrame = std::move(fn);
     e->scaled = scaled;
+    e->ownedKind = true;
     return install(std::move(e));
 }
 void FloatingHost::show(const std::string &key, bool on) {
@@ -252,7 +288,33 @@ void FloatingHost::show(const std::string &key, bool on) {
     if (e.component.getComponent() == &root_.mixViewPanel)
         root_.mixViewPanel.stack.suspendParameters(!on || e.closing || (e.window && e.window->isMinimised()));
     if (native_ && e.window && !e.closing)
-        e.window->setVisible(on);
+        e.window->setVisible(on && !e.byOwner);
+}
+void FloatingHost::ownerMinimised(bool minimised) {
+    for (auto &[key, e] : entries_)
+        if (e->ownedKind && e->window) {
+            e->byOwner = minimised;
+            if (native_ && !e->closing)
+                e->window->setVisible(!minimised && !e->hidden);
+        }
+}
+void FloatingHost::ownerToFront() {
+    for (auto &[key, e] : entries_)
+        if (e->ownedKind && e->window && e->window->isVisible())
+            e->window->toFront(false);
+}
+bool FloatingHost::owned(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && it->second->ownedKind;
+}
+bool FloatingHost::withOwner(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && it->second->byOwner;
+}
+bool FloatingHost::taskbarButton(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && it->second->window &&
+           (it->second->window->getDesktopWindowStyleFlags() & juce::ComponentPeer::windowAppearsOnTaskbar) != 0;
 }
 bool FloatingHost::shown(const std::string &key) const {
     const auto it = entries_.find(key);

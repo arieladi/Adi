@@ -194,6 +194,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Auto-Hide Plug-In Windows and Plug-in windows always on top.
     bool multiplePluginWindows() const noexcept { return multiplePluginWindows_; }
     bool autoHidePluginWindows() const noexcept { return autoHidePluginWindows_; }
+    // Live's Auto-Open Plug-In Windows (manual 23.3.1.1; plugins.autoOpenWindows, on by default).
+    bool autoOpenPluginWindows() const noexcept { return autoOpenPluginWindows_; }
     bool pluginWindowsOnTop() const noexcept { return pluginWindowsOnTop_; }
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
@@ -252,6 +254,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
     bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
+    bool autoOpenPluginWindows_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
@@ -478,6 +481,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     static std::string pluginWindowKey(std::int64_t device);
     // Each frame: Auto-Hide and Show/Hide applied, Always on Top followed.
     void followPluginWindows();
+    // WIN-03, Live's Auto-Open Plug-In Windows: a plug-in just added opens its window once the device
+    // feed shows it (within a second of frames), when the setting is on. The app calls it after an
+    // insert lands.
+    void pluginAdded(std::int64_t device);
     // Live's Show/Hide Plug-In Windows (Ctrl/Cmd+Alt+P): every plug-in window at once.
     bool pluginWindowsShown() const noexcept { return pluginWindowsShown_; }
     // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
@@ -760,6 +767,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::optional<SnapshotReader> reader_;
     std::uint64_t generation_ = 0;
     bool pluginWindowsShown_ = true;
+    std::int64_t autoOpen_ = 0; // a plug-in added, its window to open (WIN-03)
+    int autoOpenFrames_ = 0;
     unsigned lastDrain_ = 0;
     bool playing_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
@@ -860,6 +869,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     // The displays changed (a monitor gone, another resolution or scale): the title bar kept on one.
     void parentSizeChanged() override;
     void minimisationStateChanged(bool) override;
+    void broughtToFront() override;
     // Where the window stands, saved after each move or size once it stands still (WIN-02).
     PlaceWatch place;
     // What the window keeps of the App settings, brought up to date: each frame does it.

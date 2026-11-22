@@ -811,6 +811,9 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(ref.name + " did not load (" + entry->error + "); it stays in the chain, bypassed. Undo removes it.");
                 return true;
             }
+            // Auto-Open Plug-In Windows (WIN-03): its window, once the feed shows it.
+            if (made > before_)
+                root_->pluginAdded(made);
             const auto kind = ref.subtype == "instrument" ? "an instrument" : ref.subtype == "midi_effect" ? "a MIDI effect" : "an audio effect";
             if (kindGuessed)
                 root_->say(stored ? ref.name + " went in as " + kind + ", as this project holds it." :
