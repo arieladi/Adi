@@ -504,6 +504,61 @@ void multichannelStem() {
     for(int i=0;i<866;++i)for(int c=0;c<6;++c) exact=exact && decoded[static_cast<std::size_t>(6*i+c)]==source(137+i,c);
     check(exact,"every multichannel stem sample survives planar capture and interleaving");
 }
+void stereoFoldDelivery() {
+    Fixture f;
+    f.effect();
+    const std::array pairs{std::pair{0.75f, -0.75f}, std::pair{0.25f, 0.25f},
+                           std::pair{0.625f, 0.0f}, std::pair{0.0f, -0.25f}};
+    std::vector<float> stereo(8192);
+    for (std::size_t frame = 0; frame < 4096; ++frame) {
+        const auto [left, right] = pairs[frame % pairs.size()];
+        stereo[2 * frame] = left;
+        stereo[2 * frame + 1] = right;
+    }
+    audio::WavWriter input(f.dir.path() / "audio.wav", 48000, 2, audio::WavFormat::Float32);
+    input.write(stereo.data(), 4096);
+    input.close();
+    const DeviceLoader observer = [](const DeviceRequest&, std::string&) {
+        auto delay = std::make_unique<Delay>();
+        delay->delay = 29;
+        delay->gain = 2;
+        return delay;
+    };
+    auto job = f.job("mono");
+    job.session.precision = Precision::Float64;
+    job.encoding.channelFold = ChannelFold::StereoAverage;
+    job.encoding.dither = audio::WavDither::None;
+    job.encoding.format = audio::WavFormat::Pcm16;
+    const auto result = renderWav(job, observer);
+    check(result.state == JobState::Completed,
+          result.error.empty() ? "mono delivery completes" : result.error.c_str());
+    if (result.state != JobState::Completed) return;
+    audio::WavReader mono(result.output);
+    std::vector<float> actual(866);
+    check(mono.channels() == 1 && mono.sampleRate() == 48000 && mono.frames() == 866 &&
+          mono.format() == audio::WavFormat::Pcm16 && mono.read(actual.data(), 866) == 866,
+          "stereo graph delivers one PCM16 channel and preserves exact duration");
+    bool exact = true;
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        const auto [left, right] = pairs[(137 + i) % pairs.size()];
+        exact = exact && actual[i] == left + right; // stereo effect doubles before the fold
+    }
+    check(exact, "correlated, anti-phase and one-sided signals fold after compensated stereo processing");
+
+    job.nameTemplate = "mono-normalized";
+    job.encoding.format = audio::WavFormat::Float32;
+    job.normalization.mode = NormalizeMode::Peak;
+    const auto normalized = renderWav(job, observer);
+    check(normalized.state == JobState::Completed && normalized.normalization &&
+          normalized.normalization->sourceSamplePeakDb &&
+          std::abs(*normalized.normalization->sourceSamplePeakDb - 20 * std::log10(0.625)) < 1e-6,
+          "normalization measures the folded signal, after cancellation and before the encoder");
+
+    job.nameTemplate = "unsupported-fold";
+    job.session.channels = 6;
+    check(renderWav(job, observer).state == JobState::Failed && f.noStage(),
+          "an ambiguous multichannel fold is refused before staging");
+}
 void regionStems() {
     Fixture f;
     f.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,480480,60);"
@@ -1474,7 +1529,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); stereoFoldDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

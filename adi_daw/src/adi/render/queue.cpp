@@ -106,6 +106,16 @@ std::string portableName(std::string name) {
     return name;
 }
 
+int deliveryChannels(const Job& job) {
+    switch (job.encoding.channelFold) {
+        case ChannelFold::Preserve: return job.session.channels;
+        case ChannelFold::StereoAverage:
+            if (job.session.channels > 2 || job.niStems)
+                throw std::invalid_argument("stereo fold requires an ordinary mono or stereo source");
+            return 1;
+    }
+    throw std::invalid_argument("unknown export channel fold");
+}
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
     if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
@@ -126,7 +136,7 @@ void validate(const Job& j) {
     if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
         throw std::invalid_argument("unsupported export dither");
     validateNiStems(j);
-    validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
+    validateNormalization(j.normalization, static_cast<std::uint32_t>(j.session.sampleRate), deliveryChannels(j));
     if (j.exactWavFilename) {
         if (j.niStems || j.collision == Collision::Increment)
             throw std::invalid_argument("a literal WAV filename requires a single WAV with Fail or Replace");
@@ -519,9 +529,11 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         const auto rawEnd = addLatency(job.endSample, latency);
         const auto total = static_cast<std::uint64_t>(job.endSample - job.beginSample);
         const auto channels = static_cast<std::size_t>(job.session.channels);
+        const auto outputChannels = static_cast<std::size_t>(deliveryChannels(job));
+        const bool foldStereo = outputChannels < channels;
         const auto block = static_cast<std::size_t>(job.session.maxFrames);
         std::vector<float> narrow(channels * block);
-        std::vector<double> interleaved(channels * block);
+        std::vector<double> interleaved(outputChannels * block);
         std::vector<double> wide(job.session.precision == engine::Precision::Float64 ? channels * block : 0);
         std::vector<float*> fp(channels);
         std::vector<double*> dp(wide.empty() ? 0 : channels);
@@ -535,11 +547,11 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         std::unique_ptr<NormalizationCapture> normalized;
         if(job.normalization.mode==NormalizeMode::Off)
             writer=std::make_unique<audio::WavWriter>(staged,static_cast<std::uint32_t>(job.session.sampleRate),
-                static_cast<std::uint16_t>(channels),job.encoding.format,nullptr,std::uint64_t{1}<<32,
+                static_cast<std::uint16_t>(outputChannels),job.encoding.format,nullptr,std::uint64_t{1}<<32,
                 job.encoding.dither,job.encoding.ditherSeed^counter);
-        else normalized=std::make_unique<NormalizationCapture>(stage.path/"capture.f64",static_cast<std::uint32_t>(job.session.sampleRate),job.session.channels,job.normalization);
+        else normalized=std::make_unique<NormalizationCapture>(stage.path/"capture.f64",static_cast<std::uint32_t>(job.session.sampleRate),static_cast<int>(outputChannels),job.normalization);
         auto write=[&](std::uint32_t frames) {
-            if(normalized)normalized->append(std::span<const double>(interleaved.data(),static_cast<std::size_t>(frames)*channels),frames);
+            if(normalized)normalized->append(std::span<const double>(interleaved.data(),static_cast<std::size_t>(frames)*outputChannels),frames);
             else writer->write(interleaved.data(),frames);
             result.framesWritten+=frames;
         };
@@ -597,8 +609,11 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 if (!std::isfinite(value) || (!normalized && job.encoding.format == audio::WavFormat::Float32 &&
                     std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
                     throw std::runtime_error("nonfinite or out-of-range audio during export");
-                if (at + f >= first)
-                    interleaved[static_cast<std::size_t>(at + f - first) * channels + c] = value;
+                if (at + f < first) continue;
+                const auto index = static_cast<std::size_t>(at + f - first) * outputChannels;
+                if (!foldStereo) interleaved[index + c] = value;
+                else if (c == 0) interleaved[index] = value * 0.5;
+                else interleaved[index] += value * 0.5;
             }
             if (first < last) {
                 const auto count = static_cast<std::uint32_t>(last - first);
@@ -712,6 +727,7 @@ std::string serializeRunManifest(const RunReport& run) {
             const auto& job = *member.job;
             Json profile{{"sample_rate", job.session.sampleRate}, {"channels", job.session.channels},
                 {"max_frames", job.session.maxFrames},
+                {"channel_fold", job.encoding.channelFold == ChannelFold::StereoAverage ? "stereo_average" : "preserve"},
                 {"processing_precision", job.session.precision == engine::Precision::Float64 ? "float64" : "float32"},
                 {"delay_compensation", job.session.delayCompensation},
                 {"external_tempo_bpm", optionalNumber(job.session.externalTempoBpm)},
