@@ -16,6 +16,7 @@
 #include "adi/dsp/overdrive.hpp"
 #include "adi/dsp/phaser_flanger.hpp"
 #include "adi/dsp/live_compressor.hpp"
+#include "adi/dsp/spectrum_device.hpp"
 #include "adi/dsp/auto_shift.hpp"
 #include "adi/dsp/dj_filter.hpp"
 #include "adi/dsp/filter_delay.hpp"
@@ -576,6 +577,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::filterDelay)) return create<dsp::FilterDelay>(patchText, 2);
         if (sameCanvas(patchText, canonical::djFilter)) return create<dsp::DjFilter>(patchText, 2);
         if (sameCanvas(patchText, canonical::autoShift)) return create<dsp::AutoShift>(patchText, 2);
+        if (sameCanvas(patchText, canonical::spectrumDevice)) return create<dsp::SpectrumDevice>(patchText, 2);
     }
     return nullptr;
 }
