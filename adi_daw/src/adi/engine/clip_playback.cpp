@@ -8,6 +8,7 @@
 #include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <samplerate.h>
@@ -53,6 +54,15 @@ std::int64_t samples(double seconds, double rate) {
     if (!std::isfinite(n) || n < 0 || n > static_cast<double>(limit)) throw std::runtime_error("time outside supported sample range");
     return static_cast<std::int64_t>(std::llround(n));
 }
+std::int64_t samplesAtNs(std::int64_t ns, std::int64_t rate) {
+    if (ns < 0) throw std::runtime_error("negative nanosecond clock");
+    // ClipPlayback admits only bounded integer sample rates. Separate whole
+    // seconds from the fraction so the products fit and half-sample ties are exact.
+    constexpr std::int64_t second = 1000000000;
+    const auto value = (ns / second) * rate + ((ns % second) * rate + second / 2) / second;
+    if (value > limit) throw std::runtime_error("time outside supported sample range");
+    return value;
+}
 struct Page {
     // 0 empty, 1 worker-owned, 2 ready, 3 reader-owned. Both sides must
     // acquire ownership BEFORE trusting the page number (an unowned peek is
@@ -64,8 +74,10 @@ struct Page {
 };
 struct PrefixPending {};
 struct Clip {
+    std::int64_t clipId = 0, mediaId = 0;
+    std::string storedBlake3;
     std::int64_t track = 0, start = 0, end = 0, offset = 0, length = 0;
-    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0, playEnd = 0;
+    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0;
     std::int64_t inCurve = 1, outCurve = 1;
     std::optional<double> inTension,outTension;
     std::array<std::optional<std::int64_t>,4> fadeClock;
@@ -80,6 +92,7 @@ struct Clip {
     fs::path pinned; // the decoded copy this clip holds in ADI's cache, if any (ADR-0156)
     std::shared_ptr<const audio::PreparedWarp> warped;
     std::shared_ptr<audio::ProgressiveFile> progressive;
+    bool monitorInputOnly = false;
     bool failed = false; // page worker only
     std::unique_ptr<audio::WavReader> reader; // touched ONLY by worker after construction
     // The pin goes back with the clip. Every rebuild builds new clips and pins
@@ -106,13 +119,17 @@ struct Clip {
         if (time < start || time >= end) return -1;
         auto n = time-start+offset;
         if (loopLength > 0 && n >= loopBegin) n = loopBegin+(n-loopBegin)%loopLength;
-        return n < length && n < playEnd ? n : -1;
+        return n < length ? n : -1;
     }
     template<typename V> V shaped(std::int64_t time,V gainValue)const noexcept {
         const auto local=time-start+offset;
-        if(fadeClock[0])gainValue*=clipFadeShape(static_cast<V>(local-*fadeClock[0])/static_cast<V>(*fadeClock[1]-*fadeClock[0]),inCurve,inTension);
+        const auto shape=[](std::int64_t progressed,std::int64_t width,std::int64_t curve,std::optional<double> tension) {
+            if(width==0)return progressed>=0?V{1}:V{0};
+            return clipFadeShape(static_cast<V>(progressed)/static_cast<V>(width),curve,tension);
+        };
+        if(fadeClock[0])gainValue*=shape(local-*fadeClock[0],*fadeClock[1]-*fadeClock[0],inCurve,inTension);
         else if(fadeIn>0)gainValue*=clipFadeShape(static_cast<V>(time-start)/static_cast<V>(fadeIn),inCurve,inTension);
-        if(fadeClock[2])gainValue*=clipFadeShape(static_cast<V>(*fadeClock[3]-1-local)/static_cast<V>(*fadeClock[3]-*fadeClock[2]),outCurve,outTension);
+        if(fadeClock[2])gainValue*=shape(*fadeClock[3]-1-local,*fadeClock[3]-*fadeClock[2],outCurve,outTension);
         else if(fadeOut>0)gainValue*=clipFadeShape(static_cast<V>(end-1-time)/static_cast<V>(fadeOut),outCurve,outTension);
         return gainValue;
     }
@@ -136,14 +153,12 @@ struct Clip {
     }
     std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames,bool lookAhead=true) const noexcept {
         std::array<std::int64_t,slots> out; out.fill(-1);
-        if (!t.playing()) return out;
+        if (monitorInputOnly || !t.playing()) return out;
         std::size_t used = 0;
         auto sourceRange = [&](std::int64_t from, std::int64_t count) {
-            // sourceAt never reads at or past End, so no page there is wanted.
-            // A looped clip has playEnd==length.
-            const auto audible=std::min(length,playEnd);
-            if(from<0 || from>=audible || count<=0) return;
-            const auto last=std::min(audible,from+count)-1;
+            // sourceAt never reads at or past the effective source End.
+            if(from<0 || from>=length || count<=0) return;
+            const auto last=std::min(length,from+count)-1;
             for(auto p=from/pageFrames;p<=last/pageFrames && used<slots;++p)
                 if(std::find(out.begin(),out.end(),p)==out.end()) out[used++]=p;
         };
@@ -390,7 +405,7 @@ public:
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
-        if(!transport.playing()){
+        if(!transport.playing() || (!clips.empty() && clips.front()->monitorInputOnly)){
             for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex)clips[clipIndex]->releaseAdmission();
             return;
         }
@@ -453,6 +468,7 @@ struct ClipPlayback::Impl {
     Transport& transport;
     std::int32_t maxFrames;
     std::vector<std::unique_ptr<Clip>> clips;
+    std::vector<ClipMediaSource> externalSources;
     std::vector<std::unique_ptr<TrackSource>> tracks;
     std::vector<std::string> problems;
     std::atomic<bool> stalled{false};
@@ -473,7 +489,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(!project->rows.audioClips.empty() && std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
     for(const auto& row:timelineClips(project->rows)) {
-        if(row.kind!="audio") continue;
+        // Muted clips do not need a reader or a playable media source.
+        if(row.kind!="audio" || row.muted) continue;
         const auto label="clips#"+std::to_string(row.id)+": ";
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
@@ -486,13 +503,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             const auto media=std::find_if(project->rows.media.begin(),project->rows.media.end(),[&](const auto& m){return m.id==a->mediaId;});
             if(media==project->rows.media.end() || media->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
             auto clip=std::make_unique<Clip>();
+            clip->clipId=row.id; clip->mediaId=media->id; clip->storedBlake3=media->hashBlake3;
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");
-            // A muted clip opens no media. Its decode job would be cancelled
-            // when it is dropped here, yet stay queued against the decoder's
-            // job and space budgets ahead of the clips that do play.
-            if(row.muted) continue;
             // Direct WAV remains unchanged. Plain compressed clips consume a
             // shared worker's flushed prefixes; Warp still needs its complete
             // offline render and unknown-length sources retain the full path.
@@ -503,7 +517,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto info=audio::inspectPcm(clip->path);
                 if(info.frames && *info.frames) {
                     auto& service=decoder?*decoder:audio::defaultProgressiveDecoder();
-                    clip->progressive=service.open(clip->path);
+                    clip->progressive=service.openSaved(clip->path,info,media->hashBlake3);
                     clip->channels=static_cast<std::uint16_t>(clip->progressive->info().channels);
                     clip->sourceRate=clip->progressive->info().sampleRate;
                     sourceFrames=*clip->progressive->info().frames;
@@ -523,15 +537,19 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
-            const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.secondsToTicks(static_cast<double>(row.posNs.value_or(0))*1e-9);
+            const auto beginNs = row.posNs.value_or(0);
+            // Project stored nanoseconds as the edit clock and Snapshot do: an
+            // integer nanosecond rounded below its originating tick maps back to it.
+            const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.storedNanosecondsToTicks(beginNs);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
-            const double startSeconds=row.timeBase==0?tempo.ticksToSeconds(origin):static_cast<double>(row.posNs.value_or(0))*1e-9;
-            auto duration=[&](std::int64_t ticks){
+            auto tickSpanSeconds=[&](std::int64_t ticks){
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
-                return samples(tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin),rate);
+                return tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin);
             };
-            if(row.contentOffsetTicks<0)throw std::runtime_error("negative clip content offset");
-            const auto sourceOrigin=origin-row.contentOffsetTicks;
+            auto duration=[&](std::int64_t ticks){return samples(tickSpanSeconds(ticks),rate);};
+            if(row.contentOffsetTicks<0 && (a->warpEnabled || !row.contentOffsetNs))
+                throw std::runtime_error("negative clip content offset needs an unwarped source clock");
+            const auto sourceOrigin=a->warpEnabled?origin-row.contentOffsetTicks:origin;
             auto sourceDuration=[&](std::int64_t ticks){return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);};
             if(a->warpEnabled) {
                 if(row.contentOffsetTicks<0 || !a->warpMarkers)throw std::runtime_error("warp needs valid source offsets and a stored marker map");
@@ -552,35 +570,48 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
                 clip->length=static_cast<std::int64_t>(clip->warped->frames);
             }
-            clip->start=samples(startSeconds,rate);
             std::int64_t endTicks=origin;
-            double endSeconds=startSeconds;
             if(row.timeBase==0) {
                 const auto ticks=row.lengthTicks.value_or(0);
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid clip duration");
                 endTicks+=ticks;
-                endSeconds=tempo.ticksToSeconds(endTicks);
+                clip->start=samples(tempo.ticksToSeconds(origin),rate);
+                clip->end=samples(tempo.ticksToSeconds(endTicks),rate);
             } else {
                 const auto nanos=row.lengthNs.value_or(0);
-                const auto begin=row.posNs.value_or(0);
-                if(begin<0 || nanos<0 || begin>std::numeric_limits<std::int64_t>::max()-nanos)
+                if(beginNs<0 || nanos<0 || beginNs>std::numeric_limits<std::int64_t>::max()-nanos)
                     throw std::runtime_error("invalid clip duration");
-                // Preserve the stored absolute endpoint before conversion: a
-                // separately converted begin + duration can miss a sample tie.
-                endSeconds=static_cast<double>(begin+nanos)*1e-9;
-                endTicks=tempo.secondsToTicks(endSeconds);
+                const auto endNs = beginNs + nanos;
+                endTicks=tempo.storedNanosecondsToTicks(endNs);
+                clip->start=samplesAtNs(beginNs,clip->rate);
+                clip->end=samplesAtNs(endNs,clip->rate);
             }
-            // Quantise both absolute endpoints once. Rounding a duration and
-            // adding it to a rounded start can lose or add a sample.
-            clip->end=samples(endSeconds,rate);
-            auto fixedTime=[&](std::int64_t nanos) {
-                if(nanos<0)throw std::runtime_error("negative source clock");
-                return samples(static_cast<double>(nanos)*1e-9,rate);
-            };
+            auto fixedTime=[&](std::int64_t nanos) {return samplesAtNs(nanos,clip->rate);};
             clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
             if(!row.loopEnabled) {
-                if(!a->warpEnabled && row.sourceEndNs)clip->length=std::min(clip->length,fixedTime(*row.sourceEndNs));
-                else if(row.endMarkerTicks)clip->length=std::min(clip->length,sourceDuration(*row.endMarkerTicks));
+                // A physical pin survives placement and tempo edits. Warp and
+                // unpinned clips derive End from the same clock as their offset.
+                if (!a->warpEnabled && row.sourceEndNs) {
+                    clip->length = std::min(clip->length, fixedTime(*row.sourceEndNs));
+                } else if (row.endMarkerTicks) {
+                    const auto marker = *row.endMarkerTicks;
+                    if ((a->warpEnabled || !row.contentOffsetNs) && marker <= row.contentOffsetTicks)
+                        throw std::runtime_error("invalid audio clip End marker");
+                    std::int64_t end;
+                    if (a->warpEnabled || row.timeBase == 0) {
+                        end = sourceDuration(marker);
+                    } else if (!row.contentOffsetNs && marker - row.contentOffsetTicks == endTicks - origin) {
+                        // A legacy marker mirroring the visible End retains
+                        // the stored absolute endpoint, including sub-tick time.
+                        end = clip->offset + (clip->end - clip->start);
+                    } else {
+                        const auto absolute = edit::addTime(beginNs, edit::nanosFromSeconds(tickSpanSeconds(marker)));
+                        end = samplesAtNs(absolute, clip->rate) - clip->start;
+                    }
+                    if (!a->warpEnabled && row.contentOffsetNs && end <= clip->offset)
+                        throw std::runtime_error("invalid audio clip End marker");
+                    clip->length = std::min(clip->length, end);
+                }
             }
             const auto& fadeClock=a->warpEnabled?row.fadeClockTicks:row.fadeClockNs;
             for(std::size_t i=0;i<4;i+=2) {
@@ -588,19 +619,21 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(fadeClock[i]) {
                     const auto first=a->warpEnabled?sourceDuration(*fadeClock[i]):fixedTime(*fadeClock[i]);
                     const auto last=a->warpEnabled?sourceDuration(*fadeClock[i+1]):fixedTime(*fadeClock[i+1]);
-                    if(last<=first)throw std::runtime_error("fade clock has no sample extent");
+                    // A valid stored span can quantize to a single boundary
+                    // at this device rate. Render it as a step at that sample.
+                    if(last<first)throw std::runtime_error("fade clock is reversed");
                     clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
                 }
             }
-            clip->playEnd = clip->length; // after the warp length and the source-end pin (chain)
-            if (!row.loopEnabled && row.endMarkerTicks) {
-                if (*row.endMarkerTicks <= row.contentOffsetTicks)
-                    throw std::runtime_error("invalid audio clip End marker; silent");
-                clip->playEnd = std::min(clip->length, duration(*row.endMarkerTicks));
-            }
-            clip->fadeIn=duration(row.fadeInTicks);
-            if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");
-            clip->fadeOut=samples(tempo.ticksToSeconds(endTicks)-tempo.ticksToSeconds(endTicks-row.fadeOutTicks),rate);
+            clip->fadeIn = duration(row.fadeInTicks);
+            if (row.fadeOutTicks < 0) throw std::runtime_error("invalid fade-out duration");
+            // Resize can leave a legacy fade wider than the placement. Its
+            // fallback shape stays inside the rendered span. Retained split
+            // domains are evaluated independently in shaped().
+            const auto tickSpan = endTicks - origin;
+            const auto frameSpan = clip->end - clip->start;
+            clip->fadeOut = row.fadeOutTicks > tickSpan ? frameSpan : std::min(frameSpan,
+                samples(tempo.ticksToSeconds(endTicks) - tempo.ticksToSeconds(endTicks - row.fadeOutTicks), rate));
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
             if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||
                (row.fadeOutTension && (!std::isfinite(*row.fadeOutTension) || std::abs(*row.fadeOutTension)>1)))
@@ -621,6 +654,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
         } catch(const std::exception& e) { impl_->problems.push_back(label+e.what()+"; silent"); }
     }
+    impl_->externalSources.reserve(impl_->clips.size());
+    for(auto& clip:impl_->clips)
+        impl_->externalSources.push_back({clip->clipId,clip->mediaId,fs::absolute(clip->path),std::move(clip->storedBlake3)});
     for(auto& t:impl_->tracks) t->owner=impl_;
     if(impl_->clips.empty()) return;
     impl_->worker=std::jthread([p=impl_.get()](std::stop_token stop){
@@ -639,7 +675,21 @@ std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
     for(auto& t:impl_->tracks) if(t->track==id) return {t.get()};
     return {};
 }
+std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int64_t id) const {
+    std::vector<SampleRange> ranges;
+    for (const auto& clip : impl_->clips)
+        if (clip->track == id) ranges.emplace_back(clip->start, clip->end);
+    return ranges;
+}
+void ClipPlayback::useMonitoredInput(std::int64_t id) noexcept {
+    for (auto& clip : impl_->clips)
+        if (clip->track == id) clip->monitorInputOnly = true;
+}
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
+std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {
+    if(audio::onAudioThread)return {};
+    return impl_->externalSources;
+}
 void ClipPlayback::stallForTest(bool v) noexcept { impl_->stalled.store(v,std::memory_order_release); }
 void ClipPlayback::setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest* probe) noexcept {
     impl_->requestProbe.store(probe,std::memory_order_release);
@@ -676,6 +726,7 @@ ClipPlayback::Readiness ClipPlayback::readiness() const {
         }
         for(std::size_t i=0;i<held->clips.size();++i) {
             auto& clip=held->clips[i];
+            if(clip->monitorInputOnly)continue;
             if(clip->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
             for(const auto number:clip->wanted(target,frames,false)) {
                 if(number<0)continue;
@@ -716,7 +767,8 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
     for(auto& clip:impl_->clips){(void)wanted(*clip,pages);clip->request(pages);}
     do {
         bool ready=true;
-        for(const auto& c:impl_->clips)if(c->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
+        for(const auto& c:impl_->clips)
+            if(!c->monitorInputOnly && c->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
         for(auto& clip:impl_->clips) {
             (void)wanted(*clip,pages);
             for(const auto number:pages) {

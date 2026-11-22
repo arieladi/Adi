@@ -16,7 +16,7 @@ milestones win (BUILD-BRIEF §6.0).
 
 | Lane | Account and session | Owns | Never |
 |---|---|---|---|
-| **win** (this one) | Claude, the "ADI Suite Project" session on ORC-VST | coordination: ADRs, FEATURES, the Master Reference, reviews and merges of every PR, the README count, the collab tables, the drone's missions, measurements against Live and the measurement harness (MX-33; `src/adi/measure/**` with the engine), the Windows build the director opens | engine or UI code of its own beyond small fixes and one-hunk merge conflicts; it reviews |
+| **win** (this one) | Claude, the "ADI Suite Project" session on the director's lead PC | coordination: ADRs, FEATURES, the Master Reference, reviews and merges of every PR, the README count, the collab tables, the drone's missions, measurements against Live and the measurement harness (MX-33; `src/adi/measure/**` with the engine), the Windows build the director opens | engine or UI code of its own beyond small fixes and one-hunk merge conflicts; it reviews |
 | **engine** | Claude Max or Codex, its own session ("ADI engine lane") | the graph, the hosts, the format and export code: `src/adi/engine/**`, `src/adi/*.cpp` store and ops, `src/juce/*host*`, `src/juce/play*`, `src/juce/device_model*`, `docs/format/**`; `src/adi/sync/**` (MIDI clock and timecode decoding, the clock-out scheduler), the engine's MIDI queues and the Track tap, `src/adi/surfaces/**` (codecs, the resolver, profiles), `src/adi/measure/**` (with win), `src/juce/net_*` (the one network stack), `src/adi/collab/**` (P2), and `src/juce/pd_patch_host.*` with the patch device's dispatch; **first the window's needs table (ADR-0210 d2)**, then the milestones of `docs/PLAN.md` §2 in order; queue §3. **On loan while the devices seat is silent (XC-46, from 5 November):** `src/adi/dsp/loudness` and `src/adi/dsp/limiter` (the line in the devices row) | ADR numbers (asks win), `docs/FEATURES.md`, the README count, the Master Reference, the UI, the device tier, `plugins/`, `src/adi/control/**` and `tools/adi-mcp` (the control seat's) |
 | **window** (ADR-0208) | a Claude work seat of its own ("ADI window lane") | the window: `src/adi/ui/**`, `src/juce/ui_*`, `src/juce/app*`, their tests, `docs/STEP-7-PLAN.md`, `docs/UI-ARCHITECTURE.md`, `collab/window.md` and its needs table; `src/juce/app_midi_ports.*` (the one MIDI port host, on JUCE's UMP API; the Windows MIDI Services backend stays off until SRF-16), `src/juce/app_control.*`, `src/juce/app_surfaces.*`, `src/juce/ui_control.*` (the one component model for tests and the API); the Mix View (ADR-0209 d11: the shell, STACK as the director answered Q-B, and the ★ Reference at P1); queue §3b | the engine, the device tier, `plugins/`, ADR numbers; **waiting** (ADR-0210 d3) |
 | **devices** (ADR-0208) | a Codex work seat of its own ("ADI devices lane"), re-seated with the prompt of 5 November (XC-46: it had not logged since 28 October) | Live's devices as ADI's built-ins: `pd/**`, `src/adi/dsp/**`, `src/adi/pd_builtins/**`, `cmake/devices/**`, their tests; `src/juce/pd_*`: the Pd runtime (`pd_engine.*`, `pd_device.*`, `pd_declarations.*`, `pd_loader_fix.cmake`) and the zero-delay adapter; the engine owns `pd_patch_host.*` and dispatch; queue §4b. **On loan while the devices seat is silent (XC-46, from 5 November):** `src/adi/dsp/loudness` and `src/adi/dsp/limiter` are the engine seat's, and the Pd safety overlays (DEV-09) go to the seat that is running; the loan ends the day the devices seat logs again, and win strikes this line then | the graph, the UI, `plugins/`, ADR numbers |
@@ -95,8 +95,8 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    the six tuning and key ops of #444 (`tuning.create`, `tuning.delete`, `tuning.replace`,
    `project.insertKeyEvent`, `project.removeKeyEvent`, `project.setKeyScale`) listed at P1
    (TU-01; ADR-0203 d7, ADR-0227 d1); OPS §9.7's rack ops marked as capturing their whole subtree
-   (parameters, state, panels, routes, macros and the mappings that target them; DEV-03, P2;
-   ADR-0110, ADR-0203 d10); SPEC §6.2 reworded to Live's model, one main lane plays, take lanes
+   (parameters, state, panels, routes, macros and the mappings that target them; DEV-03, R, right
+   after 3 December, ADR-0249 d3; ADR-0110, ADR-0203 d10); SPEC §6.2 reworded to Live's model, one main lane plays, take lanes
    are auditioned, a comp is copies on the main lane, a NULL `lane_id` is the main lane, ADR-0037's
    comping wording superseded (ADR-0225 d1, d2). SPEC §3.7's rewording rides with the window's
    N45, SPEC §8.3's with HI-02's PR (ADR-0213), SPEC §6.5's with TM-SV-02's minor and SPEC §12
@@ -108,6 +108,10 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    director's Q-A1 answer A: every named snapshot and every dead end kept once as a deduplicated
    stored state, so the cap of ADR-0203 d13 always holds; the daily snapshot as d13; `moveTo`);
    AU-01 and AU-05 (Lock Envelopes read by the planner); the one allocator function (XC-22).
+   Then **R, racks, macros and modulation (ADR-0249 d3)**, once ADR-0248 d6's list is done after
+   3 December and ahead of any other engine row of M2 to M7: DEV-01, DEV-03 with rack paste
+   (`src/adi/device_copy.*`), DEV-06, DEV-07's evaluator, routes and nodes, then DEV-32 (win's
+   placement); TM-SV-01 waits behind them.
 5. **M3, time, media, MIDI in and safe files:** the Link line (#454, #455, #456, each retargeted
    to main in that order), then the consumer with XC-25's continuity, then tempo ramps on the same
    effective-tempo path (TM-TT-01); Global Quantization (TM-SV-01); the media line (the
@@ -135,7 +139,7 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    answer (a): then one beat, tempo and key analyser for ADI and ADiJ, chosen by the numbers), warp
    analysis and the short-sample rule (TM-WT-05; the director's Q-E answer (a): every drop arrives
    clean, Live's short-sample result on Warp or from the import prompt, the setting offers Live's
-   four choices). M7: Graph threads and the CPU timings, the modulation nodes and routes, the Pd
+   four choices). M7: Graph threads and the CPU timings, the Pd
    user tier on his answers of 5 November (Q-K1 A: vanilla Pd's editor attached to the running
    device, edits heard at once; Q-K2 1: no added delay when the buffer is a multiple of 64, events
    on Pd's tick, one reported block otherwise; Q-K3 1: editing a built-in makes a copy "<Device>
@@ -267,7 +271,11 @@ Standing prompt: `collab/prompts/2026-11-05-devices-lane-codex.md` (it replaces
    and transform phase (DEV-17, DEV-18) once those land, and Sampler onto OneShot (#278).
 5. Every Live device not yet built, in the manual's order, P1 before P2 (ADR-0169): the audio
    effects, then the instruments, then Live Suite's Max for Live devices as native devices; one PR
-   per device with its measured-render test and its plants. (Limiter merged, #259.)
+   per device with its measured-render test and its plants. Live's Limiter device is not built: #259 was a release-time fix in ADI's own limiter core (`src/adi/dsp/limiter`), so Limiter is queued after Gate (win's fix of 19 November); Auto Pan and Tuner,
+   missing from the queue until then, follow Align Delay. Live's Beat Repeat follows Limiter, then
+   Live Suite's LFO and Shaper modulator kernels (DEV-07's device side), before the rest of the
+   queue; the older device versions the director's rack presets name come behind the current
+   devices (ADR-0249 d2, d7, d8).
 6. The parity passes of the fifteen built effects against Live 12 renders as they arrive.
 7. **The limiter's true-peak path**, one change shared with export (EX4, LD5).
 8. The DJ Filter device (ADR-0203 d8) on Auto Filter's cores, a pure bypass at centre.

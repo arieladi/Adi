@@ -16,8 +16,9 @@ namespace adi {
 
 namespace {
 
-// Version 2 adds durable scan quarantine. A later version appends the scan
-// cache/AudioGridder catalogue (ADR-0145 d6); older builds refuse newer files.
+// Version 3's additive cache tables preserve version 2's untyped quarantine.
+// Triggers keep typed automatic ownership safe with earlier v3 writers: any
+// later block mutation or success retires its stale typed failure association.
 constexpr const char* kSchema =
     "CREATE TABLE IF NOT EXISTS plugin_routes ("
     "  format      TEXT    NOT NULL,"
@@ -34,7 +35,36 @@ constexpr const char* kSchema =
     "  reason      TEXT NOT NULL CHECK (length(CAST(reason AS BLOB)) BETWEEN 1 AND 4096),"
     "  updated_utc INTEGER NOT NULL CHECK (updated_utc >= 0),"
     "  UNIQUE (format,path)"
-    ") STRICT;";
+    ") STRICT;"
+    "CREATE TABLE IF NOT EXISTS plugin_scan_cache ("
+    "  format TEXT NOT NULL CHECK (format IN ('clap','vst3')),"
+    "  path TEXT NOT NULL CHECK (length(CAST(path AS BLOB)) BETWEEN 1 AND 65536),"
+    "  stamp TEXT NOT NULL CHECK (length(stamp)=64),"
+    "  packet TEXT NOT NULL CHECK (length(CAST(packet AS BLOB)) BETWEEN 1 AND 8388608),"
+    "  updated_utc INTEGER NOT NULL CHECK (updated_utc >= 0),"
+    "  PRIMARY KEY (format,path)"
+    ") STRICT, WITHOUT ROWID;"
+    "CREATE TABLE IF NOT EXISTS plugin_scan_failures ("
+    " format TEXT NOT NULL CHECK (format IN ('clap','vst3')),"
+    " path TEXT NOT NULL CHECK (length(CAST(path AS BLOB)) BETWEEN 1 AND 65536),"
+    " stamp TEXT NOT NULL CHECK (length(stamp)=64),"
+    " kind TEXT NOT NULL CHECK (kind IN ('rejected','crashed','timeout')),"
+    " reason TEXT NOT NULL CHECK (length(CAST(reason AS BLOB)) BETWEEN 1 AND 4096),"
+    " strikes INTEGER NOT NULL CHECK (strikes BETWEEN 0 AND 2),"
+    " block_id INTEGER,"
+    " updated_utc INTEGER NOT NULL CHECK (updated_utc>=0),"
+    " PRIMARY KEY(format,path),"
+    " CHECK ((kind='rejected' AND strikes=0 AND block_id IS NULL) OR "
+    " (kind!='rejected' AND ((strikes=1 AND block_id IS NULL) OR (strikes=2 AND block_id IS NOT NULL AND block_id>0))))"
+    ") STRICT, WITHOUT ROWID;"
+    "CREATE TRIGGER IF NOT EXISTS scan_failure_block_update AFTER UPDATE ON plugin_scan_blocks "
+    "WHEN NEW.state='blocked' BEGIN DELETE FROM plugin_scan_failures WHERE format=NEW.format AND path=NEW.path; END;"
+    "CREATE TRIGGER IF NOT EXISTS scan_failure_block_insert AFTER INSERT ON plugin_scan_blocks "
+    "WHEN NEW.state='blocked' BEGIN DELETE FROM plugin_scan_failures WHERE format=NEW.format AND path=NEW.path; END;"
+    "CREATE TRIGGER IF NOT EXISTS scan_failure_block_delete AFTER DELETE ON plugin_scan_blocks "
+    "WHEN OLD.state='blocked' BEGIN DELETE FROM plugin_scan_failures WHERE format=OLD.format AND path=OLD.path; END;"
+    "CREATE TRIGGER IF NOT EXISTS scan_failure_success_insert AFTER INSERT ON plugin_scan_cache "
+    "BEGIN DELETE FROM plugin_scan_failures WHERE format=NEW.format AND path=NEW.path; END;";
 
 bool text(const std::string& value, std::size_t maximum, bool empty = false) {
     if (value.size() > maximum || (!empty && value.empty()) || value.find('\0') != value.npos) return false;
@@ -59,6 +89,54 @@ void require(bool condition, const char* message) {
 void verifyScanColumns(SQLite::Database& db) {
     SQLite::Statement probe(db,"SELECT id,format,path,state,reason,updated_utc FROM plugin_scan_blocks LIMIT 0");
     probe.executeStep();
+    SQLite::Statement cache(db,"SELECT format,path,stamp,packet,updated_utc FROM plugin_scan_cache LIMIT 0");
+    cache.executeStep();
+    SQLite::Statement failures(db,"SELECT format,path,stamp,kind,reason,strikes,block_id,updated_utc FROM plugin_scan_failures LIMIT 0");
+    failures.executeStep();
+}
+bool cacheStamp(const std::string& stamp) {
+    if(stamp.size()!=64)return false;
+    for(const char ch:stamp)if(!((ch>='0' && ch<='9') || (ch>='a' && ch<='f')))return false;
+    return true;
+}
+const char* failureName(ScanFailureKind kind) {
+    switch(kind) {
+        case ScanFailureKind::Rejected:return "rejected";
+        case ScanFailureKind::Crashed:return "crashed";
+        case ScanFailureKind::TimedOut:return "timeout";
+    }
+    throw std::runtime_error("invalid scan failure kind");
+}
+struct StoredFailure {
+    ScanFailure failure;
+    std::string stamp;
+    std::int64_t blockId=0,updated=0;
+};
+std::optional<StoredFailure> readFailure(SQLite::Database& db,const std::string& format,const std::string& path) {
+    SQLite::Statement query(db,"SELECT stamp,kind,reason,strikes,block_id,updated_utc,"
+        "length(CAST(stamp AS BLOB)),length(CAST(kind AS BLOB)),length(CAST(reason AS BLOB)) "
+        "FROM plugin_scan_failures WHERE format=? AND path=?");
+    query.bind(1,format);query.bind(2,path);
+    if(!query.executeStep())return std::nullopt;
+    require(query.getColumn(0).isText() && query.getColumn(1).isText() && query.getColumn(2).isText() &&
+        query.getColumn(3).isInteger() && (query.getColumn(4).isNull() || query.getColumn(4).isInteger()) &&
+        query.getColumn(5).isInteger() && query.getColumn(6).getInt64()==64 &&
+        query.getColumn(7).getInt64()<=8 && query.getColumn(8).getInt64()<=4096,"invalid stored failure bounds/types");
+    StoredFailure row;row.stamp=query.getColumn(0).getString();const auto kind=query.getColumn(1).getString();
+    row.failure.reason=query.getColumn(2).getString();const auto strikes=query.getColumn(3).getInt64();
+    row.blockId=query.getColumn(4).isNull()?0:query.getColumn(4).getInt64();row.updated=query.getColumn(5).getInt64();
+    require(cacheStamp(row.stamp) && text(row.failure.reason,4096) && row.updated>=0 &&
+        (kind=="rejected" || kind=="crashed" || kind=="timeout") &&
+        ((kind=="rejected" && strikes==0 && query.getColumn(4).isNull()) ||
+         (kind!="rejected" && ((strikes==1 && row.blockId==0) || (strikes==2 && row.blockId>0)))),
+        "invalid stored failure state");
+    row.failure.kind=kind=="rejected"?ScanFailureKind::Rejected:
+        (kind=="crashed"?ScanFailureKind::Crashed:ScanFailureKind::TimedOut);
+    row.failure.strikes=static_cast<unsigned>(strikes);return row;
+}
+void removeFailure(SQLite::Database& db,const std::string& format,const std::string& path) {
+    SQLite::Statement remove(db,"DELETE FROM plugin_scan_failures WHERE format=? AND path=?");
+    remove.bind(1,format);remove.bind(2,path);remove.exec();
 }
 
 // SQLite takes UTF-8 file names; path::string() is the ANSI code page on
@@ -90,21 +168,28 @@ std::unique_ptr<PluginRegistry> PluginRegistry::open(const std::filesystem::path
         auto db = std::make_unique<SQLite::Database>(
             utf8(file), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         db->setBusyTimeout(2000);   // ADI and ADiJ may both have it open
-        const int appId = db->execAndGet("PRAGMA application_id").getInt();
-        const int version = db->execAndGet("PRAGMA user_version").getInt();
-        const bool fresh = appId == 0 && version == 0;
-        if (!fresh && appId != kApplicationId) {
-            error = utf8(file) + " is not a plugin registry";
-            return nullptr;
-        }
-        if (version > kVersion) {
-            error = utf8(file) + " is registry version " + std::to_string(version) +
-                    "; this build reads up to " + std::to_string(kVersion);
-            return nullptr;
-        }
+        const auto supportedHeader = [&] {
+            const int appId = db->execAndGet("PRAGMA application_id").getInt();
+            const int version = db->execAndGet("PRAGMA user_version").getInt();
+            const bool fresh = appId == 0 && version == 0;
+            if (!fresh && appId != kApplicationId) {
+                error = utf8(file) + " is not a plugin registry";
+                return false;
+            }
+            if (version > kVersion) {
+                error = utf8(file) + " is registry version " + std::to_string(version) +
+                        "; this build reads up to " + std::to_string(kVersion);
+                return false;
+            }
+            return true;
+        };
+        if (!supportedHeader()) return nullptr;
         db->exec("PRAGMA journal_mode = WAL");
-        if (version < kVersion) {
-            SQLite::Transaction txn(*db);
+        {
+            // Verify the header again after admission. Early v3 registries get
+            // the additive cache tables and triggers in the same transaction.
+            SQLite::Transaction txn(*db, SQLite::TransactionBehavior::IMMEDIATE);
+            if (!supportedHeader()) return nullptr;
             db->exec(kSchema);
             verifyScanColumns(*db);
             db->exec("PRAGMA application_id = " + std::to_string(kApplicationId));
@@ -194,9 +279,10 @@ bool PluginRegistry::finishScan(const ScanTicket& ticket, ScanDisposition dispos
         require(ticket.owner_.lock()==scanOwner_ && ticket.id_>0,"foreign or expired scan ticket");
         require(nowUtc>=0,"invalid scan completion time");
         require(disposition==ScanDisposition::Succeeded || disposition==ScanDisposition::Abandoned ||
-                disposition==ScanDisposition::Failed,"invalid scan disposition");
+                disposition==ScanDisposition::Failed || disposition==ScanDisposition::Rejected,"invalid scan disposition");
         const bool failed=disposition==ScanDisposition::Failed;
         require(failed ? text(reason,4096) : reason.empty(),"invalid scan diagnostic");
+        SQLite::Transaction transaction(*db_);
         SQLite::Statement finish(*db_,failed ?
             "UPDATE plugin_scan_blocks SET state='blocked',reason=?,updated_utc=? "
             "WHERE id=? AND format=? AND path=? AND state='pending'" :
@@ -205,8 +291,92 @@ bool PluginRegistry::finishScan(const ScanTicket& ticket, ScanDisposition dispos
         if(failed) {finish.bind(parameter++,reason);finish.bind(parameter++,nowUtc);}
         finish.bind(parameter++,ticket.id_);finish.bind(parameter++,ticket.format_);finish.bind(parameter,ticket.path_);
         require(finish.exec()==1,"scan ticket is no longer pending");
-        return true;
+        if(disposition==ScanDisposition::Succeeded || disposition==ScanDisposition::Rejected)
+            removeFailure(*db_,ticket.format_,ticket.path_);
+        if(failed || disposition==ScanDisposition::Rejected) {
+            SQLite::Statement remove(*db_,"DELETE FROM plugin_scan_cache WHERE format=? AND path=?");
+            remove.bind(1,ticket.format_);remove.bind(2,ticket.path_);remove.exec();
+        }
+        transaction.commit();return true;
     } catch(const std::exception& failure) {error=failure.what();return false;}
+}
+
+std::optional<ScanAdmission> PluginRegistry::beginStampedScan(const std::string& format,
+    const std::string& path,const std::string& stamp,std::int64_t nowUtc,std::string& error,ScanCacheMode mode) {
+    if(audio::onAudioThread)return std::nullopt;
+    error.clear();
+    try {
+        require(key(format,path) && cacheStamp(stamp) && nowUtc>=0,"invalid stamped scan admission");
+        require(mode==ScanCacheMode::Reuse || mode==ScanCacheMode::Refresh,"invalid scan cache mode");
+        // Reserve the short write transaction before reading so another owner
+        // cannot make this WAL snapshot stale before it becomes a writer.
+        SQLite::Transaction transaction(*db_, SQLite::TransactionBehavior::IMMEDIATE);
+        const auto previous=readFailure(*db_,format,path);
+        if(previous) {
+            bool owned=previous->blockId==0;
+            if(previous->blockId==0) {
+                // A negative result/first strike is not quarantine. Admission
+                // must still honor another owner's live pending/manual row.
+                SQLite::Statement active(*db_,"SELECT 1 FROM plugin_scan_blocks WHERE format=? AND path=?");
+                active.bind(1,format);active.bind(2,path);
+                require(!active.executeStep(),"scan is blocked or pending");
+            }
+            if(previous->blockId>0) {
+                SQLite::Statement block(*db_,"SELECT 1 FROM plugin_scan_blocks WHERE id=? AND format=? AND path=? "
+                    "AND state='blocked' AND reason=? AND updated_utc=?");
+                block.bind(1,previous->blockId);block.bind(2,format);block.bind(3,path);
+                block.bind(4,previous->failure.reason);block.bind(5,previous->updated);owned=block.executeStep();
+            }
+            if(owned && previous->stamp==stamp &&
+                ((previous->failure.kind==ScanFailureKind::Rejected && mode==ScanCacheMode::Reuse) || previous->blockId>0)) {
+                ScanAdmission result;result.cachedFailure=previous->failure;transaction.commit();return result;
+            }
+            if(!owned || previous->stamp!=stamp) {
+                if(owned && previous->blockId>0) {
+                    SQLite::Statement remove(*db_,"DELETE FROM plugin_scan_blocks WHERE id=? AND format=? AND path=? AND state='blocked'");
+                    remove.bind(1,previous->blockId);remove.bind(2,format);remove.bind(3,path);
+                    require(remove.exec()==1,"automatic failure changed during admission");
+                }
+                removeFailure(*db_,format,path);
+                SQLite::Statement cache(*db_,"DELETE FROM plugin_scan_cache WHERE format=? AND path=?");
+                cache.bind(1,format);cache.bind(2,path);cache.exec();
+            }
+        }
+        auto ticket=beginScan(format,path,nowUtc,error);
+        if(!ticket)return std::nullopt; // transaction rolls back any retirement
+        ScanAdmission result;result.ticket=std::move(ticket);transaction.commit();return result;
+    } catch(const std::exception& failure) {error=failure.what();return std::nullopt;}
+}
+
+std::optional<unsigned> PluginRegistry::finishFailedScan(const ScanTicket& ticket,const std::string& stamp,
+    ScanFailureKind kind,const std::string& reason,std::int64_t nowUtc,std::string& error) {
+    if(audio::onAudioThread)return std::nullopt;
+    error.clear();
+    try {
+        require(ticket.owner_.lock()==scanOwner_ && ticket.id_>0 && cacheStamp(stamp) &&
+            text(reason,4096) && nowUtc>=0,"invalid typed scan failure");
+        const auto name=failureName(kind);
+        SQLite::Transaction transaction(*db_, SQLite::TransactionBehavior::IMMEDIATE);
+        const auto previous=readFailure(*db_,ticket.format_,ticket.path_);
+        unsigned strikes=kind==ScanFailureKind::Rejected?0U:1U;
+        if(strikes && previous && previous->stamp==stamp && previous->failure.strikes>0)strikes=2;
+        const bool blocked=strikes==2;
+        SQLite::Statement finish(*db_,blocked?
+            "UPDATE plugin_scan_blocks SET state='blocked',reason=?,updated_utc=? WHERE id=? AND format=? AND path=? AND state='pending'":
+            "DELETE FROM plugin_scan_blocks WHERE id=? AND format=? AND path=? AND state='pending'");
+        int parameter=1;
+        if(blocked){finish.bind(parameter++,reason);finish.bind(parameter++,nowUtc);}
+        finish.bind(parameter++,ticket.id_);finish.bind(parameter++,ticket.format_);finish.bind(parameter,ticket.path_);
+        require(finish.exec()==1,"scan ticket is no longer pending");
+        SQLite::Statement cache(*db_,"DELETE FROM plugin_scan_cache WHERE format=? AND path=?");
+        cache.bind(1,ticket.format_);cache.bind(2,ticket.path_);cache.exec();
+        removeFailure(*db_,ticket.format_,ticket.path_);
+        SQLite::Statement insert(*db_,"INSERT INTO plugin_scan_failures(format,path,stamp,kind,reason,strikes,block_id,updated_utc) VALUES(?,?,?,?,?,?,?,?)");
+        insert.bind(1,ticket.format_);insert.bind(2,ticket.path_);insert.bind(3,stamp);insert.bind(4,name);
+        insert.bind(5,reason);insert.bind(6,static_cast<int>(strikes));
+        if(blocked)insert.bind(7,ticket.id_);else insert.bind(7);
+        insert.bind(8,nowUtc);insert.exec();transaction.commit();return strikes;
+    } catch(const std::exception& failure) {error=failure.what();return std::nullopt;}
 }
 
 bool PluginRegistry::blockScan(const std::string& format, const std::string& path,
@@ -228,13 +398,116 @@ bool PluginRegistry::blockScan(const std::string& format, const std::string& pat
     } catch(const std::exception& failure) {error=failure.what();return false;}
 }
 
+std::optional<ScanSuccessRead> PluginRegistry::readScanSuccess(const std::string& format,
+    const std::string& path,const std::string& stamp,std::string& error) const {
+    if(audio::onAudioThread)return std::nullopt;
+    error.clear();
+    try {
+        require(key(format,path) && cacheStamp(stamp),"invalid success-cache identity or stamp");
+        SQLite::Statement query(*db_,
+            "SELECT c.packet,length(CAST(c.packet AS BLOB)),c.updated_utc FROM plugin_scan_cache c "
+            "WHERE c.format=? AND c.path=? AND c.stamp=? "
+            "AND NOT EXISTS(SELECT 1 FROM plugin_scan_blocks b WHERE b.format=c.format AND b.path=c.path) "
+            "AND NOT EXISTS(SELECT 1 FROM plugin_scan_failures f WHERE f.format=c.format AND f.path=c.path)");
+        query.bind(1,format);query.bind(2,path);query.bind(3,stamp);
+        if(!query.executeStep())return std::nullopt;
+        require(query.getColumn(0).isText() && query.getColumn(1).isInteger() &&
+                query.getColumn(2).isInteger() && query.getColumn(2).getInt64()>=0,
+                "invalid stored scan cache types");
+        const auto bytes=query.getColumn(1).getInt64();
+        require(bytes>0 && bytes<=static_cast<std::int64_t>(kMaximumScanPacket),
+                "stored scan packet exceeds bounds");
+        ScanSuccessRead result;result.format_=format;result.path_=path;result.stamp_=stamp;
+        result.packet_=query.getColumn(0).getString();result.updatedUtc_=query.getColumn(2).getInt64();
+        result.owner_=scanOwner_;return result;
+    } catch(const std::exception& failure) {error=failure.what();return std::nullopt;}
+}
+std::optional<bool> PluginRegistry::hasScanBlock(const std::string& format,const std::string& path,
+    std::string& error) const {
+    if(audio::onAudioThread)return std::nullopt;
+    error.clear();
+    try {
+        require(key(format,path),"invalid scan block identity");
+        SQLite::Statement query(*db_,"SELECT 1 FROM plugin_scan_blocks WHERE format=? AND path=?");
+        query.bind(1,format);query.bind(2,path);return query.executeStep();
+    } catch(const std::exception& failure) {error=failure.what();return std::nullopt;}
+}
+bool PluginRegistry::confirmScanSuccess(const ScanSuccessRead& read,std::string& error) const {
+    if(audio::onAudioThread)return false;
+    error.clear();
+    try {
+        require(read.owner_.lock()==scanOwner_,"foreign or expired success-cache read");
+        SQLite::Statement query(*db_,
+            "SELECT 1 FROM plugin_scan_cache c WHERE c.format=? AND c.path=? AND c.stamp=? "
+            "AND typeof(c.packet)='text' AND c.packet=? COLLATE BINARY "
+            "AND typeof(c.updated_utc)='integer' AND c.updated_utc=? "
+            "AND NOT EXISTS(SELECT 1 FROM plugin_scan_blocks b WHERE b.format=c.format AND b.path=c.path) "
+            "AND NOT EXISTS(SELECT 1 FROM plugin_scan_failures f WHERE f.format=c.format AND f.path=c.path)");
+        query.bind(1,read.format_);query.bind(2,read.path_);query.bind(3,read.stamp_);
+        query.bind(4,read.packet_);query.bind(5,read.updatedUtc_);
+        return query.executeStep();
+    } catch(const std::exception& failure) {error=failure.what();return false;}
+}
+
+std::optional<std::string> PluginRegistry::cachedScan(const ScanTicket& ticket,
+    const std::string& stamp, std::string& error) const {
+    if(audio::onAudioThread)return std::nullopt;
+    error.clear();
+    try {
+        require(ticket.owner_.lock()==scanOwner_ && ticket.id_>0 && cacheStamp(stamp),
+                "invalid cache ticket or stamp");
+        SQLite::Statement query(*db_,
+            "SELECT c.packet, length(CAST(c.packet AS BLOB)), c.updated_utc "
+            "FROM plugin_scan_cache c JOIN plugin_scan_blocks b "
+            "ON c.format=b.format AND c.path=b.path "
+            "WHERE b.id=? AND b.format=? AND b.path=? AND b.state='pending' AND c.stamp=?");
+        query.bind(1,ticket.id_);query.bind(2,ticket.format_);query.bind(3,ticket.path_);query.bind(4,stamp);
+        if(!query.executeStep())return std::nullopt;
+        require(query.getColumn(0).isText() && query.getColumn(1).isInteger() &&
+                query.getColumn(2).isInteger() && query.getColumn(2).getInt64()>=0,
+                "invalid stored scan cache types");
+        const auto bytes=query.getColumn(1).getInt64();
+        require(bytes>0 && bytes<=static_cast<std::int64_t>(kMaximumScanPacket),
+                "stored scan packet exceeds bounds");
+        return query.getColumn(0).getString();
+    } catch(const std::exception& failure) {error=failure.what();return std::nullopt;}
+}
+
+bool PluginRegistry::finishCachedScan(const ScanTicket& ticket, const std::string& stamp,
+    const std::string& packet, std::int64_t nowUtc, std::string& error) {
+    if(audio::onAudioThread)return false;
+    error.clear();
+    try {
+        require(ticket.owner_.lock()==scanOwner_ && ticket.id_>0 && cacheStamp(stamp) && nowUtc>=0,
+                "invalid cache completion ticket, stamp or time");
+        require(text(packet,kMaximumScanPacket),"invalid scan cache packet bounds or text");
+        SQLite::Transaction transaction(*db_);
+        SQLite::Statement finish(*db_,
+            "DELETE FROM plugin_scan_blocks WHERE id=? AND format=? AND path=? AND state='pending'");
+        finish.bind(1,ticket.id_);finish.bind(2,ticket.format_);finish.bind(3,ticket.path_);
+        require(finish.exec()==1,"scan ticket is no longer pending");
+        // A changed module replaces its whole entry; no stale class rows survive.
+        SQLite::Statement remove(*db_,"DELETE FROM plugin_scan_cache WHERE format=? AND path=?");
+        remove.bind(1,ticket.format_);remove.bind(2,ticket.path_);remove.exec();
+        SQLite::Statement insert(*db_,"INSERT INTO plugin_scan_cache(format,path,stamp,packet,updated_utc) VALUES(?,?,?,?,?)");
+        insert.bind(1,ticket.format_);insert.bind(2,ticket.path_);insert.bind(3,stamp);
+        insert.bind(4,packet);insert.bind(5,nowUtc);insert.exec();
+        transaction.commit();return true;
+    } catch(const std::exception& failure) {error=failure.what();return false;}
+}
+
 bool PluginRegistry::unblockScan(const std::string& format, const std::string& path, std::string& error) {
     if (audio::onAudioThread) return false;
     error.clear();
     try {
         require(key(format,path),"invalid scan identity");
+        SQLite::Transaction transaction(*db_);
         SQLite::Statement remove(*db_,"DELETE FROM plugin_scan_blocks WHERE format=? AND path=?");
-        remove.bind(1,format);remove.bind(2,path);remove.exec();return true;
+        remove.bind(1,format);remove.bind(2,path);remove.exec();
+        SQLite::Statement cache(*db_,"DELETE FROM plugin_scan_cache WHERE format=? AND path=?");
+        cache.bind(1,format);cache.bind(2,path);cache.exec();
+        removeFailure(*db_,format,path);
+        transaction.commit();return true;
     } catch(const std::exception& failure) {error=failure.what();return false;}
 }
 

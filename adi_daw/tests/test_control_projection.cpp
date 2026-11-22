@@ -5,7 +5,7 @@
 //
 //   * level 0: ids, every tempo and meter change by position, the plug-in
 //     references and each device's `ref` (racks' inner devices included), key
-//     events, and nextIds equal to MAX(id) + 1 for every table;
+//     events, and nextIds above live rows and weak remark anchors;
 //   * level 1: clips with positions in ticks and bar|beat|tick, filtered by
 //     track and by fromBar/toBar; automation lanes; remarks rendered verbatim
 //     as data; tunings; the parameter cap;
@@ -396,6 +396,21 @@ int runAll() {
     testLevel2(m);
     testTicksAtBar(m);
     testNoteName();
+    auto anchored = m;
+    rows::Remark orphan;
+    orphan.targetKind = "track";
+    orphan.targetId = 80;
+    anchored.remarks.push_back(orphan);
+    orphan.targetKind = "clip";
+    orphan.targetId = 120;
+    anchored.remarks.push_back(orphan);
+    orphan.targetKind = "device";
+    orphan.targetId = std::numeric_limits<std::int64_t>::max();
+    anchored.remarks.push_back(orphan);
+    const auto reserved = nextIds(anchored);
+    check(reserved.at("track") == 81 && reserved.at("clip") == 121 &&
+              reserved.at("device").is_null() && reserved.at("chain") == nextIds(m).at("chain"),
+          "nextIds keep orphaned remarks reserved in their own namespace and refuse exhaustion");
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

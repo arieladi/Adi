@@ -152,9 +152,10 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             ++stats_.guardsExpired;
         }
     }
-    // ADR-0154: this drain's last touch, and whether it was a gesture's.
+    // ADR-0154: only explicit gestures contribute touches during absorption.
     std::int32_t touched = -1;
-    bool touchedExplicit = false;
+    const auto activityStart = activity ? activity->size() : 0;
+    bool promotedActivity = false;
     auto r = read_.load(std::memory_order_relaxed);
     // Snapshot the producer boundary: a busy producer cannot prolong this drain.
     const auto end = write_.load(std::memory_order_acquire);
@@ -180,11 +181,17 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         observed.before=p.known?p.last:event.value;observed.after=event.value;
         observed.implicit=p.implicit;
         switch (event.kind) {
-        case ParamEventKind::Begin:
+        case ParamEventKind::Begin: {
             observed.kind=ParamActivityKind::Begin;
             touched = event.paramIndex;
-            touchedExplicit = true;
-            if (p.open) {
+            const bool promote=p.open && p.implicit;
+            observed.implicit=promote && absorb && activity;
+            promotedActivity=promotedActivity || observed.implicit;
+            if (promote) {
+                p.implicit = false;
+                observed.before=p.before;
+                observed.after=p.after;
+            } else if (p.open) {
                 ++stats_.strayBegins;
             } else {
                 p.open = true;
@@ -192,6 +199,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
                 p.hasValue = false;
             }
             break;
+        }
         case ParamEventKind::End:
             observed.kind=p.open?ParamActivityKind::End:ParamActivityKind::Ignored;
             observed.before=p.hasValue?p.before:observed.before;
@@ -217,8 +225,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
                     break;
                 }
             }
-            touched = event.paramIndex;
-            touchedExplicit = p.open && !p.implicit;
+            if (!absorb || (p.open && !p.implicit)) touched = event.paramIndex;
             if (!p.open) {
                 p.open = true;
                 p.implicit = true;
@@ -238,9 +245,25 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         r = r + 1 == ring_.size() ? 0 : r + 1;
         read_.store(r, std::memory_order_release);
     }
-    // A preset's broadcasts are the plug-in moving itself, not the user
-    // touching a knob: in an absorbing drain only a gesture counts.
-    if (touched >= 0 && (!absorb || touchedExplicit)) lastTouched_ = touched;
+    if (touched >= 0) lastTouched_ = touched;
+    if (activity && promotedActivity) {
+        // ParamOps gives implicit observations to the state snapshot. A
+        // promoted gesture owns its earlier values in the same prefix, back
+        // to the preceding End for this parameter.
+        for (auto& [key, p] : parameters_) p.promoteEarlierActivity = false;
+        for (auto i=activity->size();i>activityStart;--i) {
+            auto& observation=(*activity)[i-1];
+            auto& p=parameters_.at({observation.event.deviceId,observation.event.paramIndex});
+            if (observation.kind==ParamActivityKind::Begin) {
+                p.promoteEarlierActivity=observation.implicit;
+                observation.implicit=false;
+            } else if (observation.kind==ParamActivityKind::End) {
+                p.promoteEarlierActivity=false;
+            } else if (observation.kind==ParamActivityKind::Value && p.promoteEarlierActivity) {
+                observation.implicit=false;
+            }
+        }
+    }
     for (auto& [key, p] : parameters_) {
         if (!p.open || !p.implicit) continue;
         if (absorb) {

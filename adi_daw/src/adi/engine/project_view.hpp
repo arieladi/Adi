@@ -38,6 +38,7 @@ public:
     ProjectView& operator=(const ProjectView&)=delete;
     [[nodiscard]] std::shared_ptr<const ProjectViewEndpoint> endpoint() const noexcept { return endpoint_; }
     [[nodiscard]] std::shared_ptr<const Snapshot> committed() const noexcept { return committed_; }
+    [[nodiscard]] const auto& committedImage() const noexcept { return image_; }
     [[nodiscard]] std::uint64_t committedGeneration() const noexcept { return committedGeneration_; }
     [[nodiscard]] std::uint64_t presentationGeneration() const noexcept { return presentationGeneration_; }
     /// Rebuild from the store, sharing every node that did not change with the

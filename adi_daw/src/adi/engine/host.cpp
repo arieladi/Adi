@@ -283,6 +283,12 @@ std::int32_t GraphHost::RenderBlock::latencySamples() const noexcept {
 const GraphTransportState* GraphHost::RenderBlock::transportState() const noexcept {
     return valid() ? snapshot_->transportState() : nullptr;
 }
+NodeId GraphHost::RenderBlock::find(const Node& node) const noexcept {
+    return valid() ? snapshot_->graph().graph().find(node) : kInvalidNode;
+}
+bool GraphHost::RenderBlock::pushInputEvent(NodeId node, const Event& event) const noexcept {
+    return valid() && snapshot_->graph().graph().pushInputEvent(node, event);
+}
 bool GraphHost::RenderBlock::process(const AudioIo& io) noexcept {
     if (!valid() || io.frames <= 0 || io.numOut < 0 || io.numIn < 0 ||
         io.frames > snapshot_->maxFrames()) {
