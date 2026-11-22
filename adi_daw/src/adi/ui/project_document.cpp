@@ -94,6 +94,11 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
             error = "Cannot open project: " + std::string(toString(result));
             return {};
         }
+        // New's audio and MIDI tracks monitor on Auto, as Live's (N67, ruled by win under ADR-0203 d1),
+        // where the store's seed writes Off. Part of the new file, as the seed is: no op, no undo step.
+        if (create)
+            store->db().exec("UPDATE tracks SET monitor_mode = " + std::to_string(kNewTrackMonitorMode) +
+                             " WHERE kind IN ('audio', 'midi')");
         const auto stem = path.stem().u8string();
         auto document = std::unique_ptr<ProjectDocument>(new ProjectDocument(
             std::move(store), std::string(reinterpret_cast<const char *>(stem.data()), stem.size())));
@@ -255,7 +260,30 @@ bool ProjectDocument::synchronise() {
     // The session re-read the rows after the submitter's refresh, so an override it found there,
     // or one a gesture set since the last frame, reaches the snapshot now.
     followOverrides();
+    syncMonitorInputs(); // a track added or removed is fed or let go (N65)
     return true;
+}
+void ProjectDocument::setInputChannels(std::int32_t inputs) {
+    inputChannels_ = std::max(0, inputs);
+    syncMonitorInputs();
+}
+void ProjectDocument::syncMonitorInputs() {
+    std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> wanted;
+    if (inputChannels_ > 0) {
+        const std::vector<std::uint32_t> channels =
+            inputChannels_ >= 2 ? std::vector<std::uint32_t>{0, 1} : std::vector<std::uint32_t>{0};
+        for (const auto &t : session_.model().tracks)
+            if (t.kind == "audio")
+                wanted.emplace_back(t.id, channels);
+    }
+    if (wanted == monitorInputs_)
+        return;
+    std::vector<engine::RecordingTarget> targets;
+    for (const auto &[track, channels] : wanted)
+        targets.push_back({track, channels});
+    // A refusal keeps the inputs the session had; the next change tries again.
+    if (session_.setAudioMonitorInputs(targets))
+        monitorInputs_ = std::move(wanted);
 }
 void ProjectDocument::followOverrides() {
     const auto snapshot = view_.current();

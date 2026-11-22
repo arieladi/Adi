@@ -1005,6 +1005,7 @@ class AdiApplication final : public juce::JUCEApplication,
         bridge_ = std::make_unique<device::DeviceBridge>(*document_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
         manager_.addAudioCallback(bridge_.get());
+        applyInputChannels(); // the tracks' monitoring inputs (N65)
         // The meters are the session's strips', which outlive a device change; a strip bound
         // while the session had none for its track finds it now.
         if (root_) {
@@ -1255,9 +1256,18 @@ class AdiApplication final : public juce::JUCEApplication,
         });
         return true;
     }
+    // The device's open inputs, for the tracks' monitoring (N65): every audio track hears inputs 1/2 as
+    // its Arm and monitoring say.
+    void applyInputChannels() {
+        if (!document_)
+            return;
+        const auto *device = manager_.getCurrentAudioDevice();
+        document_->setInputChannels(device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0);
+    }
     void changeListenerCallback(juce::ChangeBroadcaster *) override {
         if (!settings_ || noAudio_)
             return;
+        applyInputChannels(); // a device with other inputs, or none
         const auto setup = manager_.getAudioDeviceSetup();
         if (!manager_.getCurrentAudioDevice())
             return;

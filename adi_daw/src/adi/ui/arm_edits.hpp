@@ -16,8 +16,8 @@ namespace adi::ui {
 // app fills it once per frame. `tracks.monitor_mode` stores 0 Off, 1 In, 2 Auto.
 enum class Monitor : std::int64_t { Off = 0, In = 1, Auto = 2 };
 // A track the window has no rows for (outside the application) shows Live's default, Auto. A track's
-// own rows are always read as they stand: New and `track.create` store Off today (the window-fn log's
-// need for Live's default, AWAITING 20).
+// own rows are always read as they stand: New's tracks and the window's new tracks are written Auto
+// (N67); a bare `track.create` still stores Off until the engine's default changes.
 struct TrackRecordState {
     bool armed = false;
     Monitor monitor = Monitor::Auto;

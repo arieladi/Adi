@@ -281,6 +281,16 @@ struct RecordingDefaults {
     std::string quantize = "1/16";
     bool keepMonitoringLatency = true;
 };
+// Live's monitoring for a new audio or MIDI track: Auto (N67, ruled by win under ADR-0203 d1), where
+// `track.create` stores Off. Carried in the creating batch, the same undo step.
+inline constexpr std::int64_t kNewTrackMonitorMode = 2; // `tracks.monitor_mode`: 0 Off, 1 In, 2 Auto
+inline OpRequest newTrackMonitorOp(std::int64_t track, const char *label) {
+    OpRequest r;
+    r.opType = "track.setMonitorMode";
+    r.payload = {{"id", track}, {"mode", kNewTrackMonitorMode}};
+    r.label = label;
+    return r;
+}
 inline std::vector<OpRequest> recordingDefaultOps(std::int64_t track, const RecordingDefaults &defaults, const char *label) {
     auto ops = trackRecordingDefaults(track, defaults.quantize, defaults.keepMonitoringLatency);
     for (auto &o : ops)
@@ -313,6 +323,7 @@ inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected
                            {"parent", parentValue(parent)},
                            {"index", static_cast<std::int64_t>(at)}},
                           label));
+    edit.ops.push_back(newTrackMonitorOp(id, label));
     if (defaults != nullptr)
         for (auto &o : recordingDefaultOps(id, *defaults, label))
             edit.ops.push_back(std::move(o));

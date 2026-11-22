@@ -111,6 +111,7 @@ bool step1(Session &s, Report &report) {
     }
     auto &doc = *s.doc;
     doc.prepare(kRate, kFrames); // the driver's prepare, at the device's rate
+    doc.setInputChannels(2);    // the device's two inputs, as the app gives them once it opens (N65)
     s.driver.emplace(doc);
     const auto snap = doc.view().current();
     // By id: the snapshot lists them in the Arrangement's order, Main last.
@@ -214,7 +215,8 @@ void step2(Session &s, Report &report) {
                  "sample for sample (0)");
     if (s.take.size() == 0)
         return;
-    // Play it back from the start: the live input is still fed, and monitoring Off keeps it out.
+    // Play it back from the start: the live input is still fed, and monitoring keeps it out: Auto (New's,
+    // N67) while the armed track's take plays, as Off would.
     const auto underrunsBefore = driver.underruns();
     windowPlayFrom(doc, 0);
     Stereo heard;
@@ -295,7 +297,7 @@ void step2(Session &s, Report &report) {
                            "until sourcesReadyAt",
                            static_cast<unsigned long long>(firstBlockUnderruns));
     }
-    if (best <= 1e-6 && monitor == ui::Monitor::Off)
+    if (best <= 1e-6 && monitor != ui::Monitor::In)
         report.step("2b", V::Pass, playback, playbackExpected);
     else
         report.step("2b", V::Fail, playback, playbackExpected, cause);
@@ -763,6 +765,7 @@ void step7(Session &s, Report &report) {
     }
     auto &again = *s.doc;
     again.prepare(kRate, kFrames);
+    again.setInputChannels(2);
     driver.attach(again);
     bool same = true;
     std::string differs;
