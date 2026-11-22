@@ -319,10 +319,21 @@ int main() try {
         sparse.at("params").erase(std::to_string(id));
         sparse.at("real").erase(std::to_string(id));
     }
+    std::array<float, 64> probeL{}, probeR{};
+    const float* probeInputs[]{probeL.data(), probeR.data()};
+    float* probeOutputs[]{probeL.data(), probeR.data()};
+    adi::engine::NodeIo probe;
+    probe.channels = 2;
+    probe.frames = 64;
+    probe.in = probeInputs;
+    probe.out = probeOutputs;
     set(*device, 755, 1);
-    check(device->getParam("755").real == 2, "running one-shot is enabled before recall");
-    check(device->loadState("state", adi::Payload::to_cbor(sparse)) &&
-          device->getParam("755").real == 0 && device->latencySamples() == 0,
+    device->process(probe);
+    check(device->getParam("755").real == 2 && device->latencySamples() == 672,
+          "running one-shot publishes its delay before recall");
+    check(device->loadState("state", adi::Payload::to_cbor(sparse)), "recall a project predating audio retrigger");
+    device->process(probe);
+    check(device->getParam("755").real == 0 && device->latencySamples() == 0,
           "a sparse project resets detector delay and restores legacy transport sync");
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
