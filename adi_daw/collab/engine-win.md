@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — TM-MD-03: native same-shape FLAC rewrite and eviction
+
+**Lands after 3 December.** `engine-win/source-hash-flac-proof` `ab4fab82` on the pinned FLAC writer `d54c75a8`. Adds a native compressed fixture to the memo. The encoded FLAC was rewritten in the same file with the same byte size, channel count, sample rate and 4,096-frame duration. The real decode cache evicted the old hash's WAV. Both warm memo lookups still disagreed with the saved source digest and reused the new verified digest. Decoding the rewritten FLAC produced the authored replacement sample under a different cached WAV. Strict native MSVC: memo 66, decode 56 and PCM stream 50 checks. Raw `D:/adi-engine-win-build/20261120/engine-loans/source-hash-flac-minimal-stack.log`. The engine's plain, warped and progressive playback admission still needs the source-verification loan to mark a project clip Offline. PR requested.
+
 ## 2026-11-22 — EX-05: conditional normalization and the render contract
 
 - **Lands after 3 December.** `engine-win/export-conditional-normalization` `d1fcb88e` on `export-cycle-and-matrix` `f775a911`. The measured source statistic gates the target gain. The caller explicitly chooses whether to preserve source level or enforce the true-peak ceiling when conditional loudness skips the target. Above/Below controls, dithered ceiling enforcement, separate skip/ceiling readings and Peak's unity case passed. The settings default for the skipped ceiling still waits on the director, with the recommendation above. Strict native MSVC: 638 render, 176 WAV and 41 normalization checks. Raw `D:/adi-engine-win-build/20261120/engine-loans/export-conditional-normalization.log`. PR requested.
