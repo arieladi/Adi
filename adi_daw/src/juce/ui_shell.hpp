@@ -2,7 +2,11 @@
 #pragma once
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/arm_edits.hpp"
+#include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/export_choices.hpp"
+#include "adi/ui/automation_mode.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
@@ -153,7 +157,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ArrangePanelsVertically,
         FocusClipView, // Live's Navigate menu: Clip View, Alt/Option+3
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
-        LastId = FitToTimeRange
+        ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
+        ExportAudio,       // the File menu's Export Audio/Video (manual 5.2.1), Ctrl/Cmd+Shift+R
+        LastId = ExportAudio
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -191,6 +197,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
     bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
+    // Live's Exclusive Arm (the same page), on by default: arming a track disarms the others unless
+    // Ctrl/Cmd is held.
+    bool exclusiveArm() const noexcept { return exclusiveArm_; }
     // The registry's recording defaults a new track takes (`record.quantize`,
     // `audio.keepMonitoringLatency`; N31).
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
@@ -245,6 +254,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
+    bool exclusiveArm_ = true;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
     bool splitAll_ = true;
@@ -295,6 +305,15 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
+    // The Control Bar's MIDI Indicators (Live 12 manual 2.x, the Control Bar's right end): lit while MIDI
+    // has come in from an open port within the last moment (SRF-05). The application sets it.
+    void setMidiIn(bool on) noexcept {
+        if (on != midiIn_) {
+            midiIn_ = on;
+            mark(DirtySet::Transport); // the Control Bar redraws while the transport is stopped too
+        }
+    }
+    bool midiIn() const noexcept { return midiIn_; }
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
     unsigned lastDrain() const noexcept { return lastDrain_; }
@@ -336,9 +355,52 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // `reenableAutomation`, which says why in the Status Bar when it refuses. Automation Arm reads
     // `automationArmed` each frame (unset: on, as Live's new Set) and a click sets `armAutomation`.
     // Unset, a click says the switch has no session.
+    // Live's Export Audio/Video (EX-11): the application shows the Export page with these choices, the
+    // render range the selection, else the loop, else the whole song. Unset outside the application.
+    std::function<void(const ExportChoices &)> exportAudio;
+    // The Export page's starting choices, from the frame's snapshot and selection.
+    ExportChoices exportDefaults() const;
+    // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture. The strip begins it
+    // on the control's drag start with its kind and its track or send, and the selected tracks go with
+    // it when the dragged one is among them; each value goes to `mixerDrag`; the release commits one undo
+    // step and Esc cancels. Unset outside the application: the strip commits on release, as before.
+    std::function<bool(const gesture::RelativeScalarSelection &, std::optional<double>, const std::string &)> beginMixerDrag;
+    std::function<bool(double)> mixerDrag;
+    std::function<bool()> endMixerDrag;
+    std::function<void()> cancelMixerDrag;
     std::function<bool()> reenableAutomation;
+    // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
+    // envelope again; false with the reason said. Session state, no undo step, as the global switch.
+    std::function<bool(std::int64_t)> reenableLane;
+    // The item in a control's context menu while the control has a lane (`lane`, null for none):
+    // available while that lane is overridden, as Live's.
+    void addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane);
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;
+    // Arm, monitoring and Arrangement Record (MX-09). The session's rows hold a track's arm and its
+    // monitoring, which the snapshot does not carry yet, so the application hands them over: once a
+    // frame through `setRecordStates` (kept only when they changed, so a steady frame allocates
+    // nothing), and fresh for an action through `readRecordStates`. `startRecording(insertTick,
+    // playing)` prepares the recorder and, stopped, starts the transport as a recording start;
+    // `stopRecording` stops the recorder (the transport goes on, as Live's Record button);
+    // `recording` reads whether it runs. A refusal comes back as false and the application has said
+    // why. Unset outside the application.
+    std::function<RecordStates()> readRecordStates;
+    void setRecordStates(RecordStates states) {
+        if (states != recordStates_)
+            recordStates_ = std::move(states);
+    }
+    std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
+    std::function<void()> stopRecording;
+    std::function<bool()> recording;
+    // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
+    // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).
+    bool midiOverdub() const noexcept { return midiOverdub_; }
+    void setMidiOverdub(bool on) noexcept { midiOverdub_ = on; }
+    // The arm and monitoring of a track as the application last handed them (Off and unarmed when
+    // not known).
+    TrackRecordState recordState(std::int64_t track) const;
+    bool isRecording() const { return recording && recording(); }
     // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.
@@ -414,6 +476,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
     // undo step); `insertDevice` checks there is a track and says why it cannot.
     std::function<bool(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before)> loadBuiltin;
+    // A VST3 or CLAP plug-in from the Browser onto `track`, in front of `before` or where Live places its
+    // kind (N57, `ProjectDocument::insertPlugin`): one undo step, and the Status Bar says how it went in.
+    // `kindGuessed`: the reference's subtype is the Browser's guess (a VST3 before N58), which a kind the
+    // project already holds for the plug-in overrides. Unset outside the application.
+    std::function<bool(rows::PluginRef, std::int64_t track, std::optional<std::int64_t> before, bool kindGuessed)> loadPlugin;
     bool insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     DeviceChainStrip devices;
     DockResizer dockResizer;
@@ -523,6 +590,31 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
     bool soloTrack(std::int64_t id, bool add);
+    // Live's Arm on track `id` (MX-09; manual 21.1), with Exclusive Arm, Ctrl/Cmd for several (`add`),
+    // and the selected tracks together; and its monitoring switch In, Auto, Off (manual 21.4). Each
+    // one batch.
+    bool armTrack(std::int64_t id, bool add);
+    bool setMonitor(std::int64_t id, Monitor mode);
+    // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
+    // stops recording and the transport plays on.
+    bool toggleRecord();
+    // Selects clip `clip` as a click on it would (a recorded take, once it lands).
+    void selectClip(std::int64_t clip);
+    // Clips moved, each to a track and a position (DF-W28, ED-03; Live 12 manual 6.7): one placement by the
+    // engine's planner (`edit_plan::prepareMove`), which clears what each clip lands on in its track as
+    // Live does (the covered part goes, a clip crossing the edge is trimmed or split) under the user's
+    // edit policy, one undo step named `label`. A refusal is said.
+    struct ClipPlace {
+        std::int64_t clip = 0, track = 0, position = 0;
+    };
+    bool placeClips(const std::vector<ClipPlace> &, const char *label);
+    // Live's Automation Mode (AU-01; manual 25.2): each track's Volume envelope drawn on its lane, and its
+    // breakpoints edited there, each edit one undo step. Off in a new window, as Live's.
+    bool automationMode() const noexcept { return automationMode_; }
+    void setAutomationMode(bool on);
+    bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
+    bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
+    bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
@@ -663,6 +755,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool pluginWindowsShown_ = true;
     unsigned lastDrain_ = 0;
     bool playing_ = false;
+    bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
+    RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
+    RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
+    bool midiIn_ = false;
+    bool automationMode_ = false;
     bool infoShown_ = true;
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs

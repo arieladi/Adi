@@ -4,6 +4,12 @@
 #include "../src/juce/ui_shell.hpp"
 #include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
+#include "juce/builtin_host.hpp"
+#include "juce/mix_function_host.hpp"
+#include "juce/device_bridge.hpp"
+#include "adi/gesture_presentation.hpp"
+#include <array>
+#include <SQLiteCpp/SQLiteCpp.h>
 #include "ui_fake_peer.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -54,6 +60,184 @@ struct Event {
     double value;
     std::string parameter{};
 };
+// Exercises the actual GUI callback/coordinator seam without opening hardware.
+struct SimulatedDevice final : juce::AudioIODevice {
+    SimulatedDevice() : AudioIODevice("Owned callback fixture", "test") {}
+    juce::StringArray getOutputChannelNames() override { return {"L", "R"}; }
+    juce::StringArray getInputChannelNames() override { return {}; }
+    juce::Array<double> getAvailableSampleRates() override { return {48000.}; }
+    juce::Array<int> getAvailableBufferSizes() override { return {256}; }
+    int getDefaultBufferSize() override { return 256; }
+    juce::String open(const juce::BigInteger &, const juce::BigInteger &, double, int) override { return {}; }
+    void close() override {}
+    bool isOpen() override { return true; }
+    void start(juce::AudioIODeviceCallback *) override {}
+    void stop() override {}
+    bool isPlaying() override { return true; }
+    juce::String getLastError() override { return {}; }
+    int getCurrentBufferSizeSamples() override { return 256; }
+    double getCurrentSampleRate() override { return 48000.; }
+    int getCurrentBitDepth() override { return 32; }
+    juce::BigInteger getActiveOutputChannels() const override { return juce::BigInteger(3); }
+    juce::BigInteger getActiveInputChannels() const override { return {}; }
+    int getOutputLatencyInSamples() override { return 0; }
+    int getInputLatencyInSamples() override { return 0; }
+};
+struct KeyProbe final : device::DeviceInstance {
+    device::DeviceIdentity identity_;
+    double keyPeak = 0, choice = 0;
+    device::ParamDescriptor descriptor;
+    KeyProbe() {
+        identity_.format = "internal";
+        identity_.uid = "owned.key";
+        descriptor.id = "choice";
+        descriptor.name = "Choice";
+        descriptor.shape = device::ParamShape::Menu;
+        descriptor.stepCount = 13;
+        for (int i = 0; i < 13; ++i)
+            descriptor.choiceLabels.push_back(std::to_string(i));
+    }
+    std::int32_t paramCount() const noexcept override { return 1; }
+    const device::ParamDescriptor *paramAt(std::int32_t i) const noexcept override {
+        return i == 0 ? &descriptor : nullptr;
+    }
+    device::ParamValue getParam(const std::string &) const noexcept override {
+        return device::ParamValue::fromNormalized(choice);
+    }
+    bool setParam(const std::string &, const device::ParamValue &v) override {
+        choice = v.normalized;
+        return true;
+    }
+    const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+    bool loaded() const noexcept override { return true; }
+    std::int32_t sidechainInputChannels() const noexcept override { return 2; }
+    void process(const engine::NodeIo &io) noexcept override {
+        for (int c = 0; c < io.channels; ++c)
+            for (int i = io.blockOffset; i < io.blockOffset + io.frames; ++i) {
+                const auto key = io.sidechain && io.sidechain[c] ? io.sidechain[c][i] : 0.f;
+                keyPeak = std::max(keyPeak, std::abs(double(key)));
+                if (io.out && io.out[c])
+                    io.out[c][i] = key;
+            }
+    }
+};
+struct KeyTone final : engine::Node {
+    void process(const engine::NodeIo &io) noexcept override {
+        for (int c = 0; c < io.channels; ++c)
+            if (io.out && io.out[c])
+                std::fill_n(io.out[c] + io.blockOffset, io.frames, .25f);
+    }
+};
+void callbackKeys(AppCommands &commands, const std::filesystem::path &directory) {
+    StoreError status{};
+    const auto path = directory / "callback-keys.adi";
+    auto store = Store::create(path, status);
+    store->db().exec("INSERT INTO tracks(id,kind,name) "
+                     "VALUES(1,'master','Main'),(2,'audio','Key'),(3,'audio','Programme');"
+                     "INSERT INTO device_chains(id,track_id,name) VALUES(3,3,'Devices');"
+                     "INSERT INTO plugin_refs(id,format,uid,name) "
+                     "VALUES(77,'internal','owned.key','Owned key');"
+                     "INSERT INTO devices(id,chain_id,ord,name,plugin_ref_id) "
+                     "VALUES(30,3,0,'Target',77);");
+    store.reset();
+    std::string error;
+    auto doc = ProjectDocument::open(
+        path, false,
+        [](const engine::DeviceRequest &, std::string &) { return std::make_unique<KeyProbe>(); }, error);
+    check(bool(doc), "callback key document opens");
+    if (!doc)
+        return;
+    KeyTone tone;
+    doc->session().setSourcesFor([&](std::int64_t track) {
+        return track == 2 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+    });
+    SimulatedDevice hardware;
+    device::DeviceBridge bridge(*doc);
+    bridge.setRequestedBlockSize(256);
+    bridge.audioDeviceAboutToStart(&hardware);
+    doc->session().graph().setFadeFrames(0);
+    doc->session().transport().play();
+    gesture::EnginePresentation presentation(doc->view(), doc->session());
+    auto adopt = [&] {
+        auto source = appliedSource(doc->store());
+        return presentation.adoptCommitted(
+            doc->store(), {source, History(doc->store()).head(), source.sequence()}, nullptr);
+    };
+    check(adopt().state != gesture::PresentationState::Refused,
+          "GUI coordinator adopts initial callback graph");
+    std::array<float, 256> l{}, r{};
+    std::array<float *, 2> out{l.data(), r.data()};
+    auto render = [&] {
+        auto *probe = static_cast<KeyProbe *>(doc->session().instanceFor(30));
+        probe->keyPeak = 0;
+        for (int b = 0; b < 8; ++b)
+            bridge.audioDeviceIOCallbackWithContext(nullptr, 0, out.data(), 2, 256, {});
+        return probe->keyPeak;
+    };
+    check(render() == 0, "unrouted callback key is silent");
+    for (const auto *tap : {"pre_fx", "post_fx", "post_mixer"}) {
+        doc->tick(10);
+        const auto data = doc->parameterFeed().current()->front();
+        check(doc->setDeviceKey(data, 2, tap), "callback route commits through document");
+        check(adopt().state != gesture::PresentationState::Refused, "GUI coordinator adopts routed graph");
+        check(render() == .25, "DeviceBridge callback retains key after "
+                               "coordinator graph publication");
+        check(doc->deviceAction("track.rename", {{"id", 2}, {"name", std::string("Key ") + tap}}),
+              "non-topology edit commits");
+        check(adopt().state != gesture::PresentationState::Refused && render() == .25,
+              "scalar coordinator generation retains auxiliary samples");
+    }
+    // Every asynchronous choice must survive a stale frame before delivery,
+    // and use the same real document/Undo authority as the retained surfaces.
+    doc->setParameterDemand(doc.get(), {30});
+    doc->tick(100);
+    auto shown = doc->parameterFeed().current()->front();
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                          doc->sessionState(), "menu");
+    auto record = shown.parameters().front();
+    ParameterControl control(root.devices, 30, record, 0);
+    control.parameterGesture = [&](const std::string &id, engine::ParamEventKind kind, double value) {
+        return doc->parameterGestureExpected(30, id, kind, value, shown.runtime, shown.instance);
+    };
+    auto *probe = static_cast<KeyProbe *>(doc->session().instanceFor(30));
+    std::int64_t menuClock = 100;
+    const auto pump = [&] {
+        doc->tick(menuClock += 20);
+        render();
+        doc->tick(menuClock += 20);
+    };
+    for (int i = 1; i <= 13; ++i) {
+        const auto before = probe->choice;
+        const auto head = History(doc->store()).head();
+        const double next = double(i % 13) / 12.;
+        control.menu.setSelectedId(1 + i % 13, juce::dontSendNotification);
+        control.present(record,
+                        0);      // an intervening paint still has the previous value
+        control.menu.onChange(); // deliver JUCE's deferred callback
+                                 // deterministically, with no OS message loop
+        pump();
+        check(probe->choice == next, "every asynchronous Menu choice applies despite stale presentation");
+        const bool undone = doc->ops().undo().ok;
+        const bool synchronized = doc->synchronise();
+        pump();
+        const auto undoHead = History(doc->store()).head();
+        const bool undoOkay = undone && synchronized && undoHead == head && probe->choice == before;
+        if (!undoOkay)
+            std::printf("MENU undo %d ok=%d sync=%d head=%lld/%lld value=%.17g/%.17g "
+                        "error=%s\n",
+                        i, undone, synchronized, static_cast<long long>(undoHead.value_or(-1)),
+                        static_cast<long long>(head.value_or(-1)), probe->choice, before,
+                        doc->error().c_str());
+        check(undoOkay, "one Undo reverses exactly one Menu choice");
+        const bool redone = doc->ops().redo().ok && doc->synchronise();
+        pump();
+        check(redone && probe->choice == next, "one Redo restores Menu choice");
+        shown = doc->parameterFeed().current()->front();
+        record = shown.parameters().front();
+        control.present(record, 0);
+    }
+    bridge.audioDeviceStopped();
+}
 void functions(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;
     auto document = ProjectDocument::open(directory / "function-tabs.adi", true, {}, error);
@@ -141,6 +325,24 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     native->enabled.onClick();
     check(op == "device.remove" && payload.at("id").get<std::int64_t>() == 20,
           "native function deactivation removes it through the shared undoable device op");
+    auto submit = strip.submit;
+    strip.submit = [](const std::string &, Payload) { return false; };
+    native->enabled.setToggleState(false, juce::dontSendNotification);
+    native->enabled.onClick();
+    check(native->enabled.getToggleState(), "refused native removal restores its authored active state");
+    strip.submit = submit;
+    check(strip.setEnabledExpected(publication->back(), false) && op == "device.remove",
+          "shared compact/native activation authority removes instead of bypassing");
+    publication = std::make_shared<ParameterPublication>(*publication);
+    publication->back().enabled = false;
+    strip.frame(2); native = strip.panels[1].get(); ordinary = strip.panels[0].get();
+    native->enabled.onClick();
+    check(op == "device.setEnabled" && payload.at("enabled").get<bool>() &&
+              payload.at("id").get<std::int64_t>() == 20,
+          "expanded activation recovers an already-disabled native function");
+    publication = std::make_shared<ParameterPublication>(*publication);
+    publication->back().enabled = true;
+    strip.frame(2); native = strip.panels[1].get(); ordinary = strip.panels[0].get();
     ordinary->enabled.onClick();
     check(op == "device.setEnabled" && payload.at("id").get<std::int64_t>() == 21,
           "ordinary plug-in activator keeps ordinary bypass semantics");
@@ -187,6 +389,15 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     control->slider.onDragStart(); peer.setVisible(false);
     check(events.size() == 2 && events.back().kind == engine::ParamEventKind::End,
           "ancestor hiding ends a native gesture without a frame or native input");
+    bool foreignLive = true;
+    const auto beforeForeign = additions;
+    strip.setVisible(false);
+    auto foreign = menuItems(strip.functionMenuFor(3, [&] { return foreignLive; }));
+    foreign[1].action();
+    check(additions == beforeForeign + 1 && menuItems(strip.functionMenu())[4].ticked,
+          "explicit-target add menu works for another visible owner without retargeting the hidden strip");
+    foreignLive = false; foreign[1].action();
+    check(additions == beforeForeign + 1, "expired foreign add-menu owner cannot add later");
     peer.removeChildComponent(&root); peer.removeFromDesktop();
 }
 DevicePanelData makePagedPanel() {
@@ -322,14 +533,249 @@ void parameterPages(AppCommands &commands, const std::filesystem::path &director
     check(events.empty(), "page enable rejects a replaced runtime before mutation");
     peer.removeChildComponent(&root); peer.removeFromDesktop();
 }
+void cleanCompressor(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto doc =
+        ProjectDocument::open(directory / "clean.adi", true, device::withBuiltinDevices(), error);
+    check(doc && doc->addMixFunction(mix::Function::Compressor, 2),
+          "real Clean device can be added for component presentation");
+    if (!doc)
+        return;
+    doc->tick(0);
+    const auto publication = doc->parameterFeed().current();
+    const auto found = std::find_if(publication->begin(), publication->end(), [](const auto &p) {
+        return p.uid == "org.adidaw.mix.compressor";
+    });
+    if (found == publication->end()) {
+        check(false, "Clean publication exists");
+        return;
+    }
+    doc->setParameterDemand(doc.get(), {found->id});
+    doc->tick(1);
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                          doc->sessionState(), "clean");
+    root.setSize(1200, 800);
+    UiPeerRoot peer;
+    peer.setSize(1200, 800);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    peer.addAndMakeVisible(root);
+    check(peer.getPeer() && !peer.getPeer()->getNativeHandle(),
+          "Clean presentation uses only a software peer");
+    auto &strip = root.devices;
+    strip.setVisible(true);
+    strip.publication = [&] { return doc->parameterFeed().current(); };
+    strip.functionAvailability = device::mixFunctionAvailability;
+    strip.addFunction = [&](mix::Function kind, std::int64_t track) { return doc->addMixFunction(kind, track); };
+    strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &runtime,
+                              std::uint64_t stamp) {
+        const auto p = doc->parameterFeed().current();
+        return std::any_of(p->begin(), p->end(), [&](const auto &d) {
+            return d.id == id && d.runtime.sameInstance(runtime) && d.instance == stamp &&
+                   d.available;
+        });
+    };
+    strip.guardedGesture = [&](std::int64_t id, const std::string &parameter,
+                               engine::ParamEventKind kind, double value,
+                               const engine::DeviceRuntimeToken &runtime, std::uint64_t stamp) {
+        return doc->parameterGestureExpected(id, parameter, kind, value, runtime, stamp);
+    };
+    strip.frame(2);
+    check(strip.panels.size() == 1, "Clean creates one native device tab");
+    if (strip.panels.size() == 1) {
+        auto *panel = strip.panels.front().get();
+        check(panel->controls.size() == 8 && panel->title.getTooltip().contains("0 samples"),
+              "Clean shows eight live controls and real zero latency");
+        check(panel->parameterPages.size() == 1 && panel->parameterPages.front().name == "Clean",
+              "Clean has no unavailable style pages");
+        if (!panel->controls.empty()) {
+            auto *control = panel->controls.front().get();
+            control->slider.onDragStart();
+            control->slider.setValue(.25, juce::sendNotificationSync);
+            control->slider.onDragEnd();
+            check(doc->session().instanceFor(found->id)->getParam("0").normalized == .25,
+                  "visible Clean control reaches the actual core parameter");
+            const bool undo = doc->ops().undo().ok && doc->synchronise();
+            doc->tick(2);
+            check(undo && std::abs(doc->session().instanceFor(found->id)->getParam("0").normalized -
+                                   .7) < 1e-6,
+                  "visible Clean drag has one common undo");
+        }
+    }
+    root.arrangement.geometry.selection.track = 2;
+    root.command(AppCommands::ToggleMixView);
+    root.chooseMixViewTab(1);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &stack = root.mixViewPanel.stack;
+    stack.frameAt(root.reader(), 0);
+    const auto item = stack.model().chainRef(2, found->id);
+    if (!item.row.valid() || stack.rows().empty())
+        std::printf("STACK diagnostic: panel=%d stack=%d rows=%zu scope=%d item=%d/%d area=%d,%d error=%s\n",
+          root.mixViewPanel.isVisible(), stack.isVisible(), stack.rows().size(),
+          static_cast<int>(stack.model().windowView().channelScope), item.row.valid(),static_cast<int>(item.place),
+          stack.getWidth(),stack.getHeight(),root.error().c_str());
+    check(stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+              item.row.valid() && item.place == stack::ItemPlace::Chain && !stack.rows().empty(),
+          "actual Clean device appears in the default With Tools STACK row");
+    const auto bounds = stack.getBounds();
+    bool fits = true;
+    for (int width : {320, 480, 816, 1200}) {
+        stack.setSize(width, 650);
+        fits = fits && !stack.addFunction.getBounds().intersects(stack.search.getBounds()) &&
+            stack.getLocalBounds().contains(stack.addFunction.getBounds()) &&
+            stack.getLocalBounds().contains(stack.search.getBounds());
+    }
+    stack.setBounds(bounds);
+    check(fits, "Mix View add and search controls stay distinct and inside narrow/wide headers");
+    strip.frame(3);
+    auto add = menuItems(stack.functionMenu());
+    check(stack.addFunction.isVisible() && stack.addFunction.isEnabled() && add.size() == 5 &&
+              add[1].ticked && !add[1].enabled && add[0].enabled,
+          "Mix View offers a selected-channel add control with present and unavailable capabilities explicit");
+    if (add.size() == 5) {
+        add[0].action(); doc->tick(3);
+        const auto after = doc->parameterFeed().current();
+        const auto eq = std::find_if(after->begin(), after->end(), [](const auto &d) { return d.uid == "org.adidaw.mix.eq" && d.track == 2; });
+        check(eq != after->end() && !menuItems(strip.functionMenu())[0].ticked && root.arrangement.geometry.selection.track == 2,
+              "Mix View adds to its selected channel without selecting or altering the device-strip channel");
+        const bool undo = doc->ops().undo().ok && doc->synchronise(); doc->tick(4);
+        const auto remaining = doc->parameterFeed().current();
+        const bool eqGone = eq != after->end() && std::none_of(remaining->begin(), remaining->end(),
+            [&](const auto &d) { return d.id == eq->id; });
+        const bool cleanKept = std::any_of(remaining->begin(), remaining->end(),
+            [&](const auto &d) { return d.id == found->id && d.uid == "org.adidaw.mix.compressor"; });
+        check(undo && eqGone && cleanKept, "one Undo removes only the function added in Mix View");
+        root.frame(); stack.frameAt(root.reader(), 1);
+        auto expired = menuItems(stack.functionMenu());
+        const auto count = doc->store().db().execAndGet("SELECT count(*) FROM devices").getInt();
+        stack.cancelInteractions();
+        if (expired.size() == 5) expired[0].action();
+        check(doc->store().db().execAndGet("SELECT count(*) FROM devices").getInt() == count,
+              "cancelled Mix View add menu cannot mutate a later publication");
+        auto oldSelection = menuItems(stack.functionMenu());
+        root.arrangement.geometry.selection.track = 3; stack.frameAt(root.reader(), 2);
+        root.arrangement.geometry.selection.track = 2; stack.frameAt(root.reader(), 3);
+        if (oldSelection.size() == 5) oldSelection[0].action();
+        check(doc->store().db().execAndGet("SELECT count(*) FROM devices").getInt() == count,
+              "selection away and back cannot revive an old Mix View add menu");
+    }
+    // Drive the actual folded-dot handler using generated component events,
+    // not desktop input. Its coordinates come from the presented model geometry.
+    strip.submit = [&](const std::string &op, Payload p) { return doc->deviceAction(op, std::move(p)); };
+    stack.setSize(320, 650);
+    stack.model().setAutoZoom(false, 10);
+    const auto refresh = [&] {
+        doc->tick(10); root.mark(DirtySet::All); root.frame();
+        stack.setSize(320, 650); stack.frameAt(root.reader(), 10000);
+    };
+    const auto clickDot = [&](std::int64_t id) {
+        std::optional<stack::ItemGeo> target;
+        stack.model().forEachVisibleRow([&](const auto &row) {
+            stack.model().forEachChainItem(row.shown, [&](const auto &item) {
+                if (item.ref.device == id && item.pill) target = item;
+            });
+        });
+        if (!target) return false;
+        const auto at = stack.listArea().getPosition().toFloat() +
+            juce::Point<float>{static_cast<float>(target->x + target->width / 2),
+                               static_cast<float>(target->top + 8)};
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
+            juce::ModifierKeys::leftButtonModifier, 1.f, 0.f, 0.f, 0.f, 0.f,
+            &stack, &stack, now, at, now, 1, false};
+        stack.mouseDown(event); stack.mouseUp(event);
+        return true;
+    };
+    const auto enabledInStore = [&](std::int64_t id) -> std::optional<bool> {
+        SQLite::Statement query(doc->store().db(), "SELECT enabled FROM devices WHERE id=?");
+        query.bind(1, id);
+        if (!query.executeStep()) return {};
+        return query.getColumn(0).getInt() != 0;
+    };
+    const bool disabled = doc->deviceAction("device.setEnabled", {{"id", found->id}, {"enabled", false}});
+    refresh();
+    check(disabled && clickDot(found->id) && enabledInStore(found->id) == true,
+          "actual folded native dot recovers a bypassed function without removing it");
+    refresh();
+    const bool removed = clickDot(found->id);
+    check(removed && !enabledInStore(found->id), "actual active native dot removes its authored device row");
+    const bool restored = doc->ops().undo().ok && doc->synchronise(); refresh();
+    const auto restoredParams = doc->parameterFeed().current();
+    check(restored && enabledInStore(found->id) == true &&
+              std::any_of(restoredParams->begin(), restoredParams->end(), [&](const auto &d) {
+                  return d.id == found->id && d.uid == "org.adidaw.mix.compressor";
+              }), "one Undo recovers the active function removed by the actual folded dot");
+    peer.removeChildComponent(&root);
+    peer.removeFromDesktop();
+}
+void keyMenus(AppCommands& commands,const std::filesystem::path& directory){
+    std::string error;auto document=ProjectDocument::open(directory/"key-menu.adi",true,{},error);
+    if(!document){check(false,"key menu component document opens");return;}
+    AdiRootComponent root(document->view(),document->ops(),document->mailbox(),commands,document->views(),document->sessionState(),"key-menu");
+    root.setSize(960,620);auto publication=std::make_shared<ParameterPublication>();
+    auto native=makePanel(44,false,"EQ");native.sidechainChannels=2;publication->push_back(native);
+    auto& strip=root.devices;strip.setVisible(true);strip.publication=[&]{return publication;};
+    strip.targetCurrent=[&](std::int64_t id,const engine::DeviceRuntimeToken&,std::uint64_t stamp){return id==44 && publication->front().instance==stamp;};
+    bool invalidStoredRoute=false;
+    // One named vector, filled by push_back and returned by plain if/return. The
+    // same lists written as braced temporaries on the two arms of a conditional
+    // expression are correct C++, but GCC's -Wdangling-pointer reports the
+    // initializer_list array of the untaken arm (an error under -Werror).
+    const auto keyChoice=[](std::optional<std::int64_t> from,const char* choiceTap,const char* name,bool current){
+        DeviceKeyChoice choice;choice.source=from;choice.tap=choiceTap;choice.name=name;choice.current=current;return choice;
+    };
+    strip.keyChoices=[&](const DevicePanelData& d){
+        std::vector<DeviceKeyChoice> choices;
+        if(d.sidechainChannels<=0) {
+            if(invalidStoredRoute)choices.push_back(keyChoice(std::nullopt,"post_mixer","None",false));
+            return choices;
+        }
+        choices.push_back(keyChoice(std::nullopt,"post_mixer","None",false));
+        choices.push_back(keyChoice(2,"pre_fx","Kick",true));
+        choices.push_back(keyChoice(2,"post_fx","Kick",false));
+        choices.push_back(keyChoice(2,"post_mixer","Kick",false));
+        return choices;
+    };
+    int actions=0;std::optional<std::int64_t> source;std::string tap;
+    strip.setKey=[&](const DevicePanelData& expected,const DeviceKeyChoice& choice){++actions;source=choice.source;tap=choice.tap;return expected.id==44 && expected.instance==publication->front().instance;};
+    strip.frame(2);
+    const auto submenu=[](const juce::PopupMenu& menu,const char* name){
+        for(juce::PopupMenu::MenuItemIterator it(menu);it.next();)if(it.getItem().text==name && it.getItem().subMenu)return *it.getItem().subMenu;
+        return juce::PopupMenu{};
+    };
+    auto menu=strip.panels.front()->commands();auto keys=submenu(menu,"Sidechain Input");auto kick=submenu(keys,"Kick");
+    auto items=menuItems(kick);
+    check(items.size()==3 && items[0].ticked && !items[1].ticked && !items[2].ticked,"declared key menu shows three actual taps with the current choice ticked");
+    if(items.size()==3 && items[2].action)items[2].action();
+    check(actions==1 && source==2 && tap=="post_mixer","sidechain menu delegates exact source, tap and runtime to one document command");
+    items=menuItems(submenu(strip.panels.front()->commands(),"Sidechain Input"));
+    if(!items.empty() && items[0].action)items[0].action();
+    check(actions==2 && !source,"None delegates a route removal through the same command");
+    auto old=menuItems(submenu(submenu(strip.panels.front()->commands(),"Sidechain Input"),"Kick"));
+    publication=std::make_shared<ParameterPublication>(*publication);
+    publication->front().instance++;
+    if(!old.empty() && old[0].action)old[0].action();
+    check(actions==2,"retained stale sidechain menu cannot reroute a replacement runtime");
+    publication=std::make_shared<ParameterPublication>(*publication);
+    publication->front().sidechainChannels=0;strip.frame(2);
+    check(menuItems(submenu(strip.panels.front()->commands(),"Sidechain Input")).empty(),"internal-only devices expose no invented external key control");
+    invalidStoredRoute=true;
+    auto recovery=menuItems(submenu(strip.panels.front()->commands(),"Sidechain Input"));
+    if(recovery.size()==1 && recovery[0].action)recovery[0].action();
+    check(recovery.size()==1 && recovery[0].name=="None" && actions==3 && !source,"an unavailable stored key exposes only its recovery removal, never fabricated source choices");
+}
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI init;
     test::TempDirectory temporary("ui_mix_functions", "component");
     settings::AppSettings settings(appdata::App::Daw, temporary.path() / "settings.json");
     AppCommands commands(settings);
+    callbackKeys(commands, temporary.path());
     functions(commands, temporary.path());
     parameterPages(commands, temporary.path());
+    cleanCompressor(commands, temporary.path());
+    keyMenus(commands, temporary.path());
     std::printf("%d checks, %d failures (software-peer components)\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -105,7 +105,7 @@ void run() {
     engine.prepare(48000, 64);
     engine.bindParameters(declarations);
     engine.requestLatencyReport();
-    check(latency.latencySamples() == 0, "zero intrinsic latency");
+    check(latency.latencySamples() == 3, "the default preset reports Live 12.4's 3 samples (High Quality on)");
     check(engine.sendParameter(10, -6), "Gain host parameter reaches external");
     engine.sendParameter(1, 6);
     engine.sendParameter(2, 12);
@@ -154,7 +154,7 @@ void run() {
     engine.sendParameter(18, 1);
     block(); // DEV-09: a parameter reaches Pd in the next locked tick, before its block
     engine.requestLatencyReport();
-    check(latency.latencySamples() == 16, "HQ latency reported through actual external outlet");
+    check(latency.latencySamples() == 3, "HQ latency reported through actual external outlet (Live 12.4: 3)");
     for (int id = 1; id <= 19; ++id)
         check(engine.sendParameter(id, 0), "all controls route");
     block();

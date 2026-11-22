@@ -336,6 +336,46 @@ void failedPublicationReportsNoCounts() {
               sameEntries(before, f.index->entries()),
           "a rolled-back publication reports no committed rows or hash jobs");
 }
+void vanishedDirectoryKeepsSiblings() {
+    Fixture f;
+    fs::remove(f.root / ".adi-volume-id");
+    fs::create_directory(f.root / "removed");
+    write(f.root / "removed" / "old", "old");
+    write(f.root / "kept", "kept");
+    bool removed = false;
+    const auto scan = f.index->scan(f.volume, {}, {}, [&](const auto& state) {
+        if (!removed && state.phase == library::ScanProgress::Phase::Discovering &&
+            state.visited > state.files) {
+            fs::remove_all(f.root / "removed");
+            removed = true;
+        }
+    });
+    const auto entries = f.index->entries();
+    check(removed && scan.ok && scan.files == 1 && entries.size() == 1 &&
+              entries.front().relativePath == "kept",
+          "a directory removed before descent does not discard the surviving scan entries");
+}
+void failedCommitReleasesStagedHashes() {
+    Fixture f;
+    write(f.root / "kept", "kept");
+    check(f.scan().ok, "seed an existing queued library hash");
+    SQLite::Database side(media::pathUtf8(f.dir.path() / "index.sqlite"), SQLite::OPEN_READWRITE);
+    side.exec("CREATE TABLE gate_parent(id INTEGER PRIMARY KEY);"
+              "CREATE TABLE gate_child(id INTEGER REFERENCES gate_parent(id) DEFERRABLE INITIALLY DEFERRED);"
+              "CREATE TRIGGER fail_commit AFTER INSERT ON files WHEN NEW.rel_path='fresh'"
+              " BEGIN INSERT INTO gate_child VALUES(7); END;");
+    write(f.root / "fresh", "fresh");
+    const auto failed = f.scan();
+    check(!failed.ok && failed.files == 0 && failed.queued == 0 && f.index->entries().size() == 1,
+          "a deferred COMMIT refusal leaves the previous library rows intact");
+    f.finish();
+    check(f.index->stats().hashed == 1, "the older queued hash remains available after refusal");
+    side.exec("DROP TRIGGER fail_commit");
+    const auto retry = f.scan();
+    f.index->waitIdle();
+    check(retry.ok && retry.queued == 1 && f.index->stats().hashed == 2,
+          "retry admits and hashes the new file after COMMIT refusal");
+}
 
 } // namespace
 int main() {
@@ -348,7 +388,9 @@ int main() {
         foreignDatabases();
         scanCancellationAndProgress();
         vanishedDuringDiscovery();
+        vanishedDirectoryKeepsSiblings();
         failedPublicationReportsNoCounts();
+        failedCommitReleasesStagedHashes();
     } catch (const std::exception &e) {
         check(false, e.what());
     }

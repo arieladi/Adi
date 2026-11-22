@@ -139,7 +139,13 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
             if (control.progress)
                 control.progress(current, done, total * 5);
         };
-        auto rendered = renderWav(job, loader, renderControl, id, counter);
+        auto rendered = detail::renderWavPrepared(job, loader, renderControl, id, counter,
+            [&](const Result& prepared) {
+                result.snapshot=prepared.snapshot;
+                result.output=stage.path.parent_path()/prepared.output.filename();
+                result.output.replace_extension(".stem.mp4");
+                detail::prepareOutput(result,collision,".stem.mp4","NI Stems destination already exists");
+            });
         if (rendered.state == JobState::Cancelled)
             throw Cancelled{};
         if (rendered.state != JobState::Completed)
@@ -149,9 +155,6 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         detail::retainIntermediateMedia(result, rendered);
         result.snapshot = std::move(rendered.snapshot);
         result.framesWritten = rendered.framesWritten;
-        result.output = stage.path.parent_path() / rendered.output.filename();
-        result.output.replace_extension(".stem.mp4");
-        detail::prepareOutput(result,collision,".stem.mp4","NI Stems destination already exists");
         std::vector<audio::AacTrack> tracks;
         std::vector<audio::StemLabel> labels;
         auto encode = [&](const fs::path &wave, unsigned ordinal) {

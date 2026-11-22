@@ -232,6 +232,11 @@ public:
     /// engine silently delays 64 samples is the misalignment ADR-0058 exists
     /// to remove (ADR-0183).
     [[nodiscard]] virtual std::int32_t adapterLatencySamples() const noexcept { return 0; }
+    /// Whether the patch wants the graph's exact position per segment
+    /// (NodeIo::deviceTransport): fixed once open() has returned.
+    [[nodiscard]] virtual bool wantsPosition() const noexcept { return false; }
+    /// Message thread, on the host's schedule: drain what the patch printed (DF-E36 d).
+    virtual void pumpConsole() {}
 };
 
 /// A Pd patch in a chain, wired into delay compensation through the ordinary
@@ -245,10 +250,16 @@ public:
 class PdDevice final : public DeviceInstance {
 public:
     PdDevice(std::unique_ptr<PdPatchEngine> engine, DeviceIdentity id);
+    /// DF-E36 (d): the host's message-thread timer drains the patch's console.
+    void pumpMainThread() override { if (engine_ != nullptr) engine_->pumpConsole(); }
     ~PdDevice() override;
 
     [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
     [[nodiscard]] bool loaded() const noexcept override { return loaded_; }
+    /// A patch with [adi.transport] gets the graph's exact position for each
+    /// segment, from which each Pd tick's own position is sent (its eighth
+    /// field). Fixed for the device's life: the graph reads it every block.
+    [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return wantsPosition_; }
 
     /// Prepares the engine at the real rate, THEN asks the patch its latency
     /// -- the order is the fix for decision 2 above. Returns at once when
@@ -280,6 +291,7 @@ private:
     PdLatencyReceiver latency_;
     std::string openError_;
     bool loaded_ = false;
+    bool wantsPosition_ = false;   ///< decided at construction, after the patch opened
     bool prepared_ = false;        ///< message thread: the engine is set up at these
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;

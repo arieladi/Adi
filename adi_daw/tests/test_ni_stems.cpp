@@ -221,6 +221,22 @@ void collisionPublication() {
             "NI shared commit rechecks fold-only late arrivals");
     check(!folded.publication && fs::exists(stage) && media::blake3File(arrival).hex==retained &&
           !fs::exists(dir.path()/"STRASSE (3).stem.mp4"),"NI late folded collision leaves private bytes, arrival and numbering unchanged");
+    render::Result replacement;replacement.output=original;write(stage,"replacement NI bytes");
+    render::detail::prepareOutput(replacement,render::Collision::Replace,".stem.mp4","NI destination exists");
+    const auto replacingHash=media::blake3File(stage).hex;
+    render::detail::publishOutput(stage,replacement,{},"NI destination exists");
+    // Replace freezes the canonical parent; macOS TMPDIR /var is a symlink to /private/var.
+    check(replacement.state==render::JobState::Completed && replacement.replacement && replacement.replacement->existing &&
+          replacement.output==fs::canonical(dir.path())/original.filename() && media::blake3File(original).hex==replacingHash,
+          "NI shared publisher uses identity-bound native Replace for the complete compound filename");
+    write(stage,"refused NI bytes");
+    render::Result changed;changed.output=original;
+    render::detail::prepareOutput(changed,render::Collision::Replace,".stem.mp4","NI destination exists");
+    write(original,"external NI edit");const auto edited=media::blake3File(original).hex;
+    refuses([&]{render::detail::publishOutput(stage,changed,{},"NI destination exists");},
+            "NI shared Replace refuses changed bytes after preflight");
+    check(!changed.publication && media::blake3File(original).hex==edited && fs::exists(stage),
+          "NI refusal preserves another writer and the caller-owned stage");
 }
 void deliveryMediaVerification() {
     test::TempDirectory dir{"ni_stems", "delivery-media"};
@@ -568,6 +584,25 @@ void integration() {
     if(incremented.state==render::JobState::Completed)
         check(audio::readAacMovie(incremented.output).tracks.at(0).frames==10876,
               "numbered NI delivery contains the requested encoded range");
+    auto replacedJob=job;replacedJob.nameTemplate="NI Replaced";replacedJob.collision=render::Collision::Replace;
+    const auto replacedPath=dir.path()/"NI Replaced.stem.mp4";
+    {std::ofstream existing(replacedPath,std::ios::binary);existing<<"old NI delivery";}
+    const auto replaced=render::renderNiStems(replacedJob,{});
+    // Replace reports the delivery under its canonical parent (macOS /var -> /private/var).
+    check(replaced.state==render::JobState::Completed && replaced.replacement && replaced.replacement->existing &&
+          replaced.output==fs::canonical(replacedPath.parent_path())/replacedPath.filename() && audio::readAacMovie(replaced.output).tracks.at(0).frames==10876 && clean(dir.path()),
+          "actual NI encoder replaces the bound old delivery with the requested five-stream container");
+    bool changedDuringMain=false;render::Control duringMain;
+    duringMain.progress=[&](render::JobId,std::uint64_t done,std::uint64_t total) {
+        if(done && done<total/5 && !changedDuringMain) {
+            changedDuringMain=true;std::ofstream file(replacedPath,std::ios::binary);file<<"changed during Main";
+        }
+    };
+    const auto rejectedReplacement=render::renderNiStems(replacedJob,{},duringMain);
+    {std::ifstream file(replacedPath,std::ios::binary);const std::string bytes{std::istreambuf_iterator<char>(file),{}};
+        check(changedDuringMain && rejectedReplacement.state==render::JobState::Failed && !rejectedReplacement.publication &&
+              bytes=="changed during Main" && clean(dir.path()),
+              "NI binds before its first Main audio block, refusing an edit during that first render");}
     job.nameTemplate = "Cancelled";
     std::stop_source stop;
     render::Control cancel;

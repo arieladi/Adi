@@ -82,6 +82,8 @@ class StackTab final : public juce::Component {
     juce::TextEditor search;
     juce::ComboBox channelScope;
     juce::String emptyMessage() const;
+    juce::PopupMenu functionMenu();
+    juce::TextButton addFunction{"+ Function"};
     juce::Slider rowSize;
     juce::ToggleButton autoZoom{"Auto Zoom"}, pinsOnly{"Pinned"}, navigator{"Navigator"};
     static constexpr int kDisplayHeight = 56, kHeaderHeight = 30;

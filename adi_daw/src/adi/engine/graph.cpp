@@ -1047,14 +1047,14 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     // driver initialization failure cannot reset the running graph's nodes.
     prepareRenderState(render_);
     if(requestedWorkers_>0 && maxFrames_>=parallelMinimumFrames_) {
-        std::map<Node*,std::size_t,std::less<Node*>> occurrences;
-        for(const auto& slot:slots_)if(slot.node)++occurrences[slot.node];
+        std::map<const void*,std::size_t> occurrences;
+        for(const auto& slot:slots_)if(slot.node)++occurrences[slot.node->workerAffinity()];
         std::size_t widestParallel=0;levelWork_.resize(levels_.size());
         for(std::size_t index=0;index<levels_.size();++index) {
             auto& work=levelWork_[index];
             for(const auto id:levels_[index]) {
                 auto* node=slots_[static_cast<std::size_t>(id)].node;
-                if(node && occurrences[node]==1 && node->canProcessOnWorker())work.parallel.push_back(id);
+                if(node && occurrences[node->workerAffinity()]==1 && node->canProcessOnWorker())work.parallel.push_back(id);
                 else work.serial.push_back(id);
             }
             widestParallel=(std::max)(widestParallel,work.parallel.size());

@@ -60,6 +60,40 @@ void actualFilesAndAcknowledgment() {
         check(!std::filesystem::exists(owned),"explicit discard removes only the recording's owned staging directory");
     }
 }
+void stopDrainsLastShortBlock() {
+    test::TempDirectory directory{"audio_recording","stop_short_block"};
+    auto request=spec(directory.path());
+    request.targets={{21,{0}}};
+    const std::array<float,8> expected{-0.25f,0.125f,0.5f,0.0f,-0.75f,0.25f,-0.5f,0.75f};
+    const float* channels[]={expected.data()};
+    AudioIo block;block.in=channels;block.numIn=1;block.frames=8;
+    for(const bool deviceStopped:{false,true}) {
+        for(unsigned take=0;take<4;++take) {
+            AudioInputRecorder recorder;
+            Transport transport;
+            transport.play();
+            std::string error;
+            if(!recorder.start(request,error))throw std::runtime_error(error);
+            input(recorder,transport,block);
+            recorder.stop();
+            if(!deviceStopped) {
+                AudioIo idle;idle.frames=1;
+                input(recorder,transport,idle);
+            }
+            auto result=finish(recorder,deviceStopped);
+            check(result.failure==RecordingFailure::None && result.frames==expected.size(),
+                  "immediate Stop finalizes all accepted recording frames");
+            {
+                audio::WavReader reader(result.tracks.at(0).file);
+                std::array<float,8> heard{};
+                const auto frames=reader.read(heard.data(),8);
+                check(reader.channels()==1 && reader.frames()==expected.size() && frames==expected.size() && heard==expected,
+                      "the finalized short WAV includes the exact last block");
+            }
+            result.discard();
+        }
+    }
+}
 void formatAndInputFailures() {
     test::TempDirectory directory{"audio_recording","failures"};AudioInputRecorder recorder;std::string error;auto request=spec(directory.path());
     auto invalid=request;invalid.targets[1].trackId=21;check(!recorder.start(invalid,error),"duplicate destination track refuses before publication");
@@ -285,4 +319,4 @@ void loopDiscontinuities() {
     }
 }
 }
-int main(){try{actualFilesAndAcknowledgment();formatAndInputFailures();boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();sessionLoopPasses();loopBoundsAndCapacity();loopDiscontinuities();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual recording callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actualFilesAndAcknowledgment();stopDrainsLastShortBlock();formatAndInputFailures();boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();sessionLoopPasses();loopBoundsAndCapacity();loopDiscontinuities();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual recording callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -168,7 +168,7 @@ void stepsAndQuantization() {
     old.at(2).sample = 10;
     old.at(3).sample = 20;
     for (const auto &cuts : {std::pair{SplicePosition{99, 10}, SplicePosition{150, 15}},
-                             std::pair{SplicePosition{102, 10}, SplicePosition{150, 15}},
+                             std::pair{SplicePosition{104, 10}, SplicePosition{150, 15}},
                              std::pair{SplicePosition{50, 5}, SplicePosition{98, 10}}}) {
         auto a = point(cuts.first.native, 0.65), b = point(cuts.second.native, 0.4);
         a.sample = cuts.first.sample;
@@ -179,7 +179,32 @@ void stepsAndQuantization() {
         check(clipped.ok && ordered(clipped),
               "native cuts sharing projected samples preserve stable point order");
         rendered(clipped, old, 0.2, cut, replacement, 0, 30);
+        if (cuts.first.native == 104 && clipped.ok) {
+            auto reclocked = clipped;
+            for (auto &knot : reclocked.knots)
+                knot.knot.sample = knot.knot.point.time;
+            const auto after = program(reclocked, 0.2);
+            check(engine::valueAt(after, 102) == 0.25 && engine::valueAt(after, 103) == 0.25 &&
+                      engine::valueAt(after, 104) == 0.65,
+                  "a new clock holds the last kept coincident value up to the replacement");
+        }
     }
+
+    // The removed native point at 8 and the guard share the end sample.
+    old = {point(0, 0.1, 4), point(8, 0.4, 5), point(20, 0.9)};
+    old[1].sample = 10;
+    std::vector<SpliceKnot> replacement{point(2, 0.6), point(9, 0.3)};
+    replacement.back().sample = 10;
+    const SpliceBounds cut{{2, 2}, {9, 10}};
+    const auto suffix = planEnvelopeSplice(old, 0.2, cut, replacement);
+    const auto guardAtEnd = std::find_if(suffix.knots.begin(), suffix.knots.end(), [](const auto &knot) {
+        return knot.pointOrigin == SpliceOrigin{SplicePart::Guard, 1};
+    });
+    check(suffix.ok && guardAtEnd != suffix.knots.end() &&
+              guardAtEnd->knot.point.curve == 5 && !guardAtEnd->knot.slice &&
+              !guardAtEnd->rangeOrigin,
+          "an unsliced nonlinear segment beginning at the end guard needs no range");
+    rendered(suffix, old, 0.2, cut, replacement, 0, 24);
 }
 void defaultsAndOwnership() {
     const SpliceBounds bounds{{10, 10}, {20, 20}};
