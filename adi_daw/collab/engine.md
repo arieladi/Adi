@@ -92,6 +92,12 @@ GCC 14 and Clang 19 strict builds each passed 353 checks across five Warp suites
 
 Parked TM-WT-02 journal registration on the op reservation, rightmost-marker behavior and ratio constraints on Live, and signed pickup origin on Win's table-or-v2 decision. Parked TM-WT-01 on Q-D and a labeled corpus, and TM-WT-05 on Q-E and the import/drop readings. TM-WT-03's documented offline interpolation can proceed while those gates remain open.
 
+### 22 November — TM-WT-03 four-point native Warp interpolation
+
+**PR requested** for `engine/tm-wt03-native-warp-interpolation` at `7745cd4b304babf3ab5958b12be72d8f7904d5f9` from main. The offline native Beats and Texture sampler applies four-point Hermite interpolation with one source frame of left overlap and two of right overlap in the reader cache. Integer positions remain literal PCM, and interpolation uses silence outside the selected source window.
+
+GCC 14 and Clang 19 strict builds each passed 342 checks across five suites. An independent half-phase formula matched all 8,201 stereo frames, between frames as well as at integer positions, across the 4,096-frame page boundaries and trimmed window edges. This qualifies the DSP change. The effect's Live listening gate remains open.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
