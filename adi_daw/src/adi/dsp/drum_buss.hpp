@@ -28,7 +28,9 @@
 //
 // With Comp off and Drive, Crunch, Transients and Boom at 0, a quiet signal
 // is Trim, the drive curve's unit slope, Damp and Output alone, which the
-// test checks. Filters are direct-form-I biquads in double; states settle
+// test checks. Trim, Drive, Crunch, Transients, Boom, Output and Dry/Wet
+// glide over about 10 ms once audio runs (dsp/glide.hpp), so moving them does
+// not click. Filters are direct-form-I biquads in double; states settle
 // on exact 0 below 1e-30.
 //
 // WHAT IS NOT LIVE'S YET, and says so: every curve, constant and range above,
@@ -39,6 +41,7 @@
 #pragma once
 
 #include "adi/dsp/biquad.hpp"
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cstddef>
@@ -78,9 +81,10 @@ private:
     Biquad damp_{}, crunchBand_{}, boom_{};
     std::array<State, 2> dampState_{}, crunchState_{}, boomState_{};
     std::array<double, 2> fast_{}, slow_{}, shape_{1, 1}, crunchDcIn_{}, crunchDcOut_{};
-    double rate_ = 48000, trim_ = 1, drive_ = 1, crunch_ = 0, transients_ = 0, boomGain_ = 0, output_ = 1, wet_ = 1;
+    double rate_ = 48000;
+    Glide trim_, drive_, match_, crunch_, transients_, boomGain_, output_, wet_;
     double compEnv_ = 0, compAttack_ = 0, compRelease_ = 0, fastA_ = 0, slowA_ = 0, releaseA_ = 0, smoothA_ = 0;
-    double match_ = 1, crunchPole_ = 0;
+    double crunchPole_ = 0;
 };
 
 }  // namespace adi::dsp
