@@ -70,6 +70,7 @@ extern "C" {
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <sstream>
 #include <string>
@@ -739,6 +740,361 @@ void testTransportReachesThePatch() {
     check(arr->read(cells.data(), arr->length()), "a second array is published");
     eqi(static_cast<long long>(cells[0]), 0, "and it follows: stopped");
     eqi(static_cast<long long>(cells[5]), 4, "and the beat moved");
+}
+
+// ---------------------------------------------------------------------------
+// The exact position [adi.transport] adds: each Pd tick's first input sample,
+// as whole quarter notes and the fraction (the clones seat's "editable Pd timing cases").
+// The seven fields cannot say it: QN 0 and QN 1 in 2/2 send the same seven,
+// and after a 4/4 bar then 3/4 a reconstruction from the meter is a quarter
+// off. Expected values come from a per-frame model built here: the segments'
+// deviceTransport is the model at each segment's first frame, and tick k's
+// value is the model at input frame 64k. Every tick that STARTS inside the
+// scenario is logged, the last one completed by the flush with the position
+// latched when it began: ceil(frames / 64) of them. 48 kHz, 120 BPM: 1 sample
+// is 1/24000 of a quarter note.
+// ---------------------------------------------------------------------------
+
+struct Moment {
+    double quarterNotes = 0;
+    bool playing = true;
+};
+struct PositionRun {
+    std::vector<double> positions;  ///< whole quarter notes + fraction, added in double
+    int count = 0;
+    bool ok = false;
+};
+// `blocks`: host blocks, each a list of segment lengths (the graph's cuts).
+PositionRun runPositions(const std::vector<std::vector<int>>& blocks,
+                         const std::function<Moment(int)>& model, int maxFrames = 512,
+                         const char* patch = "adi-position-log.pd") {
+    PositionRun run;
+    LibPdEngine eng(patchDir(), patch, 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) {
+        check(false, std::string(patch) + " opens: " + err);
+        return run;
+    }
+    check(eng.wantsPosition(), "a patch with [adi.transport] asks for the exact position");
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/" + patch, std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.prepare(48000.0, maxFrames);
+    eng.bindArrays(decls);
+    LibPdEngine::Transport tr;
+    tr.playing = true;
+    tr.bpm = 120;
+    eng.setTransport(tr);
+    int frame = 0;
+    int longest = 1;
+    for (const auto& block : blocks) {
+        int total = 0;
+        for (const int length : block) {
+            total += length;
+        }
+        longest = std::max(longest, total);
+    }
+    Buffers b(2, longest);
+    for (const auto& block : blocks) {
+        int total = 0;
+        for (const int length : block) {
+            total += length;
+        }
+        int offset = 0;
+        for (const int length : block) {
+            const auto now = model(frame);
+            engine::DeviceTransport position;
+            position.quarterNotes = now.quarterNotes;
+            position.playing = now.playing;
+            position.bpm = 120;
+            auto io = b.io(2, total, offset, length);
+            io.deviceTransport = &position;
+            eng.process(io);
+            offset += length;
+            frame += length;
+        }
+    }
+    // Flush: calls with no exact position send no eighth field, so they log
+    // nothing, and the arrays (published at 1 kHz) catch up.
+    for (int i = 0; i < 4; ++i) {
+        auto io = b.io(2, longest, 0, std::min(longest, maxFrames));
+        eng.process(io);
+    }
+    const auto* wholes = eng.publishedArray(1);
+    const auto* count = eng.publishedArray(2);
+    const auto* fractions = eng.publishedArray(3);
+    if (wholes == nullptr || count == nullptr || fractions == nullptr) {
+        check(false, "the log's arrays are bound");
+        return run;
+    }
+    std::vector<float> whole(static_cast<std::size_t>(wholes->length()), -1.f);
+    std::vector<float> fraction(whole.size(), -1.f);
+    std::vector<float> n(1, 0.f);
+    run.ok = wholes->read(whole.data(), wholes->length()) && fractions->read(fraction.data(), fractions->length()) &&
+             count->read(n.data(), 1);
+    run.count = static_cast<int>(n[0]);
+    run.positions.resize(whole.size());
+    for (std::size_t i = 0; i < whole.size(); ++i) {
+        run.positions[i] = static_cast<double>(whole[i]) + static_cast<double>(fraction[i]);
+    }
+    return run;
+}
+std::vector<std::vector<int>> cutInto(int total, const std::vector<int>& pattern,
+                                      const std::vector<int>& boundaries = {}) {
+    // Awkward segment lengths in a repeating pattern, each host block one
+    // segment, cut again at every boundary (a seek, a stop) as the graph cuts.
+    std::vector<std::vector<int>> blocks;
+    int at = 0;
+    std::size_t i = 0;
+    while (at < total) {
+        int length = std::min(pattern[i++ % pattern.size()], total - at);
+        for (const int edge : boundaries) {
+            if (edge > at && edge < at + length) {
+                length = edge - at;
+            }
+        }
+        blocks.push_back({length});
+        at += length;
+    }
+    return blocks;
+}
+bool matchesModel(const PositionRun& run, const std::function<Moment(int)>& model, int ticks,
+                  std::string& first) {
+    if (!run.ok || run.count != ticks) {
+        first = "ok " + std::to_string(run.ok) + ", " + std::to_string(run.count) + " ticks logged, " +
+                std::to_string(ticks) + " expected";
+        return false;
+    }
+    for (int k = 0; k < ticks; ++k) {
+        const double want = model(64 * k).quarterNotes;
+        if (std::fabs(run.positions[static_cast<std::size_t>(k)] - want) > 1e-6) {
+            first = "tick " + std::to_string(k) + ": " + std::to_string(run.positions[static_cast<std::size_t>(k)]) +
+                    ", want " + std::to_string(want);
+            return false;
+        }
+    }
+    return true;
+}
+
+void testTheEighthTransportFieldIsEachTicksExactPosition() {
+    section("[adi.transport]'s exact position: each Pd tick's own");
+    const auto playingFromZero = [](int f) { return Moment{f / 24000.0, true}; };
+    std::string why;
+
+    // Stopped at QN 0 and at QN 1: every tick says so.
+    for (const double at : {0.0, 1.0}) {
+        const auto stopped = [at](int) { return Moment{at, false}; };
+        const auto run = runPositions(cutInto(640, {128}), stopped);
+        const bool same = matchesModel(run, stopped, 10, why);
+        check(same, "stopped at QN " + std::to_string(static_cast<int>(at)) + ", every tick says so: " + why);
+    }
+    // Playing, awkward segments: tick 375 is exactly QN 1.
+    {
+        const auto run = runPositions(cutInto(24064, {100, 37, 411, 64, 7, 250}), playingFromZero);
+        const bool same = matchesModel(run, playingFromZero, 376, why);
+        check(same, "playing, awkward segments, tick k is 64k/24000: " + why);
+        check(run.ok && std::fabs(run.positions[375] - 1.0) < 1e-9 && std::fabs(run.positions[374] - 374.0 / 375.0) < 1e-6,
+              "tick 375 is QN 1.0, tick 374 is 0.9973333");
+    }
+    // A segment at a nonzero offset in its host block, and the partial tick
+    // that spans the cut: one 512 block cut into 100 and 412, twice.
+    {
+        const auto run = runPositions({{100, 412}, {100, 412}}, [](int f) { return Moment{2.0 + f / 24000.0, true}; });
+        const bool same = matchesModel(run, [](int f) { return Moment{2.0 + f / 24000.0, true}; }, 16, why);
+        check(same, "segments at a nonzero offset, a tick spanning the cut keeps its own start: " + why);
+    }
+    // A seek and a stop, each inside a tick. Play from QN 3; at frame 1000 seek
+    // to QN 10; at frame 1700 stop. Tick 15 (frame 960) began before the seek:
+    // 3.04. Tick 26 (frame 1664) began before the stop: 10.0276667.
+    {
+        const auto model = [](int f) {
+            if (f < 1000) {
+                return Moment{3.0 + f / 24000.0, true};
+            }
+            if (f < 1700) {
+                return Moment{10.0 + (f - 1000) / 24000.0, true};
+            }
+            return Moment{10.0 + 700 / 24000.0, false};
+        };
+        for (const auto& pattern : {std::vector<int>{100, 37, 411, 64, 7, 250}, std::vector<int>{37, 411, 7, 250, 100, 64}}) {
+            const auto run = runPositions(cutInto(2200, pattern, {1000, 1700}), model);
+            {
+            const bool same = matchesModel(run, model, 35, why);
+            check(same, "a seek and a stop inside ticks: " + why);
+        }
+            check(run.ok && std::fabs(run.positions[15] - 3.04) < 1e-6 && std::fabs(run.positions[16] - 10.001) < 1e-6 &&
+                      std::fabs(run.positions[26] - (10.0 + 664.0 / 24000.0)) < 1e-6 &&
+                      std::fabs(run.positions[27] - (10.0 + 700.0 / 24000.0)) < 1e-6,
+                  "tick 15 is 3.04 (before the seek), 16 is 10.001, 26 is 10.0276667 (before the stop), 27 on 10.0291667");
+        }
+    }
+    // A call longer than prepare's maximum, tiled by the engine (128 + 128 + 44).
+    {
+        const auto run = runPositions({{300}, {300}}, playingFromZero, 128);
+        {
+            const bool same = matchesModel(run, playingFromZero, 10, why);
+            check(same, "a call tiled by the engine keeps every tick's position: " + why);
+        }
+    }
+}
+
+// What [adi.transport] hands the patch with the exact position: nine fields,
+// read back from the proof patch's cells.
+std::vector<float> transportFields(const LibPdEngine::Transport& block, const engine::DeviceTransport& position) {
+    LibPdEngine eng(patchDir(), "adi-transport-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) {
+        check(false, "adi-transport-proof.pd opens: " + err);
+        return {};
+    }
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-transport-proof.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.prepare(48000.0, 512);
+    eng.bindArrays(decls);
+    eng.setTransport(block);
+    Buffers b(2, 512);
+    for (int i = 0; i < 8; ++i) {
+        auto io = b.io(2, 512, 0, 512);
+        io.deviceTransport = &position;
+        eng.process(io);
+    }
+    const auto* arr = eng.publishedArray(1);
+    std::vector<float> cells(9, -1.f);
+    if (arr == nullptr || !arr->read(cells.data(), 9)) {
+        check(false, "the proof patch's nine cells are published");
+    }
+    return cells;
+}
+double sevenFieldQuarter(const std::vector<float>& c) {
+    // The reconstruction a patch could make from the seven fields alone.
+    return std::floor(((c[4] - 1.0) * c[2] + c[5] - 1.0) * 4.0 / c[3]);
+}
+void testTheTransportFieldsAPatchReceives() {
+    section("the nine [adi.transport] fields a patch receives with the exact position");
+    LibPdEngine::Transport twoTwo;
+    twoTwo.playing = false;
+    twoTwo.timeSigNumerator = 2;
+    twoTwo.timeSigDenominator = 2;
+    twoTwo.bar = 1;
+    twoTwo.beat = 1;
+    twoTwo.ticksInQuarter = 0;
+    engine::DeviceTransport at0;
+    at0.playing = false;
+    at0.quarterNotes = 0;
+    auto at1 = at0;
+    at1.quarterNotes = 1;
+    const auto zero = transportFields(twoTwo, at0);
+    const auto one = transportFields(twoTwo, at1);
+    if (zero.size() == 9 && one.size() == 9) {
+        check(std::equal(zero.begin(), zero.begin() + 7, one.begin()) && sevenFieldQuarter(zero) == sevenFieldQuarter(one),
+              "in 2/2, QN 0 and QN 1 bring the same seven fields: the seven cannot tell them apart");
+        check(zero[7] + zero[8] == 0.f && one[7] + one[8] == 1.f, "the position fields say QN 0 and QN 1");
+    }
+    // After a 4/4 bar then a 3/4 bar, bar 2 begins at QN 4; from the meter
+    // the block now has (3/4), the seven fields reconstruct 3.
+    LibPdEngine::Transport threeFour = twoTwo;
+    threeFour.timeSigNumerator = 3;
+    threeFour.timeSigDenominator = 4;
+    threeFour.bar = 2;
+    auto at4 = at0;
+    at4.quarterNotes = 4;
+    const auto bar2 = transportFields(threeFour, at4);
+    if (bar2.size() == 9) {
+        check(sevenFieldQuarter(bar2) == 3.0 && bar2[7] == 4.f && bar2[8] == 0.f,
+              "after 4/4 then 3/4, bar 2 is QN 4 by the position, where the seven fields give 3");
+    }
+    // A long song: QN 7200.37 (an hour at 120 BPM). One 32-bit float would
+    // carry it to about 0.0005 QN, 12 samples; split, it is exact.
+    auto late = at0;
+    late.quarterNotes = 7200.37;
+    const auto hour = transportFields(twoTwo, late);
+    if (hour.size() == 9) {
+        check(hour[7] == 7200.f && std::fabs(static_cast<double>(hour[7]) + static_cast<double>(hour[8]) - 7200.37) < 1e-6,
+              "an hour in, QN 7200.37 arrives whole as 7200 plus 0.37, within a millionth of a quarter");
+    }
+    // Playing and BPM are the tick's own when the position is known.
+    LibPdEngine::Transport block = twoTwo;
+    block.playing = true;
+    block.bpm = 120;
+    auto own = at0;
+    own.playing = false;
+    own.bpm = 90;
+    const auto state = transportFields(block, own);
+    if (state.size() == 9) {
+        check(state[0] == 0.f && state[1] == 90.f,
+              "with the position, playing and BPM are the tick's own (stopped at 90), not the block's (playing at 120)");
+    }
+    // A native core that keeps the graph's position (ADI-Shaper's canvas,
+    // matched to its native core) asks for it too.
+    auto shaper = std::make_unique<LibPdEngine>(std::string(devicePatchDir()) + "/devices", "ADI-Shaper.pd", 2, 2);
+    shaper->addSearchPath(devicePatchDir());
+    adi::device::DeviceIdentity id;
+    id.format = "pd";
+    adi::device::PdDevice native(std::move(shaper), id);
+    check(native.loaded() && native.wantsDeviceTransport(),
+          "a native core that uses the transport position asks the graph for it");
+}
+
+void testSevenFieldPatchesStillWork() {
+    section("a patch unpacking seven transport fields keeps working when eight come");
+    LibPdEngine eng(patchDir(), "adi-transport-seven.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-transport-seven.pd opens: " + err);
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-transport-seven.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.prepare(48000.0, 512);
+    eng.bindArrays(decls);
+    LibPdEngine::Transport tr;
+    tr.playing = true;
+    eng.setTransport(tr);
+    Buffers b(2, 512);
+    engine::DeviceTransport position;
+    position.quarterNotes = 5;
+    position.playing = true;
+    for (int i = 0; i < 4; ++i) {
+        auto io = b.io(2, 512, 0, 512);
+        io.deviceTransport = &position;
+        eng.process(io);
+    }
+    std::string console;
+    for (const auto& line : eng.consoleLines()) {
+        console += line + "\n";
+    }
+    std::vector<float> cell(1, -1.f);
+    const auto* playing = eng.publishedArray(1);
+    check(playing != nullptr && playing->read(cell.data(), 1) && cell[0] == 1.f && console.find("unpack") == std::string::npos &&
+              console.find("error") == std::string::npos,
+          "[unpack] of seven takes the first seven, with no error\n          console: " + console);
+
+    // Only a patch that listens asks the graph for the position.
+    adi::device::DeviceIdentity id;
+    id.format = "pd";
+    auto logEngine = std::make_unique<LibPdEngine>(patchDir(), "adi-position-log.pd", 2, 2);
+    logEngine->addSearchPath(devicePatchDir());
+    adi::device::PdDevice listens(std::move(logEngine), id);
+    adi::device::PdDevice deaf(std::make_unique<LibPdEngine>(patchDir(), "adi-proof.pd", 2, 2), id);
+    check(listens.wantsDeviceTransport() && !deaf.wantsDeviceTransport(),
+          "a patch device asks for the exact position only when its patch has [adi.transport]");
 }
 
 void testACompiledInExternalIsRegisteredForEveryInstance() {
@@ -2096,6 +2452,9 @@ int main() {
     testAParameterReachesThePatchFromTheAudioThread();
     testACompiledInExternalIsRegisteredForEveryInstance();
     testTransportReachesThePatch();
+    testTheEighthTransportFieldIsEachTicksExactPosition();
+    testSevenFieldPatchesStillWork();
+    testTheTransportFieldsAPatchReceives();
     testTransportArrivesOnNodeIo();
     testTheShippedDevicePatchesMakeSound();
     testThePatchWindowIsTheCppWindow();
