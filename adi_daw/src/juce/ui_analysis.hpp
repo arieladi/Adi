@@ -172,6 +172,8 @@ struct SpectrumAxis {
     float y(float db) const noexcept;
 };
 const SpectrumAxis &spectrumAxis(SharedSpectrumView::SpectrumScale);
+bool spectrumScaleHasFill(SharedSpectrumView::SpectrumScale) noexcept;
+inline constexpr float spectrumFillOpacity = .28f;
 juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &, juce::Rectangle<float>, SharedSpectrumView::SpectrumScale);
 void populateSpectrumScaleMenu(juce::ComboBox &);
 SharedSpectrumView::SpectrumScale selectedSpectrumScale(const juce::ComboBox &) noexcept;

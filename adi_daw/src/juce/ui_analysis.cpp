@@ -28,6 +28,10 @@ const SpectrumAxis &spectrumAxis(SpectrumScale scale) {
     return wide;
 }
 
+bool spectrumScaleHasFill(SpectrumScale scale) noexcept {
+    return scale == SpectrumScale::Detail || scale == SpectrumScale::Extended;
+}
+
 void populateSpectrumScaleMenu(juce::ComboBox &box) {
     box.addItemList({"Scale: Wide", "Scale: Detail", "Scale: Extended", "Scale: Device"}, 1);
     box.setSelectedId(1, juce::dontSendNotification);
@@ -129,7 +133,7 @@ struct SharedSpectrumView::ScaledSpectrum {
         fill.clear();
         if (x.size() < 2) return;
         const auto &axis = spectrumAxis(scale);
-        const bool filled = scale != SpectrumScale::Device;
+        const bool filled = spectrumScaleHasFill(scale);
         for (std::size_t i = 0; i < x.size(); ++i) {
             const auto bin = firstBin + i;
             const auto y = axis.y(bins[bin] + (offsets.empty() ? 0.f : offsets[bin]));
@@ -155,7 +159,7 @@ struct SharedSpectrumView::ScaledSpectrum {
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(plot.toNearestInt());
         if (!fill.isEmpty()) {
-            g.setColour(look::value.withAlpha(.28f));
+            g.setColour(look::value.withAlpha(spectrumFillOpacity));
             g.fillPath(fill, transform);
         }
         g.setColour(look::value);

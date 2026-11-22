@@ -218,7 +218,7 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         }
         juce::Graphics::ScopedSaveState state(g);
         if (!wide && !g.reduceClipRegion(plot.toNearestInt())) return;
-        const auto stroke = [&](AnalysisComparison::Picture picture, juce::Colour colour) {
+        const auto tracePath = [&](AnalysisComparison::Picture picture) {
             juce::Path curve;
             bool started = false;
             const auto hzPerBin = picture.metadata->sampleRate / picture.metadata->endpoint.request.fftSize;
@@ -231,11 +231,27 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
                     started = true;
                 } else curve.lineTo(xAt(hz), yAt(picture.binsDbfs[i]));
             }
-            g.setColour(colour);
-            g.strokePath(curve, juce::PathStrokeType(look::line));
+            return curve;
         };
-        stroke(current.b, look::accent);
-        stroke(current.a, look::value);
+        const auto reference = tracePath(current.b);
+        const auto primary = tracePath(current.a);
+        if (spectrumScaleHasFill(scale)) {
+            const auto fillTrace = [&](juce::Path area, juce::Colour colour) {
+                if (area.isEmpty()) return;
+                area.lineTo(area.getCurrentPosition().x, plot.getBottom());
+                area.lineTo(area.getBounds().getX(), plot.getBottom());
+                area.closeSubPath();
+                g.setColour(colour.withAlpha(spectrumFillOpacity));
+                g.fillPath(area);
+            };
+            fillTrace(reference, look::accent);
+            fillTrace(primary, look::value);
+        }
+        const juce::PathStrokeType stroke(look::line);
+        g.setColour(look::accent);
+        g.strokePath(reference, stroke);
+        g.setColour(look::value);
+        g.strokePath(primary, stroke);
     }
     void visibilityChanged() override { syncDemand(); }
     void parentHierarchyChanged() override {
@@ -506,6 +522,7 @@ void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const Sn
             tile.setChannel(detail.view.channel());
             tile.setPalette(detail.view.palette(), detail.view.paletteReversed());
             tile.setSpectrumSlope(detail.view.spectrumSlope());
+            if (tile.mode() == Mode::Spectrum) tile.setSpectrumScale(detail.view.spectrumScale());
             tile.present(broker, track);
             tile.frame();
         }
