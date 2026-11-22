@@ -38,6 +38,8 @@
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "adi/row_ids.hpp"
+#include "adi/ui/audio_drop.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -2362,8 +2364,61 @@ void reenableFindsThePlayedLane() {
           "no lane: none; an id a CLAP cannot spell: none");
 }
 
+void heldIdsAreSkipped() {
+    section("A deleted row's id that a remark still holds is never given again (DF-E16, window half)");
+    adi::test::TempDirectory temp("ui_seams", "held");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    auto request = [](const char* type, Payload payload, const char* label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = true;
+    for (const auto& [id, kind, name, index] : {std::tuple{1, "master", "Main", 0}, std::tuple{3, "midi", "Lead", 0},
+                                                std::tuple{4, "audio", "Kick", 1}})
+        made = sub.submit(request("track.create", {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}},
+                                  "Create track")).ok && made;
+    made = sub.submit(request("clip.create", {{"id", 7}, {"track", 3}, {"kind", "midi"}, {"pos", 0}, {"length", 3840}},
+                              "Create clip")).ok && made;
+    // Remarks on Kick and on the clip, then both deleted: the remarks stay, holding ids 4 and 7.
+    check(made, "tracks and a clip");
+    auto r1 = sub.submit(request("remark.add", {{"id", 1}, {"kind", "track"}, {"target", 4}, {"author", "user"}, {"text", "kick"}, {"created", 40}},
+                              "Add remark"));
+    check(r1.ok, "remark on Kick: " + r1.error);
+    auto r2 = sub.submit(request("remark.add", {{"id", 2}, {"kind", "clip"}, {"target", 7}, {"author", "user"}, {"text", "riff"}, {"created", 41}},
+                              "Add remark"));
+    check(r2.ok, "remark on the clip: " + r2.error);
+    auto r3 = sub.submit(request("clip.delete", {{"id", 7}}, "Delete clip"));
+    check(r3.ok, "clip deleted: " + r3.error);
+    auto r4 = sub.submit(request("track.delete", {{"id", 4}}, "Delete Track"));
+    check(r4.ok, "Kick deleted: " + r4.error);
+    made = r1.ok && r2.ok && r3.ok && r4.ok;
+    check(made && view.current()->findTrack(4) == nullptr && view.current()->remarks.size() == 2,
+          "Kick and the clip deleted, their remarks kept");
+    // The window's ids: past the live rows and past what the remarks hold.
+    check(ui::audio_drop_detail::newTrackId(*view.current()) == 5 && ui::audio_drop_detail::newClipId(*view.current()) == 8,
+          "the snapshot's next track is 5 (not 4), its next clip 8 (not 1)");
+    RowIds rows(store->db());
+    const auto next = rows.next("tracks");
+    auto made2 = ui::insertTrack(view.current()->tracks, 0, false, nullptr, next);
+    check(next == 5 && !made2.ops.empty() && made2.ops.front().payload["id"] == 5, "Insert Audio Track takes 5 from RowIds");
+    auto dropped = ui::newAudioTrack(*view.current());
+    check(!dropped.ops.empty() && dropped.ops.front().payload["id"] == 5, "a dropped file's new track takes 5 too");
+    check(sub.submit(std::move(made2.ops)).ok && view.current()->findTrack(5) != nullptr, "and lands");
+    check(sub.undo().ok && sub.undo().ok && view.current()->findTrack(4) != nullptr, "Undo brings Kick back, with its id");
+    check(sub.redo().ok && view.current()->findTrack(4) == nullptr && sub.redo().ok && view.current()->findTrack(5) != nullptr,
+          "Redo deletes it again and puts the new track back as 5");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
+    heldIdsAreSkipped();
     reenableFindsThePlayedLane();
     invalidReaderAnswersEmpty();
     readsTheModel();

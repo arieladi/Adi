@@ -196,7 +196,8 @@ inline bool canUngroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
 // takes the first one's place and is selected. A track whose group is selected as well goes with
 // its group. They stand in one group, or at the top; Main and the returns are never grouped. The
 // group's name is "# Group": '#' shows its number, as a new track's does (manual 18.2).
-inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids) {
+// `newId`, when given, is the group's id from the caller's `RowIds` (DF-E16); else past the live tracks.
+inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, std::int64_t newId = 0) {
     using namespace track_edits_detail;
     constexpr const char *label = "Group Tracks";
     TrackEdit edit;
@@ -232,6 +233,8 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
     for (const auto &k : tracks)
         if (k)
             group = std::max(group, k->id + 1);
+    if (newId > 0)
+        group = newId;
     // Into the group, in their order; the rest of their group's tracks around it, the group at the
     // first one's place.
     std::vector<const engine::TrackNode *> inside, rest;
@@ -297,8 +300,9 @@ inline std::vector<OpRequest> recordingDefaultOps(std::int64_t track, const Reco
         o.label = label;
     return ops;
 }
+// `newId`, when given, is the track's id from the caller's `RowIds` (DF-E16); else past the live tracks.
 inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected, bool midi,
-                             const RecordingDefaults *defaults = nullptr) {
+                             const RecordingDefaults *defaults = nullptr, std::int64_t newId = 0) {
     using namespace track_edits_detail;
     const char *label = midi ? "Insert MIDI Track" : "Insert Audio Track";
     TrackEdit edit;
@@ -306,6 +310,8 @@ inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected
     for (const auto &k : tracks)
         if (k)
             id = std::max(id, k->id + 1);
+    if (newId > 0)
+        id = newId;
     const auto *t = find(tracks, selected);
     if (t != nullptr && rank(*t) != 0)
         t = nullptr;
