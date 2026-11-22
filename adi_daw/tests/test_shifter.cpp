@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <new>
 #include <numbers>
+#include <limits>
 #include <vector>
 namespace { bool counting=false; std::size_t allocations=0; }
 void* operator new(std::size_t n) { if(counting) ++allocations; if(auto p=std::malloc(n?n:1)) return p; throw std::bad_alloc(); }
@@ -92,4 +93,20 @@ void unisonAfterAMove(){
  std::printf("METRIC Shifter return to unison: largest step %.5f (tone's own %.5f)\n",step,steepest);
  check(step<=steepest*1.5,"the return to unison does not click");
 }
-int main(){measured();invariants();liveUnison();unisonAfterAMove();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
+/// A NaN or infinite input is silence in every mode, and the signal after
+/// it comes out finite (the lines once kept a NaN for good).
+void nonFinite(){
+    for(double mode:{0.,1.,2.}){
+        for(double delay:{0.,1.}){
+            adi::dsp::Shifter s;s.set(adi::dsp::Shifter::Mode,mode);s.set(adi::dsp::Shifter::Coarse,5);
+            s.set(adi::dsp::Shifter::Delay,delay);s.set(adi::dsp::Shifter::Feedback,50);s.set(adi::dsp::Shifter::Mix,50);s.prepare(48000);
+            std::vector<float> bad(64,std::numeric_limits<float>::quiet_NaN()),l(64),r(64);bad[10]=std::numeric_limits<float>::infinity();
+            s.process(bad.data(),bad.data(),l.data(),r.data(),64);
+            const auto after=tone(440,48000);std::vector<float> ol(after.size()),orr(after.size());
+            s.process(after.data(),after.data(),ol.data(),orr.data(),after.size());
+            bool finite=true;for(std::size_t i=0;i<ol.size();++i)finite=finite&&std::isfinite(ol[i])&&std::isfinite(orr[i]);
+            check(finite,"a NaN or inf input is silence: the signal after it stays finite");
+        }
+    }
+}
+int main(){nonFinite();measured();invariants();liveUnison();unisonAfterAMove();std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
