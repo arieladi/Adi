@@ -2,7 +2,12 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/measure/loopback.hpp"
 #include "adi/measure/residual.hpp"
+#include "adi/material_commands.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
+#include "adi/ops.hpp"
+#include "adi/render/queue.hpp"
+#include "adi/store.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -41,31 +46,34 @@ struct Stage {
     ~Stage() {
         if (directory.empty()) return;
         std::error_code ignored;
-        fs::remove(file, ignored);
-        fs::remove(directory, ignored);
+        fs::remove_all(directory, ignored);
     }
 };
 
-int generate(const fs::path& selectedPath, std::uint32_t sampleRate, unsigned periods) {
-    if (sampleRate == 0 || sampleRate > 768000 || periods == 0 || periods > 64) {
-        throw std::invalid_argument("expected 1–64 periods and a sample rate through 768000 Hz");
-    }
-    const auto target = fs::absolute(selectedPath).lexically_normal();
+void reserve(Stage& stage, const fs::path& target, const char* basename) {
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    Stage stage;
     for (unsigned attempt = 0; attempt < 128; ++attempt) {
         auto directory = target.parent_path() / (".adi-measure-" + std::to_string(stamp) + "-" + std::to_string(attempt));
-        auto file = directory / "probe.wav";
+        auto file = directory / basename;
         std::error_code error;
         if (fs::create_directory(directory, error)) {
             stage.directory = std::move(directory);
             stage.file = std::move(file);
             break;
         }
-        if (error && error != std::errc::file_exists) throw std::system_error(error, "reserve probe stage");
+        if (error && error != std::errc::file_exists) throw std::system_error(error, "reserve measurement stage");
     }
-    if (stage.directory.empty()) throw std::runtime_error("cannot reserve the measurement probe stage");
+    if (stage.directory.empty()) throw std::runtime_error("cannot reserve the measurement stage");
     fs::permissions(stage.directory, fs::perms::owner_all, fs::perm_options::replace);
+}
+
+int generate(const fs::path& selectedPath, std::uint32_t sampleRate, unsigned periods) {
+    if (sampleRate == 0 || sampleRate > 768000 || periods == 0 || periods > 64) {
+        throw std::invalid_argument("expected 1–64 periods and a sample rate through 768000 Hz");
+    }
+    const auto target = fs::absolute(selectedPath).lexically_normal();
+    Stage stage;
+    reserve(stage, target, "probe.wav");
 
     const std::uint64_t frames = periods * LoopbackProbe::period;
     const LoopbackProbe probe;
@@ -148,6 +156,86 @@ int compare(const fs::path& expectedPath, const fs::path& actualPath) {
                       {"errorSignalDb", result.errorSignalDb ? json(*result.errorSignalDb) : json(nullptr)}}.dump() << '\n';
     return 0;
 }
+
+adi::OpRequest operation(const char* name, adi::Payload fields) {
+    adi::OpRequest request;
+    request.opType = name;
+    request.payload = std::move(fields);
+    request.label = "Build Measurement Fixture";
+    return request;
+}
+
+int build(const fs::path& selectedProject, const fs::path& selectedAudio) {
+    const auto destination = fs::absolute(selectedProject).lexically_normal();
+    const auto source = fs::absolute(selectedAudio).lexically_normal();
+    std::uint64_t frames = 0;
+    std::uint32_t sampleRate = 0;
+    {
+        WavReader wave(source);
+        frames = wave.frames();
+        sampleRate = wave.sampleRate();
+    }
+    if (frames == 0) throw std::invalid_argument("measurement source has no audio frames");
+
+    Stage stage;
+    reserve(stage, destination, "fixture.adi");
+    adi::StoreError error{};
+    auto store = adi::Store::create(stage.file, error);
+    if (!store) throw std::runtime_error(adi::toString(error));
+    constexpr std::int64_t track = 2;
+    const std::array requests{
+        operation("project.setName", {{"name", adi::media::pathUtf8(destination.stem())}}),
+        operation("track.create", {{"id", track}, {"kind", "audio"}, {"name", "Measurement Source"}, {"index", 0}}),
+        operation("track.create", {{"id", 1}, {"kind", "master"}, {"name", "Main"}, {"index", 1}})
+    };
+    const auto tracks = adi::OpJournal(*store).commit(requests);
+    if (!tracks.ok) throw std::runtime_error(tracks.error);
+
+    adi::clip_edit::ImportOptions options;
+    options.source = source;
+    options.track = track;
+    options.clipId = 1;
+    options.mediaId = 1;
+    options.at = {1, 0};
+    auto prepared = adi::clip_edit::prepareImportAudio(*store, options, sampleRate);
+    if (!prepared.edit.ok) throw std::runtime_error(prepared.edit.error);
+    const auto imported = adi::clip_edit::commitMaterial(*store, prepared);
+    if (!imported.ok) throw std::runtime_error(imported.error);
+    const auto head = adi::OpJournal(*store).headSeq().value_or(0);
+    const auto saved = store->saveCopy(destination);
+    if (!saved.ok) throw std::runtime_error(saved.error);
+    std::cout << json{{"sourceTrack", track}, {"frames", frames}, {"sourceRate", sampleRate},
+                      {"journalHead", head}, {"warning", saved.warning}}.dump() << '\n';
+    return 0;
+}
+
+int render(const fs::path& project, std::int64_t track, std::int64_t from, std::int64_t to,
+           const fs::path& selectedOutput, std::uint32_t rate, std::int32_t block, int precision) {
+    if (track < 0 || (precision != 32 && precision != 64)) {
+        throw std::invalid_argument("track must be nonnegative and precision must be 32 or 64");
+    }
+    const auto output = fs::absolute(selectedOutput).lexically_normal();
+    adi::render::Job job;
+    job.project = fs::absolute(project).lexically_normal();
+    job.directory = output.parent_path();
+    job.exactWavFilename = adi::media::pathUtf8(output.filename());
+    job.source.trackId = track;
+    job.beginSample = from;
+    job.endSample = to;
+    job.session.sampleRate = rate;
+    job.session.maxFrames = block;
+    job.session.precision = precision == 64 ? adi::engine::Precision::Float64 : adi::engine::Precision::Float32;
+    job.encoding.format = adi::audio::WavFormat::Float32;
+    job.encoding.dither = adi::audio::WavDither::None;
+    const auto result = adi::render::renderWav(std::move(job), {});
+    if (result.state != adi::render::JobState::Completed || !result.snapshot) {
+        throw std::runtime_error(result.error.empty() ? "measurement render failed" : result.error);
+    }
+    std::cout << json{{"frames", result.framesWritten}, {"track", result.snapshot->source.trackId},
+                      {"sampleRate", result.snapshot->sampleRate}, {"journalHead", result.snapshot->journalHead},
+                      {"warning", result.publication ? result.publication->warning : std::string{}}}.dump() << '\n';
+    return 0;
+}
 }
 
 int main(int argc, char** argv) {
@@ -164,6 +252,13 @@ int main(int argc, char** argv) {
                                argc == 6 ? number<unsigned>(argv[5], "channel") : 1U);
             }
             if (command == "compare" && argc == 4) return compare(argv[2], argv[3]);
+            if (command == "build" && argc == 4) return build(argv[2], argv[3]);
+            if (command == "render" && (argc == 9 || argc == 10)) {
+                return render(argv[2], number<std::int64_t>(argv[3], "track"),
+                    number<std::int64_t>(argv[4], "start sample"), number<std::int64_t>(argv[5], "end sample"),
+                    argv[6], number<std::uint32_t>(argv[7], "sample rate"), number<std::int32_t>(argv[8], "block size"),
+                    argc == 10 ? number<int>(argv[9], "precision") : 32);
+            }
         }
     } catch (const std::exception& error) {
         std::cerr << "adi_measure: " << error.what() << '\n';
@@ -171,6 +266,9 @@ int main(int argc, char** argv) {
     }
     std::cerr << "adi_measure gen loopback <output.wav> <sample-rate> [periods]\n"
                  "adi_measure latency <capture.wav> <starting-frame> <maximum-samples> [one-based-channel]\n"
-                 "adi_measure compare <expected.wav> <actual.wav>\n";
+                 "adi_measure compare <expected.wav> <actual.wav>\n"
+                 "adi_measure build <fixture.adi> <source.wav>\n"
+                 "adi_measure render <fixture.adi> <track-or-0-for-Main> <start> <exclusive-end> <output.wav> "
+                 "<sample-rate> <block-size> [32-or-64]\n";
     return 2;
 }
