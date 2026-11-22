@@ -414,6 +414,7 @@ MixAnalysers::MixAnalysers() {
     pageBox.setTitle("Analyser page");
     sourceBox.setTitle("Analyser source");
     spectrumTraceBox.addItem("Realtime", static_cast<int>(Mode::Spectrum) + 1);
+    spectrumTraceBox.addItem("Realtime Average", static_cast<int>(Mode::SpectrumAverage) + 1);
     spectrumTraceBox.addItem("Realtime Maximum", static_cast<int>(Mode::SpectrumMaximum) + 1);
     spectrumTraceBox.addItem("Cumulative Maximum", static_cast<int>(Mode::SpectrumCumulativeMaximum) + 1);
     spectrumTraceBox.setTitle("Spectrum trace");
@@ -422,12 +423,13 @@ MixAnalysers::MixAnalysers() {
         const auto id = spectrumTraceBox.getSelectedId();
         if (page_ != Page::Spectrum || id <= 0) return;
         const auto mode = static_cast<Mode>(id - 1);
-        if (mode != Mode::Spectrum) clearPinnedSpectrum();
+        const bool canPin = SharedSpectrumView::supportsSpectrumOverlays(mode);
+        if (!canPin) clearPinnedSpectrum();
         detail.setMode(mode);
-        pinnedTracks_.setEnabled(mode == Mode::Spectrum);
+        pinnedTracks_.setEnabled(canPin);
     };
     pinnedTracks_.setTitle("Pinned tracks");
-    pinnedTracks_.setTooltip("Overlay your Stack pins in the realtime Spectrum.");
+    pinnedTracks_.setTooltip("Overlay your Stack pins in Realtime or Realtime Average.");
     pinnedTracks_.onClick = [this] {
         if (!pinnedTracks_.getToggleState()) clearPinnedSpectrum();
     };
@@ -476,6 +478,7 @@ void MixAnalysers::setPage(Page page) {
     sourceBox.setVisible(page != Page::Analysis && !comparing);
     spectrumTraceBox.setVisible(page == Page::Spectrum);
     pinnedTracks_.setVisible(page == Page::Spectrum);
+    if (page != Page::Spectrum) clearPinnedSpectrum();
     for (auto &tile : tiles_) tile.setVisible(all);
     table_->setVisible(showTable);
     if (!showTable && !comparing) {
@@ -485,8 +488,9 @@ void MixAnalysers::setPage(Page page) {
         else detail.setMode(modes[index - 1]);
     }
     detail.setVisible(!showTable && !comparing);
-    pinnedTracks_.setEnabled(detail.mode() == Mode::Spectrum);
-    if (page != Page::Spectrum || detail.mode() != Mode::Spectrum) clearPinnedSpectrum();
+    const bool canPin = page == Page::Spectrum && SharedSpectrumView::supportsSpectrumOverlays(detail.mode());
+    pinnedTracks_.setEnabled(canPin);
+    if (!canPin) clearPinnedSpectrum();
     compare_->setVisible(comparing);
     resized();
 }
@@ -578,7 +582,8 @@ void MixAnalysers::updateComparison(const std::shared_ptr<SharedAnalysis> &broke
 }
 void MixAnalysers::updatePinnedSpectrum(const SnapshotReader &reader, std::uint64_t generation, std::int64_t primary,
                                        const ViewStateStore *viewState) {
-    if (page_ != Page::Spectrum || detail.mode() != Mode::Spectrum || !pinnedTracks_.getToggleState() || !viewState) {
+    if (page_ != Page::Spectrum || !SharedSpectrumView::supportsSpectrumOverlays(detail.mode()) ||
+        !pinnedTracks_.getToggleState() || !viewState) {
         clearPinnedSpectrum();
         return;
     }

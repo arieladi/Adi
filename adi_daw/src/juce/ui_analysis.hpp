@@ -53,6 +53,9 @@ class SharedSpectrumView final : public juce::Component,
     };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
+    static constexpr bool supportsSpectrumOverlays(Mode mode) noexcept {
+        return mode == Mode::Spectrum || mode == Mode::SpectrumAverage;
+    }
     void enablePhaseBands();
     void setSource(engine::ScopePoint, std::int64_t device = 0);
     engine::ScopePoint point() const noexcept { return point_; }
@@ -130,8 +133,10 @@ class SharedSpectrumView final : public juce::Component,
     void updateSpectrumProjection();
     void updateScaledSpectrum() noexcept;
     struct SpectrumOverlay;
+    using SpectrumLeases = std::array<SharedAnalysis::Lease, kSpectrumOverlayTracks + 1>;
     SharedAnalysis::Request spectrumRequest(std::int64_t track) const noexcept;
     void acquireSpectrumOverlays() noexcept;
+    void takeSpectrumLeases(SpectrumLeases &) noexcept;
     void releaseSpectrumOverlays(bool keepPictures = false) noexcept;
     void updateSpectrumOverlays(bool primaryChanged) noexcept;
     bool spectrumOverlayMatchesPrimary(const SpectrumOverlay &) const noexcept;

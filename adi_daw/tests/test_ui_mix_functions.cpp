@@ -1552,6 +1552,14 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                 static_cast<double>(i) / static_cast<double>(frames)));
         tap.write(samples.data(), samples.data(), frames, stamp, true, 4);
     };
+    const auto select = [](juce::ComboBox &menu, const juce::String &name) {
+        for (int item = 0; item < menu.getNumItems(); ++item) {
+            if (menu.getItemText(item) != name) continue;
+            menu.setSelectedId(menu.getItemId(item), juce::sendNotificationSync);
+            return true;
+        }
+        return false;
+    };
     pages.setPage(Page::Spectrum);
     pages.followSelection(false);
     root.frame();
@@ -1649,6 +1657,101 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                   a->hopSize == overviewFft / 4 && b->hopSize == overviewFft / 4 &&
                   peakBin(a->binsDbfs) == 4 && peakBin(b->binsDbfs) == 32,
               "matching pinned observers keep their real source identities and distinct tone bins");
+
+        if (rate == 48000) {
+            using Mode = SharedSpectrumView::Mode;
+            const auto beforeAverage = broker->stats();
+            const auto attachmentCount = attachments;
+            const bool offered = select(pages.spectrumTraceBox, "Realtime Average");
+            root.frame();
+            check(offered && pages.page() == Page::Spectrum && pages.detail.mode() == Mode::SpectrumAverage &&
+                      control->isEnabled() && control->getToggleState(),
+                  "Realtime Average stays on Spectrum and keeps the pinned tracks enabled");
+            if (offered) {
+                constexpr std::int64_t newStamp = 100000;
+                constexpr std::array<int, 3> bin{16, 4, 32};
+                const auto writeOverview = [&](std::int64_t stamp) {
+                    sendTone(*primaryTap, overviewFft, bin[0], stamp);
+                    sendTone(*firstTap, overviewFft, bin[1], stamp);
+                    sendTone(*wideTap, overviewFft, bin[2], stamp);
+                    for (int pass = 0; pass < 12; ++pass) broker->pump();
+                    root.frame();
+                };
+                writeOverview(newStamp);
+                const std::array raw{primary.read(), low.read(), high.read()};
+                check(std::ranges::all_of(raw, [](const auto &item) {
+                    return item && (item->outputs & SharedAnalysis::Average1s) && item->sampleRate == 48000. &&
+                           item->request.fftSize == 4096 && item->hopSize == 1024;
+                }) && tapFor(main) == primaryTap && tapFor(first) == firstTap && tapFor(wide) == wideTap,
+                      "the actual primary and pin consumers admit Average1s on their 4096/1024 sources");
+
+                auto readAverage = [&](std::int64_t track) {
+                    auto averageRequest = request;
+                    averageRequest.track = track;
+                    averageRequest.outputs = SharedAnalysis::Average1s;
+                    return broker->acquire(averageRequest);
+                };
+                auto averageMain = readAverage(main), averageFirst = readAverage(first), averageWide = readAverage(wide);
+                const std::array averaged{averageMain.readAverage(), averageFirst.readAverage(), averageWide.readAverage()};
+                const auto firstHopDb = 20. * std::log10(1. - std::pow(.1, 1024. / 48000.));
+                const std::array<std::int64_t, 3> expectedTracks{main, first, wide};
+                bool samePublishedWindows = true;
+                for (std::size_t side = 0; side < averaged.size(); ++side) {
+                    const auto k = static_cast<std::size_t>(bin[side]);
+                    const auto &item = averaged[side];
+                    samePublishedWindows = samePublishedWindows && item && raw[side] && item->window == raw[side] && item->binsDbfs &&
+                        item->window->request.track == expectedTracks[side] && item->processedWindows == 1 &&
+                        k < item->binsDbfs->size() && k < raw[side]->binsDbfs.size() &&
+                        std::abs((*item->binsDbfs)[k] - raw[side]->binsDbfs[k] - firstHopDb) < .01;
+                }
+                check(samePublishedWindows && pages.detail.view.snapshot() == raw[0] && averaged[0] &&
+                          averaged[0]->binsDbfs && pages.detail.view.spectrumBins().data() == averaged[0]->binsDbfs->data(),
+                      "Realtime Average shares the actual immutable windows and presents the existing magnitude law");
+
+                auto &view = pages.detail.view;
+                juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+                juce::Graphics g(image);
+                view.paint(g);
+                const auto peakInk = [&](std::size_t side) {
+                    if (!averaged[side] || !averaged[side]->binsDbfs) return false;
+                    const auto k = static_cast<std::size_t>(bin[side]);
+                    if (k >= averaged[side]->binsDbfs->size()) return false;
+                    const auto hz = static_cast<double>(bin[side]) * 48000. / 4096.;
+                    const auto x = juce::roundToInt(5. + (image.getWidth() - 28.) * std::log(hz / 20.) / std::log(1000.));
+                    const auto y = juce::roundToInt(21. - (image.getHeight() - 55.) * (*averaged[side]->binsDbfs)[k] / 96.);
+                    for (int dy = -2; dy <= 2; ++dy)
+                        for (int dx = -2; dx <= 2; ++dx)
+                            if (image.getPixelAt(x + dx, y + dy) != look::display) return true;
+                    return false;
+                };
+                check(view.spectrumScale() == SharedSpectrumView::SpectrumScale::Wide &&
+                          peakInk(0) && peakInk(1) && peakInk(2),
+                      "the rendered Realtime Average shows both pinned peaks at their averaged heights");
+
+                const auto warm = broker->stats();
+                for (int frame = 0; frame < 4; ++frame) { root.frame(); broker->pump(); }
+                const auto still = broker->stats();
+                check(warm.taps == beforeAverage.taps && warm.domains == beforeAverage.domains &&
+                          warm.spectralPlans == beforeAverage.spectralPlans && attachments == attachmentCount &&
+                          still.transforms == warm.transforms && still.publications == warm.publications &&
+                          still.workerPasses == warm.workerPasses && still.cursorReads == warm.cursorReads,
+                      "Realtime Average adds no FFT plans, taps or unchanged-frame worker work");
+                averageMain.reset(); averageFirst.reset(); averageWide.reset();
+
+                const bool restoredMode = select(pages.spectrumTraceBox, "Realtime");
+                root.frame();
+                writeOverview(newStamp + overviewFft);
+                const auto now = broker->stats();
+                const auto restored = primary.read(), pinA = low.read(), pinB = high.read();
+                check(restoredMode && pages.detail.mode() == Mode::Spectrum && restored && pinA && pinB &&
+                          pages.detail.view.snapshot() == restored &&
+                          pages.detail.view.spectrumBins().data() == restored->binsDbfs.data() &&
+                          !(restored->outputs & SharedAnalysis::Average1s) &&
+                          !(pinA->outputs & SharedAnalysis::Average1s) && !(pinB->outputs & SharedAnalysis::Average1s) &&
+                          now.spectralPlans == beforeAverage.spectralPlans && now.taps == beforeAverage.taps,
+                      "returning to Realtime restores raw primary and pin traces on the same plans");
+            }
+        }
     }
     const bool renamed = doc->deviceAction("track.rename", {{"id", wide}, {"name", "Renamed wide ID"}});
     root.frame();
@@ -1705,14 +1808,6 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     pages.setPage(Page::Compare);
     check(!attached(first) && !attached(wide), "switching to Compare releases all pinned Spectrum demand immediately");
 
-    const auto select = [](juce::ComboBox &menu, const juce::String &name) {
-        for (int item = 0; item < menu.getNumItems(); ++item) {
-            if (menu.getItemText(item) != name) continue;
-            menu.setSelectedId(menu.getItemId(item), juce::sendNotificationSync);
-            return true;
-        }
-        return false;
-    };
     root.frame();
     const bool pairSelected = select(pages.compareA, "Pinned 11") && select(pages.compareB, "Renamed wide ID");
     root.frame();
@@ -1738,11 +1833,43 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         root.frame();
         check(pages.comparisonView().referenceHeld && attached(wide),
               "Spectrum may reopen pinned B without clearing Compare's local hold");
+        if (rate == 48000 && select(pages.spectrumTraceBox, "Realtime Average")) {
+            root.frame();
+            check(pages.comparisonView().referenceHeld && attached(wide),
+                  "Realtime Average may open a pinned live tap without replacing Compare's held reference");
+            select(pages.spectrumTraceBox, "Realtime");
+        }
         pages.setPage(Page::Compare);
         root.frame();
         const auto held = pages.comparisonView();
         check(held.referenceHeld && !held.b.binsDbfs.empty() && held.b.binsDbfs.front() == heldValue && !attached(wide),
               "returning to Compare keeps the original held bins and no live B tap");
+    }
+    if (rate == 48000) {
+        pages.setPage(Page::Spectrum);
+        root.frame();
+        const auto primaryBefore = tapFor(main), firstBefore = tapFor(first), wideBefore = tapFor(wide);
+        const auto count = attachments;
+        const auto previous = broker->stats();
+        const bool averaged = select(pages.spectrumTraceBox, "Realtime Average");
+        root.frame();
+        const auto active = broker->stats();
+        check(averaged && primaryBefore && firstBefore && wideBefore && tapFor(main) == primaryBefore &&
+                  tapFor(first) == firstBefore && tapFor(wide) == wideBefore && attachments == count &&
+                  active.consumers == previous.consumers && active.spectralPlans == previous.spectralPlans,
+              "the view's own leases retain all three physical taps when changing to Realtime Average");
+        pages.setPage(Page::Average);
+        root.frame();
+        const auto averageTap = tapFor(main);
+        if (averageTap) sendTone(*averageTap, normalFft, 8, averageTap->written());
+        broker->pump();
+        root.frame();
+        const auto averagePicture = pages.detail.view.snapshot();
+        check(!control->isVisible() && !attached(first) && !attached(wide) && averagePicture &&
+                  averagePicture->request.fftSize == normalFft && (averagePicture->outputs & SharedAnalysis::Average1s),
+              "the separate Average page releases the pins and uses its original analysis size");
+        pages.setPage(Page::Spectrum);
+        select(pages.spectrumTraceBox, "Realtime");
     }
     if (rate == 96000) {
         pages.setPage(Page::Spectrum);

@@ -249,13 +249,18 @@ struct SharedSpectrumView::ScaledSpectrum {
 };
 
 struct SharedSpectrumView::SpectrumOverlay {
+    struct Frame {
+        std::shared_ptr<const SharedAnalysis::Result> window;
+        std::shared_ptr<const std::vector<float>> averageBins;
+        bool operator==(const Frame &) const = default;
+    };
     SpectrumOverlayTrack source;
     SharedAnalysis::Lease lease;
     SharedAnalysis::Lease::SourcePosition admission;
-    std::shared_ptr<const SharedAnalysis::Result> picture, waiting;
+    Frame picture, waiting;
     std::unique_ptr<ScaledSpectrum> plot;
 
-    void clearPicture() noexcept { picture.reset(); waiting.reset(); plot.reset(); }
+    void clearPicture() noexcept { picture = {}; waiting = {}; plot.reset(); }
 };
 
 struct SharedSpectrumView::Raster {
@@ -386,11 +391,15 @@ SharedSpectrumView::SharedSpectrumView() {
 }
 void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
-    if (mode_ == Mode::Spectrum) releaseSpectrumOverlays();
+    std::optional<SpectrumLeases> retired;
+    if (usesOverviewSpectrum() && supportsSpectrumOverlays(mode) && lease_)
+        takeSpectrumLeases(retired.emplace());
+    else if (supportsSpectrumOverlays(mode_))
+        releaseSpectrumOverlays();
     if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage ||
         isMaximumSpectrum(mode) || isMaximumSpectrum(mode_)) frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
-    sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
+    sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = retired.has_value();
     if (mode == Mode::ClassicScope && !classicPanel_) {
         classicPanel_ = std::make_unique<ClassicScopePanel>();
         classicPanel_->setBounds(getLocalBounds());
@@ -405,13 +414,14 @@ void SharedSpectrumView::setMode(Mode mode) {
         isMaximumSpectrum(mode_) || isMaximumSpectrum(mode))
         describeAnalysisView(*this, mode);
     mode_ = mode;
-    if (mode_ != Mode::Spectrum) activeSpectrumFftSize_ = 1024;
+    if (!supportsSpectrumOverlays(mode_)) activeSpectrumFftSize_ = 1024;
     if (classicPanel_) {
         resetClassic(false);
         classicPanel_->setVisible(mode_ == Mode::ClassicScope);
     }
     updateSpectrumCursorInput();
     updateDemand();
+    if (retired && lease_) acquireSpectrumOverlays();
     repaint();
 }
 void SharedSpectrumView::enablePhaseBands() {
@@ -461,20 +471,21 @@ void SharedSpectrumView::setSpectrumOverlayTracks(std::span<const SpectrumOverla
         if (next.size() == kSpectrumOverlayTracks) break;
     }
     spectrumOverlays_.swap(next);
-    if (mode_ == Mode::Spectrum && eligible()) repaint();
+    if (supportsSpectrumOverlays(mode_) && eligible()) repaint();
 }
 bool SharedSpectrumView::usesOverviewSpectrum() const noexcept {
-    return mode_ == Mode::Spectrum && device_ == 0 && !spectrumOverlays_.empty() &&
+    return supportsSpectrumOverlays(mode_) && device_ == 0 && !spectrumOverlays_.empty() &&
            overlayProfile_ == SpectrumOverlayProfile::Overview;
 }
 SharedAnalysis::Request SharedSpectrumView::spectrumRequest(std::int64_t track) const noexcept {
-    const auto size = mode_ == Mode::Spectrum ? activeSpectrumFftSize_ : 1024;
+    const auto size = supportsSpectrumOverlays(mode_) ? activeSpectrumFftSize_ : 1024;
     SharedAnalysis::Request request{track, point_, size, channel_, dsp::Window::Hann};
     request.device = device_;
+    if (mode_ == Mode::SpectrumAverage) request.outputs = SharedAnalysis::Average1s;
     return request;
 }
 void SharedSpectrumView::acquireSpectrumOverlays() noexcept {
-    if (mode_ != Mode::Spectrum || device_ != 0) return;
+    if (!supportsSpectrumOverlays(mode_) || device_ != 0) return;
     for (auto &overlay : spectrumOverlays_) {
         if (overlay.source.track == track_) {
             overlay.lease.reset();
@@ -490,80 +501,99 @@ void SharedSpectrumView::acquireSpectrumOverlays() noexcept {
         }
     }
 }
+void SharedSpectrumView::takeSpectrumLeases(SpectrumLeases &leases) noexcept {
+    leases.front() = std::move(lease_);
+    for (std::size_t i = 0; i < spectrumOverlays_.size(); ++i) {
+        auto &overlay = spectrumOverlays_[i];
+        leases[i + 1] = std::move(overlay.lease);
+        overlay.admission = {};
+        overlay.clearPicture();
+    }
+}
 void SharedSpectrumView::releaseSpectrumOverlays(bool keepPictures) noexcept {
     for (auto &overlay : spectrumOverlays_) {
         overlay.lease.reset();
         overlay.admission = {};
-        overlay.waiting.reset();
+        overlay.waiting = {};
         if (!keepPictures) overlay.clearPicture();
     }
 }
 bool SharedSpectrumView::spectrumOverlayMatchesPrimary(const SpectrumOverlay &overlay) const noexcept {
-    return overlay.picture && spectrumFitsPrimary(shown_.get(), *overlay.picture);
+    return overlay.picture.window && spectrumFitsPrimary(shown_.get(), *overlay.picture.window);
 }
 void SharedSpectrumView::updateSpectrumOverlayPlot(SpectrumOverlay &overlay) noexcept {
     if (!spectrumOverlayMatchesPrimary(overlay)) {
         overlay.plot.reset();
         return;
     }
-    const auto &picture = *overlay.picture;
+    const auto &picture = *overlay.picture.window;
+    const auto &bins = overlay.picture.averageBins ? *overlay.picture.averageBins : picture.binsDbfs;
     const auto offsets = spectrumSlope_ == SpectrumSlope::Tilt45 ? spectrumProjection_.offsets() :
         std::span<const float>{};
-    if (spectrumSlope_ == SpectrumSlope::Tilt45 && offsets.size() != picture.binsDbfs.size()) {
+    if (spectrumSlope_ == SpectrumSlope::Tilt45 && offsets.size() != bins.size()) {
         overlay.plot.reset();
         return;
     }
     try {
         if (!overlay.plot) overlay.plot = std::make_unique<ScaledSpectrum>();
-        overlay.plot->setFormat(spectrumScale_, picture.sampleRate, picture.request.fftSize, picture.binsDbfs.size());
-        overlay.plot->update(picture.binsDbfs, offsets, false);
+        overlay.plot->setFormat(spectrumScale_, picture.sampleRate, picture.request.fftSize, bins.size());
+        overlay.plot->update(bins, offsets, false);
     } catch (...) {
         overlay.plot.reset();
     }
 }
 void SharedSpectrumView::updateSpectrumOverlays(bool primaryChanged) noexcept {
-    if (mode_ != Mode::Spectrum || spectrumOverlays_.empty()) return;
+    if (!supportsSpectrumOverlays(mode_) || spectrumOverlays_.empty()) return;
     bool redraw = false;
     for (std::size_t i = 0; i < spectrumOverlays_.size(); ++i) {
         auto &overlay = spectrumOverlays_[i];
-        auto next = overlay.lease.read();
-        if (!next || next->generation != overlay.admission.generation || !overlay.admission.generation) {
-            if (next || overlay.picture || !overlay.admission.generation)
+        SpectrumOverlay::Frame next;
+        if (mode_ == Mode::SpectrumAverage) {
+            const auto average = overlay.lease.readAverage();
+            if (average && average->status == SharedAnalysis::AverageStatus::Ready && average->binsDbfs)
+                next = {average->window, average->binsDbfs};
+        } else {
+            next.window = overlay.lease.read();
+        }
+        const auto &window = next.window;
+        if (!window || window->generation != overlay.admission.generation || !overlay.admission.generation) {
+            if (window || overlay.picture.window || !overlay.admission.generation)
                 overlay.admission = overlay.lease.sourcePosition();
             redraw = redraw || static_cast<bool>(overlay.plot);
             overlay.clearPicture();
             continue;
         }
-        const auto size = static_cast<std::int64_t>(next->request.fftSize);
-        if (size <= 0 || next->firstSequence < 0 ||
-            next->firstSequence > std::numeric_limits<std::int64_t>::max() - size ||
-            next->firstSequence + size <= overlay.admission.written) continue;
+        const auto size = static_cast<std::int64_t>(window->request.fftSize);
+        if (size <= 0 || window->firstSequence < 0 ||
+            window->firstSequence > std::numeric_limits<std::int64_t>::max() - size ||
+            window->firstSequence + size <= overlay.admission.written) continue;
         // Keep one waiting picture even when the worker replaces its latest
         // publication. A persistently leading pin still advances as heard.
         auto &waiting = overlay.waiting;
-        if (waiting && (waiting->sourceEpoch != next->sourceEpoch || !sameSpectrumTimeline(*waiting, *next)))
-            waiting.reset();
-        if (spectrumFitsPrimary(shown_.get(), *next)) {
-            waiting.reset();
-        } else if (waiting && spectrumFitsPrimary(shown_.get(), *waiting)) {
-            next.swap(waiting);
+        if (waiting.window && (waiting.window->sourceEpoch != window->sourceEpoch ||
+                               !sameSpectrumTimeline(*waiting.window, *window)))
+            waiting = {};
+        if (spectrumFitsPrimary(shown_.get(), *window)) {
+            waiting = {};
+        } else if (waiting.window && spectrumFitsPrimary(shown_.get(), *waiting.window)) {
+            std::swap(next, waiting);
         } else {
-            if (!waiting && next->advancing) waiting = std::move(next);
-            next.reset();
+            if (!waiting.window && window->advancing) waiting = std::move(next);
+            next = {};
         }
 
         // The primary and first seven additional curves follow the normal clock.
         // Extra paths adopt new data at 15 Hz while the worker retains its hop rate.
-        const auto &prior = overlay.picture;
-        bool due = next && next != prior;
-        if (due && i >= 7 && prior && prior->generation == next->generation &&
-            prior->sourceEpoch == next->sourceEpoch && prior->transportRevision == next->transportRevision &&
-            prior->advancing == next->advancing && prior->sampleRate == next->sampleRate) {
-            const auto before = next->advancing ? prior->firstStamp : prior->firstSequence;
-            const auto after = next->advancing ? next->firstStamp : next->firstSequence;
+        const auto &prior = overlay.picture.window;
+        bool due = window && next != overlay.picture;
+        if (due && i >= 7 && prior && prior->generation == window->generation &&
+            prior->sourceEpoch == window->sourceEpoch && prior->transportRevision == window->transportRevision &&
+            prior->advancing == window->advancing && prior->sampleRate == window->sampleRate) {
+            const auto before = window->advancing ? prior->firstStamp : prior->firstSequence;
+            const auto after = window->advancing ? window->firstStamp : window->firstSequence;
             if (after >= before)
                 due = static_cast<double>(static_cast<std::uint64_t>(after) - static_cast<std::uint64_t>(before))
-                    >= next->sampleRate / 15.;
+                    >= window->sampleRate / 15.;
         }
         if (due) overlay.picture = std::move(next);
         if (due || (primaryChanged && spectrumOverlayMatchesPrimary(overlay) != static_cast<bool>(overlay.plot))) {
@@ -832,22 +862,16 @@ void SharedSpectrumView::updateDemand() noexcept {
         lease_.reset();
         if (mainMeterSource_.expired()) mainMeter_.reset();
     } else {
-        const auto rate = usesOverviewSpectrum() ? lease_.preparedSampleRate() : 0.;
+        const bool overview = usesOverviewSpectrum();
+        const auto rate = overview ? lease_.preparedSampleRate() : 0.;
         if (rate > 0. && overviewRate_ != rate) {
             overviewFftSize_ = overviewFftForRate(rate);
             overviewRate_ = rate;
         }
-        const auto size = rate > 0. ? overviewFftSize_ : 1024;
-        std::optional<std::array<SharedAnalysis::Lease, kSpectrumOverlayTracks + 1>> retired;
+        const auto size = overview ? (rate > 0. ? overviewFftSize_ : activeSpectrumFftSize_) : 1024;
+        std::optional<SpectrumLeases> retired;
         if (activeSpectrumFftSize_ != size) {
-            auto &leases = retired.emplace();
-            leases.front() = std::move(lease_);
-            for (std::size_t i = 0; i < spectrumOverlays_.size(); ++i) {
-                auto &overlay = spectrumOverlays_[i];
-                leases[i + 1] = std::move(overlay.lease);
-                overlay.admission = {};
-                overlay.clearPicture();
-            }
+            takeSpectrumLeases(retired.emplace());
             activeSpectrumFftSize_ = size;
             resetPicture();
             freshRequired_ = true;
@@ -855,7 +879,8 @@ void SharedSpectrumView::updateDemand() noexcept {
         if (!lease_) {
             auto request = spectrumRequest(track_);
             switch (mode_) {
-            case Mode::Spectrum: request.outputs = SharedAnalysis::Spectrum; break;
+            case Mode::Spectrum:
+            case Mode::SpectrumAverage: break;
             case Mode::Scope: request.outputs = SharedAnalysis::Scope; break;
             case Mode::Meters:
             case Mode::ChannelReadout: request.outputs = SharedAnalysis::Meters; break;
@@ -869,7 +894,6 @@ void SharedSpectrumView::updateDemand() noexcept {
                 }
                 break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
-            case Mode::SpectrumAverage: request.outputs = SharedAnalysis::Average1s; break;
             case Mode::SpectrumMaximum: request.outputs = SharedAnalysis::RealtimeMaximum; break;
             case Mode::SpectrumCumulativeMaximum: request.outputs = SharedAnalysis::CumulativeMaximum; break;
             case Mode::ClassicScope: break; // Uses the continuous capture lease above.
@@ -1463,7 +1487,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     const auto bins = spectrumBins();
     const bool projectionReady = !tilted || offsets.size() == bins.size();
     if (scaledSpectrum_) scaledSpectrum_->paint(g, scaled ? scaledPlot : plot, look::value, true);
-    if (mode_ == Mode::Spectrum) paintSpectrumOverlays(g, scaled ? scaledPlot : plot);
+    if (supportsSpectrumOverlays(mode_)) paintSpectrumOverlays(g, scaled ? scaledPlot : plot);
     if (spectrumCursorPosition_) {
         const auto pointer = *spectrumCursorPosition_;
         if (const auto reading = spectrumCursorReading(pointer)) {
