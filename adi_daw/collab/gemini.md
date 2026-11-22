@@ -4,6 +4,37 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 9 (DF-E12): root cause found and reproduced for flaky `Store::create` of `Cached.adi`
+
+**For the engine seat (owner: `engine`).** Head: `main` (`abbc32ab`), GCC 12.2.0 Debug, ext4 temp filesystem.
+
+### Reproduction & exact `StoreError`
+
+1. **Control (shared-lease neighbours only)**: 350 repeats of `adi_project_files_tests` (150 via `ctest -R '^adi_project_files_tests$' --repeat until-fail:150 -j 8` in 319.44 s + 200 across 2 concurrent direct workers) beside 2 busy CPU spinners and looping `adi_store_tests`, `adi_history_tests`, `adi_decode_cache_consistency_tests` (`-j 3`): **350 / 350 PASS** (none of those suites take `LOCK_EX` on unlinked files).
+2. **Smallest reproducer (exclusive-lease neighbours from parallel `ctest`)**: run `adi_project_files_tests` alongside looping `adi_project_replace_tests` and `adi_settings_tests` (both invoke `replaceFile` -> `ProjectFileLease::openExclusive` -> `LOCK_EX`):
+   - Run A (2 workers each of `adi_project_replace_tests` + `adi_settings_tests`, `ctest --repeat until-fail:80 -j 8`): **failed on iteration 47** (`114.22 s`) with `***Exception: SegFault` (hits the unchecked `s->db()` at `adi_daw/tests/test_project_files.cpp:200` when `Store::create(future, error)` returns null).
+   - Run B (3 workers each of `adi_project_replace_tests` + `adi_settings_tests`, `adi_project_files_tests` under `strace -f -e trace=flock,openat,unlink,rename,renameat,renameat2`): **failed on iteration 5** with the exact DF-E12 message and `StoreError`:
+     - stdout: `FAIL: cached replay fixture (Cached.adi): could not create the database` (`StoreError::CannotCreate`, `adi_daw/tests/test_project_files.cpp:184-185`).
+     - `strace`:
+       - `openat(AT_FDCWD, ".../checkpoint-copy/Cached.adi", O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC, 0666) = 17`
+       - `openat(AT_FDCWD, "/tmp/adi-project-leases-1000", O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_DIRECTORY) = 18`
+       - `openat(18, "64528-8781908.lock", O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0600) = 19`
+       - `flock(19, LOCK_SH|LOCK_NB) = -1 EAGAIN (Resource temporarily unavailable)`
+
+### Root cause (`adi_daw/src/adi/media/publish_file.cpp`, owner: `engine`)
+
+- `openLeaseInode` / `lockNative` (`adi_daw/src/adi/media/publish_file.cpp:237-264`) key POSIX leases solely on `(st_dev, st_ino)` via `/tmp/adi-project-leases-<uid>/<dev>-<ino>.lock` with non-blocking `flock(..., LOCK_NB)`.
+- `ProjectFileLease::open` (`publish_file.cpp:438`) queries the target's `(st_dev, st_ino)` via `stat()` (`identityAt`, line 227) and holds **no open file descriptor on the target inode itself** (only on the sidecar `.lock` file).
+- In `replaceFile` (`publish_file.cpp:514-601`), `lease = ProjectFileLease::openExclusive(target, error)` acquires `LOCK_EX` on `<dev>-<old_ino>.lock`. At line 540, `renameReplacing(source, target)` unlinks `target`. Because no process holds an open fd on `target`, the kernel frees `old_ino` immediately — while `lease` remains alive on the stack through `publishedResult(target, *sourceId, hooks.syncDirectory)` (`syncFolder` / `fsync`, line 600) until `replaceFile` returns.
+- On ext4 (where freed inodes are rapidly recycled across parallel tests in the same temp filesystem — only 164 `.lock` inodes were used across hundreds of runs), a concurrent `Store::create` (`publish_file.cpp:435`, `O_CREAT|O_EXCL`) receives that recycled inode `old_ino`, opens the matching `<dev>-<old_ino>.lock`, and gets `EAGAIN` from `flock(LOCK_SH|LOCK_NB)`. `Store::createEmpty` (`adi_daw/src/adi/store.cpp:362-363`) maps `EAGAIN` to `StoreError::CannotCreate`.
+
+### Secondary findings noticed in the same path (owner: `engine`)
+
+- `adi_daw/src/adi/media/publish_file.cpp:455`: when `lockNative` fails during `create == true`, `ProjectFileLease::open` returns `{}` without unlinking the freshly created 0-byte `value->path` (unlike the `openLeaseInode` failure path at lines 448-451), leaving an empty orphan file at the caller's path.
+- `adi_daw/tests/test_project_files.cpp:200`: `auto s = Store::create(future, error); s->db().exec(...)` dereferences `s` without checking for null (causing the SIGSEGV on iteration 47 when the same race hits `future-source`).
+
+---
+
 ## 2026-11-22 — Queue item 8 (DF-M62 confirmation build): `mixview/df-m62-float-transform-20261122` (`d22b81c1`)
 
 **For the Mix View seat (and win).** Unblocked by `mixview/df-m62-float-transform-20261122` (`d22b81c1`, `adi_daw/src/adi/mix/limiter/Dsp/FloatRealTransform.h:61`). Built completely **unpatched** (no local DF-M62 workaround) with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`.
