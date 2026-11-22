@@ -39,6 +39,67 @@ void lanes(){
     // creation inverse without writing unjournalled changes after its commit.
     Fixture create;create.store->db().exec("DELETE FROM automation_lanes WHERE id=2");const auto before=create.image();automation::LaneSpec spec;spec.id=2;spec.ownerId=1;spec.paramRef="volume";std::vector<OpRequest> batch{automation::createLane(spec)};for(const auto& data:state["data"]){OpRequest dataRestore;dataRestore.opType="automation.restoreData";dataRestore.payload={{"id",data.at("id")},{"lane",2},{"clip",data.at("clip")},{"state",{{"present",true},{"bytes",data.at("bytes")},{"ranges",data.at("ranges")}}}};batch.push_back(std::move(dataRestore));}const auto result=OpJournal(*create.store).commit(batch);check(result.ok && create.ranges().size()==3 && create.ranges(11).size()==3,"lane creation and exact curved stream restoration commit as one transaction");const auto after=create.image();History history(*create.store);check(history.undo().ok && create.image()==before && history.redo().ok && create.image()==after && history.undo().ok && create.image()==before,"creation Undo/Redo/Undo preserves absence and the complete populated lane");
 }
+void forwardCompatibleUndo() {
+    const auto addChildren = [](SQLite::Database& db) {
+        db.exec("CREATE TABLE later_lane_child(id INTEGER PRIMARY KEY REFERENCES automation_lanes(id)"
+                " ON DELETE CASCADE, note TEXT NOT NULL);"
+                "CREATE TABLE later_data_child(id INTEGER PRIMARY KEY REFERENCES automation_data(id)"
+                " ON DELETE CASCADE, note TEXT NOT NULL);"
+                "INSERT INTO later_lane_child VALUES(2,'lane survives');"
+                "INSERT INTO later_data_child VALUES(10,'arrangement survives'),(11,'clip survives')");
+    };
+    const auto childrenSurvive = [](SQLite::Database& db) {
+        return db.execAndGet("SELECT count(*) FROM later_lane_child WHERE note='lane survives'").getInt() == 1 &&
+            db.execAndGet("SELECT count(*) FROM later_data_child WHERE note LIKE '% survives'").getInt() == 2;
+    };
+    {
+        Fixture fixture;
+        auto& db = fixture.store->db();
+        addChildren(db);
+        fixture.commit(automation::setLaneEnabled(2, false));
+        check(History(*fixture.store).undo().ok && childrenSurvive(db),
+              "Undoing a lane flag retains CASCADE children of the existing lane and both streams");
+    }
+    {
+        Fixture fixture;
+        auto& db = fixture.store->db();
+        addChildren(db);
+        db.exec("ALTER TABLE automation_lanes ADD COLUMN later_lane TEXT NOT NULL DEFAULT 'new lane';"
+                "ALTER TABLE automation_data ADD COLUMN later_data BLOB NOT NULL DEFAULT X'00';"
+                "UPDATE automation_lanes SET later_lane='persisted lane' WHERE id=2;"
+                "UPDATE automation_data SET later_data=X'0100ff' WHERE id IN (10,11)");
+        const auto before = fixture.image();
+        fixture.commit(automation::clearLane(2));
+        const auto cleared = fixture.image();
+        History history(*fixture.store);
+        check(history.undo().ok && fixture.image() == before && childrenSurvive(db),
+              "Undoing Clear restores native streams and keeps future lane and data cells and children");
+        check(history.redo().ok && fixture.image() == cleared && childrenSurvive(db),
+              "Redoing Clear preserves the same future cells");
+        automation::LaneSpec spec;
+        spec.id = 4;
+        spec.ownerId = 1;
+        spec.paramRef = "mute";
+        check(OpJournal(*fixture.store).commit(automation::createLane(spec)).ok &&
+                  db.execAndGet("SELECT later_lane FROM automation_lanes WHERE id=4").getString() == "new lane",
+              "a new lane on an extended table uses the new column's native default");
+    }
+    {
+        Fixture fixture;
+        auto& db = fixture.store->db();
+        addChildren(db);
+        const auto before = fixture.image();
+        fixture.commit(automation::movePoints(10, 2, nullptr, Payload::array({{{"id",20},{"time",125},{"value",.2}}})));
+        const auto moved = fixture.image();
+        db.exec("CREATE TEMP TRIGGER refuse_reinsert BEFORE INSERT ON automation_data WHEN NEW.id=10"
+                " BEGIN SELECT RAISE(ABORT,'existing stream accepts updates only'); END");
+        History history(*fixture.store);
+        check(history.undo().ok && fixture.image() == before && childrenSurvive(db),
+              "Undoing a point move uses UPDATE on an existing stream");
+        check(history.redo().ok && fixture.image() == moved && childrenSurvive(db),
+              "Redoing a point move uses UPDATE on an existing stream");
+    }
+}
 void edits(){
     for(const bool clip:{false,true}){const int data=clip?11:10;const Payload address=clip?Payload(1):Payload(nullptr);
         {Fixture fixture;const auto original=fixture.ranges(data);fixture.commit(automation::deletePoints(data,2,address,Payload::array({UINT64_MAX-2})));const auto current=fixture.ranges(data);check(current.size()==2 && current[0].at("id")==original[1].at("id") && current[0].at("record_index")==0 && current[1].at("id")==original[2].at("id") && current[1].at("record_index")==1 && fixture.valid(),"deleting a point reindexes surviving outgoing curve ranges by point identity");}
@@ -99,4 +160,4 @@ void audibleCurves(){
 }
 
 }
-int main(){try{lanes();edits();atomic();adversarial();audibleCurves();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{lanes();forwardCompatibleUndo();edits();atomic();adversarial();audibleCurves();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

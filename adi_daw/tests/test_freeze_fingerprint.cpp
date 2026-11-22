@@ -150,7 +150,20 @@ void dependencies() {
         refused = true;
     }
     check(refused, "a sidechain that drives the cached instrument prefix refuses unsafe capture");
+    // Schema 1.22 (DEV-05/MX-24): a track keying a DEVICE is a planned
+    // connection now, no longer the unsupported endpoint this refusal was first
+    // written with. Supported, it must keep what the refusal protected: the key
+    // track stays a dependency, and its level and its tap reach the hash.
     p.store->db().exec("UPDATE routing SET dst_kind='device',dst_id=3 WHERE id=20");
+    check(freeze::fingerprint(*p.store, wet).dependencies == std::vector<std::int64_t>({2}),
+          "a device key keeps its key track as a wet fingerprint dependency");
+    p.mutation(wet, "UPDATE mixer_strip SET volume_db=-9 WHERE track_id=2", true,
+               "baked device-key level participates in a wet fingerprint");
+    p.mutation(wet, "INSERT INTO routing_key_taps(routing_id,tap) VALUES(20,'pre_fx')", true,
+               "a device key's tap participates in a wet fingerprint");
+    // The refusal itself, on an endpoint the planner still cannot place: the
+    // same track-into-device row as a main output instead of a key.
+    p.store->db().exec("UPDATE routing SET kind='main' WHERE id=20");
     refused = false;
     try {
         (void)freeze::fingerprint(*p.store, wet);

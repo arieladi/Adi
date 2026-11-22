@@ -71,6 +71,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <memory>
@@ -121,6 +122,11 @@ public:
     static void forgetInstance(void* instance) noexcept;
     /// Pd's fixed internal block, 64. Read from libpd rather than assumed.
     [[nodiscard]] static std::int32_t blockSize() noexcept;
+    /// PD4: every class name this build can create -- vanilla's and ADI's
+    /// compiled-in externals -- read from Pd's own creator table
+    /// (pd_vocabulary.cpp). Initialises the runtime; empty if that fails.
+    /// Message thread. Feeds `walkPdObjects` (pd_object_walk.hpp).
+    [[nodiscard]] static std::set<std::string, std::less<>> creatableClasses();
 };
 
 /// One patch, in its own Pd instance.
@@ -225,6 +231,9 @@ public:
 
     [[nodiscard]] bool isNative() const noexcept { return native_ != nullptr; }
 
+    /// A patch whose transport receiver is bound (it has [adi.transport]), or
+    /// a native core that uses the graph's position. Decided in open().
+    [[nodiscard]] bool wantsPosition() const noexcept override { return wantsPosition_; }
     /// Zero for native DSP and WholeBlocks; one block for prepared Buffered Pd;
     /// for Automatic, zero until it has had to take that block.
     [[nodiscard]] std::int32_t adapterLatencySamples() const noexcept override {
@@ -284,24 +293,7 @@ public:
     /// 16,777,216, and ADI's 5,765,760 ticks per quarter note (SPEC 4.2) pass
     /// that within three quarter notes. Bar, beat and ticks-within-the-quarter
     /// are each small enough to stay exact for as long as anyone plays.
-    struct Transport {
-        bool playing = false;
-        double bpm = 120.0;
-        int timeSigNumerator = 4;
-        int timeSigDenominator = 4;
-        /// 1-based, as a musician counts them.
-        double bar = 1.0;
-        double beat = 1.0;
-        /// **The QUARTER-NOTE grid, not the position within the beat**, and in
-        /// 5/8 or 7/8 those are different numbers. It is the absolute tick
-        /// count modulo `ADI_PPQ` (5,765,760), counted from bar 1, so it runs
-        /// 0..5,765,759 and wraps once per quarter note whatever the meter
-        /// calls a beat. In 7/8, where the beat is an eighth, it wraps once
-        /// per TWO beats. `bar` and `beat` carry the meter; this carries a
-        /// quarter-note phase, and a patch that confuses them is early or late
-        /// by a factor of two with nothing to say why.
-        double ticksInQuarter = 0.0;
-    };
+    using Transport = PdTransport;
 
     /// **`process` READS `io.transport` ITSELF**, so nothing needs to call
     /// this in the ordinary path. `NodeIo::transport` is null outside a
@@ -462,7 +454,21 @@ private:
     std::unique_ptr<NativePdDevice> native_;
     PdLatencyReceiver* nativeLatency_ = nullptr;
     bool nativePrepared_ = false;
-    void processPdAudio(const engine::NodeIo& io) noexcept;
+    /// `segmentFrame`: how far into the graph's segment this piece starts,
+    /// so a tick's position is reckoned from the segment's deviceTransport.
+    void processPdAudio(const engine::NodeIo& io, std::int32_t segmentFrame) noexcept;
+    /// The exact quarter-note position of a Pd tick's first input sample, when
+    /// the graph gave one (the eighth [adi.transport] field).
+    struct TickStart {
+        double quarterNotes = 0.0;
+        double bpm = 120.0;      ///< the tick's own tempo and transport state,
+        bool playing = false;    ///< as the graph gave them for its segment
+        bool known = false;
+    };
+    [[nodiscard]] TickStart startAt(const engine::NodeIo& io, std::int32_t frame) const noexcept;
+    TickStart carried_{};    ///< audio thread: the partial tick at in_[0], latched when it began
+    TickStart tickStart_{};  ///< audio thread: the tick about to run
+    bool wantsPosition_ = false;
 
     /// The block adapter. `in_` and `out_` are interleaved by channel, sized
     /// for one tick plus the largest segment the graph promised.
@@ -570,7 +576,7 @@ private:
     void deliverMidi(const engine::MpeOut& m) noexcept;
 
     /// AUDIO THREAD. One list to `<$0>-aditr`, built on the stack.
-    void deliverTransport() noexcept;
+    void deliverTransport(const TickStart& start) noexcept;
 
     Transport transport_{};
     bool transportSet_ = false;

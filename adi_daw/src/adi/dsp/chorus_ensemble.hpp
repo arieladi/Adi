@@ -30,7 +30,8 @@ class ChorusEnsemble {
     void process(const float *, const float *, float *, float *, std::size_t) noexcept;
 
   private:
-    std::array<double, Count> p_{0, 0, 100, 100, 1, 10, 2, 0, 0, 1, 50, 0, 0, 0, 0, 50};
+    // Live 12.4's default (DEV-22): High-Pass 50 Hz, Rate 0.9 Hz, Amount 50 %.
+    std::array<double, Count> p_{0, 0, 50, 100, 1, 10, 2, 0, 0, .9, 50, 0, 0, 0, 0, 50};
     std::array<std::vector<float>, 2> ring_;
     std::array<double, 2> low_{}, warm_{}, feedback_{};
     std::size_t write_ = 0;

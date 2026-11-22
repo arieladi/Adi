@@ -187,7 +187,8 @@ TrackBounce prepareBounceInPlace(Store &store, const InPlaceBounceOptions &optio
             edit::TimeMap time(store.db());
             SQLite::Statement clips(
                 store.db(),
-                "SELECT time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips WHERE track_id=?");
+                "SELECT time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips "
+                "WHERE track_id=? AND lane_id IS NULL");
             clips.bind(1, options.sourceTrack);
             while (clips.executeStep()) {
                 const auto base = clips.getColumn(0).getInt();

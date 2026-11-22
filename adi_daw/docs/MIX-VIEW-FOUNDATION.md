@@ -149,9 +149,30 @@ device-specific key routes. These are separate from visual demand.
 
 Actual devices continue through the established Session/Graph chain and shared parameter
 authority. Native EQ and independently enabled Clip-to-Limiter processing are wired through
-that same chain; device-area pages and Mix View rows address the same nodes. Unmasking,
-compressor, de-esser and gate native admission remain later slices, not substitute processing.
+that same chain, along with the native Clean compressor. Device-area pages and Mix View rows
+address the same nodes. Unmasking, de-esser and gate native admission remain later slices.
 ADI Still remains an ordinary plug-in. Analyzers stay outside the processing chain.
+
+### Native EQ serial provider
+
+The existing EQ function uses the shared serial processing adapter with EQ enabled and the
+downstream stages disabled. All 730 parameter IDs, saved-state values and common edit/undo paths
+remain the same. The adapter retains the authored EQ learning object across stopped reprepare.
+The native provider forces a stopped prepare when the engine switches between float and double,
+even at the same rate and buffer size. Same-format rebuilds retain the running state.
+When External Sidechain is on, the detector treats an absent bus as silence. Turning External
+Sidechain off selects the programme. A device sidechain route is still set separately.
+
+Scalar edits run without configuration-owner jobs. Prepared-plan changes use one demand-driven
+owner, a complete aggregate latency offer and physical-callback admission. Main relays published
+metadata; audio never starts or notifies the worker. Carve and Focus pages remain unavailable
+until their real controller and device-key routes are connected.
+Offline instances use a serialized owner that services the request before admitting the new
+physical block. Latency-neutral structure edits produce repeatable exports across render schedules.
+
+A parked configuration failure retains the last applied audio plan. The device header reports the
+issue and points to reopening the saved project through File > Open Project. The device remains
+available and its controls and active gestures stay usable. Ordinary pending work has no warning.
 
 ## Main meter readouts
 
@@ -176,12 +197,16 @@ pause or reset the shared Main measurement. Closing the last view adds no meter 
 `mix::compressor::Core` supplies Clean compression at the input rate with zero latency. It is
 a framework-free component, not an available native Compressor function. The factory, channel
 catalog and existing processing paths are unchanged. Other styles, quality conversion,
-lookahead, hold, key EQ, audition and wet/dry mixing are not accepted component settings.
+lookahead, key EQ, audition and wet/dry mixing are not accepted component settings.
+Fixed active Hold (above float epsilon in milliseconds) is admitted for internal-key fully
+linked stereo with Auto Release and Auto Gain off. It retains an inclusive peak window and a
+separate post-envelope. Other active-Hold routes/combinations are refused; zero/near-zero Hold
+preserves the existing admissions.
 
 Validated settings and complete pointer/context/layout checks precede each contiguous segment.
 Threshold, ratio, knee, range, attack/release and automatic controls retain running envelope
 history. Prepare/reset start a new stream; settings-only restore does not rewind it. Key
-source, link amount and M/S mode are fixed for that prepared stream; unsupported combinations
+source, link amount, M/S mode and Hold are fixed for that prepared stream; unsupported combinations
 are rejected explicitly. A temporarily absent external key means silence on the same route
 (`keyChannels=0`); partial/null planes are rejected. This is not a fabricated key source or
 arbitrary live route migration.
@@ -190,9 +215,17 @@ The processing rate is rounded to float. Double I/O uses the same float engine a
 output; it is not a double-precision engine. Finite audio within float range is a caller
 precondition, avoiding a redundant whole-buffer scan. Curve storage is prepared off audio,
 coefficients use a bounded per-instance cache, invariant control work is retained, and a fixed
-fully linked stream evaluates its identical detector envelope once. These are structural work
-properties, not a measured CPU or whole-product parity claim. The component remains unregistered
-until the complete controller/state/style/quality and real key-route paths are ready.
+fully linked stream evaluates its identical detector envelope once. Hold's bounded maximum
+storage is allocated in prepare and reused without callback allocation; its one linked
+post-envelope retains history across physical and segmented blocks.
+The maximum queue has bounded amortized work. Constant held-peak coefficients are cached;
+zero Hold selects its existing sample kernel without queue or post-envelope work.
+These properties do not establish every Hold control/quality combination or a whole-product
+CPU comparison. The zero-Hold path keeps the existing gain expression unchanged.
+These are structural work
+properties, not a measured CPU or whole-product parity claim. The bounded internal-key Clean device is now registered through the common
+function/controller/state path (see MIX-CLEAN-NATIVE.md). External keys and the
+remaining style/quality combinations remain later capabilities.
 
 ## Build and verification
 

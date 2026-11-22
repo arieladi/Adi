@@ -8,10 +8,12 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -23,6 +25,8 @@
 namespace f=adi::mix::focus;
 namespace {
 thread_local bool inAudio=false;
+thread_local bool countOwnerAllocations=false;
+thread_local std::size_t ownerAllocationBytes=0;
 std::uint64_t allocations=0,deallocations=0;
 int checks=0,failures=0;
 std::uint64_t comparedSamples=0;
@@ -79,6 +83,13 @@ void coreConcurrency() {
     f::Core core;f::Settings initial;initial.nodes[0].enabled=true;initial.nodes[0].q=1.;
     core.prepare({48000,64,2},initial);
     std::atomic<bool> done{false};std::atomic<int> bad{0};f::Settings finalDesired=initial;
+    // The owner must plan WHILE audio runs. Left to the scheduler, a loaded
+    // runner can park the owner thread for the producer's whole run and
+    // nothing was planned concurrently (macOS CI, ctest --parallel on three
+    // cores). So audio waits at its midpoint until the owner has planned at
+    // least once, then processes the rest against that live plan. The wait is
+    // bounded: an owner that never plans still fails below, it cannot hang.
+    std::atomic<std::uint64_t> services{0};std::atomic<bool> overlapped{false};
     std::thread producer([&]{
         f::Settings requested=initial;
         std::array<std::array<double,64>,2> x{},key{};
@@ -95,16 +106,23 @@ void coreConcurrency() {
             {AudioScope scope;const auto context=core.beginBlock(block,0,requested);
              if(!core.process(main.data(),keys.data(),2,64,requested,context))bad.fetch_add(1);}
             for(const auto &channel:x)for(double valueOut:channel)if(!std::isfinite(valueOut))bad.fetch_add(1);
+            if(block==500) {
+                const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+                while(services.load(std::memory_order_acquire)==0&&std::chrono::steady_clock::now()<limit)std::this_thread::yield();
+                overlapped.store(services.load(std::memory_order_acquire)>0,std::memory_order_release);
+            }
         }
         finalDesired=requested;done.store(true,std::memory_order_release);
     });
-    std::uint64_t services=0;
-    while(!done.load(std::memory_order_acquire)){if(core.serviceConfiguration())++services;else std::this_thread::yield();}
+    while(!done.load(std::memory_order_acquire)){if(core.serviceConfiguration())services.fetch_add(1,std::memory_order_acq_rel);else std::this_thread::yield();}
     producer.join();
     for(std::uint64_t i=0;i<4;++i){core.serviceConfiguration();static_cast<void>(core.beginBlock(1001+i,0,finalDesired));}
     core.serviceConfiguration();static_cast<void>(core.beginBlock(1005,0,finalDesired));
     const auto status=core.configurationStatus();
-    check(bad.load()==0&&services>0,"concurrent owner planning and audio processing stay valid");
+    if(bad.load()!=0||!overlapped.load())
+        std::printf("  invalid audio blocks %d, owner plans %llu, owner planned before audio's midpoint %d\n",bad.load(),
+            static_cast<unsigned long long>(services.load()),overlapped.load()?1:0);
+    check(bad.load()==0&&overlapped.load(),"concurrent owner planning and audio processing stay valid");
     check(status.requested==status.ready&&status.ready==status.applied&&core.pendingLatencyChange().token==0,"black-box latest request drains, applies and clears its offer");
 }
 void defaultsAndReadiness() {
@@ -194,6 +212,69 @@ bool stage(f::Core &core,const f::Settings &settings,std::uint64_t physical,std:
 f::Settings firSettings(double q=3.) {
     f::Settings s;s.engine=f::Engine::Fir;s.nodes[0].enabled=true;
     s.nodes[0].q=q;s.nodes[0].frequencyHz=1000.;s.nodes[0].thresholdDb=-60.;return s;
+}
+void lazyOwnerStorage() {
+    struct CountOwnerStorage {
+        CountOwnerStorage() { ownerAllocationBytes=0;countOwnerAllocations=true; }
+        ~CountOwnerStorage() { countOwnerAllocations=false; }
+    };
+    const f::PrepareSpec spec{48000,256,2};
+    const GeneratedAudio signal(32768);
+    auto iir=firSettings();
+    iir.engine=f::Engine::Iir;
+    f::Core core,reference;
+    {
+        CountOwnerStorage count;
+        core.prepare(spec,iir);
+    }
+    check(ownerAllocationBytes==0,"fresh native IIR prepares without allocating phase or FIR storage");
+    iir.nodes[0].q=2.;
+    check(core.requestConfiguration(iir),"coefficient-only IIR request is accepted");
+    bool built=false;
+    {
+        CountOwnerStorage count;
+        built=core.serviceConfiguration();
+    }
+    check(built && ownerAllocationBytes==0,"ordinary IIR coefficient updates allocate no transform storage");
+    { AudioScope scope;static_cast<void>(core.beginBlock(101,0,iir)); }
+
+    auto phase=iir;
+    phase.phaseMode=f::PhaseMode::Match;
+    phase.matchAmount=1.;
+    phase.externalKey=true;
+    // Isolate the dormant phase buffers from the IIR filter history, which
+    // correctly stays active across a phase-only configuration change.
+    phase.nodes[0].enabled=false;
+    auto fir=iir;
+    fir.engine=f::Engine::Fir;
+    std::uint64_t block=102;
+    const auto exercise=[&](const f::Settings &configured,std::int32_t latency) {
+        check(core.requestConfiguration(configured),"first transform configuration is requested");
+        bool ready=false;
+        {
+            CountOwnerStorage count;
+            ready=core.serviceConfiguration();
+        }
+        const auto offer=core.pendingLatencyChange();
+        check(ready && offer.token!=0 && offer.samples==latency && core.latencySamples()==0 &&
+                  ownerAllocationBytes>0,
+              "first transform storage is prepared by the owner before latency admission");
+        { AudioScope scope;static_cast<void>(core.beginBlock(block++,latency,configured)); }
+        reference.prepare(spec,configured);
+        auto actual=signal,expected=signal;
+        check(actual.run(core,configured) && expected.run(reference,configured) && compare(actual,expected)==0.,
+              "first live transform render is sample-identical to fresh preparation");
+        check(stage(core,iir,block++,0),"the live transform path retires before re-entry");
+        auto gap=signal;
+        check(gap.run(core,iir) && stage(core,configured,block++,latency),
+              "IIR advances source time before re-entering the transform path");
+        actual=signal;
+        check(actual.run(core,configured) && compare(actual,expected)==0.,
+              "re-entry resets dormant signal history and matches the same fresh render exactly");
+        check(stage(core,iir,block++,0),"the completed transform path returns to IIR");
+    };
+    exercise(phase,1024);
+    exercise(fir,12288);
 }
 void coherentFirPolicy() {
     constexpr std::size_t hop=8192,count=65536;constexpr std::int32_t latency=12288;
@@ -449,6 +530,46 @@ void immutableOfferConsumption() {
     check(held,"every immutable ready offer remains unconsumed across false-admission physical contexts");
     check(consumed,"every final-token ready offer consumes on true admission under valid cached PDC");
 }
+void withdrawnLatencyOffer() {
+    f::Settings iir;
+    auto fir=iir; fir.engine=f::Engine::Fir;
+    for (const bool parentHolds : {false, true}) {
+        f::Core core;
+        core.prepare({48000,64,2},iir);
+        const auto active=core.beginBlock(1,0,iir);
+        check(core.requestConfiguration(fir)&&core.serviceConfiguration(),
+              "owner offers a different-latency Focus plan before a reversion");
+        const auto offer=core.pendingLatencyChange();
+        const auto split=core.beginBlock(1,0,iir,!parentHolds);
+        check(split.generation==active.generation&&core.pendingLatencyChange().token==offer.token,
+              "returning controls on a split cannot withdraw an offer within the physical block");
+        const auto next=core.beginBlock(2,0,iir,!parentHolds);
+        check(next.generation==active.generation&&core.latencySamples()==0,
+              "the existing IIR callback stays valid after the user returns to IIR");
+        if (parentHolds) {
+            check(core.pendingLatencyChange().token==offer.token&&!core.serviceConfiguration(),
+                  "a parent-held Focus offer remains immutable through unrelated control changes");
+            check(core.beginBlock(3,offer.samples,iir).generation!=active.generation &&
+                  core.latencySamples()==offer.samples,
+                  "host-promised latency admits the exact retained Focus plan");
+        } else {
+            check(core.pendingLatencyChange().token==0&&core.serviceConfiguration(),
+                  "return to active settings withdraws an unused Focus offer and releases the owner");
+            const auto replacement=core.pendingLatencyChange();
+            check(replacement.token>offer.token&&replacement.samples==0&&
+                  core.beginBlock(3,0,iir).generation!=0&&core.latencySamples()==0,
+                  "the owner admits the latest IIR generation without requiring the discarded PDC");
+        }
+    }
+    f::Core promised;
+    promised.prepare({48000,64,2},iir);
+    check(promised.requestConfiguration(fir)&&promised.serviceConfiguration(),
+          "a latency offer is ready before the host adopts it");
+    const auto exact=promised.pendingLatencyChange();
+    check(promised.beginBlock(1,exact.samples,iir).generation!=0&&
+          promised.configurationStatus().applied==exact.token&&promised.latencySamples()==exact.samples,
+          "a matching new host PDC wins if it arrived before withdrawal");
+}
 void configurationIdentityHelpers() {
     f::Settings a,b=a;
     check(f::sameConfiguration(a,b),"identical prepared configurations compare equal");
@@ -667,6 +788,136 @@ void causalFirGenerations() {
     settings.nodes[0].q=4.1;check(core.requestConfiguration(settings)&&!core.serviceConfiguration(),"sixth request coalesces behind immutable fifth offer");
     check(core.pendingLatencyChange().token==offer.token,"five-slot pressure cannot overwrite the retained offer");
     check(consume(p-1)&&core.statistics().firDeadlineMisses==0,"retained source generations drain without missing a deadline");
+}
+void firCallbackWorkDistribution() {
+    constexpr std::size_t block = 512;
+    for (const auto nodes : {std::size_t{1}, f::kNodes}) {
+        auto settings = firSettings(1.3);
+        for (std::size_t i = 0; i < settings.nodes.size(); ++i)
+            settings.nodes[i].enabled = i < nodes;
+        f::Core core;
+        core.prepare({192000., static_cast<std::int32_t>(block), 2}, settings);
+        const auto partition = static_cast<std::size_t>(core.latencySamples() / 3);
+        std::array<double, block> left{}, right{}, keyLeft{}, keyRight{};
+        std::array<double *, 2> main{left.data(), right.data()};
+        std::array<const double *, 2> key{keyLeft.data(), keyRight.data()};
+        keyLeft.fill(.2);
+        keyRight.fill(-.15);
+        bool accepted = true;
+        std::uint64_t least = std::numeric_limits<std::uint64_t>::max(), most = 0;
+        for (std::size_t first = 0; first < 3 * partition; first += block) {
+            left.fill(.07);
+            right.fill(-.11);
+            const auto before = core.statistics();
+            {
+                AudioScope scope;
+                accepted = core.process(main.data(), key.data(), 2, static_cast<std::int32_t>(block), settings,
+                    core.beginBlock(0, core.latencySamples(), settings)) && accepted;
+            }
+            const auto after = core.statistics();
+            if (first >= partition) {
+                const auto work = after.firWorkUnits - before.firWorkUnits;
+                least = std::min(least, work);
+                most = std::max(most, work);
+            }
+        }
+        const auto final = core.statistics();
+        check(accepted && final.firJobsCompleted == 2 && final.firJobsStarted == 3 && final.firDeadlineMisses == 0,
+              "192 kHz stereo main and key meet both partition deadlines at 512 frames");
+        check(least > 0 && most - least <= 1,
+              nodes == 1 ? "one enabled node spreads counted FIR work through the entire callback interval" :
+                           "ten enabled nodes bound every callback to the same counted FIR work");
+    }
+}
+template<class Sample>
+void firInternalKeyReuse(double rate, std::size_t enabledNodes, bool changeRoutes) {
+    constexpr std::int32_t block = 512;
+    auto external = firSettings(1.3);
+    for (std::size_t node = 0; node < enabledNodes; ++node) {
+        external.nodes[node] = external.nodes[0];
+        external.nodes[node].frequencyHz += 550. * static_cast<double>(node);
+    }
+    auto selected = external;
+    selected.externalKey = changeRoutes;
+    f::Core subject, reference;
+    subject.prepare({rate, block, 2}, selected);
+    reference.prepare({rate, block, 2}, external);
+    const auto latency = reference.latencySamples();
+    const bool aligned = latency >= 3 * block && latency % (3 * block) == 0 && subject.latencySamples() == latency;
+    check(aligned,
+          "internal key and explicit key share the same prepared FIR delay and block grid");
+    if (!aligned) return;
+    const auto capture = static_cast<std::size_t>(latency / 3);
+    const auto sourceFrames = 5 * capture;
+    const auto totalFrames = sourceFrames + static_cast<std::size_t>(latency);
+    const GeneratedAudio input(sourceFrames);
+    std::array<std::array<Sample, block>, 2> actual{}, expected{}, key{};
+    bool accepted = true, exact = true, reduced = false;
+    std::uint64_t subjectPeakWork = 0, referencePeakWork = 0;
+    for (std::size_t first = 0; first < totalFrames; first += block) {
+        // Capture a different external key first, then two fully internal
+        // captures while older overlap is still audible. A later capture
+        // also changes back to external after the first block has been tagged.
+        selected.externalKey = changeRoutes && (first < capture || first == 3 * capture + block);
+        for (std::size_t ch = 0; ch < actual.size(); ++ch) {
+            for (std::size_t frame = 0; frame < actual[ch].size(); ++frame) {
+                const auto at = first + frame;
+                const auto programme = at < sourceFrames ? static_cast<Sample>(input.main[ch][at]) : Sample{};
+                actual[ch][frame] = expected[ch][frame] = programme;
+                key[ch][frame] = selected.externalKey && at < sourceFrames
+                    ? static_cast<Sample>(input.key[ch][at]) : programme;
+            }
+        }
+        std::array<Sample*, 2> main{actual[0].data(), actual[1].data()};
+        std::array<Sample*, 2> oracle{expected[0].data(), expected[1].data()};
+        const std::array<const Sample*, 2> externalKey{key[0].data(), key[1].data()};
+        const auto physical = static_cast<std::uint64_t>(first / block + 1);
+        const auto subjectBefore = subject.statistics().firWorkUnits;
+        const auto referenceBefore = reference.statistics().firWorkUnits;
+        {
+            AudioScope scope;
+            const auto subjectBlock = subject.beginBlock(physical, latency, selected);
+            const auto referenceBlock = reference.beginBlock(physical, latency, external);
+            const bool tookSubject = subject.process(main.data(), selected.externalKey ? externalKey.data() : nullptr,
+                selected.externalKey ? 2 : 0, block, selected, subjectBlock);
+            const bool tookReference = reference.process(oracle.data(), externalKey.data(), 2, block, external, referenceBlock);
+            accepted = accepted && tookSubject && tookReference;
+        }
+        subjectPeakWork = std::max(subjectPeakWork, subject.statistics().firWorkUnits - subjectBefore);
+        referencePeakWork = std::max(referencePeakWork, reference.statistics().firWorkUnits - referenceBefore);
+        for (std::size_t ch = 0; ch < actual.size(); ++ch) {
+            const bool matches = std::memcmp(actual[ch].data(), expected[ch].data(), sizeof(Sample) * actual[ch].size()) == 0;
+            exact = exact && matches;
+            if (first >= static_cast<std::size_t>(latency)) {
+                const auto dryStart = first - static_cast<std::size_t>(latency);
+                for (std::size_t frame = 0; frame < actual[ch].size(); ++frame) {
+                    const auto dry = static_cast<Sample>(input.main[ch][dryStart + frame]);
+                    reduced = reduced || std::abs(actual[ch][frame] - dry) > Sample{1} / Sample{10000};
+                }
+            }
+            comparedSamples += actual[ch].size();
+        }
+    }
+    const auto ran = subject.statistics(), baseline = reference.statistics();
+    check(accepted && exact && reduced, changeRoutes
+        ? "external and internal captures keep distinct overlap across route changes"
+        : "internal and sample-identical external keys produce bit-identical wet audio through the drain");
+    check(ran.firJobsStarted == totalFrames / capture && ran.firJobsCompleted + 1 == ran.firJobsStarted &&
+          ran.firJobsCompleted == baseline.firJobsCompleted && ran.firJobsStarted == baseline.firJobsStarted &&
+          ran.firDeadlineMisses == 0 && baseline.firDeadlineMisses == 0 && subject.latencySamples() == latency,
+          "both key routes finish the same FIR jobs on time while retaining the same delay");
+    if (!changeRoutes) {
+        const bool lessWork = baseline.firWorkUnits > 0 && ran.firWorkUnits * 10 < baseline.firWorkUnits * 7 &&
+                              referencePeakWork > 0 && subjectPeakWork * 10 < referencePeakWork * 7;
+        if (!lessWork)
+            std::printf("  Focus FIR work at %.0f Hz, %zu nodes, %zu-bit: total %llu/%llu, peak %llu/%llu\n",
+                        rate, enabledNodes, sizeof(Sample) * 8,
+                        static_cast<unsigned long long>(ran.firWorkUnits),
+                        static_cast<unsigned long long>(baseline.firWorkUnits),
+                        static_cast<unsigned long long>(subjectPeakWork),
+                        static_cast<unsigned long long>(referencePeakWork));
+        check(lessWork, "at 192 kHz/512, internal key uses under 70% of the total and peak external FIR work");
+    }
 }
 void firCallbackPartitions() {
     for(const double rate:{44100.,96000.,192000.}) {
@@ -917,6 +1168,44 @@ void sourceTaggedFirOracle() {
     check(okay&&maximum<1.e-10,"captured A/B/C blocks retain their actual kernels through both arithmetic partitions");
 }
 
+template<class T> void nonfiniteInputs() {
+    for (const auto engine : {f::Engine::Iir, f::Engine::Fir}) {
+        for (const auto detector : {f::Detector::SideChain, f::Detector::Difference}) {
+            f::Settings settings;
+            settings.engine = engine;
+            settings.detector = detector;
+            settings.externalKey = true;
+            settings.nodes[0].enabled = true;
+            settings.nodes[0].thresholdDb = -36.;
+            settings.nodes[0].differenceDb = -8.;
+            f::Core poisoned, sanitized;
+            poisoned.prepare({48000, 256, 2}, settings);
+            sanitized.prepare({48000, 256, 2}, settings);
+            const auto length = static_cast<std::size_t>(poisoned.latencySamples()) + 4096;
+            std::vector<T> l(length), r(length), kl(length), kr(length);
+            for (std::size_t sample = 0; sample < length; ++sample) {
+                const double angle = static_cast<double>(sample) * 6.283185307179586 / 48.;
+                l[sample] = static_cast<T>(.43 * std::sin(angle));
+                r[sample] = static_cast<T>(.31 * std::cos(angle));
+                kl[sample] = static_cast<T>(.37 * std::sin(angle));
+                kr[sample] = static_cast<T>(.39 * std::cos(angle));
+            }
+            auto badL = l, badR = r, badKl = kl, badKr = kr;
+            const auto damage = [](auto &bad, auto &clean, std::size_t sample, T value) {
+                bad[sample] = value;
+                clean[sample] = T{};
+            };
+            damage(badL, l, 63, std::numeric_limits<T>::quiet_NaN());
+            damage(badR, r, 257, -std::numeric_limits<T>::infinity());
+            damage(badKl, kl, 1022, std::numeric_limits<T>::infinity());
+            damage(badKr, kr, 1025, std::numeric_limits<T>::quiet_NaN());
+            const auto accepted = render(poisoned, badL, badR, badKl, badKr, settings, 2, 193);
+            const auto reference = render(sanitized, l, r, kl, kr, settings, 2, 193);
+            check(accepted && reference && badL == l && badR == r,
+                  "Focus substitutes silence for a poisoned sample without poisoning the following windows");
+        }
+    }
+}
 void latencyAndSafety() {
     const std::size_t count=32768;
     std::vector<double> left(count,0.),right(count,0.),key(count,0.);
@@ -944,7 +1233,7 @@ void latencyAndSafety() {
     check(error<1.e-12,"missing Difference key cannot demand unlimited cut");
 }
 }
-void* operator new(std::size_t n){if(inAudio)++allocations;if(void*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+void* operator new(std::size_t n){if(countOwnerAllocations)ownerAllocationBytes+=n;if(inAudio)++allocations;if(void*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void operator delete(void*p)noexcept{if(inAudio&&p)++deallocations;std::free(p);}
 void operator delete(void*p,std::size_t)noexcept{::operator delete(p);}
 void* operator new[](std::size_t n){return ::operator new(n);}
@@ -957,4 +1246,54 @@ int main(){
     _CrtSetReportMode(_CRT_ERROR,_CRTDBG_MODE_FILE);_CrtSetReportFile(_CRT_ERROR,_CRTDBG_FILE_STDERR);
     _set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
 #endif
-    try {sourceTaggedFirOracle();phaseRateOracles();firRateOracles();stagedTransformBudget();firSampleBudget();causalFirGenerations();firCallbackPartitions();fftChecks();mailboxConcurrency();defaultsAndReadiness();coreConcurrency();coherentFirPolicy();pinnedFrequencyCalibration();invalidCachedLatency();noStaleReactivation();alternatingBankConcurrency();contextOwnership();heldCompositionOffer<float>();heldCompositionOffer<double>();immutableOfferConsumption();configurationIdentityHelpers();scalarOnlyRequests();pinnedCandidateWithMovingScalars();latencyAndSafety();check(allocations==0,"zero C++ callback allocations");check(deallocations==0,"zero C++ callback deallocations");std::printf("{\"checks\":%d,\"failures\":%d,\"callback_allocations\":%llu,\"callback_deallocations\":%llu,\"compared_samples\":%llu}\n",checks,failures,static_cast<unsigned long long>(allocations),static_cast<unsigned long long>(deallocations),static_cast<unsigned long long>(comparedSamples));return failures?1:0;} catch(const std::exception &error){std::fprintf(stderr,"Focus exception: %s\n",error.what());return 2;} catch(...){std::fprintf(stderr,"Focus unknown exception\n");return 2;}}
+    try {
+        lazyOwnerStorage();
+        nonfiniteInputs<float>();
+        nonfiniteInputs<double>();
+        sourceTaggedFirOracle();
+        phaseRateOracles();
+        firRateOracles();
+        stagedTransformBudget();
+        firSampleBudget();
+        causalFirGenerations();
+        firCallbackPartitions();
+        firCallbackWorkDistribution();
+        for (const auto nodes : {std::size_t{1}, f::kNodes}) {
+            firInternalKeyReuse<float>(192000., nodes, false);
+            firInternalKeyReuse<double>(192000., nodes, false);
+        }
+        firInternalKeyReuse<float>(48000., 1, true);
+        firInternalKeyReuse<double>(48000., 1, true);
+        fftChecks();
+        mailboxConcurrency();
+        defaultsAndReadiness();
+        coreConcurrency();
+        coherentFirPolicy();
+        pinnedFrequencyCalibration();
+        invalidCachedLatency();
+        noStaleReactivation();
+        alternatingBankConcurrency();
+        contextOwnership();
+        heldCompositionOffer<float>();
+        heldCompositionOffer<double>();
+        immutableOfferConsumption();
+        withdrawnLatencyOffer();
+        configurationIdentityHelpers();
+        scalarOnlyRequests();
+        pinnedCandidateWithMovingScalars();
+        latencyAndSafety();
+        check(allocations == 0, "zero C++ callback allocations");
+        check(deallocations == 0, "zero C++ callback deallocations");
+        std::printf("{\"checks\":%d,\"failures\":%d,\"callback_allocations\":%llu,"
+                    "\"callback_deallocations\":%llu,\"compared_samples\":%llu}\n",
+                    checks, failures, static_cast<unsigned long long>(allocations),
+                    static_cast<unsigned long long>(deallocations), static_cast<unsigned long long>(comparedSamples));
+        return failures ? 1 : 0;
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "Focus exception: %s\n", error.what());
+        return 2;
+    } catch (...) {
+        std::fprintf(stderr, "Focus unknown exception\n");
+        return 2;
+    }
+}

@@ -96,9 +96,9 @@ public:
     Result moveTo(std::optional<std::int64_t> seq, std::int64_t nowUtc = 0,
                   StoredRestore = StoredRestore::Refuse);
 
-    /// Move to another branch's head. The project is rewound to the common
-    /// ancestor and replayed forward, so this is a real navigation, not a label
-    /// change. The branch left keeps its head, so nothing becomes unreachable.
+    /// Move to another branch's head by rewinding to the common ancestor and
+    /// replaying forward. The departing branch keeps its head, and an unheld
+    /// redo tip gets its own system branch if the destination leaves it behind.
     Result switchToBranch(std::int64_t branchId, StoredRestore = StoredRestore::Refuse);
 
     // Caps are project metadata. Setting a policy also compacts atomically.

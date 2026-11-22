@@ -2,6 +2,7 @@
 // Generated signals and authored component contracts; no external assets.
 #include "adi/mix/compressor/ControlMapping.hpp"
 #include "adi/mix/compressor/Core.hpp"
+#include "adi/mix/compressor/detail/HoldPeak.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -14,13 +15,23 @@
 
 namespace {
 bool inAudio = false, failAllocation = false;
+bool countPrepareAllocations = false;
+int allocationsUntilFailure = -1;
 std::size_t allocations = 0, deallocations = 0;
+std::size_t prepareAllocations = 0;
 } // namespace
 void *operator new(std::size_t bytes) {
     if (inAudio)
         ++allocations;
+    if (countPrepareAllocations)
+        ++prepareAllocations;
     if (failAllocation)
         throw std::bad_alloc();
+    if (allocationsUntilFailure >= 0) {
+        if (allocationsUntilFailure == 0)
+            throw std::bad_alloc();
+        --allocationsUntilFailure;
+    }
     if (void *p = std::malloc(bytes ? bytes : 1))
         return p;
     throw std::bad_alloc();
@@ -414,6 +425,429 @@ void precisionAndStaticLaws() {
     check(ok && std::abs(dc[1].back() - expected) < 2e-6 && std::abs(dc[0].back() - expected * .1) < 2e-7,
           "linked steady DC follows analytic threshold ratio law");
 }
+void makeupAutomation() {
+    struct Timing { double rate; int downward, midpoint, reversal; };
+    constexpr Timing timings[]{
+        {44100, 6600, 3072, 6608}, {48000, 7184, 3584, 7192}, {96000, 14369, 7168, 14384},
+    };
+    constexpr float level = .01f;
+    const double base = std::pow(10.0, 13.5 / std::exp(1.0) / 20.0);
+    const double target = std::pow(10.0, 18.0 / std::exp(1.0) / 20.0);
+    const auto near = [](double actual, double expected) { return std::abs(actual - expected) < 3e-6; };
+
+    for (const auto &timing : timings) {
+        c::Core core;
+        c::Settings settings;
+        settings.thresholdDb = -18;
+        settings.ratio = 4;
+        settings.attack = 0;
+        settings.autoGain = true;
+        const auto read = [&](int frames) {
+            std::array<float, 127> audio{};
+            while (frames > 0) {
+                const int n = std::min(frames, static_cast<int>(audio.size()));
+                std::fill_n(audio.begin(), n, level);
+                float *main[]{audio.data()};
+                {
+                    AudioCall guard;
+                    const auto block = core.beginBlock(n);
+                    if (core.process(block, 0, n, main, nullptr, 0, settings) != c::Status::Ok)
+                        return std::numeric_limits<double>::quiet_NaN();
+                }
+                if (n == frames) return static_cast<double>(audio[static_cast<std::size_t>(n - 1)]) / level;
+                frames -= n;
+            }
+            return std::numeric_limits<double>::quiet_NaN();
+        };
+        check(core.prepare({timing.rate, 256, 1}, settings) == c::Status::Ok && near(read(1), base),
+              "Clean starts directly at its prepared make-up");
+        settings.thresholdDb = -24;
+        const double first = read(1);
+        const double last = read(timing.downward - 1);
+        check(near(first, base) && near(last, target - (target - base) / timing.downward) && near(read(1), target),
+              "a lowering Threshold ramps its linear make-up across split callbacks");
+
+        settings.thresholdDb = -18;
+        const double reverse = read(1);
+        const double reverseLast = read(timing.downward - 1);
+        check(near(reverse, target) && near(reverseLast, base + (target - base) / timing.downward) && near(read(1), base),
+              "a raising Threshold ramps in the other direction with the same duration");
+
+        settings.thresholdDb = -24;
+        read(timing.midpoint);
+        const double mid = base + (target - base) * timing.midpoint / timing.downward;
+        settings.thresholdDb = -18;
+        const double held = read(1);
+        const double heldLast = read(timing.reversal - 1);
+        check(near(held, mid) && near(heldLast, base + (mid - base) / timing.reversal) && near(read(1), base),
+              "a mid-ramp reversal starts at the interpolated gain and gets its own duration");
+
+        settings.thresholdDb = -24;
+        read(100);
+        core.reset();
+        check(near(read(1), target), "reset finishes the ramp at its authored destination");
+        settings.autoGain = false;
+        check(read(1) == 1.0, "explicit Auto Gain Off switches immediately");
+        settings.autoGain = true;
+        check(near(read(1), target), "explicit Auto Gain On switches immediately");
+        settings.thresholdDb = -18;
+        read(100);
+        check(core.prepare({timing.rate, 256, 1}, settings) == c::Status::Ok && near(read(1), base),
+              "explicit preparation starts fresh at the destination");
+    }
+}
+
+void measuredGainEnvelope() {
+    constexpr double rate = 48000;
+    constexpr double attackSeconds = .25;
+    constexpr double releaseSeconds = .0025;
+    constexpr double targetDb = 15;
+    constexpr float quiet = .001f;
+    c::Settings settings;
+    settings.thresholdDb = -20;
+    settings.ratio = 4;
+    settings.attack = 1;
+    settings.release = 0;
+
+    c::Core core;
+    const auto readGainDb = [&](float level, int frames) {
+        std::array<float, 256> samples{};
+        while (frames > 0) {
+            const int n = std::min(frames, static_cast<int>(samples.size()));
+            std::fill_n(samples.begin(), n, level);
+            float *main[]{samples.data()};
+            {
+                AudioCall guard;
+                const auto context = core.beginBlock(n);
+                if (core.process(context, 0, n, main, nullptr, 0, settings) != c::Status::Ok)
+                    return std::numeric_limits<double>::quiet_NaN();
+            }
+            if (frames == n)
+                return 20 * std::log10(static_cast<double>(samples[static_cast<std::size_t>(n - 1)]) / level);
+            frames -= n;
+        }
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+
+    check(core.prepare({rate, 256, 1}, settings) == c::Status::Ok, "analytic envelope fixture prepares");
+    const double halfway = targetDb * (1 - std::sqrt(.1));
+    check(std::abs(readGainDb(1, 6000) + halfway) < .002 &&
+              std::abs(readGainDb(1, 6000) + 13.5) < .002,
+          "hard knee Clean attack reaches half-time and 90 percent at 250 ms");
+
+    // The slower detector has been driven for exactly one attack period. Its
+    // remaining exponential is a geometric sum during the fast release.
+    const double slowAtRelease = targetDb * (1 - std::pow(.1, attackSeconds / (100 * attackSeconds + 2)));
+    const double fast = std::pow(.1, 1 / (rate * releaseSeconds));
+    const double slow = std::pow(.1, 1 / (rate * (releaseSeconds + .2)));
+    const double slowAfter120 = std::pow(slow, 120);
+    const double remaining = 1.35 + (1 - fast) * slowAtRelease * slow * (.1 - slowAfter120) / (fast - slow);
+    check(std::abs(readGainDb(quiet, 120) + remaining) < .002,
+          "Clean release reaches its analytic reduction after 2.5 ms");
+
+    check(std::abs(readGainDb(quiet, 96000)) < .0001 &&
+              std::abs(readGainDb(1, 6000) + halfway) < .002,
+          "the core settles to unity on quiet input and attacks again on a new signal");
+
+    settings.attack = 0;
+    settings.autoGain = true;
+    check(core.prepare({rate, 256, 1}, settings) == c::Status::Ok, "static make-up fixture prepares");
+    check(std::abs(readGainDb(quiet, 256) - targetDb / std::exp(1.0)) < .002,
+          "Clean Auto Gain applies the independently calculated make-up below threshold");
+}
+
+template <class Sample>
+void nonFiniteInput() {
+    for (const bool external : {false, true}) {
+        auto s = compress();
+        if (external)
+            s.keySource = c::KeySource::External;
+        c::Core subject, zeros;
+        bool prepared = subject.prepare({48000, 256, 2}, s) == c::Status::Ok;
+        prepared &= zeros.prepare({48000, 256, 2}, s) == c::Status::Ok;
+        check(prepared, "bad-sample fixtures prepare");
+        if (!prepared)
+            continue;
+        auto a = signal<Sample>(), b = a;
+        auto key = signal<Sample>(true, 100), cleanKey = key;
+        a[0][255] = std::numeric_limits<Sample>::quiet_NaN();
+        a[1][256] = -std::numeric_limits<Sample>::infinity();
+        b[0][255] = b[1][256] = Sample{};
+        if (external) {
+            key[1][510] = std::numeric_limits<Sample>::quiet_NaN();
+            key[0][511] = std::numeric_limits<Sample>::infinity();
+            cleanKey[1][510] = cleanKey[0][511] = Sample{};
+        }
+        const auto run = [&](c::Core &core, Audio<Sample> &audio, const Audio<Sample> &keySignal) {
+            return external ? render(core, audio, &keySignal, 2, s) : render(core, audio, s);
+        };
+        const bool accepted = run(subject, a, key);
+        const bool referenceAccepted = run(zeros, b, cleanKey);
+        check(accepted && referenceAccepted && equal(a, b), external ?
+              "external compressor key and programme replace each NaN or infinity with zero" :
+              "internal compressor key and programme replace each NaN or infinity with zero");
+        a = b = signal<Sample>(true, count);
+        key = cleanKey = signal<Sample>(true, count + 100);
+        const bool resumed = run(subject, a, key);
+        const bool referenceResumed = run(zeros, b, cleanKey);
+        check(resumed && referenceResumed && equal(a, b),
+              "later compressor blocks keep the same detector and gain history without resetting");
+    }
+}
+
+void holdWindow() {
+    c::detail::HoldPeak peak;
+    peak.prepare(2);
+    check(peak.push(5) == 5 && peak.push(0) == 5 && peak.push(0) == 5 && peak.push(0) == 0,
+          "Hold maximum retains the inclusive endpoint and expires on the following sample");
+    peak.reset();
+    check(peak.push(5) == 5 && peak.push(1) == 5 && peak.push(5) == 5 && peak.push(0) == 5 &&
+              peak.push(0) == 5 && peak.push(0) == 0,
+          "an equal new peak renews its own inclusive endpoint");
+    peak.push(100);
+    peak.reset();
+    check(peak.push(0) == 0, "Hold reset clears every retained maximum");
+    for (const std::uint32_t window : {0U, 1U, 2U, 31U, 257U}) {
+        peak.prepare(window);
+        std::vector<float> input(count);
+        std::uint32_t seed = 12345;
+        for (std::size_t j = 0; j < count; ++j) {
+            seed = seed * 1664525U + 1013904223U;
+            input[j] = j < 500    ? static_cast<float>(500 - j)
+                       : j < 1000 ? static_cast<float>(j - 500)
+                       : j < 1500 ? 12.0f
+                                  : static_cast<float>(seed & 255U);
+        }
+        bool ok = true;
+        for (std::size_t j = 0; j < count; ++j) {
+            const auto start = j > window ? j - window : 0;
+            const float expected = *std::max_element(input.begin() + static_cast<std::ptrdiff_t>(start),
+                                                     input.begin() + static_cast<std::ptrdiff_t>(j + 1));
+            AudioCall guard;
+            ok = (peak.push(input[j]) == expected) && ok;
+        }
+        comparedSamples += count;
+        check(ok, "prepared Hold queue matches an independent inclusive interval maximum through wraps");
+    }
+    check(c::holdMsFromNormalized(0).value() == 0 && c::holdMsFromNormalized(1).value() == 500 &&
+              c::holdMsFromNormalized(.5f).value() == 40 && c::holdMsFromNormalized(.8f).value() == 200,
+          "Hold normalized mapping endpoints and physical landmarks");
+    check(!c::holdMsFromNormalized(-1) && !c::holdMsFromNormalized(1.1f) &&
+              !c::holdMsFromNormalized(std::numeric_limits<float>::quiet_NaN()),
+          "Hold normalized mapping refuses invalid controls");
+}
+
+void fixedHold() {
+    auto s = compress();
+    c::Core bypassed, active;
+    prepareAllocations = 0;
+    countPrepareAllocations = true;
+    const auto bypassedStatus = bypassed.prepare({48000, 256, 2}, s);
+    countPrepareAllocations = false;
+    check(bypassedStatus == c::Status::Ok && prepareAllocations == 1,
+          "zero Hold prepares only Impl without hidden queue or metadata allocation");
+    s.holdMs = 10;
+    prepareAllocations = 0;
+    countPrepareAllocations = true;
+    const auto activeStatus = active.prepare({48000, 256, 2}, s);
+    countPrepareAllocations = false;
+    check(activeStatus == c::Status::Ok && prepareAllocations == 2,
+          "active Hold prepares exactly Impl and bounded queue storage");
+    for (const float invalid :
+         {-1.0f, 501.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        s.holdMs = invalid;
+        check(!c::validSettings(s), "invalid physical Hold refused");
+    }
+    s.holdMs = 10;
+    for (int kind = 0; kind < 5; ++kind) {
+        auto unsupported = s;
+        if (kind == 0)
+            unsupported.keySource = c::KeySource::External;
+        if (kind == 1)
+            unsupported.stereoLink = .5f;
+        if (kind == 2)
+            unsupported.autoRelease = true;
+        if (kind == 3)
+            unsupported.autoGain = true;
+        c::Core core;
+        check(core.prepare({48000, 256, kind == 4 ? 1 : 2}, unsupported) ==
+                      c::Status::UnsupportedConfiguration &&
+                  !core.isPrepared(),
+              "positive Hold refuses unadmitted route and Auto combinations");
+    }
+    for (const float hold : {1.0f, 10.0f, 100.00001525878906f, 500.0f}) {
+        s.holdMs = hold;
+        c::Core a, b;
+        auto x = signal<float>(false), y = x;
+        check(a.prepare({48000, 256, 2}, s) == c::Status::Ok &&
+                  b.prepare({48000, 256, 2}, s) == c::Status::Ok && render(a, x, s, 256) &&
+                  render(b, y, s, 17) && equal(x, y),
+              "fixed Hold retains identical output across physical callback partitions");
+        const auto fresh = x;
+        x = signal<float>(false);
+        a.reset();
+        check(render(a, x, s) && equal(x, fresh), "reset clears Hold maximum and post-envelope histories");
+        x = signal<float>(false);
+        check(a.prepare({48000, 256, 2}, s) == c::Status::Ok && render(a, x, s) && equal(x, fresh),
+              "stopped reprepare reproduces a fresh fixed Hold stream");
+    }
+    s.holdMs = 10;
+    c::Core a, b;
+    check(a.prepare({48000, 256, 2}, s) == c::Status::Ok && b.prepare({48000, 256, 2}, s) == c::Status::Ok,
+          "fixed Hold refusal references prepared");
+    auto x = signal<float>(false), y = x;
+    float *xp[]{x[0].data(), x[1].data()}, *yp[]{y[0].data(), y[1].data()};
+    const auto ca = a.beginBlock(256), cb = b.beginBlock(256);
+    auto changed = s;
+    changed.holdMs = 20;
+    {
+        AudioCall guard;
+        check(a.process(ca, 0, 256, xp, nullptr, 0, changed) == c::Status::UnsupportedConfiguration &&
+                  equal(x, y),
+              "running Hold change refuses the complete segment without audio mutation");
+        check(a.process(ca, 0, 97, xp, nullptr, 0, s) == c::Status::Ok &&
+                  a.process(ca, 97, 159, xp, nullptr, 0, s) == c::Status::Ok &&
+                  b.process(cb, 0, 256, yp, nullptr, 0, s) == c::Status::Ok && equal(x, y),
+              "refused Hold update advances no history or cursor and segmented continuation is exact");
+    }
+    allocationsUntilFailure = 1; // Impl succeeds, the prepared Hold queue then fails.
+    const auto failed = a.prepare({96000, 256, 2}, s);
+    allocationsUntilFailure = -1;
+    check(failed == c::Status::AllocationFailed && a.isPrepared(),
+          "failed prepared Hold queue allocation leaves the running stream admitted");
+    x = signal<float>(false, count);
+    y = x;
+    check(render(a, x, s) && render(b, y, s) && equal(x, y),
+          "failed Hold prepare preserves queue and post-envelope continuation");
+    auto newEpoch = s;
+    newEpoch.holdMs = 37;
+    x = signal<float>(false);
+    y = x;
+    check(a.prepare({96000, 256, 2}, newEpoch) == c::Status::Ok &&
+              b.prepare({96000, 256, 2}, newEpoch) == c::Status::Ok && render(a, x, newEpoch) &&
+              render(b, y, newEpoch) && equal(x, y),
+          "changed rate and Hold clear old maximum post-envelope and coefficient-cache epochs");
+    auto zero = compress(), tiny = zero;
+    zero.keySource = tiny.keySource = c::KeySource::External;
+    zero.stereoLink = tiny.stereoLink = .5f;
+    zero.autoRelease = tiny.autoRelease = true;
+    tiny.holdMs = std::numeric_limits<float>::epsilon() * .5f;
+    c::Core dry, nearZero;
+    x = signal<float>();
+    y = x;
+    const auto key = signal<float>();
+    check(dry.prepare({48000, 256, 2}, zero) == c::Status::Ok &&
+              nearZero.prepare({48000, 256, 2}, tiny) == c::Status::Ok && render(dry, x, &key, 2, zero) &&
+              render(nearZero, y, &key, 2, tiny) && equal(x, y),
+          "constant near-zero Hold uses the exact old path and retains old route admissions");
+    s.holdMs = 500;
+    c::Core maximum;
+    x = signal<float>(false);
+    check(maximum.prepare({384000, 256, 2}, s) == c::Status::Ok && render(maximum, x, s),
+          "maximum rate and Hold prepare bounded storage and render without callback allocation");
+}
+
+template <class Sample>
+void holdInvalidInput() {
+    auto s = compress();
+    s.holdMs = 10;
+    c::Core subject, zeros;
+    bool prepared = subject.prepare({48000, 256, 2}, s) == c::Status::Ok;
+    prepared &= zeros.prepare({48000, 256, 2}, s) == c::Status::Ok;
+    check(prepared, "active Hold bad-sample fixtures prepare");
+    if (!prepared)
+        return;
+    auto a = signal<Sample>(false), b = a;
+    // Inside the Hold window, on a block edge and immediately after it.
+    for (const std::size_t at : {std::size_t{40}, std::size_t{255}, std::size_t{256}, std::size_t{700}}) {
+        a[at & 1U][at] = (at & 2U) != 0 ? std::numeric_limits<Sample>::quiet_NaN()
+                                   : -std::numeric_limits<Sample>::infinity();
+        b[at & 1U][at] = Sample{};
+    }
+    const bool accepted = render(subject, a, s);
+    const bool referenceAccepted = render(zeros, b, s);
+    check(accepted && referenceAccepted && equal(a, b),
+          "active Hold replaces each NaN or infinity with zero in key and programme");
+    a = b = signal<Sample>(false, count);
+    const bool resumed = render(subject, a, s, 37);
+    const bool referenceResumed = render(zeros, b, s, 37);
+    check(resumed && referenceResumed && equal(a, b),
+          "active Hold maximum and post-envelope continue unchanged after invalid samples");
+}
+
+void holdReset() {
+    auto s = compress();
+    s.holdMs = 10;
+    c::Core a, b;
+    check(a.prepare({48000, 256, 2}, s) == c::Status::Ok && b.prepare({48000, 256, 2}, s) == c::Status::Ok,
+          "Hold reset references prepared");
+    auto x = signal<float>(false), y = x;
+    check(render(a, x, s) && render(b, y, s) && equal(x, y), "Hold reset references share primed history");
+    x = signal<float>(false, count);
+    y = x;
+    float *xp[]{x[0].data(), x[1].data()}, *yp[]{y[0].data(), y[1].data()};
+    const auto ca = a.beginBlock(256), cb = b.beginBlock(256);
+    {
+        AudioCall guard;
+        check(a.process(ca, 0, 97, xp, nullptr, 0, s) == c::Status::Ok, "Hold block starts before a reset");
+    }
+    std::array<c::Settings, 5> refused{};
+    refused.fill(s);
+    refused[0].autoGain = true;
+    refused[1].autoRelease = true;
+    refused[2].holdMs = 20;
+    refused[3].keySource = c::KeySource::External;
+    refused[4].stereoLink = .5f;
+    bool allRefused = true;
+    {
+        AudioCall guard;
+        for (const auto &bad : refused)
+            allRefused = a.reset(bad) == c::Status::UnsupportedConfiguration && allRefused;
+        auto invalid = s;
+        invalid.holdMs = std::numeric_limits<float>::quiet_NaN();
+        allRefused = a.reset(invalid) == c::Status::InvalidSettings && allRefused;
+    }
+    check(allRefused, "mid-block reset refuses settings active Hold does not admit");
+    {
+        AudioCall guard;
+        check(a.process(ca, 97, 159, xp, nullptr, 0, s) == c::Status::Ok &&
+                  b.process(cb, 0, 256, yp, nullptr, 0, s) == c::Status::Ok,
+              "refused reset keeps the running block context");
+    }
+    bool continued = true;
+    for (std::size_t base = 256; base < count; base += 256) {
+        float *xs[]{x[0].data() + base, x[1].data() + base}, *ys[]{y[0].data() + base, y[1].data() + base};
+        const auto n = static_cast<std::int32_t>(std::min<std::size_t>(256, count - base));
+        AudioCall guard;
+        const auto cx = a.beginBlock(n), cy = b.beginBlock(n);
+        continued = a.process(cx, 0, n, xs, nullptr, 0, s) == c::Status::Ok && continued;
+        continued = b.process(cy, 0, n, ys, nullptr, 0, s) == c::Status::Ok && continued;
+    }
+    check(continued && equal(x, y), "refused reset leaves Hold history and continuation exact");
+
+    auto edited = s;
+    edited.thresholdDb = -18;
+    edited.ratio = 6;
+    edited.release = .5f;
+    x = signal<float>(false);
+    const auto mid = a.beginBlock(256);
+    float *mp[]{x[0].data(), x[1].data()};
+    c::Status accepted = c::Status::InvalidBlock, stale = c::Status::Ok;
+    {
+        AudioCall guard;
+        const bool started = a.process(mid, 0, 64, mp, nullptr, 0, s) == c::Status::Ok;
+        accepted = started ? a.reset(edited) : c::Status::InvalidBlock;
+        stale = a.process(mid, 64, 192, mp, nullptr, 0, edited);
+    }
+    check(accepted == c::Status::Ok && stale == c::Status::InvalidBlock,
+          "accepted mid-block Hold reset invalidates the running block context");
+    c::Core fresh;
+    x = signal<float>(false);
+    y = x;
+    check(fresh.prepare({48000, 256, 2}, edited) == c::Status::Ok && render(a, x, edited, 113) &&
+              render(fresh, y, edited, 113) && equal(x, y),
+          "accepted Hold reset matches a freshly prepared stream at the new controls");
+}
 } // namespace
 
 int main() {
@@ -423,6 +857,15 @@ int main() {
     splitsAndControls<double>();
     keyAndLink();
     precisionAndStaticLaws();
+    makeupAutomation();
+    measuredGainEnvelope();
+    nonFiniteInput<float>();
+    nonFiniteInput<double>();
+    holdWindow();
+    fixedHold();
+    holdInvalidInput<float>();
+    holdInvalidInput<double>();
+    holdReset();
     check(allocations == 0 && deallocations == 0, "audio callbacks allocate and deallocate nothing");
     std::printf("Mix compressor: %d checks, %d failures; %llu compared samples; audio allocations %zu/%zu\n",
                 checks, failures, static_cast<unsigned long long>(comparedSamples), allocations,
