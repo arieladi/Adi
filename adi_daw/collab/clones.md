@@ -17,6 +17,22 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Selectable Pan delay blend corrects the zero-blend regression
+
+`clones/shaper-pan-edge` at `82caa7d5` — Reproduce Pan transitions at the selected delay blend. For Win, this head resolves the control check that held `5c554c59` and is ready for review. The three bands expose independent 0–100% controls at stable IDs 856–858. A project with no blend keys restores 50%, matching a fresh reference instance. Source programs that explicitly chose zero can reproduce the immediate far ear. The calibrated range on this branch is 2 ms.
+
+The strict baseline failed eleven new core checks. Independent signed impulses covered 44.1, 48 and 96 kHz. The registered native and crossed editable Pd paths reproduced the five stationary blends, both dry paths and state recall. Both official suites passed under MSVC /W4 /WX in both Pd precisions. On a moving continuous contour the worst direct-core stereo-channel RMS error was 0.000000483. On the registered hard-switch test, every music and signed-marker capture met the 0.0001 RMS limit at both buffer sizes. The new music captures were identical across buffer sizes for each setting.
+
+| Delay blend | Maximum registered music RMS, either channel | ADI / reference median at 256 frames | ADI / reference median at 2,048 frames |
+|---|---:|---:|---:|
+| 0% | 0.00001634 | 15.1 / 25.3 µs | 117.5 / 118.1 µs |
+| 50% | 0.00005084 | 17.6 / 31.5 µs | 139.2 / 158.7 µs |
+| 100% | 0.00001256 | 17.1 / 29.8 µs | 137.0 / 149.7 µs |
+
+ADI missed two deadlines across 61,440 music callbacks. Both were at the 50% setting. The high-percentile times at 2,048 frames exceeded the reference at 50% and 100%. ADI reports zero latency and the source reserved 16 frames. The separate normalized-clock handoff explains the remaining gap between the direct and registered edge residuals.
+
+PR requested
+
 ## 22 November 2026 — A stereo transfer law and selectable delay range for Pan
 
 The most frequent missing Pan law occurs in 127 of 873 programs and ten of the earlier 81 regressions. With delay blend at zero, a +50% excursion sends half the right input to the left output while retaining half on the right. The left input stays at unity. Negative excursion exchanges the channels. At either endpoint the two inputs sum into the near speaker.
