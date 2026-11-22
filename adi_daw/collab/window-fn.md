@@ -43,8 +43,80 @@ until then a need is named by its item.
 | Reserve: one N row. A device parameter whose lane goes (its last point deleted, the lane deleted or disabled) should return to its stored value, as a mixer control does. Today the plug-in keeps the last automated value until it is touched or re-resolved | engine (`Session::rebuild`, `bindDeviceAutomation`) | DF-W37: deleting a device lane's last point in Automation Mode leaves the device playing the envelope's last value | nothing; the window deletes the lane as it does a track's |
 | Reserve: one N row. After a discovery job, an ordinary project open should still probe a plug-in's saved path when the catalogue lacks it, as it does before any job. Today `managedDiscovery_` is set by the first `startDiscovery` and never cleared, so `makeVst3` and `makeClap` answer "needs discovery" for every miss for the rest of the run (and `hydrateCatalogue` returns at once). A proposal: suppress the hint only while a job is in flight (`discoveryJob_`) | engine-win (`src/juce/juce_device_loader.cpp`, N58) | DF-W34: a project that names a plug-in installed since the last scan loads it on open, as before the window started discovery at launch | an open while a job runs waits for its adoption (engine-win's handoff); an open with no job running loads catalogue hits only |
 | Reserve: one N row. `Session::refresh` should re-read the project's identity (`recordingProject_`, read once in `Session::load` from `PRAGMA database_list`). After a Save As every take is refused, "recording belongs to a different project", until the project is reopened | engine (`src/adi/engine/session.cpp`) | PD06-SAVEAS-GUARD: recording after a Save As keeps its take | nothing: the take is refused and the Status Bar says why |
+| Reserve: one N row. A dropped audio file should clear what it lands on, as a move, Paste and Duplicate do (DF-W28): `clip_edit::prepareImportAudio` placed through the planner (`PlacementBatch::clear`), or a planner entry that clears a track span in the same prepared edit as the window's `clip.create`/`clip.attachAudio` batch | engine (`src/adi/material_commands.cpp`, `src/adi/edit_plan*`) | DF-W28: a file dropped onto a clip replaces the covered part in one step | the drop lands over the clip, as before |
 
 ---
+
+## 2026-11-22, window-fn — queue item 8, DF-W28 (rest): a Duplicate or Paste onto clips removes what it covers (PR requested, drop half parked)
+
+- **Duplicate and Paste already do this.** Both go through the engine's placement planner
+  (`clip_edit::preparePaste` → `edit_plan::detail::prepareCaptured`), so the covered part goes in the same step. The
+  branch adds the test the queue asked for (`tests/test_ui_shell.cpp`, `clipClipboard`). Duplicate onto the next
+  clip replaces it in one step, "Duplicate Clip". Paste a quarter bar into two clips trims the first and removes the
+  second in one step, "Paste Clip". Undo brings both back. No code change was needed.
+- **Parked: the drops.** A file dropped onto a clip still lands over it. Both drop paths place the clip without the
+  planner:
+  - the window's batch (`adi::ui::dropAudio`, `clip.create` + `clip.attachAudio`);
+  - the engine's material import (`clip_edit::prepareImportAudio`, a `clip.duplicate` op).
+
+  The planner's clear step (`PlacementBatch::clear`) is engine-internal (`edit_plan::detail`), and the window cannot
+  join a planner edit to its own ops in one step (`commitPrepared` takes one appended op). This needs the engine; see
+  the needs table.
+
+PR requested: `window-fn/df-w28-rest` → main, "Test that a Duplicate or Paste onto clips removes what it covers
+(DF-W28)". Depends on nothing beyond main.
+
+## 2026-11-22, window-fn — queue item 7, AU-04 lane and fader: Re-Enable Automation on the lane and the fader (PR requested)
+
+**Window lane, read first:** this item touches `src/juce/ui_mixer.*` (the volume and pan sliders become
+`PrimaryButtonSlider`, a `volumeMenu`) and `src/juce/ui_arrangement.*` (`contextMenu` takes the lane under the click).
+
+- **The lane.** In Automation Mode a right-click on a track's lane ends the lanes' menu with that envelope's
+  Re-Enable Automation (AU-04's `laneOf`, so a disabled lane or a lane in another domain offers nothing). It is
+  checked only while overridden, as on the controls.
+- **The fader.** A right-click on the track volume fader opens a menu with the Volume lane's Re-Enable Automation. A
+  track with no Volume lane shows no menu.
+- **The fader ignores the right button.** With its own menu off, JUCE's `Slider::mouseDown` starts a drag on any
+  button (`juce_Slider.cpp`, `mouseDown`). So a right-click on the fader changed the volume and opened a mixer gesture.
+  `PrimaryButtonSlider` passes only left-button presses, drags, releases and double-clicks. Pan gets the same class.
+- **Test** (`tests/test_ui_shell.cpp`, the mixer drag case): a right-button press, drag 40 px and release through the
+  slider's own handlers leave the value, the gesture and the ops as they were. The menus themselves are asynchronous
+  and are not driven in the suite.
+
+PR requested: `window-fn/reenable-lane` → main, "Re-Enable Automation on the lane and the fader; the fader ignores
+the right button (AU-04)". Depends on nothing beyond main.
+
+## 2026-11-22, window-fn — queue item 6, N61's window half: a MIDI port's record follows it by name (PR requested)
+
+**Window lane, read first:** this item touches `src/adi/ui/midi_ports.hpp` (`reconcileMidiPorts`, a `name` for
+`withMidiPortSwitch`), `src/juce/app_midi_ports.*` (the host takes a writer) and `src/juce/ui_main.cpp` (the writer).
+`ui_settings.*` needed nothing: the page already hides the `midi.port*` rows behind the table.
+
+- Each port's record keeps its name (`midi.port.name`). It is written with a switch and stamped when the host
+  lists the port.
+- A port whose identifier has no record adopts the record of the same direction and name whose port is no longer
+  listed. The record is re-keyed to the new identifier and saved, before the switches are read, so the keyboard
+  opens with its Track and MPE switches from its first listing.
+- Only an unambiguous match moves: one such record and one such port. Two keyboards of one name, or two old records
+  of one name, stay apart. A port of another name gets no record. A record that already agrees is not written again.
+- **Test:** `tests/test_ui_window_state.cpp` covers the pure function's cases (stamp, move per direction, unrelated
+  name, still listed, two ports, two records). `tests/test_ui_shell.cpp` covers a host over fixed ports with a writer:
+  the record moves on the first listing, Track and MPE survive, the unrelated port gets nothing, and a second refresh
+  writes nothing. It also checks that a click on Track keeps the port's name.
+
+PR requested: `window-fn/midi-port-name` → main, "Keep a MIDI port's name with its record and follow it to a new
+identifier (N61)". Depends on nothing beyond main. `window-fn/midi-live` (N60, waiting on win) also changes
+`app_midi_ports.*`. The two touch different functions; the second to land merges by hand if git asks.
+
+**Run for items 6, 7 and 8, built together** (they touch different code; the one shared file,
+`tests/test_ui_shell.cpp`, merges cleanly): JUCE on, Pd off, warnings as errors (GCC 13, Debug). The 27 window and
+mix suites pass, the window-state suite 137 checks, and the shell suite from a scratch directory 2972 checks, 0
+failures. Each branch builds alone from main.
+
+**Correction to items 3 and 5:** main's acceptance target fails to compile in a JUCE-on, Pd-off build
+(`test_session_wts01.cpp:307`, unused `doc` and `driver`), and it stops `ninja` before every target is built. Items 3
+and 5 were built that way, so their shell-suite runs may have used a binary from before their change. Items 6-8 were
+built with `ninja -k 0`. Items 3 and 5 are being run again the same way; the result follows in the next entry.
 
 ## 2026-11-22, window-fn — queue item 5, DFE44-DISCARD: the Status Bar says when a dropped take's files stay (PR requested)
 
