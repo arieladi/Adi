@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — DF-M3 native Modern and Guitar Amp sound evidence
+
+The verified Windows Release native bank at `d870661d4cb32ce5b069ba1b985186ad474908ad` replayed two additional sealed reference cases, both within the established whole-render peak/RMS gates.
+
+- Modern Limiter at 44.1 kHz/256, manual 32× with True Peak, +12 dB input and −1 dBTP ceiling, retained the exact 2,931-sample delay. Across 192,784 frames including the tail, peak error was 4.17233e−7 and RMS error 2.60984e−8.
+- Guitar Amp Clip at 48 kHz/256, live 2× with 50% Soften, was bit-identical for all 376,096 frames including the tail. Both sides report 31 samples of delay.
+
+Reference start and end settings agree and the native saved-state check accepted the matched values. The private report SHA-256 is `51f72c80399482b915a49df4f2f98d20a99c2bdf3b0119471a447034a780df2d`. This entry adds two specific sound cells. CPU, other styles and export conditions retain their separate gates. Evidence only.
+
+
 ### 22 November — MX-13 full-rate Focus Align preview
 
 The original 4,096-sample path still handles the rates it covered, including its allocation-free measurement. Higher rates use an 80 ms stamped capture with 40 ms of common support, two forward FFTs and one inverse of at most 65,536 points per explicit Measure request. It confirms the reported correlation against the raw samples. Nothing runs in the audio callback. The preview proposes no edit.
