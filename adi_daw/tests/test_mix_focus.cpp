@@ -13,6 +13,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -763,6 +764,96 @@ void firCallbackWorkDistribution() {
                            "ten enabled nodes bound every callback to the same counted FIR work");
     }
 }
+template<class Sample>
+void firInternalKeyReuse(double rate, std::size_t enabledNodes, bool changeRoutes) {
+    constexpr std::int32_t block = 512;
+    auto external = firSettings(1.3);
+    for (std::size_t node = 0; node < enabledNodes; ++node) {
+        external.nodes[node] = external.nodes[0];
+        external.nodes[node].frequencyHz += 550. * static_cast<double>(node);
+    }
+    auto selected = external;
+    selected.externalKey = changeRoutes;
+    f::Core subject, reference;
+    subject.prepare({rate, block, 2}, selected);
+    reference.prepare({rate, block, 2}, external);
+    const auto latency = reference.latencySamples();
+    const bool aligned = latency >= 3 * block && latency % (3 * block) == 0 && subject.latencySamples() == latency;
+    check(aligned,
+          "internal key and explicit key share the same prepared FIR delay and block grid");
+    if (!aligned) return;
+    const auto capture = static_cast<std::size_t>(latency / 3);
+    const auto sourceFrames = 5 * capture;
+    const auto totalFrames = sourceFrames + static_cast<std::size_t>(latency);
+    const GeneratedAudio input(sourceFrames);
+    std::array<std::array<Sample, block>, 2> actual{}, expected{}, key{};
+    bool accepted = true, exact = true, reduced = false;
+    std::uint64_t subjectPeakWork = 0, referencePeakWork = 0;
+    for (std::size_t first = 0; first < totalFrames; first += block) {
+        // Capture a different external key first, then two fully internal
+        // captures while older overlap is still audible. A later capture
+        // also changes back to external after the first block has been tagged.
+        selected.externalKey = changeRoutes && (first < capture || first == 3 * capture + block);
+        for (std::size_t ch = 0; ch < actual.size(); ++ch) {
+            for (std::size_t frame = 0; frame < actual[ch].size(); ++frame) {
+                const auto at = first + frame;
+                const auto programme = at < sourceFrames ? static_cast<Sample>(input.main[ch][at]) : Sample{};
+                actual[ch][frame] = expected[ch][frame] = programme;
+                key[ch][frame] = selected.externalKey && at < sourceFrames
+                    ? static_cast<Sample>(input.key[ch][at]) : programme;
+            }
+        }
+        std::array<Sample*, 2> main{actual[0].data(), actual[1].data()};
+        std::array<Sample*, 2> oracle{expected[0].data(), expected[1].data()};
+        const std::array<const Sample*, 2> externalKey{key[0].data(), key[1].data()};
+        const auto physical = static_cast<std::uint64_t>(first / block + 1);
+        const auto subjectBefore = subject.statistics().firWorkUnits;
+        const auto referenceBefore = reference.statistics().firWorkUnits;
+        {
+            AudioScope scope;
+            const auto subjectBlock = subject.beginBlock(physical, latency, selected);
+            const auto referenceBlock = reference.beginBlock(physical, latency, external);
+            const bool tookSubject = subject.process(main.data(), selected.externalKey ? externalKey.data() : nullptr,
+                selected.externalKey ? 2 : 0, block, selected, subjectBlock);
+            const bool tookReference = reference.process(oracle.data(), externalKey.data(), 2, block, external, referenceBlock);
+            accepted = accepted && tookSubject && tookReference;
+        }
+        subjectPeakWork = std::max(subjectPeakWork, subject.statistics().firWorkUnits - subjectBefore);
+        referencePeakWork = std::max(referencePeakWork, reference.statistics().firWorkUnits - referenceBefore);
+        for (std::size_t ch = 0; ch < actual.size(); ++ch) {
+            const bool matches = std::memcmp(actual[ch].data(), expected[ch].data(), sizeof(Sample) * actual[ch].size()) == 0;
+            exact = exact && matches;
+            if (first >= static_cast<std::size_t>(latency)) {
+                const auto dryStart = first - static_cast<std::size_t>(latency);
+                for (std::size_t frame = 0; frame < actual[ch].size(); ++frame) {
+                    const auto dry = static_cast<Sample>(input.main[ch][dryStart + frame]);
+                    reduced = reduced || std::abs(actual[ch][frame] - dry) > Sample{1} / Sample{10000};
+                }
+            }
+            comparedSamples += actual[ch].size();
+        }
+    }
+    const auto ran = subject.statistics(), baseline = reference.statistics();
+    check(accepted && exact && reduced, changeRoutes
+        ? "external and internal captures keep distinct overlap across route changes"
+        : "internal and sample-identical external keys produce bit-identical wet audio through the drain");
+    check(ran.firJobsStarted == totalFrames / capture && ran.firJobsCompleted + 1 == ran.firJobsStarted &&
+          ran.firJobsCompleted == baseline.firJobsCompleted && ran.firJobsStarted == baseline.firJobsStarted &&
+          ran.firDeadlineMisses == 0 && baseline.firDeadlineMisses == 0 && subject.latencySamples() == latency,
+          "both key routes finish the same FIR jobs on time while retaining the same delay");
+    if (!changeRoutes) {
+        const bool lessWork = baseline.firWorkUnits > 0 && ran.firWorkUnits * 10 < baseline.firWorkUnits * 7 &&
+                              referencePeakWork > 0 && subjectPeakWork * 10 < referencePeakWork * 7;
+        if (!lessWork)
+            std::printf("  Focus FIR work at %.0f Hz, %zu nodes, %zu-bit: total %llu/%llu, peak %llu/%llu\n",
+                        rate, enabledNodes, sizeof(Sample) * 8,
+                        static_cast<unsigned long long>(ran.firWorkUnits),
+                        static_cast<unsigned long long>(baseline.firWorkUnits),
+                        static_cast<unsigned long long>(subjectPeakWork),
+                        static_cast<unsigned long long>(referencePeakWork));
+        check(lessWork, "at 192 kHz/512, internal key uses under 70% of the total and peak external FIR work");
+    }
+}
 void firCallbackPartitions() {
     for(const double rate:{44100.,96000.,192000.}) {
         auto settings=firSettings(1.3);settings.nodes[1]=settings.nodes[0];settings.nodes[1].enabled=true;
@@ -1101,6 +1192,12 @@ int main(){
         causalFirGenerations();
         firCallbackPartitions();
         firCallbackWorkDistribution();
+        for (const auto nodes : {std::size_t{1}, f::kNodes}) {
+            firInternalKeyReuse<float>(192000., nodes, false);
+            firInternalKeyReuse<double>(192000., nodes, false);
+        }
+        firInternalKeyReuse<float>(48000., 1, true);
+        firInternalKeyReuse<double>(48000., 1, true);
         fftChecks();
         mailboxConcurrency();
         defaultsAndReadiness();
