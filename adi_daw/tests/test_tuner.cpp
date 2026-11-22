@@ -269,7 +269,48 @@ void preparing() {
     check(!threw && std::equal(l.begin(), l.end(), x.begin()), "a Tuner whose prepare could not allocate still passes the signal");
 }
 
+/// The review of the Auto Shift core e387e86e: a window of silence then a
+/// tone drove the fine-period walk toward the shortest lags, where it ran
+/// some 37,000 passes (0.4 s at 48 kHz) on the audio thread before giving
+/// up. And a rate past any host's hung prepare().
+void bounded() {
+    double worst = 0;
+    for (const double rate : {44100.0, 48000.0, 96000.0}) {
+        PitchDetector d;
+        d.prepare(rate);
+        const std::size_t n = d.window();
+        for (const double hz : {55.0, 110.0, 220.0, 330.0}) {
+            for (std::size_t onset = n / 2; onset < n; onset += n / 16) {
+                std::vector<float> x(n, 0.f);
+                for (std::size_t i = onset; i < n; ++i) {
+                    x[i] = static_cast<float>(0.3 * std::sin(2 * std::numbers::pi * hz * static_cast<double>(i - onset) / rate));
+                }
+                double got = 0, clarity = 0;
+                (void)d.analyse(x.data(), got, clarity);
+                worst = std::max(worst, static_cast<double>(d.lastWork()));
+            }
+        }
+    }
+    const double bound = PitchDetector::kPasses * (2.0 * PitchDetector::kSteps + 3);
+    check(worst <= bound, "silence then a tone: the fine search is bounded (" + std::to_string(static_cast<int>(worst)) + " differences, at most " +
+                              std::to_string(static_cast<int>(bound)) + ")");
+    // The bound does not cost a clean reading its precision.
+    PitchDetector d;
+    const auto x = sine(440.0, 48000.0, d.window(), 0.3);
+    double hz = 0, clarity = 0;
+    check(d.analyse(x.data(), hz, clarity) && std::abs(cents(hz, 440)) < 0.1 && d.lastWork() < 200,
+          "a clean 440 Hz still reads within 0.1 cent (" + std::to_string(cents(hz, 440)) + "), in " + std::to_string(d.lastWork()) + " differences");
+    for (const double rate : {1e20, 1e300}) {
+        PitchDetector big;
+        big.prepare(rate);
+        double h = 0, c = 0;
+        big.push(x.data(), x.size());
+        check(big.window() == 0 && !big.estimate(h, c), "prepare(" + std::to_string(rate).substr(0, 6) + "...) returns, inert");
+    }
+}
+
 int main() {
+    bounded();
     offsets();
     preparing();
     oneWindow();

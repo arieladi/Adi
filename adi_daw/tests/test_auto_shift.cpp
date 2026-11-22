@@ -272,12 +272,15 @@ void reviewed() {
     check(std::abs(d.shift() - 1.4) < 1e-3, "C major, Detune +50: a shift of 1.40 semitones, unclamped (" + std::to_string(d.shift()) + ")");
     const double got = peak(y, want);
     check(std::abs(cents(got, want)) < 1, "and it comes out at 302.27 Hz (" + std::to_string(got) + ")");
-    // With the window following the tone, a large Shift comes out clean too.
+    // A large Shift comes out clean too, and at the input's level (the
+    // review of e387e86e: its 880 Hz was 40 dB down and still the peak).
     S up;
     up.set(S::Shift, 12);
     up.prepare(kRate);
-    const double at880 = peak(render(up, sine(446, 144000, 0.4)), 880);
-    check(std::abs(cents(at880, 880)) < 1, "446 Hz corrected, then Shift +12: 880 Hz (" + std::to_string(at880) + ")");
+    const auto y880 = render(up, sine(446, 144000, 0.4));
+    const double at880 = peak(y880, 880), level880 = 20 * std::log10(magnitude(y880, at880) * 4 / 48000 / 0.4);
+    check(std::abs(cents(at880, 880)) < 1 && std::abs(level880) < 0.5,
+          "446 Hz corrected, then Shift +12: 880 Hz (" + std::to_string(at880) + ") at its level (" + std::to_string(level880) + " dB)");
 }
 
 /// Dry/Wet moved at a tone's peak glides: the largest step while it moves
@@ -319,12 +322,12 @@ void glides() {
 
 /// The review of 53080074: a delay-line shifter driven by a moving pitch
 /// jumped its read taps whenever the pitch moved, and dropped up to 23 dB
-/// when the correction was let go at unison. Rebuilt on a pitch-synchronous
-/// overlap-add, neither can happen.
+/// when the correction was let go at unison. The review of e387e86e: its
+/// overlap-add jumped too once a Shift was set, which the checks at Shift 0
+/// could not see. So: at Shifts 0, +3, -3 and +7, a sine with vibrato, a
+/// phase-continuous step up and one down, and a two-semitone glide come out
+/// without a step past the input's own times the ratio, within half again.
 void moving() {
-    // Correction off, Shift 0: a sine with vibrato, a phase-continuous step
-    // from 220 to 330 Hz, and a two-semitone glide come out without a step
-    // past the input's own, within half again.
     struct Motion {
         const char* what;
         double (*hz)(double t);
@@ -332,9 +335,11 @@ void moving() {
     const Motion motions[] = {
         {"vibrato of +-50 cents at 5.5 Hz", [](double t) { return 220 * std::exp2(0.5 / 12 * std::sin(2 * std::numbers::pi * 5.5 * t)); }},
         {"a step from 220 to 330 Hz", [](double t) { return t < 1.0 ? 220.0 : 330.0; }},
+        {"a step from 330 to 220 Hz", [](double t) { return t < 1.0 ? 330.0 : 220.0; }},
         {"a glide of two semitones over 300 ms", [](double t) { return 220 * std::exp2(std::clamp((t - 1.0) / 0.3, 0.0, 1.0) * 2 / 12); }},
     };
     for (const auto& m : motions) {
+        for (const double semitones : {0.0, 3.0, -3.0, 7.0}) {
         for (double rate : {44100.0, 48000.0, 192000.0}) {
             const auto n = static_cast<std::size_t>(rate * 2);
             std::vector<float> x(n);
@@ -348,6 +353,7 @@ void moving() {
             }
             S s;
             s.set(S::Correction, 0);
+            s.set(S::Shift, semitones);
             s.prepare(rate);
             std::vector<float> l(n), r(n);
             for (std::size_t at = 0; at < n; at += 256) {
@@ -358,8 +364,10 @@ void moving() {
             for (std::size_t i = static_cast<std::size_t>(rate / 2); i < n; ++i) {
                 step = std::max(step, static_cast<double>(std::abs(l[i] - l[i - 1])));
             }
-            check(step <= 1.5 * own, std::string(m.what) + " at " + std::to_string(rate) + ": no jump (largest step " + std::to_string(step) +
-                                         ", the input's " + std::to_string(own) + ")");
+            const double allowed = 1.5 * own * std::exp2(semitones / 12);
+            check(step <= allowed, std::string(m.what) + ", Shift " + std::to_string(static_cast<int>(semitones)) + ", at " + std::to_string(rate) +
+                                       ": no jump (largest step " + std::to_string(step) + ", allowed " + std::to_string(allowed) + ")");
+        }
         }
     }
     // A corrected 446 Hz tone with the correction let go at 48 points: the
@@ -400,10 +408,134 @@ void moving() {
         check(d > 0 && off == 0, "Dry/Wet 0: the input, one reported latency late (" + std::to_string(off) + ")");
     }
     S l;
-    check(l.latency() ==static_cast<int>(std::ceil(4.5 * std::ceil(kRate / S::kLowestShiftedHz))) + 8, "the latency is 4.5 of the longest period shifted, reported");
+    check(l.latency() == 4432 && static_cast<std::size_t>(l.latency()) == S::latencyFor(kRate, 4096),
+          "the latency: half a window and a hop, a chunk, 4.5 half-periods of 60 Hz and 8 (" + std::to_string(l.latency()) + ")");
+}
+
+/// An amplitude from magnitude(): a Hann-weighted second of 48,000 samples.
+static double amplitudeAt(const std::vector<float>& y, double hz) { return magnitude(y, hz) * 4 / 48000; }
+
+/// The review of e387e86e: its overlap-add cancelled a pure tone shifted up
+/// (-6 dB at +7, silence at +12) and returned it unshifted an octave or more
+/// down; its wet signal sat up to half a period off the dry one; and each
+/// reading was applied 25 to 50 ms before the audio it was read from.
+void shifted() {
+    // A 220 Hz sine at every Shift comes out at 220 x the ratio, at its own
+    // level within 0.5 dB, and nothing is left at 220 Hz.
+    for (const double semitones : {-24.0, -19.0, -12.0, -7.0, -5.0, 3.0, 5.0, 7.0, 12.0, 19.0, 24.0}) {
+        S s;
+        s.set(S::Correction, 0);
+        s.set(S::Shift, semitones);
+        s.prepare(kRate);
+        const auto y = render(s, sine(220, 144000, 0.4));
+        const double want = 220 * std::exp2(semitones / 12);
+        const double level = 20 * std::log10(amplitudeAt(y, want) / 0.4), left = amplitudeAt(y, 220);
+        check(std::abs(level) < 0.5 && left < 0.004, "220 Hz at Shift " + std::to_string(static_cast<int>(semitones)) + ": " + std::to_string(want) + " Hz at " +
+                                                         std::to_string(level) + " dB, " + std::to_string(left) + " left at 220 Hz");
+    }
+    // A sawtooth an octave down: every harmonic moves, each at its level.
+    {
+        std::vector<float> saw(144000);
+        for (std::size_t i = 0; i < saw.size(); ++i) {
+            double v = 0;
+            for (int k = 1; k <= 20; ++k) {
+                v += 0.4 / k * std::sin(2 * std::numbers::pi * 220 * k * static_cast<double>(i) / kRate);
+            }
+            saw[i] = static_cast<float>(v);
+        }
+        S s;
+        s.set(S::Correction, 0);
+        s.set(S::Shift, -12);
+        s.prepare(kRate);
+        const auto y = render(s, saw);
+        const double a1 = amplitudeAt(y, 110), a2 = amplitudeAt(y, 220), a3 = amplitudeAt(y, 330);
+        check(std::abs(20 * std::log10(a1 / 0.4)) < 0.5 && std::abs(20 * std::log10(a2 / 0.2)) < 0.5 && std::abs(20 * std::log10(a3 / (0.4 / 3))) < 0.5,
+              "a 220 Hz sawtooth at Shift -12: 0.4 at 110, 0.2 at 220, 0.133 at 330 Hz (" + std::to_string(a1) + ", " + std::to_string(a2) + ", " +
+                  std::to_string(a3) + ")");
+    }
+    // Shift 0, Correction off, Dry/Wet 50 %: wet and dry are the same signal,
+    // at every pitch (the overlap-add's left 100 Hz at -125 dB).
+    double worstMix = 0;
+    for (const double hz : {100.0, 160.0, 250.0, 290.0, 330.0, 440.0}) {
+        S s;
+        s.set(S::Correction, 0);
+        s.set(S::DryWet, 50);
+        s.prepare(kRate);
+        const auto y = render(s, sine(hz, 96000, 0.4));
+        double e = 0;
+        for (std::size_t i = 48000; i < y.size(); ++i) {
+            e += static_cast<double>(y[i]) * y[i];
+        }
+        worstMix = std::max(worstMix, std::abs(20 * std::log10(std::sqrt(e / 48000) / (0.4 / std::sqrt(2.0)))));
+    }
+    check(worstMix < 0.05, "Shift 0, Dry/Wet 50 %: the input's level at 100 to 440 Hz (worst " + std::to_string(worstMix) + " dB off)");
+    {
+        S s;
+        s.set(S::Correction, 0);
+        s.prepare(kRate);
+        const auto x = sine(290, 48000, 0.4);
+        const auto y = render(s, x);
+        const auto d = static_cast<std::size_t>(s.latency());
+        double off = 0;
+        for (std::size_t i = d; i < x.size(); ++i) {
+            off = std::max(off, static_cast<double>(std::abs(y[i] - x[i - d])));
+        }
+        check(off == 0, "Shift 0, Dry/Wet 100 %: the wet signal is the input one reported latency late, exactly (" + std::to_string(off) + ")");
+    }
+    // A step from 446 to 330 Hz at 1 s, corrected (A4, then E4 less 2
+    // cents): the 446 Hz part comes out at 440 Hz over the 800 samples ending
+    // 700 before the step arrives at the output, the 330 Hz part at 329.63
+    // over 800 from 2,600 after. A reading applied as soon as it is read puts
+    // E4's correction on the 446 Hz audio's last 30 ms (445 Hz, measured).
+    {
+        std::vector<float> x(144000);
+        double phase = 0;
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            x[i] = static_cast<float>(0.4 * std::sin(phase));
+            phase += 2 * std::numbers::pi * (i < 48000 ? 446.0 : 330.0) / kRate;
+        }
+        S s;
+        s.prepare(kRate);
+        const auto y = render(s, x);
+        const std::size_t arrives = 48000 + static_cast<std::size_t>(s.latency());
+        const auto local = [&](std::size_t from, double guess) {
+            const auto mag = [&](double f) {
+                std::complex<double> sum = 0;
+                for (std::size_t i = 0; i < 800; ++i) {
+                    const double w = 0.5 - 0.5 * std::cos(2 * std::numbers::pi * static_cast<double>(i) / 800.0);
+                    sum += w * static_cast<double>(y[from + i]) * std::polar(1.0, -2 * std::numbers::pi * f * static_cast<double>(i) / kRate);
+                }
+                return std::abs(sum);
+            };
+            double a = guess - 20, b = guess + 20;
+            const double g = (std::sqrt(5.0) - 1) / 2;
+            while (b - a > 0.01) {
+                const double c = b - g * (b - a), d = a + g * (b - a);
+                if (mag(c) > mag(d)) {
+                    b = d;
+                } else {
+                    a = c;
+                }
+            }
+            return 0.5 * (a + b);
+        };
+        const double before = local(arrives - 1500, 440), after = local(arrives + 2600, 329.63);
+        check(std::abs(before - 440) < 1 && std::abs(after - 329.63) < 1,
+              "446 then 330 Hz, corrected: 440 Hz until the step arrives, 329.63 after (" + std::to_string(before) + ", " + std::to_string(after) + ")");
+    }
+    // A rate past any host's: prepare() returns, and the device is inert.
+    for (const double rate : {1e20, 1e300}) {
+        S s;
+        s.prepare(rate);
+        const auto x = sine(300, 512, 0.4);
+        std::vector<float> l(512), r(512);
+        s.process(x.data(), x.data(), l.data(), r.data(), x.size());
+        check(s.latency() == 0 && l == x, "prepare(" + std::to_string(rate).substr(0, 4) + "...) returns; inert, its input out");
+    }
 }
 
 int main() {
+    shifted();
     moving();
     glides();
     reviewed();
