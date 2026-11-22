@@ -45,6 +45,30 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — MX-04: Options > Delay Compensation (PR requested)
+
+M1's MX-04, its open half (the PLAN M1 rows, after win's three items). The registry row
+`audio.delayCompensation` was on main and nothing read it.
+
+- The Options menu gains **Delay Compensation**, ticked from the application setting (on by default), in
+  its own group before Solo in Place. Its place among Live's other Options entries is to be read on Live 12
+  (PROVISIONAL). Choosing it writes the setting, with no undo step, and the open project's session follows
+  through `Session::setDelayCompensation`. So does every project open, and a change to the Settings' Audio
+  row; an open Settings window's row follows the menu.
+- While it is off, the mixer's Track Delay box is unavailable, keeps its stored value and says why where
+  the pointer is, and its "ms" box dims (manual 18.7).
+- A session that refuses keeps its reason in the Status Bar. The setting is in force once set, as every
+  Settings change is, and a file that could not be written is said.
+
+**Run.** The window's 27 suites (100%); `adi_ui_shell_tests` 2919 checks, 0 failures: the tick, the command
+writing the setting and telling the session with no undo step, Track Delay unavailable and still 10.00 ms,
+a refusal kept, the menu's order and the command ids' tail. Review: two dimensions with a skeptic on each
+finding. Five were confirmed and fixed (the refusal cleared, the stale Settings row, a save failure leaving
+the session behind, the tooltip, the "ms" box); two were refuted.
+
+**PR requested** — `window-fn/delay-compensation` at `ea67a671`, on main (merged today): "adi_daw: MX-04: Options >
+Delay Compensation, Live's switch, on the session". It depends on nothing.
+
 ## 2026-11-22, window-fn — N67 and N65's window halves: Auto monitoring, the inputs heard (PR requested)
 
 Win's third item.
