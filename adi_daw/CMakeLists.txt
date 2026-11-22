@@ -295,6 +295,7 @@ add_library(adi_core STATIC
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
+    src/adi/audio/quantizer.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
     src/adi/render/ni_stems.cpp

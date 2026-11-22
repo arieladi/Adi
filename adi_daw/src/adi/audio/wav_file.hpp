@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/audio/quantizer.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 
 namespace adi::audio {
 enum class WavFormat { Pcm16, Pcm24, Float32 };
-enum class WavDither { None, Triangular, Rectangular };
 struct WavMetadata {
     std::string description;
     std::string originator;
@@ -36,16 +37,16 @@ public:
     void write(const float* interleaved, std::uint32_t frames);
     void write(const double* interleaved, std::uint32_t frames);
     void close();
+    [[nodiscard]] double quantizationGain() const noexcept {
+        return quantizer_ ? quantizer_->gain() : 1.0;
+    }
 private:
     std::fstream file_;
     WavFormat format_;
     std::uint16_t channels_, bytes_;
     std::uint64_t threshold_, dataOffset_ = 0, factOffset_ = 0, dataBytes_ = 0;
     bool promoted_ = false;
-    WavDither dither_;
-    std::uint64_t randomState_;
-    double uniform() noexcept;
-    double noise() noexcept;
+    std::optional<PcmQuantizer> quantizer_;
     template<class Sample> void writeSamples(const Sample*, std::uint32_t);
     void header();
 };

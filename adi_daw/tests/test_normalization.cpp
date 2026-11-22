@@ -58,6 +58,20 @@ void peakAndWidePrecision() {
     dithered.finish(directory.path()/"dither.wav",audio::WavFormat::Pcm16,audio::WavDither::Triangular,99);
     {audio::WavWriter reference(directory.path()/"reference.wav",48000,1,audio::WavFormat::Pcm16,nullptr,std::uint64_t{1}<<32,audio::WavDither::Triangular,99);reference.write(input.data(),512);reference.close();}
     check(bytes(directory.path()/"dither.wav")==bytes(directory.path()/"reference.wav"),"normalization applies destination dither exactly once with the original deterministic stream");
+    NormalizationCapture shaped(directory.path()/"shaped.f64",48000,1,options);
+    shaped.append(input,512);
+    const auto reportShaped=shaped.finish(directory.path()/"shaped.wav",audio::WavFormat::Pcm16,
+                                         audio::WavDither::Shaped3,99);
+    double expectedGain=0;
+    {
+        audio::WavWriter writer(directory.path()/"shaped_reference.wav",48000,1,audio::WavFormat::Pcm16,nullptr,
+                                std::uint64_t{1}<<32,audio::WavDither::Shaped3,99);
+        expectedGain=20*std::log10(writer.quantizationGain());
+        writer.write(input.data(),512);
+    }
+    check(reportShaped.encodingPasses==1 && reportShaped.appliedGainDb==expectedGain && expectedGain<0 &&
+          bytes(directory.path()/"shaped.wav")==bytes(directory.path()/"shaped_reference.wav"),
+          "Peak normalization writes shaped dither once and reports the applied quantization headroom");
     NormalizationCapture silence(directory.path()/"silence.f64",48000,1,options);const std::array<double,2> zero={0,0};silence.append(zero,2);const auto silent=silence.finish(directory.path()/"silence.wav",audio::WavFormat::Float32,audio::WavDither::None,0);
     check(!silent.sourceSamplePeakDb && silent.appliedGainDb==0 && read(directory.path()/"silence.wav")==std::vector<float>({0,0}),"silent Peak export remains silent without dividing by zero");
 }
