@@ -1571,6 +1571,67 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     checkScopeDisplays();
     focus.scope.setToggleState(false, juce::dontSendNotification);
     root.frame();
+    const auto checkAlignMeasure = [&] {
+        juce::TextButton *measure = nullptr;
+        juce::Label *readout = nullptr;
+        for (auto *child : focus.getChildren()) {
+            if (child->getTitle() == "Measure Focus alignment") measure = dynamic_cast<juce::TextButton *>(child);
+            if (child->getTitle() == "Focus alignment preview") readout = dynamic_cast<juce::Label *>(child);
+        }
+        check(measure && measure->isShowing() && readout, "Together exposes the Focus Align preview");
+        if (!measure || !readout) return;
+        focus.select(second);
+        constexpr int lag = 137;
+        std::array<float, 1024> main{}, recipient{};
+        const auto sampleAt = [](std::int64_t stamp) {
+            auto bits = static_cast<std::uint32_t>(stamp);
+            bits = (bits ^ (bits >> 16u)) * 0x7feb352du;
+            bits = (bits ^ (bits >> 15u)) * 0x846ca68bu;
+            return static_cast<float>((bits ^ (bits >> 16u)) & 0xffffu) / 65536.f - .5f;
+        };
+        for (int block = 0; block < 6; ++block) {
+            const auto stamp = driver.position();
+            for (std::size_t i = 0; i < main.size(); ++i) {
+                const auto at = stamp + static_cast<std::int64_t>(i);
+                main[i] = sampleAt(at);
+                recipient[i] = sampleAt(at - lag);
+            }
+            const auto frames = static_cast<std::int32_t>(main.size());
+            driver.advance(frames);
+            doc->mailbox().publish(driver);
+            tap->write(main.data(), main.data(), frames, stamp, true, driver.revision());
+            secondTap->write(recipient.data(), recipient.data(), frames, stamp, true, driver.revision());
+            broker->pump();
+            root.frame();
+        }
+        const auto before = broker->stats();
+        const auto beforeMeasure = root.current();
+        const auto undoBefore = root.undoTitle(false);
+        check(measure->isEnabled(), "coincident current audio can Measure without a mailbox Locate");
+        measure->onClick();
+        check(readout->getText().contains("Measuring"), "preview waits for a worker result");
+        broker->pump();
+        root.frame();
+        check(readout->isShowing() && readout->getText().contains("137 samples") &&
+                  readout->getText().contains("2.854 ms") && readout->getText().contains("+1.00"),
+              "preview reports the recipient delay and measured candidate correlation");
+        const auto measured = broker->stats();
+        check(beforeMeasure == root.current() && undoBefore == root.undoTitle(false) &&
+                  measured.consumers == before.consumers && measured.taps == before.taps &&
+                  measured.transforms == before.transforms,
+              "Measure adds no source, FFT, authored timing or undo entry");
+        broker->pump();
+        root.frame();
+        check(broker->stats().workerPasses == measured.workerPasses,
+              "holding an Align preview requests no further worker work");
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, driver.position()), "queue an Align Locate");
+        root.frame();
+        check(!readout->isShowing() && !measure->isEnabled(), "a pending same-position Locate clears the preview");
+        doc->mailbox().drain(driver);
+        root.frame();
+        check(!measure->isEnabled(), "an applied Locate still waits for new Align audio");
+    };
+    checkAlignMeasure();
     std::array<float, 1024> reference{}, target{};
     const auto matchedSignal = [&](float targetGain) {
         for (std::size_t i = 0; i < reference.size(); ++i) {
