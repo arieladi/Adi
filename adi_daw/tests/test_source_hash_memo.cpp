@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/media/source_hash_memo.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/decode.hpp"
+#include "adi/audio/wav_file.hpp"
+#include "adi/render/flac_writer.hpp"
 #include "temp_directory.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -80,10 +85,68 @@ void warmAndChanged() {
     }
     check(adi::audio::callbackFileIo.load() == callbackBefore + 1, "callback refusal records the audit point");
 }
+void compressedRewrite() {
+    if (!adi::render::flacExportAvailable()) {
+        std::puts("SKIP native FLAC encoder unavailable");
+        return;
+    }
+    adi::test::TempDirectory temp{"source-hash-memo", "compressed-rewrite"};
+    const auto wave = temp.path() / "encoder-input.wav";
+    const auto source = temp.path() / "source.flac";
+    const auto alternative = temp.path() / "replacement.flac";
+    const auto encode = [&](const fs::path& target, float amplitude) {
+        std::array<float, 4096> samples;
+        samples.fill(amplitude);
+        adi::audio::WavWriter writer(wave, 48000, 1, adi::audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        writer.close();
+        adi::render::encodeStagedFlac(wave, target);
+    };
+    encode(source, 3.0f / 32.0f);
+    encode(alternative, 5.0f / 32.0f);
+    check(fs::file_size(source) == fs::file_size(alternative), "real FLAC edits have equal encoded size");
+
+    SourceHashMemo memo;
+    const auto saved = memo.verify(source);
+    adi::audio::DecodeCache cache(temp.path() / "cache", {1u << 20, 0});
+    const auto originalPcm = cache.playable(source);
+    cache.release(originalPcm);
+    const auto modified = fs::last_write_time(source) + std::chrono::seconds(4);
+    std::error_code error;
+    const auto id = readFileIdentity(source, error);
+    std::ifstream encoded(alternative, std::ios::binary);
+    const std::string bytes(std::istreambuf_iterator<char>{encoded}, {});
+    write(source, bytes);
+    fs::last_write_time(source, modified);
+    check(id && readFileIdentity(source, error) == id, "compressed bytes were rewritten in the original file");
+
+    const auto edited = memo.verify(source);
+    check(saved.digest && edited.digest && !edited.reused && edited.digest.hex != saved.digest.hex,
+          "same-size FLAC re-encode refreshes the digest and differs from the project's saved source hash");
+    cache.setLimits({0, 0});
+    cache.trim();
+    check(!fs::exists(originalPcm) && cache.stats().evictions == 1,
+          "the production decode cache evicts the old hash's WAV");
+    for (int reopen = 0; reopen < 2; ++reopen) {
+        const auto actual = memo.verify(source);
+        check(actual.digest && actual.reused && actual.digest.hex == edited.digest.hex &&
+              actual.digest.hex != saved.digest.hex, "reopened compressed media still differs after PCM eviction");
+    }
+
+    cache.setLimits({1u << 20, 0});
+    const auto changedPcm = cache.playable(source);
+    adi::audio::WavReader changed(changedPcm);
+    std::array<float, 2> heard{};
+    check(changedPcm != originalPcm && changed.frames() == 4096 && changed.channels() == 1 &&
+          changed.sampleRate() == 48000 && changed.read(heard.data(), 2) == 2 && heard[0] == 5.0f / 32.0f,
+          "the edited audio opens at the same duration and uses new PCM");
+    cache.release(changedPcm);
+}
+
 }
 
 int main() {
-    try { warmAndChanged(); }
+    try { warmAndChanged(); compressedRewrite(); }
     catch (const std::exception& error) { check(false, error.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
