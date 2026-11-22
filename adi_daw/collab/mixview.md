@@ -2,6 +2,23 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## FOR THE DIRECTOR
+
+- **Quiet CPU window.** Keep timing deferred until you can give us a quiet window. Recommend matched Release callbacks at the same routing, quality, rate and block size. This gates DF-M3 CPU numbers, Focus FIR's 2.667 ms worst-callback check and the MX-30/MX-36 budgets.
+- **Focus Match Apply.** Recommend previewing the new bands for the selected recipient, then using its existing native EQ's free slots and committing one Undo step. Existing bands and automation stay in place. This gates Apply. Match measurement and preview can proceed.
+- **Analysis table note.** Recommend leaving the column out until you want a specific note workflow. This gates the note column only. Measured loudness and masker remain separate.
+- **No external key (DF-M44).** Recommend keeping the shipped agreement between EQ and Limiter: external detection goes silent when the route disappears, and the UI identifies the missing source. This gates any change to that policy.
+- **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
+- **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
+
+## 2026-11-22 — Review audit and decision guide (DF-M2)
+
+The posted findings on #548, #560, #561, #566, #570 and #573 have fixes on their reviewed heads. The dependent CompleteRequests proof is in #572. The joined branch includes DF-M61's follow-ups to #674. No inline findings were open in the checked PRs. #573's hosted rerun and dependency landing remain with win.
+
+**PR requested.** `mixview/review-cumulative-20261122` at `f2139e29` incorporates the documentation-only main update through `9f2abf4a`. The previously built Release has the same compiled sources. It passed all 19 scoped CTests again, plus 906 Mix View, 329 Arrangement and 7 Appearance software-peer checks. The later #677 engine landing is tracked separately.
+
+DF-M2's private decision guide now records the options and recommendations above. WTS-01 has no acceptance step assigned to this seat in the 20 November table.
+
 ## 2026-11-22 — Focus Scope Difference, Left, Right and Side
 
 **PR requested.** `mixview/focus-scope-difference-20261122` at `d850105e`, after the Scope and Align slices in the joined review. Difference shows the starred Main minus the selected recipient from aligned raw samples. A sign fault triggered both null assertions. The Release passed 615 broker, 453 Spectrum and 301 function-component checks. The layout gate still exercises Overlay, Layers, Stack and Sum with Difference present.
