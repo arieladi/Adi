@@ -13,6 +13,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Step through the sync divisions and read the curve grid
+
+**PR requested** · `clones/shaper-clock-grid` · **Step ADI-Shaper's synced curve by one division** · `80e2ad08`
+
+The arrows beside the current division use the existing 23-entry menu order. Clicking the value opens the chooser. Each accepted step is one device edit. At either end an outward click adds no history. If automation has placed the period between entries, the arrow chooses the nearest listed period in its direction. The endpoint and between-entry rules are ADI choices. Free rate retains its continuous Hz drag.
+
+The quarter-note and one-bar source captures both show sixteen vertical amplitude intervals with stronger quarter and center guides. The one-bar ruler ends at 4/4. The headless widget test checks all 23 steps, menu selection, terminal clicks, a between-entry value, continuous rate and all fifteen interior guides. The paired full-HD captures show the same four-point quarter-note Volume curve on four bars of stereo kick and bass at 48 kHz and 120 BPM.
+
+This review stacks on the rack opener. The Release widget and its current DSP passed the MSVC headless suite with warnings as errors. The ADI capture feeds the widget directly from that DSP. The registered rack's separate capture documents its current waveform-provider status.
+
 ## 22 November 2026 — Open ADI-Shaper from the device rack
 
 **PR requested** · `clones/shaper-rack-editor` · **Open ADI-Shaper from its rack wrench** · `4b0c6036`
