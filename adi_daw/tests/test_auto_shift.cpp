@@ -249,7 +249,28 @@ void reviewed() {
         const double dip = 20 * std::log10(lowest / (0.4 / std::sqrt(2.0)));
         check(dip > -1, std::to_string(t.hz) + " Hz corrected: its level holds through the crossfades (lowest " + std::to_string(dip) + " dB)");
     }
-    check(std::abs(S::windowFor(460) - 2 * 12 * 1000 / 460.0) < 1e-9 && S::windowFor(30) > 60, "the window spans whole periods");
+    double n460 = 0, n30 = 0;
+    check(std::abs(S::windowFor(460, n460) - 2 * 12 * 1000 / 460.0) < 1e-9 && S::windowFor(30, n30) > 60, "the window spans whole periods");
+    // Near half way between two counts the count holds: 220 Hz is 5.5
+    // periods in 25 ms, and a reading on either side keeps the first count.
+    double n = 0;
+    (void)S::windowFor(220.01, n);
+    const double first = n;
+    (void)S::windowFor(219.99, n);
+    (void)S::windowFor(220.02, n);
+    check(n == first, "near half way the count of periods holds");
+    // So a held tone there comes out without jumps: its largest step is a
+    // sine's own at the shifted pitch, within half again.
+    S held;
+    held.set(S::Shift, 7);
+    held.prepare(kRate);
+    const auto steady = render(held, sine(220, 96000, 0.3));
+    double step = 0;
+    for (std::size_t i = 48000; i < steady.size(); ++i) {
+        step = std::max(step, static_cast<double>(std::abs(steady[i] - steady[i - 1])));
+    }
+    const double own = 0.3 * 2 * std::numbers::pi * 220 * std::exp2(7 / 12.0) / kRate;
+    check(step < 1.5 * own, "a held 220 Hz tone shifted +7 has no jumps (largest step " + std::to_string(step) + ", a sine's " + std::to_string(own) + ")");
     // Detune with a whole-tone correction is not clamped: C major, Detune
     // +50, MIDI 61.1 (278.79 Hz) goes to D (+90 cents) and 50 cents on, 1.40
     // semitones in all, 302.27 Hz.
@@ -270,7 +291,45 @@ void reviewed() {
     check(std::abs(cents(at880, 880)) < 1, "446 Hz corrected, then Shift +12: 880 Hz (" + std::to_string(at880) + ")");
 }
 
+/// Dry/Wet moved at a tone's peak glides: the largest step while it moves
+/// stays within the signal's own, before or after.
+void glides() {
+    const auto x = sine(220, 96000, 0.3);
+    // The move lands where the dry and the shifted signals differ most (from
+    // a fully wet run), so a step would show.
+    S wetOnly;
+    wetOnly.set(S::Shift, 7);
+    wetOnly.prepare(kRate);
+    const auto w = render(wetOnly, x);
+    std::size_t at = 48000;
+    for (std::size_t i = 48000; i < 48500; ++i) {
+        if (std::abs(w[i] - x[i]) > std::abs(w[at] - x[at])) {
+            at = i;
+        }
+    }
+    S s;
+    s.set(S::Shift, 7);
+    s.set(S::DryWet, 0);
+    s.prepare(kRate);
+    std::vector<float> l(x.size()), r(x.size());
+    s.process(x.data(), x.data(), l.data(), r.data(), at);
+    s.set(S::DryWet, 100);
+    s.process(x.data() + at, x.data() + at, l.data() + at, r.data() + at, x.size() - at);
+    double moving = 0, settled = 0;
+    for (std::size_t i = at; i < at + 4800; ++i) {
+        moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+    }
+    for (std::size_t i = 24000; i < 48000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+    }
+    for (std::size_t i = 72000; i < 96000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+    }
+    check(moving <= 1.5 * settled, "Dry/Wet glides: no step past the signal's own (" + std::to_string(moving) + " against " + std::to_string(settled) + ")");
+}
+
 int main() {
+    glides();
     reviewed();
     scales();
     correction();

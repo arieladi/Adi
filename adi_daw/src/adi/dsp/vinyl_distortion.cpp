@@ -49,6 +49,9 @@ void VinylDistortion::prepare(double sampleRate) noexcept {
     seed_ = 0x2545F491u;
     dcPole_ = std::exp(-2 * std::numbers::pi * 5 / rate_);   // a 5 Hz DC blocker
     crackleDecay_ = std::exp(-1 / (kCrackleMs / 1000 * rate_));
+    for (auto* g : {&tracing_amount_, &pinchDrive_, &pinchMix_, &crackleLevel_}) {
+        g->prepare(rate_);
+    }
     update();
 }
 
@@ -67,7 +70,12 @@ void VinylDistortion::update() noexcept {
     tracing_.design(rate_, p_[TracingFreq], p_[TracingWidth]);
     pinch_.design(rate_, p_[PinchFreq], p_[PinchWidth]);
     crackleChance_ = p_[CrackleDensity] / rate_;
-    crackleLevel_ = p_[CrackleVolume] <= -70 ? 0 : std::pow(10.0, p_[CrackleVolume] / 20);
+    crackleLevel_.set(p_[CrackleVolume] <= -70 ? 0 : std::pow(10.0, p_[CrackleVolume] / 20));
+    // The tracing's amount is 2 Drive while on; the pinch keeps its drive
+    // and fades in and out by its own mix, so switching it does not click.
+    tracing_amount_.set(p_[TracingOn] >= 0.5 ? 2 * p_[TracingDrive] : 0.0);
+    pinchDrive_.set(p_[PinchDrive]);
+    pinchMix_.set(p_[PinchOn] >= 0.5 && p_[PinchDrive] > 0 ? 1.0 : 0.0);
 }
 
 double VinylDistortion::random() noexcept {
@@ -78,7 +86,6 @@ double VinylDistortion::random() noexcept {
 }
 
 void VinylDistortion::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
-    const bool tracingOn = p_[TracingOn] >= 0.5 && p_[TracingDrive] > 0, pinchOn = p_[PinchOn] >= 0.5 && p_[PinchDrive] > 0;
     const bool soft = p_[Soft] >= 0.5, stereo = p_[Stereo] >= 0.5;
     const float* in[2] = {inL, inR};
     float* out[2] = {outL, outR};
@@ -102,7 +109,8 @@ void VinylDistortion::process(const float* inL, const float* inR, float* outL, f
         // channels hold. Every band runs whether or not its distortion is on,
         // so switching one on starts from the signal's own state.
         const double midBand = pinch_.run(2, 0.5 * (x[0] + x[1]));
-        const double qMid = pinchOn && stereo ? VinylDistortion::pinch(midBand, p_[PinchDrive], soft) : 0.0;
+        const double tracing = tracing_amount_.next(), drive = pinchDrive_.next(), mix = pinchMix_.next(), crackleLevel = crackleLevel_.next();
+        const double qMid = mix > 0 && stereo ? mix * VinylDistortion::pinch(midBand, drive, soft) : 0.0;
         for (std::size_t c = 0; c < 2; ++c) {
             double y = x[c];
             // The even product: b^2 with its DC blocked, then scaled by
@@ -113,14 +121,14 @@ void VinylDistortion::process(const float* inL, const float* inR, float* outL, f
             const double blocked = e - dcIn_[c] + dcPole_ * dcOut_[c];
             dcIn_[c] = e;
             dcOut_[c] = settle(blocked);
-            if (tracingOn) {
-                y += 2 * p_[TracingDrive] * blocked;
+            if (tracing != 0) {
+                y += tracing * blocked;
             }
             const double band = pinch_.run(c, x[c]);
-            if (pinchOn) {
-                y += stereo ? (c == 0 ? qMid : -qMid) : VinylDistortion::pinch(band, p_[PinchDrive], soft);
+            if (mix > 0) {
+                y += stereo ? (c == 0 ? qMid : -qMid) : mix * VinylDistortion::pinch(band, drive, soft);
             }
-            y += crackleLevel_ * crackle_;
+            y += crackleLevel * crackle_;
             if (out[c]) {
                 out[c][i] = static_cast<float>(std::clamp(y, -kLargest, kLargest));
             }
