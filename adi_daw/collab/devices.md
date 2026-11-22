@@ -211,7 +211,9 @@ method); Live's files and renders stay in the director's research.
     shown (its modes, Shift, Unison, the modulation). A burst of noise at its defaults: the partials it
     rings at and how long. A tone between two partials: is it heard?
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
-    value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
+    value of its first sample. Two boxes at the same x fed from one outlet: which fires first. A lone
+    number into `[line~]` (a jump): does its right outlet bang, and when? A list cut short by a new
+    one: does the cut list bang? (The translator assumes no to both; DEV-16 step 7.)
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
@@ -224,6 +226,30 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-16, step 7: `[line~]`'s ramp time, end bang and initial value (P2)
+
+**PR requested:** head `devices/amxd-line-ends` (106c0232), base `main`, after
+`devices/amxd-cycle-phase`. Body: the commit message.
+- **Each from Max's reference for `line~`:**
+  - The right inlet's time carries the next lone number, then reverts to 0.
+  - The right outlet bangs when the whole list has played. This is a `[delay]` of the list's total
+    time that every new input reschedules.
+  - An argument is the initial value, set before the parent's loadbang.
+- **Where the reference is silent**, an assumption, added to reading 14:
+  - A lone jump does not bang. A jump that retriggered itself would also hold Pd's scheduler at one
+    instant.
+  - A sequence cut short does not bang.
+- **Tests:** `adi_pd_amxd_tests` 83 (6 new), played in libpd.
+  - 100 into the right inlet, then 1: a ramp over 100 ms. A later lone 0 jumps.
+  - "0 0 1 100" bangs at 100 ms, not after its first segment.
+  - Cut short at 50 ms by "0 100", it bangs once, at 150 ms.
+  - A lone jump does not bang.
+  - `[line~ 0.5]` starts at 0.5, and a ramp sent from a loadbang starts there.
+  - Three plants each fail: the time kept after use, a jump that bangs, a bang after the first
+    segment.
+- **The translator's refusal list** now holds float modulo, signal-rate biquad~ coefficients and
+  slide~ times, live.text's button mode, bpatchers of outside files, and MIDI devices and instruments.
 
 ## 2026-11-22 — DEV-16, step 6: `[cycle~]`'s phase inlet, an offset as in Max (P2)
 
