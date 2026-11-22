@@ -255,6 +255,11 @@ Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU bu
 - Strict Linux GCC 14 and Clang 19 built the real VST3 bundles. The native scanner discovered each bundle's three classes under separate `ADI_HOME` roots. A direct SDK host delivered six notifications per build and verified Unicode including a surrogate pair, ARGB alpha, absent color and per-instance ordering. Scan itself produced no context receipt. Checked the Nov 20 patterns.
 - Win's Live measurement is ready once the fixture lands or its branch is used. Set `ADI_VST3_CHANNEL_CONTEXT_LOG` to a fresh absolute path, fully restart Live 12.4 from that environment, load ADI Test Plain, then rename and recolor its track. Record the Live build and receipt after load, rename and recolor. MX-32 production behavior stays parked on that Live result or director approval.
 
+### 22 November — SRF-08 MCU LCD feedback
+
+- PR requested for `engine/srf08-mcu-lcd-feedback` at `961a0cb47997ba0fee238d9faa20266990957d77`, stacked on MCU and HUI wire. Format two addressed LCD rows as seven-bit data and send at most one contiguous SysEx patch per dirty row. Successful sends advance only their own baseline. Failed writes retry and reconnect sends the complete frame. MCU and Extender have independent device headers. [REAPER MCU wire reference](https://github.com/justinfrankel/reaper-sdk/blob/61cc0d4ada1e4d8438186ed8ba5e5f9d72b148b9/reaper-plugins/reaper_csurf/csurf_mcu.cpp)
+- Strict Linux GCC 14 and Clang 19 each passed 29 checks. New cases verify exact offsets, mixed acknowledgement, Extender separation, label clearing and full reconnect. Checked the Nov 20 patterns.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
