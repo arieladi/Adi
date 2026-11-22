@@ -4,6 +4,34 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 4 (PD64): full headless ctest at `PD_FLOATSIZE=64` vs `PD_FLOATSIZE=32` on GCC 12.2 and Clang 14.0.6
+
+**Scope:**
+- `origin/land/devices-1122` (`a8af403a`) is already merged into `main` (`73f13028`), so `main` (`73f13028`) includes the full `land/devices-1122` stack. Tested `main` (`73f13028`) at both `PD_FLOATSIZE=64` and `PD_FLOATSIZE=32`, plus the latest unmerged devices stack top `devices/tuner` (`eb460dc3`) at `PD_FLOATSIZE=64`.
+- Configure check confirmed on both compilers: `-- Pd tier: PD_FLOATSIZE=64 (double-precision t_float and t_sample)`.
+
+**New finding for `devices` (`-DADI_WERROR=ON -DADI_PD_FLOATSIZE_64=ON` on GCC 12.2 and Clang 14.0.6):**
+- **`src/adi/pd_builtins/colorcab_tilde.cpp:25`** and **`src/adi/pd_builtins/oneshot_tilde.cpp:33,78,86,88`** (owner: `devices`): implicit narrowing from `t_float` / `t_floatarg` (`double` under `PD_FLOATSIZE=64`) to `float` fails `-Werror=float-conversion` on GCC 12.2 and `-Werror,-Wimplicit-float-conversion` on Clang 14.0.6 (9 diagnostics total):
+  - `src/adi/pd_builtins/colorcab_tilde.cpp:25`: `const float id = argc ? atom_getfloat(argv) : 1;`
+  - `src/adi/pd_builtins/oneshot_tilde.cpp:33`: `const float slot = argc ? atom_getfloat(argv) : 1;`
+  - `src/adi/pd_builtins/oneshot_tilde.cpp:78`: `const float id = atom_getfloat(atoms), value = atom_getfloat(atoms + 1);` (2 diagnostics)
+  - `src/adi/pd_builtins/oneshot_tilde.cpp:86`: `x->state->midi.note(key, velocity, channel);` (3 diagnostics)
+  - `src/adi/pd_builtins/oneshot_tilde.cpp:88`: `x->state->midi.bend(value, channel);` (2 diagnostics)
+- Repro: `cmake -S adi_daw -B build-pd64 -DADI_WERROR=ON -DADI_PD_FLOATSIZE_64=ON -DADI_WITH_JUCE=OFF -DADI_WITH_PD=ON && cmake --build build-pd64 --target adi_pd_builtins`.
+- Every other Pd library TU (`libpd_static`, all other `src/adi/pd_builtins/*_tilde.cpp`, all `src/juce/pd_*.cpp`, `src/adi/pd_builtins/native_devices.cpp`, and all `*pd*` test TUs — 150 of 153 Pd objects on Clang 14 and all remaining on GCC 12) compiled with zero warnings under `-DADI_WERROR=ON -DADI_PD_FLOATSIZE_64=ON`.
+
+**Result table (`PD_FLOATSIZE=32` vs `PD_FLOATSIZE=64`):**
+
+| Target / Branch | SHA | Compiler | `PD_FLOATSIZE` | `-DADI_WERROR=ON` | Headless CTest (269 suites, excl. acceptance) | Failures & Owners |
+|---|---|---|---|---|---|---|
+| `main` (includes `land/devices-1122`) | `73f13028` | GCC 12.2.0 | `32` | PASS (DF-M62 locally patched; excl. `adi_ui_seams_tests`) | **268/268 runnable PASS** (1 build-blocked) | `adi_ui_seams_tests`: `CMakeLists.txt:2084` (`-fsanitize-trap=signed-integer-overflow` unrecognized on GCC 12, owner `window-fn`/`win`) |
+| `main` (includes `land/devices-1122`) | `73f13028` | GCC 12.2.0 | `64` | FAIL (`colorcab_tilde.cpp:25`, `oneshot_tilde.cpp:33,78,86,88`) | **268/268 runnable PASS** (`-DADI_WERROR=OFF`; 1 build-blocked) | Compile `-Werror=float-conversion`: `devices`; `adi_ui_seams_tests` flag error: `window-fn`/`win`. **0 runtime failures at 64.** |
+| `main` (includes `land/devices-1122`) | `73f13028` | Clang 14.0.6 | `32` | 710/721 objs clean (DF-M62 locally patched) | link blocked by `main` `adi_core` Clang 14 errors | `timeline_clips.hpp:13`, structured-binding captures in `project_files.cpp:308`, `param_ops.cpp`, `midi_clips.cpp:659`, `test_gain_stage.cpp:138` (owner `engine`/`engine-win`) |
+| `main` (includes `land/devices-1122`) | `73f13028` | Clang 14.0.6 | `64` | 150/153 Pd objs clean (`colorcab_tilde.cpp:25`, `oneshot_tilde.cpp:33,78,86,88`, DF-M62) | link blocked by `main` `adi_core` Clang 14 errors | Same 9 `-Wimplicit-float-conversion` diagnostics in `colorcab_tilde.cpp` & `oneshot_tilde.cpp` (owner `devices`) + `main` `adi_core` blockers (`engine`/`engine-win`) |
+| `devices/tuner` (unmerged devices top) | `eb460dc3` | GCC 12.2.0 | `64` | Same 2 `main` files only (0 new warnings in 10 new devices) | **43/43 Pd + new-device suites PASS** (`-DADI_WERROR=OFF`) | Same 2 `main` files (`colorcab_tilde.cpp`, `oneshot_tilde.cpp`, owner `devices`); **0 runtime failures at 64.** |
+
+---
+
 ## 2026-11-22 — Queue item 3 (WTS-01 on Linux): `main`, DF-E53 (`03be0b99`), and DF-E56 (`0b539fb2`)
 
 **What ran:**
