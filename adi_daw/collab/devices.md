@@ -21,7 +21,7 @@ Time. Beat Repeat and External Audio Effect are left out of the count; they are 
   - This seat starts Amp now, on its own branch, and stops there if the answer is no.
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 42 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 43 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -201,6 +201,10 @@ method); Live's files and renders stay in the director's research.
     list, each stage's filter types, the feedback section, the compressor and the modulation matrix.
     A 220 Hz sine at −10 dBFS through each shape at Amount 0, 50 and 100 %: the first nine harmonics.
     Multiband with flat stages on pink noise: does it sum flat?
+43. **Spectral Time (built after 3 December).** A fresh Spectral Time, every control as shown (the
+    resolution choices, the delay's and the freeze's sections). An impulse through the delay at Time
+    250 ms, then with Tilt and Spray: when each band returns. A held chord frozen: its level and pitch
+    a few seconds on. The reported latency.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -215,6 +219,25 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Spectral Time — lands after 3 December
+
+**PR requested:** head `devices/spectral-time` (b8436141), base `main`, after `devices/roar`. It stops
+here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - A 2,048-point Hann STFT at a hop of 512, rebuilt exactly.
+  - Each bin is delayed by whole frames, shaped by Time, Feedback, Tilt, Spray and Mask.
+  - Freeze holds the spectrum through a phase vocoder.
+  - The latency is one window, reported, and the dry signal is delayed with it.
+- **Not built:** the pitch shift, the resolution choices, stereo spread and sync.
+- **Tests:**
+  - `adi_spectral_time_tests` 13. An impulse returns after the latency plus the delay, alone and whole
+    within 1e-5, and each repeat is Feedback times the last.
+  - Dry/Wet 0 is the input one window late, exactly. Tilt, Mask and Spray shape the delays.
+  - A frozen tone rings on within 1 dB and 1 Hz. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 45 built-ins.
+- **Reading 43, added to the ONE list.**
 
 ## 2026-11-22 — the glide sweep, the earlier branches; an Auto Shift jump found and fixed
 
