@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace adi::engine {
@@ -389,6 +390,95 @@ GraphPlan planGraph(const rows::Model& m) {
     }
 
     return plan;
+}
+
+void isolateViaMain(GraphPlan &plan, const rows::Model &model, std::int64_t sourceTrack) {
+    const auto source = plan.indexOf(sourceTrack);
+    if (!plan.output || *plan.output >= plan.nodes.size() || plan.cycle)
+        throw std::runtime_error("Via Main needs a valid Main output");
+    const auto sourceRow = std::find_if(model.tracks.begin(), model.tracks.end(),
+                                        [sourceTrack](const auto &track) { return track.id == sourceTrack; });
+    if (!source || sourceRow == model.tracks.end() ||
+        (sourceRow->kind != "audio" && sourceRow->kind != "midi" &&
+         sourceRow->kind != "instrument" && sourceRow->kind != "group" && sourceRow->kind != "return"))
+        throw std::runtime_error("Via Main needs a regular track, group or return");
+
+    using Links = std::vector<std::vector<std::size_t>>;
+    const auto size = plan.nodes.size();
+    Links mainInputs(size), audibleInputs(size), audibleOutputs(size), children(size);
+    const auto expand = [](const Links &links, std::vector<bool> &visited,
+                           const std::vector<bool> *permitted = nullptr) {
+        std::vector<std::size_t> pending;
+        for (std::size_t node = 0; node < visited.size(); ++node) {
+            if (visited[node])
+                pending.push_back(node);
+        }
+        for (std::size_t at = 0; at < pending.size(); ++at) {
+            for (const auto next : links[pending[at]]) {
+                if (visited[next] || (permitted && !(*permitted)[next]))
+                    continue;
+                visited[next] = true;
+                pending.push_back(next);
+            }
+        }
+    };
+
+    std::set<std::int64_t> enabledSends;
+    for (const auto &route : model.routing) {
+        if (route.kind == "send" && route.enabled)
+            enabledSends.insert(route.id);
+    }
+    const auto normalAudio = [size](const PlannedEdge &edge) {
+        return edge.bus == Bus::Main && edge.keyDevice == 0 && !edge.feedback &&
+               edge.from < size && edge.to < size;
+    };
+    for (const auto &edge : plan.edges) {
+        if (!normalAudio(edge))
+            continue;
+        const bool main = edge.routingId == 0;
+        if (main)
+            mainInputs[edge.to].push_back(edge.from);
+        if (main || (plan.nodes[edge.to].kind == PlannedKind::Return &&
+                     enabledSends.contains(edge.routingId))) {
+            audibleInputs[edge.to].push_back(edge.from);
+            audibleOutputs[edge.from].push_back(edge.to);
+        }
+    }
+
+    std::vector<bool> heard(size, false);
+    heard[*source] = true;
+    if (sourceRow->kind == "group") {
+        std::map<std::int64_t, std::size_t> indices;
+        for (std::size_t i = 0; i < size; ++i)
+            indices.emplace(plan.nodes[i].trackId, i);
+        for (const auto &track : model.tracks) {
+            if (!track.parentId)
+                continue;
+            const auto parent = indices.find(*track.parentId), child = indices.find(track.id);
+            if (parent != indices.end() && child != indices.end())
+                children[parent->second].push_back(child->second);
+        }
+        auto members = heard;
+        expand(children, members);
+        // A child redirected outside the group and an unrelated track routed
+        // into the group are both outside the group's own signal.
+        expand(mainInputs, heard, &members);
+    }
+
+    std::vector<bool> reachesMain(size, false);
+    reachesMain[*plan.output] = true;
+    expand(audibleInputs, reachesMain);
+    expand(audibleOutputs, heard, &reachesMain);
+    if (!heard[*plan.output])
+        throw std::runtime_error("Via Main source has no audio path to Main");
+
+    for (auto &edge : plan.edges) {
+        // The unselected subgraph can still feed its own devices and taps.
+        // Only contributions into the selected mix are silenced. A device
+        // key or track sidechain can cross that boundary in either direction.
+        if (normalAudio(edge))
+            edge.renderSilent = !heard[edge.from] && heard[edge.to];
+    }
 }
 
 }  // namespace adi::engine

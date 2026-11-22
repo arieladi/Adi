@@ -352,10 +352,8 @@ struct Prepared final:gesture::PreparedPresentation {
 std::shared_ptr<GestureAudio> makeGestureAudio(){return std::make_shared<Audio>();}
 std::shared_ptr<const GestureControls> nativeGestureControls(Session& owner) {
     auto result=std::make_shared<Controls>();
-    HearingFlags hearing;hearing.soloInPlace=owner.cueSettings_.soloInPlace;
-    hearing.soloIsCue=owner.spec_.performanceState && owner.cueSettings_.cueMode;
-    hearing.referenceTrack=owner.cueSettings_.projectReferenceTrack;
-    result->mixer=owner.strips_.prepareControls(owner.model_,&owner.transport_,owner.stripAutomation_,owner.spec_.delayCompensation,hearing);
+    result->mixer=owner.strips_.prepareControls(owner.model_,&owner.transport_,owner.stripAutomation_,
+                                              owner.spec_.delayCompensation,owner.hearingFlags(owner.cueSettings_));
     result->summing=owner.summing_.prepareControls(owner.model_);
     result->cue=owner.cueMonitor_.prepareControls(owner.model_,owner.cueSettings_,owner.stripAutomation_,owner.spec_.performanceState);
     for(const auto& [id,node]:owner.inputGains_) {
@@ -387,10 +385,9 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         auto playback=model;playback.tempo=owner->playbackTempo(model);
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         const auto bound=bindStripAutomation(program,suspended);
-        HearingFlags hearing;hearing.soloInPlace=committed->cue.soloInPlace;
-        hearing.soloIsCue=owner->spec_.performanceState && committed->cue.cueMode;hearing.referenceTrack=committed->cue.projectReferenceTrack;
         auto out=std::make_shared<Controls>();
-        out->mixer=owner->strips_.prepareControls(model,&owner->transport_,bound,owner->spec_.delayCompensation,hearing);
+        out->mixer=owner->strips_.prepareControls(model,&owner->transport_,bound,
+                                                owner->spec_.delayCompensation,owner->hearingFlags(committed->cue));
         out->summing=owner->summing_.prepareControls(model);
         out->cue=owner->cueMonitor_.prepareControls(model,committed->cue,bound,owner->spec_.performanceState);
         for(const auto& strip:model.strips) {

@@ -113,6 +113,8 @@ struct SessionSpec {
     bool exporting = false;
     /// Processing without a realtime deadline, even at the normal quality.
     bool offline = false;
+    /// An isolated track or group rendered through Main in a private session.
+    std::optional<std::int64_t> viaMainTrack{};
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -491,6 +493,7 @@ private:
     struct TimingView;
     struct InputMonitors;
     void attach(std::shared_ptr<const TimingView>);
+    [[nodiscard]] HearingFlags hearingFlags(const CueSettings &) const noexcept;
     void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
     bool readPlayback(const Store &);
     // The tempo this Session plays a model at: performed history (with its

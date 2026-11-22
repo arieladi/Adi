@@ -602,6 +602,8 @@ struct HearingFlags {
     /// track sends to (the sends plan's keepAllReturns, off until Live is
     /// measured).
     bool keepAllReturns = false;
+    /// Private offline isolation supplies its own output gates.
+    bool ignoreSolo = false;
 };
 
 /// Who is heard (ADR-0163 d4, ADR-0203 d3). A muted track is silent. When any
