@@ -11284,7 +11284,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         // between press and release it is a hold, which plays only while held, however fast the
         // machine delivers the click.
         {
-            if (root.reference().on()) {
+            const bool wasOn = root.reference().on();
+            if (wasOn) {
                 root.referenceKey(true, 2000);
                 root.referenceKey(false, 2050); // a second tap lets it go
             }
@@ -11298,6 +11299,10 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             check(!root.reference().latched() && playing && !root.reference().on(),
                   "[REF] held 600 ms by the test's clock plays while held and stops on release: a hold, not a tap");
             root.input.now = kept;
+            if (wasOn) { // latched again, as the checks after this one expect
+                root.referenceKey(true, 2500);
+                root.referenceKey(false, 2550);
+            }
         }
         if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); !headlessOnly && out.isNotEmpty()) {
             // Lead with two clips, the Reference latched, for the picture; undone after.
