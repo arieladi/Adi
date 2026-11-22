@@ -243,6 +243,17 @@ void testNoteExpressionRoute() {
           "semitones for CLAP, which must not be converted back from VST3's scale");
     check(v.size() == 7 && v[1].key == 60,
           "and the key of the note it addresses, for CLAP's (channel, key, id) address");
+    auto gain=expr(21,7,ExpressionDim::Gain,0.0);
+    auto pan=expr(21,7,ExpressionDim::Pan,0.0);
+    gain.paramId=pan.paramId=kNativeNoteExpressionUnits;
+    Out authored;
+    route(r,{on(20,7,60),gain,pan},authored);
+    const auto native=authored.all();
+    check(native.size()==3 && native[1].key==60 && native[1].noteId==7 &&
+          native[1].value==0.25 && native[1].plain==1.0 && native[2].value==0.5 && native[2].plain==0.5,
+          "AEXP unity and centered pan have the SDK's exact native positions");
+    check(v.size()==7 && v[4].value==0.9 && v[5].value==0.2,
+          "unmarked expression continues to use the original normalized positions");
 
     Out oUnknown;
     route(r, {expr(20, 999, ExpressionDim::Pitch, 1.0)}, oUnknown);

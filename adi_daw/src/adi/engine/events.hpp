@@ -40,6 +40,10 @@ enum class EventType : std::uint8_t {
     Controller = 5,
 };
 
+/// NoteExpression's paramId marker for AEXP units. Gain is in dB and pan is
+/// signed. Unmarked events keep the existing host-normalized value contract.
+inline constexpr std::uint32_t kNativeNoteExpressionUnits = 1;
+
 /// Does this event belong to a NOTE STREAM, and so travel along the chain until
 /// something consumes it (ADR-0091)?
 ///
