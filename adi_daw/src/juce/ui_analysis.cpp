@@ -461,8 +461,11 @@ void SharedSpectrumView::clear() {
         clearedRevision_ = shown_->windowSerial; clearedEpoch_ = shown_->sourceEpoch;
         clearedColumn_ = shown_->historySerial;
     }
-    if (mode_ == Mode::SpectrumCumulativeMaximum) lease_.restartCumulativeMaximum();
-    armFreshBoundary();
+    if (mode_ == Mode::SpectrumCumulativeMaximum) {
+        lease_.restartCumulativeMaximum();
+    } else {
+        armFreshBoundary();
+    }
     if (mode_ == Mode::Spectrogram) historyClearPosition_ = sourcePosition_;
     resetPicture(); mainMeter_.reset(); raster_.reset();
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
@@ -676,6 +679,10 @@ void SharedSpectrumView::frame() noexcept {
         armFreshBoundary();
         next.reset();
     }
+    // The cumulative lease owns its admission fence. A held picture can
+    // remain unchanged across later hops after the fence has been satisfied.
+    if (next && mode_ == Mode::SpectrumCumulativeMaximum)
+        freshRequired_ = false;
     if (next && freshRequired_) {
         const auto size = static_cast<std::int64_t>(next->request.fftSize);
         if (!sourcePosition_.generation || size <= 0 || next->firstSequence < 0 ||
