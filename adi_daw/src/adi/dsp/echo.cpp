@@ -199,7 +199,11 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
         }
         const double commonNoise =
             lanes_[0].noiseFrom + (lanes_[0].noiseTo - lanes_[0].noiseFrom) * wobble_;
-        std::array<double, 2> wet{}, roomFeedback{};
+        // `looped` is what goes back into the line: the wet before a Post
+        // reverb, which colours only the output (a found defect: Post fed its
+        // room back, and a default Echo with Reverb raised ran away near
+        // +23 dB). Only the Feedback location puts the room in the loop.
+        std::array<double, 2> wet{}, roomFeedback{}, looped{};
         for (std::size_t c = 0; c < 2; ++c) {
             auto &l = lanes_[c];
             double ph = phase_ + (c == 1 ? p_[Phase] / 360 : 0);
@@ -256,6 +260,7 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
                     wet[c] = y;
                 }
             }
+            looped[c] = wet[c];
             if (reverb > 0) {
                 const double roomIn = location == 0 ? input[c] : wet[c], rev = room(l, roomIn);
                 if (location == 0)
@@ -275,7 +280,7 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
                                            (white + (l.brown * 10 - white) * p_[NoiseMorph] / 100)
                                      : 0;
             const auto source = mode == 1 ? 1 - c : c;
-            const double x = input[c] + fb * (wet[source] + roomFeedback[source]) + noise;
+            const double x = input[c] + fb * (looped[source] + roomFeedback[source]) + noise;
             const double y = std::clamp(x, -8., 8.);
             l.ring[write_] = static_cast<float>(std::abs(y) < 1e-30 ? 0 : y);
         }
