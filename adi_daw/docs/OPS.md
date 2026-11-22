@@ -1736,6 +1736,7 @@ rate conversion, missing-file snapshot and immutable-content publication limit.
 | `routing.setGain` | e | S | sym, coalescable | P0 |
 | `routing.setPan` | e | S | sym, coalescable | P1 |
 | `routing.setPreFader` | e | G | sym | P0 |
+| `routing.setSendTap` | e | G | cap, sym | P1 |
 | `routing.setEnabled` | e | S | sym | P0 |
 | `routing.reorder` | e | S | sym | P1 |
 | `mixer.setVolume` | e | S | sym, coalescable | P0 |
@@ -1766,13 +1767,30 @@ lanes `panLeft` and `panRight` use real -1..+1 units and the existing override /
 Re-Enable Automation path. The window does not implement the panning matrix.
 
 `return.setSendTap {id, pre}` is one return-owned Pre/Post choice (ADR-0203 d3).
-It persists with zero sends and changes every incoming send as one undo step.
+`return.setSendTap {id, click: true}` is the physical switch. A mixed return
+chooses Post first. A uniform return toggles its setting. The click clears
+individual tap overrides on every incoming send, including disabled sends,
+and captures their complete rows in the same Undo step.
+It persists with zero sends and changes the inherited tap in one undo step.
 Ordinary new routing.connect sends inherit an explicit choice on their return.
 A conflicting new per-edge routing.setPreFader edit refuses; the same value is
 allowed. Historical scalar payloads retain their old apply semantics. Absent
 preferences preserve legacy row taps and expose uniform or mixed state; no
 migration rewrites existing audio. A producer for a new send captures the
 uniform legacy choice as literal ops before creating it.
+
+`routing.setSendTap {id, tap}` chooses `pre_fx`, `post_fx`, or `post_mixer`
+for one send (ADR-0245 d10). Omit `tap` to inherit the return's setting again.
+The inverse restores the prior tap or inheritance. An explicit change to the
+return default with `pre` preserves individual choices. The snapshot marks unequal
+effective taps as mixed.
+
+A return inside a group accepts sends from descendants of that group. Its
+output joins those descendants before the group's devices. Moving a track or
+subgroup out removes any sends it loses access to, with the rows and their
+taps captured in the same undo step. Group-copy producers append
+`copyGroupSendRequests` after the cloned track ops in one transaction so
+internal sends target the copied returns.
 
 Its captured inverse uses internal optional restore {current, target}, each with
 nullable choice and ordered incoming {id, pre} values. It checks current flags,

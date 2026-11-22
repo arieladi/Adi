@@ -16,4 +16,8 @@ void deleteDevice(SQLite::Database&,std::int64_t);
 void restoreDevice(SQLite::Database&,std::int64_t,const Payload&);
 void deleteTrack(SQLite::Database&,std::int64_t);
 void restoreTrack(SQLite::Database&,std::int64_t,const Payload&);
+/// Routing rows and their polymorphic owners, in the same order as ids.
+std::vector<Payload> captureRouting(SQLite::Database&, std::span<const std::int64_t> ids);
+void deleteRouting(SQLite::Database&, std::span<const std::int64_t> ids);
+void restoreRouting(SQLite::Database&, const Payload& route, const Payload& packet);
 }
