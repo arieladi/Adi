@@ -162,6 +162,14 @@ Parked Follow Action chance coupling, boundary wrap, Jump scope, timing, scene-t
 
 - TM-SV-04 group ends. I recommend wrapping Previous/Next within the occupied group only if Live does, and leaving a lone Other unchanged until the reading. Please include whether Jump can cross an empty slot and what happens when its chosen destination is empty.
 
+### 22 November — DEV-02 chain zone reading and admission
+
+**PR requested** for `engine/dev02-chain-zone-admission` at `61e95403820931834613a0e7f460a8e79020b0e3` from main. The model reads the existing four-byte key, velocity and chain-select zones. SQL NULL keeps the full range. A malformed field is named and cannot admit an event to which it applies. The pure predicate uses integer endpoints, supports gain and square-root power fades, and exposes the three factors for the appropriate rack kinds.
+
+Strict GCC 14 and Clang 19 each passed 739 checks across six suites. The native database fixture keeps malformed neighbors readable, distinguishes a zero fade edge from outside admission, and checks both laws and rack-kind scope. The schema and op validators passed, including 1.0–1.22 upgrades. The branch combines cleanly with DEV-18 at `4e749553`. DEV-01 at `cb8b4fb6` already conflicts with current main in `device_model.cpp`; the same conflict remains in the join with this branch and none is introduced by the zone hunks.
+
+Parked the rack transform hookup and note-off ownership on the DEV-01/DEV-18 landing, and the default curve and controller filtering on the Live reading. DEV-04's native drum receive and play mapping is next. It needs no persisted pad settings yet.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
