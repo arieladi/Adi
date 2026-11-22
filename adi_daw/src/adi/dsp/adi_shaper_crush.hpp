@@ -14,8 +14,10 @@ public:
     bool prepare(double sampleRate) noexcept;
     void reset() noexcept;
     void setDither(bool enabled) noexcept { dither_ = enabled; }
+    void setPrefilter(bool enabled) noexcept { prefilterEnabled_ = enabled; }
+    // A full-rate point in a moving hold contour still drives the prefilter.
     void processStereo(float& left, float& right, float bitsHeight,
-                       float resampleHeight) noexcept;
+                       float resampleHeight, bool flatHold = true) noexcept;
     bool finishBlock() noexcept;
 
 private:
@@ -24,14 +26,18 @@ private:
     void updateClock(float height) noexcept;
     double noise() noexcept;
     void quantize(Stereo& sample) noexcept;
+    void prefilter(Stereo& sample) noexcept;
     void hold(Stereo& sample) noexcept;
 
     double rate_ = 0, highpassAmount_ = 0, highpassGain_ = 1;
     double levels_ = 1, quantizedGain_ = 1, step_ = 1, period_ = 1, phase_ = 0;
     float bits_ = -1, clock_ = -1;
     Stereo previousQuantInput_{}, previousHoldInput_{}, held_{}, low_{};
+    std::array<std::array<float, 2>, 8> prefilterMemory_{};
+    double prefilterStep_ = -1;
+    float prefilterGain_ = 0;
     std::uint32_t seed_ = 0x297a04b3u;
-    bool dither_ = false;
+    bool dither_ = false, prefilterEnabled_ = false;
 };
 
 } // namespace adi::dsp

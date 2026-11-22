@@ -21,14 +21,15 @@ class AdiShaper {
     static constexpr int modBandParameterCount = 23;
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
-    enum Param { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
+    enum Param : int { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
                  VolumeHighSlope, WidthHighSlope, PanHighSlope, FilterOn,
                  SweepOn = FilterOn + modStageParameterCount, SweepLowPolarity = SweepOn + modStageParameterCount,
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
-                 Count = CrushOn + modStageParameterCount };
+                 BaseCount = CrushOn + modStageParameterCount,
+                 CrushLowPrefilter = 873, CrushMidPrefilter, CrushHighPrefilter, Count };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,

@@ -366,6 +366,11 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= BaseCount) {
+        if (id >= CrushLowPrefilter && id <= CrushHighPrefilter)
+            crush_[static_cast<std::size_t>(id - CrushLowPrefilter)].setPrefilter(value >= .5f);
+        return;
+    }
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         for (std::size_t i = 0; i < stages_.size(); ++i) updateStage(static_cast<Stage>(i));
@@ -466,7 +471,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             } else if constexpr (kind == Stage::Sweep) {
                 sweeps_[index].processStereo(l, r, primary, band.secondary.at(p));
             } else {
-                crush_[index].processStereo(l, r, primary, band.secondary.at(p));
+                crush_[index].processStereo(l, r, primary, band.secondary.at(p), band.secondary.constant);
             }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }
             else if (band.blend != 1.0f) {
