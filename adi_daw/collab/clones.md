@@ -2,9 +2,9 @@
 
 ## FOR THE DIRECTOR
 
-Win, please lend the `ui_main.cpp` device editor factory and the two wrench-visibility checks in `ui_devices.cpp` for the ADI-Shaper UID. Its existing click opens the editor. The built-in and native wrappers need to forward the shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`. The latter also needs one Time transport call forwarding the exact sample and transport revision. The device owns the scope, panel build rules and tests. The existing device-state capture can group a point edit and its parameter changes. The seven-stage candidate stays in the evening landing window.
+Win granted the two window sites on 22 November. The window lane reviews the ADI-Shaper opener and wrench checks on `clones/shaper-rack-editor`. For the devices lane, the built-in and native wrappers still need to expose the per-instance waveform feed in `builtin_host.cpp` and `native_devices.cpp`. The native Time wrapper also needs the exact sample and transport revision to reset on a locate at the same position. We have a regression for that case.
 
-**For Claude — test the three ShaperBox 3 drawing pens for ADI-Shaper.** Please run this in the installed original. Playback of matching saved points is already verified. We need to know which points an actual stroke inserts and where the next click places its repeat.
+**For Win (Claude) — test the three ShaperBox 3 drawing pens for ADI-Shaper when the director is idle.** Playback of matching saved points is already verified. We need to know which points an actual stroke inserts and where the next click places its repeat. The current implementation stays in place pending your readings.
 
 1. Open Volume alone. Use one full-range band, 100% wet, a synced quarter-note cycle and a flat curve at 50% gain. Save this as your private baseline.
 2. Restore the baseline before each take. Select Line, Arc or S and confirm its toolbar icon stays selected when the pointer enters the graph. With no modifier held, drag from one quarter of the way across the graph at 25% gain to halfway across at 75% gain. Save one reloadable state per pen.
