@@ -61,7 +61,7 @@ struct Project {
     }
 };
 void catalogueAndHost() {
-    check(builtinCatalog().size()==24 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
+    check(builtinCatalog().size()==25 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
     std::set<std::string_view> identities;int available=0;
     for(const auto& info:builtinCatalog()) {
         check(identities.insert(info.uid).second && !info.name.empty() && !info.category.empty() && !info.group.empty(),"catalogue identities are unique and labels/category/folder are present");
@@ -83,7 +83,7 @@ void catalogueAndHost() {
         check(allocations.load(std::memory_order_relaxed)==0,"canonical built-in processing allocates nothing");
     }
 #if ADI_WITH_PD
-    check(available==24,"all registered native canonical factories are available");
+    check(available==25,"all registered native canonical factories are available");
 #else
     check(available==0,"PD-disabled build advertises no unavailable backend as loadable");
 #endif
@@ -117,6 +117,64 @@ void gateLatency() {
     const auto active=node.latencySamples();
     node.setBypassed(true);
     check(active==480 && node.latencySamples()==480,"the Gate reports its 10 ms lookahead (480 samples) and keeps it while bypassed");
+}
+#endif
+#if ADI_WITH_PD
+// DEV-22: Live's Limiter as a device. Its latency for each Lookahead and
+// mode (1.5, 3 and 6 ms are 72, 144 and 288 samples at 48 kHz, 10 more in
+// True Peak mode), and its ceiling held on +12 dB noise in every link (in
+// M/S on mid and side, where a mid-side limiter holds it).
+void limiterDevice() {
+    const auto idOf=[](DeviceInstance& d,const char* name){
+        for(std::int32_t i=0;i<d.paramCount();++i){
+            if(d.paramAt(i)->name==name){
+                return d.paramAt(i)->id;
+            }
+        }
+        return std::string{};
+    };
+    std::array<std::array<float,64>,2> input{},output{};float* in[]={input[0].data(),input[1].data()};float* out[]={output[0].data(),output[1].data()};
+    NodeIo io;io.in=in;io.out=out;io.channels=2;io.frames=64;
+    const int lookahead[3]={72,144,288};
+    for(int mode=0;mode<2;++mode){
+        for(int choice=0;choice<3;++choice){
+            auto limiter=load("org.adidaw.builtin.limiter");
+            limiter->prepare(48000,64);
+            check(limiter->setParam(idOf(*limiter,"Lookahead"),ParamValue::fromNormalized(choice/2.0)) &&
+                  limiter->setParam(idOf(*limiter,"Mode"),ParamValue::fromNormalized(mode==0?0.0:1.0)),"the Limiter's Lookahead and Mode are controls");
+            for(int block=0;block<8;++block){
+                limiter->process(io);
+                limiter->pumpMainThread();
+            }
+            DeviceNode node(*limiter);
+            const int want=lookahead[choice]+(mode==1?10:0);
+            const auto active=node.latencySamples();
+            node.setBypassed(true);
+            check(active==want && node.latencySamples()==want,"the Limiter reports each lookahead (plus 10 in True Peak) and keeps it while bypassed");
+        }
+    }
+    const double ceiling=std::pow(10.0,-1.0/20.0);
+    for(int link=0;link<3;++link){
+        auto limiter=load("org.adidaw.builtin.limiter");
+        limiter->prepare(48000,64);
+        limiter->setParam(idOf(*limiter,"Gain"),ParamValue::fromNormalized((12.0+24.0)/60.0));
+        limiter->setParam(idOf(*limiter,"Ceiling"),ParamValue::fromNormalized((-1.0+36.0)/36.0));
+        limiter->setParam(idOf(*limiter,"Link"),ParamValue::fromNormalized(link/2.0));
+        std::uint32_t seed=2026u;double worst=0;
+        for(int block=0;block<400;++block){
+            for(auto& channel:input){
+                for(auto& v:channel){
+                    seed=seed*1664525u+1013904223u;v=static_cast<float>(2.0*(static_cast<double>(seed>>8)/16777216.0-0.5));
+                }
+            }
+            limiter->process(io);
+            for(std::size_t i=0;i<64;++i){
+                const double l=output[0][i],r=output[1][i];
+                worst=std::max(worst,link==2?std::max(std::abs(0.5*(l+r)),std::abs(0.5*(l-r))):std::max(std::abs(l),std::abs(r)));
+            }
+        }
+        check(worst>0.5*ceiling && worst<=ceiling*(1+1e-6),"the Limiter holds a -1 dB ceiling on +12 dB noise in every link");
+    }
 }
 #endif
 void paramsAndState() {
@@ -604,5 +662,6 @@ void instrumentSession() {
 int main(){try{catalogueAndHost();
 #if ADI_WITH_PD
 gateLatency();
+limiterDevice();
 #endif
 paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
