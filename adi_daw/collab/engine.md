@@ -36,6 +36,13 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MX-33 seeded sync measurements — PR requested
+
+- Ready at `53fad1c3b1142d897877ea962c1b9472e88858cd` on `engine/mx33-sync-spikes`, stacked on `d8c0eeaa` for after 3 December.
+- `adi_measure gen sync` produces a sample-addressed marker on a seeded noise bed, independent of write block size. `adi_measure sync` locates an isolated event in a bounded, explicitly selected channel and sample window, preserving its sign and absolute coordinate. Refusal covers low input, competing spikes and invalid samples.
+- Strict GCC and Clang passed 216 checks across four suites each. Both passed nine sync command checks at a real marker frame of 1234, a separate seeded capture delayed 257 samples, a partial last WAV block and ambiguous input. All 24 preceding offline/fixture command checks reran green with the same executable. Checked Win's five portability patterns.
+- Win still owns the native hardware/Live gate, record schema and three-system CI registration. Local fixture renders already null across three block sizes and both widths. Worker-count and physical hardware acceptance remain open.
+
 ## 2026-11-22 — MX-33 measurement fixtures and track render — PR requested
 
 - Ready at `d8c0eeaa4d001de455f79c05dc1292d2ad9d5480` on `engine/mx33-fixture-render`, stacked on `5e192277` for after 3 December.
