@@ -258,9 +258,9 @@ void loopAndTailRenders() {
         converted.nameTemplate = "fixed-tail-soxr";
         converted.deliveries.clear();
         converted.tail = {TailMode::Fixed, 2};
-        const auto fixed = renderWav(converted, echo);
-        check(fixed.state == JobState::Completed && fixed.framesWritten == 85,
-              fixed.error.empty() ? "a fixed tail adds exactly 64 frames at 32 kHz" : fixed.error.c_str());
+        const auto fixedDelivery = renderWav(converted, echo);
+        check(fixedDelivery.state == JobState::Completed && fixedDelivery.framesWritten == 85,
+              fixedDelivery.error.empty() ? "a fixed tail adds exactly 64 frames at 32 kHz" : fixedDelivery.error.c_str());
     }
 
     job.nameTemplate = "until-maximum";
@@ -292,6 +292,67 @@ void loopAndTailRenders() {
     job.tail = {TailMode::UntilSilent, 1, -20, 2};
     check(renderWav(job, echo).state == JobState::Failed && f.noStage(),
           "until-silent hold cannot exceed its bound");
+}
+void gaplessCycleRenders() {
+    Fixture f;
+    f.effect();
+    std::vector<float> impulse(8192);
+    impulse[2 * 118 + 1] = 0.75f;
+    audio::WavWriter wave(f.dir.path() / "audio.wav", 48000, 2, audio::WavFormat::Float32);
+    wave.write(impulse.data(), 4096);
+    wave.close();
+    f.store->db().exec("INSERT INTO markers(id,time_base,pos_ns,length_ns,name,kind) VALUES"
+        "(12,1,0,2666667,'Part one','cycle'),(13,1,2666667,2666666,'Part two','cycle')");
+    auto job = f.job("{region}");
+    job.session.maxFrames = 37;
+    job.encoding.format = audio::WavFormat::Pcm24;
+    job.encoding.dither = audio::WavDither::Triangular;
+    job.encoding.ditherSeed = 222;
+    int loads = 0;
+    const DeviceLoader echo = [&](const DeviceRequest&, std::string&) {
+        ++loads;
+        auto d = std::make_unique<Delay>();
+        d->delay = 17;
+        d->feedback = 0.5;
+        return d;
+    };
+    const std::array<std::int64_t, 2> selected{13, 12};
+    auto uninterrupted = job;
+    uninterrupted.nameTemplate = "independent-continuous-reference";
+    uninterrupted.beginSample = 0;
+    uninterrupted.endSample = 256;
+    const auto expected = read(renderWav(uninterrupted, echo), 256, 48000, audio::WavFormat::Pcm24);
+    loads = 0;
+    const auto batch = renderGaplessWav(job, selected, echo);
+    check(batch.state == JobState::Completed && batch.regions.size() == 2 && loads == 1,
+          batch.error.empty() ? "unordered cycle selection renders one graph with two outputs" : batch.error.c_str());
+    if (batch.state != JobState::Completed || batch.regions.size() != 2) return;
+    const auto& first = batch.regions[0];
+    const auto& second = batch.regions[1];
+    auto firstSamples = read(first, 128, 48000, audio::WavFormat::Pcm24);
+    const auto secondSamples = read(second, 128, 48000, audio::WavFormat::Pcm24);
+    firstSamples.insert(firstSamples.end(), secondSamples.begin(), secondSamples.end());
+    check(firstSamples == expected && secondSamples.size() == 256 && secondSamples[2 * 7 + 1] > 0.3f && f.noStage(),
+          "concatenation preserves the exact dithered PCM, including decay across the boundary");
+    check(first.snapshot && second.snapshot && first.snapshot->journalHead == second.snapshot->journalHead &&
+          first.snapshot->endSample == second.snapshot->beginSample &&
+          first.output.filename() == "Part one.wav" && second.output.filename() == "Part two.wav",
+          "gapless deliveries carry one revision, individual region names and a shared exact boundary");
+
+    job.nameTemplate = "tail-{region}";
+    auto tail = job;
+    tail.tail = {TailMode::Fixed, 1};
+    check(renderGaplessWav(tail, selected, echo).state == JobState::Failed && f.noStage(),
+          "gapless runner refuses independent effect tails");
+    auto repeated = job;
+    repeated.nameTemplate = "same-name";
+    const auto collision = renderGaplessWav(repeated, selected, echo);
+    check(collision.state == JobState::Failed && collision.regions.empty() && f.noStage(),
+          "duplicate region output names are refused before any delivery");
+    f.store->db().exec("UPDATE markers SET pos_ns=2687500 WHERE id=13");
+    const auto gap = renderGaplessWav(job, selected, echo);
+    check(gap.state == JobState::Failed && gap.regions.empty() && !fs::exists(job.directory / "tail-Part one.wav"),
+          "one skipped sample makes the whole gapless request invalid");
 }
 void ranges() {
     Fixture f; f.effect(); f.parallel();
@@ -2765,7 +2826,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); loopAndTailRenders(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); sparseRenderMatrix(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); brickwallNormalization(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); loopAndTailRenders(); gaplessCycleRenders(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); sparseRenderMatrix(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); brickwallNormalization(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
