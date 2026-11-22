@@ -22,14 +22,15 @@ class AdiShaper {
     static constexpr int modBandParameterCount = 23;
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
-    enum Param { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
+    enum Param : int { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
                  VolumeHighSlope, WidthHighSlope, PanHighSlope, FilterOn,
                  SweepOn = FilterOn + modStageParameterCount, SweepLowPolarity = SweepOn + modStageParameterCount,
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
-                 Count = CrushOn + modStageParameterCount };
+                 BaseCount = CrushOn + modStageParameterCount,
+                 PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend, Count };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
@@ -114,10 +115,19 @@ class AdiShaper {
         void advance(float& l, float& r) noexcept;
     };
     struct PanHistory {
+        struct Tap {
+            Gain gain;
+            std::size_t age = 0, channel = 0;
+            double fraction = 0.;
+        };
         std::vector<std::array<float, 2>> frames;
         std::size_t head = 0, valid = 0;
+        float current = 0.f, unity = 0.f;
+        Tap constantTap;
         void prepare(double rate) noexcept;
-        void process(double position, double rate, float& left, float& right) noexcept;
+        void setBlend(float percent) noexcept;
+        [[nodiscard]] Tap tap(double position, double rate, bool constant) const noexcept;
+        void process(const Tap& tap, float& left, float& right) noexcept;
     };
     std::array<PanHistory, 3> panHistory_;
     static Gain gain(Stage kind, float amount, float mix) noexcept;

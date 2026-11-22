@@ -370,6 +370,11 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= PanLowDelayBlend) {
+        panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
+        return;
+    }
+    if (id >= BaseCount) return;
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         if (masterMix_ == 0.f) resetKernels(Stage::Pan);
@@ -409,7 +414,6 @@ void AdiShaper::set(Param id, float value) noexcept {
         case Clock: case Cycle: case Rate: clock(band, static_cast<BandControl>(control), value); return;
         case Curve:
             band.primary.linear = value >= 0.5f;
-            if (kind == Stage::Pan && band.primary.linear) panHistory_[bandIndex].valid = 0;
             return;
         default: {
             const float lo = kind == Stage::Pan ? -100.0f : 0.0f;
@@ -419,7 +423,7 @@ void AdiShaper::set(Param id, float value) noexcept {
         }
         }
         updateBand(kind, band);
-        if (kind == Stage::Pan && (!band.active || band.primary.constant)) panHistory_[bandIndex].valid = 0;
+        if (kind == Stage::Pan && !band.active) panHistory_[bandIndex].valid = 0;
     }
     updateActivity(stage);
 }
@@ -469,25 +473,45 @@ void AdiShaper::PanHistory::prepare(double rate) noexcept {
     }
 }
 
-void AdiShaper::PanHistory::process(double position, double rate, float& left, float& right) noexcept {
+void AdiShaper::PanHistory::setBlend(float percent) noexcept {
+    const float twice = std::clamp(percent, 0.f, 100.f) * .02f;
+    const float direct = std::max(0.f, 1.f - twice);
+    current = direct * direct * direct;
+    unity = std::max(0.f, twice - 1.f);
+}
+
+AdiShaper::PanHistory::Tap AdiShaper::PanHistory::tap(double position, double rate, bool constant) const noexcept {
     const double height = std::clamp(.5 + .5 * position, 0., 1.);
-    left *= panGain(height);
-    right *= panGain(1. - height);
+    const float leftGain = panGain(height), rightGain = panGain(1. - height);
+    Tap result;
+    result.gain = {leftGain + unity * (1.f - leftGain), rightGain + unity * (1.f - rightGain)};
+    if (current == 1.f || frames.empty()) return result;
+    // At the two-millisecond range a stationary contour reads a whole frame.
+    // A moving contour also interpolates between the two neighboring frames.
+    const double far = std::abs(position);
+    const double ms = far * (.710640 + far * (-.505011 + far * 1.794401));
+    const double delay = ms * (.001 * rate);
+    result.age = static_cast<std::size_t>(delay);
+    result.fraction = constant ? 0. : delay - static_cast<double>(result.age);
+    result.channel = position > 0. ? 1u : 0u;
+    return result;
+}
+
+void AdiShaper::PanHistory::process(const Tap& tap, float& left, float& right) noexcept {
+    left *= tap.gain.left;
+    right *= tap.gain.right;
     if (frames.empty()) return;
     frames[head] = {finiteOrZero(left), finiteOrZero(right)};
     valid = std::min(valid + 1, frames.size());
     const auto mask = frames.size() - 1;
-    // Stereo pulses and noise at twelve balances measured this read position
-    // independently from gain. The cubic is in milliseconds at the default range.
-    const double far = std::abs(position);
-    const double ms = far * (.710640 + far * (-.505011 + far * 1.794401));
-    const double delay = ms * (.001 * rate);
-    const auto whole = static_cast<std::size_t>(delay);
-    const auto channel = position > 0. ? 1u : 0u;
-    const auto read = [&](std::size_t age) { return age < valid ? frames[(head-age) & mask][channel] : 0.f; };
-    const float a = read(whole), b = read(whole + 1);
-    auto& delayed = channel == 0 ? left : right;
-    delayed = static_cast<float>(a + (delay - static_cast<double>(whole)) * (static_cast<double>(b) - a));
+    if (tap.age != 0 || tap.fraction != 0.) {
+        const auto read = [&](std::size_t age) { return age < valid ? frames[(head-age) & mask][tap.channel] : 0.f; };
+        const float a = read(tap.age);
+        const float historical = tap.fraction == 0. ? a :
+            static_cast<float>(a + tap.fraction * (static_cast<double>(read(tap.age + 1)) - a));
+        auto& far = tap.channel == 0 ? left : right;
+        far = historical + current * (far - historical);
+    }
     head = (head + 1) & mask;
 }
 
@@ -504,6 +528,13 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
 template <AdiShaper::Stage kind>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames) noexcept {
+    if constexpr (kind == Stage::Pan) {
+        for (std::size_t i = 0; i < stage.bands.size(); ++i) {
+            const auto& band = stage.bands[i];
+            if (band.active && band.primary.constant)
+                panHistory_[i].constantTap = panHistory_[i].tap(band.primary.points[0], sampleRate_, true);
+        }
+    }
     auto applyGain = [](Gain g, float& l, float& r) {
         if constexpr (kind == Stage::Width) {
             if (g.left == 1.0f) return;
@@ -538,14 +569,17 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             }
         } else {
             if constexpr (kind == Stage::Pan) {
-                if (!band.primary.linear && !band.primary.constant) {
-                    panHistory_[index].process(band.primary.heldPanAt(p), sampleRate_, l, r);
-                    if (band.blend != 1.f) {
-                        l = dryL + band.blend * (l - dryL);
-                        r = dryR + band.blend * (r - dryR);
-                    }
-                    return;
+                auto& history = panHistory_[index];
+                if (band.primary.constant) history.process(history.constantTap, l, r);
+                else {
+                    const double position = band.primary.linear ? band.primary.at(p) : band.primary.heldPanAt(p);
+                    history.process(history.tap(position, sampleRate_, false), l, r);
                 }
+                if (band.blend != 1.f) {
+                    l = dryL + band.blend * (l - dryL);
+                    r = dryR + band.blend * (r - dryR);
+                }
+                return;
             }
             Gain g;
             if (band.primary.constant) g = band.heldGains[0];
@@ -555,7 +589,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         }
     };
     if (stage.layout == 0) {
-        if constexpr (kind == Stage::Volume || kind == Stage::Pan) {
+        if constexpr (kind == Stage::Volume) {
             const auto& band = stage.bands[1];
             if (band.primary.constant) {
                 for (std::size_t i = 0; i < frames; ++i) {

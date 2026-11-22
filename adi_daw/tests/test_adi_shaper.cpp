@@ -18,9 +18,10 @@ using Stage = Shaper::Stage;
 static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == Shaper::VolumeLowSlope);
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
 static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shaper::DriveOn == 286);
-static_assert(Shaper::CrushOn == 340 && Shaper::Count == 415);
+static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
+static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 857);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
-static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::Count);
+static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -47,6 +48,7 @@ std::array<float, 2> one(Shaper& shaper, float l = 0.375f, float r = 0.25f) {
 void endpoints() {
     Shaper shaper;
     shaper.prepare(48000);
+    shaper.set(Shaper::PanMidDelayBlend, 0);
     const std::array percent{0.0f, 25.0f, 50.0f, 75.0f, 100.0f};
     for (const float p : percent) {
         flat(shaper, Stage::Volume, Band::Mid, p);
@@ -97,6 +99,7 @@ void balanceSweep() {
         1.31611896, 1.33990800, 1.36056459, 1.37799978, 1.39212501, 1.40285146,
         1.41008985, 1.41375160};
     Shaper shaper;
+    shaper.set(Shaper::PanMidDelayBlend, 0);
     double worst = 0;
     for (std::size_t i = 0; i < gains.size(); ++i) {
         const auto fraction = static_cast<float>(2 * i + 1) / 64.0f;
@@ -217,6 +220,90 @@ void heldPanEdges() {
     bool quiet = true;
     for (int i = 0; i < 192; ++i) quiet &= one(sparse, 0.f, 0.f) == std::array{0.f, 0.f};
     check(quiet && sparse.latency() == 0, "resuming sparse Pan clears stale audio and adds no rack latency");
+}
+
+void panDelayBlend() {
+    // Opposite-signed markers distinguish an attenuated current sample, a
+    // delayed copy and any leakage into the other input's channel.
+    struct Reading { float blend, direct, delayed, nearGain; };
+    constexpr std::array readings{
+        Reading{0, .55047578f, 0.f, 1.30307758f},
+        Reading{25, .06880947f, .48166630f, 1.30307758f},
+        Reading{50, 0.f, .55047578f, 1.30307758f},
+        Reading{62.5f, 0.f, .66285682f, 1.22730815f},
+        Reading{100, 0.f, 1.f, 1.f}};
+    for (const auto reading : readings) {
+        for (const float mix : {1.f, .5f}) {
+            Shaper shaper;
+            flat(shaper, Stage::Pan, Band::Mid, -50.f);
+            shaper.set(Shaper::PanMidDelayBlend, reading.blend);
+            shaper.set(Shaper::bandParam(Stage::Pan, Band::Mid, Shaper::Mix), 100.f * mix);
+            std::array<float, 64> l{}, r{};
+            l[12] = -.5f;
+            r[40] = .25f;
+            shaper.process(l.data(), r.data(), l.data(), r.data(), l.size());
+            bool correct = true;
+            for (std::size_t i = 0; i < l.size(); ++i) {
+                const float left = i == 12 ? -.5f * (1.f-mix + mix*reading.direct)
+                                   : i == 33 ? -.5f * mix * reading.delayed : 0.f;
+                const float right = i == 40 ? .25f * (1.f-mix + mix*reading.nearGain) : 0.f;
+                correct &= near(l[i], left) && near(r[i], right);
+            }
+            check(correct, "static Pan marker has measured current and integer-delay taps");
+        }
+    }
+    struct RateReading { double rate; float pan, blend; std::size_t age; float direct, tailGain; };
+    constexpr std::array rates{
+        RateReading{44100., -37.f, 25.f, 12, .08486272f, .59403902f},
+        RateReading{48000., 81.f, 75.f, 57, 0.f, .60908943f},
+        RateReading{96000., -73.f, 100.f, 90, 0.f, 1.f}};
+    for (const auto& reading : rates) {
+        Shaper shaper;
+        shaper.prepare(reading.rate);
+        flat(shaper, Stage::Pan, Band::Mid, reading.pan);
+        shaper.set(Shaper::PanMidDelayBlend, reading.blend);
+        shaper.set(Shaper::PanHighDelayBlend, 0.f);
+        shaper.set(Shaper::PanLowDelayBlend, 0.f);
+        std::array<float, 160> l{}, r{};
+        auto& far = reading.pan < 0.f ? l : r;
+        far[19] = -.5f;
+        shaper.process(l.data(), r.data(), l.data(), r.data(), 31);
+        shaper.process(l.data()+31, r.data()+31, l.data()+31, r.data()+31, l.size()-31);
+        bool matches = true;
+        for (std::size_t i = 0; i < l.size(); ++i) {
+            const float expected = i == 19 ? -.5f * reading.direct :
+                                   i == 19+reading.age ? -.5f * reading.tailGain : 0.f;
+            matches &= near(far[i], expected);
+        }
+        check(matches, "stationary Pan delay scales across rates and survives an uneven callback edge");
+    }
+    for (const auto blend : {0.f, 50.f, 100.f}) {
+        Shaper shaper;
+        for (int i = 0; i < 8; ++i)
+            point(shaper, Stage::Pan, Band::Mid, i, i < 4 ? -100.f : 100.f);
+        shaper.set(Shaper::PanMidDelayBlend, blend);
+        std::vector<float> l(48200), r(l.size());
+        r[47917] = .625f;
+        r[48003] = -.6875f;
+        shaper.process(l.data(), r.data(), l.data(), r.data(), l.size());
+        const double old = blend == 0.f ? 0. : (blend == 50.f ? .882643 : .624123);
+        const double newMarker = blend == 100.f ? -.686535 : 0.;
+        check(near(r[48013], old, .002) && near(r[48099], newMarker, .002),
+              "a hard Pan switch scales and delays each signed marker at the selected blend");
+    }
+    Shaper moving;
+    moving.set(Shaper::PanMidDelayBlend, 100);
+    moving.set(Shaper::bandParam(Stage::Pan, Band::Mid, Shaper::Curve), 1);
+    for (int i = 0; i < 8; ++i) point(moving, Stage::Pan, Band::Mid, i, i < 2 ? -50.f : 50.f);
+    std::array<float, 128> l{}, r{};
+    l[48] = .5f;
+    r[65] = -.25f;
+    moving.process(l.data(), r.data(), l.data(), r.data(), l.size());
+    check(l[48] == 0.f && near(l[69]+l[70], .5) && r[65] == -.25f,
+          "a linear Pan contour applies the far-ear delay independently of gain");
+    Shaper gaps;
+    for (int id : {415, 720, 854, 858, 2000}) gaps.set(static_cast<Shaper::Param>(id), 100.f);
+    check(one(gaps) == std::array{.375f, .25f}, "unassigned parameter numbers leave the rack dry");
 }
 
 void clocksAndLinearCurve() {
@@ -846,6 +933,7 @@ int main() {
     endpoints();
     balanceSweep();
     heldPanEdges();
+    panDelayBlend();
     beatGate();
     clocksAndLinearCurve();
     splitBands();
