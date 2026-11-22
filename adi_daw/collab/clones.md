@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Faster moving Crush curves with the calibrated crossing intact
+
+`clones/shaper-crush-resolution` at `2afb86d5` — Reuse the preceding quantizer code for moving Crush curves. This updates the current-stage repair at `77f4ec0a`. It keeps the previous integer code per ear and takes a shorter path for normalized controls. It also preserves the original rules for infinities, NaNs, finite out-of-range controls, full resolution and resets.
+
+Compared on the same registered thread, processing cycles fell by 13.60% at 256 frames and 15.60% at 2,048 for a continuously moving bit curve. Steady controls fell by 18.89% and 21.58%, and the eight-step curve by 14.43% and 16.28%. A separate six-order comparison of registered processes measured moving-curve medians of 26.9 to 17.8 µs and 213.55 to 141.10 µs. The respective p99s fell from 41.35 to 30.50 µs and from 471.05 to 287.10 µs. Deadline misses rose from 9 to 11 and 7 to 10 per 61,440 callbacks. The original 0.00166 worst transition RMS and the saved-program counts from `77f4ec0a` apply to the same rendered signal.
+
+The two versions produced identical stereo outputs on all six registered musical fixtures, 18 cross-rate traces, 589,824 fixed-control frames and invalid-control recovery cases. The rack, Crush and registered native/edited-Pd suites passed under MSVC /W4 /WX at both precisions. Reported latency remains zero.
+
+PR requested
+
 ## 22 November 2026 — Random variation of the Crush sample clock
 
 The two ears take their signed samples at the same fractional time. The jitter control varies a cumulative clock every audio frame. Inverting the independently marked left and right inputs recovered held stereo output to 0.000000553 RMS and 0.00000412 peak. All 36 matching runs at 256 and 2,048 frames were byte-identical across three sample rates. Doubling the knob from one quarter to one half scaled the recovered random speed deviation by 3.9993 across 2,164 joint frames. Doubling from one half to full scaled it by 3.9996. The clock is independent of the dither switch.
