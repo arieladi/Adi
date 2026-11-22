@@ -193,7 +193,59 @@ void routing() {
 
 }  // namespace
 
+/// The review of 1802596d: selectivity fell away at 192 kHz (a fixed
+/// 2,048-sample window), a huge finite burst latched a ring at inf, Dry/Wet
+/// stepped.
+void reviewed() {
+    for (double rate : {44100.0, 96000.0, 192000.0}) {
+        R t;
+        t.set(R::DryWet, 100);
+        t.prepare(rate);
+        const auto n = static_cast<std::size_t>(rate * 2);
+        std::vector<float> tone(n), tl, tr;
+        for (std::size_t i = 0; i < n; ++i) {
+            tone[i] = static_cast<float>(0.4 * std::sin(2 * std::numbers::pi * 330 * static_cast<double>(i) / rate));
+        }
+        run(t, tone, tl, tr);
+        double e = 0;
+        for (std::size_t i = n / 2; i < n; ++i) {
+            e += static_cast<double>(tl[i]) * tl[i];
+        }
+        const double level = 10 * std::log10(e / static_cast<double>(n / 2) / (0.4 * 0.4 / 2));
+        check(level < -40, "at " + std::to_string(rate) + ", a tone between partials is not heard (" + std::to_string(level) + " dB)");
+    }
+    R big;
+    big.set(R::DryWet, 100);
+    big.prepare(kRate);
+    std::vector<float> x(48000 * 2, 0.f), l, r;
+    for (std::size_t i = 0; i < 4096; ++i) {
+        x[i] = static_cast<float>(1e36 * std::sin(2 * std::numbers::pi * 220 * static_cast<double>(i) / kRate));
+    }
+    run(big, x, l, r);
+    check(std::all_of(l.end() - 4096, l.end(), [](float v) { return std::isfinite(v); }), "after a burst of 1e36 the output is finite again");
+    R g;
+    g.set(R::DryWet, 0);
+    g.prepare(kRate);
+    std::vector<float> t(96000), tl(96000), tr(96000);
+    for (std::size_t i = 0; i < t.size(); ++i) {
+        t[i] = static_cast<float>(0.4 * std::sin(2 * std::numbers::pi * 330 * static_cast<double>(i) / kRate));
+    }
+    constexpr std::size_t at = 48036;   // the tone's peak
+    g.process(t.data(), t.data(), tl.data(), tr.data(), at);
+    g.set(R::DryWet, 100);
+    g.process(t.data() + at, t.data() + at, tl.data() + at, tr.data() + at, t.size() - at);
+    double moving = 0, settled = 0;
+    for (std::size_t i = at; i < at + 4800; ++i) {
+        moving = std::max(moving, static_cast<double>(std::abs(tl[i] - tl[i - 1])));
+    }
+    for (std::size_t i = 24000; i < 48000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(tl[i] - tl[i - 1])));
+    }
+    check(moving <= 1.5 * settled, "Dry/Wet glides (" + std::to_string(moving) + " against " + std::to_string(settled) + ")");
+}
+
 int main() {
+    reviewed();
     partials();
     rings();
     decay();

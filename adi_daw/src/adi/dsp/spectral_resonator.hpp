@@ -11,15 +11,20 @@
 //   Brightness  -100 to +100 %: partial n's level times n^(Brightness/100).
 //   Dry/Wet     0 to 100 %.
 //
-// On a 2,048-point periodic Hann STFT at a hop of 512 (rebuilt exactly, as
-// Spectral Time's), each partial owns the bins within one bin of it. In
+// On a periodic Hann STFT at a hop of a quarter window (rebuilt exactly, as
+// Spectral Time's), its window 2,048 points at 44.1 and 48 kHz and scaled with
+// the rate (4,096 at 96, 8,192 at 192 kHz, so a bin spans 23 Hz at any rate), each partial owns the bins within one bin of it. In
 // them the output's magnitude is the larger of the input's and the last
 // frame's times the Decay's fall per hop, so a struck partial rings on and
 // fades; while it rings every one of its bins advances at the partial's own
 // frequency, so they stay together and the ring is a tone at the partial.
 // The other bins are silent.
 // The latency is one window, reported, and the dry signal is delayed with
-// it. prepare() allocates and never throws; processing does not.
+// it. prepare() allocates and never throws: when memory cannot be had the
+// device is inert, passing its input with no latency reported. Processing
+// does not allocate. An input sample is bounded at 1e6, so no window's
+// transform can overflow into a ring. Dry/Wet glides over about 10 ms once
+// audio runs (dsp/glide.hpp).
 //
 // WHAT IS NOT LIVE'S YET, and says so: Spectral Resonator's MIDI and
 // internal modes, Shift, Unison, the modulation and polyphony, the laws of
@@ -29,6 +34,7 @@
 
 #pragma once
 
+#include "adi/dsp/glide.hpp"
 #include "adi/dsp/spectrum.hpp"
 
 #include <array>
@@ -46,13 +52,15 @@ public:
         double low, high, initial;
     };
     static constexpr Range ranges[Count] = {{20, 5000, 220}, {1, 64, 16}, {-100, 100, 0}, {20, 20000, 2000}, {-100, 100, 0}, {0, 100, 50}};
-    static constexpr std::size_t kSize = 2048, kHop = 512, kBins = kSize / 2 + 1;
+    /// The window at 44.1 and 48 kHz; at the rate set, size().
+    static constexpr std::size_t kSize = 2048;
 
     SpectralResonator();
     void prepare(double sampleRate) noexcept;
     void set(Param, double) noexcept;
     [[nodiscard]] double value(Param p) const noexcept { return p_[static_cast<std::size_t>(p)]; }
-    [[nodiscard]] int latency() const noexcept { return static_cast<int>(kSize); }
+    [[nodiscard]] int latency() const noexcept { return ready_ ? static_cast<int>(size_) : 0; }
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
     void process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept;
     /// Bin k's weight as set (0: silent), for tests.
     [[nodiscard]] float weight(std::size_t k) const noexcept { return weights_[k]; }
@@ -71,8 +79,9 @@ private:
     std::array<Lane, 2> lanes_;
     std::vector<float> window_, scratch_, weights_, advance_;   ///< advance_: a ringing bin's phase per hop
     std::vector<std::complex<float>> bins_, out_;
-    std::size_t written_ = 0;
-    double rate_ = 48000, fall_ = 0, wet_ = 0.5;
+    std::size_t written_ = 0, size_ = 0, hop_ = 1, binCount_ = 1;
+    double rate_ = 48000, fall_ = 0;
+    Glide wet_;
     bool ready_ = false;
 };
 
