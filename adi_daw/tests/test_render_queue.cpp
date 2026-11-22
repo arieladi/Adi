@@ -564,6 +564,50 @@ void directStemBatch() {
           matches(read(afterReplace[4].result, 866), 137) && f.noStage(),
           "a later naming change cannot let one batch member replace its predecessor");
 }
+void sparseRenderMatrix() {
+    Fixture f;
+    f.parallel();
+    f.store->db().exec("INSERT INTO markers(id,time_base,pos_ns,length_ns,name,kind) VALUES"
+        "(11,1,2000000,8000000,'One','cycle'),(12,1,10000000,4000000,'Two','cycle'),"
+        "(13,1,1000000,NULL,'Point','position')");
+    Queue queue;
+    auto job = f.job("{region}-{track}-{counter}");
+    const std::array cells{RenderCell{Source{2}, 12}, RenderCell{Source{1}, 11}, RenderCell{Source{1}, 12}};
+    const auto preview = queue.previewRenderMatrix(job, cells);
+    check(preview.size() == 3 && preview[0].ordinal == 1 && preview[0].regionId == 12 &&
+          preview[0].beginSample == 480 && preview[0].endSample == 672 &&
+          preview[0].output.filename() == "Two-Parallel-1.wav" &&
+          preview[1].output.filename() == "One-Audio-2.wav" &&
+          preview[2].output.filename() == "Two-Audio-3.wav",
+          "sparse matrix previews only individually selected cells and exact marker bounds");
+
+    const std::array repeated{cells[0], cells[0]};
+    bool repeatedRefused = false;
+    try { (void)queue.addRenderMatrix(job, repeated); }
+    catch (const std::invalid_argument&) { repeatedRefused = true; }
+    auto badCell = cells;
+    badCell[2].regionId = 13;
+    bool badMarkerRefused = false;
+    try { (void)queue.addRenderMatrix(job, badCell); }
+    catch (const std::invalid_argument&) { badMarkerRefused = true; }
+    check(repeatedRefused && badMarkerRefused && queue.snapshot().empty(),
+          "a repeated cell or a point marker leaves the matrix queue unchanged");
+
+    const auto ids = queue.addRenderMatrix(job, cells);
+    f.store->db().exec("UPDATE markers SET name='Updated' WHERE id=12");
+    queue.run();
+    const auto results = queue.snapshot();
+    check(ids == std::vector<JobId>{1, 2, 3} && results.size() == 3 &&
+          results[0].result.output.filename() == "Updated-Parallel-1.wav" &&
+          results[1].result.output.filename() == "One-Audio-2.wav" &&
+          results[2].result.output.filename() == "Updated-Audio-3.wav",
+          "selected matrix cells become ordinary jobs with job-start marker names and original order");
+    if (results.size() != 3) return;
+    check(matches(read(results[0].result, 192), 480) &&
+          matches(read(results[1].result, 384), 96) &&
+          matches(read(results[2].result, 192), 480) && f.noStage(),
+          "each selected matrix cell renders its own source and sample-exact region");
+}
 void groupStems() {
     Fixture f;f.effect();f.parallel();
     f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(5,'group','Drums',3);"
@@ -1580,7 +1624,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); explicitDirectTaps(); directStemBatch(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); explicitDirectTaps(); directStemBatch(); sparseRenderMatrix(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

@@ -19,8 +19,8 @@
 #include <memory>
 #include <set>
 #include <stdexcept>
-#include <type_traits>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -671,13 +671,31 @@ JobId Queue::add(Job job) {
     jobs_.push_back({id, std::move(job), {}});
     return id;
 }
+namespace {
+std::vector<RenderCell> stemCells(std::span<const Source> sources, std::optional<std::int64_t> regionId) {
+    std::vector<RenderCell> cells;
+    cells.reserve(sources.size());
+    for (const auto& source : sources) cells.push_back({source, regionId});
+    return cells;
+}
+} // namespace
+
 std::vector<StemPreview> Queue::previewStemBatch(const Job& base, std::span<const Source> sources) const {
-    if (sources.empty() || base.niStems || base.exactWavFilename)
-        throw std::invalid_argument("stem batch requires explicit sources and template filenames");
-    if (sources.size() > std::numeric_limits<JobId>::max() - next_)
+    return previewRenderMatrix(base, stemCells(sources, base.regionId));
+}
+
+std::vector<JobId> Queue::addStemBatch(const Job& base, std::span<const Source> sources) {
+    return addRenderMatrix(base, stemCells(sources, base.regionId));
+}
+
+std::vector<StemPreview> Queue::previewRenderMatrix(const Job& base, std::span<const RenderCell> cells) const {
+    if (cells.empty() || base.niStems || base.exactWavFilename)
+        throw std::invalid_argument("export batch requires explicit cells and template filenames");
+    if (cells.size() > std::numeric_limits<JobId>::max() - next_)
         throw std::overflow_error("export job IDs exhausted");
     auto job = base;
-    job.source = sources.front();
+    job.source = cells.front().source;
+    job.regionId = cells.front().regionId;
     validate(job);
     StoreError error{};
     auto store = Store::open(base.project, error, true);
@@ -689,37 +707,41 @@ std::vector<StemPreview> Queue::previewStemBatch(const Job& base, std::span<cons
     const auto snapshot = engine::SnapshotBuilder::fromStore(*store, std::set<std::int64_t>{}, false);
 
     std::vector<StemPreview> preview;
-    preview.reserve(sources.size());
-    std::set<std::pair<std::int64_t, engine::Tap>> members;
+    preview.reserve(cells.size());
+    std::set<std::tuple<std::int64_t, engine::Tap, std::optional<std::int64_t>>> members;
     std::set<std::string> reserved;
-    for (const auto& source : sources) {
+    for (const auto& cell : cells) {
         job = base;
-        job.source = source;
+        job.source = cell.source;
+        job.regionId = cell.regionId;
         validate(job);
         NameContext names;
         names.project = project;
         names.counter = next_ + static_cast<JobId>(preview.size());
         resolveSourceName(job, model, *snapshot->tempo, names);
-        if (!members.emplace(job.source.trackId, job.source.resolvedTap()).second)
-            throw std::invalid_argument("duplicate stem source and signal tap");
+        if (!members.emplace(job.source.trackId, job.source.resolvedTap(), job.regionId).second)
+            throw std::invalid_argument("duplicate export source, signal tap and range");
         Result output;
         output.output = job.directory / media::pathFromUtf8(resolveName(job.nameTemplate, names) + ".wav");
         selectOutput(output, job.collision, ".wav", "stem batch output name is already in use", reserved);
         reserved.insert(foldedFilename(output.output));
-        preview.push_back({names.counter, job.source, std::move(output.output)});
+        preview.push_back({names.counter, job.source, std::move(output.output), job.regionId,
+                           job.beginSample, job.endSample});
     }
     return preview;
 }
 
-std::vector<JobId> Queue::addStemBatch(const Job& base, std::span<const Source> sources) {
-    const auto preview = previewStemBatch(base, sources);
+std::vector<JobId> Queue::addRenderMatrix(const Job& base, std::span<const RenderCell> cells) {
+    const auto preview = previewRenderMatrix(base, cells);
     std::vector<JobId> ids;
     std::vector<Entry> pending;
     ids.reserve(preview.size());
     pending.reserve(preview.size());
     for (std::size_t i = 0; i < preview.size(); ++i) {
         auto job = base;
-        job.source = sources[i]; // keep the requested alias and resolve names again at render start
+        // Preserve the caller's Main alias and unresolved cycle marker.
+        job.source = cells[i].source;
+        job.regionId = cells[i].regionId;
         ids.push_back(preview[i].ordinal);
         pending.push_back({ids.back(), std::move(job), {}, next_});
     }

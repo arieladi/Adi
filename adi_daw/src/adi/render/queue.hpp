@@ -147,10 +147,16 @@ struct Result {
     std::optional<ReplacementBinding> replacement{};
 };
 struct Entry { JobId id = 0; Job job; Result result; JobId stemBatch = 0; };
+struct RenderCell {
+    Source source;
+    std::optional<std::int64_t> regionId{}; // null uses the job's literal range
+};
 struct StemPreview {
     JobId ordinal = 0;
     Source source;
     std::filesystem::path output;
+    std::optional<std::int64_t> regionId{};
+    std::int64_t beginSample = 0, endSample = 0;
 };
 struct RunMember {
     JobId id = 0;
@@ -239,6 +245,10 @@ public:
     [[nodiscard]] std::vector<StemPreview> previewStemBatch(const Job&, std::span<const Source>) const;
     // Revalidate before adding the entire list. Refusal adds no queue entries.
     std::vector<JobId> addStemBatch(const Job&, std::span<const Source>);
+    // Sparse matrix in caller order. Every selected track/tap and cycle
+    // marker becomes an ordinary job under the same batch collision rules.
+    [[nodiscard]] std::vector<StemPreview> previewRenderMatrix(const Job&, std::span<const RenderCell>) const;
+    std::vector<JobId> addRenderMatrix(const Job&, std::span<const RenderCell>);
     bool update(JobId, Job);
     bool remove(JobId);
     bool retry(JobId); // only Failed/Cancelled, never silently rerender completed files
