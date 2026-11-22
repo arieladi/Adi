@@ -4,8 +4,29 @@
 #include <algorithm>
 #include <cmath>
 #include <new>
+#include <numbers>
 
 namespace adi::dsp {
+
+namespace {
+// The measured rise and fall share a range-reduced exponential. Its two
+// polynomial values round separately before the single-precision division.
+float followerPole(double rate, double milliseconds) noexcept {
+    constexpr double timeScale = 1.00032789;
+    constexpr double ln2 = std::numbers::ln2;
+    const double z = (1000.0 / rate) / (timeScale * milliseconds);
+    if (z >= 150.0 * ln2) return 0.f; // Smaller than half the least binary32 subnormal.
+    if (z <= 0x1p-26) return 1.f;    // Both polynomial terms round to unity.
+    const int shift = static_cast<int>(std::round(z / ln2));
+    const double r = z - static_cast<double>(shift) * ln2;
+    const auto polynomial = [](double x) {
+        constexpr double quadratic = .09997512;
+        constexpr double cubic = .5 * quadratic - 1.0 / 24.0;
+        return static_cast<float>(1.0 + x * (.5 + x * (quadratic + x * cubic)));
+    };
+    return std::ldexp(polynomial(-r) / polynomial(r), -shift);
+}
+} // namespace
 
 void AdiShaperFollower::prepare(double sampleRate) noexcept {
     if (!std::isfinite(sampleRate) || sampleRate < 1.0) return;
@@ -32,10 +53,8 @@ void AdiShaperFollower::reset() noexcept {
 
 void AdiShaperFollower::updateTimes() noexcept {
     const double a = attack;
-    // Fitted to the first step sample at 48 and 96 kHz.
-    constexpr double minimumAttackSeconds = 5.0018e-6;
-    const double attackSeconds = minimumAttackSeconds + (.1 - minimumAttackSeconds) * a * a * a;
-    rise = static_cast<float>(-std::expm1(-1.0 / (rate * attackSeconds)));
+    const double attackMs = .005 + 99.995 * a * a * a;
+    rise = 1.f - followerPole(rate, attackMs);
     const double limit = history.empty() ? 0.0 : static_cast<double>(history.size() - 1);
     const float frames = static_cast<float>(std::min(.5 * rate * (hold * hold), limit));
     const auto nextWindow = static_cast<std::uint32_t>(frames);
@@ -44,17 +63,14 @@ void AdiShaperFollower::updateTimes() noexcept {
         windowChanged = true;
     }
 
-    // Continuous duration fitted to signed falling steps across the control.
-    const double ms = 5.00160 + 55.0211 * std::expm1(4.51953 * release);
-    // Round both terms of the decay pole. At long release, a one-ULP
-    // coefficient difference persists for several seconds.
-    const float halfStep = static_cast<float>(std::tanh(500.0 / rate / ms));
-    fall = (1.f - halfStep) / (1.f + halfStep);
+    // A 50 ms offset gives a logarithmic interpolation from 5 ms to 5 s.
+    const double releaseMs = 5.0 + 55.0 * std::expm1(std::log(5050.0 / 55.0) * release);
+    fall = followerPole(rate, releaseMs);
 }
 
 void AdiShaperFollower::set(Control control, float value) noexcept {
     if (!std::isfinite(value)) return;
-    const float unit = std::clamp(value, 0.f, 100.f) * .01f;
+    const float unit = std::clamp(value, 0.f, 100.f) / 100.f;
     switch (control) {
     case Control::Mode: multiply = value >= .5f; break;
     case Control::Amount: amount = unit; break;
@@ -63,9 +79,8 @@ void AdiShaperFollower::set(Control control, float value) noexcept {
     case Control::Threshold: threshold = unit; return;
     case Control::Attack: case Control::Hold: case Control::Release: {
         auto& setting = control == Control::Attack ? attack : control == Control::Hold ? hold : release;
-        const float time = std::clamp(value, 0.f, 100.f) / 100.f;
-        if (setting != time) {
-            setting = time;
+        if (setting != unit) {
+            setting = unit;
             updateTimes();
         }
         return;

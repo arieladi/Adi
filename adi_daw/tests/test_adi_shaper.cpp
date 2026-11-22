@@ -957,10 +957,10 @@ void followerTimeConstants() {
         return (l.back() - r.back()) / .02f;
     };
     baseline();
-    check(near(gainAfter(1, .18f), .5 + 2 * .18720603, 3e-6), "minimum attack matches the first measured step sample at 48 kHz");
+    check(near(gainAfter(1, .18f), .87441205978, 3e-6), "minimum attack matches the first measured step sample at 48 kHz");
     rack.prepare(96000);
     baseline();
-    check(near(gainAfter(1, .18f), .5 + 2 * .16757002, 3e-6), "minimum attack matches the first measured step sample at 96 kHz");
+    check(near(gainAfter(1, .18f), .83514451981, 3e-6), "minimum attack matches the first measured step sample at 96 kHz");
     rack.prepare(48000);
     const std::array attackMs{1.562,12.500,42.188,99.938};
     for (std::size_t i = 0; i < attackMs.size(); ++i) {
@@ -990,6 +990,60 @@ void followerTimeConstants() {
         const auto n = static_cast<std::size_t>(std::round(measuredHalfMs[i] * 48)) + 1;
         check(near(gainAfter(n, 0), .7, .001), "absolute peak decay reproduces the six measured release crossings");
     }
+}
+
+void followerPoleLandmarks() {
+    using Follower = adi::dsp::AdiShaperFollower;
+    using Control = Follower::Control;
+    Follower meter;
+    meter.set(Control::On, 1);
+    meter.set(Control::Amount, 75);
+    struct Reading { double rate; float percent, rise, fall, fourth, twelfth; };
+    constexpr Reading readings[]{
+        {44100, 12.5f, .10700142384f, .99951541424f, .18203955889f, .37141829729f},
+        {48000, 20, .02554094791f, .99975728989f, .04915797710f, .13345009089f},
+        {48000, 11, .13999295235f, .99948495626f, .22648695111f, .41815462708f},
+        {88200, 17.6f, .02039110661f, .99984222651f, .03955170512f, .10951656103f},
+        {96000, 18.75f, .01555687189f, .99986714125f, .03039520979f, .08575469255f},
+        {192000, .5f, .64609569311f, .99916821718f, .49215644598f, .49999806285f}
+    };
+    for (const auto& row : readings) {
+        meter.prepare(row.rate);
+        meter.set(Control::Attack, row.percent);
+        meter.set(Control::Release, 0);
+        for (int i = 0; i < 12; ++i) {
+            const float sign = i % 2 ? 1.f : -1.f;
+            const float e = meter.apply(sign * .5f, -sign * .5f, 0);
+            if (i == 0) {
+                // The fastest held-out 192 kHz attack differs by one float step.
+                const float tolerance = row.rate == 192000 ? 0x1p-24f : 0.f;
+                check(std::abs(2.f * e - row.rise) <= tolerance, "measured first attack coefficient");
+            }
+            if (i == 3 || i == 11) {
+                const float value = .5f + (e - .5f); // Read with the signed half-scale reference's rounding.
+                check(std::abs(value - (i == 3 ? row.fourth : row.twelfth)) <= 0x1p-25f,
+                      "independent signed attack trajectory at the fourth and twelfth frames");
+            }
+        }
+        meter.reset();
+        meter.set(Control::Attack, 0);
+        meter.set(Control::Release, row.percent);
+        float e = 0;
+        for (int i = 0; i < 256 && e != .5f; ++i) e = meter.apply(-.5f, .25f, 0);
+        check(e == .5f && 2.f * meter.apply(0, 0, 0) == row.fall, "measured first falling coefficient");
+    }
+
+    meter.prepare(48000);
+    meter.set(Control::Threshold, 10);
+    check(meter.apply(0, -std::nextafter(.1f, 0.f), 0) == 0 && meter.apply(0, -.1f, 0) > 0,
+          "a physical threshold is normalized by division and includes the exact boundary");
+    meter.set(Control::Threshold, 0);
+    meter.set(Control::Release, 0);
+    meter.prepare(1);
+    check(meter.apply(1, 0, 0) == 1 && meter.apply(0, 0, 0) == 0,
+          "an underflowed pole settles immediately at the slowest supported rate");
+    meter.prepare(std::numeric_limits<double>::max());
+    check(meter.apply(1, 0, 0) == 0, "the rising increment rounds to zero at extreme finite rates");
 }
 
 void followerSplitInputs() {
@@ -1052,6 +1106,7 @@ int main() {
     followerSignedPeaks();
     followerLevels();
     followerTimeConstants();
+    followerPoleLandmarks();
     followerSplitInputs();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
