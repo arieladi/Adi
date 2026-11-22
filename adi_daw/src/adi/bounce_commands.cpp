@@ -174,7 +174,7 @@ TrackBounce prepareBounceInPlace(Store &store, const InPlaceBounceOptions &optio
         if (std::llround(static_cast<double>(endNs) * rate / 1e9) != options.job.endSample)
             throw std::runtime_error("Bounce in Place range cannot preserve its final sample");
         std::optional<std::int64_t> head;
-        std::vector<OpRequest> parked;
+        std::vector<OpRequest> afterCapture;
         std::string name;
         {
             SQLite::Transaction capture(store.db(), SQLite::TransactionBehavior::DEFERRED);
@@ -218,17 +218,16 @@ TrackBounce prepareBounceInPlace(Store &store, const InPlaceBounceOptions &optio
             }
             SQLite::Statement devices(store.db(),
                                       "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id "
-                                      "WHERE c.track_id=? AND d.enabled<>0 ORDER BY c.ord,c.id,d.ord,d.id");
+                                      "WHERE c.track_id=? ORDER BY c.ord,c.id,d.ord,d.id");
             devices.bind(1, options.sourceTrack);
             while (devices.executeStep())
-                add(parked, "device.setEnabled",
-                    {{"id", devices.getColumn(0).getInt64()}, {"enabled", false}});
+                add(afterCapture, "device.remove", {{"id", devices.getColumn(0).getInt64()}});
             SQLite::Statement gain(store.db(), "SELECT input_gain_db FROM mixer_strip WHERE track_id=?");
             gain.bind(1, options.sourceTrack);
             if (gain.executeStep() && gain.getColumn(0).getDouble() != 0)
-                add(parked, "mixer.setInputGain", {{"id", options.sourceTrack}, {"db", 0.0}});
+                add(afterCapture, "mixer.setInputGain", {{"id", options.sourceTrack}, {"db", 0.0}});
             if (track.getColumn(4).getInt() != 0)
-                add(parked, "track.setArm", {{"id", options.sourceTrack}, {"armed", false}});
+                add(afterCapture, "track.setArm", {{"id", options.sourceTrack}, {"armed", false}});
             capture.commit();
         }
         BounceOptions bounce;
@@ -248,7 +247,7 @@ TrackBounce prepareBounceInPlace(Store &store, const InPlaceBounceOptions &optio
         if (!data->material.edit.options.expectHead || *data->material.edit.options.expectHead != head)
             throw std::runtime_error("project changed before in-place capture");
         auto &requests = data->material.edit.requests;
-        requests.insert(requests.end(), parked.begin(), parked.end());
+        requests.insert(requests.end(), afterCapture.begin(), afterCapture.end());
         add(requests, "clip.setName", {{"id", options.clipId}, {"name", name}});
         for (auto &op : requests)
             op.label = "Bounce in Place";

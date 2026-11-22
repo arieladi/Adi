@@ -44,7 +44,8 @@ class TrackBounce {
                                                   engine::DeviceLoader = {}, render::Control = {});
 // Whole-chain in-place replacement: only regular tracks without incoming
 // main/send audio. All their clips must fit the explicit [0,end) range. Effects
-// are parked bypassed, baked input gain resets to zero; fader/pan stay live.
+// and their nested chains are removed with native undo. Baked input gain resets
+// to zero, and fader/pan stay live.
 [[nodiscard]] TrackBounce prepareBounceInPlace(Store &, const InPlaceBounceOptions &,
                                                engine::DeviceLoader = {}, render::Control = {});
 [[nodiscard]] CommitResult commitTrackBounce(Store &, TrackBounce &, std::uint64_t documentGeneration,

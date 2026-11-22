@@ -24,14 +24,14 @@ parallel route of a source. The output clip starts at the job's begin sample,
 converted to nanoseconds with a checked sample round trip, and plays Warp off.
 
 `prepareBounceInPlace(Store&, InPlaceBounceOptions, loader, control)` renders a
-whole regular track before its fader, replaces its main-lane clips and parks its
-enabled inserts bypassed. Take-lane clips stay in the project. Device state,
-params and blobs remain intact. Baked
-input gain resets to zero, and an armed source disarms. The fader, pan, width,
-track delay and output routing remain live. Device bypass keeps latency under
-ADR-0203 d4; its graph delay line remains compensated and source device DSP is
-not called. One Undo restores the full original material, enabled state, input
-gain and arm flag. This is the whole-chain command: begin must be sample zero,
+whole regular track before its fader, replaces its main-lane clips and removes
+the insert devices along with nested rack chains. Take-lane clips stay in the
+project. The capture compensates the original insert delay and the bounced
+clip plays with the removed devices out of the live graph. Baked input gain
+resets to zero, and an armed source disarms. The fader, pan, width, track delay
+and output routing remain live. Device removal captures saved state, params
+and rack contents. One Undo restores them along with the original material,
+input gain and arm flag. The whole-chain range begins at sample zero,
 and the explicit end must include the main-lane clips and the caller's chosen tail.
 It refuses a partial range, a group, locked/frozen/missing track, or live
 incoming main/send audio that would otherwise be added to its already baked
@@ -67,7 +67,7 @@ edit without deleting it. Successful pool files survive Undo for Redo/history.
 
 Tests audition actual outputs through a parent and a different explicit Main
 route in both processing widths, with source effects, gain and pan. They cover
-source parking without a second effect pass, Warp off, exact native undo/redo
+removal of delayed and disabled inserts, Warp off, exact native undo/redo
 and reopen, hierarchy/order/color, document/head guards, same-job retry after a
 deferred FK fault, and preservation of external sources. No schema or opcode
 is added: existing native track/mixer/device/media/clip operations form the
