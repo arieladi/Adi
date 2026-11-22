@@ -404,6 +404,7 @@ add_library(adi_core STATIC
     src/adi/engine/scale_context.cpp
     src/adi/tuning_ops.cpp
     src/adi/render/queue.cpp
+    src/adi/render/after_export.cpp
     src/adi/render/freeze_capture.cpp
     src/adi/freeze_fingerprint.cpp
     src/adi/freeze_groups.cpp

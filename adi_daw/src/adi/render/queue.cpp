@@ -647,12 +647,25 @@ void detail::retainIntermediateMedia(Result& delivery, Result& intermediate) {
         throw std::runtime_error("NI Stems input media changed between renders");
 }
 
+namespace {
+std::optional<std::string> fingerprintStagedDelivery(const fs::path& stage, const Control& control) {
+    if (!control.fingerprintDelivery) return std::nullopt;
+    cancellation(control);
+    auto hash = media::blake3File(stage, control.stop);
+    cancellation(control);
+    if (!hash) throw std::runtime_error("Cannot fingerprint staged export for After Export");
+    return std::move(hash.hex);
+}
+} // namespace
+
 void detail::publishVerifiedOutput(const fs::path& stage, Result& result, const Control& control,
                                    const char* collisionMessage) {
     if (!result.mediaVerification || !result.mediaVerification->startComplete)
         throw std::runtime_error("export has no complete input media capture");
     verifyMedia(*result.mediaVerification, control);
+    auto fingerprint = fingerprintStagedDelivery(stage, control);
     publishOutput(stage, result, control.publicationHooks, collisionMessage);
+    result.deliveryBlake3 = std::move(fingerprint);
 }
 
 void detail::publishOutput(const fs::path& stage, Result& result, media::PublishHooks hooks,
@@ -951,6 +964,11 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 (void)sink.finish(serviceEncoding);
             }
             verifyMedia(*result.mediaVerification, control);
+            if (control.fingerprintDelivery) {
+                for (std::size_t i = 0; i < sinks.size(); ++i) {
+                    preparedFiles[i].deliveryBlake3 = fingerprintStagedDelivery(sinks[i].output(), control);
+                }
+            }
             for (std::size_t index = 0; index < sinks.size(); ++index) {
                 cancellation(control);
                 auto& file = preparedFiles[index];
@@ -960,6 +978,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                                           "export destination already exists");
                     report.state = file.state;
                     report.publication = std::move(file.publication);
+                    report.deliveryBlake3 = std::move(file.deliveryBlake3);
                 } catch (const std::exception& error) {
                     report.state = JobState::Failed;
                     report.error = error.what();
@@ -1158,14 +1177,17 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"error", result.error}, {"publication", nullptr}, {"stage_cleanup", nullptr},
                 {"normalization", nullptr},
                 {"resolved_snapshot", nullptr}, {"ni_stem_snapshots", Json::array()}, {"media_verification", nullptr}};
+            if (result.deliveryBlake3) value["delivery_blake3"] = *result.deliveryBlake3;
             if (!result.deliveries.empty()) {
                 auto& files = value["deliveries"] = Json::array();
                 for (const auto& file : result.deliveries) {
                     Json publication = nullptr;
                     if (file.publication) publication = {{"durability_confirmed", file.publication->durabilityConfirmed},
                         {"used_fallback", file.publication->usedFallback}, {"warning", file.publication->warning}};
-                    files.push_back({{"output", media::pathUtf8(file.output)}, {"state", stateName(file.state)},
-                                     {"publication", std::move(publication)}, {"error", file.error}});
+                    Json delivery{{"output", media::pathUtf8(file.output)}, {"state", stateName(file.state)},
+                                  {"publication", std::move(publication)}, {"error", file.error}};
+                    if (file.deliveryBlake3) delivery["delivery_blake3"] = *file.deliveryBlake3;
+                    files.push_back(std::move(delivery));
                 }
             }
             if(result.replacement) {

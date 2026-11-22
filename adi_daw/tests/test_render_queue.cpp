@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/after_export.hpp"
 #include "adi/render/delivery_src.hpp"
 #include "adi/render/mp3_writer.hpp"
 #include "adi/render/opus_writer.hpp"
@@ -1026,6 +1027,92 @@ void losslessReadbackGate() {
     check(corrupted && result.state == JobState::Failed && !result.publication &&
           !fs::exists(job.directory / "corrupt-pcm-stage.wav") && f.noStage(),
           "a truncated finalized WAV is refused before publication and its stage is removed");
+}
+
+void afterExportImport() {
+    Fixture f;
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(3,'audio','After Export',2)");
+    auto job = f.job("delivered");
+    auto ordinary = job;
+    ordinary.nameTemplate = "ordinary";
+    check(!renderWav(ordinary, {}).deliveryBlake3, "ordinary exports do not fingerprint their delivery");
+    Control control;
+    control.fingerprintDelivery = true;
+    const auto delivery = renderWav(job, {}, control);
+    const auto actual = media::blake3File(delivery.output);
+    check(delivery.state == JobState::Completed && actual && delivery.deliveryBlake3 == actual.hex,
+          "completed delivery records the actual published bytes for an After Export action");
+
+    clip_edit::ImportOptions target;
+    target.track = 3;
+    target.clipId = 40;
+    target.mediaId = 50;
+    target.at = {1, 200000000};
+    const auto originalHead = OpJournal(*f.store).headSeq();
+    auto cancelled = delivery;
+    cancelled.state = JobState::Cancelled;
+    check(!importAfterExport(*f.store, cancelled, target, 48000).ok && OpJournal(*f.store).headSeq() == originalHead,
+          "cancelled jobs cannot import and leave the project untouched");
+    check(importAfterExport(*f.store, delivery, target, 48000).ok &&
+          f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id=40 AND track_id=3").getInt() == 1,
+          "After Export places audio on the explicit destination track");
+    auto placed = f.job("after-export-playback");
+    placed.source.trackId = 3;
+    placed.beginSample = 9600;
+    placed.endSample = 10466;
+    check(matches(read(renderWav(placed, {}), 866), 137), "the imported clip plays the exported sample range at its new placement");
+    check(History(*f.store).undo().ok && OpJournal(*f.store).headSeq() == originalHead &&
+          f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id=40").getInt() == 0 &&
+          fs::exists(delivery.output) && media::blake3File(delivery.output).hex == actual.hex,
+          "one Undo removes the import and preserves the original delivery file");
+
+    audio::WavWriter swapped(delivery.output, 48000, 2, audio::WavFormat::Float32);
+    std::vector<float> silence(866 * 2);
+    swapped.write(silence.data(), 866);
+    swapped.close();
+    const auto wrongBytes = importAfterExport(*f.store, delivery, target, 48000);
+    check(!wrongBytes.ok && wrongBytes.error.find("changed") != std::string::npos &&
+          OpJournal(*f.store).headSeq() == originalHead && f.noStage(),
+          "same-dimensional replacement is refused without journal or export-stage changes");
+}
+void importSelectedDelivery() {
+    Fixture f;
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(3,'audio','After Export',2)");
+    auto job = f.job("import-selected-file");
+    auto aiff = job.encoding;
+    aiff.container = ExportContainer::Aiff;
+    job.deliveries = {{job.encoding, ""}, {aiff, ""}};
+    Control control;
+    control.fingerprintDelivery = true;
+    Queue queue;
+    queue.add(job);
+    queue.run({}, control);
+    const auto result = queue.snapshot().front().result;
+    check(result.state == JobState::Completed && result.deliveries.size() == 2 &&
+          !result.deliveryBlake3 && result.deliveries[0].deliveryBlake3 && result.deliveries[1].deliveryBlake3 &&
+          result.deliveries[0].deliveryBlake3 != result.deliveries[1].deliveryBlake3,
+          "each published file carries its own opt-in After Export identity");
+    if (result.state != JobState::Completed || result.deliveries.size() != 2 ||
+        !result.deliveries[0].deliveryBlake3 || !result.deliveries[1].deliveryBlake3) return;
+    const auto& chosen = result.deliveries[1];
+    const auto manifest = nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["result"]["deliveries"][1]["delivery_blake3"] == *chosen.deliveryBlake3,
+          "the requested delivery identity is visible on the selected manifest row");
+    clip_edit::ImportOptions target;
+    target.track = 3;
+    target.clipId = 40;
+    target.mediaId = 50;
+    target.at = {1, 200000000};
+    const auto before = OpJournal(*f.store).headSeq();
+    const auto imported = importAfterExport(*f.store, chosen, target, 48000);
+    check(imported.ok && f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id=40 AND track_id=3").getInt() == 1,
+          imported.error.empty() ? "After Export imports only the chosen AIFF file" : imported.error.c_str());
+    if (imported.ok) {
+        check(History(*f.store).undo().ok && OpJournal(*f.store).headSeq() == before &&
+              media::blake3File(result.deliveries[0].output).hex == *result.deliveries[0].deliveryBlake3 &&
+              media::blake3File(chosen.output).hex == *chosen.deliveryBlake3,
+              "one Undo restores the project and both original delivery files keep their bytes");
+    }
 }
 
 void regionStems() {
@@ -2143,7 +2230,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
