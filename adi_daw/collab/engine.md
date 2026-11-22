@@ -32,6 +32,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DF-E50 built-in automation review
+
+`devices/df-e50` at `854050e33bba4f9b85719c448273e9c40ced128b` is already on main through `40cb0599`. The Engine review confirms Utility's lane is heard live and offline. With a stored +6 dB and a 0 dB lane, the exact native result is 0.250000 in both paths. The current full Built-in Devices suite passes 183 checks with GCC and Clang warnings as errors, and the WTS-01 6b engine exercise hears its scripted Utility change.
+
+The rapid manual override residual belongs to DF-E61. A real same-session ParamOps edit from saved +6 dB through +3 dB and back to +6 dB before the next callback overrides the lane and leaves 0.250000 on current main. Published `devices/df-e57` at `25dbda759ce449ee1966f0f5bb83ffc1626aab92` supplies the per-parameter edit counts and passes all 16 native probe checks, including +6 dB restored to 0.498810 and the unchanged live/offline lane. It is outside the current main ancestry.
+
+The reviewed patch holds ParamMod until the next value. For DEV-07, have the evaluator explicitly clear a withdrawn or disabled source so a held offset has a defined end. Utility's 3 December exercise uses ParamValue.
+
 ## 2026-11-22 — DF-E27(g) graph host telemetry and swap policies
 
 **PR requested** for `engine/df-e27-host-telemetry` at `0d14bd14def1d84171f02564cb48800acad19ee0`. Title **DF-E27 snapshot graph host telemetry across the callback**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. `GraphHost::stats()` returns a value snapshot of six independently sampled lock-free counters. The owner can set history carry and fade safely across callback acquisition. Each swap uses one fade length for the whole ramp.
