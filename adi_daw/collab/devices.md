@@ -8,7 +8,7 @@ device PRs do not conflict on one shared log file.
 ## FOR THE DIRECTOR
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 32 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 33 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -153,6 +153,10 @@ method); Live's files and renders stay in the director's research.
     lists. With a loop-back cable and Dry/Wet 50 %: does the dry meet the return, or arrive early?
 32. **DJ Filter (built after 3 December).** The DJ Filter as Live 12.4 shows it: its controls and
     ranges, and whether it has a resonance of its own. Pink noise at Filter −50 and +50: the response.
+33. **Auto Shift (built after 3 December).** A fresh Auto Shift, every control as shown (its scale
+    list, the Strength and Smooth ranges, the formant and vibrato sections).
+    - A 446 Hz sine through it at its defaults: the output's pitch, and how fast the correction comes.
+    - Its reported latency.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -167,6 +171,26 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — PLAN DEV-22: Auto Shift on the Tuner's detector and the Shifter — lands after 3 December
+
+**PR requested:** head `devices/auto-shift` (9149da91), base `main`, after `devices/dj-filter`.
+- **What it is.** `dsp::AutoShift` reads the pitch with the Tuner's `PitchDetector` and moves it with
+  the Shifter's Pitch mode. These are the two cores that PLAN DEV-22 names for it.
+  - Every 64th sample it retunes to Shift + Detune + the correction. The correction is Strength times
+    the distance to the nearest note of the scale, and Smooth glides it.
+  - An unclear reading holds the last correction.
+  - Formant, vibrato and the MIDI scale input are not built.
+- **Tests:**
+  - `adi_auto_shift_tests` 19: 446 Hz comes out at 440 within 1 cent; the 50 % Strength, C major,
+    Strength 0, Correction off and Detune cases; Shift +12 commands the right shift; the glide; the
+    hold through noise (a plant that resets it fails); block sizes; NaN; no allocation.
+  - parity max error 0;
+  - the catalogue holds 35 built-ins.
+- **Not claimed:** a large Shift sounds as the Shifter does. Its lines sit a crossfade rate apart under
+  an envelope at the commanded pitch; at 446 Hz × 2 the strongest line is 886 Hz, not 892. The
+  Shifter's own tests cover that sound.
+- **Reading 33, added to the ONE list.**
 
 ## 2026-11-22 — items 19 to 22 reviewed: eleven findings, all fixed
 
@@ -204,7 +228,8 @@ their order. The heads below replace those logged for items 19, 20 and 22.
 **CTest (`ctest -LE acceptance`):**
 - `devices/channel-eq` (776ad5eb): 277/277 at 32 and 64.
 - `devices/hybrid-reverb-nupc` (fb1c7e9a): 268/268 at 32 and 64.
-- `devices/dj-filter` (729bc803, before the fixes): 283/283 at 32; the 64 run is pending.
+- `devices/dj-filter` (729bc803, before the fixes): 283/283 at 32 and 64. The fixed stack is being run
+  on `devices/auto-shift`.
 
 **Found in passing, not this branch's to change:** `dsp::Shifter` passes a NaN input into its delay
 line, where it stays (Auto Shift, next, sanitises its own input). The fix belongs on its own branch
