@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Pan switching transient on held curves
+
+`clones/shaper-pan-edge` at `5c554c59` — Reproduce both ears at held Pan transitions. The level at an endpoint already matched. A signed marker showed the outgoing ear also carried 96 frames of earlier input at 48 kHz. The device now keeps that history per band. Its parameter IDs and zero reported latency are preserved.
+
+On 192,000 frames of stereo kick and bass, after removing the reference’s measured 16-frame latency, whole-capture RMS fell from 0.00906528 to 0.000000011302 on L and from 0.00498397 to 0.0000000037333 on R. Peak residual was below 0.00000197. The DC oracle measured 0.0000000138 RMS and unrelated stereo noise stayed below 0.000000649. All three ADI renders were bit-identical at 256 and 2,048 frames. The Release MSVC /W4 /WX suite passed, including dry, neutral and sparse-state cases. Main failed both buffer-size edge oracles and the signed marker.
+
+PR requested
+
 ## 22 November 2026 — Two-head delay reader for devices review
 
 For devices and Win. `clones/two-head-reader` at `9b7cd7ca` — Share the two-head delay reader across pitch policies. **Lands after 3 December.** The reader accepts the caller’s interpolator and retains the phase precision, crossfade, wrap and unison behavior of each processor. The public unit test exercises read ages across the history boundary and the two weight and advance laws at 44.1, 48 and 96 kHz. The two shipping devices have no changes on this branch.
