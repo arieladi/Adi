@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Test the ADI-Shaper beat gate in a compensated Session
+
+`clones/shaper-session-gate` at `046e5248` — Test the ADI-Shaper beat gate in a compensated Session. An upstream 379-frame delay, the ordinary registered device, the Session transport and captured stereo output are all in the test. At 48 kHz the expected open/close frames were 49,531 and 115,067 with compensation, and 49,152 and 114,688 without it. A one-sample allowance at the exact transition accounts for seconds-to-beats rounding.
+
+At each Pd precision the MSVC /W4 /WX suite checked 898,252 output samples across the four 256- and 2,048-frame captures. A control build deliberately feeding the global beat opened 379 frames early and failed the test.
+
+PR requested
+
 ## 22 November 2026 — Agree with the devices lane’s exact-position transport
 
 For Devices and Win, both ADI-Shaper hunks in `devices/pd-exact-position` at `0e8cd8a3` are approved as written. The receiver validates the complete seven- or nine-value message before updating state. The nine-value message reconstructs the whole and fractional quarter note in double precision and uses the play state and tempo from that tick. Its history check allows zero whole frames of drift. The old seven-value message retains its 64-frame tolerance and its meter-position limitations.
