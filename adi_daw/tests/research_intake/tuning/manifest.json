@@ -1,0 +1,166 @@
+{
+  "authorship": "Original fixtures from the director's research.",
+  "warning": "Documentary expectations only. No Live or ADI runtime interoperability tests executed. No product source modified.",
+  "records": [
+    {
+      "file": "valid-12-edo.scl",
+      "sha256": "fbeafb6955125cb71bfdbb9bc42c83d04406c14a30506b605a9dab0710042a1d",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Format-valid interval list.",
+      "adi_0178_policy_expectation": "Fits rising nonnegative degree model after period extraction.",
+      "probe_focus": "Baseline import, implicit unison, last entry as period, reference assignment.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "valid-19-edo.scl",
+      "sha256": "61c4e1e1dff04830b61816e6de4ce3d3eb1e93dfba7cd7f557d812610b0ee287",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Format-valid interval list.",
+      "adi_0178_policy_expectation": "Fits rising nonnegative degree model after period extraction.",
+      "probe_focus": "Non-twelve-degree mapping and numerical precision.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "valid-labels-reference-a.ascl",
+      "sha256": "c28f144828e9542ab3febd31ad82645633a426397c80594cd61701f9dd3d1239",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Format-valid declared extension data.",
+      "adi_0178_policy_expectation": "Intervals/names fit; reference frequency and keyboard mapping are deferred representation questions.",
+      "probe_focus": "Reference metadata, quoted space-containing names, paired index bounds and label persistence.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "valid-labels-reference-b.ascl",
+      "sha256": "3d983420d482f75c120de34cbab3a21ad78354c88c95eeafb85173c142b498f4",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Format-valid declared extension data.",
+      "adi_0178_policy_expectation": "Same interval representation as reference-a; audible anchor differs.",
+      "probe_focus": "Compare same degrees with changed reference; export and reopen without claiming equivalent pitch.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "valid-nonmonotonic.ascl",
+      "sha256": "743592e94ef40ab0b2cd78712f8ff7514cc239e1993d39d0d8bac6be61dfda49",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "ASCL explicitly describes nonmonotonic indexed ranges; this is not malformed solely because pitch order falls.",
+      "adi_0178_policy_expectation": "Conflicts with ADR-0178 ascending-degree invariant; requires explicit import policy, not silent sorting.",
+      "probe_focus": "Keep index/name identity and distinguish first/last indices from lowest/highest frequency.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "valid-negative-cents.scl",
+      "sha256": "13bd36d13f6ec3878871f803d4d4f2532c10ddf3565f98308e04044bb570ba9d",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Negative cents are legal SCL syntax.",
+      "adi_0178_policy_expectation": "Conflicts with nonnegative and rising degree requirements; no unapproved schema change.",
+      "probe_focus": "Differentiate source validity from ADI representability and visible rejection/normalization choice.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "valid-integer-ratio.scl",
+      "sha256": "8939911188fb484407657935485d673106892843ad191f93cba4ce0cf907dae7",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Integer without a decimal point is a ratio over one; trailing labels are allowed.",
+      "adi_0178_policy_expectation": "Fits increasing degree model once ratios become cents.",
+      "probe_focus": "Reject an implementation that treats the integer period as cents.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "valid-legacy-description.scl",
+      "sha256": "f7b13e56fa0108ddc84045231f9b21860312eedc7e23db8810bc2fc5f9361053",
+      "encoding": "iso-8859-1",
+      "documentary_format_expectation": "Legacy 8-bit SCL text is allowed; there are no Ableton extensions here.",
+      "adi_0178_policy_expectation": "Encoding migration is separate from musical validity.",
+      "probe_focus": "Compare description decoding with a Unicode import path.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "format-valid-zero-count.scl",
+      "sha256": "d9a0ac4b16ae729692194aa403239163f248291141562c6656e9a4a8318855c0",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "SCL permits zero count; host usability is separate and Live acceptance is unmeasured.",
+      "adi_0178_policy_expectation": "No usable positive period is provided; require a deliberate application-level outcome.",
+      "probe_focus": "Do not equate a valid source grammar with accepted usable tuning.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "invalid-missing-pitch.scl",
+      "sha256": "5aa82eed71ea8a4a86d082d793332bed21117d8ba6e7ff76395441eb1f159c33",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Invalid declared pitch count.",
+      "adi_0178_policy_expectation": "Reject without publishing partial tuning objects.",
+      "probe_focus": "Diagnostic location, unchanged previous tuning, no partial history entry.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "invalid-negative-ratio.scl",
+      "sha256": "757dec8db451075a56925d8a04febf8ee82f51576371a834c9503c0e9167f7a6",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Invalid SCL ratio.",
+      "adi_0178_policy_expectation": "Reject before degree conversion.",
+      "probe_focus": "Differentiate negative ratio from valid negative cents.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "invalid-duplicate-range.ascl",
+      "sha256": "0046cec179f96a21c9bc9bcf9891b3898a4c0f30c14c4f65b1160baee99d78b8",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Invalid ASCL: multiple range directives.",
+      "adi_0178_policy_expectation": "Reject extension validation; do not silently choose the first or last.",
+      "probe_focus": "Transactional failure and actionable duplicate-directive diagnostic.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "invalid-index-before-reference.ascl",
+      "sha256": "a03273f74460797b1f1d7281ab463edc55124ece94fff4eb3b725bd3c38dca01",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Violates the declared-prior-reference requirement for index ranges.",
+      "adi_0178_policy_expectation": "Source validation precedes representation conversion.",
+      "probe_focus": "Check strict versus permissive implementation behavior without recording any result in advance.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "invalid-zero-reference.ascl",
+      "sha256": "2fcdfc7fc934a1a2a2ecce6dc9075a616b16801247e407a9a2bf9f86ae529a13",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Invalid reference frequency.",
+      "adi_0178_policy_expectation": "Reject before frequency or cents arithmetic.",
+      "probe_focus": "No nonfinite values, partial writes or audio-state corruption.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "invalid-extension-encoding.ascl",
+      "sha256": "0b42552f6cad412618e029de460380d98f681a4328632378cd2b019db573043b",
+      "encoding": "iso-8859-1",
+      "documentary_format_expectation": "Invalid ASCL encoding because extension-bearing text is Latin-1 rather than UTF-8.",
+      "adi_0178_policy_expectation": "Reject or explicit user-approved conversion path; do not guess silently.",
+      "probe_focus": "Contrast with valid-legacy-description.scl.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    },
+    {
+      "file": "unspecified-unknown-directive.ascl",
+      "sha256": "027e0b93ecc5bc2c7ad0cbd5ccc6913fcba25cc3224b619b67c9304fd48d8559",
+      "encoding": "utf-8",
+      "documentary_format_expectation": "Base SCL is valid; ASCL unknown-directive handling is not specified by the reviewed baseline.",
+      "adi_0178_policy_expectation": "Define preserve/warn/reject policy explicitly; fixture does not prescribe a Live result.",
+      "probe_focus": "Forward-compatibility and metadata-loss reporting across load/save/reexport.",
+      "live_result": "NOT RUN",
+      "adi_runtime_result": "NOT RUN"
+    }
+  ]
+}
