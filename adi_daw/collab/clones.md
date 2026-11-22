@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Which Room timings reproduce the reference hall
+
+The 70.25/92.35 µs and 525.30/635.53 µs ADI/reference readings above are for the verified settings. All 16 active reference streams reproduced an independent stereo impulse convolved with the actual input, within 0.000000050 RMS per channel. An unrotated control reproduced it within 0.000000062. On an impulse, ADI and the reference first respond at one sample. The time to 95% of the response energy is 202.69 ms for ADI and 260.13 ms for the reference. At 99% the times are 341.98 and 460.35 ms.
+
+The earlier 89.9 and 556.7 µs reference runs produced repeatable wet audio at both buffer sizes. Their captures differed from the verified hall by 0.30437 RMS left and 0.31118 right. Those older Room readings are superseded for the hall comparison. The earlier white Noise measurements have independent procedural level and exact dry checks. In the final Room comparison ADI had a lower gross median in all eight rounds at both sizes. After subtracting bypass, it had a lower median in five of eight at 256 and seven of eight at 2,048.
+
 ## 22 November 2026 — Room compared with the installed reference after optimization
 
 On 48 kHz stereo kick and bass the registered Room at `97f9ffd7` took a gross median of 70.25 µs at 256 frames and 525.30 µs at 2,048. The corresponding reference readings were 92.35 and 635.53 µs. Subtracting bypass within the balanced runs yielded 66.55 and 501.00 µs for ADI versus 71.90 and 594.48 µs for the reference. Gross p99 was 1,008.75 and 7,602.70 µs versus 1,238.85 and 14,853.35 µs. ADI missed 71 and 9 deadlines out of 16,384 active callbacks at each size. The reference missed 52 and 37. Small-block median and p99 improved while the number of small-block misses remained higher for ADI.
