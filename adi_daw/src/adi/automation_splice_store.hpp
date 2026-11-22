@@ -15,10 +15,12 @@ struct PreparedEnvelopeSplice {
     bool ok = false;
     std::string error;
     std::vector<OpRequest> requests;
+    bool subSample = false;
 };
 struct EnvelopeSpliceRequest {
     std::optional<std::int64_t> dataId;
     std::string_view label = "Replace Automation";
+    std::string_view actorDetail{};
 };
 /// Owner-thread storage adapter for AU05. Explicit incoming values include
 /// begin and end; no move/copy/delete material policy is selected here. Captures

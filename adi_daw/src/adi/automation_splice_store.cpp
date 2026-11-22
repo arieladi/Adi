@@ -106,6 +106,12 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
             {"tempo_map", Payload::object(),
              detail::captureGuardRows(store, "tempo_map", Payload::object())});
         const edit::TimeMap time(db);
+        const auto beginSample = sampleAt(time, base, begin, rate);
+        const auto endSample = sampleAt(time, base, end, rate);
+        if (begin < end && beginSample == endSample) {
+            result.subSample = true;
+            throw std::runtime_error("automation splice boundaries project to one sample");
+        }
         clip_edit::CopyIds ids(db);
         std::optional<Payload> row;
         for (const auto &candidate : data) {
@@ -168,7 +174,7 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
         }
         auto splice = planEnvelopeSplice(
             original.knots, lane->at("default_value"),
-            {{begin, sampleAt(time, base, begin, rate)}, {end, sampleAt(time, base, end, rate)}},
+            {{begin, beginSample}, {end, endSample}},
             incoming, budget);
         require(splice.ok, splice.error.c_str());
         for (const auto &knot : original.knots)
@@ -251,6 +257,7 @@ PreparedEnvelopeSplice prepareEnvelopeSplice(Store &store, std::int64_t laneId, 
         request.opType = "arranger.splice";
         request.payload = {{"id", 0}, {"changes", changes}};
         request.label = intent.label;
+        request.actorDetail = intent.actorDetail;
         request.targetKind = "automation";
         request.targetId = laneId;
         result.requests.push_back(std::move(request));

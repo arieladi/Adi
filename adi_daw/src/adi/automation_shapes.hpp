@@ -39,9 +39,10 @@ std::optional<PreparedShape> prepareShapeInsertion(Store&, std::int64_t data,
     std::int64_t lane, std::optional<std::int64_t> clip, const ShapeSpec&, std::string& error,
     std::optional<double> sessionRate = {});
 CommitResult commitShapeInsertion(Store&, const PreparedShape&);
-// Same atomic replacement mechanism for recorded, explicitly timestamped points.
-// Input IDs must be zero; preparation assigns fresh replayable IDs. Optional
-// thinning is checked at the Arrangement lane's projected sample positions.
+// Prepare one atomic native write from explicitly timestamped points.
+// Arrangement passes with a nonempty played interval retain the old curve
+// outside [first,last). Local clip and single-sample writes use native points.
+// Optional thinning is checked at the Arrangement lane's projected samples.
 std::optional<PreparedShape> prepareAutomationWrite(Store&, std::int64_t data,
     std::int64_t lane, std::optional<std::int64_t> clip,
     std::span<const AutomationPoint>, std::string& error,

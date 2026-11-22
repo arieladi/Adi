@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
+#include "adi/automation_edits.hpp"
+#include "adi/digest.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/engine/automation_recording.hpp"
 #include "adi/engine/automation.hpp"
 #include "adi/history.hpp"
@@ -264,8 +267,14 @@ void boundedThinning() {
             maxError = std::max(maxError, std::abs(valueAt(*a, sample) - valueAt(*b, sample)));
         check(maxError <= tolerance && b->points.size() < a->points.size() / 4,
               "projected automation is substantially smaller and bounded at every playback sample");
-        const auto hold = a->points.at(64).sample;
-        const auto step = a->points.at(143).sample;
+        const edit::TimeMap time(exact->db());
+        const auto sampleAt = [&](std::int64_t position) {
+            const double seconds = clock == 0 ? time.seconds(position)
+                                                : static_cast<double>(position) * 1e-9;
+            return std::llround(seconds * rate);
+        };
+        const auto hold = sampleAt(64 * unit);
+        const auto step = sampleAt(143 * unit);
         check(b->points.front().sample == a->points.front().sample &&
                   b->points.back().sample == a->points.back().sample &&
                   valueAt(*a, hold) == valueAt(*b, hold) && valueAt(*a, hold + 1) == valueAt(*b, hold + 1) &&
@@ -287,5 +296,78 @@ void boundedThinning() {
               "invalid thinning policy leaves the active stream untouched");
     }
 }
+void guardsRecordedPass() {
+    const test::TempDirectory temp("automation", "pass-guards");
+    constexpr double rate = 48000.0;
+    for (int clock : {0, 1}) {
+        auto store = project(temp.path() / ("guard-" + std::to_string(clock) + ".adi"));
+        auto &db = store->db();
+        db.exec("UPDATE project SET sample_rate=48000;"
+                "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120),(2,1000000,93);");
+        if (clock == 0)
+            db.exec("UPDATE automation_lanes SET time_base=0;");
+        const std::int64_t unit = clock == 0 ? 10000 : 1000000;
+        const auto makePoint = [](std::int64_t time, double value, Curve curve) {
+            AutomationPoint p{};
+            p.time = time;
+            p.value = value;
+            p.curve = static_cast<std::uint8_t>(curve);
+            return p;
+        };
+        const auto initial = automation::writePoints(3, 2, nullptr, Payload::array({
+            {{"id", 1}, {"time", 0}, {"value", 0.25}, {"curve", 5}, {"tension", 0.65}},
+            {{"id", 2}, {"time", 300 * unit}, {"value", 0.75}, {"curve", 1}, {"tension", 0}}}));
+        if (!OpJournal(*store).commit(initial).ok)
+            throw std::runtime_error("cannot create the authored exterior curve");
+        const auto before = compileAutomation(rows::readModel(*store), rate);
+        const auto beforeDigest = digestProject(*store).text;
+        const RecordedAutomation pass{{3, 2, std::nullopt}, 2,
+                                      {makePoint(75 * unit, 0.125, Curve::Hold),
+                                       makePoint(150 * unit, 0.625, Curve::Linear),
+                                       makePoint(225 * unit, 0.5, Curve::Linear)}};
+        std::string error;
+        const auto prepared = prepareRecordedAutomation(*store, pass, error);
+        check(prepared && prepared->requests.size() == 1 &&
+                  prepared->requests.front().capturedTransaction &&
+                  prepared->requests.front().label == "Record Automation" &&
+                  digestProject(*store).text == beforeDigest,
+              "a pass captures both guards and one Undo label before it writes");
+        if (!prepared || !automation::commitShapeInsertion(*store, *prepared).ok)
+            throw std::runtime_error("cannot commit the guarded write pass: " + error);
+        const auto after = compileAutomation(rows::readModel(*store), rate);
+        const auto *outside = before->lane(2), *recorded = after->lane(2);
+        if (!outside || !recorded)
+            throw std::runtime_error("cannot compile the guarded write pass");
+        const edit::TimeMap time(db);
+        const auto sampleAt = [&](std::int64_t pos) {
+            const double seconds = clock == 0 ? time.seconds(pos) : static_cast<double>(pos) * 1e-9;
+            return std::llround(seconds * rate);
+        };
+        const auto begin = sampleAt(75 * unit), end = sampleAt(225 * unit);
+        double maxError = 0.0;
+        for (std::int64_t sample = 0; sample <= outside->points.back().sample; ++sample) {
+            if (sample < begin || sample >= end)
+                maxError = std::max(maxError,
+                                    std::abs(valueAt(*outside, sample) - valueAt(*recorded, sample)));
+        }
+        check(maxError < 1e-9 && valueAt(*recorded, end) == valueAt(*outside, end) &&
+                  valueAt(*recorded, begin + 1) == 0.125 &&
+                  valueAt(*recorded, sampleAt(150 * unit)) == 0.625,
+              "the held recording plays inside while every exterior sample remains intact");
+        History history(*store);
+        const auto afterDigest = digestProject(*store).text;
+        check(history.undo().ok && digestProject(*store).text == beforeDigest &&
+                  history.redo().ok && digestProject(*store).text == afterDigest,
+              "the guarded pass, curves and data replay as one exact undo");
+        const auto stale = prepareRecordedAutomation(*store, pass, error);
+        if (!stale)
+            throw std::runtime_error(error);
+        db.exec("UPDATE tempo_map SET bpm=100 WHERE id=2");
+        const auto changed = digestProject(*store).text;
+        check(!automation::commitShapeInsertion(*store, *stale).ok &&
+                  digestProject(*store).text == changed,
+              "changed captured tempo refuses without publishing any part of the pass");
+    }
+}
 } // namespace
-int main(){try{run();passBoundaries();boundedThinning();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{run();passBoundaries();boundedThinning();guardsRecordedPass();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
