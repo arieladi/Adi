@@ -16,6 +16,7 @@
 #include "adi/dsp/overdrive.hpp"
 #include "adi/dsp/phaser_flanger.hpp"
 #include "adi/dsp/live_compressor.hpp"
+#include "adi/dsp/align_delay.hpp"
 #include "adi/dsp/live_limiter.hpp"
 #include "adi/dsp/live_gate.hpp"
 #include "adi/dsp/glue_compressor.hpp"
@@ -556,6 +557,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::glueCompressor)) return create<dsp::GlueCompressor>(patchText, 2);
         if (sameCanvas(patchText, canonical::liveGate)) return create<dsp::LiveGate>(patchText, 2);
         if (sameCanvas(patchText, canonical::liveLimiter)) return create<dsp::LiveLimiter>(patchText, 2);
+        if (sameCanvas(patchText, canonical::alignDelay)) return create<dsp::AlignDelay>(patchText, 2);
     }
     return nullptr;
 }
