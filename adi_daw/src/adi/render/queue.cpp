@@ -1225,6 +1225,15 @@ std::string serializeRunManifest(const RunReport& run) {
     const auto optionalNumber = [](const std::optional<double>& value) -> Json {
         return value ? Json(*value) : Json(nullptr);
     };
+    const auto exportStatistics = [&](const ExportStatistics& statistics) -> Json {
+        return {{"integrated_lufs", optionalNumber(statistics.integratedLufs)},
+                {"sample_peak_dbfs", optionalNumber(statistics.samplePeakDbfs)},
+                {"true_peak_dbtp", optionalNumber(statistics.truePeakDbtp)},
+                {"loudness_range_lu", optionalNumber(statistics.loudnessRangeLu)},
+                {"maximum_momentary_lufs", optionalNumber(statistics.maximumMomentaryLufs)},
+                {"maximum_short_term_lufs", optionalNumber(statistics.maximumShortTermLufs)},
+                {"rms_dbfs", optionalNumber(statistics.rmsDbfs)}};
+    };
     const auto identityValue = [&](const media::FileIdentity& identity) -> Json {
         return {{"volume",identity.volume},{"file",identity.file},
                 {"file_high",identity.fileHigh},{"scheme",identityScheme(identity.scheme)}};
@@ -1279,6 +1288,15 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"target_lufs", job.normalization.targetLufs},
                     {"true_peak_ceiling_db", job.normalization.truePeakCeilingDb},
                     {"channel_weights", job.normalization.channelWeights}}}};
+            if (job.normalization.mode == NormalizeMode::Loudness) {
+                const auto* metric = normalizationTargetName(job.normalization.target);
+                auto& normalization = profile["normalization"];
+                normalization["target_metric"] = metric ? Json(metric) : Json(nullptr);
+                if (job.normalization.target == NormalizationTarget::Rms) {
+                    normalization.erase("target_lufs");
+                    normalization["target_rms_dbfs"] = job.normalization.targetRmsDbfs;
+                }
+            }
             if (job.encoding.container == ExportContainer::Mp3) {
                 profile["wav_encoding"] = nullptr;
                 profile["effective_dither"] = "none";
@@ -1405,6 +1423,8 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"source_true_peak_db", optionalNumber(report.sourceTruePeakDb)},
                     {"output_lufs", optionalNumber(report.outputLufs)},
                     {"output_true_peak_db", optionalNumber(report.outputTruePeakDb)},
+                    {"captured_pcm", exportStatistics(report.captured)},
+                    {"decoded_delivery", exportStatistics(report.decoded)},
                     {"applied_gain_db", report.appliedGainDb}, {"ceiling_limited", report.ceilingLimited},
                     {"encoding_passes", report.encodingPasses}};
             }

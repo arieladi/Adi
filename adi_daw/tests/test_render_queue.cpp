@@ -1258,6 +1258,19 @@ void convertedDeliveryClockAndMask() {
         check(reader.sampleRate() == 44100 && reader.channels() == 1 && reader.frames() == 3763,
               "converted file has the expected final rate, channels and duration");
     }
+    conversion.name = "converted-rms";
+    conversion.encoding.format = audio::WavFormat::Pcm24;
+    conversion.encoding.dither = audio::WavDither::Shaped2;
+    conversion.normalization.mode = NormalizeMode::Loudness;
+    conversion.normalization.target = NormalizationTarget::Rms;
+    conversion.normalization.targetRmsDbfs = -16.0;
+    const auto normalized = convertAudioFile(conversion);
+    check(normalized.state == JobState::Completed && normalized.normalization &&
+          normalized.normalization->decoded.rmsDbfs &&
+          std::abs(*normalized.normalization->decoded.rmsDbfs + 16.0) <= 0.1 &&
+          normalized.normalization->decoded.truePeakDbtp &&
+          *normalized.normalization->decoded.truePeakDbtp <= -1.0,
+          normalized.error.empty() ? "RMS correction verifies the folded, shaped PCM after SRC" : normalized.error.c_str());
     conversion.name = "refuse-upsampling";
     conversion.outputSampleRate = 96000;
     check(convertAudioFile(conversion).state == JobState::Failed && f.noStage(),
