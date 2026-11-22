@@ -132,10 +132,7 @@ void correction() {
         const double got = peak(y, k.want);
         check(std::abs(cents(got, k.want)) < 1, std::string(k.what) + " (" + std::to_string(got) + " Hz against " + std::to_string(k.want) + ")");
     }
-    // Corrected, then Shift +12: the Shifter is told 12 semitones less the
-    // correction. (Its output for so large a shift is the Shifter's own:
-    // lines on a grid of the input plus multiples of its crossfade rate,
-    // under an envelope at the commanded pitch. The Shifter's tests own it.)
+    // Corrected, then Shift +12: 12 semitones less the correction.
     S up;
     up.set(S::Shift, 12);
     up.prepare(kRate);
@@ -249,18 +246,10 @@ void reviewed() {
         const double dip = 20 * std::log10(lowest / (0.4 / std::sqrt(2.0)));
         check(dip > -1, std::to_string(t.hz) + " Hz corrected: its level holds through the crossfades (lowest " + std::to_string(dip) + " dB)");
     }
-    double n460 = 0, n30 = 0;
-    check(std::abs(S::windowFor(460, n460) - 2 * 12 * 1000 / 460.0) < 1e-9 && S::windowFor(30, n30) > 60, "the window spans whole periods");
-    // Near half way between two counts the count holds: 220 Hz is 5.5
-    // periods in 25 ms, and a reading on either side keeps the first count.
-    double n = 0;
-    (void)S::windowFor(220.01, n);
-    const double first = n;
-    (void)S::windowFor(219.99, n);
-    (void)S::windowFor(220.02, n);
-    check(n == first, "near half way the count of periods holds");
-    // So a held tone there comes out without jumps: its largest step is a
-    // sine's own at the shifted pitch, within half again.
+    // A held tone half way between two counts of periods in 25 ms (which
+    // once flipped a delay-line shifter's window) comes out without jumps:
+    // its largest step is a sine's own at the shifted pitch, within half
+    // again.
     S held;
     held.set(S::Shift, 7);
     held.prepare(kRate);
@@ -328,7 +317,94 @@ void glides() {
     check(moving <= 1.5 * settled, "Dry/Wet glides: no step past the signal's own (" + std::to_string(moving) + " against " + std::to_string(settled) + ")");
 }
 
+/// The review of 53080074: a delay-line shifter driven by a moving pitch
+/// jumped its read taps whenever the pitch moved, and dropped up to 23 dB
+/// when the correction was let go at unison. Rebuilt on a pitch-synchronous
+/// overlap-add, neither can happen.
+void moving() {
+    // Correction off, Shift 0: a sine with vibrato, a phase-continuous step
+    // from 220 to 330 Hz, and a two-semitone glide come out without a step
+    // past the input's own, within half again.
+    struct Motion {
+        const char* what;
+        double (*hz)(double t);
+    };
+    const Motion motions[] = {
+        {"vibrato of +-50 cents at 5.5 Hz", [](double t) { return 220 * std::exp2(0.5 / 12 * std::sin(2 * std::numbers::pi * 5.5 * t)); }},
+        {"a step from 220 to 330 Hz", [](double t) { return t < 1.0 ? 220.0 : 330.0; }},
+        {"a glide of two semitones over 300 ms", [](double t) { return 220 * std::exp2(std::clamp((t - 1.0) / 0.3, 0.0, 1.0) * 2 / 12); }},
+    };
+    for (const auto& m : motions) {
+        for (double rate : {44100.0, 48000.0, 192000.0}) {
+            const auto n = static_cast<std::size_t>(rate * 2);
+            std::vector<float> x(n);
+            double phase = 0, own = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                x[i] = static_cast<float>(0.4 * std::sin(phase));
+                phase += 2 * std::numbers::pi * m.hz(static_cast<double>(i) / rate) / rate;
+                if (i > 0) {
+                    own = std::max(own, static_cast<double>(std::abs(x[i] - x[i - 1])));
+                }
+            }
+            S s;
+            s.set(S::Correction, 0);
+            s.prepare(rate);
+            std::vector<float> l(n), r(n);
+            for (std::size_t at = 0; at < n; at += 256) {
+                const auto k = std::min<std::size_t>(256, n - at);
+                s.process(x.data() + at, x.data() + at, l.data() + at, r.data() + at, k);
+            }
+            double step = 0;
+            for (std::size_t i = static_cast<std::size_t>(rate / 2); i < n; ++i) {
+                step = std::max(step, static_cast<double>(std::abs(l[i] - l[i - 1])));
+            }
+            check(step <= 1.5 * own, std::string(m.what) + " at " + std::to_string(rate) + ": no jump (largest step " + std::to_string(step) +
+                                         ", the input's " + std::to_string(own) + ")");
+        }
+    }
+    // A corrected 446 Hz tone with the correction let go at 48 points: the
+    // one-period level in the next 60 ms never falls 1.5 dB.
+    double worst = 0;
+    for (int k = 0; k < 48; ++k) {
+        S s;
+        s.prepare(kRate);
+        const std::size_t at = 96000 + static_cast<std::size_t>(k) * 1000 / 48 * 48;
+        const auto x = sine(446, at + 4800, 0.4);
+        std::vector<float> l(x.size()), r(x.size());
+        s.process(x.data(), x.data(), l.data(), r.data(), at);
+        s.set(S::Correction, 0);
+        s.process(x.data() + at, x.data() + at, l.data() + at, r.data() + at, x.size() - at);
+        const auto period = static_cast<std::size_t>(kRate / 446) + 1;
+        for (std::size_t i = at; i + period < at + 2880; i += 16) {
+            double e = 0;
+            for (std::size_t j = i; j < i + period; ++j) {
+                e += static_cast<double>(l[j]) * l[j];
+            }
+            worst = std::min(worst, 20 * std::log10(std::sqrt(e / static_cast<double>(period)) / (0.4 / std::sqrt(2.0)) + 1e-300));
+        }
+    }
+    check(worst > -1.5, "the correction let go at 48 points: the level never falls 1.5 dB (" + std::to_string(worst) + " dB)");
+    // Dry/Wet 0: the input, exactly one reported latency late.
+    {
+        S s;
+        s.set(S::DryWet, 0);
+        s.prepare(kRate);
+        const auto x = sine(446, 24000, 0.4);
+        std::vector<float> l(x.size()), r(x.size());
+        s.process(x.data(), x.data(), l.data(), r.data(), x.size());
+        const auto d = static_cast<std::size_t>(s.latency());
+        double off = 0;
+        for (std::size_t i = d; i < x.size(); ++i) {
+            off = std::max(off, static_cast<double>(std::abs(l[i] - x[i - d])));
+        }
+        check(d > 0 && off == 0, "Dry/Wet 0: the input, one reported latency late (" + std::to_string(off) + ")");
+    }
+    S l;
+    check(l.latency() ==static_cast<int>(std::ceil(4.5 * std::ceil(kRate / S::kLowestShiftedHz))) + 8, "the latency is 4.5 of the longest period shifted, reported");
+}
+
 int main() {
+    moving();
     glides();
     reviewed();
     scales();
