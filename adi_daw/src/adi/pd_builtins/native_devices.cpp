@@ -16,6 +16,7 @@
 #include "adi/dsp/overdrive.hpp"
 #include "adi/dsp/phaser_flanger.hpp"
 #include "adi/dsp/live_compressor.hpp"
+#include "adi/dsp/live_cabinet.hpp"
 #include "adi/dsp/live_amp.hpp"
 #include "adi/dsp/spectrum_device.hpp"
 #include "adi/dsp/auto_shift.hpp"
@@ -580,6 +581,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::autoShift)) return create<dsp::AutoShift>(patchText, 2);
         if (sameCanvas(patchText, canonical::spectrumDevice)) return create<dsp::SpectrumDevice>(patchText, 2);
         if (sameCanvas(patchText, canonical::liveAmp)) return create<dsp::LiveAmp>(patchText, 2);
+        if (sameCanvas(patchText, canonical::liveCabinet)) return create<dsp::LiveCabinet>(patchText, 2);
     }
     return nullptr;
 }
