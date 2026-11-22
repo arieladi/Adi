@@ -225,6 +225,45 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — DEV-16, step 5: embedded bpatchers in the `.amxd` translator (P2)
+
+**PR requested:** head `devices/amxd-bpatcher` (9def72a5), base `main`, after
+`devices/amxd-translator` (steps 3 and 4, not yet on main). Body: the commit message.
+- **Why this row.** The queue is worked through; items 4, 5, 6, 13 and 14 stay parked on their
+  lines. Their blockers have not cleared on main: no `adi_shaper_scope.hpp`, no `syncAtSample`, no
+  DEV-17 or DEV-18. Every M-row of this lane waits on a ruling, a reading or another seat:
+  - DEV-09 and DEV-28: win's rulings;
+  - DEV-19 and DEV-14: the engine's DEV-17 and DEV-18;
+  - DEV-22: the readings and DEV-32's reader;
+  - DEV-10, DEV-15, DEV-11 and DEV-13: the engine, ADRs, the director.
+
+  So the next buildable piece in milestone order is DEV-16's.
+- **What it does.** A bpatcher whose patcher is embedded becomes a `[pd name]`, as a `[p]` does.
+  - Max replaces `#1` to `#9` in its boxes by the bpatcher's arguments, and `#0` by a name unique to
+    the instance. The translation does the same, writing `#0` as `$0-bp-<its path>`, so two
+    instances never share a send.
+  - Its `[p]`s take the same arguments; a bpatcher inside it takes its own.
+  - A float argument stays a float: `2.` keeps `[+ #1]` the float form.
+- **Refused, named, not guessed:**
+  - a `#` with no argument;
+  - an argument that is not a number or a plain word;
+  - a bpatcher naming a patcher file outside the device. That file is not in the `.amxd`.
+- **Tests:** `adi_pd_amxd_tests` 75 (15 new).
+  - A gain bpatcher at arguments 0.5 and 0.25 walks clean under PD4. In libpd it plays the input times
+    the argument.
+  - Two instances' `[s #0-v]` → `[r #0-v]` stay apart.
+  - `[+ #1]` fed 0.5 gives 2.5 with the argument 2.0, and 2 with the argument 2.
+  - The step-4 translator fails 14 of the checks. Four plants each fail: one `#0` for all, a `[p]`
+    without the arguments, a float argument without its point, and a missing argument read as 0.
+  - Tidy is clean. One older line in the file had built a `Fragment` with a field missing; it is now
+    filled field by field.
+- **Left in DEV-16:**
+  - MIDI devices (after DEV-14 and DEV-18) and Suite's modulators (after DEV-07);
+  - `[line~]`'s ramp-time inlet and end bang, and `[cycle~]`'s phase inlet;
+  - parity against Live (readings);
+  - the AI path for the rest;
+  - becoming a device (DEV-10).
+
 ## 2026-11-22 — the fifth review: Roar, Auto Shift and the spectral pair, ten findings, all fixed
 
 Three skeptics per finding. Every fix is merged up the stack and pushed. The new heads are listed
