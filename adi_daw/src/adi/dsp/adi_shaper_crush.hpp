@@ -14,23 +14,26 @@ public:
     bool prepare(double sampleRate) noexcept;
     void reset() noexcept;
     void setDither(bool enabled) noexcept { dither_ = enabled; }
+    void setJitter(float normalized) noexcept;
     void processStereo(float& left, float& right, float bitsHeight,
-                       float resampleHeight) noexcept;
+                       float resampleHeight, bool flatHold = true) noexcept;
     bool finishBlock() noexcept;
 
 private:
     using Stereo = std::array<double, 2>;
     void updateResolution(float height) noexcept;
     void updateClock(float height) noexcept;
-    double noise() noexcept;
+    static double noise(std::uint32_t& seed) noexcept;
     void quantize(Stereo& sample) noexcept;
-    void hold(Stereo& sample) noexcept;
+    void hold(Stereo& sample, bool flatHold) noexcept;
 
     double rate_ = 0, highpassAmount_ = 0, highpassGain_ = 1;
     double levels_ = 1, quantizedGain_ = 1, step_ = 1, period_ = 1, phase_ = 0;
-    float bits_ = -1, clock_ = -1;
+    double uncappedStep_ = 1, jitterScale_ = 0, jitterOffset_ = 1;
+    float bits_ = -1, clock_ = -1, jitter_ = 0;
     Stereo previousQuantInput_{}, previousHoldInput_{}, held_{}, low_{};
-    std::uint32_t seed_ = 0x297a04b3u;
+    static constexpr std::uint32_t initialSeed = 0x297a04b3u;
+    std::uint32_t seed_ = initialSeed, jitterSeed_ = initialSeed;
     bool dither_ = false;
 };
 

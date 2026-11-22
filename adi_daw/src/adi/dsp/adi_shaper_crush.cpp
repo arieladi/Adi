@@ -42,8 +42,18 @@ bool AdiShaperCrush::prepare(double sampleRate) noexcept {
 void AdiShaperCrush::reset() noexcept {
     bits_ = clock_ = -1;
     phase_ = 0;
-    seed_ = 0x297a04b3u;
+    seed_ = jitterSeed_ = initialSeed;
     previousQuantInput_ = previousHoldInput_ = held_ = low_ = {};
+}
+
+void AdiShaperCrush::setJitter(float normalized) noexcept {
+    const float amount = std::isfinite(normalized) ? std::clamp(normalized, 0.f, 1.f) : 0.f;
+    if (amount == jitter_) return;
+    jitter_ = amount;
+    const double square = static_cast<double>(amount) * amount;
+    // A triangular draw of radius 1/2 gives the measured timing distribution.
+    jitterScale_ = 20.0 * square;
+    jitterOffset_ = 1.0 - std::numbers::e * square * square;
 }
 
 void AdiShaperCrush::updateResolution(float height) noexcept {
@@ -58,7 +68,7 @@ void AdiShaperCrush::updateResolution(float height) noexcept {
 void AdiShaperCrush::updateClock(float height) noexcept {
     clock_ = height;
     if (height == 1.f) {
-        step_ = period_ = 1;
+        uncappedStep_ = step_ = period_ = 1;
         return;
     }
     const double index = static_cast<double>(height) * clockIntervals;
@@ -68,18 +78,19 @@ void AdiShaperCrush::updateClock(float height) noexcept {
     // while a moving contour avoids a transcendental function at audio rate.
     const double power = exponent[slot] * (1.0 + x * (1.0 + x * (.5 + x / 6.0)));
     const double hz = holdLow + holdScale * (power - 1.0);
-    step_ = std::min(hz / rate_, 1.0);
+    uncappedStep_ = hz / rate_;
+    step_ = std::min(uncappedStep_, 1.0);
     period_ = 1.0 / step_;
 }
 
-double AdiShaperCrush::noise() noexcept {
-    // Two uniform draws shared by L/R give triangular dither between +/- half
-    // a quantization step. Reset is reproducible for renders and seeks.
-    const auto uniform = [this]() noexcept {
-        seed_ ^= seed_ << 13;
-        seed_ ^= seed_ >> 17;
-        seed_ ^= seed_ << 5;
-        return static_cast<double>(seed_ >> 8) * 0x1p-24;
+double AdiShaperCrush::noise(std::uint32_t& seed) noexcept {
+    // Dither and timing each advance this same stereo-shared sequence at
+    // their own position, so pausing one leaves the other untouched.
+    const auto uniform = [&seed]() noexcept {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        return static_cast<double>(seed >> 8) * 0x1p-24;
     };
     const double first = uniform();
     return .5 * (first - uniform());
@@ -90,7 +101,7 @@ void AdiShaperCrush::quantize(Stereo& sample) noexcept {
         previousQuantInput_ = sample;
         return;
     }
-    const double perturbation = dither_ ? noise() / levels_ : 0.0;
+    const double perturbation = dither_ ? noise(seed_) / levels_ : 0.0;
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double value = sample[ch] + perturbation;
         const double before = previousQuantInput_[ch] * levels_;
@@ -110,19 +121,38 @@ void AdiShaperCrush::quantize(Stereo& sample) noexcept {
     }
 }
 
-void AdiShaperCrush::hold(Stereo& sample) noexcept {
-    if (step_ >= 1.0) {
+void AdiShaperCrush::hold(Stereo& sample, bool flatHold) noexcept {
+    double increment = step_;
+    if (jitter_ > 0.f) {
+        if (flatHold && clock_ == 1.f) {
+            previousHoldInput_ = held_ = sample;
+            return;
+        }
+        const double speed = std::max(0.0, jitterOffset_ + jitterScale_ * noise(jitterSeed_));
+        increment = uncappedStep_ * speed;
+        if (increment >= 1.0) {
+            // Pass this input directly while the capped clock advances one
+            // whole cycle. Its fractional remainder sets the next held value.
+            const double fraction = 1.0 - phase_;
+            for (unsigned ch = 0; ch < 2; ++ch)
+                held_[ch] = previousHoldInput_[ch] + fraction * (sample[ch] - previousHoldInput_[ch]);
+            previousHoldInput_ = sample;
+            return;
+        }
+    } else if (increment >= 1.0) {
         previousHoldInput_ = held_ = sample;
         phase_ = 0;
         return;
     }
     const auto input = sample;
-    const double next = phase_ + step_;
+    const double next = phase_ + increment;
     if (next < 1.0) {
         sample = held_;
         phase_ = next;
     } else {
-        const double fraction = std::clamp((1.0 - phase_) * period_, 0.0, 1.0);
+        const double remaining = 1.0 - phase_;
+        const double fraction = std::clamp(jitter_ > 0.f ? remaining / increment : remaining * period_,
+                                           0.0, 1.0);
         for (unsigned ch = 0; ch < 2; ++ch) {
             const double captured = previousHoldInput_[ch] +
                                     fraction * (input[ch] - previousHoldInput_[ch]);
@@ -135,14 +165,14 @@ void AdiShaperCrush::hold(Stereo& sample) noexcept {
 }
 
 void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
-                                   float resampleHeight) noexcept {
+                                   float resampleHeight, bool flatHold) noexcept {
     if (rate_ == 0) return;
     const auto u = sanitized(bitsHeight), r = sanitized(resampleHeight);
     if (u != bits_) updateResolution(u);
     if (r != clock_) updateClock(r);
     Stereo sample{left, right};
     quantize(sample);
-    hold(sample);
+    hold(sample, flatHold);
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double difference = sample[ch] - low_[ch];
         low_[ch] += highpassAmount_ * difference;
