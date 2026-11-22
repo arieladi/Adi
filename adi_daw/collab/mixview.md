@@ -11,6 +11,15 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 scheduled pinned Spectrum
+
+PR requested — `mixview/mx21-pinned-spectrum-lands-after-2026-12-03` at `03d3bdaa35aa03a185998f9f566520037b90dc63`, also on `mixview/review-scope-lands-after-2026-12-03`. Lands after 3 December.
+
+- Spectrum can show pinned tracks in Realtime. The primary plus up to 15 committed live pins use one compatible FFT plan per source, an ordered legend and stable track IDs. The ninth and later curves adopt completed frames at up to 15 Hz. The page releases the overlay plans on freeze, hide and incompatible settings while Compare keeps its held B.
+- Release gates passed 24/24, including 363 Mix Functions checks and the 473 analyser and 732 broker checks. The software-peer shell passed 906 Mix View, 329 Arrangement and 7 Appearance checks. The red control test failed before implementation. Distinct fixture peaks, the 16-curve cap, rename continuity, the held frame and absence of the two overlay FFT plans on switching to All were checked. Strict MSVC passed four units and Clang passed the three changed implementation units.
+- Review ZIP SHA-256 `cf6945ebed08d4e8100e8a0cbadd38cf29852c6dda52c878bd479772a6453195`; EXE SHA-256 `0b6d614b9cea3b276703414b480130cfe12656f504e362c8b274f634873df359`. The retest brief and two deterministic 48 kHz fixtures accompany the build. The V7 4096 display profile, overlay traces and controls, and the timed X19 gate remain open. Live and timed comparisons stay with the existing review process.
+
+
 ### 2026-11-22 — MX-36 browser search folds authored names, lands after 3 December
 
 The normal Mix View search now uses Stack's accent folding for channel and tool names. Matching retains JUCE's case-insensitive comparison. The browser caches folded channel names with the track list and reads the passive tool publication only on its existing query/generation boundary. Display names keep their original spelling.
