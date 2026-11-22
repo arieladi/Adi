@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Stereo cutoff offset for all five calibrated Filter responses
+
+`clones/shaper-filter-stereo` at `830d3a12` — Add independent stereo cutoff offset to the three Filter bands. **Lands after 3 December.** IDs 850–852 control the low, middle and high bands. Existing response IDs and sparse projects retain centered stereo. For each of the five responses, 60 source impulse comparisons in total at three sample rates confirmed that each channel follows the same response with its own shifted cutoff.
+
+With the stereo spread deliberately forced to center, the largest absolute error on the new reference cases was 0.757046. The repair reduced this to 0.000000075. A separate 10,240-frame test moved offset, cutoff and resonance together and reproduced two independently centered ADI channel histories bit for bit. The full rack, Filter and registered native/edited Pd tests passed under MSVC /W4 /WX in both signal precisions, including signed state recall and writes across the unused ID range.
+
+On kick and bass with a moving 12 dB/octave low-pass at 48 kHz, the registered device’s median/p99 at 256 frames was 29.7/46.3 µs centered and 34.6/56.3 µs at +50% offset. At 2,048 frames the readings were 239.9/436.9 and 276.3/485.4 µs. All 40,960 callbacks met their deadlines. Reported latency was zero.
+
+PR requested
+
 ## 22 November 2026 — Stage contributions to the 81 preset regressions
 
 For Win, the private bank has 873 stereo comparisons at 48 kHz. The count below 0.001 stereo RMS was 37 before band Trim and 39 after Trim. Eighty-one individual programs became worse. We opened two fresh instances of each original, then repeated the comparison after disabling each active stage separately. That gave 400 one-stage removals. The source and ADI were latency-aligned for each take. We counted a change only when it exceeded both 0.000001 RMS and twice the difference between the two fresh baseline measurements.
