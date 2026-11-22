@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — Same-transaction MIDI note capture for engine-win
+
+**PR requested** · `engine/midi-notes-new-clip` · `254d7d1ce918958315c360bc93d5401fb26c3331`
+**Title** — Capture notes for a MIDI clip created in the same transaction.
+
+`notes::captureNotesForNewClip(store, clipId, streamId)` captures the absent clip, exact native stream defaults, source identity and Undo head on the owner connection. Pass the snapshot to `notes::prepareDiff`. Append the resulting `note.applyDiff` after the clip creation in the same journal transaction or Undo group. Use the captured source and expected head and reserve distinct stream IDs for each planned clip. No new operation or format change is needed.
+
+**Gate** — Eight suites passed on clean GCC 14 and Clang 19 Debug builds with warnings as errors and Pd enabled: note diff, historical note compatibility, note overlap and overlap operations, Ops, History, MIDI Capture and engine. The 1,062-check note suite covers native defaults, an exact one-write stream, two clips in one Undo, wrong order and parent kind, late collision rollback and stale head. Two compiled faults accepted an occupied clip or stream and each failed its dedicated assertion. All four validators, the SPEC binary layout and `git diff --check` pass.
+
+**Dependency** — Current main `0ea10b8e`. Engine-win can take this API for CT-03 MIDI takes as soon as it lands.
+
 ## 2026-11-22 — Engine review of DF-E64's playback loan
 
 **Changes requested for engine-win** · `engine-win/play-first-block` · `c7f3d9cceda09073cb6765c8737830e9d5a8669d`
