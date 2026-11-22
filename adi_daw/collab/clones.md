@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Lower cost for steady white Noise
+
+`clones/shaper-noise-port` at `d9d0e19e` — Process steady white Noise in bounded blocks. **Lands after 3 December.** This updates the existing Noise review. The single full-range, fully wet white stage with a fixed level now generates exactly the stereo sample pairs required by its resampler and filters them in blocks of up to 64 frames. The scalar path remains available for other settings. Separate channel histories preserve continuity when switching between mono, stereo, pink and white.
+
+With the same stereo kick and bass, the registered white-stage median fell from 28.6 to 21.2 µs at 256 frames and from 224.6 to 166.8 µs at 2,048. The matching reference readings were 37.7 and 171.2 µs. Subtracting bypass in paired trials gave 17.7 and 140.2 µs for ADI, versus 18.1 and 123.5 µs for the reference. At the larger size ADI's p99 rose from 1,117 to 1,220 µs while deadline misses went from 40 to 38. Five large-block reference trial medians ranged from 131 to 174 µs. These readings establish a lower ADI median at both sizes and leave the larger-block incremental cost above the reference.
+
+Six 192,000-frame registered stereo recordings matched the previous build byte for byte at both sizes. A separate core comparison covered 801 irregular callbacks across 44.1, 48 and 96 kHz, filter and routing changes, fresh seeds and resets. Bypass, white and pink all retained their output. The rack, Noise and registered native/edited-Pd suites passed under MSVC /W4 /WX at both precisions. Reported latency remained zero.
+
+PR requested
+
 ## 22 November 2026 — Isolating the effect of saved Crush bias
 
 We reopened all 43 affected programs in the reference, rendered each twice, cleared only the three bias values and rendered again. Thirty-seven repeats and archived recordings agreed within 0.000001 stereo RMS. The other six retain their individual repeat errors in the private results. A seven-stage regression of 0.049439 to 0.224996 RMS came from a program whose full reference output was exactly silent in both bias settings. Crush alone changed by 0.250202 RMS in both the original and the weighted device. Building up the source chain one stage at a time located the mute at Noise before Crush. Removing only Noise from the entire source chain restored a 0.129473 RMS difference between bias settings. Removing any one of the other enabled stages kept it silent.
