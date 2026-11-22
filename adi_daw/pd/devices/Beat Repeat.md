@@ -47,11 +47,24 @@ tests pin Live's values once they are read.
 
 ## The core (`dsp/beat_repeat.*`)
 
+- **The slice is a copy.** At a capture the slice (Grid long) is copied into
+  a slice buffer allocated in `prepare()`, and every repeat plays from that
+  copy. A repeat held by Repeat (id 9) for any length therefore plays the same
+  slice: nothing the input writes afterwards can lap it.
 - **Input history.** A bounded stereo ring of the input, allocated in
-  `prepare()` for the longest history any setting can read at the prepared
-  rate: the longest Interval plus Offset plus Grid at the slowest tempo the
-  host allows (20 BPM), as reading 18 states the oldest frame Live reads.
-  Nothing allocates in `process()`.
+  `prepare()`, holding only what a capture reads backwards from its trigger:
+  one Grid if reading 18 says the slice ends at the trigger, none if it starts
+  there (the slice buffer then fills forward from the trigger). Interval and
+  Offset place the trigger; they add no history.
+- **A stated reach.** A bar's length follows the meter (the device transport
+  carries the numerator and denominator of each segment), and ADI allows
+  meters up to 99/1, so 4 bars at 20 BPM would be 4,752 s. The core does not
+  size for that. Its buffers hold 16 quarter notes at 20 BPM: 48 s, 4 bars of
+  4/4, at the prepared rate (about 37 MB a buffer at 96 kHz, stereo float). A
+  Grid longer than that (a long meter at a slow tempo) is shortened to the
+  reach, measured from the trigger. That is ADI's rule until reading 18 shows
+  Live's, and a test holds it.
+- Nothing allocates in `process()`.
 - **The read head.** Reads the captured slice at a fractional position;
   Pitch and Pitch Decay move it at a ratio (a resampling read, interpolated),
   never by resampling the stored history.
@@ -95,6 +108,10 @@ tests pin Live's values once they are read.
 - Every output frame against the frame oracle, at the three rates, with
   irregular blocks, and with events off the 64-frame ticks.
 - Chance exact at 0 % (never repeats) and 100 % (repeats every Interval).
+- Repeat held for longer than the input history spans: the same slice, frame
+  for frame, to the end.
+- A Grid past the stated reach (7/4 and 99/4 at 20 BPM): shortened to the
+  reach from the trigger, as stated above.
 - A locate, and a loop wrap, under the effect.
 - Save and reopen: the same output.
 - The native core equal to the canvas.
@@ -102,8 +119,11 @@ tests pin Live's values once they are read.
 
 ## Reading 18 (the ONE list), with the clones seat's precision
 
-Placed on the devices log's ONE list for the director's session. Each item is
-taken with distinct markers so frames can be told apart:
+Item 18 of the devices log's ONE list, for the director's session, carries
+exactly these items; the list's wording was brought into line with this
+section on 22 November. The method is the clones seat's: independently seeded,
+uncorrelated left and right markers, so that every frame of each channel can
+be told apart.
 
 - every control as shown, on a fresh Beat Repeat at 48 kHz;
 - **capture direction:** markers immediately before and after the capture
@@ -119,7 +139,11 @@ taken with distinct markers so frames can be told apart:
 - **locate:** while repeating, including a jump back to the same musical
   position: which pre-locate frames it can still play;
 - **the oldest frame:** at 20 BPM with the longest Interval and Grid, the
-  oldest input frame it plays, in frames and seconds, at 44.1, 48 and 96 kHz.
+  oldest input frame it plays, in frames and seconds, at 44.1, 48 and 96 kHz;
+- **the meter:** in 7/4, whether 1 Bar spans seven quarter notes, and what
+  4 Bars does at 20 BPM in a long meter (shortened, or played in full);
+- **a held Repeat:** held for a minute, whether it keeps playing the same
+  slice.
 
 ## One history kernel with ADI-Shaper's Time stage? (the clones seat's question)
 
@@ -127,14 +151,21 @@ taken with distinct markers so frames can be told apart:
 allocated in `prepare()`, read at a fractional delay: 43.7 s at 48 kHz and
 21.8 s at 96 kHz. Beat Repeat at 20 BPM with a 4-bar reach needs about 48 s,
 so a fixed capacity cannot serve both. **The answer: yes to one kernel, with
-the capacity the caller's, set in `prepare()`** (a stereo input ring, its
-valid count, and an interpolated read at a fractional age), each caller
-keeping its own slice boundaries, playback phase and storage, **provided**
-reading 18 shows Beat Repeat's write source (the input, before the effect),
-its retention across a locate and its oldest readable frame agree with Time's.
-If the locate behaviour differs, the kernel stays shared and the locate policy
-stays with each caller. The kernel would live in `dsp/` under the devices
-lane, with the clones seat reviewing the hunk Time takes from it.
+the capacity the caller's, set in `prepare()`.** What is shared: a stereo
+input ring, its valid count, and an interpolated read at a fractional age.
+What each caller keeps: its capacity, its oldest-frame rule, its locate
+policy, and its slice boundaries, playback phase and storage (Beat Repeat's
+slice buffer above).
+
+This departs from the handoff's three conditions on purpose. Two of them, the
+oldest readable frame and the retention across a locate, are each caller's
+own, so they cannot block the sharing; the capacities already differ (Time's
+2²¹ frames against Beat Repeat's 48 s). One condition stays: the ring is
+shared only if reading 18 shows that Beat Repeat writes its input before the
+effect, as Time does. If Live writes something else (its own output, or the
+input after the filter), the kernel is not shared. The kernel would live in
+`dsp/` under the devices lane, with the clones seat reviewing the hunk Time
+takes from it.
 
 ## The panel
 
