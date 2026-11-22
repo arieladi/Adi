@@ -356,8 +356,6 @@ juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &row
 std::string BrowserPanel::unavailable(const BuiltinInfo &d) {
     if (d.available)
         return {};
-    if (d.uid == "org.adidaw.builtin.hybrid-reverb")
-        return "Hybrid Reverb is not built in ADI yet.";
     return std::string(d.name) + " runs on ADI's Pd devices, which this build leaves out.";
 }
 juce::String BrowserPanel::deviceDescription(const BuiltinInfo &d) {
