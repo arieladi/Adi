@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Random variation of the Crush sample clock
+
+The two ears take their signed samples at the same fractional time. The jitter control varies a cumulative clock every audio frame. Inverting the independently marked left and right inputs recovered held stereo output to 0.000000553 RMS and 0.00000412 peak. All 36 matching runs at 256 and 2,048 frames were byte-identical across three sample rates. Doubling the knob from one quarter to one half scaled the recovered random speed deviation by 3.9993 across 2,164 joint frames. Doubling from one half to full scaled it by 3.9996. The clock is independent of the dither switch.
+
+An independent reproducible model uses a triangular draw T on [−1,1]. For normalized jitter J, the unbounded speed is approximately `1 + 10 J² T − 2.7183 J⁴`. Multiply this speed by the nominal fractional advance and clamp the resulting increment to [0,1]. On six held-out settings the interval mean missed the measured value by at most 0.00685 of one nominal period and the 5th, 50th and 95th percentiles by at most 0.0187. The exact reference random-number sequence is unknown. ADI can reproduce the measured statistics with its own deterministic sequence.
+
+An increment clamped to one emits the current input but preserves its fractional remainder. The stored capture for the following frame uses the preceding and current inputs at the actual crossing. Across 21 high-rate conditions the phase error was 0.0014–0.0042 cycles for this rule versus 0.265–0.291 when carrying excess speed. A truly flat, unsmoothed full-height section pauses both phase and stochastic position. An equally high plateau within a moving contour continues to draw. Inserting 1,024 flat bypass frames moved later captures by exactly 1,024 frames. A fresh state restarts repeatably.
+
+Of 1,048 stored settings, 39 use jitter in an active band, including two earlier Trim regressions. Thirty-eight of those 39 changed the stereo kick and bass in a matched switch-off check. Whole-chain comparisons were made for eight programs and isolated Crush comparisons for 31. Five full-height stored contours had an audible startup difference through smoothing, falling below 0.0000001 amplitude by 158 ms. All 31 additional settings found only in inactive stages gave a null.
+
+The clones seat takes `adi_shaper_crush.*`, `adi_shaper.*`, `ADI-Shaper.pd` and the matching stage, rack and Pd tests on `clones/shaper-crush-jitter`. IDs 871–873 are reserved at 0–100% with a zero legacy default. **Lands after 3 December.**
+
 ## 22 November 2026 — Crush preserves physical levels when the resolution changes
 
 `clones/shaper-crush-resolution` at `77f4ec0a` — Preserve each bit resolution across a Crush threshold crossing. This fixes the current stage on main. The old core returned 0.07724228 on the first independent stereo marker against 0.08445889 measured. Across the nine transition fixtures, the worst RMS fell from 0.032832 to 0.00000166. All 589,824 stationary stereo frames in a separate binary comparison retained their exact samples. The rack, Crush and registered native/edited-Pd suites passed under MSVC /W4 /WX at both precisions.
