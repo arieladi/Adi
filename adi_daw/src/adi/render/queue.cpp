@@ -997,6 +997,176 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
     return result;
 }
 
+namespace {
+Result convertAudioFilePrepared(FileConversion job, const Control& control, JobId id,
+                                const std::optional<media::FileIdentity>& expectedSource = {},
+                                const std::function<void(const Result&)>& prepared = {}) {
+    Result result;
+    try {
+        cancellation(control);
+        if (job.source.empty() || job.directory.empty())
+            throw std::invalid_argument("conversion needs a source and output directory");
+        const auto source = fs::absolute(job.source);
+        const auto sourceId = mediaIdentityAt(source);
+        if (expectedSource && *expectedSource != sourceId) {
+            throw std::runtime_error("Conversion source was replaced before its batch step");
+        }
+        const auto stem = portableName(job.name.empty() ? media::pathUtf8(source.stem()) : std::move(job.name));
+        const auto extension = containerSuffix(job.encoding.container);
+        result.output = job.directory / media::pathFromUtf8(stem + extension);
+        detail::prepareOutput(result, job.collision, extension.c_str(), "conversion destination already exists");
+        if (result.replacement && result.replacement->existing == sourceId)
+            throw std::invalid_argument("conversion cannot replace its input");
+        if (prepared) prepared(result);
+        const auto original = hashMedia(source, control);
+        auto input = audio::openPcmStream(source, control.stop);
+        cancellation(control);
+        if (!input.ready()) throw std::runtime_error("Cannot decode conversion source: " + input.error);
+        const auto info = input.stream->info();
+        const auto outputRate = job.outputSampleRate == 0 ? info.sampleRate : job.outputSampleRate;
+        if (job.outputSampleRate != 0 &&
+            (outputRate < 8000 || outputRate > 768000 || outputRate > info.sampleRate)) {
+            throw std::invalid_argument("Converter rate must be supported and at or below the source rate");
+        }
+        const bool downsampling = outputRate < info.sampleRate;
+        const auto encoding = job.encoding.container;
+        const bool packetDelivery = encoding == ExportContainer::Mp3 || encoding == ExportContainer::OggVorbis ||
+                                    encoding == ExportContainer::OggOpus;
+        if ((packetDelivery || downsampling) && !info.frames) {
+            throw std::invalid_argument("This conversion needs a source with a declared length");
+        }
+        if (downsampling && !deliverySrcAvailable()) {
+            throw std::runtime_error("Converter downsampling requires the pinned SoXR build");
+        }
+        auto expected = info.frames.value_or(0);
+        if (downsampling) {
+            if (expected > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                throw std::invalid_argument("Conversion source exceeds the supported timeline");
+            }
+            expected = static_cast<std::uint64_t>(projectFrames(static_cast<std::int64_t>(expected),
+                                                outputRate, info.sampleRate, info.sampleRate / 2));
+            if (expected == 0) throw std::invalid_argument("Conversion would have an empty output range");
+        }
+        Job profile;
+        profile.session.sampleRate = static_cast<double>(outputRate);
+        profile.session.channels = static_cast<int>(info.channels);
+        profile.normalization = job.normalization;
+        const auto channels = deliveryChannels(profile, job.encoding.channelFold);
+        validateEncoding(profile, job.encoding, channels);
+        validateNormalization(profile.normalization, outputRate, channels);
+
+        Stage stage(job.directory, result);
+        DeliverySink delivery(stage.path, "conversion", profile, job.encoding, channels, expected, 1);
+        constexpr std::size_t block = 4096;
+        std::vector<float> pcm(block * info.channels);
+        std::vector<double> wide(pcm.size()), mono;
+        const auto writeDelivery = [&](std::span<const double> samples, std::uint32_t frames) {
+            if (static_cast<unsigned>(channels) < info.channels) {
+                mono.resize(frames);
+                for (std::size_t i = 0; i < frames; ++i) {
+                    mono[i] = samples[i * 2] * 0.5 + samples[i * 2 + 1] * 0.5;
+                }
+                samples = mono;
+            }
+            if (std::ranges::any_of(samples, [&](double value) {
+                return !std::isfinite(value) || (delivery.requiresFloat32Range() &&
+                    std::abs(value) > static_cast<double>(std::numeric_limits<float>::max()));
+            })) throw std::runtime_error("Converted file audio exceeds the output format");
+            delivery.append(samples, frames);
+            result.framesWritten += frames;
+        };
+        std::unique_ptr<DeliverySrc> converter;
+        if (downsampling) converter = std::make_unique<DeliverySrc>(
+            info.sampleRate, outputRate, info.channels, expected, writeDelivery);
+        const auto checkpoint = [&] {
+            cancellation(control);
+            if (control.serviceHost) control.serviceHost();
+            cancellation(control);
+        };
+        for (;;) {
+            checkpoint();
+            const auto read = input.stream->read(pcm, control.stop);
+            cancellation(control);
+            if (read.status == audio::PcmReadStatus::End) break;
+            if (read.status != audio::PcmReadStatus::Frames || read.frames == 0)
+                throw std::runtime_error("Cannot read conversion source: " + input.stream->error());
+            const auto samples = static_cast<std::size_t>(read.frames) * info.channels;
+            for (std::size_t i = 0; i < samples; ++i) {
+                if (!std::isfinite(pcm[i])) throw std::runtime_error("Conversion source contains nonfinite audio");
+                wide[i] = pcm[i];
+            }
+            const std::span<const double> blockInput(wide.data(), samples);
+            if (converter) converter->append(blockInput, read.frames);
+            else writeDelivery(blockInput, read.frames);
+            if (control.progress) control.progress(id, result.framesWritten, expected);
+        }
+        input.stream.reset();
+        if (converter) {
+            converter->finish(checkpoint);
+            if (control.progress) control.progress(id, result.framesWritten, expected);
+            checkpoint();
+        }
+        if (result.framesWritten == 0) throw std::runtime_error("Conversion source is empty");
+        result.normalization = delivery.finish(checkpoint);
+        checkpoint();
+        if (mediaIdentityAt(source) != sourceId || hashMedia(source, control) != original || mediaIdentityAt(source) != sourceId)
+            throw std::runtime_error("Conversion source changed before publication");
+        auto fingerprint = fingerprintStagedDelivery(delivery.output(), control);
+        detail::publishOutput(delivery.output(), result, control.publicationHooks, "conversion destination already exists");
+        result.deliveryBlake3 = std::move(fingerprint);
+    } catch (const Cancelled&) {
+        result.state = JobState::Cancelled;
+    } catch (const std::exception& error) {
+        result.state = JobState::Failed;
+        result.error = error.what();
+    }
+    return result;
+}
+
+bool sameConversionPath(const fs::path& left, const fs::path& right) {
+    std::error_code error;
+    if (fs::equivalent(left, right, error)) return true;
+    return foldedFilename(left) == foldedFilename(right) &&
+        fs::equivalent(fs::absolute(left).parent_path(), fs::absolute(right).parent_path(), error);
+}
+} // namespace
+
+Result convertAudioFile(FileConversion job, Control control) {
+    return convertAudioFilePrepared(std::move(job), control, 0);
+}
+
+std::vector<Result> convertAudioFiles(std::span<const FileConversion> jobs, Control control) {
+    std::vector<Result> results(jobs.size());
+    std::vector<std::optional<media::FileIdentity>> sources(jobs.size());
+    for (std::size_t i = 0; i < jobs.size(); ++i) {
+        if (control.stop.stop_requested()) return results;
+        try {
+            sources[i] = mediaIdentityAt(jobs[i].source);
+        } catch (const std::exception& error) {
+            results[i].state = JobState::Failed;
+            results[i].error = error.what();
+        }
+    }
+    const auto guard = [&](const Result& candidate) {
+        for (std::size_t i = 0; i < jobs.size(); ++i) {
+            if (sources[i] && (sameConversionPath(candidate.output, jobs[i].source) ||
+                (candidate.replacement && candidate.replacement->existing == sources[i]))) {
+                throw std::runtime_error("Conversion output would overwrite a batch input");
+            }
+        }
+        for (const auto& prior : results) {
+            if (prior.state == JobState::Completed && sameConversionPath(candidate.output, prior.output)) {
+                throw std::runtime_error("Conversion output would overwrite an earlier delivery in this batch");
+            }
+        }
+    };
+    for (std::size_t i = 0; i < jobs.size() && !control.stop.stop_requested(); ++i) {
+        if (sources[i]) results[i] = convertAudioFilePrepared(
+            jobs[i], control, static_cast<JobId>(i) + 1, sources[i], guard);
+    }
+    return results;
+}
+
 Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
                        JobId id, std::uint64_t counter) {
     if (job.source.trackId != 0 || job.source.tap != engine::OfflineTap::PostFader) {

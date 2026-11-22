@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -206,6 +207,23 @@ struct Control {
     media::PublishHooks publicationHooks{};
     bool fingerprintDelivery = false; // requested for a later After Export action
 };
+struct FileConversion {
+    std::filesystem::path source;
+    std::filesystem::path directory;
+    std::string name; // empty uses the source stem; the writer adds the selected format suffix
+    Encoding encoding;
+    Normalization normalization{};
+    Collision collision = Collision::Fail;
+    std::uint32_t outputSampleRate = 0; // zero preserves the source, lower rates use SoXR
+};
+/// Owner-worker conversion uses the project's normal export delivery pipeline.
+/// Source clock and channel layout are preserved by default. No project opens.
+[[nodiscard]] Result convertAudioFile(FileConversion, Control = {});
+
+// Runs in request order with one result slot per input. Cancellation leaves
+// remaining slots Pending. Progress uses one-based request IDs in this call.
+[[nodiscard]] std::vector<Result> convertAudioFiles(std::span<const FileConversion>, Control = {});
+
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,
                                     std::uint64_t counter = 1);
