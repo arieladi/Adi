@@ -243,6 +243,7 @@ public:
     virtual void processBypassTransition(const engine::NodeIo&) noexcept {}
     /// Actual graph suspension transition, on the same serialized audio owner.
     virtual void didSuspend() noexcept {}
+    [[nodiscard]] virtual bool canProcessOnWorker() const noexcept { return false; }
 
     /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
     /// default: the device is handed float in every graph, converted either
@@ -605,6 +606,10 @@ public:
     [[nodiscard]] bool wantsDeviceTransport() const noexcept override {
         return inst_ && inst_->wantsDeviceTransport();
     }
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override {
+        return inst_ && inst_->canProcessOnWorker();
+    }
+    [[nodiscard]] const void* workerAffinity() const noexcept override { return inst_; }
 
     [[nodiscard]] bool hasBypass() const noexcept override { return true; }
     void processActive(const engine::NodeIo& io) noexcept override;
