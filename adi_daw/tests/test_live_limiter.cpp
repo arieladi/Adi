@@ -224,7 +224,7 @@ void changesWhileRunning() {
     // At the ceiling, on a correlated (mono) programme, through every change.
     const auto loud = noise(24000, 4.0);
     const Stereo mono{loud.l, loud.l};
-    for (int mode : {L::Standard, L::SoftClip}) {
+    for (int mode : {L::Standard, L::TruePeak}) {  // (Soft Clip's tanh never reaches the ceiling: no test)
         auto lim = made(-1, mode, L::Stereo);
         Stereo y{std::vector<float>(mono.l.size()), std::vector<float>(mono.r.size())};
         for (std::size_t at = 0; at < mono.l.size(); at += 97) {
@@ -244,7 +244,7 @@ void changesWhileRunning() {
     // The ceiling lowered from 0 to -36 dB on a full-scale programme: every
     // sample after the change under the new one.
     for (int link : {L::Stereo, L::LeftRight}) {
-        for (int mode : {L::Standard, L::SoftClip}) {
+        for (int mode : {L::Standard}) {
             auto lim = made(0, mode, link, 2);
             const auto full = noise(9600, 1.0);
             Stereo y{std::vector<float>(full.l.size()), std::vector<float>(full.r.size())};
@@ -264,6 +264,82 @@ void changesWhileRunning() {
                                                          std::to_string(mode) +
                                                          ": a ceiling lowered to -36 dB holds from the next sample (" +
                                                          std::to_string(20 * std::log10(after)) + " dB)");
+        }
+    }
+    // True Peak: the same change, read between the samples by the Annex's
+    // meter from just after it (a found defect: a clamp's corners overshot).
+    for (int link : {L::Stereo, L::LeftRight}) {
+        auto lim = made(0, L::TruePeak, link, 2);
+        const auto full = noise(9600, 1.0);
+        Stereo y{std::vector<float>(full.l.size()), std::vector<float>(full.r.size())};
+        const std::size_t change = 97 * 49;
+        for (std::size_t at = 0; at < full.l.size(); at += 97) {
+            if (at == change) {
+                lim.set(L::Ceiling, -36);
+            }
+            const auto n = std::min<std::size_t>(97, full.l.size() - at);
+            lim.process(full.l.data() + at, full.r.data() + at, y.l.data() + at, y.r.data() + at, n);
+        }
+        adi::dsp::TruePeakMeter meter;
+        meter.prepare(48000, 2);
+        // The meter reads 8 samples behind: fed through change + 16 and
+        // cleared, it reads from 8 samples after the change on.
+        const std::size_t split = change + 16;
+        const float* head[2] = {y.l.data(), y.r.data()};
+        meter.process(head, 2, static_cast<int>(split));
+        meter.resetPeak();
+        const float* tail[2] = {y.l.data() + split, y.r.data() + split};
+        meter.process(tail, 2, static_cast<int>(y.l.size() - split));
+        check(meter.peakDb() <= -36 + 0.05, "True Peak, link " + std::to_string(link) +
+                                                ": a ceiling lowered to -36 dB holds between the samples (" +
+                                                std::to_string(meter.peakDb()) + " dBTP)");
+    }
+    // Above the ceiling, a hot left (DC 4.0) and a quiet right (DC 0.1), the
+    // link changed every 97 to 291 samples: mid-hold, mid-fade, back to a
+    // path fading out, a third path. On DC each link's right settles to a
+    // constant (Stereo ducks it, L/R passes it, M/S cancels it), so a fade can
+    // move the right by at most the largest gap between them over the fade's
+    // length a sample; a splice jumps (a found defect: a third path mid-fade
+    // cut in at once).
+    constexpr std::size_t kSamples = 24000;
+    const Stereo dc{std::vector<float>(kSamples, 4.0f), std::vector<float>(kSamples, 0.1f)};
+    double lowest = 1e9, highest = -1e9;
+    for (int link : {L::Stereo, L::LeftRight, L::MidSide}) {
+        auto lim = made(-1, L::Standard, link);
+        const double settled = run(lim, dc).r.back();
+        lowest = std::min(lowest, settled);
+        highest = std::max(highest, settled);
+    }
+    // A fade is at least a latency long (144 samples at 3 ms) and never under 64.
+    const double fadeLength = std::max(static_cast<double>(made(-1).latency()), 64.0);
+    const double bound = 1.5 * (highest - lowest) / fadeLength + 1e-6;
+    for (bool withMidSide : {false, true}) {
+        for (std::size_t every : {1u, 2u, 3u}) {
+            auto lim = made(-1, L::Standard, L::Stereo);
+            Stereo y{std::vector<float>(kSamples), std::vector<float>(kSamples)};
+            const int three[] = {L::LeftRight, L::MidSide, L::LeftRight, L::Stereo, L::MidSide, L::Stereo};
+            const int two[] = {L::LeftRight, L::Stereo, L::LeftRight, L::LeftRight, L::Stereo, L::Stereo};
+            const int* order = withMidSide ? three : two;
+            std::size_t next = 0;
+            for (std::size_t at = 0; at < kSamples; at += 97) {
+                if (at >= 970 && at % (97 * every) == 0) {
+                    lim.set(L::Link, order[next++ % 6]);
+                }
+                const auto n = std::min<std::size_t>(97, kSamples - at);
+                lim.process(dc.l.data() + at, dc.r.data() + at, y.l.data() + at, y.r.data() + at, n);
+            }
+            double step = 0;
+            for (std::size_t i = 600; i < kSamples; ++i) {
+                step = std::max(step, static_cast<double>(std::abs(y.r[i] - y.r[i - 1])));
+            }
+            // M/S holds the ceiling on mid and side, not on left and right, so
+            // the ceiling on every sample is checked without it.
+            const bool under = withMidSide || std::max(peakOf(y.l), peakOf(y.r)) <= fromDb(-1) * (1 + 1e-6);
+            check(under && step <= bound, std::string(withMidSide ? "Stereo, L/R and M/S" : "Stereo and L/R") +
+                                              ", changed every " + std::to_string(97 * every) +
+                                              " samples above the ceiling: the right's largest step " +
+                                              std::to_string(step) + ", a fade's at most " + std::to_string(bound) +
+                                              (under ? "" : "; OVER the ceiling"));
         }
     }
 }

@@ -29,9 +29,17 @@ void LiveLimiter::prepare(double sampleRate) {
         limiter_[k].prepare(rate_, 1, most);
     }
     update();
-    // Every brickwall starts from silence: nothing to fade from or clamp.
-    from_ = -1;
+    restart();
+}
+
+void LiveLimiter::restart() noexcept {
+    // Every brickwall starts from silence: the link's path alone, nothing to
+    // fade or clamp.
+    weight_ = {0.0, 0.0, 0.0};
+    weight_[static_cast<std::size_t>(link_)] = 1.0;
+    filling_ = {0, 0, 0};
     clampLeft_ = 0;
+    clampScale_ = 1.0;
 }
 
 void LiveLimiter::set(Param p, double v) noexcept {
@@ -66,63 +74,40 @@ void LiveLimiter::update() noexcept {
         l.setCeiling(ceiling);
         l.setReleaseSeconds(p_[Release] / 1000.0);
     }
+    const double before = ceiling_;
+    ceiling_ = ceiling;
+    const int was = link_;
+    link_ = link;
     if (restarted) {
         // A latency change: every path restarts from silence together.
-        from_ = -1;
-        clampLeft_ = 0;
-    } else {
-        if (ceiling < ceiling_) {
-            // The samples already in the delay were limited to the old
-            // ceiling; for one latency they are clamped to the new one.
-            clampLeft_ = static_cast<std::size_t>(latency());
-        }
-        if (link != link_) {
-            const std::size_t hold = static_cast<std::size_t>(latency()), fade = fadeLength();
-            if (from_ >= 0 && link == from_) {
-                // Back to the path still fading out: it never stopped running.
-                if (faded_ < hold) {
-                    from_ = -1;  // the output never left it
-                } else {
-                    // The two swap roles, the mix where it was.
-                    const double w = weight(faded_);
-                    from_ = link_;
-                    faded_ = hold - 1 + static_cast<std::size_t>(std::lround(static_cast<double>(fade) * (1.0 - w)));
-                }
-            } else {
-                // The new path starts from silence and is faded in from the
-                // one running, once its delay holds the programme. Mid-fade,
-                // that is the old path while the output is still on it, else
-                // the path that was coming in.
-                if (from_ < 0 || faded_ >= hold) {
-                    from_ = link_;
-                }
-                const std::size_t first = firstOf(link);
-                limiter_[first].setLookahead(lookahead);
-                if (link != Stereo) {
-                    limiter_[first + 1].setLookahead(lookahead);
-                }
-                faded_ = 0;
-            }
-        }
+        restart();
+        return;
     }
-    ceiling_ = ceiling;
-    link_ = link;
+    if (ceiling < before) {
+        // The samples already in the delay were limited to the old ceiling.
+        // For one latency they are clamped to the new one, or, in True Peak
+        // mode, scaled by new over old, so they stay under it between the
+        // samples too (a clamp's corners would not).
+        clampLeft_ = static_cast<std::size_t>(latency());
+        clampScale_ *= ceiling / before;
+    }
+    const auto l = static_cast<std::size_t>(link);
+    if (link != was && weight_[l] == 0.0) {
+        // A path the output is not on starts from silence; it takes its share
+        // once its delay holds the programme. A path still sounding (a change
+        // back mid-fade) is warm and takes its share at once.
+        const std::size_t first = firstOf(link);
+        limiter_[first].setLookahead(lookahead);
+        if (link != Stereo) {
+            limiter_[first + 1].setLookahead(lookahead);
+        }
+        filling_[l] = static_cast<std::size_t>(latency());
+    }
 }
 
 int LiveLimiter::latency() const noexcept {
     // All five run at the same settings; the linked one stands for them.
     return limiter_[0].latencySamples();
-}
-
-std::size_t LiveLimiter::fadeLength() const noexcept {
-    return std::max<std::size_t>(static_cast<std::size_t>(latency()), 64);
-}
-
-double LiveLimiter::weight(std::size_t k) const noexcept {
-    // Held on the old path for a latency (the new one's delay still filling),
-    // then a linear crossfade over at least another.
-    const auto hold = static_cast<std::size_t>(latency());
-    return k < hold ? 0.0 : std::min(1.0, static_cast<double>(k - hold + 1) / static_cast<double>(fadeLength()));
 }
 
 void LiveLimiter::runPath(int link, const Block& x, Block& y, std::size_t n, std::size_t clamp) noexcept {
@@ -149,8 +134,13 @@ void LiveLimiter::runPath(int link, const Block& x, Block& y, std::size_t n, std
     for (std::size_t i = 0; i < n; ++i) {
         double l = y[0][i], r = y[1][i];
         if (i < clamp) {
-            l = std::clamp(l, -ceiling_, ceiling_);
-            r = std::clamp(r, -ceiling_, ceiling_);
+            if (kind_ == TruePeak) {
+                l *= clampScale_;
+                r *= clampScale_;
+            } else {
+                l = std::clamp(l, -ceiling_, ceiling_);
+                r = std::clamp(r, -ceiling_, ceiling_);
+            }
         }
         if (link == MidSide) {
             const double mid = l, side = r;
@@ -163,9 +153,13 @@ void LiveLimiter::runPath(int link, const Block& x, Block& y, std::size_t n, std
 }
 
 void LiveLimiter::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
-    // In blocks of kBlock: screened and gained into doubles, limited on the
-    // link's path (and the one fading out), softened (Soft Clip), out.
-    Block x, now, before;
+    // In blocks of kBlock: screened and gained into doubles, limited on every
+    // path that sounds (the link's, and any still fading out), mixed by their
+    // weights, softened (Soft Clip), out.
+    Block x;
+    std::array<Block, 3> y;
+    const auto current = static_cast<std::size_t>(link_);
+    const double step = 1.0 / static_cast<double>(std::max(latency(), 64));
     for (std::size_t done = 0; done < frames;) {
         const std::size_t n = std::min(kBlock, frames - done);
         for (std::size_t i = 0; i < n; ++i) {
@@ -177,31 +171,41 @@ void LiveLimiter::process(const float* inL, const float* inR, float* outL, float
             x[1][i] = std::isfinite(r) ? r * gain_ : 0.0;
         }
         const std::size_t clamp = std::min(n, clampLeft_);
-        runPath(link_, x, now, n, clamp);
-        if (from_ >= 0) {
-            // Each path keeps its own ceiling, so their mix does too.
-            runPath(from_, x, before, n, clamp);
-            for (std::size_t i = 0; i < n; ++i) {
-                const double w = weight(faded_ + i);
-                for (std::size_t c = 0; c < 2; ++c) {
-                    now[c][i] = before[c][i] + w * (now[c][i] - before[c][i]);
-                }
-            }
-            faded_ += n;
-            if (faded_ >= static_cast<std::size_t>(latency()) + fadeLength()) {
-                from_ = -1;
+        std::array<bool, 3> sounding{};
+        for (std::size_t p = 0; p < 3; ++p) {
+            sounding[p] = p == current || weight_[p] > 0.0;
+            if (sounding[p]) {
+                runPath(static_cast<int>(p), x, y[p], n, clamp);
             }
         }
-        clampLeft_ -= clamp;
         for (std::size_t i = 0; i < n; ++i) {
-            double l = now[0][i], r = now[1][i];
+            // The link's path waits a latency while its delay fills, then
+            // rises linearly over at least another; the others give way in
+            // proportion, so the weights always sum to one and every path
+            // keeps the ceiling, so the mix does too. A change mid-fade mixes
+            // from wherever the output is: no step.
+            if (filling_[current] > 0) {
+                --filling_[current];
+            } else if (weight_[current] < 1.0) {
+                const double now = weight_[current], next = std::min(1.0, now + step);
+                const double keep = (1.0 - next) / (1.0 - now);
+                for (std::size_t p = 0; p < 3; ++p) {
+                    weight_[p] = p == current ? next : next >= 1.0 ? 0.0 : weight_[p] * keep;
+                }
+            }
+            double l = 0.0, r = 0.0;
+            for (std::size_t p = 0; p < 3; ++p) {
+                if (sounding[p] && weight_[p] > 0.0) {
+                    l += weight_[p] * y[p][0][i];
+                    r += weight_[p] * y[p][1][i];
+                }
+            }
             if (kind_ == SoftClip) {
                 // tanh inside the ceiling: unity slope near 0, so a quiet
                 // signal passes as itself, rounding off toward the ceiling and
                 // never reaching it.
-                const auto soft = [this](double v) { return ceiling_ * std::tanh(v / ceiling_); };
-                l = soft(l);
-                r = soft(r);
+                l = ceiling_ * std::tanh(l / ceiling_);
+                r = ceiling_ * std::tanh(r / ceiling_);
             }
             if (outL) {
                 outL[done + i] = static_cast<float>(l);
@@ -209,6 +213,10 @@ void LiveLimiter::process(const float* inL, const float* inR, float* outL, float
             if (outR) {
                 outR[done + i] = static_cast<float>(r);
             }
+        }
+        clampLeft_ -= clamp;
+        if (clampLeft_ == 0) {
+            clampScale_ = 1.0;
         }
         done += n;
     }
