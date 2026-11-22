@@ -252,7 +252,14 @@ public:
             bypassScratch_[static_cast<std::size_t>(channel)].resize(static_cast<std::size_t>(maximum));
         backend_->prepare(rate,maximum,channels_,settings(cached_,offline_));
         reduction_->setPrepared(!offline_);
-        prepared_=everPrepared_=true;publishLatency(backend_->advertisedLatency());
+        const auto preparedLatency = backend_->advertisedLatency();
+        // A fresh export graph reads its initial delay after preparing its nodes.
+        // Reporting it as a change would invalidate that graph before it processes.
+        if (offline_ && !everPrepared_)
+            latency_.store(preparedLatency, std::memory_order_release);
+        else
+            publishLatency(preparedLatency);
+        prepared_ = everPrepared_ = true;
     }
     void release() override {
         const ReactivationGate::Hold hold(gate_);

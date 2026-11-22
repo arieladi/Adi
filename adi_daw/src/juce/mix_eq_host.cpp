@@ -193,7 +193,15 @@ public:
         prepared_=false;
         tailRevision_.store(0, std::memory_order_release);
         refresh();backend_->prepare(rate,maximum,channels_,settings(cached_));
-        sampleRate_=rate;maximum_=maximum;preparedWidth_=handedWidth_;prepared_=true;publishLatency(backend_->advertisedLatency());
+        const auto preparedLatency = backend_->advertisedLatency();
+        // The offline graph reads initial PDC after preparing its nodes.
+        // No latency change has occurred in that graph at this point.
+        if (!everPrepared_ && offline_.load(std::memory_order_acquire))
+            latency_.store(preparedLatency, std::memory_order_release);
+        else
+            publishLatency(preparedLatency);
+        sampleRate_=rate;maximum_=maximum;preparedWidth_=handedWidth_;
+        prepared_ = everPrepared_ = true;
     }
     void release() override {
         const ReactivationGate::Hold hold(gate_);
@@ -363,7 +371,7 @@ private:
         if(latency_.exchange(value,std::memory_order_acq_rel)!=value)latencyEpoch_.fetch_add(1,std::memory_order_release);
     }
     int channels_;double sampleRate_=0;std::int32_t maximum_=0;std::unique_ptr<mix::EqProcessingBackend> backend_;
-    DeviceIdentity identity_;ReactivationGate gate_;bool prepared_=false;
+    DeviceIdentity identity_;ReactivationGate gate_;bool prepared_=false,everPrepared_=false;
     engine::Precision handedWidth_=engine::Precision::Float32,preparedWidth_=engine::Precision::Float32;
     std::array<ParamDescriptor,count> descriptors_;std::array<std::atomic<float>,count> values_{};
     Values cached_{};std::uint64_t cachedRevision_=0;
