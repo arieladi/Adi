@@ -52,6 +52,8 @@ LinkPlayback::Result LinkPlayback::process(const AudioIo& io,const LinkBuffer& i
     if(!block.valid() || !whole.valid() || io.frames<=0 || io.frames>block.maxFrames() ||
        block.sampleRate()<=0){silence(io);return {};}
     LinkBuffer buffer=input;
+    // Link needs a positive phase cycle within its adapter's supported range.
+    if (const auto quantum = block.launchQuantum(); quantum && *quantum <= 256) buffer.quantum = *quantum;
     const auto graphLatency=static_cast<std::int64_t>(std::llround(
         static_cast<double>(block.latencySamples())*1000000.0/block.sampleRate()));
     if(buffer.outputLatencyMicros<0 || buffer.outputLatencyMicros>10000000-graphLatency){silence(io);return {};}
@@ -70,6 +72,10 @@ LinkPlayback::Result LinkPlayback::consume(Session::RenderBlock& block,const Aud
     if(!block.valid() || !whole.valid() || io.frames<=0 || io.frames>block.maxFrames() ||
        !validFrame(frame,quantum) || !validCommand(command)){silence(io);return result;}
     result.valid=true;
+    if (quantum != appliedQuantum_) {
+        appliedQuantum_ = quantum;
+        anchored_ = false;
+    }
     const double rate=block.sampleRate();
     auto& transport=session_.transport();
     const bool continuous=haveEnd_ && expectedSample_==transport.position() && expectedRevision_==transport.revision();
@@ -164,6 +170,7 @@ LinkPlayback::Result LinkPlayback::consume(Session::RenderBlock& block,const Aud
     if(!result.valid){silence(io);return result;}
 
     std::int32_t cursor=0;
+    std::optional<std::uint64_t> revisionBeforeDiscontinuity;
     const auto render=[&](std::int32_t end) {
         if(end<=cursor)return;
         if(transport.playing()) {
@@ -193,7 +200,9 @@ LinkPlayback::Result LinkPlayback::consume(Session::RenderBlock& block,const Aud
             }
         }
         AudioIoSlice slice(io,cursor,end-cursor);
+        const auto revision = transport.revision();
         if(slice.valid())(void)block.process(slice.io());
+        if (revision != transport.revision()) revisionBeforeDiscontinuity = revision;
         cursor=end;
     };
     if(pendingStart_ && clockReady) {
@@ -224,7 +233,9 @@ LinkPlayback::Result LinkPlayback::consume(Session::RenderBlock& block,const Aud
         }
     }
     render(io.frames);
-    expectedSample_=transport.position();expectedRevision_=transport.revision();
+    expectedSample_=transport.position();
+    // Handle a seek inside a rendered slice as a discontinuity on the next callback.
+    expectedRevision_=revisionBeforeDiscontinuity.value_or(transport.revision());
     endBeat_=block.beatAtSample(transport.sampleAt(0));lastGeneration_=block.generation();haveEnd_=true;
     result.waiting=result.waiting || pendingStart_;
     return result;

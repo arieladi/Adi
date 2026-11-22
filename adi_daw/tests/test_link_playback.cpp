@@ -284,6 +284,35 @@ LinkPlayback::Result render(LinkPlayback& playback, Buffer& buffer, const LinkFr
     audio::CallbackScope callback;
     return playback.processCaptured(buffer.io, frame, 4, command);
 }
+void savedLaunchQuantum() {
+    Project project(Precision::Float32);
+    auto link = participant();
+    LinkPlayback playback(project.session, *link);
+    Buffer buffer(Precision::Float32);
+    auto setGrid = [&](int code) {
+        OpRequest request;
+        request.opType = "transport.setLaunchQuantization";
+        request.payload = {{"code", code}};
+        if (!OpJournal(*project.store).commit(request).ok || !project.session.refresh(*project.store))
+            throw std::runtime_error("publish Link launch grid");
+    };
+    LinkCommand command;
+    command.requestBeat = true;
+    command.beat = 3.5;
+    const auto query = [&] {
+        const LinkBuffer timing{link->clockMicros(), 4000, 4};
+        const audio::CallbackScope callback;
+        return playback.process(buffer.io, timing, command);
+    };
+    setGrid(7);
+    const auto quarter = query();
+    check(quarter.valid && std::abs(quarter.frame.phase - 0.5) < 1e-6,
+          "the actual SDK receives the saved one-quarter phase quantum");
+    setGrid(0);
+    const auto none = query();
+    check(none.valid && std::abs(none.frame.phase - 3.5) < 1e-6,
+          "None keeps the Link caller's positive phase cycle");
+}
 void launchStop() {
     for (const auto width : {Precision::Float32, Precision::Float64}) {
         Project project(width);
@@ -994,7 +1023,7 @@ void peers() {
 
 int main(int argc, char** argv) {
     try {
-        launchStop(); preparation(); latencyBoundary(); continuity(); optOutAndValidation(); drift();
+        savedLaunchQuantum(); launchStop(); preparation(); latencyBoundary(); continuity(); optOutAndValidation(); drift();
         pendingLaunchUpdates(); restartClearsPerformedHistory(); cancelPendingIntent();
         captureTimeAdmission(); slowOwnerAndLoops(); repeatedLocalPlay(); localPlayCancelsPendingPeerStop();
         distantLaunchReadiness();

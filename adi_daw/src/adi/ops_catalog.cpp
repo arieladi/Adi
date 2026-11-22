@@ -1030,6 +1030,19 @@ bool transportSongStart(OpContext &c, const Payload &p, std::string &error) {
     set.exec();
     return true;
 }
+bool transportLaunchQuantization(OpContext& c, const Payload& p, std::string& error) {
+    const auto& code = p.at("code");
+    if (!code.is_number_integer() || code < 0 ||
+        code > static_cast<std::int32_t>(LaunchQuantization::ThirtySecond)) {
+        error = "launch quantization needs a code between 0 and 13";
+        return false;
+    }
+    SQLite::Statement set(c.db,
+        "INSERT OR REPLACE INTO session_state(key,value) VALUES('transport.launchQuantization',?)");
+    set.bind(1, code.dump());
+    set.exec();
+    return true;
+}
 bool transportLoop(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,true);}
 bool transportMetronome(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,false);}
 
@@ -1198,6 +1211,7 @@ constexpr Field kFRemarkResolve[] = {{"id", FieldType::Int, true},
 constexpr Field kFTransportSeek[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
 constexpr Field kFTransportCountIn[] = {{"bars", FieldType::Int, true}};
+constexpr Field kFTransportQuantization[] = {{"code", FieldType::Int, true}};
 constexpr Field kFTransportSongStart[] = {{"on", FieldType::Bool, true},
                                           {"start", FieldType::Int, false}};
 constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
@@ -2302,6 +2316,8 @@ const OpDescriptor kHandWritten[] = {
      kFTransportCountIn, false, true, transportCountIn, nullptr, ""},
     {"transport.setSongStart", "Set or clear the song start", Scope::Transport, EngineImpact::Snapshot,
      kFTransportSongStart, false, true, transportSongStart, nullptr, ""},
+    {"transport.setLaunchQuantization", "Set Global Quantization", Scope::Transport, EngineImpact::Snapshot,
+     kFTransportQuantization, false, true, transportLaunchQuantization, nullptr, ""},
     {"transport.setRecord", "Arm or disarm the transport", Scope::Transport,
      EngineImpact::GraphRebuild, kFTransportFlag, false, true,
      transportNoop, nullptr, ""},

@@ -301,6 +301,10 @@ public:
         [[nodiscard]] double beatAtSample(std::int64_t) const noexcept;
         [[nodiscard]] std::int64_t sampleAtTick(std::int64_t) const noexcept;
         [[nodiscard]] double bpmAtTick(std::int64_t) const noexcept;
+        [[nodiscard]] std::optional<double> launchQuantum() const noexcept;
+        /// Driver command. While rolling, execute on the next reachable grid
+        /// sample. None and a stopped transport locate immediately.
+        bool locateQuantized(std::int64_t destinationTick) noexcept;
         /// Driver only, immediately before rendering this target. Posts bounded
         /// read-ahead and checks mandatory pages without waiting or doing I/O.
         [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept;
@@ -314,6 +318,8 @@ public:
     private:
         friend class Session;
         explicit RenderBlock(Session&) noexcept;
+        [[nodiscard]] std::optional<std::int32_t> gridOffset(std::int32_t frames) const noexcept;
+        bool renderThroughLocate(const AudioIo&, std::int32_t offset, std::int64_t destination) noexcept;
         // CallbackScope precedes acquisition and outlives the graph handle.
         audio::CallbackScope callback_;
         Session& session_;
@@ -515,6 +521,11 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    struct PendingLocate {
+        std::int64_t tick;
+        std::uint64_t revision;
+    };
+    std::optional<PendingLocate> quantizedLocate_;
     std::unique_ptr<LiveMidiInput> midiInput_;
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;

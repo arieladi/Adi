@@ -2045,6 +2045,7 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `transport.setRecord` | t | G | — | P0 |
 | `transport.setMetronome` | t | S | — | P1 |
 | `transport.setCountIn` | t | S | — | P1 |
+| `transport.setLaunchQuantization` | t | S | — | P1 |
 | `transport.setSongStart` | t | S | — | P1 |
 | `controller.bind` | e | N | cap | P1 |
 | `controller.unbind` | e | N | pair `controller.bind` | P1 |
@@ -2093,6 +2094,16 @@ loop/click choices do not change rendered material.
 `on:false` clears the override. Both use session metadata, Snapshot impact and
 the same ephemeral/audit/batch-rollback rules as loop/click. A missing song start
 uses the insert marker or active time selection supplied by the caller.
+
+`transport.setLaunchQuantization {code}` follows the same ephemeral rules. It
+saves `transport.launchQuantization` in session metadata. Codes 0 through 13
+mean None, 8 Bars, 4 Bars, 2 Bars, 1 Bar, 1/2, 1/2T, 1/4, 1/4T, 1/8, 1/8T,
+1/16, 1/16T and 1/32. Missing or invalid saved values default to 1 Bar.
+`Session::RenderBlock::locateQuantized(destinationTick)` locates immediately
+while stopped or with None. While rolling it schedules the locate at the next
+reachable grid sample, including an exact boundary. Bar groups restart on meter
+changes and sub-bar fractions count from song zero. The driver retains one
+pending destination. Stop or a later transport discontinuity cancels it.
 
 The driver calls `Session::RenderBlock::startPlayback(insertMarkerTick, recording)`
 between slices using its pinned generation. The saved song start wins over that

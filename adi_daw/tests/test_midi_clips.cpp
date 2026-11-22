@@ -3,12 +3,15 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/gesture_preview.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/textproj.hpp"
+#include "adi/transport_settings.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -39,7 +42,7 @@ void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
 namespace {
 int checks=0,failures=0;
 void check(bool ok,const char* label){++checks;if(!ok){++failures;std::printf("FAIL %s\n",label);}}
-struct Heard { Event e;std::int64_t clock; };
+struct Heard { Event e;std::int64_t clock;std::int64_t timeline = -1; };
 struct Instrument final:device::DeviceInstance {
     device::DeviceIdentity id;
     std::array<Heard,8192> heard{};std::size_t count=0;std::int64_t clock=0;
@@ -52,7 +55,11 @@ struct Instrument final:device::DeviceInstance {
     std::int64_t tailSamples()const noexcept override{return tail;}
     void process(const NodeIo& io)noexcept override{
         ++calls;
-        for(const auto& e:io.events)if(count<heard.size())heard[count++]={e,clock+e.frame};
+        for (const auto& e : io.events) {
+            if (count < heard.size())
+                heard[count++] = {e, clock + e.frame,
+                                  io.transport ? io.transport->timelineSample : -1};
+        }
         if(audible) {
             auto event=io.events.begin();
             for(int frame=io.blockOffset;frame<io.blockOffset+io.frames;++frame) {
@@ -483,6 +490,114 @@ void maximumLocate(){
     Fixture f;f.clip(1,0,5765760);f.load();f.render();
     f.session.transport().locate(std::numeric_limits<std::int64_t>::max());f.render();
     check(f.instrument->balance()==0,"maximum sample locate releases notes without overflow");
+}
+void quantizedLocate() {
+    constexpr auto q = textproj::kPPQ;
+    for (const auto width : {Precision::Float32, Precision::Float64}) {
+        Fixture f(48000, 64, width);
+        check(readTransportSettings(*f.store).launchQuantization == LaunchQuantization::Bar,
+              "an existing or new set without a value defaults to one bar");
+        f.clip(1, 0, 2 * q, 2 * q);
+        f.clip(2, 0, 2 * q, 2 * q);
+        SQLite::Statement position(f.store->db(), "UPDATE clips SET pos_ticks=? WHERE id=2");
+        position.bind(1, 3 * q);
+        position.exec();
+        NoteRecord second{};
+        second.dur_ticks = 2 * q;
+        second.note_id = 46;
+        second.key = 72;
+        second.channel = 3;
+        second.vel_on = 96;
+        second.probability = 10000;
+        const auto bytes = writeStream<NoteRecord>(FourCC::Notes, std::vector<NoteRecord>{second});
+        if (!f.store->putEventStream(2, "notes", bytes))
+            throw std::runtime_error("chase clip stream write failed");
+
+        OpRequest op;
+        op.opType = "transport.setLaunchQuantization";
+        op.payload = {{"code", 14}};
+        check(!OpJournal(*f.store).commit(op).ok, "unknown Global Quantization choice is refused");
+        const auto defaultPresentation = capturePresentationImage(*f.store);
+        op.payload = {{"code", 7}};
+        check(OpJournal(*f.store).commit(op).ok && !History(*f.store).canUndo() &&
+              readTransportSettings(*f.store).launchQuantization == LaunchQuantization::Quarter,
+              "Global Quantization persists in session metadata outside undo");
+        check(capturePresentationImage(*f.store) != defaultPresentation,
+              "a settings-only edit changes the document presentation image without a history step");
+
+        f.load();
+        auto& transport = f.session.transport();
+        auto sample = [&](std::int64_t tick) { return f.session.beginRender().sampleAtTick(tick); };
+        const auto grid = sample(q);
+        const auto target = sample(4 * q);
+        transport.locate(grid - 159);
+        f.render();
+        check(f.instrument->balance() == 1, "the old clip voice is held before the scheduled locate");
+        const auto revision = transport.revision();
+        {
+            const audio::CallbackScope callback;
+            auto block = f.session.beginRender();
+            check(block.launchQuantum() == 1 && block.locateQuantized(4 * q) &&
+                  transport.position() == grid - 95 && transport.revision() == revision,
+                  "the rolling quarter-grid locate queues the original musical tick");
+        }
+        const auto before = f.instrument->count;
+        f.render();
+        check(transport.position() == grid - 31 && f.instrument->count == before,
+              "an earlier physical block stays on the old clip");
+        f.render();
+        check(transport.position() == target + 33 && transport.revision() == revision + 1,
+              "an interior grid sample starts the 33-frame suffix at the destination");
+        bool off = false, chased = false;
+        for (auto i = before; i < f.instrument->count; ++i) {
+            const auto& event = f.instrument->heard[i];
+            if (event.timeline == target && event.e.frame == 0) {
+                off |= event.e.type == EventType::NoteOff && event.e.dim == 60;
+                chased |= event.e.type == EventType::NoteOn && event.e.dim == 72;
+            }
+        }
+        check(off && chased && f.instrument->balance() == 1,
+              "the old note releases and the new clip chases at the first destination sample");
+
+        transport.loop(grid, grid + 40);
+        transport.locate(grid + 17);
+        {
+            auto block = f.session.beginRender();
+            check(block.locateQuantized(block.tickAtSample(grid + 10)),
+                  "a locate can queue before a nearby loop wrap");
+        }
+        f.render(32);
+        check(transport.position() == grid + 19,
+              "the first reachable grid is the wrapped head, 23 samples into the callback");
+        transport.loop(0, 0, false);
+
+        transport.locate(grid - 64);
+        check(f.session.beginRender().locateQuantized(4 * q), "callback-boundary locate queues");
+        f.render();
+        check(transport.position() == grid,
+              "a boundary equal to the callback end waits for the next callback");
+        f.render();
+        check(transport.position() == target + 64,
+              "a locate on the next callback's first sample renders its whole destination block");
+
+        transport.locate(grid - 31);
+        check(f.session.beginRender().locateQuantized(4 * q), "locate queues before Stop");
+        transport.play(false);
+        transport.play();
+        f.render();
+        check(transport.position() == grid + 33, "Stop and later Play cancel the queued destination");
+
+        transport.play(false);
+        check(f.session.beginRender().locateQuantized(q) && transport.position() == grid,
+              "stopped locate runs immediately even with a saved grid");
+        transport.play();
+        op.payload = {{"code", 0}};
+        if (!OpJournal(*f.store).commit(op).ok) throw std::runtime_error("None commit failed");
+        f.refresh();
+        auto block = f.session.beginRender();
+        check(!block.launchQuantum() && block.locateQuantized(4 * q) && transport.position() == target,
+              "None disables waiting for a rolling locate");
+    }
 }
 void loopEntry(){
     Fixture f;f.clip(1,0,240240,240240);
@@ -925,6 +1040,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "live-input") liveInput(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "quantized-locate") quantizedLocate(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");

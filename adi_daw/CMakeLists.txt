@@ -442,6 +442,7 @@ add_library(adi_core STATIC
     src/adi/summing_flavors.cpp
     src/adi/engine/param_automation.cpp
     src/adi/engine/play_quantize.cpp
+    src/adi/engine/launch_quantize.cpp
     src/adi/engine/param_ops.cpp
     src/adi/engine/param_edits.cpp
     src/adi/engine/mpe_input.cpp
@@ -1825,6 +1826,10 @@ add_test(NAME adi_wav_file_tests COMMAND adi_wav_file_tests)
 add_executable(adi_play_quantize_tests tests/test_play_quantize.cpp)
 target_link_libraries(adi_play_quantize_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_play_quantize_tests COMMAND adi_play_quantize_tests)
+
+add_executable(adi_launch_quantize_tests tests/test_launch_quantize.cpp)
+target_link_libraries(adi_launch_quantize_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_launch_quantize_tests COMMAND adi_launch_quantize_tests)
 
 add_executable(adi_media_hash_tests tests/test_media_hash.cpp)
 target_link_libraries(adi_media_hash_tests PRIVATE adi_core adi_warnings Threads::Threads)

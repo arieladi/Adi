@@ -15,6 +15,8 @@
 #include "adi/audio/io_audit.hpp"
 #include "juce/clap_host.hpp"
 #include "adi/engine/audio_recording.hpp"
+#include "adi/engine/audio_io_slice.hpp"
+#include "adi/engine/launch_quantize.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/gesture_capture_detail.hpp"
 
@@ -2323,6 +2325,75 @@ double Session::RenderBlock::bpmAtTick(std::int64_t tick) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     return timing ? timing->tempo.bpmAt(tick) : 0;
 }
+std::optional<double> Session::RenderBlock::launchQuantum() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    if (!timing) return std::nullopt;
+    const auto now = tickAtSample(session_.transport_.sampleAt(0));
+    return launch_quantize::quantumBeats(now, timing->settings.launchQuantization, timing->signatures);
+}
+bool Session::RenderBlock::locateQuantized(std::int64_t destinationTick) noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    if (!timing || destinationTick < 0) return false;
+    const auto destination = timing->sampleForTick(destinationTick);
+    if (destination == std::numeric_limits<std::int64_t>::max()) return false;
+
+    auto& transport = session_.transport_;
+    session_.quantizedLocate_.reset();
+    if (!transport.playing() || timing->settings.launchQuantization == LaunchQuantization::None) {
+        transport.locate(destination);
+        session_.publishDriverClock();
+    } else {
+        session_.quantizedLocate_ = PendingLocate{destinationTick, transport.revision()};
+    }
+    return true;
+}
+
+std::optional<std::int32_t> Session::RenderBlock::gridOffset(std::int32_t frames) const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    if (!timing) return std::nullopt;
+    const auto code = timing->settings.launchQuantization;
+    if (code == LaunchQuantization::None) return 0;
+
+    const auto& transport = session_.transport_;
+    std::int64_t offset = 0;
+    // Beyond the first wrap the same loop repeats. Only the initial range
+    // and the first loop head can offer a new reachable grid point.
+    for (int range = 0; range < 2 && offset < frames; ++range) {
+        const auto first = transport.sampleAt(offset);
+        const auto count = transport.contiguousFrames(offset, frames - offset);
+        if (count <= 0) return std::nullopt;
+        // Samples round to nearest. Start at the lower half-sample boundary
+        // so a grid point that rounds onto the first sample is eligible.
+        const double seconds = (static_cast<double>(first) - 0.5) / timing->sampleRate;
+        auto search = timing->tempo.secondsToTicks(seconds);
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            const auto tick = launch_quantize::nextGridTick(search, code, timing->signatures);
+            if (!tick || *tick == std::numeric_limits<std::int64_t>::max()) break;
+            const auto sample = timing->sampleForTick(*tick);
+            if (sample >= first) {
+                if (sample - first < count)
+                    return static_cast<std::int32_t>(offset + (sample - first));
+                break;
+            }
+            search = *tick + 1;
+        }
+        offset += count;
+    }
+    return std::nullopt;
+}
+bool Session::RenderBlock::renderThroughLocate(const AudioIo& io, std::int32_t offset,
+                                               std::int64_t destination) noexcept {
+    AudioIoSlice lead(io, 0, offset);
+    AudioIoSlice tail(io, offset, io.frames - offset);
+    if (!lead.valid() || !tail.valid()) {
+        SilenceProcessor silence;
+        silence.process(io);
+        return false;
+    }
+    if (!process(lead.io())) return false;
+    session_.transport_.locate(destination);
+    return process(tail.io());
+}
 bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool recording) noexcept {
     const auto *timing = dynamic_cast<const TimingView *>(graph_.transportState());
     if (!timing || insertMarkerTick < 0)
@@ -2372,6 +2443,19 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
             silence.process(io);
         }
         return false;
+    }
+    auto& queued = session_.quantizedLocate_;
+    auto& transport = session_.transport_;
+    if (queued && (!transport.playing() || queued->revision != transport.revision())) queued.reset();
+    if (queued && timing) {
+        if (const auto offset = gridOffset(io.frames)) {
+            const auto destination = timing->sampleForTick(queued->tick);
+            queued.reset();
+            if (destination != std::numeric_limits<std::int64_t>::max()) {
+                if (*offset > 0) return renderThroughLocate(io, *offset, destination);
+                transport.locate(destination);
+            }
+        }
     }
     const auto remaining = session_.transport_.countInRemaining();
     if (remaining > 0 && timing &&
@@ -2550,6 +2634,7 @@ void Session::release() {
     ++runtimeEpoch_;
     recording_->stop();
     midiInputCapture_->deviceStopped();
+    quantizedLocate_.reset();
     resetMidiInput();
     // A device stop cancels a pending lead-in, as a format change does in
     // prepare(): the recorder it was counting in for has just stopped, so a

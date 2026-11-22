@@ -57,7 +57,8 @@ Tables readTables(const Store& store) {
 std::vector<std::uint8_t> encodeTables(const Tables& rows) {return Payload::to_cbor(Payload(rows));}
 std::vector<std::uint8_t> imageBytes(const Tables& rows,const TransportSettings& transport,const CueSettings& cue) {
     Payload value=rows;
-    value["@transport"]={transport.metronome,transport.loopEnabled,transport.hasLoop,transport.loopStartTicks,transport.loopEndTicks};
+    value["@transport"]={transport.metronome,transport.loopEnabled,transport.hasLoop,
+        transport.loopStartTicks,transport.loopEndTicks,static_cast<int>(transport.launchQuantization)};
     value["@cue"]={cue.cueMode,cue.soloInPlace,cue.referenceOn,cue.referenceFromRole,cue.firstOutputChannel,
         cue.volumeDb,cue.referenceTrack,cue.projectReferenceTrack,cue.selectedTracks};
     return Payload::to_cbor(value);

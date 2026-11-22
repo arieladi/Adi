@@ -56,5 +56,6 @@ private:
     std::optional<std::int64_t> repairTick_;
     std::uint64_t expectedRevision_=0,lastGeneration_=0;
     double beatOffset_=0,performedBeat_=0,endBeat_=0,pendingLinkTempo_=0;
+    double appliedQuantum_=0;
 };
 } // namespace adi::engine
