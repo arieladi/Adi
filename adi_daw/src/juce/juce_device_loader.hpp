@@ -48,7 +48,7 @@ struct PluginSearchPaths {
     std::vector<std::string> clap;
 };
 
-enum class DiscoveryMode { Incremental, CacheOnly, Refresh };
+enum class DiscoveryMode { Incremental, CacheOnly, Refresh, Clean };
 enum class DiscoveryOutcome { Published, Missing, Legacy, Failed, Cancelled, Stale };
 
 enum class DiscoveryPhase { Idle, Queued, ReadingCache, Vst3, Clap, Reconciling, Ready };
@@ -113,7 +113,7 @@ public:
     /// const result, safe to retain after later operations or loader destruction.
     /// Explicit CacheOnly with missing/legacy storage never opts into lazy scan;
     /// hydrateCatalogue below preserves that separate compatibility policy.
-    /// No job scheduling, Clean mode, runtime loading or automatic startup here.
+    /// Clean is admitted only through the asynchronous job API.
     /// Callback refusal returns null before allocation or state mutation.
     [[nodiscard]] std::shared_ptr<const DiscoveryResult> discover(DiscoveryMode);
 
@@ -132,7 +132,7 @@ public:
     void setScanConfig(const scan::Config&);
 
     /// Use one owner worker for read-only startup hydration, Incremental
-    /// discovery or explicit Refresh. A zero worker override uses half the
+    /// discovery, Refresh or Clean. A zero worker override uses half the
     /// reported hardware threads, bounded to 1..4. The job owns cancellation
     /// through cancelDiscovery.
     /// After this API admits a job, runtime misses report NeedsDiscovery until

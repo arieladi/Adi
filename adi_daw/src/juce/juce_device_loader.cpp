@@ -81,7 +81,8 @@ void JuceDeviceLoader::setScanConfig(const scan::Config& config) {
 DiscoveryAdmission JuceDeviceLoader::startDiscovery(DiscoveryMode mode,unsigned workers) {
     if(audio::onAudioThread)return {DiscoveryStart::CallbackRefused,0,{}};
     if(discoveryJob_)return {DiscoveryStart::Busy,discoveryJob_->id,"a discovery job is awaiting adoption"};
-    if((mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::Refresh && mode!=DiscoveryMode::CacheOnly) ||
+    if((mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::Refresh && mode!=DiscoveryMode::CacheOnly &&
+        mode!=DiscoveryMode::Clean) ||
         workers>scan::kMaximumProbeWorkers || nextDiscoveryJob_==0)
         return {DiscoveryStart::Invalid,0,"invalid discovery mode or worker count"};
     try {
@@ -225,10 +226,11 @@ bool JuceDeviceLoader::hydrateCatalogue(std::string& error) {
 
 std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discover(DiscoveryMode mode) {
     if(audio::onAudioThread)return {};
-    if(discoveryJob_) {
+    if(discoveryJob_ || mode==DiscoveryMode::Clean) {
         auto busy=std::make_shared<DiscoveryResult>();busy->mode=mode;
         busy->catalogue=publishedCatalogue_;busy->report.complete=false;
-        busy->error="an asynchronous discovery job is awaiting adoption";
+        busy->error=discoveryJob_?"an asynchronous discovery job is awaiting adoption":
+            "Clean discovery requires an asynchronous job";
         return busy;
     }
     return discoverOwned(mode,false);
@@ -256,7 +258,8 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         failed(diagnostic,state);
     };
     try {
-        if(mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::CacheOnly && mode!=DiscoveryMode::Refresh) {
+        if(mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::CacheOnly && mode!=DiscoveryMode::Refresh &&
+           mode!=DiscoveryMode::Clean) {
             failed("invalid discovery mode",scan::State::Invalid);return result;
         }
         hydrationAttempted_=true;
@@ -268,7 +271,8 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         if(mode!=DiscoveryMode::CacheOnly) {
             ++stats_.scans;
             auto config=scanConfig_;
-            config.cacheMode=mode==DiscoveryMode::Refresh?ScanCacheMode::Refresh:ScanCacheMode::Reuse;
+            if(mode==DiscoveryMode::Clean)config.cacheMode=ScanCacheMode::Clean;
+            else config.cacheMode=mode==DiscoveryMode::Refresh?ScanCacheMode::Refresh:ScanCacheMode::Reuse;
             if(scanConfig_.process.cancel && scanConfig_.process.cancel->load(std::memory_order_relaxed)) {
                 result->report.cancelled=true;failed("discovery cancelled",scan::State::Cancelled);return result;
             }
