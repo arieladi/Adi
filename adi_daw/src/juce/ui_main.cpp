@@ -4,6 +4,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
+#include "juce/adi_shaper_panel_view.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
 #include "juce/juce_device_loader.hpp"
@@ -942,6 +943,18 @@ class AdiApplication final : public juce::JUCEApplication,
             auto *instance = document_->session().instanceFor(id);
             if (instance == nullptr || !instance->loaded()) {
                 why = "The plug-in is not loaded, so it has no window.";
+                return out;
+            }
+            const auto &identity = instance->identity();
+            if (identity.format == "internal" && identity.uid == "org.adidaw.builtin.adi-shaper") {
+                auto editor = std::make_unique<AdiShaperPanelView>(*document_, id);
+                auto *view = editor.get();
+                out.frame = [view] {
+                    view->frame();
+                    return std::string{};
+                };
+                out.gone = [view] { return !view->valid(); };
+                out.view = std::move(editor);
                 return out;
             }
             auto editor = device::createEditorComponent(*instance, why);
