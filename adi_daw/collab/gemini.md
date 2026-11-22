@@ -4,6 +4,35 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 6 (RT-TIMING): `adi_builtin_realtime_tests` Debug and Release timings on `devices/perf-pass` (main) and `devices/perf-debug-timeout`
+
+**For the devices lane.** Built with GCC 12.2.0 (`-DADI_ACCEPTANCE=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`), Debug (`-g0`) and Release (`-O3 -DNDEBUG`), measured against the 900 s CTest `TIMEOUT` (`adi_daw/cmake/devices/realtime.cmake:10`). `devices/perf-pass` (`920fac00`) is already merged on `main` (`abbc32ab`).
+
+### Summary table
+
+| Branch / Head | Build | Wall time vs 900 s | Checks | Allocations | Result |
+|---|---|---:|---|---:|---|
+| `main` (`abbc32ab`, includes `devices/perf-pass` `920fac00`) | Debug | > 240.00 s (capped; 29/40 single-device passes finished, 0% of Part 2 — projects past 900 s) | partial (29/40 devices, 0 failures seen) | 0 | **TIMEOUT RISK** (exceeds practical Debug budget) |
+| `main` (`abbc32ab`, includes `devices/perf-pass` `920fac00`) | Release | **188.92 s** | 156 checks, 6 timing failures | 0 | **FAIL** (timing only; well under 900 s) |
+| `devices/perf-debug-timeout` (`a4146193`, includes `devices/perf-sampler`) | Debug | **152.80 s** (2 m 32.8 s) | **64 / 64 PASS** (all 21 built-ins incl. 32-slot Sampler + WTS-01 project) | 0 | **PASS** (~5.9× margin under 900 s) |
+| `devices/perf-debug-timeout` (`a4146193`, includes `devices/perf-sampler`) | Release | **188.29 s** | 168 checks, 6 timing failures | 0 | **FAIL** (same 6 timing bounds; Sampler & OneShot pass) |
+
+### Key numbers for `devices`
+
+- **`devices/perf-debug-timeout` (`a4146193`) Debug fix confirmed**: finishes in **152.80 s** on Linux GCC 12.2 Debug (all 64 checks pass, 0 allocations across all 21 built-ins including the 32-slot Sampler and WTS-01 contended project).
+- **`devices/perf-sampler` improvements confirmed on Linux GCC 12.2 Release (`a4146193`)**:
+  - `OneShot` 64 f: p50 **1.76 µs**, p99 **2.98 µs** (0.22% dl) vs `main` p50 7.38 µs / p99 11.48 µs (0.86% dl); 128 f: p50 **3.31 µs**, p99 **4.09 µs** (0.15% dl) vs `main` p50 14.57 µs / p99 22.07 µs (0.83% dl).
+  - `Sampler` (32 slots): 64 f p50 **63.73 µs**, p99 **93.81 µs** (7.04% dl, 0 allocs); 128 f p50 **111.63 µs**, p99 **184.22 µs** (6.91% dl, 0 allocs) — well inside the 15% bound.
+  - WTS-01 project (Release, `a4146193`): 64 f p50 300.27 µs / p99 337.88 µs (25.34% dl); 128 f p50 553.59 µs / p99 622.78 µs (23.35% dl); contended 64 f / 128 f both PASS within deadline with 0 allocations.
+- **Finding (Release timing failures on both `main` `abbc32ab` and `a4146193`, owner: `devices`)**:
+  - `Hybrid Reverb`: 64 f p50 333.86 µs / p99 372.50 µs (**27.94%** vs 25% bound); 128 f p50 664.86 µs / p99 713.55 µs (**26.76%** vs 25% bound); 0 allocations; no recurring stall over 50% dl. (Note: `devices/log` standing queue item 10 already addresses Hybrid Reverb under the common bound on later post-3-Dec branches.)
+  - `Vocoder` (notable recurring 6× jump between p50 and p99 on Linux GCC 12.2 Release):
+    - 64 f: p50 **114.82 µs**, p99 **724.49 µs** (**54.34%** vs 15% bound), max 798.65 µs, recurring **731.54 µs** (> 50% dl = 666.7 µs), 0 allocations.
+    - 128 f: p50 **228.71 µs**, p99 **1441.77 µs** (**54.07%** vs 15% bound), max 1589.30 µs, recurring **1457.00 µs** (> 50% dl = 1333.3 µs), 0 allocations.
+    - Repro: Release GCC 12.2 `-DADI_ACCEPTANCE=ON`, run `./adi_builtin_realtime_tests` (`adi_daw/tests/test_builtin_realtime.cpp`, `Vocoder` case, parameter 0 swept across blocks).
+
+---
+
 ## 2026-11-22 — Queue item 5 (BENCH): Release empty-project callback cost on main and engine/empty-project-cost
 
 **For the engine seat.** Release build (`-DCMAKE_BUILD_TYPE=Release`, GCC 12.2.0 `-O3 -DNDEBUG`, `-DADI_BUILD_BENCHMARKS=ON -DADI_ACCEPTANCE=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`, 48 kHz stereo; `-DADI_WERROR=OFF` because GCC 12 `-O3` emits libstdc++ `-Wrestrict`/`-Wmaybe-uninitialized`/`-Wstringop-overflow` alongside DF-M62 `FloatRealTransform.h:61`). Deadlines: 1333.33 µs at 64 frames, 2666.67 µs at 128 frames.
