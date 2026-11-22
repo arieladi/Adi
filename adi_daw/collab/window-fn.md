@@ -45,6 +45,36 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — the standing queue of 22 November taken; MX-02: Split Stereo Pan (PR requested, lands after 3 December)
+
+Win's standing queue (`collab/prompts/2026-11-22-window-fn-queue.md`) replaces every earlier list. MX-02, its
+item 13, was nearly done when the queue arrived; it is finished here and marked **lands after 3 December**.
+`window-fn/lane-ref-canonical` (DF-W38, logged earlier today) is superseded by the queue's item 9, which stacks
+on gemini's parser (`src/adi/device_param_ref.hpp`): that branch will be rebuilt there, and win can drop the
+standalone one.
+
+- The pan's menu offers **Stereo Pan** and **Split Stereo Pan**, the one in use ticked; a choice is one undo
+  step (`mixer.setPanMode`).
+- **Split**, the strip shows two pans, left and right, in the pan's place, made as the pan is; the look is the
+  window lane's sheet. Each is dragged live through the gesture session (`TrackPanLeft`, `TrackPanRight`) and
+  leaves one undo step of `mixer.setPanLeft` or `setPanRight`. With tracks selected, a drag moves only the
+  tracks whose pan is the one dragged, so a track in the other mode keeps its stored values. A typed value or
+  a double-click (back to 50L or 50R) commits at once.
+- The menu offers **Re-Enable Automation** for the pan, or for the split half right-clicked (`panLeft`,
+  `panRight` lanes).
+
+**Run.** The window's 27 suites (100%; one `adi_ui_document_tests` failure under a parallel build's load passed
+alone, 305 checks, and in the rerun of all 27). `adi_ui_shell_tests` 2921 checks, 0 failures: the mode one
+step; the two pans at 50L and 50R; each half dragged live, nothing written mid-drag, one step, moving only
+itself; typed; a split drag beside a selected stereo track leaving that track alone; Stereo again on Undo.
+Review: two dimensions with a skeptic each. Confirmed and fixed: a selected stereo track's hidden halves
+written by a split drag, the two unlabelled Re-Enable items, and two test gaps (the live drag, the right
+half). Three were refuted.
+
+**PR requested** — `window-fn/split-pan` at `1d8030a5`, on main `0ea10b8e`: "adi_daw: MX-02: Live's Split Stereo
+Pan". **Lands after 3 December.** It depends on nothing; it shares `ui_mixer.cpp` with `window-fn/cueing` and
+`window-fn/delay-compensation` (separate hunks).
+
 ## 2026-11-22, window-fn — MX-08: Live's cueing, the window's half (PR requested)
 
 M1's MX-08 (the window worklist's B6), on the engine's `cue.*` ops, which were on main and had no caller
