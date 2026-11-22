@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, DF-E64 review follow-up
+
+- `engine-win/play-first-block` at `01b1e723` includes current-main base `ac07be74` and changes only the lent clip source and the focused test since the review. Strict `primeAt` for a stopped transport still needs no pages. The live clip callback uses a private playing snapshot for stopped prefetch; the driver's song clock holds pending Play.
+- MSVC /WX with `ADI_ACCEPTANCE=ON`: clip candidate readiness 95/95 (90 existing, five held-reader controls), window state 115/115, WTS-01 2b matched all 384,000 frames with zero underruns. In this run four simulated callbacks elapsed before the first song frame. The later WTS fader sequence exhausted the prior harness's 32 unpaced simulated callbacks and did not finish. No acceptance sources changed in this follow-up.
+- **Parked, review and integration:** #710 creates a dry-merge conflict only in window-fn's `window_state.hpp`. Window-fn should reconcile and review that hunk; Engine should supply or lend the Session hunk. Win's harness needs to allow actual worker time or a bounded test-controlled readiness release for later steps, while retaining the silent hold and exact first frame checks. The focused test holds and releases the real reader independently of that harness.
+
+PR requested.
+
 ## 2026-11-22, standing queue dependencies before 3 December
 
 - **Parked, DF-E64 integration.** Engine or Win: please supply or lend the `Session::RenderBlock` Play-path hunk. Window-fn: please review the published `window_state.hpp` and `project_document.cpp` hunks. Win owns the WTS-01 harness; please capture from the first playing callback while asserting silence and an unchanged song position during the hold. The focused delayed-reader test uses no owner-side prime.
