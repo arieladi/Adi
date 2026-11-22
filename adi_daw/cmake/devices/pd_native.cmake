@@ -80,6 +80,7 @@ if(ADI_WITH_PD)
     adi_embed_native_pd(livePedal "pd/devices/Pedal.pd")
     adi_embed_native_pd(roar "pd/devices/Roar.pd")
     adi_embed_native_pd(spectralTime "pd/devices/Spectral Time.pd")
+    adi_embed_native_pd(spectralResonator "pd/devices/Spectral Resonator.pd")
     string(APPEND ADI_NATIVE_PD_HEADER "} // namespace adi::device::canonical\n")
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/adi_native_pd_patches.hpp"
         CONTENT "${ADI_NATIVE_PD_HEADER}")
