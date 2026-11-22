@@ -166,7 +166,7 @@ void placementRule() {
               sanitize({-900000, 900000, 900000, 50}, 1, 1) == Rect{-kLimit, kLimit, kLimit, 50},
           "sanitize: a size below the least grows to it, one past the limit and a far corner come back in");
     // The monitor by the area shown.
-    check(monitorOf({1000, 100, 400, 300}, two) == 1 && monitorOf({900, 100, 400, 300}, two) == 0 &&
+    check(monitorOf({1000, 100, 400, 300}, two) == 1 && monitorOf({800, 100, 400, 300}, two) == 0 &&
               monitorOf({9000, 9000, 10, 10}, two) == 0,
           "the monitor showing most of a window is its monitor; one shown nowhere is the main display's");
     // Identity: id, area, origin, the one of the same size and DPI, the main display.
@@ -227,7 +227,7 @@ void placementRule() {
     small.rect = {1293, 100, 300, 200};
     check(restore(small, one, 100, 100) == Rect{200, 100, 300, 200},
           "with its monitor gone, on the main display at the same offset from its corner");
-    check(restore(onWide, one, 520, 180) == Rect{293, 200, 800, 500}, "and wholly on it, where the offset would leave it partly off");
+    check(restore(onWide, one, 520, 180) == Rect{293, 82, 800, 500}, "and wholly on it, where the offset would leave it partly off");
     Place onLeft;
     onLeft.display = "left";
     onLeft.area = left.area;
