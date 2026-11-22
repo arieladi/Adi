@@ -1329,6 +1329,17 @@ void focusBarResidualSpectrum() {
               "residual analyses the latest power-of-two tail with the selected calibrated stereo or mono reading");
     }
 
+    // Equal magnitudes cancel if frequency-domain magnitudes are subtracted.
+    // These operands instead add to a full-scale sine when subtracted in time.
+    StereoBar inverted{};
+    for (std::size_t ch = 0; ch < inverted.size(); ++ch)
+        std::ranges::transform(tone[ch], inverted[ch].begin(), [](float value) { return -value; });
+    const auto opposite = select(Channels::Left);
+    const auto summed = writeBar(tone, inverted);
+    const auto *summedBins = summed ? summed->differenceSpectrum(opposite) : nullptr;
+    check(summedBins && summedBins->binsDbfs.size() == fft / 2 + 1 && near(summedBins->binsDbfs[bin], 0.),
+          "equal-magnitude opposite-phase sources produce a full-scale residual after raw subtraction");
+
     StereoBar adjusted{};
     for (std::size_t ch = 0; ch < adjusted.size(); ++ch)
         for (std::size_t i = 1; i < frames; ++i) adjusted[ch][i] = -tone[ch][i - 1];
