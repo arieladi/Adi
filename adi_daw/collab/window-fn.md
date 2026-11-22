@@ -47,6 +47,28 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — queue item 9, DF-W38: Re-Enable finds a device lane stored as "001" (PR requested, lands after DF-E53)
+
+**Window lane, read first:** this item touches `src/adi/ui/automation_override.hpp` only.
+
+`laneOf` compared a device lane's `param_ref` as written, so a lane stored as "001" (a hand-made or older file) was
+never found for parameter 1. The engine, after DF-E53, binds that lane as parameter 1, and an edit overrides it, so
+the knob's Re-Enable Automation went missing. A device lane's ref is now compared by the id that DF-E53's shared
+parser (`adi::parseDeviceParamRef`, `src/adi/device_param_ref.hpp`) reads from it. A track's or a send's ref is
+compared as written. This replaces `window-fn/lane-ref-canonical` (`996d5b1f`), which carried a parser of its own.
+`ParameterControl::showMenu` (`ui_devices.cpp`) goes through `deviceLaneOf` → `laneOf`, so it needed no change.
+
+**Test** (`tests/test_ui_seams.cpp`): a lane stored as "001" is found as parameter 1 by `laneOf` and `deviceLaneOf`,
+so the item is offered; parameter 2 finds none; a track's "Pan" is not "pan".
+
+**Run:** JUCE on, Pd off, warnings as errors (GCC 13, Debug, `ninja -k 0`). Seams 555 checks, 0 failures. The 27
+window and mix suites, `adi_param_automation_tests` and `adi_automation_lanes_tests` pass (30 of 30). The shell suite
+passes from a scratch directory (2911 checks, 0 failures).
+
+PR requested: `window-fn/df-w38-param-ref` → main, "DF-W38: a device lane's ref is the parameter it parses to".
+**Lands after DF-E53:** the branch is `gemini/df-e53-canonical-param-ref` `03be0b99` plus one commit (`bd21e064`).
+Close `window-fn/lane-ref-canonical` unmerged.
+
 ## 2026-11-22, window-fn — items 3 and 5 run again on full builds
 
 Rebuilt with `ninja -k 0`, so every target but main's broken acceptance target was built. On `window-fn/saveas-guard`
