@@ -73,6 +73,10 @@ Exact exposed-branch native archive plus local overlays, GCC 14 warning-as-error
 
 Exact GCC 14 and Clang 19 Debug warnings-as-errors passed all nine suites (Param Live Replay, Param Ops, Applied Batches, Gesture, Gesture Graph, Gesture Playback, Engine, Param Edits and Device Copy). Param Live Replay passes 985 checks. With main's old ParamOps the same suite fails its waiting and Undo assertions. The GCC join with the exact Mix View resolver and expanded fixture passes 991 checks, including delayed replacement attachment, a superseded state change, exact original and replacement instance reuse through Undo and Redo, and the compatible Undo's recorded gain.
 
+### 2026-11-22 — #677 follow-up commits available for transfer
+
+`engine/df-e23-followups-staged` now saves the two tested commits at remote head `096edc93f972392b966fff5dbc5006976e0d1512`. It carries DF-E30 and one-click Post at `167d863e6af3008d477b45803f90e478c6e251f4` and DF-E55(b) immediately after it. Transfer these to Win's published reconciliation in order. The staging branch is based on the exposed November 19 head and is a Git backup for the transfer. **PR requested for the follow-ups on #677 once the reconciled head passes its gates.** The actual #677 head still resolves to `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`.
+
 ## 2026-11-22 — N67 new input tracks monitor on Auto
 
 **PR requested** · `engine/n67-auto-monitor-default` · `f2802a0030d9e9ad0a02d4404276cf1ccf140422`
