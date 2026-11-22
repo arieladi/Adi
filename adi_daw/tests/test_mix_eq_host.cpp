@@ -374,6 +374,184 @@ template<class Sample>void continuousPrepare() {
     std::printf("Duplicate prepare %s: exact=%d peakDifference=%.17g\n",
                 std::is_same_v<Sample,float>?"f32":"f64",afterExact?1:0,peakDifference);
 }
+
+template <class Sample> void neutralSilenceCanBeOmitted() {
+    constexpr int frames = 64;
+    constexpr double rate = 48000.;
+    using Audio = std::array<std::array<Sample, frames>, 2>;
+    auto continuous = make(q::makeBackend());
+    auto parked = make(q::makeBackend());
+    check(continuous && parked, "neutral wake fixture constructs two real native EQs");
+    if (!continuous || !parked) return;
+    constexpr auto precision = std::is_same_v<Sample, float> ? engine::Precision::Float32 : engine::Precision::Float64;
+    for (auto *d : {continuous.get(), parked.get()}) {
+        d->willBeHanded(precision);
+        // The document can prepare before the audio device grants its format.
+        d->prepare(rate, 512);
+        d->prepare(rate, frames);
+    }
+
+    const auto signal = [](std::uint64_t block) {
+        Audio input{};
+        for (std::size_t channel = 0; channel < input.size(); ++channel) {
+            for (std::size_t i = 0; i < input[channel].size(); ++i) {
+                const auto steps = 1 + (i * 13 + channel * 7 + block) % 31;
+                const double sample = static_cast<double>(steps) / 64.;
+                input[channel][i] = std::nextafter(static_cast<Sample>(channel == 0 ? sample : -sample), Sample{});
+            }
+        }
+        return input;
+    };
+    const auto render = [](device::DeviceInstance &d, const Audio &input, std::uint64_t block, bool silent) {
+        Audio output{};
+        const std::array<const Sample *, 2> in{input[0].data(), input[1].data()};
+        std::array<Sample *, 2> out{output[0].data(), output[1].data()};
+        engine::NodeIo io;
+        io.channels = 2;
+        io.sampleRate = rate;
+        io.renderBlock = block;
+        io.inputSilent = silent;
+        io.frames = 17;
+        if constexpr (std::is_same_v<Sample, float>) {
+            io.in = in.data();
+            io.out = out.data();
+        } else {
+            io.in64 = in.data();
+            io.out64 = out.data();
+        }
+        inAudio = true;
+        d.process(io);
+        io.blockOffset = 17;
+        io.frames = frames - 17;
+        d.process(io);
+        inAudio = false;
+        return output;
+    };
+    const auto exact = [](const Audio &a, const Audio &b) {
+        using Bits = std::array<unsigned char, sizeof(Sample)>;
+        for (std::size_t channel = 0; channel < a.size(); ++channel)
+            for (std::size_t i = 0; i < a[channel].size(); ++i)
+                if (std::bit_cast<Bits>(a[channel][i]) != std::bit_cast<Bits>(b[channel][i])) return false;
+        return true;
+    };
+
+    bool cleanPrelude = true;
+    for (std::uint64_t block = 1; block <= 4; ++block) {
+        const auto input = signal(block);
+        cleanPrelude &= exact(render(*continuous, input, block, false), input);
+        cleanPrelude &= exact(render(*parked, input, block, false), input);
+    }
+    check(cleanPrelude, "neutral EQ preserves the nonzero split-block prelude exactly");
+    check(parked->tailSamples() == 0, "a proven neutral EQ can sleep after the current callback");
+    parked->setOffline(true);
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "offline intent keeps the native EQ running independently of export quality");
+    parked->setOffline(false);
+    const Audio silence{};
+    bool cleanSilence = true;
+    for (std::uint64_t block = 5; block <= 68; ++block)
+        cleanSilence &= exact(render(*continuous, silence, block, true), silence);
+    check(cleanSilence, "continuous neutral EQ emits exact silence during the omitted interval");
+
+    const auto resumed = signal(69);
+    const auto expectedFirst = render(*continuous, resumed, 69, false);
+    const auto actualFirst = render(*parked, resumed, 69, false);
+    check(exact(expectedFirst, resumed) && exact(actualFirst, expectedFirst) &&
+              continuous->latencySamples() == 0 && parked->latencySamples() == 0,
+          "omitting neutral silence preserves the entire first resumed block and zero latency");
+
+    parked->prepare(rate, 128);
+    continuous->prepare(rate, 128);
+    const auto formatChange = signal(70);
+    const auto changed = render(*parked, formatChange, 70, false);
+    check(exact(changed, render(*continuous, formatChange, 70, false)) && exact(changed, formatChange) &&
+              parked->tailSamples() == 0,
+          "neutral playback stays eligible after a stopped format change");
+    const bool edited = set(*continuous, 3, .7) && set(*parked, 3, .7); // Output Gain
+    check(edited, "both native EQs accept the same subsequent owner edit");
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "an owner edit wakes the parked EQ before its first processing callback");
+    if (!edited) return;
+    const auto next = signal(71);
+    const auto expectedEdited = render(*continuous, next, 71, false);
+    const auto actualEdited = render(*parked, next, 71, false);
+    check(!exact(expectedEdited, next) && exact(actualEdited, expectedEdited),
+          "the next owner gain edit changes audio and preserves the same initial transition after wake");
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "a processed gain transition is outside the proven zero-tail configuration");
+    check(set(*parked, 3, .5), "return the EQ's output control to unity");
+    parked->prepare(rate, 64);
+    static_cast<void>(render(*parked, silence, 72, true));
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "returning a used nonneutral EQ to default does not certify its old history");
+}
+
+void neutralEqGraphSuspension() {
+    auto eq = make(q::makeBackend());
+    check(eq != nullptr, "graph suspension fixture creates the real native EQ");
+    if (!eq) return;
+
+    struct Programme final : engine::Node {
+        float level = .25f;
+        bool alwaysProcess() const noexcept override { return true; }
+        void process(const engine::NodeIo& io) noexcept override {
+            for (int ch = 0; ch < io.channels; ++ch)
+                std::fill_n(io.out[ch] + io.blockOffset, io.frames, level);
+        }
+    } programme;
+    constexpr int frames = 64;
+    device::DeviceNode node(*eq);
+    engine::Graph graph;
+    const auto source = graph.addNode(programme), effect = graph.addNode(node);
+    check(graph.connect(source, effect), "graph connects the source through the native EQ");
+    graph.setOutput(effect);
+    graph.prepare(48000., frames);
+    check(graph.ok(), "native EQ suspension graph prepares");
+    if (!graph.ok()) return;
+
+    using Block = std::array<std::array<float, frames>, 2>;
+    Block output{}, input{};
+    for (auto& channel : input) channel.fill(programme.level);
+    const std::array<float*, 2> planes{output[0].data(), output[1].data()};
+    engine::AudioIo io;
+    io.frames = frames;
+    io.numOut = 2;
+    io.out = planes.data();
+    const auto render = [&] {
+        inAudio = true;
+        graph.process(io);
+        inAudio = false;
+    };
+
+    render();
+    check(output == input, "the live graph preserves the neutral nonzero block exactly");
+    const auto beforeSleep = graph.stats().nodesSuspended;
+    programme.level = 0.f;
+    render();
+    const auto asleep = graph.stats().nodesSuspended;
+    check(asleep == beforeSleep + 1 && output == Block{}, "the neutral EQ suspends on silence and emits exact zeros");
+
+    eq->setOffline(true);
+    render();
+    check(eq->tailSamples() == engine::kInfiniteTail && graph.stats().nodesSuspended == asleep &&
+              output == Block{},
+          "offline intent disables suspension even with the same previously certified EQ and graph");
+    eq->setOffline(false);
+    render();
+    const auto resumedSleep = graph.stats().nodesSuspended;
+    check(resumedSleep == asleep + 1 && output == Block{},
+          "the unchanged neutral EQ can suspend again on returning to realtime");
+
+    check(set(*eq, 3, .7), "an owner Output Gain edit is accepted while the EQ is asleep");
+    render();
+    check(graph.stats().nodesSuspended == resumedSleep && output == Block{},
+          "the gain edit wakes the EQ during silence before any new programme");
+    programme.level = .25f;
+    render();
+    check(graph.stats().nodesSuspended == resumedSleep &&
+              output[0].front() > 0.f && output[0].front() != input[0].front(),
+          "gain is applied from the first sample of the next nonzero block");
+}
 }
 int main() {
     check(!make({}),"factory refuses absent DSP backend");
@@ -383,6 +561,7 @@ int main() {
     check(d&&!d->processesDouble(),"narrow-only provider does not claim native double");
     publishedDesignPreview();metadataAndMapping();strictState();pairPublication();offsetsAndEvents<float>();offsetsAndEvents<double>();
     prepareLifecycle();duplicatePrepareKeepsProcessing();continuousPrepare<float>();continuousPrepare<double>();
+    neutralSilenceCanBeOmitted<float>();neutralSilenceCanBeOmitted<double>();neutralEqGraphSuspension();
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}
     check(allocations==0&&deallocations==0,"native controller and direct core allocate/free nothing during callbacks");
     std::printf("Mix EQ host: %d checks, %d failures\n",checks,failures);return failures?1:0;
