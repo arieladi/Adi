@@ -32,6 +32,18 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DF-E17 current-main rebase, lands after DF-E35(a)
+
+**PR requested, lands after DF-E35(a)**, for `engine/df-e17-edit-invariants-current` at `ab14b5ddfc54a4578abe9ceb83f2b5e47f9551b3`. Title **Preserve native clip placement and automation lane bounds**. Base main `9f2abf4a`. This replaces the older `engine/df-e17-edit-invariants` `0c30d4ce` without rewriting it. Main already contains DF-E47's projection, DF-E27(a)'s fade fix, checked freeze extents, and rack cascade Undo. The rebased branch retains their stronger regression controls and adds native placement and automation bounds.
+
+Move and resize preserve exact linear placement and inactive tick columns through Undo/Redo. Linear resize converts both endpoints across tempo changes. Valid zero-length clips and signed musical positions keep their existing admission. Saved scalar inverses replay literally. New automation point edits refuse values outside the lane range, and history preserves old points. Nested rack removal, overflow and bounce identity controls exercise main's existing code.
+
+Exact candidate objects with GCC 14 and Clang 19 warnings-as-errors passed Clip Edit 433, Device Ops 143, Automation Edits 52, Material Commands 30, Take Lane Ops 74 and Engine 147 checks against the compatible reconciled core. The prior handlers fail nine clip-placement and four automation checks using the same fixtures. OPS validator passes.
+
+| Seat | Landing dependency |
+|---|---|
+| engine-win | Confirm CT-01 EditScope and this branch keep the existing `dc65a5f7` contract. A same-track move retains its lane, and a raw cross-track move requires explicit detach. Detach, native move and attach form one Undo step. Both the atomic refusal and the explicit transaction are covered. DF-E35(a) lands first. |
+
 ## 2026-11-22 — PD-03 capture attached device state before document saves
 
 **PR requested** for `engine/pd03-snapshot-all` at `67515e1c3d2c402179f8a23ffe57b6393ccf2eda`. Title **Capture attached device state before document saves**. Base main `9f2abf4a`. `ParamOps::snapshotAll` commits through the attached Session. Successful zero `journalOps` means unchanged. Failure carries the reason and device when known, plus the counts of any previous durable operations. Each device's save still uses the existing guarded gesture and ADR-0142 first-state semantics.
