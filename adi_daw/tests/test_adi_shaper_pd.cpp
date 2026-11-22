@@ -219,6 +219,56 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         }
     }
 }
+
+void automatedCrossoverPd(const std::string& editedDir) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    constexpr int frames = 8192, tick = 64;
+    using Stereo = std::array<std::array<float, frames>, 2>;
+    Stereo input{}, nativeAudio{}, editedAudio{};
+    for (int n = 0; n < frames; ++n) {
+        input[0][n] = static_cast<float>(.4 * std::sin(.115 * n));
+        input[1][n] = static_cast<float>(.3 * std::cos(.237 * n));
+    }
+    const auto render = [&](const std::string& directory, bool native, Stereo& audio) {
+        adi::device::PdLatencyReceiver latency;
+        Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+        path.addSearchPath(ADI_PD_PATCH_DIR);
+        std::string error;
+        check(path.open(latency, error) && path.isNative() == native, "open the selected stereo crossover path");
+        path.prepare(48000, tick);
+        path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+        check(path.sendParameter(2, 1) && path.sendParameter(3, 160), "set an initial low split");
+        for (int j = 0; j < 8; ++j) {
+            const auto id = Shaper::bandParam(Shaper::Stage::Volume, Shaper::Band::Mid,
+                                               static_cast<Shaper::BandControl>(Shaper::Point1 + j));
+            check(path.sendParameter(id + 1, 0), "isolate the low band");
+        }
+        for (int first = 0; first < frames; first += tick) {
+            if (first == 512) check(path.sendParameter(3, 3200), "start an audible cutoff change");
+            if (first == 3072) check(path.sendParameter(3, 500), "reverse the moving cutoff");
+            const float* in[]{input[0].data() + first, input[1].data() + first};
+            float* out[]{audio[0].data() + first, audio[1].data() + first};
+            adi::engine::NodeIo io;
+            io.channels = 2;
+            io.frames = tick;
+            io.in = in;
+            io.out = out;
+            path.process(io);
+        }
+    };
+    render(ADI_SHAPER_PATCH_DIR, true, nativeAudio);
+    render(editedDir, false, editedAudio);
+    check(nativeAudio[0] == editedAudio[1] && nativeAudio[1] == editedAudio[0],
+          "live cutoff and reversal agree sample for sample through the edited stereo canvas");
+    const auto peak = [&](int first, int last) {
+        float value = 0;
+        for (int n = first; n < last; ++n) value = std::max(value, std::abs(nativeAudio[0][n]));
+        return value;
+    };
+    check(peak(512, 576) < .09f && peak(2600, 3000) > .29f && peak(7800, 8192) < .24f,
+          "both registered frequency edits are heard with the measured direction and gradual onset");
+}
 // The host splits a block at every lane event (DF-E50), and every piece of
 // the segment carries the transport of the segment's first sample. A synced
 // curve must keep its own clock after the first piece: lane values for an
@@ -381,6 +431,7 @@ int main() try {
     const auto editedDir = edited.path().string();
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
+    automatedCrossoverPd(editedDir);
     modulationPd(editedDir, false, false);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
