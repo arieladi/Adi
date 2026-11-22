@@ -768,7 +768,9 @@ void driveAndCrush() {
 }
 void audioTrigger() {
     // These are stable public parameter IDs; sparse sessions only contain active controls.
-    const auto parameter = [](int publicId) { return static_cast<Shaper::Param>(publicId - 1); };
+    const auto parameter = [](int publicId) {
+        return publicId <= Shaper::Count ? static_cast<Shaper::Param>(publicId - 1) : Shaper::Count;
+    };
     constexpr std::array rates{44100, 48000, 96000};
     constexpr int expected[][4] = {{617, 882, 1058, 1323}, {672, 961, 1152, 1441}, {1344, 1921, 2304, 2881}};
     for (std::size_t rate = 0; rate < rates.size(); ++rate) {
