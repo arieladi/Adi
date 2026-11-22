@@ -115,10 +115,11 @@ class CompressorDevice final : public DeviceInstance {
     const DeviceIdentity &identity() const noexcept override { return identity_; }
     bool loaded() const noexcept override { return true; }
     bool processesDouble() const noexcept override { return true; }
+    ReactivationGate &gateForTesting() noexcept { return gate_; }
     void prepare(double rate, std::int32_t maximum) override {
-        const ReactivationGate::Hold hold(gate_);
         if (prepared_ && rate == rate_ && maximum == maximum_)
             return;
+        const ReactivationGate::Hold hold(gate_);
         if (core_.prepare({rate, maximum, channels_}, settings(read())) != c::Status::Ok)
             throw std::runtime_error("Clean compressor preparation failed");
         rate_ = rate;
@@ -330,6 +331,11 @@ class CompressorDevice final : public DeviceInstance {
     Payload extra_ = Payload::object();
 };
 } // namespace
+ReactivationGate *detail::mixCompressorGateForTesting(DeviceInstance &instance) noexcept {
+    if (auto *compressor = dynamic_cast<CompressorDevice *>(&instance))
+        return &compressor->gateForTesting();
+    return nullptr;
+}
 std::unique_ptr<DeviceInstance> makeMixCompressorFunction(const engine::DeviceRequest &request,
                                                           std::string &error) {
     if (!request.ref || !mix::functionForReference(request.ref->format, request.ref->uid) ||
