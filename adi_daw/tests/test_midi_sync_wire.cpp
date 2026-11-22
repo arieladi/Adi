@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/sync/midi_sync_wire.hpp"
 #include "adi/sync/midi_clock_follower.hpp"
+#include "adi/sync/midi_clock_transport.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -164,6 +165,51 @@ void clockTempoStep() {
               std::abs(settled121 - 121.0) < 0.02 && worstPhase < 2'000'000.0,
           "clock follows a 120-to-121 BPM step under plus or minus 1 ms timestamp jitter");
 }
+
+void clockTransport() {
+    MidiClockTransport transport;
+    const ClockEvent clock{ClockKind::Clock};
+    const ClockEvent start{ClockKind::Start};
+    const ClockEvent resume{ClockKind::Continue};
+    const ClockEvent stop{ClockKind::Stop};
+    constexpr auto locate = 270 * ticksPerSongPosition;
+    check(!transport.receive(clock) && !transport.receive(stop) &&
+              !transport.receive(ClockEvent{ClockKind::SongPosition, -1}) &&
+              !transport.receive(ClockEvent{ClockKind::SongPosition, locate + ticksPerClock}),
+          "idle F8 keeps musical position and invalid song positions never locate");
+    check(transport.receive(ClockEvent{ClockKind::SongPosition, locate}) ==
+                  MidiTransportEdge{MidiTransportKind::Locate, locate} &&
+              !transport.receive(clock) && !transport.receive(resume) &&
+              transport.receive(clock) == MidiTransportEdge{MidiTransportKind::Continue, locate},
+          "the first clock after Continue is at the exact received song position");
+    bool pulsePositions = true;
+    for (std::int64_t i = 1; i <= 11; ++i) {
+        pulsePositions = pulsePositions && transport.receive(clock) ==
+            MidiTransportEdge{MidiTransportKind::Pulse, locate + i * ticksPerClock};
+    }
+    check(pulsePositions && !transport.receive(start) &&
+              !transport.receive(ClockEvent{ClockKind::SongPosition, 0}) &&
+              transport.receive(stop) == MidiTransportEdge{MidiTransportKind::Stop, locate + ticksPerSongPosition},
+          "rolling advances one exact clock step and Stop rewinds to the previous sixteenth");
+    check(!transport.receive(clock) && !transport.receive(resume) &&
+              transport.receive(clock) ==
+                  MidiTransportEdge{MidiTransportKind::Continue, locate + ticksPerSongPosition},
+          "Continue without a new SPP resumes from the rewound MIDI beat");
+    check(transport.receive(stop).has_value() && !transport.receive(start) &&
+              !transport.receive(stop) && !transport.receive(clock) && !transport.receive(resume) &&
+              transport.receive(clock) ==
+                  MidiTransportEdge{MidiTransportKind::Continue, locate + ticksPerSongPosition},
+          "a Stop before the first Start pulse preserves the previous Continue position");
+    check(transport.receive(stop).has_value(), "the recovered transport can stop");
+    check(!transport.receive(start) && !transport.receive(resume) &&
+              transport.receive(clock) == MidiTransportEdge{MidiTransportKind::Start, 0} &&
+              transport.receive(clock) == MidiTransportEdge{MidiTransportKind::Pulse, ticksPerClock},
+          "Start explicitly restarts the song on the next timing clock");
+    transport.reset();
+    check(!transport.receive(clock) && !transport.receive(resume) &&
+              transport.receive(clock) == MidiTransportEdge{MidiTransportKind::Continue, 0},
+          "a reconnected port discards its previous rolling position");
+}
 } // namespace
 
 int main() {
@@ -171,6 +217,7 @@ int main() {
     timecodeWire();
     clockFollower();
     clockTempoStep();
+    clockTransport();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

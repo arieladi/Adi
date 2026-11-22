@@ -296,6 +296,7 @@ add_library(adi_core STATIC
     src/adi/media/zip_writer.cpp
     src/adi/sync/midi_sync_wire.cpp
     src/adi/sync/midi_clock_follower.cpp
+    src/adi/sync/midi_clock_transport.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
