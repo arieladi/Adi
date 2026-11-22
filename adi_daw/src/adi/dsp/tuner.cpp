@@ -13,7 +13,7 @@ Tuner::Tuner() {
     prepare(48000);
 }
 
-void Tuner::prepare(double sampleRate) {
+void Tuner::prepare(double sampleRate) noexcept {
     detector_.prepare(sampleRate);
     hz_.store(0);
     clarity_.store(0);

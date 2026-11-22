@@ -15,8 +15,10 @@
 //
 // The window is the least power of two that holds two of the longest period
 // (4,096 samples at 44.1 and 48 kHz, 8,192 at 88.2 and 96 kHz); an estimate
-// is made every quarter window on the last window. prepare() allocates on the
-// message thread; push() and analyse() do not. 30 Hz to 5 kHz.
+// is made every quarter window on the last window, its mean removed, and a
+// window under -80 dBFS RMS reads nothing. prepare() allocates on the message
+// thread and never throws; push() and analyse() do not allocate. 30 Hz to
+// 5 kHz.
 
 #pragma once
 
@@ -32,10 +34,13 @@ namespace adi::dsp {
 class PitchDetector {
 public:
     static constexpr double kLowestHz = 30, kHighestHz = 5000, kThreshold = 0.15;
+    /// The least RMS level read, once the window's mean is removed: -80 dBFS.
+    static constexpr double kFloor = 1e-4;
 
     PitchDetector();
-    /// Message thread: the window, the transform and its scratch.
-    void prepare(double sampleRate);
+    /// Message thread: the window, the transform and its scratch. It never
+    /// throws: when memory or a plan cannot be had the detector is inert.
+    void prepare(double sampleRate) noexcept;
     /// Audio thread: mono samples in; an estimate every hop() samples.
     void push(const float* x, std::size_t frames) noexcept;
     /// The last estimate: its frequency, and its clarity (1 minus YIN's
