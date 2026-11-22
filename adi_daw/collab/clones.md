@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Preserve the measured gap between crossover frequencies
+
+`clones/shaper-split-spacing` at `34ee3fbd` — Apply the measured half-octave spacing and single-edge limits. ADI retains the requested knob frequencies independently. The upper cutoff follows the lower when necessary and a saved state reopens with both original knob values. The existing band selector controls which bands are enabled. Five new source-response checks failed on main. All six rack, stage and registered Pd suites passed under MSVC /W4 /WX in both precisions.
+
+At both 256 and 2,048 frames on 48 kHz stereo kick and bass, equal interior cuts improved from 0.005726 to 0.000000288 RMS and crossed cuts from 0.009493 to 0.000001663. The lower and upper endpoint settings improved from 0.014198 to 0.000000029 and from 0.0002433 to 0.0000000072. A separated pair and an ordinary two-band setting stayed byte-identical. All repeats and both block sizes produced identical audio and zero latency.
+
+For the equal-cut case at 256/2,048 frames, ADI measured 27.8/206.9 µs median and 42.4/393.3 µs p99. The reference measured 59.3/318.0 µs median and 112.3/1,107.2 µs p99. Misses were 10/31 versus 42/36 per 30,720 callbacks at each size. The lower-endpoint case at 2,048 frames had 26 misses versus two in the reference.
+
+The private control conversion now preserves the middle band at both coincident endpoints. In a complete regeneration, 872 of 873 states were byte-identical in all three encodings. The sole difference corrected a float-step cutoff. This change accounted for no threshold crossings.
+
+PR requested
+
 ## 22 November 2026 — Live crossover frequency changes have three smoothing poles
 
 The lower and upper edges use three equal one-pole smoothers in series on normalized log frequency. Per sample, the coefficient is 1 − exp(−72.02133 / sample rate). A newly opened device starts at its supplied frequency. When automation changes the target while audio is running, the first pole follows the target, the second follows the first and the third follows the second. An edit during the transition starts from the current states.
