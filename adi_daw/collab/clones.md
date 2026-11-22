@@ -17,6 +17,20 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Manual per-band Crush Hold follower
+
+`clones/shaper-hold-input` at `9bec0183` — Control each Crush hold rate from its stereo band. **Lands after 3 December.** IDs 877–903 store the nine manual controls per band. The common detector is shared with Width. The rack, Crush and registered native/Pd tests passed under MSVC /W4 /WX at both Pd precisions. Muting only the modulation supplied to the clock failed both active regressions and preserved the disabled oracle. Older active Crush projects restore all followers off. Bypass and three follower-off curves reproduced both channels exactly.
+
+On kick and bass the fixed Add stereo error fell from 0.025408 to 0.004308. Adding positive Hold took 0.026766 to 0.001356. The full-height Add case went from 0.005361 to 0.000751. Moving Multiply improved from 0.046824 to 0.036258 and remains discrepant. All results reproduced at 256 and 2,048 frames with zero latency. A separate reference-driven clock test distinguishes the phase carry through the 1,331 unity samples of the moving fixture. That comparison also detects small differences in attack, release and amount conversion.
+
+Positive Hold took 22.5/198.1 µs median at 256/2,048 frames in the registered device versus 100.8/704.0 µs in the reference. Its p99 was 41.4/515.8 versus 201.8/3,073.3 µs. Moving Multiply took 28.8/226.2 versus 99.1/722.7 µs median, with p99 51.8/407.6 versus 191.7/2,507.3 µs. On that moving case ADI missed zero/one deadlines and the reference seven/zero out of 30,720 at each size.
+
+Seven of sixteen historical Hold programs match the linked manual controls. In isolated Crush audio five errors fell, one rose and one was exactly unchanged. The largest improvement was 0.156404 to 0.118404 RMS. In their seven-stage mixes one fell, four rose and two stayed within 0.000001. Two other programs require the full-stage detector source, and seven use automatic release.
+
+For Win, use this clean review branch. The earlier `clones/shaper-crush-hold-follower` ref is superseded following a commit-subject audit. Please retire it once review has moved. The complete source tree on the review branch matches the tested tree exactly.
+
+PR requested
+
 ## 22 November 2026 — Choose the linked band or full input for the Hold detector
 
 Two of the sixteen stored active Hold followers select a separate detector input with both filtering edges open. Both are in split mode. Changing only the detector source altered the original isolated output by up to 0.00019030 stereo RMS. In a different state with linked routing, changing the stored cutoff limits alone left every sample unchanged. The non-default low-pass cutoff is dormant while the detector follows its band.
