@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — N63 ordered note batches write the stream once
+
+**PR requested** · `engine/n63-ordered-note-batch` · `c97f2a961c4623b1fa0ffe0e0cbbeef09b68ddad`
+**Title** — Prepare one ordered native note edit for the legacy batch.
+
+`notes::prepareBatch(snapshot, ops)` takes one clip's scalar insert, delete, move, resize, velocity and mute requests in order. Pass the editor's overlap-generated requests in that same sequence. Preparation emits one `note.applyDiff`. Stable equal-time order, the distinction between an absent and an empty stream, and expression removed during a delete and reinsert all match scalar replay. The batch retains exact captured rows and guards for Undo and Redo.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors with Pd. All nine native suites passed: note diff, historical compatibility, note flags, overlap, overlap ops and playback, Ops, History and UI Seams. The 1,074-check note suite verifies 10,000 ordered mutations use one stream write and one journal operation. Compiled faults reversed equal-time ordering, kept an erased expression and discarded a newly created empty stream. Each failed its dedicated test. OPS validator and `git diff --check` pass.
+
+**Dependency** — Stack after the same-transaction note API `254d7d1c`. Window can adopt the new producer without changing its overlap planning.
+
 ## 2026-11-22 — N64 track record controls in the snapshot
 
 **PR requested** · `engine/n64-recording-snapshot` · `8a32d9e382affc8cc5ed16ffe504181a0eb76535`
