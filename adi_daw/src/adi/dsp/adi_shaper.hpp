@@ -100,11 +100,13 @@ class AdiShaper {
         bool finishBlock() noexcept;
     };
     struct StageData {
+        struct Bands { float low, mid, high; };
         std::array<CurveBand, 3> bands;
         Split low, high;
         double lowHz = 200.0, highHz = 2000.0;
         int layout = 0;
         bool active = false, enabled = true;
+        [[nodiscard]] Bands firstOrderBands(float input, std::size_t channel) noexcept;
     };
     struct DriveDryDelay {
         std::array<std::array<float, 2>, AdiShaperDrive::latencySamples> samples{};

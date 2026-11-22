@@ -127,6 +127,15 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
             for (int j = 0; j < 8; ++j)
                 send(Shaper::bandParam(Stage::Volume, mid, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 50);
         }
+        if (filterOn && sweepOn) {
+            // Feed both processors the first-order middle band on both signal paths.
+            send(Shaper::VolumeBands, 3);
+            send(static_cast<Shaper::Param>(Shaper::VolumeBands + 1), 82.40689f);
+            send(static_cast<Shaper::Param>(Shaper::VolumeBands + 2), 1147.8298f);
+            for (const auto band : {Shaper::Band::Low, Shaper::Band::High})
+                for (int j = 0; j < 8; ++j)
+                    send(Shaper::bandParam(Stage::Volume, band, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 0);
+        }
         send(Shaper::FilterOn, filterOn ? 1.0f : 0.0f);
         send(Shaper::SweepOn, sweepOn ? 1.0f : 0.0f);
         send(Shaper::DriveOn, driveOn ? 1.0f : 0.0f);

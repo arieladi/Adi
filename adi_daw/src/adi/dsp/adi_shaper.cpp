@@ -98,6 +98,17 @@ double AdiShaper::Split::pole(double input, double& state) const noexcept {
     return low;
 }
 
+AdiShaper::StageData::Bands AdiShaper::StageData::firstOrderBands(float input, std::size_t channel) noexcept {
+    auto& lower = low.channels[channel].poles;
+    auto& upper = high.channels[channel].poles;
+    // Each outer band crosses its own edge first. Swapping the two filters
+    // changes the response while either cutoff moves.
+    const double bass = high.pole(low.pole(input, lower[0]), upper[1]);
+    const double upperHigh = input - high.pole(input, upper[0]);
+    const double treble = upperHigh - low.pole(upperHigh, lower[1]);
+    return {static_cast<float>(bass), static_cast<float>(input - bass - treble), static_cast<float>(treble)};
+}
+
 void AdiShaper::Split::butterworth(double x, Integrator& state, double& low,
                                    double& high, double& all) const noexcept {
     const double v3 = x - state.low;
@@ -523,25 +534,33 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 sumR += wetR;
             }
         };
-        if (hasLow) {
-            auto l = stage.low.split(midL, 0);
-            auto r = stage.low.split(midR, 1);
-            midL = l.high;
-            midR = r.high;
-            // The low band bypasses the upper split and needs its summed
-            // allpass phase for coherent three-way reconstruction.
-            if (hasHigh) {
-                l.low = stage.high.align(l.low, 0);
-                r.low = stage.high.align(r.low, 1);
-            }
+        if (flatPhase && hasLow && hasHigh) {
+            const auto l = stage.firstOrderBands(midL, 0);
+            const auto r = stage.firstOrderBands(midR, 1);
             accumulate(0, l.low, r.low);
-        }
-        if (hasHigh) {
-            const auto l = stage.high.split(midL, 0);
-            const auto r = stage.high.split(midR, 1);
             accumulate(2, l.high, r.high);
-            midL = l.low;
-            midR = r.low;
+            midL = l.mid;
+            midR = r.mid;
+        } else {
+            if (hasLow) {
+                auto l = stage.low.split(midL, 0);
+                auto r = stage.low.split(midR, 1);
+                midL = l.high;
+                midR = r.high;
+                // Steeper three-way splits align the low band to the upper allpass.
+                if (hasHigh) {
+                    l.low = stage.high.align(l.low, 0);
+                    r.low = stage.high.align(r.low, 1);
+                }
+                accumulate(0, l.low, r.low);
+            }
+            if (hasHigh) {
+                const auto l = stage.high.split(midL, 0);
+                const auto r = stage.high.split(midR, 1);
+                accumulate(2, l.high, r.high);
+                midL = l.low;
+                midR = r.low;
+            }
         }
         accumulate(1, midL, midR);
         outL[i] = !flatPhase ? sumL : (sumL == 0.0f ? dryL : dryL + sumL);
