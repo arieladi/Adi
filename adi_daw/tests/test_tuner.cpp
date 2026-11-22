@@ -307,8 +307,8 @@ void bounded() {
     // the window's middle. (A cut-off at 1.5 samples from the coarse dip
     // read 0 of 137 hops at 96 kHz.)
     for (const double rate : {48000.0, 96000.0}) {
-        for (const double base : {82.4, 110.0}) {
-            for (int motion = 0; motion < 2; ++motion) {
+        for (const double base : {82.4, 110.0, 220.0}) {
+            for (int motion = 0; motion < 3; ++motion) {
                 PitchDetector m;
                 m.prepare(rate);
                 const auto n = static_cast<std::size_t>(rate * 3);
@@ -317,9 +317,11 @@ void bounded() {
                 double phase = 0;
                 for (std::size_t i = 0; i < n; ++i) {
                     const double t = static_cast<double>(i) / rate;
-                    f[i] = motion == 0 ? base * std::exp2(0.5 / 12 * std::sin(2 * std::numbers::pi * 5.5 * t))
-                                       : base * std::exp2(std::clamp((t - 1.0) / 1.0, 0.0, 1.0) * 2 / 12);
-                    y[i] = static_cast<float>(0.2 * std::sin(phase) + 0.1 * std::sin(2 * phase) + 0.05 * std::sin(3 * phase));
+                    f[i] = motion == 1 ? base * std::exp2(std::clamp((t - 1.0) / 1.0, 0.0, 1.0) * 2 / 12)
+                                       : base * std::exp2(0.5 / 12 * std::sin(2 * std::numbers::pi * 5.5 * t));
+                    // motion 2: the vibrato with a singer's tremolo, +-40 % amplitude at its rate
+                    const double a = motion == 2 ? 1 + 0.4 * std::sin(2 * std::numbers::pi * 5.5 * t) : 1.0;
+                    y[i] = static_cast<float>(a * (0.2 * std::sin(phase) + 0.1 * std::sin(2 * phase) + 0.05 * std::sin(3 * phase)));
                     phase += 2 * std::numbers::pi * f[i] / rate;
                 }
                 int hops = 0, read = 0;
@@ -331,7 +333,7 @@ void bounded() {
                         ++read;
                     }
                 }
-                check(read >= hops * 9 / 10, std::to_string(base) + " Hz " + (motion == 0 ? "with vibrato" : "gliding") + " at " + std::to_string(rate) +
+                check(read >= hops * 9 / 10, std::to_string(base) + " Hz " + (motion == 0 ? "with vibrato" : motion == 1 ? "gliding" : "with vibrato and tremolo") + " at " + std::to_string(rate) +
                                                  ": " + std::to_string(read) + " of " + std::to_string(hops) + " hops read");
             }
         }
