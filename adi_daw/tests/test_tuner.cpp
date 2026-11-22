@@ -298,7 +298,8 @@ void bounded() {
     PitchDetector d;
     const auto x = sine(440.0, 48000.0, d.window(), 0.3);
     double hz = 0, clarity = 0;
-    check(d.analyse(x.data(), hz, clarity) && std::abs(cents(hz, 440)) < 0.1 && d.lastWork() < 200,
+    const bool clean = d.analyse(x.data(), hz, clarity);   // before the message reads hz
+    check(clean && std::abs(cents(hz, 440)) < 0.1 && d.lastWork() < 200,
           "a clean 440 Hz still reads within 0.1 cent (" + std::to_string(cents(hz, 440)) + "), in " + std::to_string(d.lastWork()) + " differences");
     // A moving pitch still reads: 82.4 and 110 Hz (three harmonics) with
     // vibrato of +-50 cents at 5.5 Hz, and a two-semitone glide, at 48 and
@@ -333,6 +334,32 @@ void bounded() {
                 check(read >= hops * 9 / 10, std::to_string(base) + " Hz " + (motion == 0 ? "with vibrato" : "gliding") + " at " + std::to_string(rate) +
                                                  ": " + std::to_string(read) + " of " + std::to_string(hops) + " hops read");
             }
+        }
+    }
+    // A note after silence, its onset anywhere in the window: a reading the
+    // Tuner would show (clarity 0.8 or more) is within 10 cents. (A walk left
+    // sliding gave clear readings up to 280 cents sharp.)
+    for (const double rate : {48000.0, 96000.0}) {
+        for (const double note : {110.0, 146.83, 220.0}) {
+            PitchDetector o;
+            o.prepare(rate);
+            const std::size_t w = o.window();
+            double off = 0;
+            int clear = 0;
+            for (std::size_t s = w / 4; s < w; s += 16) {
+                std::vector<float> z(w, 0.f);
+                for (std::size_t i = s; i < w; ++i) {
+                    const double ph = 2 * std::numbers::pi * note * static_cast<double>(i - s) / rate;
+                    z[i] = static_cast<float>(0.2 * std::sin(ph) + 0.1 * std::sin(2 * ph) + 0.05 * std::sin(3 * ph));
+                }
+                double got = 0, c = 0;
+                if (o.analyse(z.data(), got, c) && c >= Tuner::kClarity) {
+                    ++clear;
+                    off = std::max(off, std::abs(cents(got, note)));
+                }
+            }
+            check(off < 10 && clear > 0, std::to_string(note) + " Hz after silence at " + std::to_string(rate) + ": " + std::to_string(clear) +
+                                               " clear readings, the worst " + std::to_string(off) + " cents off");
         }
     }
     for (const double rate : {1e20, 1e300}) {
