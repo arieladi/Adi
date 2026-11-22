@@ -380,6 +380,89 @@ struct SharedAnalysis::CumulativeAverageHistory {
         } catch (...) { /* Keep the last complete interval publication. */ }
     }
 };
+namespace {
+class StereoBalanceHistory {
+    using Power = std::array<double, 2>;
+    struct Bucket {
+        Power whole{}, tail{};
+        std::size_t frames = 0;
+    };
+    const std::size_t hop_, wholeHops_, tailFrames_;
+    std::vector<Bucket> buckets_;
+    std::size_t nextBucket_ = 0, used_ = 0;
+    std::int64_t admission_ = 0, windowEnd_ = -1;
+
+    static Power power(std::span<const float> left, std::span<const float> right) noexcept {
+        Power result{};
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            const double l = left[i], r = right[i];
+            result[0] += l * l;
+            result[1] += r * r;
+        }
+        return result;
+    }
+    void append(std::span<const float> left, std::span<const float> right, bool silent) noexcept {
+        Bucket bucket;
+        bucket.frames = left.size();
+        if (!silent) {
+            const auto length = std::min(tailFrames_, left.size());
+            const auto prefix = left.size() - length;
+            bucket.whole = power(left.first(prefix), right.first(prefix));
+            bucket.tail = power(left.last(length), right.last(length));
+            bucket.whole[0] += bucket.tail[0];
+            bucket.whole[1] += bucket.tail[1];
+        }
+        buckets_[nextBucket_] = bucket;
+        nextBucket_ = (nextBucket_ + 1) % buckets_.size();
+        used_ = std::min(used_ + 1, buckets_.size());
+    }
+
+  public:
+    StereoBalanceHistory(std::size_t frames, std::size_t hop, std::int64_t admission)
+        : hop_(hop), wholeHops_(frames / hop), tailFrames_(frames % hop),
+          buckets_(wholeHops_ + static_cast<std::size_t>(tailFrames_ != 0)), admission_(admission) {}
+    void reset() noexcept { nextBucket_ = used_ = 0; windowEnd_ = -1; }
+    void startAt(std::int64_t admission) noexcept { admission_ = admission; reset(); }
+
+    // Each completed FFT window ends on the hop grid. Keep only its newly heard
+    // samples, including a possibly partial first hop at this history's admission.
+    void advance(std::int64_t start, std::span<const float> left, std::span<const float> right, bool silent) noexcept {
+        const auto end = start + static_cast<std::int64_t>(left.size());
+        if (end <= std::max(admission_, windowEnd_)) return;
+        if (windowEnd_ >= 0 && (start > windowEnd_ || end - windowEnd_ != static_cast<std::int64_t>(hop_))) reset();
+        const auto first = std::max({start, admission_, windowEnd_});
+        auto offset = static_cast<std::size_t>(first - start);
+        auto length = (left.size() - offset) % hop_;
+        if (length) {
+            append(left.subspan(offset, length), right.subspan(offset, length), silent);
+            offset += length;
+        }
+        while (offset < left.size()) {
+            append(left.subspan(offset, hop_), right.subspan(offset, hop_), silent);
+            offset += hop_;
+        }
+        windowEnd_ = end;
+    }
+    std::optional<std::array<float, 2>> reading(std::int64_t end) const noexcept {
+        if (!used_ || end != windowEnd_) return {};
+        Power sum{};
+        std::size_t frames = 0, slot = nextBucket_;
+        // Summing positive buckets avoids subtracting away quiet programme when
+        // an earlier, much louder transient rolls out of the two-second interval.
+        for (std::size_t i = 0; i < used_; ++i) {
+            slot = slot ? slot - 1 : buckets_.size() - 1;
+            const auto &bucket = buckets_[slot];
+            const bool oldestTail = i == wholeHops_;
+            const auto &p = oldestTail ? bucket.tail : bucket.whole;
+            sum[0] += p[0];
+            sum[1] += p[1];
+            frames += oldestTail ? std::min(tailFrames_, bucket.frames) : bucket.frames;
+        }
+        const auto count = static_cast<double>(frames);
+        return std::array{static_cast<float>(std::sqrt(sum[0] / count)), static_cast<float>(std::sqrt(sum[1] / count))};
+    }
+};
+} // namespace
 struct SharedAnalysis::SpectrumBlockAverage {
     // Worker and owner mutations hold the domain mutex. Readers see immutable snapshots.
     const std::uint32_t depth;
@@ -469,6 +552,9 @@ struct SharedAnalysis::Domain {
     std::vector<std::shared_ptr<CumulativeHistory>> cumulativeHistories;
     std::atomic<bool> cumulativeReady{true};
     std::vector<std::shared_ptr<CumulativeAverageHistory>> cumulativeAverages;
+    std::unique_ptr<StereoBalanceHistory> balanceHistory;
+    std::atomic<bool> balanceActive{false};
+    std::size_t balanceUsers = 0;
     std::vector<std::shared_ptr<SpectrumBlockAverage>> blockAverages;
     std::atomic<bool> blockAveragesQuiet{true};
     std::unique_ptr<dsp::StereoEnvelopeMeter> meter;
@@ -677,6 +763,26 @@ struct SharedAnalysis::Domain {
             return entry->settled;
         }), std::memory_order_release);
     }
+    void prepareBalance() noexcept {
+        balanceHistory.reset();
+        constexpr auto maximumSupportedRate = 768000.;
+        const auto rate = tap ? tap->sampleRate() : 0.;
+        if (balanceUsers && rate > 0. && rate <= maximumSupportedRate) {
+            const auto frames = static_cast<std::size_t>(std::max(1ll, std::llround(rate * 2.)));
+            try {
+                balanceHistory = std::make_unique<StereoBalanceHistory>(frames, static_cast<std::size_t>(request.hopSize),
+                                                                       tap->written());
+            } catch (...) { /* The Spectrum and current-window correlation can still publish. */ }
+        }
+        balanceActive.store(static_cast<bool>(balanceHistory), std::memory_order_release);
+    }
+    void changeBalanceDemand(bool enabled) noexcept {
+        if (enabled) {
+            if (++balanceUsers == 1) prepareBalance();
+        } else if (--balanceUsers == 0) {
+            prepareBalance();
+        }
+    }
     std::shared_ptr<SpectrumBlockAverage> admitBlockAverage(
         std::uint32_t depth, std::int64_t sequence) {
         if (depth <= 1) return {};
@@ -706,6 +812,7 @@ struct SharedAnalysis::Domain {
         columns.clear();
         if (epoch) {
             ++sourceEpoch;
+            if (balanceHistory) balanceHistory->reset();
             resetAverageForGap();
             // A discontinuity clears the history but cannot admit older
             // samples from the same tap. A replacement tap uses startAt().
@@ -723,6 +830,7 @@ struct SharedAnalysis::Domain {
         cursor = tap ? tap->cursorAtEnd() : engine::ScopeTap::Cursor{};
         if (tap && !fresh) cursor.next = std::max(tap->oldest(), tap->written() - request.fftSize);
         if (phaseBandPlan) phaseBandPlan->bindRate(tap ? tap->sampleRate() : 0.);
+        if (balanceUsers) prepareBalance();
         if (meter) {
             neutralMeter.store(false, std::memory_order_release);
             publishMeter({});
@@ -743,6 +851,7 @@ struct SharedAnalysis::Domain {
             cursor.next = std::clamp(sequence, oldest, end);
         }
         consumedSequence.store(cursor.next, std::memory_order_release);
+        if (balanceHistory) balanceHistory->startAt(cursor.next);
         activateAverage(sequence);
         activateMaximum(sequence);
         if (outputs.load(std::memory_order_acquire) & Strip) startStripAt(sequence);
@@ -784,6 +893,10 @@ struct SharedAnalysis::Domain {
         return true;
     }
     void releaseUnused(std::uint32_t bits) {
+        if (!bits && balanceHistory) {
+            balanceHistory.reset();
+            balanceActive.store(false, std::memory_order_release);
+        }
         if (!(bits & PhaseBands)) phaseBandPlan.reset();
         if (!(bits & Strip) && strip) {
             strip.reset();
@@ -824,6 +937,7 @@ struct SharedAnalysis::Domain {
     bool parkedWindowSettled(engine::ScopeTap::ParkedSilence quiet, std::uint32_t bits) const noexcept {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
+               !balanceActive.load(std::memory_order_acquire) &&
                (!(bits & Strip) || neutralStrip.load(std::memory_order_acquire)) &&
                (!(bits & DeviceBlockAverage) || blockAveragesQuiet.load(std::memory_order_acquire)) &&
                // Cumulative averaging counts silent hops even when its bins already sit at the floor.
@@ -1012,6 +1126,10 @@ struct SharedAnalysis::Domain {
         latest->rms = {static_cast<float>(std::sqrt(sumL / static_cast<double>(n))),
                        static_cast<float>(std::sqrt(sumR / static_cast<double>(n)))};
         latest->correlation = sumL > 0 && sumR > 0 ? std::clamp(cross / std::sqrt(sumL * sumR), -1., 1.) : 0.;
+        if (balanceHistory) {
+            if (newWindow) balanceHistory->advance(firstSequence, left, right, sumL == 0. && sumR == 0.);
+            latest->balanceRms2s = balanceHistory->reading(windowEnd);
+        }
         if (needsSpectrum) {
             if (spectralWindow != windowSerial) {
                 const bool stereoPower = request.channel == Channel::StereoPower;
@@ -1836,7 +1954,7 @@ struct SharedAnalysis::State {
     void drop(const std::shared_ptr<Domain> &domain, std::uint32_t outputs,
               const std::shared_ptr<CumulativeHistory> &cumulative,
               const std::shared_ptr<SpectrumBlockAverage> &blockAverage,
-              const std::shared_ptr<CumulativeAverageHistory> &cumulativeAverage) noexcept {
+              const std::shared_ptr<CumulativeAverageHistory> &cumulativeAverage, bool balanceEnabled) noexcept {
         ownerOnly();
         bool detach = false;
         const auto key = domain->request.source();
@@ -1847,6 +1965,7 @@ struct SharedAnalysis::State {
             --domain->consumers; --consumers;
             if (domain->consumers) {
                 std::lock_guard domainLock(domain->mutex);
+                if (balanceEnabled) domain->changeBalanceDemand(false);
                 domain->dropCumulative(cumulative);
                 domain->dropBlockAverage(blockAverage);
                 if (cumulativeAverage) std::erase(domain->cumulativeAverages, cumulativeAverage);
@@ -2126,7 +2245,7 @@ SharedAnalysis::Lease::~Lease() { reset(); }
 SharedAnalysis::Lease::Lease(Lease &&other) noexcept
     : state_(std::move(other.state_)), domain_(std::move(other.domain_)), cumulative_(std::move(other.cumulative_)),
       spectrumBlockAverage_(std::move(other.spectrumBlockAverage_)), cumulativeAverage_(std::move(other.cumulativeAverage_)),
-      outputs_(std::exchange(other.outputs_, 0)) {}
+      outputs_(std::exchange(other.outputs_, 0)), balanceEnabled_(std::exchange(other.balanceEnabled_, false)) {}
 SharedAnalysis::Lease &SharedAnalysis::Lease::operator=(Lease &&other) noexcept {
     if (this != &other) {
         reset();
@@ -2136,12 +2255,14 @@ SharedAnalysis::Lease &SharedAnalysis::Lease::operator=(Lease &&other) noexcept 
         spectrumBlockAverage_ = std::move(other.spectrumBlockAverage_);
         cumulativeAverage_ = std::move(other.cumulativeAverage_);
         outputs_ = std::exchange(other.outputs_, 0);
+        balanceEnabled_ = std::exchange(other.balanceEnabled_, false);
     }
     return *this;
 }
 void SharedAnalysis::Lease::reset() noexcept {
     if (domain_) if (auto state = state_.lock())
-        state->drop(domain_, outputs_, cumulative_, spectrumBlockAverage_, cumulativeAverage_);
+        state->drop(domain_, outputs_, cumulative_, spectrumBlockAverage_, cumulativeAverage_, balanceEnabled_);
+    balanceEnabled_ = false;
     cumulativeAverage_.reset();
     spectrumBlockAverage_.reset();
     cumulative_.reset(); domain_.reset(); state_.reset(); outputs_ = 0;
@@ -2196,6 +2317,15 @@ bool SharedAnalysis::Lease::restartCumulativeAverage() noexcept {
     cumulativeAverage_->afterSequence = domain_->tap->written();
     cumulativeAverage_->clear();
     return true;
+}
+void SharedAnalysis::Lease::setStereoBalanceEnabled(bool enabled) noexcept {
+    if (enabled == balanceEnabled_ || !domain_ || !spectralOutput(outputs_)) return;
+    const auto state = state_.lock();
+    if (!state || !domain_->active.load(std::memory_order_acquire)) return;
+    state->ownerOnly();
+    const std::lock_guard lock(domain_->mutex);
+    domain_->changeBalanceDemand(enabled);
+    balanceEnabled_ = enabled;
 }
 std::shared_ptr<const SharedAnalysis::StereoMeterResult> SharedAnalysis::Lease::readStereoMeter() const noexcept {
     return available() && domain_->meter ? domain_->readMeterResult() : nullptr;
@@ -2642,6 +2772,7 @@ SharedAnalysis::Stats SharedAnalysis::stats() const {
         (void)key;
         result.spectralPlans += static_cast<std::size_t>(domain->spectrum != nullptr) +
                                 static_cast<std::size_t>(domain->phaseBandPlan != nullptr);
+        result.stereoBalanceHistories += static_cast<std::size_t>(domain->balanceActive.load(std::memory_order_acquire));
         result.droppedHistoryColumns += domain->droppedHistory.load(std::memory_order_relaxed);
     }
     result.historyBytes = state_->historyBudget->bytes.load(std::memory_order_acquire);

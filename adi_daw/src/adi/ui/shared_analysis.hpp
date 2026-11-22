@@ -107,6 +107,7 @@ class SharedAnalysis final {
         // Raw per-channel sample peak/RMS, not a true-peak or loudness meter. Spectrum uses
         // dsp::Spectrum's coherent sine calibration; Scope/Phase keep unwindowed samples.
         std::array<float, 2> peak{}, rms{};
+        std::optional<std::array<float, 2>> balanceRms2s;
         std::size_t clippedSamples = 0; // Meters: finite samples at or above full scale across both channels.
         double correlation = 0;
         // Optional L/R correlation in ascending ERB bands. Missing lanes
@@ -165,6 +166,7 @@ class SharedAnalysis final {
         std::uint64_t droppedHistoryColumns = 0;
         // Successful insertions into this broker's shared scheduler queue.
         std::uint64_t successfulEnqueues = 0;
+        std::size_t stereoBalanceHistories = 0;
     };
     class Lease {
       public:
@@ -196,6 +198,7 @@ class SharedAnalysis final {
         // Arithmetic mean of calibrated linear bin magnitudes over this lease's interval.
         std::shared_ptr<const CumulativeAverageResult> readCumulativeAverage() const noexcept;
         bool restartCumulativeAverage() noexcept;
+        void setStereoBalanceEnabled(bool) noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
         std::shared_ptr<const StripResult> readStrip() const noexcept;
         bool restartStereoMeter() noexcept;
@@ -214,6 +217,7 @@ class SharedAnalysis final {
         std::shared_ptr<SpectrumBlockAverage> spectrumBlockAverage_;
         std::shared_ptr<CumulativeAverageHistory> cumulativeAverage_;
         std::uint32_t outputs_ = 0;
+        bool balanceEnabled_ = false;
         friend class SharedAnalysis;
     };
     // A continuous acquisition has its own sequence cursor. The physical tap

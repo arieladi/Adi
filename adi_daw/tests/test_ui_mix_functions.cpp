@@ -2057,12 +2057,14 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         };
         const auto balance = [&] { return statistic("RMS Balance"); };
         const auto correlation = [&] { return statistic("Stereo Correlation"); };
-        const auto sendLevels = [&](float left, float right) {
+        std::uint64_t stereoRevision = 4;
+        const auto sendLevels = [&](float left, float right, bool newEpoch = false) {
             const auto tap = tapFor(main);
             if (!tap) return false;
             const std::vector<float> a(static_cast<std::size_t>(overviewFft), left);
             const std::vector<float> b(static_cast<std::size_t>(overviewFft), right);
-            tap->write(a.data(), b.data(), overviewFft, tap->written(), true, 4);
+            if (newEpoch) ++stereoRevision;
+            tap->write(a.data(), b.data(), overviewFft, tap->written(), true, stereoRevision);
             for (int pass = 0; pass < 12; ++pass) broker->pump();
             root.frame();
             return true;
@@ -2083,7 +2085,8 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
               "pinned readouts use the primary window's RMS direction and signed anti-correlation");
         const auto published = broker->stats();
         check(published.consumers == plan.consumers && published.taps == plan.taps &&
-                  published.domains == plan.domains && published.spectralPlans == plan.spectralPlans,
+                  published.domains == plan.domains && published.spectralPlans == plan.spectralPlans &&
+                  published.stereoBalanceHistories == 1,
               "pinned readouts do not add a consumer or plan to the existing primary and pin spectra");
         for (int frame = 0; frame < 4; ++frame) { root.frame(); broker->pump(); }
         const auto statisticsIdle = broker->stats();
@@ -2098,7 +2101,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         const auto compact = broker->stats();
         check(balance().isEmpty() && correlation().isEmpty() && pages.detail.getBottom() > fullBottom &&
                   pages.detail.view.snapshot() == picture && compact.domains == statisticsIdle.domains &&
-                  compact.transforms == statisticsIdle.transforms,
+                  compact.transforms == statisticsIdle.transforms && compact.stereoBalanceHistories == 0,
               "compact pinned Spectrum removes the readout row without losing the primary picture");
         pages.setBounds(fullBounds);
         root.frame();
@@ -2122,12 +2125,79 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         const bool wroteAligned = sendLevels(.25f, .5f);
         check(wroteAligned && balance().contains("R 6.0") && correlation().contains("+1.00"),
               "fresh primary samples update the stereo statistics after Freeze");
-        const bool wroteOneSide = sendLevels(.5f, 0.f);
+        const bool wroteOneSide = sendLevels(.5f, 0.f, true);
         check(wroteOneSide && balance().contains("L only") && correlation().contains("--"),
-              "a one-sided primary has a balance direction but no stereo correlation");
-        const bool wroteQuiet = sendLevels(0.f, 0.f);
+              "a fresh one-sided epoch has a balance direction without stereo correlation");
+        const bool wroteQuiet = sendLevels(0.f, 0.f, true);
         check(wroteQuiet && balance().contains("--") && correlation().contains("--"),
-              "silence has neither a balance direction nor a stereo correlation");
+              "a fresh silent epoch has neither a balance direction nor stereo correlation");
+
+        const bool balanceSourceSelected = select(pages.sourceBox, "Pinned 12");
+        const bool infoWasVisible = commands.infoView();
+        const bool infoClosed = !infoWasVisible || commands.setInfoView(false, error);
+        root.frame();
+        for (int pass = 0; pass < 12; ++pass) broker->pump();
+        root.frame();
+        const auto balanceTap = tapFor(12);
+        check(balanceSourceSelected && infoClosed && balanceTap, "the two-second oracle has an isolated Spectrum source");
+        if (const auto &tap = balanceTap) {
+            constexpr int window = 4096, hop = 1024, hops = 90;
+            constexpr float bed = .0625f;
+            constexpr std::int64_t start = 200000;
+            const auto epoch = ++stereoRevision;
+            const auto beforeHistory = broker->stats();
+            std::array<float, window> left, right;
+            left.fill(bed); right.fill(bed);
+            std::fill_n(left.begin(), 256, 1.f);
+            std::fill_n(right.begin() + 256, 768, .75f);
+            tap->write(left.data(), right.data(), window, start, true, epoch);
+            broker->pump();
+
+            left.fill(bed);
+            for (int current = 0; current < hops; ++current) {
+                // The newest window is inverted while most of the two-second history is in phase.
+                right.fill(current >= hops - window / hop ? -bed : bed);
+                tap->write(left.data(), right.data(), hop, start + window + current * hop, true, epoch);
+                if (current % 3 == 2) broker->pump();
+            }
+            root.frame();
+            const auto trailing = pages.detail.view.snapshot();
+            const auto afterHistory = broker->stats();
+            // At 96,256 frames only the first 256 frames have aged out.
+            // The power sums are 375 and 804, giving R 3.3122478 dB.
+            check(trailing && trailing->transportRevision == epoch && trailing->firstStamp == start + hops * hop &&
+                      trailing->rms[0] == bed && trailing->rms[1] == bed && trailing->correlation == -1. &&
+                      balance().contains("R 3.3") && correlation().contains("-1.00"),
+                  "pinned balance retains the exact two-second tail while correlation uses only the current window");
+            check(afterHistory.taps == beforeHistory.taps && afterHistory.domains == beforeHistory.domains &&
+                      afterHistory.spectralPlans == beforeHistory.spectralPlans &&
+                      afterHistory.stereoBalanceHistories == 1 &&
+                      afterHistory.analysisWindows == beforeHistory.analysisWindows + hops + 1 &&
+                      afterHistory.transforms == beforeHistory.transforms + hops,
+                  "two-second balance adds no tap or transform including the Mid spectrum's inverted zero window");
+
+            right.fill(bed);
+            const auto heardEnd = start + window + hops * hop;
+            tap->write(left.data(), right.data(), hop, heardEnd, true, epoch);
+            broker->pump();
+            root.frame();
+            check(balance().contains("Centre") && correlation().contains("-0.50"),
+                  "the next hop ages out the remaining imbalance independently of the short correlation");
+
+            left.fill(.125f); right.fill(0.f);
+            const auto gapStart = heardEnd + hop + 17;
+            tap->write(left.data(), right.data(), window, gapStart, true, epoch);
+            broker->pump();
+            root.frame();
+            const auto resumed = pages.detail.view.snapshot();
+            check(trailing && resumed && resumed->transportRevision == epoch &&
+                      resumed->sourceEpoch > trailing->sourceEpoch && resumed->firstStamp == gapStart &&
+                      balance().contains("L only") && correlation().contains("--"),
+                  "a same-revision advancing gap starts a fresh balance history at the new heard position");
+        }
+        if (infoWasVisible) commands.setInfoView(true, error);
+        pages.followSelection(false);
+        root.frame();
 
         pages.setVisible(false);
         const auto hidden = broker->stats();
@@ -2135,7 +2205,8 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         const auto hiddenIdle = broker->stats();
         check(balance().isEmpty() && correlation().isEmpty() && !pages.detail.view.subscribed() &&
                   !attached(first) && !attached(wide) && hiddenIdle.workerPasses == hidden.workerPasses &&
-                  hiddenIdle.transforms == hidden.transforms && hiddenIdle.publications == hidden.publications,
+                  hiddenIdle.transforms == hidden.transforms && hiddenIdle.publications == hidden.publications &&
+                  hiddenIdle.stereoBalanceHistories == 0,
               "a hidden Spectrum exposes no readouts and adds no worker activity");
     }
     detachPeer();

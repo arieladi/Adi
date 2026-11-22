@@ -348,7 +348,7 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
     SpectrumStatistics() {
         setInterceptsMouseClicks(false, false);
         balance_.setTitle("RMS Balance");
-        balance_.setTooltip("Left and right RMS balance over the primary Spectrum window.");
+        balance_.setTooltip("Left and right RMS balance over the most recent two seconds of the primary Spectrum source.");
         correlation_.setTitle("Stereo Correlation");
         correlation_.setTooltip("Signed left and right correlation over the primary Spectrum window.");
         balance_.setText("RMS balance --", juce::dontSendNotification);
@@ -361,20 +361,20 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
         if (!window.owner_before(last_) && !last_.owner_before(window)) return;
         last_ = window;
         juce::String balance("--"), correlation("--");
-        if (window) {
-            const double left = window->rms[0], right = window->rms[1];
+        if (window && window->balanceRms2s) {
+            const double left = (*window->balanceRms2s)[0], right = (*window->balanceRms2s)[1];
             const bool hasLeft = std::isfinite(left) && left > 0., hasRight = std::isfinite(right) && right > 0.;
             if (hasLeft && hasRight) {
                 const double difference = 20. * std::log10(left / right);
                 balance = std::abs(difference) < .05 ? juce::String("Centre")
                     : juce::String(difference > 0. ? "L " : "R ") + juce::String(std::abs(difference), 1) + " dB";
-                if (std::isfinite(window->correlation)) {
-                    const auto value = std::abs(window->correlation) < .005 ? 0. : window->correlation;
-                    correlation = juce::String(value < 0. ? "" : "+") + juce::String(value, 2);
-                }
             } else if (hasLeft || hasRight) {
                 balance = hasLeft ? "L only" : "R only";
             }
+        }
+        if (window && window->rms[0] > 0.f && window->rms[1] > 0.f && std::isfinite(window->correlation)) {
+            const auto value = std::abs(window->correlation) < .005 ? 0. : window->correlation;
+            correlation = juce::String(value < 0. ? "" : "+") + juce::String(value, 2);
         }
         balance_.setText("RMS balance " + balance, juce::dontSendNotification);
         correlation_.setText("Correlation " + correlation, juce::dontSendNotification);
@@ -700,6 +700,7 @@ void MixAnalysers::resized() {
     const bool showStatistics = hasPinnedSpectrum_ && showsTrace &&
         area.getWidth() >= 2 * look::mixChannelMinWidth + look::gap && area.getHeight() >= 2 * look::mixChannelRowHeight;
     spectrumStatistics_->setVisible(showStatistics);
+    detail.view.setStereoBalanceEnabled(showStatistics);
     if (showStatistics) spectrumStatistics_->setBounds(area.removeFromBottom(look::mixChannelRowHeight));
     if (page_ == Page::Analysis) { table_->setBounds(area); return; }
     if (page_ == Page::Compare) { compare_->setBounds(area); return; }
