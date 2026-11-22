@@ -110,6 +110,67 @@ void phaser(Sweep& band) {
     near(energy, 1, .00001, "zero-feedback all-pass energy");
 }
 
+void stereoOffsetHistories() {
+    constexpr float nan = std::numeric_limits<float>::quiet_NaN();
+    constexpr float infinity = std::numeric_limits<float>::infinity();
+    for (const double rate : {44100., 96000.}) {
+        Sweep stereo, leftOnly, rightOnly;
+        stereo.setStereoOffset(.375f);
+        for (auto* band : {&stereo, &leftOnly, &rightOnly}) check(band->prepare(rate), "prepare stereo sweep");
+        for (const auto mode : {Mode::Flange, Mode::Phaser4, Mode::Phaser8, Mode::Phaser12, Mode::Phaser16}) {
+            for (const bool negative : {false, true}) {
+                for (auto* band : {&stereo, &leftOnly, &rightOnly}) {
+                    band->setMode(mode);
+                    band->setPolarity(negative);
+                }
+                float offset = .375f;
+                double retainedLeft = 0, retainedRight = 0;
+                for (int n = 0; n < 1536; ++n) {
+                    // Each run ends with the starting controls of the next run.
+                    // A mode or polarity change must refresh both sets of coefficients.
+                    float center = .5f, feedback = .625f;
+                    if (n >= 64 && n < 512) {
+                        center = .3f + .4f * static_cast<float>(n % 103) / 102.f;
+                        feedback = static_cast<float>(n % 71) / 70.f;
+                    }
+                    // Change each control alone while the others are held.
+                    if (n == 512) { offset = .5f; stereo.setStereoOffset(offset); }
+                    if (n >= 552 && n < 592) feedback = .19f;
+                    if (n == 600) { offset = -.5f; stereo.setStereoOffset(offset); }
+                    if (n == 616) stereo.setStereoOffset(nan);
+                    if (n == 617) stereo.setStereoOffset(infinity);
+                    if (n == 704) { offset = 0.f; stereo.setStereoOffset(offset); }
+                    if (n >= 864 && n < 1000) feedback = .31f;
+                    if (n == 1000) { offset = 1.f; stereo.setStereoOffset(2.f); }
+                    if (n == 1128) { offset = -1.f; stereo.setStereoOffset(-2.f); }
+                    if (n == 1200) { offset = .375f; stereo.setStereoOffset(offset); }
+                    if (n == 1250) center = nan;
+                    if (n == 1251) feedback = infinity;
+
+                    float left = static_cast<float>((n * 37) % 127 - 63) / 128.f;
+                    float right = static_cast<float>((n * 19) % 83 - 41) / 96.f;
+                    if (n >= 704 && n < 800) left = right = 0;
+                    float expectedLeft = left, expectedRight = right, spare = 0;
+                    const float base = std::isfinite(center) ? center : .5f;
+                    const float shift = .5f * offset * std::abs(offset);
+                    leftOnly.processStereo(expectedLeft, spare, base + shift, feedback);
+                    spare = 0;
+                    rightOnly.processStereo(spare, expectedRight, base - shift, feedback);
+                    stereo.processStereo(left, right, center, feedback);
+                    check(left == expectedLeft && right == expectedRight,
+                          "moving spread matches independent centered sweeps across the entire history");
+                    if (n >= 704 && n < 800) {
+                        retainedLeft += std::abs(expectedLeft);
+                        retainedRight += std::abs(expectedRight);
+                    }
+                }
+                check(retainedLeft > 1e-5 && retainedRight > 1e-5,
+                      "returning to zero spread retains an audible history on each channel");
+            }
+        }
+    }
+}
+
 void lifecycle(Sweep& band) {
     for (const double rate : {44100., 96000., 192000.}) {
         check(band.prepare(rate), "sample-rate change");
@@ -151,6 +212,7 @@ int main() try {
     flange(band);
     phaser(band);
     lifecycle(band);
+    stereoOffsetHistories();
     std::puts("ADI-Shaper Sweep impulse, response, stereo and rate checks passed.");
     return 0;
 } catch (const std::exception& e) {

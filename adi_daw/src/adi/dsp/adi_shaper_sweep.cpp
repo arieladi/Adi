@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <limits>
 #include <new>
 #include <numbers>
 #include <stdexcept>
@@ -50,6 +51,14 @@ bool AdiShaperSweep::prepare(double sampleRate) noexcept {
         tuning_[i] = {static_cast<float>(std::max(1.0, sampleRate / hz)),
                       static_cast<float>((1.0 - g) / (1.0 + g))};
     }
+    // With spread the phaser extends the center axis by five octaves at
+    // either end. Keep the centered table's original range and arithmetic.
+    for (std::size_t i = 0; i < spreadPoles_.size(); ++i) {
+        const double position = static_cast<double>(i) / intervals - .5;
+        const double hz = minimumHz * std::exp2(10.0 * position);
+        const double g = std::tan(std::numbers::pi * std::min(hz / sampleRate, .4999));
+        spreadPoles_[i] = static_cast<float>((1.0 - g) / (1.0 + g));
+    }
     center_ = feedback_ = -1;
     ready_ = true;
     return true;
@@ -86,25 +95,54 @@ void AdiShaperSweep::setPolarity(bool negative) noexcept {
     }
 }
 
+void AdiShaperSweep::setStereoOffset(float bipolar) noexcept {
+    if (!std::isfinite(bipolar)) return;
+    bipolar = std::clamp(bipolar, -1.f, 1.f);
+    const float offset = .5f * bipolar * std::abs(bipolar);
+    if (offset != offset_) {
+        offset_ = offset;
+        center_ = std::numeric_limits<float>::quiet_NaN();
+    }
+}
+
 void AdiShaperSweep::updateCenter(float value) noexcept {
     center_ = height(value);
-    const float index = center_ * intervals;
-    const auto lower = std::min(static_cast<std::size_t>(index), intervals - 1);
-    const float fraction = index - static_cast<float>(lower);
-    const auto& a = tuning_[lower];
-    const auto& b = tuning_[lower + 1];
-    if (stages_ == 0) {
-        const float frames = a.delay + (b.delay - a.delay) * fraction;
-        delayFrames_ = static_cast<std::size_t>(frames);
-        delayFraction_ = frames - static_cast<float>(delayFrames_);
+    if (offset_ == 0.f) {
+        updateChannel(channels_[0], center_);
     } else {
-        pole_ = a.pole + (b.pole - a.pole) * fraction;
-        const float square = pole_ * pole_;
-        const float four = square * square, eight = four * four;
-        cascadeGain_ = stages_ == 4 ? four : stages_ == 8 ? eight :
-                       stages_ == 12 ? four * eight : eight * eight;
-        inverse_ = 1.0f / (1.0f + loop_ * cascadeGain_);
+        updateChannel(channels_[0], center_ + offset_);
+        updateChannel(channels_[1], center_ - offset_);
     }
+}
+
+void AdiShaperSweep::updateChannel(ChannelTuning& channel, float center) const noexcept {
+    if (stages_ != 0 && offset_ != 0.f) {
+        // Separate the signed integer part before indexing the extended
+        // table to retain the centered table's fractional resolution.
+        const float position = center * intervals;
+        const int lower = std::min(static_cast<int>(std::floor(position)), static_cast<int>(intervals * 3 / 2) - 1);
+        const auto index = static_cast<std::size_t>(lower + static_cast<int>(intervals / 2));
+        const float fraction = position - static_cast<float>(lower);
+        channel.pole = spreadPoles_[index] + (spreadPoles_[index + 1] - spreadPoles_[index]) * fraction;
+    } else {
+        const float position = std::clamp(center, 0.f, 1.f) * intervals;
+        const auto lower = std::min(static_cast<std::size_t>(position), intervals - 1);
+        const float fraction = position - static_cast<float>(lower);
+        const auto& a = tuning_[lower];
+        const auto& b = tuning_[lower + 1];
+        if (stages_ == 0) {
+            const float frames = a.delay + (b.delay - a.delay) * fraction;
+            channel.delayFrames = static_cast<std::size_t>(frames);
+            channel.delayFraction = frames - static_cast<float>(channel.delayFrames);
+            return;
+        }
+        channel.pole = a.pole + (b.pole - a.pole) * fraction;
+    }
+    const float square = channel.pole * channel.pole;
+    const float four = square * square, eight = four * four;
+    channel.cascadeGain = stages_ == 4 ? four : stages_ == 8 ? eight :
+                          stages_ == 12 ? four * eight : eight * eight;
+    channel.inverse = 1.0f / (1.0f + loop_ * channel.cascadeGain);
 }
 
 void AdiShaperSweep::updateFeedback(float value) noexcept {
@@ -126,7 +164,8 @@ void AdiShaperSweep::updateFeedback(float value) noexcept {
             loop_ = 0.99f * feedback_;
             wet_ = 1.0f - 0.5f * loop_ * loop_;
         }
-        inverse_ = 1.0f / (1.0f + loop_ * cascadeGain_);
+        channels_[0].inverse = 1.0f / (1.0f + loop_ * channels_[0].cascadeGain);
+        if (offset_ != 0.f) channels_[1].inverse = 1.0f / (1.0f + loop_ * channels_[1].cascadeGain);
     }
 }
 
@@ -136,10 +175,11 @@ void AdiShaperSweep::flange(float& left, float& right) noexcept {
     const Stereo input{left, right};
     Stereo output;
     for (std::size_t ch = 0; ch < 2; ++ch) {
+        const auto& tuning = channels_[offset_ != 0.f ? ch : 0];
         auto& valid = valid_[ch];
-        const float first = valid >= delayFrames_ ? delay_[(write_ - delayFrames_) & mask_][ch] : 0.0f;
-        const float second = valid > delayFrames_ ? delay_[(write_ - delayFrames_ - 1) & mask_][ch] : 0.0f;
-        const float delayed = first + (second - first) * delayFraction_;
+        const float first = valid >= tuning.delayFrames ? delay_[(write_ - tuning.delayFrames) & mask_][ch] : 0.0f;
+        const float second = valid > tuning.delayFrames ? delay_[(write_ - tuning.delayFrames - 1) & mask_][ch] : 0.0f;
+        const float delayed = first + (second - first) * tuning.delayFraction;
         const float filtered = delayed - low_[ch];
         low_[ch] = clean(low_[ch] + highpassAmount_ * filtered);
         const float next = softDrive(input[ch] + loop_ * filtered);
@@ -158,22 +198,25 @@ void AdiShaperSweep::flange(float& left, float& right) noexcept {
 }
 
 void AdiShaperSweep::phase(float& left, float& right) noexcept {
+    const auto& leftTuning = channels_[0];
+    const auto& rightTuning = channels_[offset_ != 0.f ? 1 : 0];
+    const Stereo poles{leftTuning.pole, rightTuning.pole};
     Stereo response{};
     if (loop_ != 0.0f) {
         // Evaluate the cascade's stored response to zero input. Its immediate
         // input gain is pole^stages, so the feedback loop can be solved at this
         // sample without inserting an extra sample of delay.
         for (unsigned i = 0; i < stages_; ++i) {
-            response[0] = pole_ * response[0] + states_[i][0];
-            response[1] = pole_ * response[1] + states_[i][1];
+            response[0] = poles[0] * response[0] + states_[i][0];
+            response[1] = poles[1] * response[1] + states_[i][1];
         }
     }
-    Stereo work{(left - loop_ * response[0]) * inverse_,
-                (right - loop_ * response[1]) * inverse_};
+    Stereo work{(left - loop_ * response[0]) * leftTuning.inverse,
+                (right - loop_ * response[1]) * rightTuning.inverse};
     for (unsigned i = 0; i < stages_; ++i) {
         for (std::size_t ch = 0; ch < 2; ++ch) {
-            const float next = pole_ * work[ch] + states_[i][ch];
-            states_[i][ch] = clean(pole_ * next - work[ch]);
+            const float next = poles[ch] * work[ch] + states_[i][ch];
+            states_[i][ch] = clean(poles[ch] * next - work[ch]);
             work[ch] = next;
         }
     }

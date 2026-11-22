@@ -892,6 +892,10 @@ void AdiShaper::setTrigger(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (!hasParameter(id) || !std::isfinite(value)) return;
+    if (id >= SweepLowOffset && id <= SweepHighOffset) {
+        sweeps_[static_cast<std::size_t>(id - SweepLowOffset)].setStereoOffset(value * .01f);
+        return;
+    }
     if (id >= DriveLowRounded && id <= DriveHighRounded) {
         drives_[static_cast<std::size_t>(id - DriveLowRounded)].setRoundedClip(value >= .5f);
         return;

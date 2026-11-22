@@ -32,7 +32,8 @@ static_assert(Shaper::noiseParam(Band::High, Shaper::NoiseLowPass) + 1 == Shaper
 static_assert(Shaper::ReverbOn == 625 && Shaper::ReverbEnd == 715);
 static_assert(Shaper::reverbParam(Band::High, Shaper::RoomClearTails) + 1 == Shaper::ReverbEnd);
 static_assert(Shaper::hasParameter(415) && Shaper::hasParameter(624) && Shaper::hasParameter(715)
-              && !Shaper::hasParameter(854) && Shaper::hasParameter(855) && !Shaper::hasParameter(858));
+              && Shaper::hasParameter(852) && Shaper::hasParameter(854) && Shaper::hasParameter(855)
+              && !Shaper::hasParameter(858));
 static_assert(static_cast<int>(Stage::Time) == 7 && Shaper::TimeOn == 415 && Shaper::TimeEnd == 463);
 static_assert(Shaper::timeParam(Band::High, Shaper::Time8) + 1 == Shaper::TimeEnd);
 static_assert(static_cast<int>(Stage::Noise) == 9 && static_cast<int>(Stage::Reverb) == 10);
@@ -45,6 +46,7 @@ static_assert(Shaper::WidthFollowerEnd == Shaper::TriggerLowMode);
 static_assert(Shaper::FilterLowOffset == 849 && Shaper::FilterHighOffset == 851);
 static_assert(Shaper::FilterLowPeak == 912 && Shaper::FilterHighPeak == 914);
 static_assert(Shaper::FilterLowSteep == 915 && Shaper::FilterHighSteep == 917);
+static_assert(Shaper::SweepLowOffset + 1 == 853 && Shaper::SweepHighOffset + 1 == 855);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -107,6 +109,58 @@ void filterStereoOffsets() {
     }
     std::printf("Stereo cutoff offset maximum impulse error %.9g\n", worst);
     check(worst < .00015, "five filter responses honor opposite signed stereo cutoff offsets");
+}
+
+void sweepStereoOffsets() {
+    // Each pair is a signed stereo reading from the same independent impulse.
+    struct Case {
+        int mode, rate;
+        float center, offset, feedback;
+        bool negative;
+        std::array<int, 3> frames;
+        std::array<double, 6> taps;
+    };
+    constexpr std::array cases{
+        Case{1, 48000, .5f, .5f, .5f, false, {0, 31, 173},
+             {.49179465, .49179465, .50437051, 0, -.01051137, .68816620}},
+        Case{2, 48000, .5f, .5f, 0.f, false, {0, 2, 31},
+             {.43743840, .86488026, -.13748743, -.21485321, .06531038, .03005173}},
+        Case{3, 96000, .125f, -1.f, .625f, true, {0, 1, 23},
+             {.93185472, .70999539, -.00057401, -.31727451, -.00056736, .02564088}},
+        Case{4, 44100, .875f, 1.f, .5f, false, {0, 1, 5},
+             {.58400112, .41756591, .00590519, -.30270416, .00584401, -.00339100}},
+        Case{5, 48000, .625f, -.375f, .25f, true, {0, 3, 19},
+             {.57341188, .50251234, .20027761, -.27287206, .02152780, -.08996191}}};
+    for (const auto& c : cases) {
+        Shaper rack;
+        rack.prepare(c.rate);
+        rack.set(Shaper::SweepOn, 1);
+        const auto control = [](Shaper::ModControl index) {
+            return Shaper::modParam(Stage::Sweep, Band::Mid, index);
+        };
+        rack.set(control(Shaper::Type), static_cast<float>(c.mode));
+        rack.set(Shaper::SweepMidPolarity, c.negative ? 1.f : 0.f);
+        for (int point = 0; point < 8; ++point) {
+            rack.set(control(static_cast<Shaper::ModControl>(Shaper::Primary1 + point)), c.center * 100.f);
+            rack.set(control(static_cast<Shaper::ModControl>(Shaper::Secondary1 + point)), c.feedback * 100.f);
+        }
+        for (int id = Shaper::BaseCount; id < Shaper::SweepLowOffset; ++id)
+            if (!Shaper::hasParameter(id)) rack.set(static_cast<Shaper::Param>(id), 100.f);
+        rack.set(Shaper::SweepMidOffset, c.offset * 100.f);
+        std::size_t next = 0;
+        double worst = 0;
+        for (int frame = 0; frame <= c.frames.back(); ++frame) {
+            const float impulse = frame == 0 ? .0625f : 0.f;
+            const auto stereo = one(rack, impulse, impulse);
+            if (frame == c.frames[next]) {
+                for (std::size_t ch = 0; ch < 2; ++ch)
+                    worst = std::max(worst, std::abs(stereo[ch] / .0625 - c.taps[2 * next + ch]));
+                ++next;
+            }
+        }
+        std::printf("Sweep offset mode %d peak tap error %.9g\n", c.mode, worst);
+        check(worst < .0001, "Sweep stereo offset matches measured impulse taps");
+    }
 }
 
 void endpoints() {
@@ -2594,6 +2648,7 @@ void midiVolumeRetrigger() {
 int main() {
     filterStereoOffsets();
     endpoints();
+    sweepStereoOffsets();
     balanceSweep();
     stereoPanTransfer();
     heldPanEdges();

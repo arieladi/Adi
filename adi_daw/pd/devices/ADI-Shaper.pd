@@ -1450,6 +1450,12 @@
 #X msg 7710 111 p 916 \$1;
 #X obj 7710 148 adi.param \$0 918 0 1 0 - toggle Filter_High_24_dB;
 #X msg 7710 175 p 917 \$1;
+#X obj 7985 20 adi.param \$0 853 -100 100 0 % lin Sweep_Low_Stereo_Offset;
+#X msg 7985 47 p 852 \$1;
+#X obj 7985 84 adi.param \$0 854 -100 100 0 % lin Sweep_Mid_Stereo_Offset;
+#X msg 7985 111 p 853 \$1;
+#X obj 7985 148 adi.param \$0 855 -100 100 0 % lin Sweep_High_Stereo_Offset;
+#X msg 7985 175 p 854 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -2902,3 +2908,9 @@
 #X connect 1448 0 1 0;
 #X connect 1449 0 1450 0;
 #X connect 1450 0 1 0;
+#X connect 1451 0 1452 0;
+#X connect 1452 0 1 0;
+#X connect 1453 0 1454 0;
+#X connect 1454 0 1 0;
+#X connect 1455 0 1456 0;
+#X connect 1456 0 1 0;

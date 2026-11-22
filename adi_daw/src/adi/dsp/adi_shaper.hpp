@@ -53,6 +53,7 @@ class AdiShaper {
                  TriggerLowMode = 753, TriggerMidMode, TriggerHighMode, TriggerLowEnd, TriggerMidEnd, TriggerHighEnd,
                  TriggerThreshold, TriggerDetail, TriggerProfile, TriggerShift, TriggerSmoothing,
                  FilterLowOffset = 849, FilterMidOffset, FilterHighOffset,
+                 SweepLowOffset = 852, SweepMidOffset, SweepHighOffset,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
                  FilterLowPeak = 912, FilterMidPeak, FilterHighPeak,
                  FilterLowSteep = 915, FilterMidSteep, FilterHighSteep,
@@ -111,6 +112,7 @@ class AdiShaper {
             || (id >= orderParam(Stage::Noise) && id <= orderParam(Stage::Reverb))
             || (id >= WidthFollowerLow && id <= TriggerSmoothing)
             || (id >= FilterLowOffset && id <= FilterHighOffset)
+            || (id >= SweepLowOffset && id <= SweepHighOffset)
             || (id >= FilterLowPeak && id <= FilterHighSteep)
             || (id >= PanLowDelayBlend && id <= PanHighDelayBlend)
             || (id >= PanLowTransfer && id <= PanHighGainLaw)

@@ -18,6 +18,7 @@ public:
     void reset() noexcept;
     void setMode(Mode mode) noexcept;
     void setPolarity(bool negative) noexcept;
+    void setStereoOffset(float bipolar) noexcept;
     void processStereo(float& left, float& right, float centerHeight,
                        float feedbackHeight) noexcept;
     bool finishBlock() noexcept;
@@ -25,8 +26,13 @@ public:
 private:
     using Stereo = std::array<float, 2>;
     struct Tuning { float delay = 1.0f, pole = 0.0f; };
+    struct ChannelTuning {
+        std::size_t delayFrames = 1;
+        float delayFraction = 0, pole = 0, cascadeGain = 0, inverse = 1;
+    };
     static constexpr std::size_t intervals = 1024;
     void updateCenter(float value) noexcept;
+    void updateChannel(ChannelTuning& channel, float center) const noexcept;
     void updateFeedback(float value) noexcept;
     void flange(float& left, float& right) noexcept;
     void phase(float& left, float& right) noexcept;
@@ -35,14 +41,15 @@ private:
     bool negative_ = false, ready_ = false;
     unsigned stages_ = 0;
     std::array<Tuning, intervals + 1> tuning_{};
+    std::array<float, 2 * intervals + 1> spreadPoles_{};
+    std::array<ChannelTuning, 2> channels_{};
     std::vector<Stereo> delay_;
-    std::size_t write_ = 0, mask_ = 0, delayFrames_ = 1;
+    std::size_t write_ = 0, mask_ = 0;
     std::array<std::size_t, 2> valid_{};
     std::array<bool, 2> delayFault_{};
     Stereo low_{};
     std::array<Stereo, 16> states_{};
-    float center_ = -1, feedback_ = -1, delayFraction_ = 0, highpassAmount_ = 0;
-    float pole_ = 0, cascadeGain_ = 0, inverse_ = 1;
+    float center_ = -1, feedback_ = -1, offset_ = 0, highpassAmount_ = 0;
     float dry_ = 1, wet_ = 0, loop_ = 0;
 };
 

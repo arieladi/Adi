@@ -458,6 +458,43 @@ void cachedPdTransport(const std::string& directory, bool native) {
     }
 }
 
+void stereoSweepPd(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    constexpr auto mid = Shaper::Band::Mid;
+    adi::device::PdLatencyReceiver latency;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    std::string error;
+    check(path.open(latency, error), "open stereo sweep");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    check(path.sendParameter(Shaper::SweepOn + 1, 1), "enable sweep");
+    check(path.sendParameter(Shaper::modParam(Shaper::Stage::Sweep, mid, Shaper::Type) + 1, 2),
+          "select the four-stage phaser");
+    for (int n = 0; n < 8; ++n) {
+        const auto point = static_cast<Shaper::ModControl>(Shaper::Primary1 + n);
+        check(path.sendParameter(Shaper::modParam(Shaper::Stage::Sweep, mid, point) + 1, 50), "set sweep center");
+        const auto feedback = static_cast<Shaper::ModControl>(Shaper::Secondary1 + n);
+        check(path.sendParameter(Shaper::modParam(Shaper::Stage::Sweep, mid, feedback) + 1, 0), "zero feedback");
+    }
+    check(path.sendParameter(854, 50), "set middle band's stereo offset");
+    std::array<float, 64> input{}, left{}, right{};
+    const float* in[]{input.data(), input.data()};
+    float* out[]{left.data(), right.data()};
+    adi::engine::NodeIo io;
+    io.in = in;
+    io.out = out;
+    io.channels = 2;
+    io.frames = 64;
+    path.process(io);
+    input[0] = .0625f;
+    path.process(io);
+    const float highCenter = crossed ? right[0] : left[0], lowCenter = crossed ? left[0] : right[0];
+    check(std::abs(highCenter / .0625 - .43743840) < 3e-5 && std::abs(lowCenter / .0625 - .86488026) < 3e-5,
+          "stereo Sweep reaches the native wrapper and editable external");
+}
+
 void panDelayBlend(const std::string& directory, bool crossed) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
@@ -1509,7 +1546,7 @@ void audioTriggerPd() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 721, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 724, "device registration");
     for (int id = 727; id <= 753; ++id) {
         const auto* control = device->paramAt(676 + id - 727);
         check(control && control->id == std::to_string(id), "Width follower follows the existing trigger declarations");
@@ -1552,6 +1589,22 @@ int main() try {
     check(device->loadState("state", savedOffsets) && device->getParam("850").real == -100
           && device->getParam("851").real == 50 && device->getParam("852").real == 100,
           "each band's signed stereo offset round-trips independently");
+    device = open();
+    for (int band = 0; band < 3; ++band) {
+        const auto id = std::to_string(853 + band);
+        check(device->paramAt(721 + band) && device->paramAt(721 + band)->id == id
+              && device->getParam(id).real == 0, "three stable Sweep stereo offset IDs default to center");
+    }
+    const auto savedSweepOffsets = [&] {
+        auto source = open();
+        set(*source, 853, 0.);
+        set(*source, 854, .75);
+        set(*source, 855, 1.);
+        return source->saveState("state");
+    }();
+    check(device->loadState("state", savedSweepOffsets) && device->getParam("853").real == -100
+          && device->getParam("854").real == 50 && device->getParam("855").real == 100,
+          "each band's signed Sweep stereo offset round-trips independently");
     device = open();
     for (int i = 0; i < 3; ++i)
         check(device->paramAt(715 + i) && device->paramAt(715 + i)->id == std::to_string(913 + i),
@@ -1596,15 +1649,17 @@ int main() try {
     // Restore an actual earlier-format parameter map, with no Filter or Sweep keys.
     auto state = adi::Payload::from_cbor(device->saveState("state"));
     for (const auto* group : {"params", "real", "units"})
-        for (int id : {850, 851, 852, 913, 914, 915, 916, 917, 918}) state.at(group).erase(std::to_string(id));
+        for (int id : {850, 851, 852, 853, 854, 855, 913, 914, 915, 916, 917, 918}) state.at(group).erase(std::to_string(id));
     for (const auto* group : {"params", "real"})
         for (int id = 134; id <= 463; ++id) state.at(group).erase(std::to_string(id));
     device = open();
     set(*device, 416, 1.0);
     set(*device, 423, 0.);
     set(*device, 851, 1.);
-    check(device->loadState("state", adi::Payload::to_cbor(state)) && device->getParam("851").real == 0,
-          "restore earlier curve, width and centered Filter");
+    set(*device, 854, 1.);
+    check(device->loadState("state", adi::Payload::to_cbor(state)) && device->getParam("851").real == 0
+          && device->getParam("854").real == 0,
+          "restore earlier curve, width and centered Filter and Sweep");
     check(device->getParam("416").real == 0. && device->getParam("423").real == 100.,
           "older sessions reset Time enable and band mix on a running device");
     check(device->getParam("134").real == 0 && device->getParam("209").real == 0,
@@ -1804,6 +1859,8 @@ int main() try {
     const auto editedDir = edited.path().string();
     panDelayBlend(ADI_SHAPER_PATCH_DIR, false);
     panDelayBlend(editedDir, true);
+    stereoSweepPd(ADI_SHAPER_PATCH_DIR, false);
+    stereoSweepPd(editedDir, true);
     driveShapeState(*open());
     driveShapeCanvas(ADI_SHAPER_PATCH_DIR, false);
     driveShapeCanvas(editedDir, true);
