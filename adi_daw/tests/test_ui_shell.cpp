@@ -10739,6 +10739,22 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
           "with 2 MIDI and 3 Audio selected, a drag on 2 MIDI moves both by -6 dB, in one step");
     check(root.command(AppCommands::Undo) && std::abs(volumeOf(3)) < 1e-6 && std::abs(volumeOf(4) + 9) < 1e-6,
           "one Undo takes both back");
+    // AU-04: the right button opens the fader's menu and moves nothing (JUCE's Slider would drag on it).
+    {
+        root.frame();
+        const auto value = three->volume.getValue();
+        const auto ops = opCount();
+        const juce::ModifierKeys right(juce::ModifierKeys::rightButtonModifier);
+        const auto centre = three->volume.getLocalBounds().getCentre().toFloat();
+        three->volume.mouseDown(pressAt(three->volume, centre, right));
+        three->volume.mouseDrag(dragAt(three->volume, centre, centre.translated(0, -40), right));
+        three->volume.mouseUp(dragAt(three->volume, centre, centre.translated(0, -40), right));
+        root.frame();
+        check(three->volume.getValue() == value && !document->mixerDragging() && opCount() == ops &&
+                  std::abs(volumeOf(4) + 9) < 1e-6,
+              "a right-button drag on the fader moves nothing and writes nothing");
+        juce::PopupMenu::dismissAllActiveMenus();
+    }
     sel.track = sel.toTrack = 0;
     root.frame();
     // Esc while dragging puts the value back, and the release commits nothing.

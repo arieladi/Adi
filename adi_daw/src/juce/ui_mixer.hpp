@@ -32,6 +32,27 @@ class SoloButton final : public juce::TextButton {
 };
 // Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
 // it has clipped. A click resets it.
+// A mixer control the left button moves; the right one opens the strip's menu for it and moves nothing (AU-04):
+// JUCE's Slider starts a drag on any button when its own menu is off.
+class PrimaryButtonSlider final : public juce::Slider {
+  public:
+    void mouseDown(const juce::MouseEvent &e) override {
+        if (!e.mods.isPopupMenu())
+            juce::Slider::mouseDown(e);
+    }
+    void mouseDrag(const juce::MouseEvent &e) override {
+        if (!e.mods.isPopupMenu())
+            juce::Slider::mouseDrag(e);
+    }
+    void mouseUp(const juce::MouseEvent &e) override {
+        if (!e.mods.isPopupMenu())
+            juce::Slider::mouseUp(e);
+    }
+    void mouseDoubleClick(const juce::MouseEvent &e) override {
+        if (!e.mods.isPopupMenu())
+            juce::Slider::mouseDoubleClick(e);
+    }
+};
 class PeakHold final : public juce::Button {
   public:
     PeakHold();
@@ -77,7 +98,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Finds the engine's meter for the track again (MixerPanel::meter): on binding, on every
     // refresh, and when the panel is asked to (MixerPanel::resolveMeters).
     void resolveMeter();
-    juce::Slider volume, pan;
+    PrimaryButtonSlider volume, pan;
     // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
     // the row after the sends in the track controls, and as the section under the mixer in the
@@ -167,6 +188,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // The Mixer View strip's meter, under its fader.
     juce::Rectangle<int> meterArea() const noexcept;
     void panMenu();
+    void volumeMenu();
     void sendMenu(std::size_t index);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
     // Live's MIDI meter on a track with no instrument, at the head of the meter's column.

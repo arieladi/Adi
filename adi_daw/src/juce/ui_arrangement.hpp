@@ -471,7 +471,9 @@ class ArrangementView final : public juce::Component {
     bool selectAll();
     void locate();
     // Live's right-click menu for the track area and the headers.
-    void contextMenu(juce::Point<int> where, bool header);
+    // The lanes' or a header's menu at `where`. `lane`: in Automation Mode, the envelope under the click, whose
+    // Re-Enable Automation the lanes' menu ends with (AU-04).
+    void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr);
     // A track header's menu: Insert Audio and MIDI Track; with a track selected, Rename, Delete, Group
     // and Ungroup, then Live's colour chooser (Live 12 manual 2.3.2), and on a group Assign Track
     // Color to Grouped Tracks and Clips (manual 18.3).
