@@ -106,6 +106,7 @@ bool DeviceHost::rebuildModel(const rows::Model& model, engine::NodePreparePolic
     opts.sendTailFor = spec_.sendTailFor;
     opts.feedbackFor = spec_.feedbackFor;
     opts.eventSourceFor = spec_.eventSourceFor;
+    opts.fixedLatencyFor = spec_.fixedLatencyFor;
 
     if (!host_->rebuild(model, opts, spec_.sampleRate, spec_.maxFrames, spec_.transformPlan,
                         spec_.transportState, preparation)) {

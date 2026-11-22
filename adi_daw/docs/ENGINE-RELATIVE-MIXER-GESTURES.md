@@ -35,8 +35,14 @@ Additional producer-level cases cover all eight mappings, control floors and
 ceilings, absent split-pan rows, invalid inputs/domains and retargeted routes;
 those raw Proposals alone are not sealed journal admission.
 
-This is the MX-23 relative-selection engine slice. Window bindings, Track Delay
-preview (currently a graph-rebuild operation), SRF-02's unbracketed quiet-window
-owner and AU-03's armed recording-pass coordinator remain separate work. This
-API does not create a timer, recorder, automation point, control/MCP field or DSP
-implementation, and is not a claim that those full requirements are delivered.
+Track Delay uses the same single and relative producers with
+`ScalarKind::TrackDelay` and begins with `Strategy::Structural`. Supply signed
+samples at the project rate. For a relative drag, the control domain spans up
+to one second on each side. The producer rounds the absolute values to whole
+samples and preserves the original offsets across the selection. A Value
+prepares compensation for the strip and its Post sends and cue path while
+retaining the current clip readers and loaded plug-ins. End commits the
+ordinary `mixer.setDelay` operations together. Esc restores the authored delay.
+Track Delay previews require Delay Compensation to be on.
+
+Window binding and AU-03's armed recording-pass integration remain open.

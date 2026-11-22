@@ -916,7 +916,7 @@ public:
     /// Adds a node and returns its id. The graph does not own it; nodes outlive
     /// the graph, because ADR-0042's decision 5 says a device change must not
     /// disturb the project and the project is where nodes come from.
-    NodeId addNode(Node& node);
+    NodeId addNode(Node& node, std::optional<std::int32_t> fixedLatency = std::nullopt);
     // Owner preflight on a newly constructed graph. No node prepare, SDK calls,
     // buffers or publication; reuse the same topology authority as prepare.
     [[nodiscard]] bool validateTopology() { error_.clear(); return topoSort(); }
@@ -1235,6 +1235,11 @@ private:
     void* workerInitializationContext_=nullptr;
     struct Slot {
         Node* node = nullptr;
+        std::optional<std::int32_t> fixedLatency;
+        [[nodiscard]] std::int32_t latency() const noexcept {
+            if (fixedLatency) return *fixedLatency;
+            return node ? node->latencySamples() : 0;
+        }
         EventSourceBinding eventSource;
         bool explicitEventSource = false;
         std::uint64_t preparationRevision = 0;

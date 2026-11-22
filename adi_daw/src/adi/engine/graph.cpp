@@ -27,9 +27,10 @@ std::uint32_t Graph::renderWorkerCount() const noexcept{return static_cast<std::
 // Construction
 // ---------------------------------------------------------------------------
 
-NodeId Graph::addNode(Node& node) {
+NodeId Graph::addNode(Node& node, std::optional<std::int32_t> fixedLatency) {
     slots_.push_back(Slot{});
     slots_.back().node = &node;
+    slots_.back().fixedLatency = fixedLatency;
     prepared_ = false;
     return static_cast<NodeId>(slots_.size() - 1);
 }
@@ -695,7 +696,7 @@ void Graph::computeCompensation() {
         for (NodeId in : s.inputs) {
             const Slot& u = slots_[static_cast<std::size_t>(in)];
             const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
-                (u.node != nullptr ? u.node->latencySamples() : 0);
+                u.latency();
             if (ready > latest) latest = ready;
         }
         // ADR-0058 decision 5: a sidechain is compensated WITH the rest, not
@@ -704,7 +705,7 @@ void Graph::computeCompensation() {
         for (NodeId in : s.sidechains) {
             const Slot& u = slots_[static_cast<std::size_t>(in)];
             const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
-                (u.node != nullptr ? u.node->latencySamples() : 0);
+                u.latency();
             if (ready > latest) latest = ready;
         }
         s.arrival = static_cast<std::int32_t>(latest);
@@ -713,11 +714,11 @@ void Graph::computeCompensation() {
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
         s.inDelays.resize(s.inputs.size());
-        if (s.hasBypass) prepareLine(s.dryDelay, s.node->latencySamples());
+        if (s.hasBypass) prepareLine(s.dryDelay, s.latency());
         for (std::size_t k = 0; k < s.inputs.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
-                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+                u.arrival + u.latency();
             if (!delayCompensation_ || loopEdge(u.node, s.node)) {
                 // No ring at all, not even the headroom: it never delays,
                 // so a retap that tried to move it would be refused.
@@ -731,7 +732,7 @@ void Graph::computeCompensation() {
         for (std::size_t k = 0; k < s.sidechains.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
             const std::int32_t ready =
-                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+                u.arrival + u.latency();
             const std::int32_t d = delayCompensation_ ? s.arrival - ready : 0;
             if(delayCompensation_)prepareLine(s.sideDelays[k],d);
             else {
@@ -749,12 +750,12 @@ void Graph::computeCompensation() {
     if (slotArrival_.size() != slots_.size())
         slotArrival_ = std::vector<std::atomic<std::int32_t>>(slots_.size());
     for (std::size_t i = 0; i < slots_.size(); ++i) {
-        slotLatency_[i].store(slots_[i].node != nullptr ? slots_[i].node->latencySamples() : 0,
+        slotLatency_[i].store(slots_[i].latency(),
                               std::memory_order_relaxed);
         slotArrival_[i].store(slots_[i].arrival, std::memory_order_relaxed);
     }
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
-    graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
+    graphLatency_.store(out.arrival + out.latency(),
                         std::memory_order_release);
     preparePdcStorage();
 }
@@ -785,7 +786,7 @@ void Graph::preparePdcStorage() {
 bool Graph::computePdcOwner() noexcept {
     const auto n=slots_.size();
     // Main-thread-only SDK calls: one answer per node for the complete plan.
-    for(std::size_t i=0;i<n;++i)pdcOwner_[i]=slots_[i].node?slots_[i].node->latencySamples():0;
+    for(std::size_t i=0;i<n;++i)pdcOwner_[i]=slots_[i].latency();
     bool allFit = true;
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];

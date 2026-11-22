@@ -12,7 +12,7 @@ namespace adi::gesture {
 /// the same evaluator/admission/inverse path, not test-only virtual producers.
 enum class ScalarKind {
     TrackVolume, TrackPan, TrackPanLeft, TrackPanRight, TrackInputGain,
-    RoutingGain, RoutingPan, GroupSummingDrive
+    RoutingGain, RoutingPan, GroupSummingDrive, TrackDelay
 };
 struct ScalarTarget { ScalarKind kind; std::int64_t id; };
 class ScalarInput final : public Input {
@@ -26,6 +26,8 @@ public:
 /// No plug-in parameter path here: ParamOps owns that capture/runtime protocol.
 /// Existing mixer.setWidth has no playback consumer and is UnsupportedPreview;
 /// this item does not invent a new width DSP implementation.
+/// TrackDelay uses signed project samples, rounded once to whole samples.
+/// Begin it with Strategy::Structural to preview a prepared compensation graph.
 std::unique_ptr<Producer> scalarProducer(ScalarTarget);
 
 /// The existing control's coordinate range, copied once at Begin. A gain
@@ -54,7 +56,7 @@ class RelativeScalarInput final : public Input {
 /// kinds. The caller supplies control metadata and latest absolute coordinate,
 /// never per-target values, SQL, live selection or incremental preview deltas.
 /// Reuses scalarProducer's exact capture/admission/operations and the common
-/// gesture lifecycle. No new timer, automation recording pass or Delay preview.
+/// gesture lifecycle. TrackDelay uses the structural strategy for the batch.
 std::unique_ptr<Producer> relativeScalarProducer(RelativeScalarSelection);
 enum class TrackSwitchKind { Activation, Solo };
 struct TrackSwitchTarget {
