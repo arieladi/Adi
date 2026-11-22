@@ -21,7 +21,7 @@ Time. Beat Repeat and External Audio Effect are left out of the count; they are 
   - This seat starts Amp now, on its own branch, and stops there if the answer is no.
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 41 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 42 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -197,6 +197,10 @@ method); Live's files and renders stay in the director's research.
 41. **Pedal (built after 3 December).** A fresh Pedal, every control as shown. A 220 Hz sine at
     −10 dBFS for each Type at Gain 0, 50 and 100 %: the first nine harmonics, and the output level. A
     −60 dBFS sweep from 30 Hz to 10 kHz with Sub off and on: the response.
+42. **Roar (built after 3 December).** A fresh Roar, every control as shown: the routings, the shape
+    list, each stage's filter types, the feedback section, the compressor and the modulation matrix.
+    A 220 Hz sine at −10 dBFS through each shape at Amount 0, 50 and 100 %: the first nine harmonics.
+    Multiband with flat stages on pink noise: does it sum flat?
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -211,6 +215,45 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — Roar (DEV-22); the fourth review: Grain Delay and Pedal, four findings fixed
+
+**PR requested:** head `devices/roar` (0ac41161), base `main`, after `devices/live-pedal`. It stops
+here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - Three shaper stages in five routings: Single, Serial, Parallel, Mid Side, and Multiband (LR4 bands
+    that sum flat).
+  - Each stage: a shape (six, each with slope 1 at 0 except the crusher), Amount, a Bias with its DC
+    blocked, a filter and a level.
+  - Input, a bounded feedback path, Output and Dry/Wet.
+  - A change of routing restarts the stages.
+- **Not built:** Roar's compressor and modulation matrix.
+- **Tests:**
+  - `adi_roar_tests` 19. Four routings follow their documented structure within 0.05 dB, Mid Side's
+    side goes through stage 2, and Multiband with flat stages sums flat.
+  - The feedback loop matches its closed form. The shapes check out, and a bias makes a second
+    harmonic.
+  - A routing change does not replay an idle stage (a plant fails). Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 44 built-ins.
+- **Reading 42, added to the ONE list.**
+
+**The fourth review** covered Grain Delay and Pedal (three skeptics each) and confirmed four findings:
+- **`devices/grain-delay` (c50bd30a).**
+  - **Fast grains read past the write head**, down to −19,195 samples. The clamp counted the
+    excursion twice, and the line ignored Random Pitch. The line now holds 7.6 s, and the clamp is
+    correct. `lowestDelay()` is at least 1 in six extreme settings.
+  - **A Frequency move rescaled running grains:** clicks, and up to twice the level. A new grain now
+    rises over its predecessor's fall, so a constant input stays at 1 within 1e-6 through five
+    moves.
+- **`devices/live-pedal` (41d658de).**
+  - **Gain, Output and Dry/Wet stepped at once.** They now glide over 10 ms.
+  - **A Type change thumped.** The voices now crossfade over 200 ms. All four new checks fail on the
+    old core.
+
+**A lane-wide follow-up, taken next.** Pedal's review found gain controls applied as instant steps.
+Amp, Cabinet, Corpus, Drum Buss, Dynamic Tube, Roar and the earlier post-3-December cores are built
+the same way, so they need the same glide on their gain, output and mix controls, and the same test.
 
 ## 2026-11-22 — the third review: fourteen findings in Amp to Dynamic Tube, all fixed
 
