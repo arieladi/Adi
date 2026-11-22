@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The `.amxd` translator, steps 1 and 2 -- DEV-16 (ADR-0203 d8: an addition at P2).
+// The `.amxd` translator, steps 1 to 5 -- DEV-16 (ADR-0203 d8: an addition at P2).
 //
 // A Max for Live device file is a small chunked container -- `ampf` with the
 // device kind, `meta`, then `ptch` holding the Max patcher as JSON -- and the
@@ -33,10 +33,17 @@
 //     the feedback SUBTRACTED) become Pd's fb1 fb2 ff1 ff2 ff3 (ADDED): a
 //     coefficient list is reordered and its b's negated on the way in.
 //     live.text (toggle mode), live.menu and live.tab are parameters too.
+//   * BPATCHERS (step 5). One whose patcher is embedded becomes a [pd name]
+//     as a [p] does; Max replaces #1 to #9 in its boxes by its arguments and
+//     #0 by a name unique to the instance, and so does the translation (#0
+//     as $0-bp-<its path>, so two instances never share a send). Its [p]s
+//     take the same arguments; a bpatcher inside it takes its own. A # with
+//     no argument is refused rather than guessed, as is a bpatcher naming a
+//     patcher file outside the device.
 // Refused, for later steps: [cycle~]'s phase inlet (an offset in Max, a reset
 // in Pd), [line~]'s ramp-time inlet and end bang, float modulo, signal-rate
-// biquad~ coefficients and slide~ times, live.text's button mode, bpatchers,
-// MIDI devices and instruments; and
+// biquad~ coefficients and slide~ times, live.text's button mode, bpatchers
+// of a file outside the device, MIDI devices and instruments; and
 // not read at all: frozen devices (`mx@c`) and Live's own encrypted devices
 // (`ciph`).
 //

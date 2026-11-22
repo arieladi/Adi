@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <set>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <map>
@@ -69,7 +70,25 @@ struct Box {
     double x = 0, y = 0;
     std::vector<bool> signalOutlet;
     json raw;
+    /// Why the box's #-arguments could not be replaced; empty when they were.
+    std::string unreplaced;
 };
+
+/// What a bpatcher gives the patcher inside it (and that patcher's own [p]
+/// subpatchers): its arguments for #1 to #9, and for #0 a name that belongs
+/// to this one instance, under the device's $0.
+struct Substitution {
+    bool active = false;
+    std::vector<std::string> args;
+    std::string instance;
+};
+
+/// A name usable as a Pd canvas name or inside a send name.
+std::string plainName(std::string s) {
+    for (char& c : s)
+        if (!(std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '-' || c == '.')) c = '_';
+    return s;
+}
 
 struct Line {
     std::string src, dst;
@@ -106,8 +125,9 @@ bool isIntLiteral(const std::string& s) { return isNumber(s) && !isFloatLiteral(
 /// One Max patcher -- the device's, or a subpatcher's -- as one Pd canvas.
 class Canvas {
 public:
-    Canvas(AmxdTranslation& out, std::string prefix, std::set<int> signalInlets, int depth)
-        : out_(out), prefix_(std::move(prefix)), signalInlets_(std::move(signalInlets)), depth_(depth) {}
+    Canvas(AmxdTranslation& out, std::string prefix, std::set<int> signalInlets, int depth, Substitution sub = {})
+        : out_(out), prefix_(std::move(prefix)), signalInlets_(std::move(signalInlets)), depth_(depth),
+          sub_(std::move(sub)) {}
 
     /// False when the patcher could not be read; refusals go to `out`.
     bool read(const json& patcher) {
@@ -120,6 +140,8 @@ public:
                 box.maxClass = b.value("maxclass", "");
                 box.text = b.value("text", "");
                 box.raw = b;
+                if (sub_.active && (box.maxClass == "newobj" || box.maxClass == "message"))
+                    box.unreplaced = replaceArguments(box.text, box.maxClass == "newobj");
                 if (b.contains("patching_rect") && b["patching_rect"].is_array() &&
                     b["patching_rect"].size() >= 2) {
                     box.x = b["patching_rect"][0].get<double>();
@@ -239,7 +261,42 @@ public:
 
 private:
     static bool isSubpatcher(const Box& b) {
-        return b.maxClass == "newobj" && !b.words.empty() && (b.words[0] == "p" || b.words[0] == "patcher");
+        return (b.maxClass == "newobj" && !b.words.empty() && (b.words[0] == "p" || b.words[0] == "patcher")) ||
+               (b.maxClass == "bpatcher" && embedded(b));
+    }
+
+    static bool embedded(const Box& b) {
+        if (!b.raw.contains("embed")) return false;
+        const json& e = b.raw["embed"];
+        return (e.is_number() && e.get<double>() != 0) || (e.is_boolean() && e.get<bool>());
+    }
+
+    /// Replaces #0 to #9 in a box's text as Max does when a bpatcher's patcher
+    /// is loaded: #n by the bpatcher's n-th argument, #0 by the instance's own
+    /// name (written as Pd's $0, escaped in an object box's text). Returns why
+    /// it could not, or nothing.
+    std::string replaceArguments(std::string& text, bool objectBox) const {
+        std::string out;
+        for (std::size_t i = 0; i < text.size(); ++i) {
+            const bool hash = text[i] == '#' && i + 1 < text.size() &&
+                              std::isdigit(static_cast<unsigned char>(text[i + 1])) != 0;
+            if (!hash) {
+                out += text[i];
+                continue;
+            }
+            const auto n = static_cast<std::size_t>(text[i + 1] - '0');
+            if (n == 0) {
+                out += std::string(objectBox ? "\\$0-" : "$0-") + sub_.instance;
+            } else if (n <= sub_.args.size()) {
+                out += sub_.args[n - 1];
+            } else {
+                return "#" + std::to_string(n) + " has no argument: the bpatcher gives " +
+                       std::to_string(sub_.args.size());
+            }
+            ++i;
+        }
+        text = std::move(out);
+        return {};
     }
 
     std::vector<std::string> sortedByX(const char* cls) const {
@@ -285,7 +342,11 @@ private:
                            [&](const Line& l) { return l.src == b.id || l.dst == b.id; });
     }
 
-    void single(const Box& b, const std::string& record) { frags_[b.id] = Fragment{{record}, {}, {}, {}}; }
+    void single(const Box& b, const std::string& record) {
+        Fragment f;
+        f.records = {record};
+        frags_[b.id] = std::move(f);
+    }
     void obj(const Box& b, const std::string& text) { single(b, "#X obj " + at(b.x, b.y) + " " + text); }
 
     /// A Max integer box: each listed inlet goes through [i] first; with
@@ -310,6 +371,8 @@ private:
 
     void translate(const Box& b) {
         const std::string& mc = b.maxClass;
+        if (!b.unreplaced.empty()) return refuse(b, b.words.empty() ? mc : b.words[0], b.unreplaced);
+        if (mc == "bpatcher") return bpatcher(b);
         if (mc == "comment" || mc == "live.comment") return single(b, "#X text " + at(b.x, b.y) + " " + pdEscape(b.text));
         if (mc == "panel" || mc == "fpic" || mc == "live.line") {
             if (anyConnection(b)) refuse(b, mc, "a decoration with connections");
@@ -686,11 +749,54 @@ private:
     void subpatcher(const Box& b) {
         if (!b.raw.contains("patcher") || !b.raw["patcher"].is_object())
             return refuse(b, b.words[0], "a subpatcher with no patcher in it");
-        if (depth_ + 1 > kPdWalkMaxDepth) return refuse(b, b.words[0], "nested too deep");
         std::string name;
         for (std::size_t k = 1; k < b.words.size(); ++k) name += (k > 1 ? "_" : "") + b.words[k];
         if (name.empty()) name = "subpatch";
-        Canvas child(out_, prefix_ + "p " + name + "/", signalInletsOf(b), depth_ + 1);
+        // A [p] shares its parent's arguments: inside a bpatcher, its #1 is the bpatcher's.
+        nest(b, b.words[0], name, "p " + name + "/", sub_);
+    }
+
+    /// A bpatcher whose patcher is embedded in the device becomes a [pd name]
+    /// like a [p], with its arguments and its #0 replaced in every box inside
+    /// (its own [p]s too); the view it shows changes nothing heard. One that
+    /// names a patcher file outside the device is refused: that file is not in
+    /// the .amxd.
+    void bpatcher(const Box& b) {
+        if (!embedded(b) || !b.raw.contains("patcher") || !b.raw["patcher"].is_object())
+            return refuse(b, "bpatcher", "its patcher is a file outside the device (not embedded)");
+        std::string name = b.raw.value("name", std::string());
+        if (name.size() > 7 && name.compare(name.size() - 7, 7, ".maxpat") == 0) name.resize(name.size() - 7);
+        name = plainName(name);
+        if (name.empty()) name = "bpatcher";
+        Substitution sub;
+        sub.active = true;
+        sub.instance = "bp-" + plainName(prefix_ + b.id);
+        if (b.raw.contains("args")) {
+            const json& a = b.raw["args"];
+            if (!a.is_array()) return refuse(b, "bpatcher", "its arguments are not a list");
+            for (const auto& v : a) {
+                if (v.is_number_integer()) {
+                    sub.args.push_back(std::to_string(v.get<long long>()));
+                } else if (v.is_number()) {
+                    // Max keeps a float argument a float ("2."), so [+ #1] stays the float form.
+                    std::string s = number(v.get<double>());
+                    if (!isFloatLiteral(s)) s += ".";
+                    sub.args.push_back(s);
+                } else if (v.is_string() && !v.get<std::string>().empty() &&
+                           v.get<std::string>().find_first_of(" \t\"$#") == std::string::npos) {
+                    sub.args.push_back(v.get<std::string>());
+                } else {
+                    return refuse(b, "bpatcher", "an argument that is not a number or a plain word");
+                }
+            }
+        }
+        nest(b, "bpatcher", name, "bpatcher " + name + "/", sub);
+    }
+
+    void nest(const Box& b, const std::string& cls, const std::string& name, const std::string& path,
+              const Substitution& sub) {
+        if (depth_ + 1 > kPdWalkMaxDepth) return refuse(b, cls, "nested too deep");
+        Canvas child(out_, prefix_ + path, signalInletsOf(b), depth_ + 1, sub);
         if (!child.read(b.raw["patcher"])) return;
         const std::size_t before = out_.refused.size();
         const std::string inner = child.body();
@@ -758,6 +864,7 @@ private:
     std::string prefix_;
     std::set<int> signalInlets_;
     int depth_ = 0;
+    Substitution sub_;
     std::vector<Box> boxes_;
     std::vector<Line> lines_;
     std::map<std::string, std::size_t> index_;

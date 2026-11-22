@@ -17,12 +17,14 @@
 #include "juce/pd_engine.hpp"
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -210,6 +212,96 @@ void testWhatIsRefusedIsNamed() {
                                          AmxdKind::AudioEffect);
     check(sub.refused.size() == 1 && sub.refused[0].id == "p helper/obj-1",
           "a box inside [p helper] is named 'p helper/obj-1'");
+}
+
+/// A patcher's own object (what a [p] or a bpatcher holds), not the file's wrapper.
+std::string inside(const std::vector<std::string>& boxes, const std::vector<std::string>& lines) {
+    const std::string whole = patcher(boxes, lines);
+    return whole.substr(11, whole.size() - 12);   // drop {"patcher": and the last }
+}
+
+/// An embedded bpatcher (maxclass bpatcher, embed 1) holding `inner`, with its arguments.
+std::string bpatcherBox(const std::string& id, const std::string& name, const std::string& args, double x, double y,
+                        const std::string& outlets, const std::string& inner, bool embed = true) {
+    return box(id, "", x, y, outlets, "bpatcher",
+               R"(,"name":")" + name + R"(","embed":)" + (embed ? "1" : "0") + R"(,"args":[)" + args + "]" +
+                   (embed ? R"(,"patcher":)" + inner : std::string()));
+}
+
+/// inlet -> <text> -> outlet.
+std::string through(const std::string& text, const std::string& outlets) {
+    return inside({box("obj-1", "", 10, 10, R"("")", "inlet"), box("obj-2", text, 10, 50, outlets),
+                   box("obj-3", "", 10, 90, "", "outlet")},
+                  {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0)});
+}
+
+/// plugin~ -> a bpatcher (each side, its own arguments) -> plugout~.
+std::string bpatcherDevice(const std::string& inner, const std::string& argsL, const std::string& argsR) {
+    return patcher({box("obj-1", "plugin~", 20, 20, kSig2), bpatcherBox("obj-2", "gain.maxpat", argsL, 20, 80, kSig, inner),
+                    bpatcherBox("obj-3", "gain.maxpat", argsR, 120, 80, kSig, inner),
+                    box("obj-4", "plugout~", 20, 140, "")},
+                   {line("obj-1", 0, "obj-2", 0), line("obj-1", 1, "obj-3", 0), line("obj-2", 0, "obj-4", 0),
+                    line("obj-3", 0, "obj-4", 1)});
+}
+
+void testBpatchersTranslate() {
+    section("DEV-16 step 5 -- an embedded bpatcher becomes [pd name], its #1 to #9 and #0 replaced as Max does");
+    const auto t = translateMaxPatcher(bpatcherDevice(through("*~ #1", kSig), "0.5", "0.25"), AmxdKind::AudioEffect);
+    check(t.ok() && t.pdPatch.find("#X obj 10 50 *~ 0.5;") != std::string::npos &&
+              t.pdPatch.find("#X obj 10 50 *~ 0.25;") != std::string::npos &&
+              t.pdPatch.find("#X restore 20 80 pd gain;") != std::string::npos &&
+              t.pdPatch.find("#X obj 10 10 inlet~;") != std::string::npos,
+          "[*~ #1] in two instances with arguments 0.5 and 0.25: [*~ 0.5] and [*~ 0.25], each a [pd gain] "
+          "with signal ports");
+    // A [p] inside a bpatcher takes the bpatcher's arguments; a bpatcher
+    // inside it takes its own.
+    const std::string withP = inside({box("obj-1", "", 10, 10, R"("")", "inlet"),
+                                      box("obj-2", "p deeper", 10, 50, kSig, "newobj", R"(,"patcher":)" + through("*~ #1", kSig)),
+                                      box("obj-3", "", 10, 90, "", "outlet")},
+                                     {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0)});
+    const auto p = translateMaxPatcher(bpatcherDevice(withP, "0.5", "0.5"), AmxdKind::AudioEffect);
+    check(p.ok() && p.pdPatch.find("*~ 0.5;") != std::string::npos && p.pdPatch.find("#1") == std::string::npos,
+          "a [p] inside a bpatcher replaces #1 with the bpatcher's argument");
+    const std::string nested =
+        inside({box("obj-1", "", 10, 10, R"("")", "inlet"), box("obj-2", "*~ #1", 10, 40, kSig),
+                bpatcherBox("obj-3", "inner.maxpat", "0.25", 10, 70, kSig, through("*~ #1", kSig)),
+                box("obj-4", "", 10, 100, "", "outlet")},
+               {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0), line("obj-3", 0, "obj-4", 0)});
+    const auto n = translateMaxPatcher(bpatcherDevice(nested, "0.5", "0.5"), AmxdKind::AudioEffect);
+    check(n.ok() && n.pdPatch.find("#X obj 10 40 *~ 0.5;") != std::string::npos &&
+              n.pdPatch.find("#X obj 10 50 *~ 0.25;") != std::string::npos,
+          "a bpatcher inside a bpatcher replaces #1 with its own argument");
+    // #0: one name per instance, under the device's $0.
+    const auto z = translateMaxPatcher(bpatcherDevice(through("s #0-v", R"("")"), "", ""), AmxdKind::AudioEffect);
+    check(z.ok() && z.pdPatch.find("s \\$0-bp-obj-2-v;") != std::string::npos &&
+              z.pdPatch.find("s \\$0-bp-obj-3-v;") != std::string::npos,
+          "[s #0-v] in two instances: [s $0-bp-obj-2-v] and [s $0-bp-obj-3-v]");
+    const auto m = translateMaxPatcher(
+        patcher({bpatcherBox("obj-2", "msg.maxpat", "7", 10, 10, R"("")",
+                             inside({box("obj-1", "#1 #0", 10, 10, R"("")", "message")}, {}))},
+                {}),
+        AmxdKind::AudioEffect);
+    check(m.ok() && m.pdPatch.find("#X msg 10 10 7 \\$0-bp-obj-2;") != std::string::npos,
+          "and in a message box: [7 $0-bp-obj-2(");
+    // Refused, with the path and the reason.
+    const auto missing = translateMaxPatcher(bpatcherDevice(through("*~ #2", kSig), "0.5", "0.5"), AmxdKind::AudioEffect);
+    check(!missing.ok() && missing.refused.size() == 2 && missing.refused[0].id == "bpatcher gain/obj-2" &&
+              missing.refused[0].reason.find("#2 has no argument") != std::string::npos,
+          "#2 with one argument is refused, not guessed: 'bpatcher gain/obj-2'" +
+              (missing.refused.empty() ? std::string() : " (" + missing.refused[0].reason + ")"));
+    const auto file = translateMaxPatcher(
+        patcher({box("obj-1", "plugin~", 20, 20, kSig2), bpatcherBox("obj-2", "elsewhere.maxpat", "", 20, 80, kSig, "", false),
+                 box("obj-4", "plugout~", 20, 140, "")},
+                {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-4", 0)}),
+        AmxdKind::AudioEffect);
+    check(!file.ok() && file.refused.size() == 1 && file.refused[0].id == "obj-2" &&
+              file.refused[0].maxClass == "bpatcher" &&
+              file.refused[0].reason.find("outside the device") != std::string::npos,
+          "a bpatcher of a patcher file outside the device is refused, named");
+    const auto oddArg = translateMaxPatcher(bpatcherDevice(through("*~ #1", kSig), R"("two words")", "0.5"),
+                                            AmxdKind::AudioEffect);
+    check(!oddArg.ok() && !oddArg.refused.empty() && oddArg.refused[0].id == "obj-2",
+          "an argument with a space in it is refused");
 }
 
 #if defined(ADI_WITH_PD)
@@ -509,6 +601,63 @@ void testStepFourSignals() {
           "and its arguments a0 a1 a2 b1 b2 become Pd's fb1 fb2 ff1 ff2 ff3 = -b1 -b2 a0 a1 a2");
 }
 
+void testBpatchersPlay() {
+    section("DEV-16 step 5 -- bpatchers walk, open and play as Max's do");
+    std::string slurped;
+    {
+        std::ifstream f(std::filesystem::path(ADI_PD_PATCH_DIR) / "adi.param.pd", std::ios::binary);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        slurped = ss.str();
+    }
+    const PdVocabulary vocab(PdRuntime::creatableClasses());
+    const PdAbstractions abs{{"adi.param.pd", slurped}};
+    for (const float g : {0.5f, 0.25f}) {
+        const auto t = translateAmxd(amxd(bpatcherDevice(through("*~ #1", kSig), g == 0.5f ? "0.5" : "0.25", "1")));
+        check(t.ok() && walkPdObjects(t.pdPatch, abs, vocab).allowed(),
+              "a gain bpatcher with argument " + std::to_string(g) + ": translated and walks clean");
+        float gain = 0;
+        int latency = -1;
+        std::string error;
+        const auto residue = render(t.pdPatch, gain, latency, error);
+        double worst = 0;
+        for (float r : residue) worst = std::max(worst, std::fabs(static_cast<double>(r)));
+        check(error.empty() && !residue.empty() && std::fabs(gain - g) < 1e-6 && worst < 1e-6,
+              "and plays input x " + std::to_string(gain) + " (worst residue " + std::to_string(worst) + ")" + error);
+    }
+    // #0 is the instance's own: two bpatchers that send to [r #0-v] each hear
+    // only themselves, so 1 and 2 come out once each (shared, each twice).
+    const std::string store = inside({box("obj-1", "", 10, 10, R"("")", "inlet"), box("obj-2", "s #0-v", 10, 50, ""),
+                                      box("obj-3", "r #0-v", 100, 10, R"("")"), box("obj-4", "", 100, 90, "", "outlet")},
+                                     {line("obj-1", 0, "obj-2", 0), line("obj-3", 0, "obj-4", 0)});
+    const auto own = translateMaxPatcher(
+        patcher({box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "1", 10, 40, R"("")", "message"),
+                 bpatcherBox("obj-3", "store.maxpat", "", 10, 80, R"("")", store), box("obj-4", "print X", 10, 140, ""),
+                 box("obj-5", "loadbang", 200, 10, R"("bang")"), box("obj-6", "2", 200, 40, R"("")", "message"),
+                 bpatcherBox("obj-7", "store.maxpat", "", 200, 80, R"("")", store), box("obj-8", "print X", 200, 140, "")},
+                {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0), line("obj-3", 0, "obj-4", 0),
+                 line("obj-5", 0, "obj-6", 0), line("obj-6", 0, "obj-7", 0), line("obj-7", 0, "obj-8", 0)}),
+        AmxdKind::AudioEffect);
+    auto heard = own.ok() ? printed(own.pdPatch) : std::vector<std::string>{"refused"};
+    std::sort(heard.begin(), heard.end());
+    std::string shown;
+    for (const auto& h : heard) shown += (shown.empty() ? "" : " | ") + h;
+    check(heard == std::vector<std::string>{"X: 1", "X: 2"}, "two instances' [s #0-v] -> [r #0-v] stay apart: " + shown);
+    // A float argument stays a float, as in Max: [+ #1] with 2. is the float form.
+    const std::vector<std::pair<std::string, std::string>> floats{{"2.0", "X: 2.5"}, {"2", "X: 2"}};
+    for (const auto& [arg, expect] : floats) {
+        const auto a = translateMaxPatcher(
+            patcher({box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "0.5", 10, 40, R"("")", "message"),
+                     bpatcherBox("obj-3", "add.maxpat", arg, 10, 80, R"("")", through("+ #1", R"("")")),
+                     box("obj-4", "print X", 10, 140, "")},
+                    {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0), line("obj-3", 0, "obj-4", 0)}),
+            AmxdKind::AudioEffect);
+        const auto got = a.ok() ? printed(a.pdPatch) : std::vector<std::string>{"refused"};
+        check(got == std::vector<std::string>{expect},
+              "[+ #1] with argument " + arg + " fed 0.5 prints " + (got.empty() ? std::string("nothing") : got[0]));
+    }
+}
+
 void testTheOrderIsHeard() {
     section("DEV-16 -- and the right-to-left order is what Pd does");
     const auto t = translateMaxPatcher(
@@ -540,6 +689,7 @@ int main() {
     testMoreLiveControls();
     testRightToLeftIsMadeExplicit();
     testWhatIsRefusedIsNamed();
+    testBpatchersTranslate();
 #if defined(ADI_WITH_PD)
     testTranslationsWalkAndPlay();
     testTheOrderIsHeard();
@@ -548,6 +698,7 @@ int main() {
     testLineSegmentsAreChained();
     testStepFourControls();
     testStepFourSignals();
+    testBpatchersPlay();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;
