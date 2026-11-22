@@ -258,9 +258,9 @@ void loopAndTailRenders() {
         converted.nameTemplate = "fixed-tail-soxr";
         converted.deliveries.clear();
         converted.tail = {TailMode::Fixed, 2};
-        const auto fixed = renderWav(converted, echo);
-        check(fixed.state == JobState::Completed && fixed.framesWritten == 85,
-              fixed.error.empty() ? "a fixed tail adds exactly 64 frames at 32 kHz" : fixed.error.c_str());
+        const auto fixedDelivery = renderWav(converted, echo);
+        check(fixedDelivery.state == JobState::Completed && fixedDelivery.framesWritten == 85,
+              fixedDelivery.error.empty() ? "a fixed tail adds exactly 64 frames at 32 kHz" : fixedDelivery.error.c_str());
     }
 
     job.nameTemplate = "until-maximum";
