@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Crush preserves physical levels when the resolution changes
+
+`clones/shaper-crush-resolution` at `77f4ec0a` — Preserve each bit resolution across a Crush threshold crossing. This fixes the current stage on main. The old core returned 0.07724228 on the first independent stereo marker against 0.08445889 measured. Across the nine transition fixtures, the worst RMS fell from 0.032832 to 0.00000166. All 589,824 stationary stereo frames in a separate binary comparison retained their exact samples. The rack, Crush and registered native/edited-Pd suites passed under MSVC /W4 /WX at both precisions.
+
+On the registered stereo kick and bass with a linear bit curve, the per-channel error fell from 0.002342/0.002475 to 0.000231/0.000499 at both 256 and 2,048 frames. Median callback times in the first pass were 27.0 and 223.0 µs versus 36.4 and 221.8 µs for the reference. Six additional order-balanced 2,048-frame runs gave median callback times of 208.4 µs before the fix, 225.8 µs after it and 346.3 µs for the reference. Their median p99s were 1,870.6, 1,461.2 and 4,983.1 µs. They missed 51, 61 and 128 deadlines respectively in 61,440 callbacks each. Every capture reproduced its stored stereo waveform. Full-rate transitions and fixed controls retain zero reported latency. The eight-step rack approximation has larger corner errors than the direct core comparison.
+
+All 873 seven-stage programs were rendered through both kernels. The count below 0.001 stereo RMS remained 17. On the weighted device, 45 original programs have moving bit contours. In source stage order six errors fell, five rose and 34 stayed within 0.000001 RMS. Of five movers in the earlier 81-program regression group, three improved and two were within tolerance. All 25 cases overlapping a previous bias, Sweep or Room addition reproduced their prior centered-build input to the comparison. The 828 stationary or inactive cases preserve 42 of 873 below threshold in the source-order pipeline and 40 in weighted fixed order. Neither conditional count changed. For the eventual bias merge, keep each endpoint's physical level in both the audio calculation and the dither-only subtraction.
+
+PR requested
+
 ## 22 November 2026 — The Crush treble control
 
 Nineteen of the 873 rendered programs use a reduced treble setting on an audible Crush band. One is among the 81 prior regressions. The reference passes the low frequencies and attenuates the highs as bit resolution or hold rate drops. If normalized bit height is B, hold-rate height H and treble T, the high-frequency gain is T + (1−T)BH. A first-order bilinear low-pass at 350 Hz separates the low component. At full treble the band passes its existing processed signal. The shelf follows the sample hold and precedes the measured 10 Hz DC filter.
