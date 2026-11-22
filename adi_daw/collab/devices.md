@@ -231,6 +231,69 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the sixth review: the overlap-add Auto Shift was wrong; rebuilt as a spliced delay line. The detector's stall fixed
+
+The review of e387e86e found eight faults, every one confirmed by all three skeptics with their own probe
+builds. The overlap-add design itself was wrong.
+- **A pure tone shifted lost its level or did not shift at all.** Grains cut from a sine on its own
+  period grid cancelled each other shifted up: −6 dB at +7, silence from +12 to +24. An octave or more
+  down, the tone came back unshifted, only delayed. The +12 check passed on a peak 40 dB down, because
+  it checked only where the peak was.
+- **Wet and dry did not line up.** The wet signal sat up to half a period off the dry one, so Dry/Wet
+  combed: 100 Hz at −125 dB.
+- **Readings came too early.** Each one was applied 25 to 50 ms before the audio it was read from.
+- **A downward pitch step jumped.** With a Shift set it jumped 10 to 38 times the input's own step.
+  The step checks ran only at Shift 0, where this cannot show.
+- **The detector stalled the audio thread at every onset after silence.** Its fine search ran some
+  37,000 passes: 0.4 s at 48 kHz, 1.8 s at 96 kHz. The detector is the one the Tuner uses too.
+- **An absurd sample rate hung `prepare()`**, in the core and in the detector.
+
+**Fixed:**
+- **The detector**, on `devices/tuner` (d8c3fd89):
+  - the fine search is bounded at 16 passes of 16 steps, and a walk that leaves the coarse dip ends
+    the reading;
+  - a rate past any host's leaves it inert;
+  - `adi_tuner_tests` 35. Onsets after silence at 44.1, 48 and 96 kHz stay within the bound, and a
+    clean 440 Hz still reads within 0.1 cent. The old detector does not finish the new test: its
+    `prepare(1e300)` hangs.
+- **The core**, on `devices/auto-shift` (b50591ad), rebuilt as a delay line read at the shift's speed:
+  - When the read tap has drifted half a period from its centre, a second tap takes over a whole
+    number of detected periods away, crossfaded over half a period. A periodic input reads the same
+    waveform in both, so the splice is not heard.
+  - At a ratio of exactly 1 the tap never moves from the centre, so wet is dry, sample for sample.
+  - Readings wait in a queue until the tap is within half a hop of the middle of their window.
+  - The latency is fixed and reported: 4,432 samples at 48 kHz.
+  - `adi_auto_shift_tests` 97:
+    - 220 Hz at eleven Shifts from −24 to +24 comes out at 220 × the ratio, at 0.000 dB, with nothing
+      left at 220 Hz.
+    - A sawtooth an octave down keeps every harmonic's level.
+    - Dry/Wet 50 % at Shift 0 keeps the input's level, and the wet signal is the input one latency
+      late, exactly.
+    - 446 then 330 Hz, corrected, gives 440.0 up to the step's arrival and 329.63 after it.
+    - 48 jump checks pass. The worst uses 0.89 of its allowance.
+  - Four plants each fail: readings applied at once (444.8 Hz before the step), splices by 0.9 of a
+    period, no crossfade, and the tap half a sample off the centre. Two checks had first passed under
+    their plants. Both were tightened after a probe measured where the output's frequency actually
+    changes.
+- **Merged up the stack and pushed:** from `devices/erosion` through `devices/spectral-resonator`
+  (a478fe52).
+
+**The translator branches now include today's main.** On `devices/amxd-line-ends`,
+`adi_oneshot_pd_tests` failed six checks at PD_FLOATSIZE 64. It fails the same way on
+`devices/amxd-translator`: that branch was cut from an old main, before the OneShot fixes. Main is now
+merged into `devices/amxd-translator` (74aefaff), and from there up the chain to
+`devices/amxd-modulo-biquad` (22fd659f).
+
+**CTest:** `devices/spectral-resonator` at 57e5c9be (before this round) passed 295/295 at 32 and 64.
+Both new tops are running.
+
+**Next:** the translator audit. Four finders went through the translation table against Max's reference
+pages, with three skeptics per finding. They confirmed 28 differences that a patch would hear or show.
+Some are wrong defaults: a bare `[/~]` divides by 0 instead of 1, and `[t]` with no arguments gives
+bangs. Others are missing messages (`set`, `reset`, `clear`), out-of-range choices in `[gate]` and
+`[selector~]`, number-box limits, and `plugout~`'s channel arguments. Each is fixed, or refused with
+its reason, step by step.
+
 ## 2026-11-22 — DEV-16, step 8: Max's `%` is an integer modulo; `biquad~`'s smoothing is not ignored (P2)
 
 **PR requested:** head `devices/amxd-modulo-biquad` (0a1ea57b), base `main`, after
