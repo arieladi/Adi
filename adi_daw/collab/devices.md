@@ -128,6 +128,10 @@ method); Live's files and renders stay in the director's research.
     - Pink noise through each band at its extremes, and through the low cut: the response, to settle
       the corners, slopes and the bell's Q.
     - Whether the Mid band's Q changes with its gain.
+26. **EQ Three (built after 3 December).** A fresh EQ Three, every control as shown.
+    - Pink noise with each band killed in turn, at 24 and at 48 dB/oct: the response, to settle the
+      crossover family.
+    - The gain law near its low end.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -142,6 +146,21 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — standing queue item 18: EQ Three, core and device — lands after 3 December
+
+**PR requested:** head `devices/eq-three` (617cd9e4), base `main`, after item 17 (stacked).
+- **What it is.** Linkwitz-Riley crossovers, LR4 (24 dB/oct) or LR8 (48 dB/oct). The low band passes
+  the high crossover's allpass, so the three bands sum flat at unity. Each band has a gain from
+  −70 dB (silence) to +6 dB, and a kill.
+- **Tests:**
+  - `adi_eq_three_tests` 19: the flat sum within 0.01 dB at both slopes; kills and gains against a
+    complex model of the crossovers within 0.01 dB; the kill's depth; a plant without the allpass
+    fails;
+  - parity max error 0;
+  - the catalogue holds 29 built-ins.
+- **Reading 26, added to the ONE list:** a fresh EQ Three as shown. Pink noise with each band killed
+  at both slopes, to settle the crossover family. The gain law near −∞.
 
 ## 2026-11-22 — standing queue items 11, 12, 15 and 16: the LFO and Shaper kernels, Align Delay, Auto Pan-Tremolo; item 10's review fixed — all land after 3 December
 
