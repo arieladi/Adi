@@ -36,6 +36,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DF-E35(a) and CT-01 review, DF-E17 updated — PR requested
+
+- Reviewed engine-win's take projection at `430ea825` and literal EditScope at `4c2b07f3`. The snapshot keeps main readers on the main row and includes the lane in take-node reuse. Move, trim, resize and delete respect the literal take scope. Both seats agree that a same-track move keeps the lane and a cross-track move requires an explicit detach, move and attach in one journal transaction.
+- `engine/df-e17-edit-invariants-current` now fast-forwards to `4eda2b5bd134ef97ef4c2e4e89e7f84c68caa4e2`, stacked on the exact DF-E35(a) head for landing after it. The first joined run caught DF-E17's fixture looking for a linear take in the main row. The updated fixture checks its projected timing and lane identity on the take row and verifies its exclusion from main. The branch keeps all native move, duration and Undo controls.
+- Local three-way join `eb906e43` passed six strict Linux suites with GCC and Clang, 1,927 checks per compiler, including 434 clip edits, 680 EditScope and 553 UI seam checks. The OPS validator passed all 214 entries. Reviewed the five portability patterns. Win can land the snapshot before DF-E17. Window-fn can wire take rows with `takeClips` and literal EditScope. Audition remains parked on its separate contract.
+
 ## 2026-11-22 — DF-E64 live prefetch follow-up reviewed
 
 - Reviewed engine-win's exact `01b1e723`. The live stopped callback requests the upcoming pages using a private playing transport. A stopped candidate still needs no pages, and Link and other callers keep the strict default for failed sources. The engine hunks are ready for the current-main join.
