@@ -1477,6 +1477,50 @@ void normalizedRenders() {
     queue.run();check(queue.snapshot()[0].result.state==JobState::Completed && queue.snapshot()[0].result.normalization.has_value(),"a queued normalization choice produces a report on its completed job");
 }
 
+void brickwallNormalization() {
+    test::TempDirectory scratch{"render_queue","brickwall_normalization"};
+    constexpr std::uint32_t rate=48000,frames=48000;
+    constexpr double pi=3.14159265358979323846;
+    std::vector<double> signal(frames*2);
+    for(std::uint32_t frame=0;frame<frames;++frame) {
+        const auto sample=0.065*std::sin(2*pi*997*frame/rate);
+        signal[2*frame]=sample;
+        signal[2*frame+1]=-sample;
+    }
+    const auto run=[&](const char* name,NormalizeMode mode,bool enabled) {
+        Normalization settings;settings.mode=mode;settings.targetLufs=-20;settings.truePeakCeilingDb=-1;
+        settings.brickwall=enabled;
+        const auto staged=scratch.path()/(std::string(name)+".wav");
+        NormalizationCapture capture(scratch.path()/(std::string(name)+".pcm"),rate,2,settings);
+        for(std::uint32_t offset=0;offset<frames;) {
+            const auto count=std::min<std::uint32_t>(4096,frames-offset);
+            capture.append(std::span<const double>(signal).subspan(2*offset,2*count),count);
+            offset+=count;
+        }
+        const auto report=capture.finish(staged,audio::WavFormat::Pcm24,audio::WavDither::Triangular,999);
+        audio::WavReader wave(staged);
+        check(wave.frames()==frames && wave.channels()==2 && wave.sampleRate()==rate,
+              "brickwall export preserves programme length and channel format");
+        return std::pair{report,media::blake3File(staged).hex};
+    };
+    const auto [ordinary,ordinaryHash]=run("below-off",NormalizeMode::Loudness,false);
+    const auto [enabled,enabledHash]=run("below-on",NormalizeMode::Loudness,true);
+    check(!ordinaryHash.empty() && ordinaryHash==enabledHash && !enabled.brickwallApplied &&
+          ordinary.outputTruePeakDb && enabled.outputTruePeakDb==ordinary.outputTruePeakDb,
+          "below the ceiling, enabling Brickwall preserves the entire seeded PCM file byte for byte");
+    signal[2*13451]=0.97;
+    signal[2*31077+1]=-0.97;
+    const auto [limited,limitedHash]=run("loudness-limited",NormalizeMode::Loudness,true);
+    check(!limitedHash.empty() && limited.brickwallApplied && limited.ceilingLimited &&
+          limited.outputTruePeakDb && *limited.outputTruePeakDb<=-1 &&
+          limited.encodingPasses>=1 && limited.encodingPasses<=4,
+          "over-ceiling true peaks are limited before dither and the encoded 4x meter verifies the ceiling");
+    const auto [peakOff,peakOffHash]=run("peak-off",NormalizeMode::Peak,false);
+    const auto [peakOn,peakOnHash]=run("peak-on",NormalizeMode::Peak,true);
+    check(!peakOffHash.empty() && peakOffHash==peakOnHash && !peakOn.brickwallApplied &&
+          peakOff.outputTruePeakDb==peakOn.outputTruePeakDb,
+          "Peak normalization ignores the Brickwall setting");
+}
 void namesAndValidation() {
     NameContext c{"../A{track}","B/C","G","90",3};
     check(resolveName("{project}-{track}-{group}-{bpm}-{counter}",c)==".._A{track}-B_C-G-90-3","metadata cannot inject paths or more placeholders");
@@ -2436,7 +2480,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); brickwallNormalization(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

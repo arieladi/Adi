@@ -1315,6 +1315,7 @@ std::string serializeRunManifest(const RunReport& run) {
                     (job.normalization.mode == NormalizeMode::Peak ? "peak" : "loudness")},
                     {"target_lufs", job.normalization.targetLufs},
                     {"true_peak_ceiling_db", job.normalization.truePeakCeilingDb},
+                    {"brickwall", job.normalization.brickwall},
                     {"channel_weights", job.normalization.channelWeights}}}};
             if (job.normalization.mode == NormalizeMode::Loudness) {
                 const auto* metric = normalizationTargetName(job.normalization.target);
@@ -1462,7 +1463,7 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"captured_pcm", exportStatistics(report.captured)},
                     {"decoded_delivery", exportStatistics(report.decoded)},
                     {"applied_gain_db", report.appliedGainDb}, {"ceiling_limited", report.ceilingLimited},
-                    {"encoding_passes", report.encodingPasses}};
+                    {"encoding_passes", report.encodingPasses}, {"brickwall_applied", report.brickwallApplied}};
             }
             item["result"] = std::move(value);
         }

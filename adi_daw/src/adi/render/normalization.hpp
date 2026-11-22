@@ -18,6 +18,7 @@ struct Normalization {
     std::vector<double> channelWeights{};
     NormalizationTarget target = NormalizationTarget::Integrated;
     double targetRmsDbfs = -14.0;
+    bool brickwall=false;
 };
 // Values describe the named stage. Silence and an unfitted loudness
 // window have no numeric value. RMS gives each scalar sample equal weight.
@@ -49,6 +50,7 @@ struct NormalizationReport {
     bool ceilingLimited=false;
     unsigned encodingPasses=0;
     ExportStatistics captured{}, decoded{};
+    bool brickwallApplied=false;
 };
 void validateNormalization(const Normalization&,std::uint32_t rate,int channels);
 /// Offline worker, using a fresh job-owned staging file. Retains interleaved
