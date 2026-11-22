@@ -613,10 +613,32 @@ void switchingPreFxClearsSource() {
               "Post to Pre FX and back matches a fresh playback session");
     }
     const auto pre = rows::readModel(store);
-    stagedControls.prepareControls(pre, &transport, bound, true, {})->apply();
+    const auto preview = stagedControls.prepareControls(pre, &transport, bound, true, {});
+    StripLaneBindings previewLanes;
+    preview->captureLanes(previewLanes);
+    preview->apply();
     const auto staged = stagedSend->captureControls().source;
-    check(staged.audible && staged.config.volumeDb == 0 && staged.config.pan == 0 && !staged.config.lanes,
-          "staged controls use the neutral Pre FX source");
+    check(staged.audible && staged.config.volumeDb == 0 && staged.config.pan == 0 && staged.config.lanes,
+          "the staged scalars are neutral and the owner retains its lane binding");
+
+    stagedSend->prepare(48000, 64);
+    stagedSend->restart();
+    std::array<float, 64> input{}, left{}, right{};
+    input.fill(0.25f);
+    const float* sourceChannels[]{input.data(), input.data()};
+    float* outputChannels[]{left.data(), right.data()};
+    TransportInfo previewTransport;
+    previewTransport.stripLanes = &previewLanes;
+    NodeIo previewIo;
+    previewIo.in = sourceChannels;
+    previewIo.out = outputChannels;
+    previewIo.channels = 2;
+    previewIo.frames = 64;
+    previewIo.sampleRate = 48000;
+    previewIo.transport = &previewTransport;
+    stagedSend->process(previewIo);
+    check(left.back() == 0.25f && right.back() == 0.25f,
+          "the staged callback hears the neutral Pre FX source");
 
     auto solo = pre;
     const auto other = std::find_if(solo.tracks.begin(), solo.tracks.end(),

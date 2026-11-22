@@ -118,7 +118,16 @@ void generations(bool wide) {
     check(unchanged,"owner preparing a new tempo cannot change acquired strip, send or Reference stages");
     check(allocations.load()==beforeAllocations && frees.load()==beforeFrees && audio::callbackFileIo.load()==beforeIo,
           "concurrent old-publication rendering does not allocate, free, or touch files on callback");
+    // Force the old audio overlay into the interval between the owner's
+    // completed sync and the new generation's lane capture.
+    {
+        const auto oldOverlay = strips.prepareControls(original, &clock, oldProgram, true, {});
+        audio::CallbackScope callback;
+        oldOverlay->apply();
+    }
     auto next=strips.captureLanes();
+    check(next->forNode(strip) == &newProgram->byTrack.at(1),
+          "an old audio overlay cannot replace the new owner's lane pointer during capture");
     cue.captureLanes(*next);
     cue.collect();
     std::weak_ptr<StripAutomation> retained=oldProgram;oldProgram.reset();
