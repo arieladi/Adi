@@ -364,6 +364,54 @@ void bounded() {
                                                " clear readings, the worst " + std::to_string(off) + " cents off");
         }
     }
+    // Low notes (the review of b4c027f2): E1 and B1 after silence, the onset
+    // anywhere from the window's start, at 44.1, 48 and 96 kHz; and a 41.2 Hz
+    // pluck dying in 40 ms and in 300 ms, read hop by hop. A clear reading
+    // is within 30 cents for E1 (three and a half periods in a 44.1 kHz
+    // window: the floor of what the window holds; the halves rule read 21 to
+    // 22, the quarters measured on the mean-removed energy 40) and 15 for
+    // B1; the plucks within 25.
+    for (const double rate : {44100.0, 48000.0, 96000.0}) {
+        for (const double note : {41.2, 61.74}) {
+            PitchDetector o;
+            o.prepare(rate);
+            const std::size_t w = o.window();
+            double off = 0;
+            for (std::size_t s0 = 8; s0 < w; s0 += 8) {
+                std::vector<float> z(w, 0.f);
+                for (std::size_t i = s0; i < w; ++i) {
+                    const double ph = 2 * std::numbers::pi * note * static_cast<double>(i - s0) / rate;
+                    z[i] = static_cast<float>(0.2 * std::sin(ph) + 0.1 * std::sin(2 * ph) + 0.05 * std::sin(3 * ph));
+                }
+                double got = 0, c = 0;
+                if (o.analyse(z.data(), got, c) && c >= Tuner::kClarity) {
+                    off = std::max(off, std::abs(cents(got, note)));
+                }
+            }
+            check(off < (note < 50 ? 30 : 15), std::to_string(note) + " Hz after silence at " + std::to_string(rate) + ", from the window's start: the worst clear reading " +
+                                std::to_string(off) + " cents off");
+        }
+        for (const double tau : {0.04, 0.3}) {
+            PitchDetector o;
+            o.prepare(rate);
+            const auto n = static_cast<std::size_t>(rate * 1.5);
+            std::vector<float> z(n, 0.f);
+            const auto start = static_cast<std::size_t>(rate * 0.2);
+            for (std::size_t i = start; i < n; ++i) {
+                const double t = static_cast<double>(i - start) / rate, ph = 2 * std::numbers::pi * 41.2 * t;
+                z[i] = static_cast<float>(std::exp(-t / tau) * (0.4 * std::sin(ph) + 0.2 * std::sin(2 * ph) + 0.1 * std::sin(3 * ph)));
+            }
+            double off = 0;
+            for (std::size_t at = 0; at + o.window() <= n; at += o.hop()) {
+                double got = 0, c = 0;
+                if (o.analyse(z.data() + at, got, c) && c >= Tuner::kClarity) {
+                    off = std::max(off, std::abs(cents(got, 41.2)));
+                }
+            }
+            check(off < 25, "a 41.2 Hz pluck dying in " + std::to_string(tau) + " s at " + std::to_string(rate) + ": the worst clear reading " +
+                                std::to_string(off) + " cents off");
+        }
+    }
     for (const double rate : {1e20, 1e300}) {
         PitchDetector big;
         big.prepare(rate);
