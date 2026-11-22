@@ -1968,13 +1968,13 @@ void meterGrid() {
         track->id = 1;
         track->kind = "audio";
         track->clips = {clip};
-        const ui::SnapshotTracks tracks{track};
-        const auto plain = ui::createFades(tracks, {1}, -10, 200);
-        check(plain.ops.empty() && plain.refusal == "The fades are already that long.",
+        const ui::SnapshotTracks fadeTracks{track};
+        const auto plainFade = ui::createFades(fadeTracks, {1}, -10, 200);
+        check(plainFade.ops.empty() && plainFade.refusal == "The fades are already that long.",
               "a plain fade already that long: no op, and says so");
         clip->fadeInHandles = {0, 300}; // the clock a split pinned, at a new tempo
-        const auto pinned = ui::createFades(tracks, {1}, -10, 200);
-        check(pinned.ops.size() == 1 && pinned.refusal.empty(),
+        const auto pinnedFade = ui::createFades(fadeTracks, {1}, -10, 200);
+        check(pinnedFade.ops.size() == 1 && pinnedFade.refusal.empty(),
               "a fade of that length playing at another (its clock pinned) still takes the op");
     }
 }
