@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <span>
@@ -98,7 +99,7 @@ struct Delay : device::DeviceInstance {
     int delay = 77;
     std::array<std::array<double,256>,2> ring{};
     int at = 0;
-    double gain = 1;
+    double gain = 1, feedback = 0;
     bool distinguishWidth = false;
     int changeAfter = 0, processed = 0;
     std::uint64_t epoch = 0;
@@ -107,7 +108,7 @@ struct Delay : device::DeviceInstance {
     bool processesDouble() const noexcept override {return true;}
     std::int32_t latencySamples() const noexcept override {return delay;}
     std::uint64_t latencyEpoch() const noexcept override {return epoch;}
-    std::int64_t tailSamples() const noexcept override {return delay;}
+    std::int64_t tailSamples() const noexcept override {return feedback == 0 ? delay : 256;}
     void process(const NodeIo& io) noexcept override {
         for (int i = 0; i < io.frames; ++i) {
             for (int c = 0; c < io.channels; ++c) {
@@ -115,7 +116,7 @@ struct Delay : device::DeviceInstance {
                 const auto index = static_cast<std::size_t>(io.blockOffset+i);
                 const double x = io.wide() ? io.in64[c][index] : static_cast<double>(io.in[c][index]);
                 const double y = ring[channel][static_cast<std::size_t>((at+256-delay)%256)];
-                ring[channel][static_cast<std::size_t>(at)] = x;
+                ring[channel][static_cast<std::size_t>(at)] = x + feedback * y;
                 const double out = y * gain * (distinguishWidth && io.wide() ? 2.0 : 1.0);
                 if (io.wide()) io.out64[c][index] = out;
                 else io.out[c][index] = static_cast<float>(out);
@@ -145,6 +146,92 @@ bool matches(const std::vector<float>& samples, std::int64_t begin, double gain 
         if (samples[2*i+static_cast<std::size_t>(c)] != expected) return false;
     }
     return true;
+}
+void loopAndTailRenders() {
+    Fixture f;
+    f.effect();
+    const auto setSource = [&](std::initializer_list<int> impulses) {
+        std::vector<float> pcm(8192);
+        for (const auto at : impulses) pcm[static_cast<std::size_t>(2 * at + 1)] = 0.75f;
+        audio::WavWriter wave(f.dir.path() / "audio.wav", 48000, 2, audio::WavFormat::Float32);
+        wave.write(pcm.data(), 4096);
+        wave.close();
+    };
+    const DeviceLoader echo = [](const DeviceRequest&, std::string&) {
+        auto device = std::make_unique<Delay>();
+        device->delay = 17;
+        device->feedback = 0.5;
+        return device;
+    };
+    setSource({70, 127});
+    auto job = f.job("continuous");
+    job.beginSample = 0;
+    job.endSample = 320;
+    const auto continuous = read(renderWav(job, echo), 320);
+
+    job.nameTemplate = "fixed-tail";
+    job.beginSample = 96;
+    job.endSample = 128;
+    job.tail = {TailMode::Fixed, 2};
+    const auto fixed = read(renderWav(job, echo), 128);
+    check(continuous.size() == 640 && fixed.size() == 256 &&
+          std::equal(fixed.begin(), fixed.end(), continuous.begin() + 2 * 96) &&
+          fixed[2 * 8 + 1] > 0 && fixed[2 * 48 + 1] > 0,
+          "fixed tail and pre-range decay null against the continuous compensated render");
+    setSource({70, 127, 145});
+    job.nameTemplate = "fixed-tail-extra-input";
+    const auto extra = read(renderWav(job, echo), 128);
+    check(extra == fixed, "fixed tail ignores post-range input at the original block size");
+    job.nameTemplate = "fixed-tail-block-change";
+    job.session.maxFrames = 11;
+    const auto partitioned = read(renderWav(job, echo), 128);
+    check(partitioned == fixed,
+          "tail excludes later arrangement input and is independent of callback partition");
+
+    job.nameTemplate = "until-silent";
+    job.tail = {TailMode::UntilSilent, 4, -20, 1};
+    const auto result = renderWav(job, echo);
+    auto expectedEnd = std::size_t{128};
+    std::size_t quiet = 0;
+    while (continuous.size() == 640 && expectedEnd < 320 && quiet < 48) {
+        const auto sample = continuous[2 * expectedEnd + 1];
+        quiet = std::abs(sample) <= 0.1 ? quiet + 1 : 0;
+        ++expectedEnd;
+    }
+    const auto until = read(result, expectedEnd - 96);
+    check(quiet == 48 && expectedEnd < 320 && !until.empty() &&
+          std::equal(until.begin(), until.end(), continuous.begin() + 2 * 96),
+          "Until Silent counts the exact consecutive quiet frames across both output channels");
+
+    job.nameTemplate = "until-maximum";
+    job.tail = {TailMode::UntilSilent, 1, -80, 1};
+    check(renderWav(job, echo).framesWritten == 80, "Until Silent respects its maximum");
+
+    setSource({70, 111, 127, 198, 239, 255});
+    job.nameTemplate = "plain-second-pass";
+    job.beginSample = 128;
+    job.endSample = 256;
+    job.tail = {};
+    const auto second = read(renderWav(job, echo), 128);
+    job.nameTemplate = "loop-second-pass";
+    job.beginSample = 0;
+    job.endSample = 128;
+    job.renderAsLoop = true;
+    const auto looped = read(renderWav(job, echo), 128);
+    check(!looped.empty() && looped == second && looped[1] > 0,
+          "Render as Loop writes the compensated second pass with the first pass's wrapped decay");
+
+    job.gaplessBatch = true;
+    check(renderWav(job, echo).error.find("gapless batches") != std::string::npos && f.noStage(),
+          "a gapless batch refuses an independent loop before staging");
+    job.renderAsLoop = false;
+    job.tail = {TailMode::Fixed, 1};
+    check(renderWav(job, echo).error.find("gapless batches") != std::string::npos && f.noStage(),
+          "a gapless batch refuses an independent tail before staging");
+    job.gaplessBatch = false;
+    job.tail = {TailMode::UntilSilent, 1, -20, 2};
+    check(renderWav(job, echo).state == JobState::Failed && f.noStage(),
+          "until-silent hold cannot exceed its bound");
 }
 void ranges() {
     Fixture f; f.effect(); f.parallel();
@@ -1474,7 +1561,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); loopAndTailRenders(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

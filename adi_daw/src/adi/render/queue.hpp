@@ -43,6 +43,13 @@ struct NiStems {
     std::vector<NiStem> stems; // one to four direct wet sources; unused slots silent
     std::uint32_t bitRate = 256000; // per stereo track, one codec setting for all five
 };
+enum class TailMode { Off, Fixed, UntilSilent };
+struct Tail {
+    TailMode mode = TailMode::Off;
+    std::uint32_t maxMilliseconds = 0; // fixed length, or the upper bound of UntilSilent
+    double thresholdDbfs = -90;
+    std::uint32_t holdMilliseconds = 50;
+};
 struct Job {
     std::filesystem::path project;
     std::filesystem::path directory;
@@ -61,6 +68,10 @@ struct Job {
     // The complete literal WAV filename chosen by the single-export save
     // dialog. It includes .wav, bypasses templates, and uses Fail or Replace.
     std::optional<std::string> exactWavFilename;
+    Tail tail{};
+    bool renderAsLoop = false;
+    // Reserved for the continuous region renderer (EX-12).
+    bool gaplessBatch = false;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
