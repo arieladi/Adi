@@ -286,6 +286,7 @@ public:
     /// sounding voice from an on still waiting in a retired graph's PDC queue.
     virtual void noteOnDelivered(const Event&) noexcept {}
     virtual void noteOnRejected(const Event&) noexcept {}
+    virtual std::uint32_t noteSourcePrefix() const noexcept { return 0; }
     // Explicit opt-in to retaining queued source events across graph swaps.
     // Graph prepares reachable source lists on the owner; these audio hooks
     // validate immutable authorship/shared ownership without allocating.
@@ -1359,8 +1360,10 @@ private:
 
     std::vector<Slot> slots_;
     std::vector<std::pair<Node*,NodeId>> eventNodes_;
-    std::vector<std::pair<std::uint32_t, Node *>> controllerSources_;
+    std::vector<std::pair<std::uint32_t, Node *>> eventSources_;
+    [[nodiscard]] Node* eventSource(std::uint32_t prefix) const noexcept;
     void acknowledgeController(const Event &, bool delivered) noexcept;
+    void acknowledgeNote(const Event&, bool delivered, bool waiting = false) noexcept;
     [[nodiscard]] bool hasPendingNoteOff(std::uint64_t noteId) const noexcept;
 
     /// Public diagnostic mirrors of the audio-applied plan. Callback processing

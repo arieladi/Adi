@@ -77,11 +77,11 @@ void LiveMidiInput::deliver(const GraphHost::RenderBlock& block, const Route& ro
                                     [&](const Voices::Voice& v) { return v.sourceId == event.noteId; });
     auto note = event;
     if (event.type == EventType::NoteOn) {
-        if (voice != state.active.end() || voiceSerial_ == kLiveNoteIdPrefix - 1) return;
+        if (voice != state.active.end() || voiceSerial_ == std::numeric_limits<std::uint32_t>::max()) return;
         const auto free = std::find_if(state.active.begin(), state.active.end(),
                                        [](const Voices::Voice& v) { return v.sourceId == 0; });
         if (free == state.active.end()) return;
-        note.noteId = kLiveNoteIdPrefix | ++voiceSerial_;
+        note.noteId = eventIdentity(prefix_, ++voiceSerial_);
         if (!block.pushInputEvent(route.slot, note)) return;
         note.type = EventType::NoteOff;
         note.value = 0;

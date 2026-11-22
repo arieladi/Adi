@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "adi/engine/note_identity.hpp"
+
 #include "adi/engine/events.hpp"
 #include "adi/engine/mpe_output.hpp"
 #include "adi/engine/note_expression.hpp"
@@ -66,13 +68,6 @@ static_assert(sizeof(SV::NoteExpressionValue) == 8,
 /// -1 means "not set" on their side, which is what JUCE hardcodes and what
 /// makes per-note expression unaddressable through its path (ADR-0057).
 static_assert(sizeof(SV::NoteOnEvent::noteId) == 4, "VST3 noteId is int32");
-
-/// Narrow our 64-bit note id into VST3's int32, never producing their
-/// "unset" sentinel.
-///
-[[nodiscard]] inline Steinberg::int32 toVst3NoteId(std::uint64_t id) noexcept {
-    return engine::pluginNoteId(id);
-}
 
 /// A fixed-capacity `IEventList` we fill and hand to a plugin.
 ///
@@ -136,6 +131,7 @@ public:
 
 private:
     std::vector<SV::Event> events_;
+    engine::PluginNoteIds noteIds_;
     std::int32_t cap_ = 0;
     std::int64_t dropped_ = 0;
     std::int64_t outOfRange_ = 0;

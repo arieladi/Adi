@@ -3,7 +3,6 @@
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/curves.hpp"
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -11,13 +10,6 @@
 #include <stdexcept>
 #include <tuple>
 namespace adi::engine {
-std::uint32_t allocateControllerSourcePrefix() {
-    static std::atomic<std::uint64_t> next{1};
-    const auto value = next.fetch_add(1, std::memory_order_relaxed);
-    if (value > std::numeric_limits<std::uint32_t>::max())
-        throw std::runtime_error("controller source identity exhausted");
-    return static_cast<std::uint32_t>(value);
-}
 namespace {
 constexpr std::int64_t tickLimit = std::int64_t{1} << 50;
 constexpr double sampleLimit = static_cast<double>(std::int64_t{1} << 50);

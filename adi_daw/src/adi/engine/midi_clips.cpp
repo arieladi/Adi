@@ -3,6 +3,7 @@
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/blob.hpp"
 #include "adi/engine/midi_controllers.hpp"
+#include "adi/engine/note_identity.hpp"
 #include "adi/engine/snapshot.hpp"
 #include <algorithm>
 #include <array>
@@ -81,14 +82,14 @@ struct ControlState {
 };
 struct TrackState {
     std::array<ControlState, 2048> controls{};
-    const std::uint32_t controlPrefix = allocateControllerSourcePrefix();
+    const std::uint32_t controlPrefix = allocateEventSourcePrefix();
     std::uint16_t controlCursor = 0;
     std::atomic<std::uint32_t> droppedControls{0};
     std::array<Active,maxActive> active{};
     std::uint64_t generation=0, revision=0,controllerGeneration=0;
     std::atomic<std::uint64_t> renderedControllerGeneration{0};
     std::int64_t expected=-1;
-    std::uint64_t prefix=0;
+    const std::uint32_t prefix = allocateEventSourcePrefix();
     std::uint32_t serial=0;
     std::atomic<std::uint32_t> dropped{0};
 };
@@ -107,6 +108,7 @@ public:
     std::vector<Scheduled> events;
     std::shared_ptr<const MidiControllerProgram> controls;
     bool retainsQueuedSourceEvents()const noexcept override{return true;}
+    std::uint32_t noteSourcePrefix() const noexcept override { return state->prefix; }
     const Occurrence* replacement(const Active& active)const noexcept {
         if(!active.note.identity.note || byIdentity.empty())return nullptr;
         const auto* end=byIdentity.data()+byIdentity.size();
@@ -321,7 +323,7 @@ public:
         if(out.capacity()-out.size()<static_cast<std::int32_t>(active)+3){++state->dropped;return;}
         if(state->serial==std::numeric_limits<std::uint32_t>::max()){++state->dropped;return;}
         for(auto& a:state->active)if(!a.used) {
-            auto e=n.start;e.frame=frame;e.noteId=state->prefix | ++state->serial;
+            auto e=n.start;e.frame=frame;e.noteId=eventIdentity(state->prefix, ++state->serial);
             if(!out.push(e))return;
             a.note=n;a.used=true;a.pending=false;a.releasing=false;a.sounding=false;a.retryOn=false;a.occurrence=n.start.noteId;
             a.retainedOn=0;a.retainedOff=0;
@@ -503,7 +505,7 @@ struct MidiClipState {
         std::vector<std::shared_ptr<const RouteVersion>> routes;
     };
     std::map<std::int64_t,OwnedTrack> tracks; // message thread only
-    std::uint64_t generation=0,trackIdentity=0,controllerIdentity=0,routeIdentity=0;
+    std::uint64_t generation=0,controllerIdentity=0,routeIdentity=0;
 };
 std::shared_ptr<MidiClipState> makeMidiClipState(){return std::make_shared<MidiClipState>();}
 struct MidiClips::Impl {
@@ -518,7 +520,8 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     // Include empty tracks: deleting or muting the last clip must still flush
     // the notes owned by the preceding published source generation.
     for(const auto& track:model.tracks) {
-        auto& s=state->tracks[track.id].audio;if(!s) {s=std::make_shared<TrackState>();s->prefix=(++state->trackIdentity)<<32;}
+        auto& s=state->tracks[track.id].audio;
+        if (!s) s = std::make_shared<TrackState>();
         impl_->tracks.emplace(track.id,std::make_unique<Source>(transport,s,generation));
     }
     MidiControllerPrograms controls(model, rate);

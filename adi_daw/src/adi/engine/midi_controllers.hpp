@@ -4,8 +4,6 @@
 #include <memory>
 #include <span>
 namespace adi::engine {
-// Owner-thread allocation of a process-unique delivery namespace.
-std::uint32_t allocateControllerSourcePrefix();
 // Immutable, owner-prepared control timelines. Points remain normalized double;
 // callbacks only search/evaluate these arrays, and never read the Store.
 class MidiControllerProgram {

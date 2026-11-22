@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/graph.hpp"
+#include "adi/engine/note_identity.hpp"
 #include "adi/engine/scope.hpp"
 #include "adi/engine/render_workers.hpp"
 #include "adi/engine/transport.hpp"
@@ -1013,19 +1014,20 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
 
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
-    controllerSources_.clear();
-    controllerSources_.reserve(slots_.size());
+    eventSources_.clear();
+    eventSources_.reserve(slots_.size());
     for (const auto &slot : slots_)
         if (slot.node) {
-            const auto prefix = slot.node->controllerSourcePrefix();
-            if (prefix)
-                controllerSources_.push_back({prefix, slot.node});
+            const auto controller = slot.node->controllerSourcePrefix();
+            const auto note = slot.node->noteSourcePrefix();
+            if (controller) eventSources_.push_back({controller, slot.node});
+            if (note && note != controller) eventSources_.push_back({note, slot.node});
         }
-    std::sort(controllerSources_.begin(), controllerSources_.end(),
+    std::sort(eventSources_.begin(), eventSources_.end(),
               [](const auto &left, const auto &right) { return left.first < right.first; });
-    for (std::size_t i = 1; i < controllerSources_.size(); ++i)
-        if (controllerSources_[i - 1].first == controllerSources_[i].first) {
-            error_ = "duplicate controller source prefix";
+    for (std::size_t i = 1; i < eventSources_.size(); ++i)
+        if (eventSources_[i - 1].first == eventSources_[i].first) {
+            error_ = "duplicate event source prefix";
             return;
         }
 
@@ -1518,18 +1520,37 @@ bool Graph::mixWide(RenderState& r, const std::vector<NodeId>& inputs, std::vect
     return true;
 }
 
-void Graph::acknowledgeController(const Event &event, bool delivered) noexcept {
-    const auto prefix = static_cast<std::uint32_t>(event.noteId >> 32);
-    if (!prefix)
-        return;
-    const auto found = std::lower_bound(controllerSources_.begin(), controllerSources_.end(), prefix,
+Node* Graph::eventSource(std::uint32_t prefix) const noexcept {
+    const auto found = std::lower_bound(eventSources_.begin(), eventSources_.end(), prefix,
                                         [](const auto &item, std::uint32_t key) { return item.first < key; });
-    if (found == controllerSources_.end() || found->first != prefix)
-        return;
-    if (delivered)
-        found->second->controllerDelivered(event);
-    else
-        found->second->controllerRejected(event);
+    return found != eventSources_.end() && found->first == prefix ? found->second : nullptr;
+}
+
+void Graph::acknowledgeController(const Event &event, bool delivered) noexcept {
+    if (auto* source = eventSource(eventSourcePrefix(event.noteId))) {
+        if (delivered) source->controllerDelivered(event);
+        else source->controllerRejected(event);
+    }
+}
+
+void Graph::acknowledgeNote(const Event& event, bool delivered, bool waiting) noexcept {
+    const auto acknowledge = [&](Node& source) {
+        if (event.type == EventType::NoteOff) {
+            if (!delivered) source.noteOffRejected(event);
+            else if (!waiting || !source.retainsQueuedSourceEvents()) source.noteOffDelivered(event);
+        } else {
+            if (delivered) source.noteOnDelivered(event);
+            else source.noteOnRejected(event);
+        }
+    };
+    const auto prefix = eventSourcePrefix(event.noteId);
+    if (prefix) {
+        if (auto* source = eventSource(prefix)) acknowledge(*source);
+    } else {
+        for (auto& slot : slots_) {
+            if (slot.node) acknowledge(*slot.node);
+        }
+    }
 }
 bool Graph::hasPendingNoteOff(std::uint64_t noteId) const noexcept {
     for(std::size_t i=0;i<slots_.size();++i) {
@@ -1546,13 +1567,8 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
     auto rejected = [&](const Event &e) {
         if (e.type == EventType::Controller)
             acknowledgeController(e, false);
-        if (e.type == EventType::NoteOff)
-            for (std::size_t i=0;i<slots_.size();++i)
-                if (slots_[i].node)
-                    slots_[i].node->noteOffRejected(e);
-        if (e.type == EventType::NoteOn)
-            for(std::size_t i=0;i<slots_.size();++i)
-                if(slots_[i].node)slots_[i].node->noteOnRejected(e);
+        if (e.type == EventType::NoteOn || e.type == EventType::NoteOff)
+            acknowledgeNote(e, false);
     };
     const std::int64_t end = now_ + frames;
 
@@ -2199,15 +2215,10 @@ void Graph::process(const AudioIo& io) noexcept {
                 // Forwarding through every hop and worker processing have
                 // finished. Even a short note's future on/off pair is now in
                 // these queues; its first consumer cannot retire the owner.
-                const bool waiting=hasPendingNoteOff(e.noteId);
-                for (std::size_t source=0;source<slots_.size();++source)
-                    if (slots_[source].node &&
-                        (!waiting || !slots_[source].node->retainsQueuedSourceEvents()))
-                        slots_[source].node->noteOffDelivered(e);
+                acknowledgeNote(e, true, hasPendingNoteOff(e.noteId));
             }
-            if(e.type==EventType::NoteOn)
-                for(std::size_t source=0;source<slots_.size();++source)
-                    if(slots_[source].node)slots_[source].node->noteOnDelivered(e);
+            if (e.type == EventType::NoteOn)
+                acknowledgeNote(e, true);
         }
     }
     for (auto& s : slots_) {
