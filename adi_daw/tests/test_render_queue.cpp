@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/mp3_writer.hpp"
+#include "adi/audio/pcm_stream.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
@@ -16,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <span>
@@ -672,6 +675,56 @@ void aiffExports() {
     check(renderWav(j, {}).state == JobState::Failed && f.noStage(), "AIFF rejects unsupported encodings");
 }
 
+void cbrMp3Delivery() {
+    Fixture f;
+    auto job = f.job("cbr-mp3");
+    job.encoding.container = ExportContainer::Mp3;
+    job.session.precision = Precision::Float64;
+    job.endSample = job.beginSample + 4201;
+    if (!mp3ExportAvailable()) {
+        const auto missing = renderWav(job, {});
+        check(missing.state == JobState::Failed && missing.error.find("pinned LAME") != std::string::npos && f.noStage(),
+              "builds without LAME explain MP3 refusal before staging");
+        return;
+    }
+    const auto first = renderWav(job, {});
+    check(first.state == JobState::Completed && first.output.extension() == ".mp3" && first.framesWritten == 4201,
+          first.error.empty() ? "verified CBR MP3 publishes with its native suffix" : first.error.c_str());
+    if (first.state != JobState::Completed) return;
+    auto pcm = audio::openPcmStream(first.output);
+    check(pcm.ready() && pcm.stream->info().format == audio::SourceFormat::Mp3 &&
+          pcm.stream->info().sampleRate == 48000 && pcm.stream->info().channels == 2 &&
+          pcm.stream->info().frames == 4201,
+          "dr_mp3 removes the LAME delay and padding to recover the exact authored length");
+    const auto fileBytes = [](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    job.nameTemplate = "cbr-mp3-repartitioned";
+    job.session.maxFrames = 103;
+    job.encoding.dither = audio::WavDither::None;
+    job.encoding.ditherSeed = 7282;
+    const auto again = renderWav(job, {});
+    check(again.state == JobState::Completed && fileBytes(first.output) == fileBytes(again.output),
+          "MP3 bits ignore PCM dither/seed and stay stable across graph block partition");
+
+    job.nameTemplate = "cbr-mp3-mono";
+    job.session.channels = 1;
+    job.session.sampleRate = 44100;
+    job.endSample = job.beginSample + 719;
+    const auto mono = renderWav(job, {});
+    check(mono.state == JobState::Completed && mono.framesWritten == 719 && f.noStage(),
+          mono.error.empty() ? "44.1 kHz mono uses the same exact MPEG-1 and trim gate" : mono.error.c_str());
+
+    job.nameTemplate = "invalid-cbr-mp3";
+    job.session.sampleRate = 96000;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "unsupported MPEG-1 rate is refused before staging");
+    job.session.sampleRate = 44100;
+    job.normalization.mode = NormalizeMode::Peak;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "MP3 normalization waits for a verified lossy normalization path");
+}
 void regionStems() {
     Fixture f;
     f.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,480480,60);"
@@ -1662,7 +1715,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
