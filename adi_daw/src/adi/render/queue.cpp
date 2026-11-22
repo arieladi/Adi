@@ -3,6 +3,7 @@
 #include "adi/render/aiff_writer.hpp"
 #include "adi/render/flac_writer.hpp"
 #include "adi/render/mp3_writer.hpp"
+#include "adi/render/vorbis_writer.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -115,12 +116,13 @@ const char* containerName(ExportContainer type) {
     case ExportContainer::Flac: return "flac";
     case ExportContainer::Aiff: return "aiff";
     case ExportContainer::Mp3: return "mp3";
+    case ExportContainer::OggVorbis: return "ogg_vorbis";
     }
     throw std::invalid_argument("unknown export container");
 }
 
 std::string containerSuffix(ExportContainer type) {
-    return std::string(".") + containerName(type);
+    return type == ExportContainer::OggVorbis ? ".ogg" : std::string(".") + containerName(type);
 }
 
 void validate(const Job& j) {
@@ -156,6 +158,15 @@ void validate(const Job& j) {
             j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
             throw std::invalid_argument("MP3 needs one or two channels, 32/44.1/48 kHz, a template name and Normalize Off");
         if (!mp3ExportAvailable()) throw std::runtime_error("MP3 export requires the pinned LAME build");
+    }
+    if (j.encoding.container == ExportContainer::OggVorbis) {
+        const auto rate = j.session.sampleRate;
+        if (rate < 8000 || rate > 192000 || j.session.channels > 2 ||
+            !std::isfinite(j.encoding.vorbisQuality) || j.encoding.vorbisQuality < -0.1f ||
+            j.encoding.vorbisQuality > 1.0f ||
+            j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
+            throw std::invalid_argument("Vorbis needs one or two channels, 8-192 kHz, quality -0.1 to 1, a template name and Normalize Off");
+        if (!vorbisExportAvailable()) throw std::runtime_error("Ogg Vorbis export requires the pinned Xiph build");
     }
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
@@ -565,13 +576,18 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         }
         Stage stage(job.directory, result);
         const bool mp3 = container == ExportContainer::Mp3;
-        const auto staged = stage.path / (mp3 ? "render.mp3" : "render.wav");
+        const bool vorbis = container == ExportContainer::OggVorbis;
+        const auto staged = stage.path / ("render" + (mp3 || vorbis ? extension : ".wav"));
         std::unique_ptr<Mp3Writer> mp3Writer;
+        std::unique_ptr<VorbisWriter> vorbisWriter;
         std::unique_ptr<audio::WavWriter> writer;
         std::unique_ptr<NormalizationCapture> normalized;
         if (mp3)
             mp3Writer = std::make_unique<Mp3Writer>(staged, static_cast<unsigned>(job.session.sampleRate),
                                                     static_cast<unsigned>(channels), total);
+        else if (vorbis)
+            vorbisWriter = std::make_unique<VorbisWriter>(staged, static_cast<unsigned>(job.session.sampleRate),
+                static_cast<unsigned>(channels), total, job.encoding.vorbisQuality);
         else if(job.normalization.mode==NormalizeMode::Off)
             writer=std::make_unique<audio::WavWriter>(staged,static_cast<std::uint32_t>(job.session.sampleRate),
                 static_cast<std::uint16_t>(channels),job.encoding.format,nullptr,std::uint64_t{1}<<32,
@@ -580,6 +596,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         auto write=[&](std::uint32_t frames) {
             const std::span<const double> samples(interleaved.data(), static_cast<std::size_t>(frames) * channels);
             if (mp3Writer) mp3Writer->write(samples, frames);
+            else if (vorbisWriter) vorbisWriter->write(samples, frames);
             else if (normalized) normalized->append(samples, frames);
             else writer->write(samples.data(), frames);
             result.framesWritten+=frames;
@@ -654,6 +671,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             cancellation(control); if (control.serviceHost) control.serviceHost(); cancellation(control);
         };
         if (mp3Writer) mp3Writer->finish(serviceEncoding);
+        else if (vorbisWriter) vorbisWriter->finish(serviceEncoding);
         else if (normalized) result.normalization = normalized->finish(staged, job.encoding.format, job.encoding.dither,
                                                                        job.encoding.ditherSeed ^ counter, serviceEncoding);
         else writer->close();
@@ -784,6 +802,11 @@ std::string serializeRunManifest(const RunReport& run) {
                 profile["wav_encoding"] = nullptr;
                 profile["effective_dither"] = "none";
                 profile["mp3_bit_rate_kbps"] = 320;
+            }
+            if (job.encoding.container == ExportContainer::OggVorbis) {
+                profile["wav_encoding"] = nullptr;
+                profile["effective_dither"] = "none";
+                profile["vorbis_vbr_quality"] = job.encoding.vorbisQuality;
             }
             if (job.niStems) {
                 profile["ni_stems"] = {{"bit_rate_per_stream", job.niStems->bitRate}, {"stems", Json::array()}};
