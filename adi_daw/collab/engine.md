@@ -32,6 +32,28 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MI-08 units joined with Gemini's release retry
+
+**PR requested** for `engine/mi08-expression-units-current` at `f0b5b6a7ab17b4fe3615926045c85e2aceb0fb8d`. Title **Convert authored note expression units with the bounded MIDI release queue**. This fast-forwards the prior `0273aa63` by joining Gemini's exact `da6d1629`. GCC 14 and Clang 19 warnings-as-errors each passed 128 MPE output checks, including the 120-note/104-slot pending-release probe and the authored dB and pan checks. The playback branch joins this exact head. Gemini retains its refused-attack fix.
+
+The local hosted CLAP integration uses the exact `f41debbd` adapter and capacity calculation with `da6d1629` and the authored units. At 48 kHz and 16 frames, both MPE MIDI to CLAP and the reverse delivered all 128 releases in their original dialect, in order, followed by all 16 new attacks. Nothing was dropped, and no release remained pending or appeared twice. The stock adapter admitted only 32 of the 128 releases and zero new notes in both directions. The tracked playback regressions are in progress.
+
+## 2026-11-22 — deferred sub-parts audited on main
+
+Exact main `9f2abf4a3c3979bfe3b17efa62aba5fe7a0f22f3`. Win can move the individual Engine parts below to Done.
+
+| Part | Status | Commit and scope |
+|---|---|---|
+| DF-E45(b) | Landed | `55fd8bbd`, `5a416811`, `f26b6396`. Exact tick boundaries and integer-nanosecond origins round-trip. Genuine fractions keep floor semantics. The 90, 110 and 140 BPM cases cover both contracts. |
+| DF-E47(b) | Landed | `f26b6396`. The snapshot makes one set of track IDs for the remarks lookup. |
+| DF-E51(c) | Landed | `418a16b0`. A new accepted MPE note receives its member channel's initial bend and timbre. |
+| DF-E51(d) | Landed | `ba87710e`. Complete polyphonic aftertouch and program changes are counted as unsupported. |
+| DF-E52(b) | Landed | `b2c79ba7`. Absorbing an ungestured parameter edit preserves the previous explicit `lastTouched`. |
+| DF-E54(b) | Landed | `3887a4cb` checks parent and main-route cycles, missing or negative native lengths, and failed tempo queries. Window's guarded parent walks landed separately as `67854419`. |
+| DF-E16, Window half | Open | Engine `RowIds` landed in `ab09e120`. Window's live-ID scan from `7481782b` is still in Track Insert, and other live-only callers remain in imports, paste and automation. |
+
+The native Window helper probe deletes remarked track 9 while retaining track 8. Insert MIDI Track takes 9 and the real journal reattaches the orphaned remark to the unrelated track. Undo orphans the remark again. `RowIds` chooses 10. Window-fn owns the migration of its producers. The schema allows remark subjects for track, clip and device. Check those orphan cases separately from lane identity and lane-data Undo/Redo.
+
 ## 2026-11-22 — the standing queue's E23-FU branch
 
 **PR requested** for `engine/df-e23-followups` at `25e3dfe9f2c46773c6af6f9931df92410c066347`, base Win's `76c8aaa1`. Title **Preserve grouped sends, one-click Post and main-route ownership**. This is the exact tree and three commits gated below for DF-E30, DF-E55(b) and DF-E24(b,c), including the 512-frame MIDI clock fixture. The prior direct instruction placed these three commits on #677 before the standing queue reached this checkout. #677 already contains the identical head, so Win can take its existing review or use this companion branch. `engine/df-e23-followups-staged` is superseded. GitHub's gate for the published #677 head is run `45010141132`.
