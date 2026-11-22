@@ -466,7 +466,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             } else if constexpr (kind == Stage::Sweep) {
                 sweeps_[index].processStereo(l, r, primary, band.secondary.at(p));
             } else {
-                crush_[index].processStereo(l, r, primary, band.secondary.at(p));
+                crush_[index].processStereo(l, r, primary, band.secondary.at(p), band.secondary.constant);
             }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }
             else if (band.blend != 1.0f) {

@@ -153,11 +153,74 @@ void dither(Crush& band) {
     band.reset();const auto x=mono(band,.49f,0,1);
     band.reset();near(x,mono(band,.49f,0,1),0,"repeatable dither reset");
 }
+
+std::array<float, 2> endpointMarker(int offset) {
+    constexpr std::array<std::array<float, 2>, 3> markers{{
+        {.8f, -.1f}, {-.25f, .6f}, {.16f, -.42f}}};
+    if (offset < 0 || offset >= static_cast<int>(markers.size())) return {};
+    return markers[static_cast<std::size_t>(offset)];
+}
+
+void fullRatePlateau() {
+    // A signed pair at the end of the plateau distinguishes the passed sample
+    // from the fractional capture that the next, slower frames reveal.
+    struct Case { int preroll; double heldL, heldR; };
+    constexpr Case cases[]{{0, .11061388, .35959082}, {8192, .42338427, .15107722}};
+    for (const auto& test : cases) {
+        Crush band;
+        band.prepare(49152);
+        UndoHighPass left(49152), right(49152);
+        for (int frame = 0; frame <= test.preroll + 119; ++frame) {
+            const int position = frame % 8192;
+            const int stimulus = frame - test.preroll;
+            auto [l, r] = endpointMarker(stimulus - 116);
+            const float height = position >= 67 && position < 118 ? 1.f : .65f;
+            band.processStereo(l, r, 1, height, false);
+            const double a = left.decode(l), b = right.decode(r);
+            if (stimulus == 117) {
+                near(a, -.25, .00001, "full moving plateau passes left");
+                near(b, .6, .00001, "full moving plateau passes right");
+            } else if (stimulus == 118 || stimulus == 119) {
+                const double tolerance = test.preroll == 0 ? .00002 : .001;
+                near(a, test.heldL, tolerance, "crossing an endpoint retains the clock and left latch");
+                near(b, test.heldR, tolerance, "crossing an endpoint retains the clock and right latch");
+            }
+        }
+    }
+}
+
+void flatOrCappedHold() {
+    // At 32 kHz both flat settings pass full-rate audio. Only the literal
+    // full-height setting bypasses the latch. The sub-full setting still clocks.
+    struct Case { float height; double firstL, firstR, nextL, nextR; };
+    constexpr Case cases[]{{1.f, -.25, .6, -.09885536, .22944373},
+                           {.97f, .45492853, .13004768, .27775367, -.02162898}};
+    for (const auto& test : cases) {
+        Crush band;
+        band.prepare(32000);
+        UndoHighPass left(32000), right(32000);
+        for (int frame = 0; frame <= 1026; ++frame) {
+            auto [l, r] = endpointMarker(frame - 1022);
+            const float h = frame >= 512 && frame < 1024 ? test.height : .65f;
+            band.processStereo(l, r, 1, h);
+            const double a = left.decode(l), b = right.decode(r);
+            constexpr double tolerance = .0003; // Accumulated frequency error before frame 512.
+            if (frame == 1024 || frame == 1025) {
+                near(a, frame == 1024 ? test.firstL : test.nextL, tolerance, "flat/capped left re-entry");
+                near(b, frame == 1024 ? test.firstR : test.nextR, tolerance, "flat/capped right re-entry");
+            } else if (frame == 1026) {
+                near(a, .07451977, tolerance, "both paths resume the same left phase");
+                near(b, -.19561441, tolerance, "both paths resume the same right phase");
+            }
+        }
+    }
+}
 } // namespace
 int main() try {
     Crush band;
     check(band.prepare(48000),"prepare band");
     quantizer(band);clock(band);longClock(band);combined(band);dither(band);
+    fullRatePlateau(); flatOrCappedHold();
     check(!band.prepare(std::numeric_limits<double>::infinity()),"invalid sample rate");
     near(mono(band,.321f,.1f,.1f),.321f,0,"invalid-rate dry signal");
     std::puts("ADI-Shaper Crush resolution, antialiasing, hold clock, dither, and DC response passed.");
