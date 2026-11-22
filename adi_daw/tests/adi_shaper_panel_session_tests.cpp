@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/adi_shaper_panel_session.hpp"
+#include "adi/dsp/adi_shaper.hpp"
 #include "juce/builtin_host.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/history.hpp"
@@ -33,6 +34,39 @@ float sample(device::DeviceInstance& instance) {
     return left[0];
 }
 
+void bandTrimInProject() {
+    using Core = dsp::AdiShaper;
+    test::TempDirectory temp("adi_shaper_band_trim", "fader");
+    std::string error;
+    auto doc = ui::ProjectDocument::open(temp.path() / "trim.adi", true, device::withBuiltinDevices(), error);
+    require(doc && doc->insertBuiltin(uid, 2, {}), "insert shaper for trim");
+    doc->prepare(48000, 64);
+    doc->tick(0);
+    const auto id = doc->store().db().execAndGet("SELECT MAX(id) FROM devices").getInt64();
+    ui::AdiShaperPanelSession session(*doc, id);
+    auto binding = session.binding();
+    auto* device = doc->session().instanceFor(id);
+    const int trim = Core::VolumeMidTrim + 1;
+    const std::array<Panel::Point,1> quarter{{{0, .25f, -1, Panel::Shape::SourceCorner}}};
+    require(device && binding.hasBandTrim && binding.read(trim) == .5, "registered trim defaults to unity");
+    require(binding.editWave(key, Phase::Begin, {}) && binding.editWave(key, Phase::Change, quarter) &&
+            binding.editWave(key, Phase::End, quarter), "quarter-gain source");
+    const auto steps = [&] { return History(doc->store()).readTimeline().steps.size(); };
+    const auto start = steps();
+    const std::array<Panel::Change,1> boost{{{trim, .75}}};
+    require(binding.parameters(Phase::Begin, {}) && binding.parameters(Phase::Change, boost), "preview trim");
+    require(std::abs(sample(*device) - 1) < .0001 && steps() == start, "trim reaches audio before release");
+    require(binding.parameters(Phase::End, boost) && steps() == start + 1, "one undo step for trim");
+    require(doc->ops().undo().ok && doc->synchronise(), "undo trim");
+    doc->tick(1);
+    session.refresh();
+    require(binding.read(trim) == .5 && std::abs(sample(*device) - .25) < .0001, "undo restores gain and fader");
+    require(doc->ops().redo().ok && doc->synchronise(), "redo trim");
+    doc->tick(2);
+    session.refresh();
+    require(std::abs(binding.read(trim) - .75) < .00001 && std::abs(sample(*device) - 1) < .0001,
+            "redo restores gain and fader");
+}
 void run() {
     test::TempDirectory temp("adi_shaper_session", "journal");
     const auto file=temp.path()/"song.adi";
@@ -95,6 +129,6 @@ void run() {
 }
 }
 int main() {
-    try { run(); std::puts("ADI-Shaper project gesture, audio and recall tests passed"); return 0; }
+    try { run(); bandTrimInProject(); std::puts("ADI-Shaper project gesture, audio and recall tests passed"); return 0; }
     catch(const std::exception& e) { std::fprintf(stderr,"%s\n",e.what()); return 1; }
 }

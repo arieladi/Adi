@@ -35,6 +35,7 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
         std::function<bool(Phase, std::span<const Change>)> parameters;
         std::function<std::vector<Point>(Key)> wave;
         std::function<bool(Key, Phase, std::span<const Point>)> editWave;
+        bool hasBandTrim = false;
     };
     struct Trace {
         std::span<const float> minimum, maximum;
@@ -85,6 +86,7 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     static float average(const std::vector<Point> &);
     bool freeCurve() const;
     std::vector<Control> controls() const;
+    float outputMeterLeft() const noexcept;
     void startNodes(Drag);
     void updateNodes(std::vector<Point>);
     void finish(Phase);

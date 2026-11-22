@@ -32,10 +32,11 @@ void AdiShaperPanelView::frame() {
         return;
     }
     auto *live = doc_.session().resolveDevice(token_);
-    auto *source = dynamic_cast<dsp::AdiShaperScopeSource *>(live);
-    if (!source)
+    if (!live)
         return;
-    const auto version = source->shaperParameterRevision();
+    auto *source = dynamic_cast<dsp::AdiShaperScopeSource *>(live);
+    // Undo and redo publish a new committed project even on hosts without a scope feed.
+    const auto version = source ? source->shaperParameterRevision() : doc_.view().committedGeneration();
     if (version != revision_ && !model_.editing()) {
         const auto previousTitle = model_.presetTitle();
         model_.refresh();
@@ -45,6 +46,8 @@ void AdiShaperPanelView::frame() {
         panel_.refresh();
         revision_ = version;
     }
+    if (!source)
+        return;
     if (auto *scope = source->shaperScope()) {
         const auto k = panel_.selection();
         if (scope->selection() != k.stage * 3 + k.band) {

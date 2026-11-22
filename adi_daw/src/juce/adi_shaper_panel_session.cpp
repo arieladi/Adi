@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/adi_shaper_panel_session.hpp"
+#include "adi/dsp/adi_shaper.hpp"
 #include "adi/dsp/adi_shaper_wave.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_model.hpp"
@@ -71,6 +72,7 @@ AdiShaperPanel::Binding AdiShaperPanelSession::binding() {
     AdiShaperPanel::Binding b;
     if (!title_.empty()) b.presetName = juce::String::fromUTF8(title_.c_str());
     b.parameterCount = defaults_.contains(416) ? 463 : 415;
+    b.hasBandTrim = defaults_.contains(dsp::AdiShaper::WidthHighTrim + 1);
     b.read = [this](int id) { const auto i = values_.find(id); return i == values_.end() ? 0.0 : i->second; };
     b.parameters = [this](Phase p, auto changes) { return parameters(p, changes); };
     if (defaults_.contains(Bank::firstId)) {
