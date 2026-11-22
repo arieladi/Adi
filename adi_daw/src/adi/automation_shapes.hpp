@@ -27,6 +27,10 @@ struct PreparedShape {
     const Store* owner = nullptr;
     std::string client;
 };
+struct AutomationThinning {
+    double maxValueError = 0;
+    double sampleRate = 0;
+};
 // Arrangement shapes replace [start,end) and retain the played exterior
 // through the shared envelope splice. A supplied rate is the owner's session
 // sample clock, otherwise the stored project rate is used. Clip envelopes
@@ -36,8 +40,10 @@ std::optional<PreparedShape> prepareShapeInsertion(Store&, std::int64_t data,
     std::optional<double> sessionRate = {});
 CommitResult commitShapeInsertion(Store&, const PreparedShape&);
 // Same atomic replacement mechanism for recorded, explicitly timestamped points.
-// Input IDs must be zero; preparation assigns fresh replayable IDs.
+// Input IDs must be zero; preparation assigns fresh replayable IDs. Optional
+// thinning is checked at the Arrangement lane's projected sample positions.
 std::optional<PreparedShape> prepareAutomationWrite(Store&, std::int64_t data,
     std::int64_t lane, std::optional<std::int64_t> clip,
-    std::span<const AutomationPoint>, std::string& error);
+    std::span<const AutomationPoint>, std::string& error,
+    std::optional<AutomationThinning> = {});
 } // namespace adi::automation

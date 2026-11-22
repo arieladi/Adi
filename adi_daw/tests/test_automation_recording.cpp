@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/engine/automation_recording.hpp"
+#include "adi/engine/automation.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <chrono>
@@ -217,5 +219,73 @@ void passBoundaries() {
               history.redo().ok && bytes(*store) == persisted,
           "the completed pass has one exact undo and redo");
 }
+void boundedThinning() {
+    const test::TempDirectory temp("automation", "thinning");
+    constexpr double rate = 48000.0, tolerance = 0.00025;
+    for (int clock : {0, 1}) {
+        auto exact = project(temp.path() / ("exact-" + std::to_string(clock) + ".adi"));
+        auto thinned = project(temp.path() / ("thinned-" + std::to_string(clock) + ".adi"));
+        if (clock == 0) {
+            for (auto *store : {exact.get(), thinned.get()}) {
+                store->db().exec("UPDATE automation_lanes SET time_base=0;"
+                                 "INSERT INTO tempo_map(id,pos_ticks,bpm) "
+                                 "VALUES(1,0,120),(2,5500000,73),(3,10550000,155);");
+            }
+        }
+        const std::int64_t unit = clock == 0 ? 50000 : 1000000;
+        RecordedAutomation pass{{3, 2, std::nullopt}, 1, {}};
+        for (std::int64_t i = 0; i <= 400; ++i) {
+            AutomationPoint p{};
+            p.time = i * unit;
+            p.value = 0.2 + static_cast<double>(i) * 0.001 + (i % 2 == 0 ? 0.0 : 0.00005);
+            p.curve = static_cast<std::uint8_t>(i == 64 ? Curve::Hold : Curve::Linear);
+            if (i == 144)
+                p.time = 143 * unit;
+            if (i == 250)
+                p.value += 0.03;
+            pass.points.push_back(p);
+        }
+        std::string error;
+        const auto raw = prepareRecordedAutomation(*exact, pass, error);
+        const auto reduced = prepareRecordedAutomation(
+            *thinned, pass, error, automation::AutomationThinning{tolerance, rate});
+        if (!raw || !reduced ||
+            !automation::commitShapeInsertion(*exact, *raw).ok ||
+            !automation::commitShapeInsertion(*thinned, *reduced).ok)
+            throw std::runtime_error("cannot commit exact and thinned recording fixtures: " + error);
+
+        const auto exactProgram = compileAutomation(rows::readModel(*exact), rate);
+        const auto reducedProgram = compileAutomation(rows::readModel(*thinned), rate);
+        const auto *a = exactProgram->lane(2), *b = reducedProgram->lane(2);
+        if (!a || !b || a->points.empty() || b->points.empty())
+            throw std::runtime_error("cannot compile the exact and thinned recording fixtures");
+        double maxError = 0.0;
+        for (std::int64_t sample = 0; sample <= a->points.back().sample; ++sample)
+            maxError = std::max(maxError, std::abs(valueAt(*a, sample) - valueAt(*b, sample)));
+        check(maxError <= tolerance && b->points.size() < a->points.size() / 4,
+              "projected automation is substantially smaller and bounded at every playback sample");
+        const auto hold = a->points.at(64).sample;
+        const auto step = a->points.at(143).sample;
+        check(b->points.front().sample == a->points.front().sample &&
+                  b->points.back().sample == a->points.back().sample &&
+                  valueAt(*a, hold) == valueAt(*b, hold) && valueAt(*a, hold + 1) == valueAt(*b, hold + 1) &&
+                  std::count_if(b->points.begin(), b->points.end(),
+                                [step](const auto &p) { return p.sample == step; }) == 2 &&
+                  valueAt(*a, step) == valueAt(*b, step),
+              "first and last samples, the Hold segment, and a coincident step keep their anchors");
+        const auto logs = OpJournal(*thinned).recent();
+        check(!logs.empty() && logs.front().actorDetail.find("Automation thinning removed ") == 0 &&
+                  OpJournal(*exact).recent().front().actorDetail.empty(),
+              "the journal distinguishes a thinned pass from an original sparse capture");
+        const auto stored = bytes(*thinned);
+        History history(*thinned);
+        check(history.undo().ok && bytes(*thinned).empty() && history.redo().ok &&
+                  bytes(*thinned) == stored,
+              "Undo and Redo restore the exact recorded reduction");
+        check(!prepareRecordedAutomation(*thinned, pass, error, automation::AutomationThinning{-1, rate}) &&
+                  bytes(*thinned) == stored,
+              "invalid thinning policy leaves the active stream untouched");
+    }
+}
 } // namespace
-int main(){try{run();passBoundaries();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{run();passBoundaries();boundedThinning();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -78,5 +78,6 @@ private:
 };
 
 std::optional<automation::PreparedShape> prepareRecordedAutomation(
-    Store&, const RecordedAutomation&, std::string& error);
+    Store&, const RecordedAutomation&, std::string& error,
+    std::optional<automation::AutomationThinning> = {});
 } // namespace adi::engine

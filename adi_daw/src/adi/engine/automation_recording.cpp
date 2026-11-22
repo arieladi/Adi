@@ -123,8 +123,11 @@ AutomationRecorder::Stats AutomationRecorder::stats() const noexcept {
     return {accepted_.load(std::memory_order_relaxed),dropped_.load(std::memory_order_relaxed),
         ignored_.load(std::memory_order_relaxed),discarded_};
 }
-std::optional<automation::PreparedShape> prepareRecordedAutomation(Store& store,const RecordedAutomation& recorded,std::string& error) {
+std::optional<automation::PreparedShape> prepareRecordedAutomation(
+    Store &store, const RecordedAutomation &recorded, std::string &error,
+    std::optional<automation::AutomationThinning> thinning) {
     if(!recorded.gesture){error="automation: missing recorded gesture identity";return std::nullopt;}
-    return automation::prepareAutomationWrite(store,recorded.target.data,recorded.target.lane,recorded.target.clip,recorded.points,error);
+    return automation::prepareAutomationWrite(store, recorded.target.data, recorded.target.lane,
+                                              recorded.target.clip, recorded.points, error, thinning);
 }
 } // namespace adi::engine
