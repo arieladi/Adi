@@ -1986,6 +1986,12 @@ target_sources(adi_core PRIVATE src/adi/measure/loopback.cpp)
 add_executable(adi_loopback_measurement_tests tests/test_loopback_measurement.cpp)
 target_link_libraries(adi_loopback_measurement_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_loopback_measurement_tests COMMAND adi_loopback_measurement_tests)
+target_sources(adi_core PRIVATE src/adi/measure/residual.cpp)
+add_executable(adi_measure_residual_tests tests/test_measure_residual.cpp)
+target_link_libraries(adi_measure_residual_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_measure_residual_tests COMMAND adi_measure_residual_tests)
+add_executable(adi_measure tools/adi_measure.cpp)
+target_link_libraries(adi_measure PRIVATE adi_core adi_warnings)
 
 # ADR-0156: one decoder for imported audio, into the decoding cache. The
 # libraries' implementations compile once, as C, outside the warning wall;
