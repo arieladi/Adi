@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace adi::dsp {
@@ -18,11 +19,14 @@ public:
     void setNoiseOnly(bool only) noexcept { only_ = only; }
     void setTrim(float normalized) noexcept;
     void setFilters(float highPassSetting, float lowPassSetting) noexcept;
+    bool processWhiteBlock(const float* inL, const float* inR, float* outL, float* outR,
+                           std::size_t frames, float levelHeight) noexcept;
     void processStereo(float& left, float& right, float levelHeight, float pitchHeight) noexcept;
 
 private:
     using Stereo = std::array<float, 2>;
     using FilterState = std::array<Stereo, 2>;
+    Stereo nextWhite() noexcept;
     Stereo nextSource() noexcept;
     float uniform() noexcept;
     void updateFilters() noexcept;

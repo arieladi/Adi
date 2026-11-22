@@ -514,6 +514,11 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         }
     };
     if (stage.layout == 0) {
+        if constexpr (kind == Stage::Noise) {
+            const auto& band = stage.bands[1];
+            if (band.primary.constant && band.blend == 1.f &&
+                noise_[1].processWhiteBlock(inL, inR, outL, outR, frames, band.primary.points[0])) return;
+        }
         if constexpr (kind == Stage::Volume || kind == Stage::Pan) {
             const auto& band = stage.bands[1];
             if (band.primary.constant) {

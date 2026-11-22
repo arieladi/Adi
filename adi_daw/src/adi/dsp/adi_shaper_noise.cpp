@@ -97,7 +97,7 @@ float AdiShaperNoise::uniform() noexcept {
     return static_cast<float>(random_ >> 8) * (1.0f / 8388608.0f) - 1.0f;
 }
 
-AdiShaperNoise::Stereo AdiShaperNoise::nextSource() noexcept {
+AdiShaperNoise::Stereo AdiShaperNoise::nextWhite() noexcept {
     // The polar transform emits a statistically independent stereo pair.
     float x, y, radius;
     do {
@@ -106,7 +106,11 @@ AdiShaperNoise::Stereo AdiShaperNoise::nextSource() noexcept {
         radius = x*x + y*y;
     } while (radius >= 1.0f || radius <= 0.0f);
     const float gain = .02475f * std::sqrt(-2.0f * std::log(radius) / radius);
-    Stereo sample{x*gain, y*gain};
+    return {x*gain, y*gain};
+}
+
+AdiShaperNoise::Stereo AdiShaperNoise::nextSource() noexcept {
+    Stereo sample = nextWhite();
     if (source_ == Source::Pink) {
         const Stereo input = sample;
         sample = {-.31305603f * input[0], -.31305603f * input[1]};
@@ -135,6 +139,65 @@ void AdiShaperNoise::filter(Stereo& sample) noexcept {
     };
     if (high_ > 0) cascade(highState_, highCoeff_, true);
     if (low_ < 1) cascade(lowState_, lowCoeff_, false);
+}
+
+bool AdiShaperNoise::processWhiteBlock(const float* inL, const float* inR, float* outL, float* outR,
+                                       std::size_t frames, float levelHeight) noexcept {
+    if (source_ != Source::White || rate_ <= 0.) return false;
+    constexpr std::size_t chunk = 64;
+    std::array<Stereo, chunk + 4> source;
+    std::array<Stereo, chunk> interpolated;
+    std::array<float, chunk> subphase;
+    std::array<std::size_t, chunk> index;
+    const float level = unit(levelHeight, 0.f) * gain_;
+    for (std::size_t at = 0; at < frames;) {
+        const auto count = std::min(chunk, frames - at);
+        std::copy(history_.begin(), history_.end(), source.begin());
+        // White advances by at most one source pair per output frame. Carry the
+        // last four signed pairs and the exact fractional phase across chunks.
+        std::size_t generated = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            index[i] = generated;
+            subphase[i] = static_cast<float>(phase_);
+            phase_ += step_;
+            if (phase_ >= 1.) { phase_ -= 1.; ++generated; }
+        }
+        for (std::size_t i = 0; i < generated; ++i) source[4+i] = nextWhite();
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto k = index[i];
+            for (std::size_t ch = 0; ch < 2; ++ch) {
+                interpolated[i][ch] = subphase[i] == 0.f ? source[k+1][ch] :
+                    cubic(source[k][ch], source[k+1][ch], source[k+2][ch], source[k+3][ch], subphase[i]);
+            }
+        }
+        std::copy_n(source.begin() + generated, 4, history_.begin());
+        const auto cascade = [&](FilterState& state, float coefficient, bool removeLow) {
+            for (auto& stage : state) {
+                auto memory = stage;
+                for (std::size_t i = 0; i < count; ++i) {
+                    for (std::size_t ch = 0; ch < 2; ++ch) {
+                        const float value = interpolated[i][ch];
+                        const float delta = coefficient * (value - memory[ch]);
+                        const float low = memory[ch] + delta;
+                        interpolated[i][ch] = removeLow ? value - low : low;
+                        memory[ch] += 2.f * delta;
+                    }
+                }
+                stage = memory;
+            }
+        };
+        // Both ears retain their filter memory while mono routes only the left.
+        if (high_ > 0.f) cascade(highState_, highCoeff_, true);
+        if (low_ < 1.f) cascade(lowState_, lowCoeff_, false);
+        for (std::size_t i = 0; i < count; ++i) {
+            const float dryL = only_ ? 0.f : inL[at+i];
+            const float dryR = only_ ? 0.f : inR[at+i];
+            outL[at+i] = dryL + level * interpolated[i][0];
+            outR[at+i] = dryR + level * interpolated[i][mono_ ? 0 : 1];
+        }
+        at += count;
+    }
+    return true;
 }
 
 void AdiShaperNoise::processStereo(float& left, float& right, float levelHeight,

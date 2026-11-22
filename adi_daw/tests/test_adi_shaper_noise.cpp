@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -36,6 +37,48 @@ Noise make(double rate, Noise::Source source = Noise::Source::White) {
 struct Reading {
     double rms, lagOne, stereoCorrelation, kurtosis;
 };
+
+void whiteBlockContinuity() {
+    Noise scalar, block;
+    constexpr std::array<std::size_t, 8> lengths{1, 63, 129, 17, 65, 193, 64, 7};
+    std::array<float, 193> left{}, right{}, outL{}, outR{};
+    const auto sameBits = [](float a, float b) {
+        return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+    };
+    for (std::size_t part = 0; part < lengths.size(); ++part) {
+        const auto source = part == 5 ? Noise::Source::Pink : Noise::Source::White;
+        for (auto* noise : {&scalar, &block}) {
+            if (part == 0 || part == 6)
+                noise->prepare(part == 0 ? 48000. : 96000., 0x692bd147u);
+            if (part == 3) noise->reset();
+            noise->setSource(source);
+            noise->setMono(part < 2 || part == 4);
+            noise->setNoiseOnly(part == 3);
+            noise->setFilters(.23f, .74f);
+        }
+        const auto count = lengths[part];
+        for (std::size_t i = 0; i < count; ++i) {
+            left[i] = i % 11 == 0 ? -0.f : .013f * static_cast<float>(static_cast<int>(i % 19) - 8);
+            right[i] = -.037f * static_cast<float>(static_cast<int>((i + part) % 17) - 7);
+            outL[i] = .625f;
+            outR[i] = -.375f;
+        }
+        const bool handled = block.processWhiteBlock(left.data(), right.data(), outL.data(), outR.data(),
+                                                     count, .82f);
+        check(handled == (source == Noise::Source::White), "white block selects its supported source");
+        for (std::size_t i = 0; i < count; ++i) {
+            if (!handled) {
+                check(outL[i] == .625f && outR[i] == -.375f, "declined block preserves both outputs");
+                outL[i] = left[i];
+                outR[i] = right[i];
+                block.processStereo(outL[i], outR[i], .82f, .31f);
+            }
+            scalar.processStereo(left[i], right[i], .82f, .31f);
+            check(sameBits(left[i], outL[i]) && sameBits(right[i], outR[i]),
+                  "block and scalar retain identical noise, filter history, and signed stereo output");
+        }
+    }
+}
 
 Reading meter(Noise& noise, float pitch = .5f) {
     constexpr int count = 192000;
@@ -184,6 +227,7 @@ void pink() {
 int main() {
     try {
         white();
+        whiteBlockContinuity();
         routing();
         filters();
         pink();
