@@ -129,18 +129,40 @@ Version 1 records:
   other constructed clip sources are checked even if outside the selected range.
 - Each distinct resolved file is hashed with BLAKE3 after Session preparation,
   before offline processing, and again immediately before publication. A native
-  `(volume,file)` identity key joins hardlinks, symlinks and volume-native case
+  `(scheme,volume,file,file_high)` identity key joins hardlinks, symlinks and volume-native case
   aliases. Each distinct selected path incurs one native identity read per pass;
   keyed lookup replaces pairwise filesystem-equivalence checks. All referring
   clip/media IDs, selected paths and stored hash values are retained. Every
   selected path must still name its captured native identity when rechecked,
   even when a replacement has identical bytes. `native_identity` records that
   run-local key, not a persistent or portable content identifier. The shared
-  publisher identity reader uses Windows `GetFileInformationByHandle` or POSIX
-  `stat`, follows symlinks, and refuses callbacks. An unavailable native identity
+  publisher identity reader uses Windows `GetFileInformationByHandleEx(FileIdInfo)`
+  or POSIX `stat`, follows symlinks, and refuses callbacks. Windows keeps the full
+  64-bit volume serial and all 128 file-ID bits. `native_identity.file` retains
+  its existing integer field as the low 64 bits; additive `file_high` holds the
+  upper 64 bits. Each half packs its eight native ID bytes little-endian.
+  `scheme` is `windows_file_id_128`, `windows_legacy_64` or `posix`; all four
+  fields participate in identity. Consumers must preserve unsigned 64-bit JSON
+  integers; a floating-point parse is not an identity-preserving conversion.
+  POSIX and the restricted Windows legacy path use `file_high=0`. These are
+  additive fields in the version-1 report, not a portable identity or content hash.
+  An unavailable native identity
   fails with its filesystem error; there is no path-only fallback claiming the
   same alias/rebinding guarantees. Cancellation is checked
   between files and between the hasher's fixed 64 KiB reads.
+- Windows legacy fallback is used only when the fixed valid `FileIdInfo` query
+  returns unsupported-operation/class codes 1, 50, 87 or 120. Access, sharing,
+  invalid-handle and I/O errors do not downgrade identity. Legacy indices zero
+  and all ones are refused, and a legacy result has a separate namespace from
+  a 128-bit result. Publication, project leases, export alias/rebinding checks
+  and Windows ownership-checked rollback share this handle reader. Rollback
+  still rejects final reparse points and directories before deletion. Microsoft's
+  [FILE_ID_INFO documentation](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)
+  describes the full identifier, and its
+  [legacy structure documentation](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information)
+  warns that the old 64-bit index is not unique on ReFS. Tests include synthetic
+  high-half/upper-volume distinctions, native alias/copy checks and comparison
+  with the direct Windows API; those do not substitute for an actual ReFS run.
 - A stored 64-digit hexadecimal BLAKE3 is compared with the measured start hash
   (uppercase spelling is normalized for comparison). A mismatch fails before
   rendering. Legacy non-digest labels are not treated as proof: `matches_stored`

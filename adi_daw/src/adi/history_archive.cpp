@@ -151,7 +151,21 @@ UndoCompactionResult compactStoredUndo(Store &store, const UndoRetentionPolicy &
         result.ok = true;
         return result;
     }
-    // Name every redo/dead-end tip before its old bridge can be compacted.
+    // The checkpoints keep their sequence numbers, but their incoming edges
+    // are removed. Follow Redo's highest-child rule through retained ops only.
+    std::map<std::optional<std::int64_t>, std::int64_t> redoChildren;
+    for (const auto &row : rows)
+        if (row.seq > cut)
+            redoChildren[row.parent] = row.seq;
+    auto liveTip = OpJournal(store).headSeq();
+    for (std::size_t hops = 0;; ++hops) {
+        const auto child = redoChildren.find(liveTip);
+        if (child == redoChildren.end()) break;
+        if (hops == redoChildren.size()) throw std::runtime_error("the redo chain loops");
+        liveTip = child->second;
+    }
+
+    // Name unheld tips the current line can no longer reach after pruning.
     {
         SQLite::Statement tips(db, "SELECT o.seq,o.ts_utc FROM ops o WHERE o.tags<>'ephemeral' AND "
                                    "o.op_type<>'history.root' AND NOT EXISTS(SELECT 1 FROM ops c "
@@ -159,13 +173,26 @@ UndoCompactionResult compactStoredUndo(Store &store, const UndoRetentionPolicy &
                                    "c.op_type<>'history.root') AND NOT EXISTS(SELECT 1 FROM "
                                    "op_branches b WHERE b.head_seq=o.seq)");
         std::vector<std::pair<std::int64_t, std::int64_t>> held;
-        while (tips.executeStep())
-            held.emplace_back(tips.getColumn(0).getInt64(), tips.getColumn(1).getInt64());
+        while (tips.executeStep()) {
+            const auto seq = tips.getColumn(0).getInt64();
+            if (seq != liveTip) held.emplace_back(seq, tips.getColumn(1).getInt64());
+        }
+        SQLite::Statement exists(db, "SELECT 1 FROM op_branches WHERE name=? LIMIT 1");
         for (const auto &[seq, time] : held) {
+            // A previously named branch may itself have been opened and
+            // undone before this cut. Keep its head and give the tip a new name.
+            const auto base = "before compaction at " + std::to_string(seq);
+            auto name = base;
+            for (std::int64_t ordinal = 2;; ++ordinal) {
+                exists.reset();
+                exists.bind(1, name);
+                if (!exists.executeStep()) break;
+                name = base + " (" + std::to_string(ordinal) + ")";
+            }
             SQLite::Statement branch(db, "INSERT INTO "
                                          "op_branches(name,head_seq,created_utc,is_"
                                          "current,created_by) VALUES(?,?,?,0,'system')");
-            branch.bind(1, "before compaction at " + std::to_string(seq));
+            branch.bind(1, name);
             branch.bind(2, seq);
             branch.bind(3, time);
             branch.exec();

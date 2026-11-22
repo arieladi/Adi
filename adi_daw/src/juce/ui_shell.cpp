@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/edit_plan.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
@@ -61,6 +62,7 @@ void AppCommands::reload() {
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
+    exclusiveArm_ = flag(settings_, "record.exclusiveArm", true);
     if (const auto quantize = settings_.get("record.quantize"); quantize.is_string())
         recordingDefaults_.quantize = quantize.get<std::string>();
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
@@ -209,7 +211,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Delete Fades/Crossfades", "Invert Selection", "Quantize", "Quantize Settings...",
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
-                                  "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range"};
+                                  "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
+                                  "Arrangement Record", "Export Audio/Video..."};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -652,6 +655,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('j', cmd | alt);
         info.setActive(false);
         break;
+    case ArrangementRecord: // manual 21.1 and §41.6: F9
+        info.addDefaultKeypress(juce::KeyPress::F9Key, 0);
+        info.setTicked(active_ != nullptr && active_->isRecording());
+        break;
+    case ExportAudio: // manual 5.2.1 and §41.3: Ctrl/Cmd+Shift+R
+        info.addDefaultKeypress('r', cmd | shift);
+        break;
     case ExpandClipView: // manual 10.2; Live 12's View menu: Expand Clip View, Ctrl/Cmd+Alt+E
         info.addDefaultKeypress('e', cmd | alt);
         info.setTicked(active_ != nullptr && active_->clipViewFull());
@@ -944,7 +954,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     namesBar.delay.onClick = [this] { command(AppCommands::ToggleTrackOptions); };
     namesBar.height.onClick = [this] { command(AppCommands::OptimizeHeight); };
     namesBar.width.onClick = [this] { command(AppCommands::OptimizeWidth); };
-    namesBar.automation.onClick = [this] { say(NamesBar::kAutomationWaits); };
+    namesBar.automation.onClick = [this] { setAutomationMode(!automationMode_); };
     namesBar.lock.onClick = [this] { say(NamesBar::kLockWaits); };
     // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
     addAndMakeVisible(arrangement.overview);
@@ -1677,6 +1687,61 @@ bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
 }
 double AdiRootComponent::editRate() const noexcept {
     return sampleRate_ > 0 ? sampleRate_ : (reader_ ? reader_->sampleRate() : 48000.0);
+}
+bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const char *label) {
+    const auto current = view_.current();
+    if (!current || places.empty())
+        return fail("Select a clip to move.");
+    // The scope: every track a clip leaves or lands on, over the span from the earliest start to the
+    // latest end, where it was and where it goes.
+    std::vector<std::int64_t> tracks;
+    std::int64_t begin = std::numeric_limits<std::int64_t>::max(), end = 0;
+    std::vector<edit_plan::Move> moves;
+    for (const auto &place : places) {
+        const engine::ClipNode *clip = nullptr;
+        std::int64_t from = 0;
+        for (const auto &t : current->tracks)
+            if (t)
+                for (const auto &c : t->clips)
+                    if (c && c->id == place.clip) {
+                        clip = c.get();
+                        from = t->id;
+                    }
+        if (clip == nullptr)
+            return fail("That clip is gone.");
+        for (const auto id : {from, place.track})
+            if (std::find(tracks.begin(), tracks.end(), id) == tracks.end())
+                tracks.push_back(id);
+        begin = std::min({begin, clip->posTicks, place.position});
+        end = std::max({end, clip->posTicks + clip->lengthTicks, place.position + clip->lengthTicks});
+        moves.push_back({place.clip, {place.track, std::nullopt}, {0, place.position}});
+    }
+    const auto scope = edit_plan::materialScope(tracks, edit_plan::PlacementClock::Ticks, {begin, std::max(end, begin + 1)});
+    edit_plan::Options options;
+    options.referenceRate = editRate();
+    options.policy = edit_plan::capturePolicy(commands_.settings());
+    auto prepared = edit_plan::prepareMove(submitter_.store(), scope, moves, options);
+    if (!prepared.ok) {
+        // The planner will not place here yet (automation that follows its clips, AU-05; a frozen track;
+        // an editing setting off Live's rule; clips that already overlap): the clips move as before,
+        // keeping what they land on, and the Status Bar says why, as a range edit does.
+        std::vector<OpRequest> ops;
+        for (const auto &place : places) {
+            OpRequest op;
+            op.opType = "clip.move";
+            op.payload = {{"id", place.clip}, {"to", place.position}, {"track", place.track}};
+            op.label = label;
+            ops.push_back(std::move(op));
+        }
+        const auto why = prepared.error;
+        if (!submitEdits(std::move(ops)))
+            return false;
+        say("Moved, keeping what the clips land on: the engine does not place them here yet (" + why + ").");
+        return true;
+    }
+    if (!prepared.requests.empty())
+        prepared.requests.front().label = label;
+    return commitEdit(std::move(prepared));
 }
 bool AdiRootComponent::commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended) {
     if (!prepared.ok)
@@ -2658,6 +2723,132 @@ bool AdiRootComponent::soloTrack(std::int64_t id, bool add) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+void AdiRootComponent::selectClip(std::int64_t clip) {
+    // As a click on it selects it: its track, and its time.
+    const auto now = view_.current();
+    if (!now)
+        return;
+    for (const auto &t : now->tracks)
+        if (t)
+            for (const auto &c : t->clips)
+                if (c->id == clip) {
+                    auto &sel = arrangement.geometry.selection;
+                    sel.track = t->id;
+                    sel.toTrack = 0;
+                    sel.picked.clear();
+                    sel.clip = clip;
+                    sel.pickedClips.clear();
+                    sel.start = c->posTicks;
+                    sel.end = c->posTicks + c->lengthTicks;
+                    publishSelection();
+                    return;
+                }
+}
+TrackRecordState AdiRootComponent::recordState(std::int64_t track) const {
+    return ::adi::ui::recordState(recordStates_, track);
+}
+bool AdiRootComponent::armTrack(std::int64_t id, bool add) {
+    // From the CURRENT cell (ADR-0201) and the rows the application hands over; one batch.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Arming needs an open project.");
+    auto edit = armTracks(current->tracks, freshRecordStates(), id, arrangement.geometry.selectedTracks(reader()),
+                          commands_.exclusiveArm(), add);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Monitoring needs an open project.");
+    auto edit = ::adi::ui::setMonitor(current->tracks, freshRecordStates(), id, arrangement.geometry.selectedTracks(reader()), mode);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::toggleRecord() {
+    if (!startRecording || !stopRecording || !recording)
+        return fail("Recording runs in the application, with an audio device.");
+    if (recording()) {
+        // Live's Record button again: recording stops, playback goes on.
+        stopRecording();
+        mark(DirtySet::Transport);
+        return true;
+    }
+    const bool rolling = mailbox_.desiredPlaying();
+    if (!rolling && !mailbox_.hasRoom(1))
+        return fail("Transport command queue is full");
+    if (!startRecording(arrangement.geometry.selection.insert, rolling))
+        return false; // the application said why
+    // A recording start plays the transport: the same op Play writes, so the history's transport state
+    // agrees.
+    if (!rolling) {
+        OpRequest request;
+        request.opType = "transport.play";
+        request.payload = Payload::object();
+        (void)submitter_.submit(std::move(request));
+    }
+    mark(DirtySet::Transport);
+    return true;
+}
+ExportChoices AdiRootComponent::exportDefaults() const {
+    // Live renders the time selection, else the loop brace (manual 5.2.1); a project has a brace from New,
+    // so the whole song (its start to the end of its last clip or locator) is for a project without one.
+    ExportChoices c;
+    const auto &sel = arrangement.geometry.selection;
+    const auto current = view_.current();
+    if (sel.end != sel.start) {
+        // A selection made right to left is the same range.
+        c.startTicks = std::min(sel.start, sel.end);
+        c.lengthTicks = std::max(sel.start, sel.end) - c.startTicks;
+    } else if (current && current->transport.loopEndTicks > current->transport.loopStartTicks) {
+        // The loop brace, whether the loop is switched on or not, as Live's.
+        c.startTicks = current->transport.loopStartTicks;
+        c.lengthTicks = current->transport.loopEndTicks - current->transport.loopStartTicks;
+    } else {
+        c.startTicks = 0;
+        c.lengthTicks = arrangementEnd();
+    }
+    if (current && current->sampleRate > 0)
+        c.sampleRate = static_cast<int>(current->sampleRate);
+    return c;
+}
+void AdiRootComponent::setAutomationMode(bool on) {
+    automationMode_ = on;
+    namesBar.automation.setToggleState(on, juce::dontSendNotification);
+    say(on ? "Automation Mode: each track shows its Volume envelope; click a lane to add a breakpoint, drag one "
+             "to move it, double-click one to delete it."
+           : "");
+    arrangement.repaint();
+}
+bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value) {
+    const auto current = view_.current();
+    const auto *t = current ? current->findTrack(track) : nullptr;
+    if (t == nullptr)
+        return fail("That track is gone.");
+    auto &db = submitter_.store().db();
+    AutomationIds ids;
+    ids.lane = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes").getInt64();
+    ids.data = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data").getInt64();
+    ids.point = 1;
+    return submitEdits(::adi::ui::addAutomationPoint(trackEnvelope(*current, track), track, "volume", tick, value,
+                                                     t->volumeDb, ids));
+}
+bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value) {
+    const auto current = view_.current();
+    if (!current)
+        return false;
+    auto ops = ::adi::ui::moveAutomationPoint(trackEnvelope(*current, track), "volume", point, tick, value);
+    return !ops.empty() && submitEdits(std::move(ops));
+}
+bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t point) {
+    const auto current = view_.current();
+    if (!current)
+        return false;
+    auto ops = ::adi::ui::deleteAutomationPoint(trackEnvelope(*current, track), point);
+    return !ops.empty() && submitEdits(std::move(ops));
+}
 bool AdiRootComponent::setSoloInPlace(bool on) {
     // Live's Solo in Place (manual 18.6): one project field for the Solo button's menu and the
     // Options menu's entry (#412, N23), from the CURRENT cell (ADR-0201). The op is outside undo, as
@@ -3255,6 +3446,9 @@ bool AdiRootComponent::command(int id) {
         // Space plays from the insert marker, Shift+Space from where it stopped.
         const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();
         const bool fromMarker = play && id == AppCommands::PlayStop;
+        // Stopping the transport ends a recording (manual 21.1); its take lands on the next frames.
+        if (!play && recording && recording() && stopRecording)
+            stopRecording();
         if (!mailbox_.hasRoom(fromMarker ? 2 : 1))
             return fail("Transport command queue is full");
         OpRequest request;
@@ -3268,6 +3462,15 @@ bool AdiRootComponent::command(int id) {
         mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
         break;
     }
+    case AppCommands::ArrangementRecord:
+        if (!toggleRecord())
+            return false;
+        break;
+    case AppCommands::ExportAudio:
+        if (!exportAudio)
+            return fail("Export runs in the application.");
+        exportAudio(exportDefaults());
+        break;
     case AppCommands::Undo:
     case AppCommands::Redo: {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
@@ -3613,10 +3816,10 @@ const std::vector<MenuEntries> &menuBar() {
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
         {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport}},
+                  C::CollectAndExport, 0, C::ExportAudio}},
 #else
         {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport, 0, C::Quit}},
+                  C::CollectAndExport, 0, C::ExportAudio, 0, C::Quit}},
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
@@ -3939,5 +4142,20 @@ void AdiRootComponent::ImportPrompt::resized() {
     cancel.setBounds(foot.removeFromRight(80));
     foot.removeFromRight(8);
     import.setBounds(foot.removeFromRight(80));
+}
+void AdiRootComponent::addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane) {
+    if (lane == nullptr)
+        return;
+    if (menu.getNumItems() > 0)
+        menu.addSeparator();
+    const auto id = lane->id;
+    menu.addItem("Re-Enable Automation", lane->overridden, false, [safe = SafePointer<AdiRootComponent>(this), id] {
+        if (!safe)
+            return;
+        if (!safe->reenableLane)
+            safe->say("Re-Enable Automation needs the project's session.");
+        else
+            safe->reenableLane(id); // a refusal says why
+    });
 }
 } // namespace adi::ui

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/plugin_registry.hpp"
+#include "adi/scan_catalogue.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -84,12 +85,16 @@ void validationAndCallbacks() {
     check(!reg.scanBlocks(f.error,0) && !reg.scanBlocks(f.error,PluginRegistry::kMaximumScanBlocks+1),"read bounds refuse zero/oversized requests");
     // Every argument is built before the callback scope: MSVC's Debug CRT allocates an
     // iterator proxy whenever a std::string is constructed, even an empty one.
-    const std::string format="clap",reason="crash",uid="known",none;f.error="untouched";
+    const std::string format="clap",reason="crash",uid="known",none,stamp(64,'a'),packet="{}";f.error="untouched";
     bool callback=false;
     {audio::CallbackScope scope;
         callback=!PluginRegistry::open(f.file,f.error) && !reg.route(format,uid) &&
             !reg.remember(format,uid,engine::RouteChoice::Plain,2,f.error) &&
             !reg.beginScan(format,f.path,2,f.error) && !reg.finishScan(*ticket,ScanDisposition::Succeeded,none,2,f.error) &&
+            !reg.beginStampedScan(format,f.path,stamp,2,f.error) &&
+            !scan::readCatalogue(f.file,f.error) &&
+            !reg.finishFailedScan(*ticket,stamp,ScanFailureKind::Crashed,reason,2,f.error) &&
+            !reg.cachedScan(*ticket,stamp,f.error) && !reg.finishCachedScan(*ticket,stamp,packet,2,f.error) &&
             !reg.blockScan(format,f.path,reason,2,f.error) && !reg.unblockScan(format,f.path,f.error) && !reg.scanBlocks(f.error);
     }
     check(callback && f.error=="untouched" && allocations==0 && audio::callbackFileIo==0,"all registry callback entry points refuse before allocating or mutating diagnostics");
@@ -114,7 +119,7 @@ void migrationAndIsolation() {
     check(reg->blockScan("clap",path,"migrated",50,error),"migrated registry admits quarantine independently of routes");
     {
         SQLite::Database db(utf8(file),SQLite::OPEN_READONLY);
-        check(db.execAndGet("PRAGMA user_version").getInt()==2 && db.execAndGet("SELECT updated_utc FROM plugin_routes").getInt64()==42,"migration bumps only application schema version and preserves authored route time");
+        check(db.execAndGet("PRAGMA user_version").getInt()==PluginRegistry::kVersion && db.execAndGet("SELECT updated_utc FROM plugin_routes").getInt64()==42,"migration bumps only application schema version and preserves authored route time");
     }
     const auto poisoned=temp.path()/"bad-legacy.sqlite";
     {

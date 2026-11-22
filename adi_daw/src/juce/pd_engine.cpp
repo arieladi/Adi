@@ -24,10 +24,23 @@ extern "C" {
 // once they have taken sys_lock(). See deliverMidi for why we call them
 // directly.
 #include "s_stuff.h"
+#include "g_canvas.h"
+// DEV-09 AR8 (pd_loader_fix.cmake's m_class.c overlay): marks this thread's
+// ticks, inside which an object Pd does not know is refused, never waited for.
+void adi_pd_set_audio_tick(int on);
 }
 
 namespace adi::device {
 namespace {
+
+/// DF-E36 (a): whether `patch` is still one of this instance's top-level
+/// canvases. A second guard behind the menuclose fence: getdollarzero and
+/// closefile never touch a canvas Pd has freed.
+bool stillOpen(void* patch) noexcept {
+    for (t_canvas* x = pd_getcanvaslist(); x != nullptr; x = x->gl_next)
+        if (static_cast<void*>(x) == patch) return true;
+    return false;
+}
 
 std::mutex& initMutex() {
     static std::mutex m;
@@ -170,6 +183,8 @@ LibPdEngine::LibPdEngine(std::string patchDir, std::string patchFile,
     // Vyukov's bounded queue: slot i starts at sequence i.
     for (std::size_t i = 0; i < kPrintSlots; ++i)
         printSlots_[i].sequence.store(static_cast<std::uint64_t>(i), std::memory_order_relaxed);
+    for (std::size_t i = 0; i < kRefusalSlots; ++i)
+        refusalSlots_[i].sequence.store(static_cast<std::uint64_t>(i), std::memory_order_relaxed);
 }
 
 LibPdEngine::InstanceLock::InstanceLock(LibPdEngine& engine) noexcept
@@ -276,6 +291,7 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
         }
         if (helpersMatch) {
             native_ = std::move(candidate);
+            wantsPosition_ = native_->usesTransportPosition();
             nativeLatency_ = &latency;
             nativeLatency_->report(native_->latencySamples());
             return true;
@@ -329,12 +345,20 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
         error = "libpd_openfile() could not open " + dir_ + "/" + file_;
         return false;
     }
+    if (!stillOpen(patch_)) {
+        error = "the patch closed itself while it opened";
+        patch_ = nullptr;
+        return false;
+    }
     dollarZero_ = libpd_getdollarzero(patch_);
     // Resolved once, here, for `sendParameter`'s reason: `gensym` on the audio
     // thread allocates for a name Pd has not seen, and `pd_list` by name would
     // do exactly that every block.
     transportSymbol_ = static_cast<void*>(
         gensym(pdTransportReceiveName(dollarZero_).c_str()));
+    // The exact position is asked for only by a patch that listens for the
+    // transport, or by a native core that keeps the graph's position.
+    wantsPosition_ = static_cast<t_symbol*>(transportSymbol_)->s_thing != nullptr;
 
     // THE [loadbang] REPORT CANNOT BE CAUGHT, and that is structural rather
     // than an ordering mistake to fix. The receive name is built from `$0`,
@@ -382,7 +406,7 @@ void LibPdEngine::close() noexcept {
             libpd_unbind(latencyBinding_);
             latencyBinding_ = nullptr;
         }
-        libpd_closefile(patch_);
+        if (stillOpen(patch_)) libpd_closefile(patch_);
         patch_ = nullptr;
         dollarZero_ = 0;
     }
@@ -392,6 +416,9 @@ void LibPdEngine::close() noexcept {
     sendTail_.store(sendHead_.load(std::memory_order_acquire), std::memory_order_release);
     pendingMidiCount_ = 0;
     transportPending_ = false;
+    wantsPosition_ = false;
+    carried_ = {};
+    tickStart_ = {};
     libpd_free_instance(static_cast<t_pdinstance*>(instance_));
     instance_ = nullptr;
 }
@@ -459,6 +486,8 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
     // The price is one Pd block of latency, reported through
     // adapterLatencySamples() so the graph compensates it.
     inFill_ = 0;
+    carried_ = {};
+    tickStart_ = {};
     outFill_ = blockMode_ == BlockMode::Buffered ? block_ : 0;
     adapterLatency_ = outFill_;
 }
@@ -544,8 +573,8 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     // delivered inside the next locked tick (lockedTick), never into a running
     // instance without its lock. Pd acts on both at its next tick either way.
     if (transportSet_) {
-        if (native_ != nullptr) deliverTransport();
-        else transportPending_ = true;
+        if (native_ == nullptr) transportPending_ = true;
+        else if (!native_->usesTransportPosition()) native_->tempo(static_cast<float>(transport_.bpm));
     }
 
     // --- MIDI in, before the audio it belongs to (ADR-0194) ------------------
@@ -574,7 +603,7 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     }
 
     if (native_ != nullptr) {
-        native_->process(io);
+        native_->process(io, transportSet_ ? &transport_ : nullptr);
         nativeLatency_->report(native_->latencySamples());
         return;
     }
@@ -589,7 +618,7 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
         auto part = io;
         part.frames = std::min(chunk, n - offset);
         part.blockOffset += offset;
-        processPdAudio(part);
+        processPdAudio(part, offset);
         offset += part.frames;
     }
 
@@ -632,6 +661,7 @@ bool LibPdEngine::lockedTick() noexcept {
     // sys_trylock does not mark the instance locked, as sys_lock does; Pd's
     // own pd_globallock checks the mark.
     pd_this->pd_islocked = 1;
+    adi_pd_set_audio_tick(1);
     deliverPendingLocked();
     // libpd_process_float's body for one tick, without its sys_lock (blocking)
     // and its sys_pollgui (sockets and GUI, never on the audio thread).
@@ -649,6 +679,7 @@ bool LibPdEngine::lockedTick() noexcept {
         for (int c = 0; c < outCh_; ++c)
             tickOut_[static_cast<std::size_t>(frame * outCh_ + c)] =
                 c < outChannels ? static_cast<float>(soundOut[c * DEFDACBLKSIZE + frame]) : 0.f;
+    adi_pd_set_audio_tick(0);
     sys_unlock();
     return true;
 }
@@ -671,17 +702,41 @@ void LibPdEngine::deliverPendingLocked() noexcept {
         if (symbol != nullptr && symbol->s_thing != nullptr) pd_float(symbol->s_thing, paramValues_[i]);
     }
     // Then the transport and the MIDI that belong to the coming audio.
-    if (transportPending_) {
+    // With the graph's exact position, before EVERY tick: its eighth field is
+    // that tick's own. Without it, once per change, as the seven always were.
+    if (transportSet_ && (transportPending_ || tickStart_.known)) {
         transportPending_ = false;
-        deliverTransport();
+        deliverTransport(tickStart_);
     }
     for (std::int32_t i = 0; i < pendingMidiCount_; ++i)
         deliverMidi(pendingMidi_[static_cast<std::size_t>(i)]);
     pendingMidiCount_ = 0;
 }
 
-void LibPdEngine::processPdAudio(const engine::NodeIo& io) noexcept {
+LibPdEngine::TickStart LibPdEngine::startAt(const engine::NodeIo& io, std::int32_t frame) const noexcept {
+    // Within one graph segment the position is linear: the graph cuts at a
+    // seek, a loop wrap and a tempo or meter change, and a stopped transport
+    // stands still. Upstream latency is already in quarterNotes (its arrival).
+    TickStart start;
+    const auto* position = io.deviceTransport;
+    if (position == nullptr || !std::isfinite(position->quarterNotes) || !std::isfinite(position->bpm)) {
+        return start;
+    }
+    start.quarterNotes = position->quarterNotes;
+    start.bpm = position->bpm;
+    start.playing = position->playing;
+    if (position->playing) {
+        start.quarterNotes += static_cast<double>(frame) * position->bpm / (60.0 * sampleRate_);
+    }
+    start.known = true;
+    return start;
+}
+
+void LibPdEngine::processPdAudio(const engine::NodeIo& io, std::int32_t segmentFrame) noexcept {
     const auto n = io.frames;
+    // Frames of the tick at in_[0] that earlier calls pushed: that tick began
+    // before this piece, and keeps the position latched when it began.
+    const std::int32_t pendingBefore = inFill_;
 
     // --- push: planar segment -> interleaved pending input -------------------
     const std::int32_t cap = static_cast<std::int32_t>(in_.size()) / inCh_;
@@ -703,9 +758,18 @@ void LibPdEngine::processPdAudio(const engine::NodeIo& io) noexcept {
     inFill_ += push;
 
     // --- render whole Pd blocks ---------------------------------------------
+    std::int32_t rendered = 0;
     while (inFill_ >= block_) {
+        // This tick's first input frame, counted in this piece (negative: an
+        // earlier call pushed it, and its position was latched then).
+        const std::int32_t first = rendered * block_ - pendingBefore;
+        tickStart_ = first < 0 ? carried_ : startAt(io, segmentFrame + first);
         std::memcpy(tickIn_.data(), in_.data(), tickIn_.size() * sizeof(float));
-        if (lockedTick()) ticks_.fetch_add(1, std::memory_order_relaxed);
+        if (lockedTick()) {
+            ticks_.fetch_add(1, std::memory_order_relaxed);
+        }
+        tickStart_ = {};
+        ++rendered;
 
         inFill_ -= block_;
         if (inFill_ > 0) {
@@ -720,6 +784,14 @@ void LibPdEngine::processPdAudio(const engine::NodeIo& io) noexcept {
                         tickOut_.data(),
                         static_cast<std::size_t>(room) * static_cast<std::size_t>(outCh_) * sizeof(float));
             outFill_ += room;
+        }
+    }
+
+    // A partial tick that began in this piece latches its position now.
+    if (inFill_ > 0) {
+        const std::int32_t first = rendered * block_ - pendingBefore;
+        if (first >= 0) {
+            carried_ = startAt(io, segmentFrame + first);
         }
     }
 
@@ -873,11 +945,7 @@ void LibPdEngine::setTransport(const Transport& tr) noexcept {
     transportSet_ = true;
 }
 
-void LibPdEngine::deliverTransport() noexcept {
-    if (native_ != nullptr) {
-        native_->tempo(static_cast<float>(transport_.bpm));
-        return;
-    }
+void LibPdEngine::deliverTransport(const TickStart& start) noexcept {
     t_symbol* const sym = static_cast<t_symbol*>(transportSymbol_);
     // A patch with no [adi.transport] binds nothing, so this is the whole cost
     // of transport for every patch that does not ask for it.
@@ -885,16 +953,30 @@ void LibPdEngine::deliverTransport() noexcept {
 
     // On the stack, and `pd_list` rather than `libpd_list`: the libpd entry
     // point would take `sys_lock()` and build the atoms with its own
-    // allocating message stack. ADR-0188 d3's field list, in order.
-    t_atom at[7];
-    SETFLOAT(at + 0, transport_.playing ? 1.f : 0.f);
-    SETFLOAT(at + 1, static_cast<t_float>(transport_.bpm));
+    // allocating message stack. ADR-0188 d3's field list, in order, and two
+    // more when the graph gave the exact position of this tick's first input
+    // sample: its WHOLE quarter notes and the FRACTION of the quarter. One
+    // absolute position in a 32-bit t_float would lose a sample within
+    // minutes; split, both parts stay exact for as long as anyone plays (the
+    // whole part to 2^24 quarter notes). Then playing and BPM are the tick's
+    // own as well, so all a patch reads about the tick agrees. A patch
+    // unpacking seven drops the two extra fields.
+    t_atom at[9];
+    SETFLOAT(at + 0, (start.known ? start.playing : transport_.playing) ? 1.f : 0.f);
+    SETFLOAT(at + 1, static_cast<t_float>(start.known ? start.bpm : transport_.bpm));
     SETFLOAT(at + 2, static_cast<t_float>(transport_.timeSigNumerator));
     SETFLOAT(at + 3, static_cast<t_float>(transport_.timeSigDenominator));
     SETFLOAT(at + 4, static_cast<t_float>(transport_.bar));
     SETFLOAT(at + 5, static_cast<t_float>(transport_.beat));
     SETFLOAT(at + 6, static_cast<t_float>(transport_.ticksInQuarter));
-    pd_list(sym->s_thing, &s_list, 7, at);
+    int count = 7;
+    if (start.known) {
+        const double whole = std::floor(start.quarterNotes);
+        SETFLOAT(at + 7, static_cast<t_float>(whole));
+        SETFLOAT(at + 8, static_cast<t_float>(start.quarterNotes - whole));
+        count = 9;
+    }
+    pd_list(sym->s_thing, &s_list, count, at);
 }
 
 void LibPdEngine::deliverMidi(const engine::MpeOut& m) noexcept {
@@ -1049,6 +1131,30 @@ void LibPdEngine::printHookThunk(const char* line) {
 }
 
 void LibPdEngine::enqueuePrint(const char* piece) noexcept {
+    // DF-E36 (d): a refusal goes to its own small queue, which a flood of
+    // ordinary printing cannot fill. A full refusal queue still counts.
+    if (std::strstr(piece, "ADI refused") != nullptr) {
+        auto position = refusalHead_.load(std::memory_order_relaxed);
+        for (;;) {
+            RefusalSlot& slot = refusalSlots_[static_cast<std::size_t>(position % kRefusalSlots)];
+            const auto sequence = slot.sequence.load(std::memory_order_acquire);
+            const auto difference = static_cast<std::int64_t>(sequence - position);
+            if (difference == 0) {
+                if (refusalHead_.compare_exchange_weak(position, position + 1, std::memory_order_relaxed)) {
+                    const std::size_t part = std::min(std::strlen(piece), sizeof(slot.text) - 1);
+                    std::memcpy(slot.text, piece, part);
+                    slot.text[part] = '\0';
+                    slot.sequence.store(position + 1, std::memory_order_release);
+                    return;
+                }
+            } else if (difference < 0) {
+                refusalsDropped_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            } else {
+                position = refusalHead_.load(std::memory_order_relaxed);
+            }
+        }
+    }
     // A piece longer than a slot continues in the next one; the reader joins
     // pieces into lines, so a split costs nothing.
     std::size_t length = std::strlen(piece);
@@ -1084,10 +1190,29 @@ void LibPdEngine::enqueuePrint(const char* piece) noexcept {
 void LibPdEngine::drainConsole() const {
     for (;;) {
         PrintSlot& slot = printSlots_[static_cast<std::size_t>(printTail_ % kPrintSlots)];
-        if (slot.sequence.load(std::memory_order_acquire) != printTail_ + 1) return;
+        if (slot.sequence.load(std::memory_order_acquire) != printTail_ + 1) break;
         appendConsole(slot.text);
         slot.sequence.store(printTail_ + kPrintSlots, std::memory_order_release);
         ++printTail_;
+    }
+    // DF-E36 (d): where pieces were dropped, say so, once, at the gap. A line
+    // Pd had not finished ends there, rather than joining the next one.
+    const auto dropped = consoleDropped_.load(std::memory_order_relaxed);
+    if (dropped > droppedShown_) {
+        if (!pending_.empty()) appendConsole("\n");
+        appendConsole(("[" + std::to_string(dropped - droppedShown_) + " pieces dropped]\n").c_str());
+        droppedShown_ = dropped;
+    }
+    // Refusals, from their own queue: each is a line of its own.
+    for (;;) {
+        RefusalSlot& slot = refusalSlots_[static_cast<std::size_t>(refusalTail_ % kRefusalSlots)];
+        if (slot.sequence.load(std::memory_order_acquire) != refusalTail_ + 1) break;
+        std::string line(slot.text);
+        while (!line.empty() && line.back() == '\n') line.pop_back();
+        if (!pending_.empty()) appendConsole("\n");
+        appendConsole((line + "\n").c_str());
+        slot.sequence.store(refusalTail_ + kRefusalSlots, std::memory_order_release);
+        ++refusalTail_;
     }
 }
 
@@ -1104,6 +1229,11 @@ void LibPdEngine::appendConsole(const char* line) const {
         console_.push_back(pending_.substr(0, nl));
         pending_.erase(0, nl + 1);
     }
+}
+
+void LibPdEngine::pumpConsole() {
+    const std::lock_guard<std::mutex> lock(consoleMutex_);
+    drainConsole();
 }
 
 std::vector<std::string> LibPdEngine::consoleLines() const {

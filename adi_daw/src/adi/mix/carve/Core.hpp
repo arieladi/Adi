@@ -23,7 +23,9 @@ class Core {
     void reset(const Settings &) noexcept;
     // Planar mono/stereo, in place. Key layout is independent of main layout:
     // zero channels releases with zero input; one channel broadcasts to both.
-    // Disabled processing retains histories and performs no signal work.
+    // Disabled processing reports Sleeping, retains histories and performs no
+    // signal work. An exact key alias is legal. Shifted overlap and overlapping
+    // writable programme planes are invalid.
     // Each call is a control boundary for Freeze hold and tiny-state cleanup.
     // Invalid calls return false without changing samples or DSP state.
     bool process(float *const *main, const float *const *key, std::int32_t keyChannels,

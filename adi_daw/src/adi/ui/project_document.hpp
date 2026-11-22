@@ -3,13 +3,16 @@
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
 #include "adi/sample_slots.hpp"
+#include "adi/engine/audio_recording.hpp"
 #include "adi/engine/param_ops.hpp"
+#include "adi/gesture_producers.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/material_commands.hpp"
+#include "adi/ui/arm_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/op_submitter.hpp"
@@ -19,6 +22,8 @@
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
+#include <atomic>
+#include <functional>
 #include <optional>
 namespace adi::ui {
 using media::pathFromUtf8;
@@ -76,6 +81,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
+    // Installed by the audio device owner before attaching its callback. Evaluated on the
+    // message thread when the driver supplies the granted size to prepare.
+    void configureGraphWorkers(std::function<std::uint32_t(std::int32_t)> count,
+                               std::int32_t minimumFrames);
     void prepare(double rate, std::int32_t frames) override;
     void release() override;
     void process(const engine::AudioIo &) noexcept override;
@@ -115,11 +124,56 @@ class ProjectDocument final : public engine::BlockProcessor {
     // not an undo step: the override is session state (ADR-0162), and so is its end. True with
     // nothing overridden too; false with `error()` when the session's rebuild failed.
     bool reenableAutomation();
+    // The parameter's context menu in Live (manual 25.4): one overridden lane follows its envelope
+    // again; the others stay overridden. Session state as above, no undo step. False with `error()`
+    // when the lane was not overridden or the rebuild failed.
+    bool reenableAutomation(std::int64_t laneId);
     // Live's Automation Arm (manual 25.1): whether a control moved while the Arrangement Record
-    // button is on becomes automation. The session's switch, on in a new Set as Live's. The window
-    // does not record yet, so the session is never told that recording is on.
+    // button is on becomes automation. The session's switch, on in a new Set as Live's. Automation
+    // recording is not wired yet (AU-03), so the session is never told that recording is on.
     void setAutomationArmed(bool armed) noexcept;
     bool automationArmed() const noexcept { return session_.automationArmed(); }
+    // Arm and monitoring as the session's rows hold them (MX-09): the snapshot carries neither yet.
+    RecordStates recordStates() const;
+    // Arrangement Record (MX-09; Live 12 manual 21.1): every armed audio track records from the audio
+    // device's inputs 1/2 (1 on a device with one input; the window's In/Out column shows "1/2", and
+    // `tracks.input_ref` has no grammar yet, MX-25). The recorder is prepared here, on the message
+    // thread, before the driver is told; stopped, the driver starts at the song start or the insert
+    // marker after the saved Count-In (`RenderBlock::startPlayback`). Playing, it records from the
+    // playhead on, as Live's punch in. False with `error()` saying why: nothing armed, only MIDI armed
+    // (the engine's live MIDI input is not on main yet), a device with no inputs, the engine's refusal.
+    // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
+    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
+    // Stops the recorder (the transport is the caller's); the takes land on a later `tick()`.
+    void stopRecording();
+    // Lands a running or stopping take now, with the driver detached (a project replaced, Quit): call it
+    // after the audio callback is gone and before the document goes.
+    void settleRecording();
+    bool recording() const noexcept { return recording_; }
+    bool landingTake() const noexcept { return landing_; }
+    // What the last take did, once: the clips it added (one undo step for all of them), or nothing and
+    // the reason in `error()`. Empty until a take lands.
+    struct TakeLanded {
+        bool ok = false;
+        std::vector<std::int64_t> clips;
+        std::string message;
+    };
+    std::optional<TakeLanded> takeLanded();
+    // A mixer drag heard while it moves (MX-23, SRF-02; Live 12 manual 18.1): a fader, a pan or a send
+    // knob, on its track or, when that track is among the selected, on every selected track by the same
+    // move. Begin captures the values where the drag starts; each Value is heard at once, with no op;
+    // End commits ONE transaction of the final values, one undo step named `label`, or nothing when
+    // nothing changed; Cancel (Esc) puts every value back. The engine's gesture session does the work
+    // (`gesture::relativeScalarProducer`); `coordinate` is the control's own value (a fader's dB, a
+    // pan's -1..1). False with `error()` saying why; a drag already running is ended first.
+    // With no `coordinate` the drag begins where the rows stand and is heard from its first move, so a
+    // click that does not move writes nothing.
+    bool beginMixerDrag(const gesture::RelativeScalarSelection &, std::optional<double> coordinate,
+                        const std::string &label);
+    bool mixerDrag(double coordinate);
+    bool endMixerDrag();
+    void cancelMixerDrag();
+    bool mixerDragging() const noexcept { return mixerDrag_ != nullptr; }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
@@ -140,7 +194,12 @@ class ProjectDocument final : public engine::BlockProcessor {
     // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
     bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    bool insertPlugin(const rows::PluginRef &, std::int64_t track,
+                      std::optional<std::int64_t> before = {}, const PluginInsertOptions& = {});
     bool addMixFunction(mix::Function, std::int64_t track);
+    std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
+    bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);
+    bool setDeviceKey(const DevicePanelData&,std::optional<std::int64_t> source,const std::string& tap);
     bool moveMixFunction(const DevicePanelData &expected, std::int64_t track,
                          std::optional<std::int64_t> before);
     // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
@@ -183,6 +242,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    bool finishInsert(PreparedBuiltinInsert);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
     // and for a gesture, so a gesture's quiet timer and its End agree.
@@ -200,6 +260,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // so a frame that changes nothing builds nothing; the rows did not move, so the session has
     // nothing to re-read after it.
     void followOverrides();
+    void persistReportedLatencies();
+    void refreshReportedLatenciesForSave();
     std::unique_ptr<Store> store_;
     std::string name_;
     engine::ProjectView view_;
@@ -213,8 +275,24 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::shared_ptr<const gesture::OwnerToken> owner;
     };
     std::map<std::pair<std::int64_t, std::string>, SurfaceGesture> surfaceGestures_;
+    std::function<std::uint32_t(std::int32_t)> graphWorkerCount_;
+    std::int32_t graphWorkerMinimumFrames_ = 1;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
+    std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
+    // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
+    void landTake(engine::AudioRecordingResult &);
+    bool recording_ = false, landing_ = false;
+    std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
+    std::optional<TakeLanded> landed_;
+    // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
+    std::shared_ptr<gesture::Coordinator> coordinator_;
+    std::unique_ptr<gesture::Session> mixerDrag_;
     ParameterFeed feed_;
+    // Owner-only. Refresh the pointer even when latency fields still match so
+    // an old load of controls is never held after its display changes.
+    std::shared_ptr<const ParameterPublication> reportedLatencyFeed_;
+    std::uint64_t reportedLatencySequence_ = 0;
+    double reportedLatencyRate_ = 0;
     struct AnalysisSource { engine::ScopeLease lease; double seconds = 0; };
     std::map<engine::ScopeSource, AnalysisSource> analysisSources_;
     std::shared_ptr<SharedAnalysis> analysis_;

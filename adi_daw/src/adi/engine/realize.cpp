@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/realize.hpp"
+#include "adi/engine/mixer.hpp"
 
 #include <algorithm>
 #include <cstring>
+#include <cmath>
+#include <limits>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -13,6 +16,37 @@ namespace adi::engine {
 namespace {
 
 std::string trackRef(std::int64_t id) { return "tracks#" + std::to_string(id); }
+// Owned by one immutable graph. Gains are computed on its owner; no atomics,
+// allocation, worker, source-fader duplication or SDK calls in its callback.
+class KeyGain final : public Node {
+public:
+    KeyGain(double db,double pan) {
+        const auto p=panGainsWide(pan,PanLaw::Live);
+        gain_=faderGain(db);left_=gain_*p.left;right_=gain_*p.right;
+    }
+    std::int64_t tailSamples() const noexcept override {return 0;}
+    bool processesDouble() const noexcept override {return true;}
+    EventFlow eventFlow() const noexcept override {return EventFlow::Consume;}
+    const char* name() const noexcept override {return "device key gain";}
+    void process(const NodeIo& io) noexcept override {
+        if(io.wide())run(io,io.in64,io.out64);
+        else run(io,io.in,io.out);
+    }
+private:
+    double gain_=1,left_=1,right_=1;
+    template<class T>void run(const NodeIo& io,const T*const* in,T*const* out) noexcept {
+        if(!out)return;
+        for(std::int32_t c=0;c<io.channels;++c) {
+            if(!out[c])continue;
+            auto* dst=out[c]+io.blockOffset;
+            const auto* src=in&&in[c]?in[c]+io.blockOffset:nullptr;
+            const auto gain=static_cast<T>(c==0?left_:c==1?right_:gain_);
+            if(!src || gain==T{})std::fill_n(dst,io.frames,T{});
+            else if(gain==T{1})std::memcpy(dst,src,static_cast<std::size_t>(io.frames)*sizeof(T));
+            else for(std::int32_t i=0;i<io.frames;++i)dst[i]=src[i]*gain;
+        }
+    }
+};
 
 }  // namespace
 
@@ -203,6 +237,46 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
         }
         const std::int64_t srcId = plan.nodes[e.from].trackId;
         const std::int64_t dstId = plan.nodes[e.to].trackId;
+        if(e.keyDevice!=0) {
+            const auto ref="routing#"+std::to_string(e.routingId);
+            const auto srcChain=r->chains_.find(srcId),dstChain=r->chains_.find(dstId);
+            if(srcChain==r->chains_.end() || dstChain==r->chains_.end()) {
+                r->problems_.push_back(ref+": a device key endpoint carries no audio");continue;
+            }
+            Node* target=opts.keyDeviceFor?opts.keyDeviceFor(e.keyDevice):nullptr;
+            const auto targetId=target?r->graph_.find(*target):kInvalidNode;
+            const auto& destination=dstChain->second;
+            const bool inChain=target && std::any_of(destination.nodes.begin(),destination.nodes.end(),
+                [&](const auto& n){return n.first==target;});
+            if(targetId==kInvalidNode || !inChain || !opts.keyTapFor) {
+                r->problems_.push_back(ref+": key device/input or source tap is unavailable");continue;
+            }
+            const auto endpoint=opts.keyTapFor(srcId,e.tap);
+            if(!endpoint) {r->problems_.push_back(ref+": source key tap is unavailable");continue;}
+            Node* tap=*endpoint;
+            const auto source=tap?r->graph_.find(*tap):r->inputFor(srcId);
+            const auto& chain=srcChain->second;
+            const bool sourceHere=!tap || std::any_of(chain.nodes.begin(),chain.nodes.end(),
+                [&](const auto& n){return n.first==tap;});
+            if(source==kInvalidNode || !sourceHere || !std::isfinite(e.keyGainDb) ||
+               !std::isfinite(e.keyPan) || !std::isfinite(faderGain(e.keyGainDb)) ||
+               faderGain(e.keyGainDb)>static_cast<double>(std::numeric_limits<float>::max())/2) {
+                r->problems_.push_back(ref+": invalid key source/tap/gain");continue;
+            }
+            auto gain=std::make_unique<KeyGain>(e.keyGainDb,e.keyPan);
+            const auto gainId=add(*gain);r->owned_.push_back(std::move(gain));
+            if(!r->graph_.connect(source,gainId) || !r->graph_.connect(gainId,targetId,Bus::Sidechain)) {
+                r->problems_.push_back(ref+": graph refused device key");continue;
+            }
+            // Distinct logical identities survive unrelated rebuilds, while a
+            // changed source, target or tap cannot inherit another key's rings.
+            RealizedGraph::EdgeKey before{srcId,dstId,static_cast<std::uint8_t>(Bus::Main),0,
+                e.routingId,e.keyDevice,static_cast<std::uint8_t>(e.tap)};
+            auto after=before;after.bus=static_cast<std::uint8_t>(Bus::Sidechain);
+            r->planEdges_.push_back({before,source,gainId,Bus::Main});
+            r->planEdges_.push_back({after,gainId,targetId,Bus::Sidechain});
+            continue;
+        }
         const NodeId from = r->outputFor(srcId);
         const NodeId to = r->inputFor(dstId);
 

@@ -3,6 +3,7 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/engine/mpe_input.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
@@ -20,6 +21,7 @@
 #include <limits>
 #include <new>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 namespace {std::atomic<unsigned> allocations{0};}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
@@ -87,11 +89,11 @@ struct Fixture {
         store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'midi','Capture'),(9,'master','Main');"
             "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','capture.probe','Probe','instrument');"
             "INSERT INTO device_chains(id,track_id) VALUES(1,1);INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Probe')");}
-    Played play(Precision precision,double rate=48000,std::size_t frames=128) {
+    Played play(Precision precision,double rate=48000,std::size_t frames=128,std::int64_t start=0) {
         Session session;Probe* probe=nullptr;session.graph().setFadeFrames(0);SessionSpec format{2,rate,64};format.precision=precision;
         if(!session.load(*store,[&](const DeviceRequest&,std::string&)->std::unique_ptr<device::DeviceInstance>{auto device=std::make_unique<Probe>();probe=device.get();return device;},format))throw std::runtime_error(session.error());
         if(!session.problems().empty())throw std::runtime_error(session.problems().front());
-        session.transport().play();Played result;result.audio.resize(frames);
+        session.transport().locate(start);session.transport().play();Played result;result.audio.resize(frames);
         std::array<float,128> narrow{};std::array<double,128> wide{};float* out[]={narrow.data(),narrow.data()+64};double* out64[]={wide.data(),wide.data()+64};
         for(std::size_t first=0;first<frames;first+=64) {
             AudioIo io;io.out=out;if(precision==Precision::Float64)io.out64=out64;io.numOut=2;io.frames=static_cast<std::int32_t>(std::min<std::size_t>(64,frames-first));
@@ -104,6 +106,48 @@ struct Fixture {
 double expected(std::int64_t frame) {
     if(frame<0 || frame>=64)return 0;
     const int active=(frame<24?1:0)+(frame>=8 && frame<48?1:0)+(frame>=32?1:0);return static_cast<double>(active)*0.125;
+}
+void sampleOriginRounding() {
+    constexpr auto quarter=static_cast<std::int64_t>(textproj::kPPQ);
+    for(const auto& [bpm,position,rate]:std::array{
+        std::tuple{110,quarter,48000u},std::tuple{128,4*quarter,44100u}}) {
+        Fixture fixture;
+        fixture.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,"+std::to_string(bpm)+")");
+        const edit::TimeMap time(fixture.store->db());
+        const auto start=std::llround(time.seconds(position)*static_cast<double>(rate));
+        std::string error;
+        const auto take=capture::prepareMidi(*fixture.store,transcript(rate),spec(7,position),error);
+        check(take && take->notes==3 && capture::commitMidi(*fixture.store,*take).ok,
+              "ordinary tempo and half-sample start both prepare and commit at the given tick");
+        if(!take)continue;
+        const auto bytes=fixture.store->getEventStream(7,"notes");
+        const StreamReader<NoteRecord> notes(bytes?std::span<const std::byte>(*bytes):std::span<const std::byte>{},FourCC::Notes);
+        check(notes.count()==3 && notes.at(0)->start_ticks==0 &&
+              fixture.store->db().execAndGet("SELECT pos_ticks FROM clips WHERE id=7").getInt64()==position,
+              "capture offset zero preserves the given musical origin rather than a nearby tick");
+        const auto heard=fixture.play(Precision::Float64,rate,128,start);
+        bool exact=heard.ons==3 && heard.offs==3 && heard.active==0;
+        for(std::size_t frame=0;frame<heard.audio.size();++frame)
+            exact=exact && heard.audio[frame]==expected(static_cast<std::int64_t>(frame));
+        check(exact,"capture offsets preserve every rounded driver sample on the actual Session path");
+    }
+    for(const auto bpm:{90,110,140}) {
+        Fixture fixture;
+        fixture.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,"+std::to_string(bpm)+")");
+        const edit::TimeMap time(fixture.store->db());
+        bool exact=true,floor=true;
+        for(std::int64_t tick=quarter;tick<quarter+512;++tick) {
+            const auto nanos=time.nanos(tick);
+            exact=exact && time.ticks(nanos)==tick;
+            floor=floor && time.ticks(nanos-8)==tick-1;
+        }
+        check(exact && floor,"nanosecond round-trip recovers integer ticks and preserves the true floor at 90, 110 and 140 BPM");
+    }
+    TempoMap tempo;tempo.events.push_back({0,120,0});
+    check(tempo.secondsToTicks(std::numeric_limits<double>::quiet_NaN())==0 &&
+          tempo.secondsToTicks(std::numeric_limits<double>::infinity())==0 &&
+          tempo.secondsToTicks(std::numeric_limits<double>::max())==std::numeric_limits<std::int64_t>::max(),
+          "nonfinite and huge inverse tempo inputs avoid an out-of-range conversion");
 }
 void nativeHistory() {
     for(const auto precision:{Precision::Float32,Precision::Float64}) {
@@ -269,6 +313,6 @@ void largeCapture() {
         "large Capture retains every identity and one undo/redo restores the complete stream");
 }
 }
-int main(){try{nativeHistory();clocksAndSourceConventions();guardsAndTransactions();refusalCases();nativePackets();largeCapture();check(allocations==0 && audio::callbackFileIo==0,"actual input/Capture playback and callback refusal allocate nothing and perform no callback file I/O");}
+int main(){try{nativeHistory();clocksAndSourceConventions();sampleOriginRounding();guardsAndTransactions();refusalCases();nativePackets();largeCapture();check(allocations==0 && audio::callbackFileIo==0,"actual input/Capture playback and callback refusal allocate nothing and perform no callback file I/O");}
 catch(const std::exception& e){std::printf("EXCEPTION: %s\n",e.what());check(false,"fixture must complete");}
 std::printf("midi_capture: %d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -56,6 +56,25 @@ adi_pd_replace([=[int sys_run_scheduler(const char *externalschedlibname,
         pd_error(0, "ADI refused an external scheduler: %s", externalschedlibname);
         return (1);
     }]=])
+# DEV-09 AR8: no abstraction is made inside one of ADI's ticks, whether or not
+# its name is registered yet: it would be read and parsed from disk on the
+# audio thread (a [clone] resize, dynamic patching). The m_class.c overlay
+# below refuses a name Pd does not know; this refuses one it does, so the
+# answer depends on the tick alone, never on what any device loaded before.
+adi_pd_replace([=[static t_pd *do_create_abstraction(t_symbol*s, int argc, t_atom *argv)
+{
+]=] [=[int adi_pd_in_audio_tick(void);
+static t_pd *do_create_abstraction(t_symbol*s, int argc, t_atom *argv)
+{
+        /* ADI (DEV-09 AR8): not inside a tick. */
+    if (adi_pd_in_audio_tick())
+    {
+        pd_this->pd_newest = 0;
+        pd_error(0, "ADI refused creating '%s' while audio runs (DEV-09 AR8: "
+            "an abstraction is read from disk)", s->s_name);
+        return (0);
+    }
+]=])
 file(WRITE "${adi_pd_overlay}/s_loader.c" "${adi_pd_text}")
 file(READ "${adi_pd_source}/m_class.c" adi_pd_text)
 # Multi-line needles below are written with LF: a checkout with CRLF must match.
@@ -92,6 +111,43 @@ adi_pd_replace("    class_loadsym = s;" [=[    t_symbol *previous_loadsym = clas
 adi_pd_replace("        tryingalready--;" [=[        tryingalready--;
         class_loadsym = previous_loadsym;]=])
 adi_pd_replace("    class_loadsym = 0;" "    class_loadsym = previous_loadsym;")
+# DEV-09 AR8: an object Pd does not know, made while audio runs (dynamic
+# patching from a clock or a parameter's message), took the process-wide write
+# lock below inside the tick -- the audio thread waited on every other Pd
+# device's tick and editor -- and looked for an abstraction on disk. ADI's
+# engine marks its own ticks; inside one, such an object is refused by name.
+adi_pd_replace([=[void new_anything(void *dummy, t_symbol *s, int argc, t_atom *argv)
+{
+    int fd;
+    char dirbuf[MAXPDSTRING], classslashclass[MAXPDSTRING], *nameptr;
+]=] [=[    /* ADI (DEV-09 AR8): set while ADI's engine holds an instance for a tick
+    on the audio thread (LibPdEngine::lockedTick). */
+static PERTHREAD int adi_pd_audio_tick;
+void adi_pd_set_audio_tick(int on);
+void adi_pd_set_audio_tick(int on)
+{
+    adi_pd_audio_tick = on;
+}
+int adi_pd_in_audio_tick(void);   /* the s_loader.c overlay's question */
+int adi_pd_in_audio_tick(void)
+{
+    return (adi_pd_audio_tick);
+}
+
+void new_anything(void *dummy, t_symbol *s, int argc, t_atom *argv)
+{
+    int fd;
+    char dirbuf[MAXPDSTRING], classslashclass[MAXPDSTRING], *nameptr;
+        /* ADI (DEV-09 AR8): not inside a tick. The box stays broken, as for
+        any object Pd cannot create, and nothing stale is taken for it. */
+    if (adi_pd_audio_tick)
+    {
+        pd_this->pd_newest = 0;
+        pd_error(0, "ADI refused creating '%s' while audio runs (DEV-09 AR8: "
+            "an object Pd does not know would wait on every Pd device)", s->s_name);
+        return;
+    }
+]=])
 adi_pd_replace("    c->c_name = c->c_helpname = s;" [=[#ifdef PDINSTANCE
     c->c_name = c->c_helpname = s ? dogensym(s->s_name, 0, &pd_maininstance) : 0;
 #else
@@ -148,7 +204,8 @@ file(WRITE "${adi_pd_overlay}/g_io.c" "${adi_pd_text}")
 # make patches nobody asked for; the path, startup and preference messages
 # change where Pd looks for code or write files; the audio and MIDI dialogs
 # reconfigure devices Pd does not own here; `fast-forward` runs the scheduler
-# for as long as it is told, on whichever thread sent it. Each becomes one
+# for as long as it is told, on whichever thread sent it; `compatibility` sets
+# one process-wide level every Pd instance in the session reads. Each becomes one
 # refusal naming the message. ADI never sends any of them: it opens patches with
 # libpd_openfile (glob_evalfile), not `open`.
 file(READ "${adi_pd_source}/m_glob.c" adi_pd_text)
@@ -179,7 +236,8 @@ foreach(adi_pd_fenced IN ITEMS
         "glob_loadpreferences,\n        gensym(\"load-preferences\"), A_DEFSYM, 0"
         "glob_savepreferences,\n        gensym(\"save-preferences\"), A_DEFSYM, 0"
         "glob_forgetpreferences,\n        gensym(\"forget-preferences\"), A_DEFSYM, 0"
-        "glob_fastforward,\n         gensym(\"fast-forward\"), A_FLOAT, 0")
+        "glob_fastforward,\n         gensym(\"fast-forward\"), A_FLOAT, 0"
+        "glob_compatibility,\n        gensym(\"compatibility\"), A_FLOAT, 0")
     string(REGEX MATCH "gensym\\(\"[a-z-]+\"\\)" adi_pd_name "${adi_pd_fenced}")
     adi_pd_replace("(t_method)${adi_pd_fenced});" "(t_method)adi_glob_refused, ${adi_pd_name}, A_GIMME, 0);")
 endforeach()
@@ -209,9 +267,124 @@ void pd_free(t_pd *x)
             pd_unbind(x, a);
     }]=])
 file(WRITE "${adi_pd_overlay}/m_pd.c" "${adi_pd_text}")
+# DF-E36 (a), (b): a patch cannot close the patch ADI opened, nor quit. In
+# canvas_menuclose, force 0 or 1 to a top-level canvas and force 2 to any
+# canvas free the root under the engine (a use after free and a double free
+# in LibPdEngine::close); force 3 calls glob_verifyquit directly, past the
+# glob fence, and with no dirty canvas sets the process-wide sys_quit that
+# libpd never clears -- every instance's scheduler then skips its DSP. Each
+# is refused by name. Force 0 or 1 to a subpatch, which headless only hides
+# it, stays.
+file(READ "${adi_pd_source}/g_editor.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[void canvas_menuclose(t_canvas *x, t_floatarg fforce)
+{
+    int force = fforce;]=] [=[void canvas_menuclose(t_canvas *x, t_floatarg fforce)
+{
+    int force = fforce;
+    if (force == 3 || force == 2 || !x->gl_owner)
+    {
+        pd_error(0, "ADI refused [menuclose %d] (DEV-09): a patch cannot close the patch "
+            "it is in, or quit", force);
+        return;
+    }]=])
+# DEV-09 PD2 (found by the seeded patch-text fuzz): `#X connect` on a canvas
+# with no objects walked off its empty list (src->g_next on NULL) and crashed
+# the process; a negative index is refused with it. Both now fail as Pd's own
+# bad connections do, by name on the console.
+adi_pd_replace([=[    if (THISED->paste_canvas == x) whoout += THISED->paste_onset,
+        whoin += THISED->paste_onset;
+]=] [=[    if (THISED->paste_canvas == x) whoout += THISED->paste_onset,
+        whoin += THISED->paste_onset;
+        /* ADI (DEV-09 PD2): no objects to connect, or no such index. */
+    if (!x->gl_list || whoout < 0 || whoin < 0)
+        goto bad;
+]=])
+# DEV-09 PD2 (found by the review of the fuzz): a box that failed to create
+# (`[osc~ foo]`) is given dummy outlets or inlets up to the connection's port
+# number, which came from the patch unbounded: `#X connect 0 100000000 1 0`
+# made Pd build 1e8 outlets, each by walking the list (a hang, then a NULL
+# write when memory ran out). A port past 1024 on such a box fails instead.
+adi_pd_replace([=[        /* if object creation failed, make dummy inlets or outlets
+           as needed */
+]=] [=[        /* ADI (DEV-09 PD2): dummy ports only up to a bound. */
+    if (outno < 0 || inno < 0 ||
+        (pd_class(&src->g_pd) == text_class && objsrc->te_type == T_OBJECT && outno >= 1024) ||
+        (pd_class(&sink->g_pd) == text_class && objsink->te_type == T_OBJECT && inno >= 1024))
+        goto bad;
+        /* if object creation failed, make dummy inlets or outlets
+           as needed */
+]=])
+file(WRITE "${adi_pd_overlay}/g_editor.c" "${adi_pd_text}")
+# DF-E36 (c): no help patch is opened for a patch. The canvas's and [array
+# define]'s `done-popup 2` reach glob_evalfile through open_via_helppath: the
+# same effect the glob fence refuses for `open` and `menunew`. ADI calls it
+# from nowhere; libpd_openfile and abstraction loading do not pass here.
+file(READ "${adi_pd_source}/s_path.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[void open_via_helppath(const char *name, const char *dir)
+{]=] [=[void open_via_helppath(const char *name, const char *dir)
+{
+    if (name)
+    {
+        pd_error(0, "ADI refused a help patch: %s (DEV-09)", name);
+        return;
+    }]=])
+file(WRITE "${adi_pd_overlay}/s_path.c" "${adi_pd_text}")
+# DF-E36 (e): a patch cannot change where Pd looks for code. canvas_declare
+# serves the [declare] box, the file's `#X declare` record and a run-time
+# `declare` message alike; its -path, -stdpath, -lib and -stdlib are refused
+# by name. The engine's own libpd_add_to_search_path is untouched.
+file(READ "${adi_pd_source}/g_canvas.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+foreach(adi_pd_call IN ITEMS "canvas_path(x, e, item);" "canvas_stdpath(e, item);"
+                             "canvas_lib(x, e, item);" "canvas_stdlib(e, item);")
+    adi_pd_replace("            ${adi_pd_call}"
+        "            pd_error(0, \"ADI refused [declare %s %s] (DEV-09): a patch cannot change where Pd looks for code\", flag, item);")
+endforeach()
+file(WRITE "${adi_pd_overlay}/g_canvas.c" "${adi_pd_text}")
+# DF-E36 (a)'s "menusave and menusaveas, which write files": a patch cannot
+# write files through its canvas. `savetofile` writes the patch's text to any
+# name in any folder, `menusave` overwrites the patch's own file with what the
+# patch made of itself at run time, `write` writes the canvas's data; each is
+# a message any patch can send, past the PD4 walk, and each is refused by
+# name. ADI saves no patch through Pd. menusaveas only asks a GUI (none here).
+file(READ "${adi_pd_source}/g_readwrite.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[static void canvas_savetofile(t_canvas *x, t_symbol *filename, t_symbol *dir,
+    float fdestroy)
+{]=] [=[static void canvas_savetofile(t_canvas *x, t_symbol *filename, t_symbol *dir,
+    float fdestroy)
+{
+    if (filename)
+    {
+        pd_error(0, "ADI refused [savetofile %s] (DEV-09): a patch cannot write files",
+            filename->s_name);
+        return;
+    }]=])
+adi_pd_replace([=[static void canvas_menusave(t_canvas *x, t_float fdestroy)
+{]=] [=[static void canvas_menusave(t_canvas *x, t_float fdestroy)
+{
+    if (x)
+    {
+        pd_error(0, "ADI refused [menusave] (DEV-09): a patch cannot write files");
+        return;
+    }]=])
+adi_pd_replace([=[static void glist_write(t_glist *x, t_symbol *filename, t_symbol *format)
+{]=] [=[static void glist_write(t_glist *x, t_symbol *filename, t_symbol *format)
+{
+    if (filename)
+    {
+        pd_error(0, "ADI refused [write %s] (DEV-09): a patch cannot write files",
+            filename->s_name);
+        return;
+    }]=])
+file(WRITE "${adi_pd_overlay}/g_readwrite.c" "${adi_pd_text}")
 get_target_property(adi_pd_sources libpd_static SOURCES)
-list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd)\\.c$")
+list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd|g_editor|s_path|g_canvas|g_readwrite)\\.c$")
 set_property(TARGET libpd_static PROPERTY SOURCES "${adi_pd_sources}")
 target_sources(libpd_static PRIVATE "${adi_pd_overlay}/s_loader.c" "${adi_pd_overlay}/m_class.c"
                                     "${adi_pd_overlay}/g_io.c" "${adi_pd_overlay}/m_glob.c"
-                                    "${adi_pd_overlay}/m_pd.c")
+                                    "${adi_pd_overlay}/m_pd.c" "${adi_pd_overlay}/g_editor.c"
+                                    "${adi_pd_overlay}/s_path.c" "${adi_pd_overlay}/g_canvas.c"
+                                    "${adi_pd_overlay}/g_readwrite.c")

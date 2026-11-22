@@ -87,6 +87,69 @@ void d() {
     c.seed(1, 2, 0.1); send(c, K::Begin); send(c, K::Value, 0.9); send(c, K::Begin); send(c, K::End);
     check(c.drain(1, out) == 1 && edit(out.back(), 0.1, 0.9), "d: stray Begin does not reset pending value");
 }
+
+void promoteImplicit() {
+    ParamEditCapture capture(16);
+    capture.setQuietMs(10);
+    capture.seed(1,2,0.1);
+    std::vector<ParamEdit> edits;
+    send(capture,K::Value,0.25);
+    capture.drain(0,edits);
+    send(capture,K::Begin);
+    capture.drain(5,edits);
+    check(capture.drain(50,edits)==0 && edits.empty(),
+          "Begin promotes a pending implicit gesture beyond the quiet deadline");
+    send(capture,K::Value,0.8);
+    send(capture,K::End);
+    check(capture.drain(51,edits)==1 && edit(edits.back(),0.1,0.8),
+          "promoted gesture ends once as an explicit edit with its original value");
+    check(capture.stats().strayBegins==0 && capture.stats().strayEnds==0 &&
+          capture.stats().implicitEdits==0,"promotion counts as a real bracket");
+}
+
+void absorbingTouches() {
+    ParamEditCapture capture(16);
+    capture.seed(1,2,0.1);
+    capture.seed(1,5,0.4);
+    capture.seed(1,7,0.6);
+    std::vector<ParamEdit> edits;
+    send(capture,K::Begin,0,1,2);
+    send(capture,K::Value,0.7,1,2);
+    send(capture,K::End,0,1,2);
+    send(capture,K::Value,0.9,1,5);
+    check(capture.drainAbsorbing(0,edits)==1 && capture.lastTouched()==2,
+          "a later absorbed broadcast cannot erase an explicit touch");
+    send(capture,K::Value,0.8,1,7);
+    capture.drainAbsorbing(1,edits);
+    check(capture.lastTouched()==2,"a broadcast-only drain preserves the prior touch");
+    send(capture,K::Begin,0,1,5);
+    send(capture,K::Value,0.5,1,5);
+    send(capture,K::End,0,1,5);
+    check(capture.drainAbsorbing(2,edits)==1 && edit(edits.back(),0.9,0.5,false,1,5) &&
+          capture.lastTouched()==5,"the next explicit touch uses the absorbed value as its baseline");
+}
+
+void absorbingPromotedPrefix() {
+    ParamEditCapture capture(16);
+    capture.seed(1,2,0.1);
+    std::vector<ParamEdit> edits;
+    std::vector<ParamActivity> activities;
+    send(capture,K::Value,0.2);
+    send(capture,K::End);
+    send(capture,K::Value,0.3);
+    send(capture,K::Value,0.7,8,2);
+    send(capture,K::Begin);
+    send(capture,K::Value,0.8);
+    send(capture,K::End);
+    capture.drainLifecycle(0,edits,activities,true);
+    check(activities.size()==8 && activities[0].implicit && activities[1].implicit &&
+          !activities[2].implicit && activities[3].implicit && !activities[4].implicit &&
+          !activities[5].implicit && !activities[6].implicit &&
+          activities[7].kind==ParamActivityKind::Absorbed,
+          "preset absorption leaves the promoted prefix with its gesture and other values implicit");
+    check(edits.size()==2 && edit(edits[0],0.1,0.2,true) && edit(edits[1],0.2,0.8),
+          "same-drain promotion preserves closed edits and merges only its own prefix");
+}
 void e() {
     ParamEditCapture c(3); c.seed(1, 2, 0.1); std::vector<ParamEdit> out;
     send(c, K::Begin); send(c, K::Value, 0.7); send(c, K::End);
@@ -204,7 +267,9 @@ int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const struct { const char* name; void (*run)(); } cases[] = {
         {"a", a}, {"b", b}, {"c", c}, {"d", d}, {"e", e}, {"f", f},
-        {"g", g}, {"h", h}, {"i", i}, {"j", j}, {"k", k}, {"l", l}};
+        {"g", g}, {"h", h}, {"i", i}, {"j", j}, {"k", k}, {"l", l},
+        {"promotion", promoteImplicit}, {"absorbing-touch", absorbingTouches},
+        {"absorbing-prefix", absorbingPromotedPrefix}};
     for (const auto& t : cases) if (argc == 1 || std::strcmp(argv[1], t.name) == 0) {
         std::printf("[param edits %s]\n", t.name); t.run();
     }

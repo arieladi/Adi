@@ -236,6 +236,8 @@ public:
     /// affinity. Opted-in nodes restore any FP control state they change.
     /// Duplicate pointers in a graph are always callback-only.
     [[nodiscard]] virtual bool canProcessOnWorker() const noexcept { return false; }
+    /// Different adapters of the same device share this key.
+    [[nodiscard]] virtual const void* workerAffinity() const noexcept { return this; }
 
     /// Opt-in device bypass (ADR-0203 d4). The graph keeps a dry delay at
     /// graph precision, including while the node is active, and owns its
@@ -906,6 +908,9 @@ public:
     /// the graph, because ADR-0042's decision 5 says a device change must not
     /// disturb the project and the project is where nodes come from.
     NodeId addNode(Node& node);
+    // Owner preflight on a newly constructed graph. No node prepare, SDK calls,
+    // buffers or publication; reuse the same topology authority as prepare.
+    [[nodiscard]] bool validateTopology() { error_.clear(); return topoSort(); }
     /// Construction only. An explicit null binding suppresses a node's legacy
     /// source. Owners are retired with the graph, never on the callback.
     bool setEventSource(NodeId, EventSourceBinding);

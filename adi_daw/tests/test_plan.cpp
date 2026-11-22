@@ -404,6 +404,20 @@ void testDanglingAndMissing() {
 
     {
         rows::Model m;
+        m.tracks = {track(1, "master", "Master"), track(2, "audio", "Kick"),
+                    track(3, "group", "Drums")};
+        m.routing = {route(12, 2, 3, "main", "user"), route(11, 2, 1, "main", "user"),
+                     route(10, 2, 1, "main", "auto")};
+        const GraphPlan p = planGraph(m);
+        const auto kick = p.indexOf(2);
+        check(kick && p.nodes[*kick].route == PlannedNode::Route::Auto &&
+                  edgeCount(p, 2) == 1 && hasEdge(p, 2, 1),
+              "only the lowest-ID valid main row contributes a summing edge");
+        check(p.problems.size() == 2 && p.problems[0].find("more than one main output") != std::string::npos,
+              "duplicate main rows are still reported");
+    }
+    {
+        rows::Model m;
         m.tracks = {track(1, "master", "Master"), track(2, "audio", "Kick")};
         m.routing = {route(10, 2, 404, "main", "user")};
         const GraphPlan p = planGraph(m);

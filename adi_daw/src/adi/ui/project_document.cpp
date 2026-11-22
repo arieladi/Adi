@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
+#include "adi/device_key_routes.hpp"
+#include "adi/recording_commands.hpp"
+#include "adi/gesture_presentation.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <mutex>
+#include <thread>
 namespace adi::ui {
 // Where the document's file is now. The message thread moves it at Save As; the waveform worker
 // reads it at each build.
@@ -103,6 +110,7 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
         document->realisedGeneration_ = document->view_.generation();
         document->parameterOps_.attachSession(document->session_);
         document->feed_.publish(document->session_, document->realisedGeneration_);
+        document->persistReportedLatencies();
         error.clear();
         return document;
     } catch (const std::exception &e) {
@@ -117,6 +125,7 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
         refused.error = "Project is read-only";
         return refused;
     }
+    refreshReportedLatenciesForSave();
     History history(*store_);
     return history.takeSnapshot(name, nowUtc, utcOffsetMinutes);
 }
@@ -136,6 +145,7 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     }
     // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
     // the members hold the Store itself, which keeps its identity across the switch.
+    refreshReportedLatenciesForSave();
     const auto result = store_->saveAs(path);
     if (!result.ok) {
         error_ = "Save As failed: " + result.error;
@@ -178,6 +188,7 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
     warning_.clear();
     if (refuseExisting(path, "Save a Copy", error_))
         return false;
+    refreshReportedLatenciesForSave();
     const auto result = store_->saveCopy(path);
     if (!result.ok) {
         error_ = "Save a Copy failed: " + result.error;
@@ -189,6 +200,7 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
 }
 bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
+    refreshReportedLatenciesForSave();
     const auto result = store_->collectAllAndSave();
     warning_ = result.warning;
     if (!result.ok) {
@@ -209,6 +221,7 @@ bool ProjectDocument::collectAllAndSave() {
 bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
     if (refuseExisting(zip, "Collect and Export", error_))
         return false;
+    refreshReportedLatenciesForSave();
     out.project = media::projectFolder(*store_) / store_->path().filename();
     out.zip = zip;
     error_.clear();
@@ -224,7 +237,8 @@ StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
 }
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {
-        if (!session_.refresh(*store_)) {
+        const auto keyed = session_.refreshDeviceKeys(*store_, view_.committedImage());
+        if (!(keyed ? *keyed : session_.refresh(*store_))) {
             error_ = session_.error();
             return false;
         }
@@ -273,6 +287,15 @@ bool ProjectDocument::reenableAutomation() {
     error_ = refusal;
     return ok;
 }
+bool ProjectDocument::reenableAutomation(std::int64_t laneId) {
+    const bool ok = session_.reenableAutomation(laneId);
+    const std::string refusal =
+        ok ? std::string{} : (session_.error().empty() ? std::string("That automation is not overridden.") : session_.error());
+    followOverrides();
+    feed_.publish(session_, realisedGeneration_);
+    error_ = refusal;
+    return ok;
+}
 void ProjectDocument::setAutomationArmed(bool armed) noexcept {
     session_.setAutomationWriteState(armed, false);
 }
@@ -296,10 +319,72 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
+    // A take, once the driver has moved past it and its worker has finished: a stopped one, or one that
+    // ended on its own while recording (a locate, an overflow, a device change), which lands at once and
+    // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
+    // callback on, so the take is settled as the driver's is.
+    if (recording_ || landing_)
+        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire) && landing_)) {
+            recording_ = false;
+            landing_ = false;
+            landTake(*result);
+        }
     std::vector<OpRequest> requests;
     parameterOps_.drain(captureNowMs(), requests);
     commitCaptured(requests);
     feed_.publish(session_, realisedGeneration_);
+    persistReportedLatencies();
+}
+void ProjectDocument::refreshReportedLatenciesForSave() {
+    if (realisedGeneration_ != view_.generation()) return;
+    feed_.publish(session_, realisedGeneration_);
+    persistReportedLatencies();
+}
+void ProjectDocument::persistReportedLatencies() {
+    if (store_->readOnly() || realisedGeneration_ != view_.generation()) return;
+    const auto current = feed_.current();
+    const auto sequence = session_.realisedAppliedSequence();
+    const auto rate = session_.spec().sampleRate;
+    if (reportedLatencyFeed_ && sequence == reportedLatencySequence_ && rate == reportedLatencyRate_ &&
+        (current == reportedLatencyFeed_ ||
+         std::equal(current->begin(), current->end(), reportedLatencyFeed_->begin(), reportedLatencyFeed_->end(),
+                    [](const DevicePanelData &a, const DevicePanelData &b) {
+                        return a.id == b.id && a.instance == b.instance && a.available == b.available &&
+                               a.latency == b.latency;
+                    }))) {
+        reportedLatencyFeed_ = current;
+        return;
+    }
+    const auto source = appliedSource(*store_);
+    if (source.sequence() != sequence || !session_.presentationReady(source, sequence) ||
+        !sqlite3_get_autocommit(store_->db().getHandle())) return;
+    // An open edit can preview new latency before those settings enter history.
+    const auto guard = gesture::detail::beginNavigation(*store_);
+    if (!guard.status.ok()) return;
+    try {
+        const auto head = History(*store_).head();
+        Payload report{{"version", 1}, {"sample_rate", rate},
+                       {"history_head", head ? Payload(*head) : Payload(nullptr)}, {"devices", Payload::array()}};
+        auto &devices = report["devices"];
+        for (const auto &device : *current) {
+            if (!device.available) continue;
+            const auto *entry = session_.entryFor(device.id);
+            if (!entry || !entry->resolvedPluginRef) continue;
+            devices.push_back({{"device_id", device.id}, {"plugin_ref_id", *entry->resolvedPluginRef},
+                               {"format", entry->resolvedFormat}, {"uid", entry->resolvedUid},
+                               {"latency_samples", device.latency}});
+        }
+        SQLite::Statement write(store_->db(), "INSERT INTO session_state(key,value) "
+            "VALUES('devices.reported_latency',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value "
+            "WHERE session_state.value<>excluded.value");
+        write.bind(1, report.dump());
+        write.exec();
+        reportedLatencyFeed_ = current;
+        reportedLatencySequence_ = sequence;
+        reportedLatencyRate_ = rate;
+    } catch (const SQLite::Exception &e) {
+        warning_ = std::string("Device latency report could not be saved: ") + e.what();
+    }
 }
 void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
@@ -319,6 +404,13 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     OpRequest r;
     r.opType = op;
     r.payload = std::move(payload);
+    if(op=="device.remove" || op=="device.setEnabled") {
+        const auto id=r.payload.value("id",std::int64_t{});
+        const auto row=std::find_if(session_.model().devices.begin(),session_.model().devices.end(),
+            [id](const auto& device){return device.id==id;});
+        const auto name=row==session_.model().devices.end()?std::string("device"):row->name;
+        r.label=(op=="device.remove"?"Remove ":r.payload.value("enabled",false)?"Enable ":"Disable ")+name;
+    }
     const auto result = ops_.submit(r);
     error_ = result.error;
     if (!result.ok || !synchronise())
@@ -343,7 +435,13 @@ bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
     return true;
 }
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-    auto prepared = prepareBuiltinInsert(*store_, uid, track, before);
+    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before));
+}
+bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
+                                   std::optional<std::int64_t> before, const PluginInsertOptions& options) {
+    return finishInsert(preparePluginInsert(*store_, ref, track, before, options));
+}
+bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     if (!prepared.ok) {
         error_ = prepared.error.empty() ? "The device could not be loaded." : prepared.error;
         return false;
@@ -357,10 +455,62 @@ bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, 
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
+std::vector<DeviceKeyChoice> ProjectDocument::deviceKeyChoices(const DevicePanelData& target) {
+    std::vector<DeviceKeyChoice> choices;
+    if(!deviceTargetCurrent(target.id,target.runtime,target.instance))return choices;
+    auto* instance=session_.instanceFor(target.id);
+    const bool keyAvailable=instance && instance->sidechainInputChannels()>0;
+    const auto& model=session_.model();
+    const rows::Routing* current=nullptr;std::size_t count=0;
+    for(const auto& route:model.routing)if(route.kind=="sidechain" && route.dstKind=="device" && route.dstId==target.id){current=&route;++count;}
+    if(!keyAvailable && count==0)return choices;
+    choices.push_back({{},"post_mixer","None",count==0,view_.generation()});
+    if(!keyAvailable)return choices; // recovery only; never fabricate an input
+    for(const auto& track:model.tracks){
+        if(track.kind=="vca")continue;
+        for(const auto& tap:{"pre_fx","post_fx","post_mixer"})
+            choices.push_back({track.id,tap,track.name,count==1 && current->enabled && current->srcKind=="track" && current->srcId==track.id && current->keyTap==tap});
+    }
+    for(auto& choice:choices)choice.generation=view_.generation();
+    return choices;
+}
+bool ProjectDocument::setDeviceKeyChoice(const DevicePanelData& target,const DeviceKeyChoice& choice) {
+    if(!synchronise())return false;
+    if(!choice.generation || choice.generation!=view_.generation()) {
+        error_="The project changed while choosing a sidechain. Open the menu again.";return false;
+    }
+    return setDeviceKey(target,choice.source,choice.tap);
+}
+bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<std::int64_t> source,const std::string& tap) {
+    if(!deviceTargetCurrent(target.id,target.runtime,target.instance)) {error_="That device changed while choosing its sidechain.";return false;}
+    if(!synchronise())return false;
+    auto* instance=session_.instanceFor(target.id);
+    if(source && (!instance || instance->sidechainInputChannels()<=0)) {error_="That device has no declared auxiliary input.";return false;}
+    for(const auto& held:parameterOps_.pendingGestures())if(held.deviceId==target.id){error_="Finish the device edit before changing its sidechain.";return false;}
+    auto prepared=prepareDeviceKey(*store_,target.id,source,tap);
+    if(!prepared.ok){error_=prepared.error;return false;}
+    // Removing edges cannot introduce feedback or an unavailable tap. Keep
+    // recovery possible when another stored key is already unavailable.
+    if(source && !prepared.requests.empty() && !session_.validateDeviceKey(prepared.candidate,error_)) {
+        error_=error_.find("cycle")!=std::string::npos
+            ? "That sidechain would feed back into its own source. Choose an earlier tap or another channel."
+            : "That sidechain source or input is unavailable. Choose another source or remove the unavailable key.";
+        return false;
+    }
+    const auto result=ops_.commitPrepared(std::move(prepared),[](Store& store,PreparedDeviceKey& p,Actor actor){return commitDeviceKey(store,p,actor);});
+    error_=result.error;if(!result.ok || !synchronise())return false;
+    feed_.publish(session_,realisedGeneration_);return true;
+}
+
 bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
     const auto available = device::mixFunctionAvailability(kind);
     if (!available.ready) { error_ = available.reason; return false; }
-    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready);
+    // Removed instances stay alive for Undo. A fresh authored row must not
+    // claim an ID that the current session still uses for one of those instances.
+    std::int64_t retainedDeviceId = 0;
+    for (std::size_t i = 0; i < session_.entryCount(); ++i)
+        retainedDeviceId = std::max(retainedDeviceId, session_.entryAt(i).deviceId);
+    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready, retainedDeviceId);
     if (!prepared.ok) { error_ = prepared.error; return false; }
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
         return mix::commitFunctionEdit(s, p, a);
@@ -716,16 +866,249 @@ std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &p
         return "The plug-in does not let \"" + descriptor->name + "\" be edited from here.";
     return "The plug-in did not take the value.";
 }
+void ProjectDocument::configureGraphWorkers(std::function<std::uint32_t(std::int32_t)> count,
+                                            std::int32_t minimumFrames) {
+    graphWorkerCount_ = std::move(count);
+    graphWorkerMinimumFrames_ = minimumFrames;
+}
 void ProjectDocument::prepare(double rate, std::int32_t frames) {
+    deviceStopped_.store(false, std::memory_order_release);
     engineRate_ = rate;
-    session_.prepare(rate, frames);
+    engineFrames_ = frames;
+    if (graphWorkerCount_)
+        session_.prepareWithGraphWorkers(rate, frames, graphWorkerCount_(frames), graphWorkerMinimumFrames_);
+    else
+        session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
     analysis_->refreshSources(true);
 }
-void ProjectDocument::release() { session_.release(); }
+void ProjectDocument::release() {
+    session_.release(); // stops a running capture; the timer lands what it holds
+    deviceStopped_.store(true, std::memory_order_release);
+}
+void ProjectDocument::settleRecording() {
+    // The driver is detached: nothing will move the callback past the capture, so it is settled here.
+    if (recording_)
+        stopRecording();
+    // The recorder's worker finishes writing on its own thread: wait for it, up to ten seconds.
+    for (int waited = 0; landing_ && waited < 5000; ++waited) {
+        if (auto result = session_.recording().poll(true)) {
+            landing_ = false;
+            landTake(*result);
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
+bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
+                                     const std::string &label) {
+    if (mixerDrag_)
+        endMixerDrag();
+    // The live values are the session's and the view's. Attached on every drag: Save As replaces the
+    // store's gesture domain, and a coordinator kept from before would refuse.
+    auto attached = gesture::Coordinator::attach(*store_, std::make_shared<gesture::EnginePresentation>(view_, session_));
+    if (!attached.status.ok() || !attached.value) {
+        error_ = "The mixer cannot be dragged live: " + attached.status.message;
+        return false;
+    }
+    coordinator_ = std::move(attached.value);
+    gesture::Spec spec;
+    spec.strategy = gesture::Strategy::LiveValues;
+    spec.label = label;
+    auto begun = coordinator_->begin(spec, gesture::relativeScalarProducer(selection));
+    if (!begun.status.ok() || !begun.session) {
+        error_ = begun.status.message.empty() ? "The drag could not begin." : begun.status.message;
+        return false;
+    }
+    mixerDrag_ = std::move(begun.session);
+    if (!coordinate) {
+        error_.clear();
+        return true;
+    }
+    if (mixerDrag(*coordinate))
+        return true;
+    // The first value was refused: the gesture goes, so Undo and Save As are not held by it.
+    const auto reason = error_;
+    cancelMixerDrag();
+    error_ = reason;
+    return false;
+}
+bool ProjectDocument::mixerDrag(double coordinate) {
+    if (!mixerDrag_)
+        return false;
+    const auto updated = mixerDrag_->update(std::make_unique<gesture::RelativeScalarInput>(coordinate));
+    if (!updated.status.ok()) {
+        error_ = updated.status.message;
+        return false;
+    }
+    error_.clear();
+    return true;
+}
+bool ProjectDocument::endMixerDrag() {
+    if (!mixerDrag_)
+        return false;
+    auto drag = std::move(mixerDrag_);
+    const auto outcome = drag->commit();
+    if (!outcome.status.ok()) {
+        error_ = outcome.status.message;
+        (void)drag->cancel(); // nothing written: the values go back
+        synchronise();
+        return false;
+    }
+    // The committed rows reach the view and the session as any commit does.
+    view_.refresh(*store_);
+    synchronise();
+    error_.clear();
+    return true;
+}
+void ProjectDocument::cancelMixerDrag() {
+    if (!mixerDrag_)
+        return;
+    auto drag = std::move(mixerDrag_);
+    (void)drag->cancel();
+    synchronise();
+}
 void ProjectDocument::process(const engine::AudioIo &io) noexcept {
-    mailbox_.drain(session_.transport());
-    session_.process(io);
+    // One render handle for the callback, so a Record start (`startPlayback`, which applies the saved
+    // song start and Count-In) and the block it starts in read the same graph.
+    auto block = session_.beginRender();
+    mailbox_.drain(session_.transport(), [&block, this](std::int64_t insertTick) noexcept {
+        if (!block.startPlayback(insertTick, true))
+            session_.transport().play(true);
+    });
+    (void)block.process(io);
     mailbox_.publish(session_.transport());
+}
+RecordStates ProjectDocument::recordStates() const {
+    RecordStates out;
+    for (const auto &t : session_.model().tracks)
+        out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
+    return out;
+}
+bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing) {
+    if (recording_ || landing_) {
+        error_ = recording_ ? "Recording is already running." : "The last take is still being saved.";
+        return false;
+    }
+    const auto current = view_.current();
+    if (!current) {
+        error_ = "Recording needs an open project.";
+        return false;
+    }
+    const auto armed = armedTracks(current->tracks, recordStates());
+    if (armed.audio.empty()) {
+        error_ = armed.midi.empty() ? "Arm a track to record into it."
+                                    : "Recording MIDI waits for the engine's live MIDI input; arm an audio track to record audio.";
+        return false;
+    }
+    if (inputs <= 0) {
+        error_ = "The audio device has no inputs to record from. Choose an input device in the Settings' Audio page.";
+        return false;
+    }
+    // A loop pass is a take of its own in Live; ADI's recorder captures loop passes, but their publication
+    // as takes is not on main yet (CT-02), and a linear capture fails at the loop's end.
+    if (current->transport.loopEnabled) {
+        error_ = "Recording with the loop on waits for take lanes (CT-02); turn the loop off to record.";
+        return false;
+    }
+    engine::AudioRecordingSpec spec;
+    spec.workFolder = media::projectFolder(*store_);
+    spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
+    spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
+    // Two seconds of input between the callback and the writer, at least eight blocks.
+    spec.ringFrames = std::max<std::uint32_t>(spec.sampleRate * 2, spec.maxFrames * 8);
+    const std::vector<std::uint32_t> channels = inputs >= 2 ? std::vector<std::uint32_t>{0, 1} : std::vector<std::uint32_t>{0};
+    for (const auto id : armed.audio)
+        spec.targets.push_back({id, channels});
+    std::string why;
+    if (!session_.startRecording(spec, why)) {
+        error_ = "Recording did not start: " + why;
+        return false;
+    }
+    if (!playing && !mailbox_.post(TransportMailbox::Command::Record, insertTick)) {
+        session_.recording().stop(true);
+        if (auto dropped = session_.recording().poll())
+            dropped->discard();
+        else
+            landing_ = true; // the cancelled capture is collected and dropped on the timer
+        error_ = "Transport command queue is full";
+        return false;
+    }
+    recording_ = true;
+    error_.clear();
+    return true;
+}
+void ProjectDocument::stopRecording() {
+    if (!recording_)
+        return;
+    session_.recording().stop();
+    recording_ = false;
+    landing_ = true;
+}
+std::optional<ProjectDocument::TakeLanded> ProjectDocument::takeLanded() {
+    auto out = std::move(landed_);
+    landed_.reset();
+    return out;
+}
+namespace {
+std::string recordingFailure(const engine::AudioRecordingResult &r) {
+    using F = engine::RecordingFailure;
+    switch (r.failure) {
+    case F::None: return {};
+    case F::Overflow: return "the input came faster than it could be written, and the take was stopped";
+    case F::MissingInput: return "the audio device did not deliver the input channels the track records from";
+    case F::BlockSize: return "the audio device changed its block size while recording";
+    case F::Discontinuity: return "the audio stream jumped while recording (a locate, a loop or a device change)";
+    case F::Cancelled: return "the recording was cancelled";
+    case F::Io: return "the take could not be written to disk" + (r.error.empty() ? std::string() : " (" + r.error + ")");
+    case F::NoFrames: return "nothing was recorded";
+    case F::InvalidCapture: return "the capture was not valid" + (r.error.empty() ? std::string() : " (" + r.error + ")");
+    case F::PassLimit: return "the loop recorded more passes than a take can hold";
+    }
+    return r.error;
+}
+} // namespace
+void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
+    TakeLanded outcome;
+    if (result.failure != engine::RecordingFailure::None) {
+        outcome.message = "The take was not kept: " + recordingFailure(result) + ".";
+        // Nothing recovers a failed capture yet, so its private files go with it rather than stay hidden in
+        // the project's folder.
+        result.discard();
+        landed_ = std::move(outcome);
+        return;
+    }
+    // The clips and their media take the next free ids, named after their tracks (Live names a take by
+    // its track).
+    auto &db = store_->db();
+    auto clip = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM clips").getInt64();
+    auto media = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    std::vector<recording::ClipIds> ids;
+    const auto current = view_.current();
+    for (const auto &track : result.tracks) {
+        const auto *t = current ? current->findTrack(track.trackId) : nullptr;
+        ids.push_back({clip++, media++, t != nullptr ? t->name : std::string("Take")});
+        outcome.clips.push_back(ids.back().clip);
+    }
+    auto edit = recording::prepareCommit(*store_, result, ids);
+    if (!edit.ok) {
+        outcome.clips.clear();
+        outcome.message = "The take was recorded but could not be added: " + edit.error + ".";
+        result.discard();
+        landed_ = std::move(outcome);
+        return;
+    }
+    const auto committed =
+        ops_.commitPrepared(edit.requests, [&](Store &s, Actor actor) { return recording::commit(s, edit, actor); });
+    if (!committed) {
+        outcome.clips.clear();
+        outcome.message = "The take was recorded but could not be added: " + committed.error + ".";
+        landed_ = std::move(outcome);
+        return;
+    }
+    synchronise();
+    outcome.ok = true;
+    outcome.message = result.tracks.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(result.tracks.size()) + " takes.";
+    landed_ = std::move(outcome);
 }
 } // namespace adi::ui
