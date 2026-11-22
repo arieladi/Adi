@@ -596,8 +596,8 @@ void reviewedThird() {
                                                         std::to_string(20 * std::log10(later / 0.3 + 1e-12)) + " dB later");
     }
     // A3 30 cents flat for a second, then A3 in tune for four, corrected, at
-    // Dry/Wet 50 %: the last second is the input's level, and the tap moved
-    // between copies at most once while in tune.
+    // Dry/Wet 50 %: the last second is the input's level. (The copies are
+    // not reached at these ratios; reviewedFourth() drives them.)
     for (const std::size_t extra : {0u, 3313u, 6626u}) {
         S s;
         s.set(S::DryWet, 50);
@@ -611,21 +611,81 @@ void reviewedThird() {
         }
         std::vector<float> l(n), r(n);
         s.process(x.data(), x.data(), l.data(), r.data(), first + 48000);
-        const std::size_t moved = s.bandChanges();
         s.process(x.data() + first + 48000, x.data() + first + 48000, l.data() + first + 48000, r.data() + first + 48000, n - first - 48000);
         double e = 0;
         for (std::size_t i = n - 48000; i < n; ++i) {
             e += static_cast<double>(l[i]) * l[i];
         }
         const double level = 20 * std::log10(std::sqrt(e / 48000) / (0.4 / std::sqrt(2.0)));
-        check(std::abs(level) < 0.05 && s.bandChanges() - moved <= 1,
-              "A3 flat, then in tune, corrected, Dry/Wet 50 % (" + std::to_string(extra) + "): the input's level (" + std::to_string(level) + " dB), " +
-                  std::to_string(s.bandChanges() - moved) + " moves between copies");
+        check(std::abs(level) < 0.05,
+              "A3 flat, then in tune, corrected, Dry/Wet 50 % (" + std::to_string(extra) + "): the input's level (" + std::to_string(level) + " dB)");
     }
     {
         S s;
         s.prepare(88200);
         check(s.detectorRate() == 44100, "at 88.2 kHz the detector runs at " + std::to_string(s.detectorRate()) + " Hz");
+    }
+}
+
+/// The review of c95041a9 (three skeptics each): the glide back to the
+/// centre at 0.5 % played an in-tune note after a corrected one up to 8.6
+/// cents off; and no check reached a ratio where the copies change, so the
+/// band hysteresis was untested.
+void reviewedFourth() {
+    // A note 30 cents off for a second, then in tune, corrected, at Dry/Wet
+    // 100 %: from 100 ms after the in-tune audio comes out, no 50 ms block
+    // (100 ms at 82.4 Hz) is 2 cents off.
+    struct Note {
+        double hz, off;
+    };
+    for (const Note n : {Note{220, -30}, Note{220, 30}, Note{82.41, -30}}) {
+        S s;
+        s.prepare(kRate);
+        const std::size_t total = 48000 * 5;
+        std::vector<float> x(total);
+        double phase = 0;
+        for (std::size_t i = 0; i < total; ++i) {
+            x[i] = static_cast<float>(0.4 * std::sin(phase));
+            phase += 2 * std::numbers::pi * (i < 48000 ? n.hz * std::exp2(n.off / 1200) : n.hz) / kRate;
+        }
+        const auto y = render(s, x, 256);
+        const std::size_t block = n.hz < 100 ? 4800 : 2400;
+        double worst = 0;
+        for (std::size_t from = 48000 + static_cast<std::size_t>(s.latency()) + 4800; from + block < total; from += block) {
+            int crossings = 0;
+            double first = -1, last = -1;
+            for (std::size_t i = from + 1; i < from + block; ++i) {
+                if (y[i - 1] < 0 && y[i] >= 0) {
+                    const double t = static_cast<double>(i - 1) + static_cast<double>(y[i - 1]) / static_cast<double>(y[i - 1] - y[i]);
+                    if (first < 0) {
+                        first = t;
+                    }
+                    last = t;
+                    ++crossings;
+                }
+            }
+            if (crossings > 2) {
+                worst = std::max(worst, std::abs(cents((crossings - 1) * kRate / (last - first), n.hz)));
+            }
+        }
+        check(worst < 2, std::to_string(n.hz) + " Hz " + std::to_string(static_cast<int>(n.off)) +
+                             " cents, then in tune, corrected: no block more than 2 cents off (worst " + std::to_string(worst) + ")");
+    }
+    // Shift +4 (a ratio exactly at the first band's top) with Detune moving
+    // between +1 and -1 cent every 64 samples for 3 s: the tap moves between
+    // copies once, not on every move.
+    {
+        S s;
+        s.set(S::Correction, 0);
+        s.set(S::Shift, 4);
+        s.prepare(kRate);
+        const auto x = sine(220, 48000 * 3, 0.4);
+        std::vector<float> l(64), r(64);
+        for (std::size_t at = 0; at < x.size(); at += 64) {
+            s.set(S::Detune, (at / 64) % 2 == 0 ? 1 : -1);
+            s.process(x.data() + at, x.data() + at, l.data(), r.data(), 64);
+        }
+        check(s.bandChanges() <= 2, "a ratio hovering on a band's top: " + std::to_string(s.bandChanges()) + " moves between copies in 3 s");
     }
 }
 
@@ -745,6 +805,7 @@ void shifted() {
 }
 
 int main() {
+    reviewedFourth();
     reviewedThird();
     reviewedAgain();
     shifted();
