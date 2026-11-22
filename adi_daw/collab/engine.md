@@ -243,6 +243,12 @@ Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU bu
 - Strict Linux GCC 14 and Clang 19 each passed 100 checks. Independent OpenTimelineIO 0.18.1 reopened three exported upstream samples and matched five tracks and 23 items, including ranges, enable state and media URLs. The exact JSON boundary retains wide integers; upstream OTIO uses binary64 for its native RationalTime API. Checked the Nov 20 patterns.
 - Project lowering, reattaching preserved opaque fields and the native import/export commands remain parked on TM-IC-03 shared converter ops and the window bindings.
 
+### 22 November — TM-IC-04 Compound File Binary writer
+
+- PR requested for `engine/tm-ic04-compound-file` at `3ff8ba64d53f31aebd229e852c8238212a8e5ebc` from main `73f13028`. The CFB v3 byte writer supports nested storages, CLSIDs, regular and mini streams, red-black directory trees, FAT and extended DIFAT. Output is deterministic and uses the ASCII subset needed for AAF storage names. [CFB format reference](https://github.com/libyal/libolecf/blob/148cef77c93f5597a05ed3d9ed0f6b8ca9247d24/documentation/OLE%20Compound%20File%20format.asciidoc)
+- Strict Linux GCC 14 and Clang 19 each passed 14 checks. Independent olefile 0.47 in strict defect mode reopened six streams from the ASan/UBSan fixture, including nested, empty, 4095/4096-byte cutoff cases and a 16 MiB payload spanning two DIFAT sectors. All bytes matched. Checked the Nov 20 patterns.
+- AAF object and property lowering, vendor reader integration, and delivery remain parked on TM-IC-03, the pinned LibAAF source and EX-04/AAF-3.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
