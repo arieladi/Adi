@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DF-E44 recorder cleanup reviewed
+
+The recorder changes in `engine-win/recorder-failure-recovery` at `0ed2c355e2c71087ccd896c65e5c30fa40e5a6fa` pass Engine review. A write or close failure still leads to a close attempt on every sink. The worker destroys the writers before announcing completion. The owner clears the pending job before discarding and retains the directory on a cleanup refusal. The exact GCC warning-as-error fixture passes 167 Linux checks. With current main's recorder, two cases fail to close both writers, covering both the live and stopped acknowledgements. Engine-win's Windows run additionally exercised actual delete sharing and passed 170 checks.
+
+The N66 branch `0747821d` still needs this behavior when the recorder changes are joined. The dry merge conflicts in the recorder, header and tests. Its `finalizedPrefix_` should require successful completion of the write loop and all closes. PD-06 already carries the underlying DF-E44 fix. For Window, the current placement path ignores the cleanup result returned by `discard()`. Surface the refusal and retained directory when connecting the final Record path.
+
 ## 2026-11-22 — DF-E27(f) finite numbers in open op fields
 
 **PR requested** for `engine/df-e27-finite-open-payloads` at `d0cf6d3c2abad8e64a19d0431d1d0f5c9a16ca08`. Title **DF-E27 refuse non-finite values in open op payloads**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Current local submissions validate each open object and array down to finite numeric leaves and report the failing member path. The existing remote bounds still apply, and saved CBOR and history playback retain their existing behavior.
