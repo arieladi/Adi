@@ -7,6 +7,19 @@ device PRs do not conflict on one shared log file.
 
 ## FOR THE DIRECTOR
 
+**The rest of Live 12.4's audio effects chapter (DEV-22; asked 22 November).** With the standing queue
+built, the catalogue holds 31 of the chapter's audio effects. Eleven are missing: Amp, Cabinet,
+Corpus, Drum Buss, Dynamic Tube, Grain Delay, Looper, Pedal, Roar, Spectral Resonator and Spectral
+Time. Beat Repeat and External Audio Effect are left out of the count; they are covered elsewhere.
+- **Where things stand.** PLAN DEV-22 says the queue follows the manual's order and is checked against
+  the chapter. win's check of 20 November named three gaps (Auto Shift, External Audio Effect,
+  Spectrum), and those are built now. Nothing names the eleven, and nothing excludes them.
+- **Recommendation:** they are in DEV-22's queue, built after 3 December in the manual's order (Amp
+  first), each "built, not verified" with its reading on the ONE list.
+  - Looper stays out until the engine's recording and transport rows: its core is the engine's, as
+    External Audio Effect's routing is.
+  - This seat starts Amp now, on its own branch, and stops there if the answer is no.
+
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
 session; 19 to 34 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
