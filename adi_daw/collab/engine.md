@@ -36,6 +36,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — TM-FC-01 mute the bounced source range — PR requested
+
+- Ready at `d114655929b0ef7af501894c2e9900ce4cb102ee` on `engine/tm-fc01-bounce-range-mute`, for after 3 December.
+- Bounce to New Track captures regular-track main-lane edits with its render head. Existing clip split and mute operations reserve the bounce identity, cut at each boundary, and mute the covered pieces in the same Undo step as the new track and rendered clip. Unselected material and take lanes remain live under their existing lane rules. Group bounce keeps its group-output policy pending the isolated group contract.
+- GCC and Clang each passed 1,827 checks across seven strict suites. The full 1,024-sample source and replacement null through the actual parent/explicit routing in both precisions, including the portions before and after selection. Native tests verify exact interval, explicit output, one Undo/Redo, reopen and retry on deferred failure. Cuts use existing split-fade behavior. Checked Win's five portability patterns.
+
 ## 2026-11-22 — TM-FC-01 remove inserts after Bounce in Place — PR requested
 
 - Ready at `6689b97c4e02f18863061a5fe2b1b98756b9d3a9` on `engine/tm-fc01-remove-bounced-inserts`, for after 3 December.
