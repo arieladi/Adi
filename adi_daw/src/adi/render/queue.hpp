@@ -26,6 +26,12 @@ enum class Collision { Fail, Increment, Replace };
 struct Source {
     std::int64_t trackId = 0; // zero selects the project's master at render start
     engine::OfflineTap tap = engine::OfflineTap::PostFader;
+    // The legacy PreFader spelling is the wet PostFx tap. Existing jobs can
+    // keep that field; explicit EX-02 jobs choose the actual signal point.
+    std::optional<engine::Tap> signalTap{};
+    [[nodiscard]] engine::Tap resolvedTap() const noexcept {
+        return signalTap.value_or(tap == engine::OfflineTap::PreFader ? engine::Tap::PostFx : engine::Tap::PostFader);
+    }
 };
 struct Encoding {
     audio::WavFormat format = audio::WavFormat::Pcm24;

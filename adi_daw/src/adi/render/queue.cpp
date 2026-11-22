@@ -106,6 +106,16 @@ std::string portableName(std::string name) {
     return name;
 }
 
+const char* signalTapName(engine::Tap tap) {
+    switch (tap) {
+        case engine::Tap::PreFx: return "pre_fx";
+        case engine::Tap::PostFx: return "post_fx";
+        case engine::Tap::PostFader: return "post_fader";
+        case engine::Tap::PostMixer: return "post_mixer";
+        case engine::Tap::Tail: break;
+    }
+    return nullptr;
+}
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
     if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
@@ -119,7 +129,8 @@ void validate(const Job& j) {
     if (j.session.precision != engine::Precision::Float32 && j.session.precision != engine::Precision::Float64)
         throw std::invalid_argument("unknown processing precision");
     if (j.regionId && *j.regionId <= 0) throw std::invalid_argument("region ID must be positive");
-    if (j.source.trackId < 0 || (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
+    if (j.source.trackId < 0 || !signalTapName(j.source.resolvedTap()) ||
+        (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
         throw std::invalid_argument("invalid direct stem source or tap");
     if (j.encoding.format != audio::WavFormat::Float32 && j.encoding.format != audio::WavFormat::Pcm16 && j.encoding.format != audio::WavFormat::Pcm24)
         throw std::invalid_argument("unsupported export WAV encoding");
@@ -507,7 +518,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         if(prepared)prepared(result);
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
-        const auto endpoint = session.offlineOutput(job.source.trackId, job.source.tap);
+        const auto endpoint = session.offlineTapOutput(job.source.trackId, job.source.resolvedTap());
         if (!endpoint) throw std::runtime_error("export source has no audio output at the selected tap");
         result.mediaVerification.emplace();
         captureMedia(*session.clips(),*result.mediaVerification,control);
@@ -627,7 +638,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
 
 Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
                        JobId id, std::uint64_t counter) {
-    if (job.source.trackId != 0 || job.source.tap != engine::OfflineTap::PostFader) {
+    if (job.source.trackId != 0 || job.source.resolvedTap() != engine::Tap::PostFader) {
         Result result;
         result.state = JobState::Failed;
         result.error = "renderMasterWav requires the default master source; use renderWav for stems";
@@ -689,7 +700,8 @@ std::string serializeRunManifest(const RunReport& run) {
     };
     const auto sourceValue = [](const Source& source) -> Json {
         return {{"track_id", source.trackId},
-                {"tap", source.tap == engine::OfflineTap::PreFader ? "pre_fader" : "post_fader"}};
+                {"tap", source.tap == engine::OfflineTap::PreFader ? "pre_fader" : "post_fader"},
+                {"signal_tap", signalTapName(source.resolvedTap())}};
     };
     const auto snapshotValue = [&](const RenderSnapshot& snapshot) -> Json {
         return {{"journal_head", snapshot.journalHead}, {"source", sourceValue(snapshot.source)},

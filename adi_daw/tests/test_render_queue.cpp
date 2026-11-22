@@ -458,6 +458,52 @@ void directStems() {
         check(matches(read(renderWav(j,{}),270),31),"pre-fader endpoint excludes the strip's track delay");
     }
 }
+void explicitDirectTaps() {
+    Fixture f;
+    f.effect();
+    f.parallel();
+    f.store->db().exec("UPDATE tracks SET soloed=1 WHERE id=2");
+    auto job = f.job("direct-dry");
+    job.source.trackId = 1;
+    const DeviceLoader loader = [](const DeviceRequest&, std::string&) {
+        auto device = std::make_unique<Delay>();
+        device->delay = 23;
+        device->gain = 2;
+        return device;
+    };
+    job.source.signalTap = Tap::PreFx;
+    check(matches(read(renderWav(job, loader), 866), 137),
+          "explicit PreFx excludes source effects and the solo gate");
+    job.nameTemplate = "direct-post-fx";
+    job.source.signalTap = Tap::PostFx;
+    check(matches(read(renderWav(job, loader), 866), 137, 2),
+          "explicit PostFx includes the compensated effect before the strip");
+    job.nameTemplate = "direct-post-fader";
+    job.source.signalTap = Tap::PostFader;
+    const auto soloedOut = read(renderWav(job, loader), 866);
+    check(!soloedOut.empty() && std::all_of(soloedOut.begin(), soloedOut.end(), [](float value) { return value == 0; }),
+          "engine's current PostFader strip is silent when another track is soloed");
+    f.store->db().exec("UPDATE tracks SET soloed=0 WHERE id=2");
+    job.nameTemplate = "direct-post-fader-alone";
+    check(matches(read(renderWav(job, loader), 866), 137, 2), "PostFader includes the effect on an audible track");
+    f.store->db().exec("UPDATE tracks SET soloed=1 WHERE id=2");
+    job.nameTemplate = "direct-post-mixer";
+    job.source.signalTap = Tap::PostMixer;
+    Queue queue;
+    queue.add(job);
+    queue.run(loader);
+    const auto pcm = read(queue.snapshot()[0].result, 866);
+    check(!pcm.empty() && std::all_of(pcm.begin(), pcm.end(), [](float value) { return value == 0; }),
+          "explicit PostMixer follows the actual solo gate");
+    const auto manifest = nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["job"]["source"]["signal_tap"] == "post_mixer" &&
+          manifest["members"][0]["result"]["resolved_snapshot"]["source"]["signal_tap"] == "post_mixer",
+          "manifest states the actual requested and captured signal point");
+    job.nameTemplate = "invalid-tail";
+    job.source.signalTap = Tap::Tail;
+    check(renderWav(job, loader).state == JobState::Failed && f.noStage(),
+          "internal Tail is not a public EX-02 tap");
+}
 void groupStems() {
     Fixture f;f.effect();f.parallel();
     f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(5,'group','Drums',3);"
@@ -1474,7 +1520,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); explicitDirectTaps(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
