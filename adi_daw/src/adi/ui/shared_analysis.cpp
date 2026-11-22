@@ -22,7 +22,7 @@ namespace {
 constexpr std::uint32_t allOutputs = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Meters |
                                      SharedAnalysis::Phase | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s |
                                      SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum |
-                                     SharedAnalysis::Strip;
+                                     SharedAnalysis::Strip | SharedAnalysis::DeviceBlockAverage;
 constexpr int stripFftSize = 1024;
 constexpr double stripRefreshSeconds = .05, stripSmoothingSeconds = .3;
 constexpr std::size_t maxHistoryColumns = 128;
@@ -131,6 +131,66 @@ struct SharedAnalysis::CumulativeHistory {
         publication.store({});
     }
 };
+struct SharedAnalysis::SpectrumBlockAverage {
+    // Worker and owner mutations hold the domain mutex. Readers see immutable snapshots.
+    const std::uint32_t depth;
+    std::size_t subscribers = 1;
+    std::int64_t afterSequence = 0;
+    std::vector<double> sum, completed;
+    std::shared_ptr<const Result> completedWindow;
+    std::shared_ptr<const BlockAverageResult> publication;
+    std::uint32_t windows = 0;
+    bool quietGroup = true, settled = false;
+
+    SpectrumBlockAverage(std::uint32_t blocks, std::int32_t fftSize)
+        : depth(blocks), sum(static_cast<std::size_t>(fftSize / 2 + 1)), completed(sum.size()) {}
+
+    void setPublication(std::mutex &resultMutex, std::shared_ptr<const BlockAverageResult> result) noexcept {
+        const std::lock_guard lock(resultMutex);
+        publication.swap(result);
+    }
+
+    void reset(std::mutex &resultMutex) noexcept {
+        std::fill(sum.begin(), sum.end(), 0.);
+        windows = 0;
+        quietGroup = true;
+        settled = false;
+        completedWindow.reset();
+        setPublication(resultMutex, {});
+    }
+
+    void advance(const std::shared_ptr<const Result> &window, std::span<const float> bins, bool nonzero) noexcept {
+        if (window->firstSequence < afterSequence) return;
+        if (nonzero) {
+            settled = false;
+            quietGroup = false;
+            for (std::size_t bin = 0; bin < bins.size(); ++bin)
+                sum[bin] += static_cast<double>(bins[bin]);
+        }
+        if (++windows == depth) {
+            completed.swap(sum);
+            std::fill(sum.begin(), sum.end(), 0.);
+            completedWindow = window;
+            settled = quietGroup;
+            windows = 0;
+            quietGroup = true;
+        }
+    }
+
+    void publish(std::mutex &resultMutex) noexcept {
+        if (!completedWindow) return;
+        try {
+            auto next = std::make_shared<BlockAverageResult>();
+            next->window = completedWindow;
+            next->binsDbfs.resize(completed.size());
+            std::transform(completed.begin(), completed.end(), next->binsDbfs.begin(), [this](double sumValue) {
+                return dsp::toDbfs(static_cast<float>(sumValue / depth));
+            });
+            setPublication(resultMutex, std::move(next));
+        } catch (...) { /* Raw publication stays usable. */ }
+        completedWindow.reset();
+    }
+};
 struct SharedAnalysis::Domain {
     explicit Domain(Request r) : request(r),
         ringLeft(static_cast<std::size_t>(r.fftSize)), ringRight(ringLeft.size()),
@@ -159,6 +219,8 @@ struct SharedAnalysis::Domain {
     std::atomic<bool> neutralMaximum{true};
     std::vector<std::shared_ptr<CumulativeHistory>> cumulativeHistories;
     std::atomic<bool> cumulativeReady{true};
+    std::vector<std::shared_ptr<SpectrumBlockAverage>> blockAverages;
+    std::atomic<bool> blockAveragesQuiet{true};
     std::unique_ptr<dsp::StereoEnvelopeMeter> meter;
     bool meterPrepared = false;
     std::atomic<bool> neutralMeter{false};
@@ -359,6 +421,31 @@ struct SharedAnalysis::Domain {
             return item->lastWindow != 0;
         }), std::memory_order_release);
     }
+    void refreshBlockAveragesQuiet() noexcept {
+        blockAveragesQuiet.store(std::ranges::all_of(blockAverages, [](const auto &entry) {
+            return entry->settled;
+        }), std::memory_order_release);
+    }
+    std::shared_ptr<SpectrumBlockAverage> admitBlockAverage(
+        std::uint32_t depth, std::int64_t sequence) {
+        if (depth <= 1) return {};
+        const auto sameDepth = [depth](const auto &entry) { return entry->depth == depth; };
+        if (const auto found = std::ranges::find_if(blockAverages, sameDepth); found != blockAverages.end()) {
+            ++(*found)->subscribers;
+            return *found;
+        }
+        auto entry = std::make_shared<SpectrumBlockAverage>(depth, request.fftSize);
+        entry->afterSequence = sequence;
+        blockAverages.push_back(entry);
+        blockAveragesQuiet.store(false, std::memory_order_release);
+        return entry;
+    }
+    void dropBlockAverage(const std::shared_ptr<SpectrumBlockAverage> &entry) noexcept {
+        if (entry && --entry->subscribers == 0) {
+            std::erase(blockAverages, entry);
+            refreshBlockAveragesQuiet();
+        }
+    }
     void resetWindow(bool epoch) {
         position = filled = sinceWindow = 0;
         completedWindowEnd.store(-1, std::memory_order_release);
@@ -373,6 +460,8 @@ struct SharedAnalysis::Domain {
             // samples from the same tap. A replacement tap uses startAt().
             resetMaximum();
             for (const auto &history : cumulativeHistories) history->clear();
+            for (const auto &entry : blockAverages) entry->reset(resultMutex);
+            refreshBlockAveragesQuiet();
             cumulativeReady.store(cumulativeHistories.empty(), std::memory_order_release);
         }
         publishResult({});
@@ -404,6 +493,11 @@ struct SharedAnalysis::Domain {
         activateAverage(sequence);
         activateMaximum(sequence);
         if (outputs.load(std::memory_order_acquire) & Strip) startStripAt(sequence);
+        for (const auto &blockAverage : blockAverages) {
+            blockAverage->afterSequence = sequence;
+            blockAverage->reset(resultMutex);
+        }
+        refreshBlockAveragesQuiet();
         for (const auto &history : cumulativeHistories) {
             history->afterSequence = sequence;
             history->clear();
@@ -449,6 +543,10 @@ struct SharedAnalysis::Domain {
             std::vector<std::shared_ptr<CumulativeHistory>>().swap(cumulativeHistories);
             cumulativeReady.store(true, std::memory_order_release);
         }
+        if (!(bits & DeviceBlockAverage) && !blockAverages.empty()) {
+            std::vector<std::shared_ptr<SpectrumBlockAverage>>().swap(blockAverages);
+            blockAveragesQuiet.store(true, std::memory_order_release);
+        }
         if (!spectralOutput(bits)) {
             spectrum.reset(); spectralWindow = 0;
             std::vector<float>().swap(scratch); std::vector<float>().swap(linear); std::vector<float>().swap(second);
@@ -459,6 +557,7 @@ struct SharedAnalysis::Domain {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
                (!(bits & Strip) || neutralStrip.load(std::memory_order_acquire)) &&
+               (!(bits & DeviceBlockAverage) || blockAveragesQuiet.load(std::memory_order_acquire)) &&
                !(bits & Average1s) && (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire));
     }
     bool settledParkedSilence(engine::ScopeTap::ParkedSilence quiet) const noexcept {
@@ -498,7 +597,7 @@ struct SharedAnalysis::Domain {
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
-    std::array<std::size_t, 9> outputUsers{}; // State mutex
+    std::array<std::size_t, 10> outputUsers{}; // State mutex
     std::size_t consumers = 0;
     std::uint64_t sourceEpoch = 1, revision = 0, columnSerial = 0, gaps = 0, overruns = 0;
     std::vector<Column> columns;
@@ -704,6 +803,10 @@ struct SharedAnalysis::Domain {
             if (rawSpectralOutput(bits)) {
                 latest->binsDbfs.resize(linear.size());
                 std::transform(linear.begin(), linear.end(), latest->binsDbfs.begin(), dsp::toDbfs);
+            }
+            if ((bits & DeviceBlockAverage) && newWindow) {
+                for (const auto &blockAverage : blockAverages) blockAverage->advance(latest, linear, nonzero);
+                refreshBlockAveragesQuiet();
             }
             if ((bits & Output::Spectrogram) && historyWindow != windowSerial)
                 recordHistory(budget, latest->binsDbfs);
@@ -1450,7 +1553,8 @@ struct SharedAnalysis::State {
         if (detach && release) { try { release(key); } catch (...) {} }
     }
     void drop(const std::shared_ptr<Domain> &domain, std::uint32_t outputs,
-              const std::shared_ptr<CumulativeHistory> &cumulative) noexcept {
+              const std::shared_ptr<CumulativeHistory> &cumulative,
+              const std::shared_ptr<SpectrumBlockAverage> &blockAverage) noexcept {
         ownerOnly();
         bool detach = false;
         const auto key = domain->request.source();
@@ -1462,6 +1566,7 @@ struct SharedAnalysis::State {
             if (domain->consumers) {
                 std::lock_guard domainLock(domain->mutex);
                 domain->dropCumulative(cumulative);
+                domain->dropBlockAverage(blockAverage);
                 domain->releaseUnused(domain->outputs.load(std::memory_order_acquire));
                 return;
             }
@@ -1655,6 +1760,7 @@ struct SharedAnalysis::State {
                     auto averagePublication = d.makeAverageResult(latest);
                     auto maximumPublication = d.makeMaximumResult(latest);
                     d.publishCumulative(latest);
+                    for (const auto &blockAverage : d.blockAverages) blockAverage->publish(d.resultMutex);
                     d.publishResult(std::move(latest), std::move(averagePublication), std::move(maximumPublication));
                     publications.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -1720,24 +1826,28 @@ struct SharedAnalysis::Scheduler {
     }
 };
 SharedAnalysis::Lease::Lease(std::weak_ptr<State> state, std::shared_ptr<Domain> domain, std::uint32_t outputs,
-                             std::shared_ptr<CumulativeHistory> cumulative)
-    : state_(std::move(state)), domain_(std::move(domain)), cumulative_(std::move(cumulative)), outputs_(outputs) {}
+                             std::shared_ptr<CumulativeHistory> cumulative,
+                             std::shared_ptr<SpectrumBlockAverage> blockAverage)
+    : state_(std::move(state)), domain_(std::move(domain)), cumulative_(std::move(cumulative)),
+      spectrumBlockAverage_(std::move(blockAverage)), outputs_(outputs) {}
 SharedAnalysis::Lease::~Lease() { reset(); }
 SharedAnalysis::Lease::Lease(Lease &&other) noexcept
     : state_(std::move(other.state_)), domain_(std::move(other.domain_)), cumulative_(std::move(other.cumulative_)),
-      outputs_(std::exchange(other.outputs_, 0)) {}
+      spectrumBlockAverage_(std::move(other.spectrumBlockAverage_)), outputs_(std::exchange(other.outputs_, 0)) {}
 SharedAnalysis::Lease &SharedAnalysis::Lease::operator=(Lease &&other) noexcept {
     if (this != &other) {
         reset();
         state_ = std::move(other.state_);
         domain_ = std::move(other.domain_);
         cumulative_ = std::move(other.cumulative_);
+        spectrumBlockAverage_ = std::move(other.spectrumBlockAverage_);
         outputs_ = std::exchange(other.outputs_, 0);
     }
     return *this;
 }
 void SharedAnalysis::Lease::reset() noexcept {
-    if (domain_) if (auto state = state_.lock()) state->drop(domain_, outputs_, cumulative_);
+    if (domain_) if (auto state = state_.lock()) state->drop(domain_, outputs_, cumulative_, spectrumBlockAverage_);
+    spectrumBlockAverage_.reset();
     cumulative_.reset(); domain_.reset(); state_.reset(); outputs_ = 0;
 }
 SharedAnalysis::Lease::operator bool() const noexcept { return domain_ && !state_.expired() && domain_->active.load(std::memory_order_acquire); }
@@ -1749,6 +1859,11 @@ std::shared_ptr<const SharedAnalysis::Result> SharedAnalysis::Lease::read() cons
 std::shared_ptr<const SharedAnalysis::AverageResult> SharedAnalysis::Lease::readAverage() const noexcept {
     const auto publication = (outputs_ & Average1s) && available() ? domain_->readAverageResult() : nullptr;
     return publication && publication->window && (publication->window->outputs & outputs_) == outputs_ ? publication : nullptr;
+}
+std::shared_ptr<const SharedAnalysis::BlockAverageResult> SharedAnalysis::Lease::readBlockAverage() const noexcept {
+    if (!spectrumBlockAverage_ || !available()) return {};
+    const std::lock_guard lock(domain_->resultMutex);
+    return spectrumBlockAverage_->publication;
 }
 std::shared_ptr<const SharedAnalysis::MaximumResult> SharedAnalysis::Lease::readMaximum() const noexcept {
     return readMaximum((outputs_ & RealtimeMaximum) ? RealtimeMaximum : CumulativeMaximum);
@@ -1987,8 +2102,11 @@ void SharedAnalysis::shutdown() noexcept {
     for (const auto &[key, tap] : taps) if (tap.attached && state_->release) { try { state_->release(key); } catch (...) {} }
 }
 SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
+    return acquire(request, 1);
+}
+SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint32_t averageBlocks) {
     state_->ownerOnly();
-    if (!valid(request)) return {};
+    if (!valid(request) || ((request.outputs & DeviceBlockAverage) != 0) != (averageBlocks > 1)) return {};
     const auto key = keyFor(request);
     std::unique_lock lock(state_->mutex);
     if (state_->closed) return {};
@@ -2002,6 +2120,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
         if (!found->second->ensureSpectrum(request.outputs)) return {};
         const auto newlyRequested = request.outputs & ~found->second->outputs.load(std::memory_order_acquire);
         const auto sequence = found->second->tap ? found->second->tap->written() : 0;
+        auto blockAverage = found->second->admitBlockAverage(averageBlocks, sequence);
         found->second->addCumulative(cumulative, sequence);
         found->second->changeOutputs(request.outputs, true);
         if (newlyRequested & Average1s) found->second->activateAverage(sequence);
@@ -2009,10 +2128,11 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
         if (newlyRequested & Strip) found->second->startStripAt(sequence);
         found->second->updateAvailability();
         ++found->second->consumers; ++state_->consumers;
-        return Lease(state_, found->second, request.outputs, std::move(cumulative));
+        return Lease(state_, found->second, request.outputs, std::move(cumulative), std::move(blockAverage));
     }
     auto domain = std::make_shared<Domain>(key);
     if (!domain->ensureSpectrum(request.outputs)) return {};
+    auto blockAverage = domain->admitBlockAverage(averageBlocks, 0);
     domain->addCumulative(cumulative, 0);
     auto [tap, inserted] = state_->taps.try_emplace(key.source());
     auto &t = tap->second;
@@ -2033,10 +2153,28 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
     if (request.outputs & RealtimeMaximum) domain->activateMaximum(admission);
     if (request.outputs & Strip) domain->startStripAt(admission);
     if (cumulative) cumulative->afterSequence = admission;
+    if (blockAverage) blockAverage->afterSequence = admission;
     state_->domains.emplace(key, domain); ++state_->consumers;
-    return Lease(state_, std::move(domain), request.outputs, std::move(cumulative));
+    return Lease(state_, std::move(domain), request.outputs, std::move(cumulative), std::move(blockAverage));
 }
 
+SharedAnalysis::Lease SharedAnalysis::acquireDeviceSpectrum(const DeviceSpectrumRequest &device) {
+    if (device.fftSize < 32 || device.fftSize > kMaxFftSize ||
+        !std::has_single_bit(static_cast<std::uint32_t>(device.fftSize)) ||
+        device.averageBlocks < 1 || device.averageBlocks > DeviceSpectrumRequest::kMaximumAverageBlocks)
+        return {};
+    Request request{device.track, engine::ScopePoint::DeviceOutput, device.fftSize};
+    request.device = device.device;
+    switch (device.channel) {
+    case DeviceSpectrumRequest::Channel::Left: request.channel = Channel::Left; break;
+    case DeviceSpectrumRequest::Channel::Right: request.channel = Channel::Right; break;
+    case DeviceSpectrumRequest::Channel::Stereo: request.channel = Channel::StereoPower; break;
+    default: return {};
+    }
+    if (device.maximum) request.outputs |= CumulativeMaximum;
+    if (device.averageBlocks > 1) request.outputs |= DeviceBlockAverage;
+    return acquire(request, device.averageBlocks);
+}
 SharedAnalysis::Lease SharedAnalysis::acquireStrip(std::int64_t track) {
     Request request{track, engine::ScopePoint::PostFader, stripFftSize};
     request.outputs = Strip;
