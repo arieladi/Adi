@@ -110,6 +110,7 @@ private:
         struct Echo { double value = 0.0; std::int64_t armedMs = 0; };
         bool known = false, open = false, implicit = false, hasValue = false;
         bool guarded = false;
+        bool promoteEarlierActivity = false; // scratch for an absorbing drain's reverse pass
         double last = 0.0, before = 0.0, after = 0.0, echo = 0.0;
         std::int64_t lastValueMs = 0, armedMs = 0;
         std::vector<Echo> echoes; // consumer only; never inspected by push

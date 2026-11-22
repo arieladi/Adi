@@ -314,7 +314,11 @@ void SharedSpectrumView::updateRaster() {
         const bool reset = raster.image.isNull() || raster.epoch != shown_->sourceEpoch ||
             shown_->historySerial < raster.column || shown_->historySerial - raster.column >= Raster::width;
         if (reset) {
-            if (raster.image.isNull()) raster.image = juce::Image(juce::Image::RGB, Raster::width, Raster::height, true);
+            // History scrolls and changes individual pixels on the message thread.
+            // Keep those edits in memory so shifts and clears never read back a GPU surface.
+            if (raster.image.isNull())
+                raster.image = juce::Image(juce::Image::RGB, Raster::width, Raster::height, false,
+                                           juce::SoftwareImageType{});
             raster.intensity.fill(Raster::gap); raster.image.clear(raster.image.getBounds(), look::display);
         } else {
             while (firstColumn < shown_->columns.size() && shown_->columns[firstColumn].serial <= raster.column) ++firstColumn;

@@ -27,6 +27,12 @@ void increment(std::int64_t &value) {
         throw std::runtime_error("persistent row identities are exhausted");
     ++value;
 }
+std::string_view remarkKind(std::string_view table) noexcept {
+    if (table == "tracks") return "track";
+    if (table == "clips") return "clip";
+    if (table == "devices") return "device";
+    return {};
+}
 } // namespace
 RowIds::State &RowIds::state(std::string_view table) {
     owner();
@@ -53,10 +59,18 @@ RowIds::State &RowIds::state(std::string_view table) {
         throw std::runtime_error("row identity needs one INTEGER PRIMARY KEY named id");
     SQLite::Statement maximum(db_, "SELECT COALESCE(MAX(\"id\"),0) FROM " + name);
     maximum.executeStep();
-    return states_
-        .emplace(std::string(table),
-                 State{std::max<std::int64_t>(0, maximum.getColumn(0).getInt64()), {}})
-        .first->second;
+    auto high = std::max<std::int64_t>(0, maximum.getColumn(0).getInt64());
+    auto kind = remarkKind(table);
+    if (!kind.empty() && !db_.tableExists("remarks"))
+        kind = {};
+    if (!kind.empty()) {
+        SQLite::Statement anchors(db_,
+            "SELECT COALESCE(MAX(target_id),0) FROM remarks WHERE target_kind=?");
+        anchors.bind(1, std::string(kind));
+        anchors.executeStep();
+        high = std::max(high, anchors.getColumn(0).getInt64());
+    }
+    return states_.emplace(std::string(table), State{high, {}, kind}).first->second;
 }
 void RowIds::reserve(std::string_view table, std::int64_t id) {
     auto &group = state(table);
@@ -78,8 +92,12 @@ std::int64_t RowIds::next(std::string_view table, RowIdExhaustion exhaustion) {
         while (group.reserved.contains(candidate))
             increment(candidate);
     };
-    SQLite::Statement ids(db_,
-                          "SELECT \"id\" FROM " + quote(table) + " WHERE \"id\">0 ORDER BY \"id\"");
+    auto query = "SELECT \"id\" FROM " + quote(table) + " WHERE \"id\">0";
+    if (!group.remarkKind.empty())
+        query += " UNION ALL SELECT target_id FROM remarks WHERE target_kind=? AND target_id>0";
+    SQLite::Statement ids(db_, query + " ORDER BY \"id\"");
+    if (!group.remarkKind.empty())
+        ids.bind(1, std::string(group.remarkKind));
     while (ids.executeStep()) {
         skipReserved();
         const auto stored = ids.getColumn(0).getInt64();

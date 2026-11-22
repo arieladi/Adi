@@ -3,9 +3,12 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/midi_input_capture.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
+#include "adi/edit_plan.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -41,6 +44,7 @@ struct Instrument final:device::DeviceInstance {
     device::DeviceIdentity id;
     std::array<Heard,8192> heard{};std::size_t count=0;std::int64_t clock=0;
     std::int64_t tail=kInfiniteTail;int calls=0; // ADR-0158: most plugins report no tail
+    bool audible=false;int voices=0;
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
     bool processesDouble()const noexcept override{return true;}
@@ -49,6 +53,21 @@ struct Instrument final:device::DeviceInstance {
     void process(const NodeIo& io)noexcept override{
         ++calls;
         for(const auto& e:io.events)if(count<heard.size())heard[count++]={e,clock+e.frame};
+        if(audible) {
+            auto event=io.events.begin();
+            for(int frame=io.blockOffset;frame<io.blockOffset+io.frames;++frame) {
+                while(event!=io.events.end() && event->frame<=frame) {
+                    if(event->type==EventType::NoteOn)++voices;
+                    if(event->type==EventType::NoteOff)--voices;
+                    ++event;
+                }
+                for(int c=0;c<io.channels;++c) {
+                    if(io.wide())io.out64[c][frame]=voices>0?0.5:0.0;
+                    else io.out[c][frame]=voices>0?0.5f:0.0f;
+                }
+            }
+            return;
+        }
         for(int c=0;c<io.channels;++c) {
             if(io.wide())std::fill_n(io.out64[c]+io.blockOffset,io.frames,0.0);
             else std::fill_n(io.out[c]+io.blockOffset,io.frames,0.0f);
@@ -65,7 +84,7 @@ struct LatencyEffect final:device::DeviceInstance {
 };
 struct Fixture {
     test::TempDirectory dir{"midi_clips","session"};
-    std::unique_ptr<Store> store;Session session;Instrument* instrument=nullptr;
+    std::unique_ptr<Store> store;Session session;Instrument* instrument=nullptr;Instrument* otherInstrument=nullptr;
     double rate;int block;Precision width;std::int64_t clock=0;
     explicit Fixture(double r=48000,int b=512,Precision w=Precision::Float32):rate(r),block(b),width(w){
         StoreError e{};store=Store::createEmpty(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
@@ -77,17 +96,247 @@ struct Fixture {
         auto bytes=writeStream<NoteRecord>(FourCC::Notes,std::vector<NoteRecord>{note});
         if(!store->putEventStream(id,"notes",bytes))throw std::runtime_error("ANOT write");
     }
-    void load(){session.graph().setFadeFrames(0);if(!session.load(*store,[this](const DeviceRequest& request,std::string&) -> std::unique_ptr<device::DeviceInstance> {if(request.device->id==2)return std::make_unique<LatencyEffect>();auto p=std::make_unique<Instrument>();instrument=p.get();return p;},{2,rate,block,width}))throw std::runtime_error(session.error());session.transport().play();}
-    void render(int n=0){
+    void load(){session.graph().setFadeFrames(0);if(!session.load(*store,[this](const DeviceRequest& request,std::string&) -> std::unique_ptr<device::DeviceInstance> {if(request.device->id==2)return std::make_unique<LatencyEffect>();auto p=std::make_unique<Instrument>();(request.device->id==3?otherInstrument:instrument)=p.get();return p;},{2,rate,block,width}))throw std::runtime_error(session.error());session.transport().play();}
+    void render(int n=0, std::span<double> capture={}){
         if(!n)n=block;
         std::array<float,8192> out{};std::array<double,8192> out64{};
         float* channels[]={out.data(),out.data()+4096};double* wide[]={out64.data(),out64.data()+4096};
-        AudioIo io;io.frames=n;io.numOut=2;
+        AudioIo io;io.frames=n;io.numOut=2;io.streamTimeSamples=clock;
         if(width==Precision::Float64)io.out64=wide;else io.out=channels;
-        instrument->clock=clock;session.process(io);clock+=n;
+        if(otherInstrument)otherInstrument->clock=clock;
+        instrument->clock=clock;
+        { const audio::CallbackScope callback; session.process(io); }
+        if(width==Precision::Float64)std::copy_n(out64.data(),capture.size(),capture.data());
+        else std::copy_n(out.data(),capture.size(),capture.data());
+        clock+=n;
     }
     void refresh(){if(!session.refresh(*store))throw std::runtime_error(session.error());}
 };
+void liveInput() {
+    for (const auto width : {Precision::Float32, Precision::Float64}) {
+        Fixture f(48000, 64, width);
+        f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
+            "INSERT INTO tracks(id,kind,name,index_in_parent,monitor_mode) VALUES(3,'midi','Other',2,2);"
+            "INSERT INTO device_chains(id,track_id) VALUES(3,3);"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(3,3,0,1,'Other')");
+        f.load();
+        f.instrument->audible = true;
+        f.session.transport().play(false);
+        f.session.transport().locate(24000);
+        auto send = [&](std::int64_t sample, EventType type, std::uint64_t id, std::uint16_t dim, double value) {
+            return f.session.enqueueMidiInput(sample, Event{0,type,3,dim,id,0,value});
+        };
+        check(send(31, EventType::NoteOn, 42, 60, 0.72) &&
+              send(63, EventType::NoteExpression, 42, static_cast<std::uint16_t>(ExpressionDim::Pitch), 0.314159) &&
+              send(64, EventType::NoteOff, 42, 60, 0.43), "Track input accepts typed, timestamped notes");
+        std::array<double,64> pcm{};
+        f.render(64, pcm);
+        auto& i = *f.instrument;
+        check(i.count == 2 && i.heard[0].clock == 31 && i.heard[1].clock == 63 &&
+              i.heard[1].e.value == 0.314159 && i.heard[0].e.noteId == i.heard[1].e.noteId &&
+              i.heard[0].e.channel == 3, "live note/expression use physical frames and one voice identity while stopped");
+        check(pcm[30] == 0 && pcm[31] > 0.2 && pcm[63] > 0.2,
+              "a live instrument reaches the main output at its exact onset");
+        f.render(17, std::span(pcm).first(17));
+        check(i.count == 3 && i.heard[2].clock == 64 && i.heard[2].e.noteId == i.heard[0].e.noteId &&
+              i.heard[2].e.value == 0.43 && i.balance() == 0 && f.otherInstrument->count == 0 && pcm[0] == 0,
+              "boundary note-off lands in the next short block on the armed instrument only");
+        check(send(80, EventType::NoteOn, 43, 62, 0.8), "late event enters the queue");
+        f.render();
+        check(i.count == 4 && i.heard[3].clock == 81 && i.balance() == 1,
+              "late input is played once at the earliest available sample");
+        OpRequest arm;
+        arm.opType = "track.setArm";
+        arm.payload = {{"id",1},{"armed",false}};
+        if (!OpJournal(*f.store).commit(arm).ok) throw std::runtime_error("track disarm failed");
+        arm.payload = {{"id",3},{"armed",true}};
+        if (!OpJournal(*f.store).commit(arm).ok) throw std::runtime_error("track arm failed");
+        f.refresh();
+        check(send(150, EventType::NoteOff, 43, 62, 0.1) &&
+              send(151, EventType::NoteOn, 44, 64, 0.82) &&
+              send(152, EventType::NoteOff, 44, 64, 0), "old release and new key both reach the changed graph");
+        f.render();
+        check(i.count == 5 && i.heard[4].clock == 145 && i.heard[4].e.noteId == i.heard[3].e.noteId &&
+              i.balance() == 0, "disarming releases a held voice even after a graph publication");
+        check(f.otherInstrument->count == 2 && f.otherInstrument->heard[0].clock == 151 &&
+              f.otherInstrument->heard[1].clock == 152 && f.otherInstrument->balance() == 0,
+              "arming the other instrument routes new keys without old note-offs");
+        const auto beforeReset = f.clock;
+        check(send(beforeReset, EventType::NoteOn, 45, 65, 0.8) &&
+              f.session.enqueueMidiInput(beforeReset + 1, {0,EventType::Controller,3,0,0,64,1}),
+              "new target accepts a held note and sustain");
+        f.render();
+        const auto resetAt = f.clock;
+        check(send(resetAt + 600, EventType::NoteOn, 46, 66, 0.8), "queue a future event from old input");
+        f.session.resetMidiInput();
+        check(send(resetAt + 4, EventType::NoteOn, 47, 67, 0.8) &&
+              send(resetAt + 7, EventType::NoteOff, 47, 67, 0.1),
+              "rebound producer can submit beneath the old timestamps");
+        f.render();
+        auto& other = *f.otherInstrument;
+        check(other.count == 8 && other.heard[4].clock == resetAt &&
+              other.heard[4].e.noteId == other.heard[2].e.noteId &&
+              other.heard[5].clock == resetAt && other.heard[5].e.type == EventType::Controller &&
+              other.heard[5].e.paramId == 64 && other.heard[5].e.value == 0 &&
+              other.heard[6].clock == resetAt + 4 && other.heard[7].clock == resetAt + 7 && other.balance() == 0,
+              "port reset releases notes and sustain and discards obsolete future input");
+        check(send(f.clock, EventType::NoteOn, 48, 68, 0.8), "sound another held voice before overflow");
+        f.render();
+        bool overflow = false;
+        for (int queued = 0; queued < 2048; ++queued) {
+            if (f.session.enqueueMidiInput(f.clock + 900, {0,EventType::Controller,3,0,0,7,1})) continue;
+            overflow = true;
+            break;
+        }
+        f.render();
+        check(overflow && other.count == 10 && other.balance() == 0 &&
+              other.heard[8].e.noteId == other.heard[9].e.noteId,
+              "a full queue refuses and releases held notes safely even if the lost packet was its release");
+        check(!send(f.clock, EventType::NoteOn, 0, 68, 0.5) &&
+              !send(f.clock, EventType::ParamValue, 20, 68, 0.5),
+              "one MIDI input cannot forge addressed parameter events or anonymous notes");
+        const auto topChannel = f.clock;
+        check(f.session.enqueueMidiInput(topChannel, {0,EventType::NoteOn,15,70,49,0,0.75}) &&
+              f.session.enqueueMidiInput(topChannel + 1, {0,EventType::NoteExpression,15,
+                  static_cast<std::uint16_t>(ExpressionDim::Pitch),0,0,0.25}) &&
+              f.session.enqueueMidiInput(topChannel + 2, {0,EventType::NoteOff,15,70,49,0,0}),
+              "the sixteenth channel accepts notes and a channel-wide expression");
+        f.render();
+        check(other.count == 13 && other.heard[10].e.channel == 15 && other.heard[11].clock == topChannel + 1 &&
+              other.heard[11].e.noteId == 0 && other.heard[11].e.value == 0.25 &&
+              other.heard[12].e.noteId == other.heard[10].e.noteId && other.balance() == 0,
+              "channel-wide expression reaches the instrument with its unaddressed identity");
+    }
+    Fixture overlap;
+    overlap.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1");
+    overlap.clip();
+    overlap.load();
+    check(overlap.session.enqueueMidiInput(100, {0,EventType::NoteOn,3,60,42,0,0.5}) &&
+          overlap.session.enqueueMidiInput(110, {0,EventType::NoteOff,3,60,42,0,0}),
+          "enqueue a live voice on the Arrangement note's channel and key");
+    overlap.render();
+    const auto& inst = *overlap.instrument;
+    check(inst.count == 4 && inst.heard[0].clock == 100 && inst.heard[1].clock == 100 &&
+          inst.heard[0].e.noteId != inst.heard[1].e.noteId && inst.heard[3].clock == 110 &&
+          inst.heard[3].e.noteId == inst.heard[0].e.noteId && inst.balance() == 1,
+          "releasing the live same-pitch note leaves the Arrangement voice active");
+}
+void driverMidiCapture() {
+    Fixture f(48000, 64);
+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1;"
+        "INSERT INTO tracks(id,kind,name,index_in_parent,record_armed)"
+        " VALUES(3,'midi','Armed without instrument',2,1),(4,'midi','Unarmed',3,0)");
+    f.load();
+    auto& capture = f.session.midiInputCapture();
+    auto& transport = f.session.transport();
+    using Kind = MidiCapturePacket::Kind;
+    const std::array<std::int64_t,2> tracks{3,1};
+    std::string error;
+    const auto start = [&] { return f.session.startMidiInputCapture(tracks, error); };
+    const auto send = [&](std::int64_t sample, EventType type, std::uint64_t id, std::uint16_t dim = 60) {
+        return f.session.enqueueMidiInput(sample, {0,type,3,dim,id,0,0.5});
+    };
+    check(!f.session.startMidiInputCapture(std::array<std::int64_t,1>{4}, error) &&
+          !f.session.startMidiInputCapture(std::array<std::int64_t,2>{3,3}, error),
+          "capture rejects an unarmed or duplicate destination");
+    transport.play(false);
+    transport.loop(6,42,true);
+    transport.locate(36);
+    check(start() && capture.epoch() != 0 && capture.tracks().size() == 2 &&
+          capture.tracks()[0] == 3 && capture.tracks()[1] == 1 && capture.sampleRate() == 48000,
+          "capture freezes its epoch, rate and destination list including a track with no instrument");
+    const auto epoch = capture.epoch();
+    std::array<MidiCapturePacket,16> packets{};
+    f.render(16);
+    check(capture.state() == MidiCaptureState::Waiting && capture.drain(packets) == 0,
+          "stopped rendering does not start a recording span");
+    transport.play();
+    check(send(15, EventType::NoteOn, 500) && send(18, EventType::NoteOn, 501) &&
+          send(22, EventType::NoteExpression, 501, static_cast<std::uint16_t>(ExpressionDim::Pitch)) &&
+          send(59, EventType::NoteOff, 501), "queued input crosses two loop boundaries and includes a pre-epoch key");
+    f.render();
+    check(capture.state() == MidiCaptureState::Recording, "the first playable slice starts the epoch");
+    check(send(79, EventType::NoteOn, 502) && send(80, EventType::NoteOff, 502),
+          "a late packet and an on-time packet share the next driver's first frame");
+    f.render(16);
+    capture.stop();
+    f.render();
+    check(capture.state() == MidiCaptureState::Complete && !start(),
+          "stop leaves the completed epoch available until the consumer drains it");
+    const auto count = capture.drain(packets);
+    const auto span = [&](std::size_t i, std::uint64_t pass, std::int64_t stream,
+                          std::int64_t timeline, std::int32_t frames) {
+        const auto& p = packets[i];
+        return p.kind == Kind::Span && p.epoch == epoch && p.pass == pass &&
+               p.streamSample == stream && p.timelineSample == timeline && p.frames == frames;
+    };
+    const auto event = [&](std::size_t i, std::uint64_t pass, std::int64_t stream,
+                           std::int64_t timeline, std::int64_t input, std::int32_t frame,
+                           EventType type, std::uint64_t id) {
+        const auto& p = packets[i];
+        return p.kind == Kind::Event && p.epoch == epoch && p.pass == pass &&
+               p.streamSample == stream && p.timelineSample == timeline && p.inputSample == input &&
+               p.event.type == type && p.event.frame == frame && p.event.noteId == id && p.event.channel == 3;
+    };
+    check(count == 10 && span(0,0,16,36,6) && span(2,1,22,6,36) && span(4,2,58,6,22) &&
+          span(6,2,80,28,14) && span(9,3,94,6,2),
+          "capture emits exact loop spans including the silent final pass and a pass split across callbacks");
+    check(event(1,0,18,38,18,2,EventType::NoteOn,501) &&
+          event(3,1,22,6,22,0,EventType::NoteExpression,501) &&
+          event(5,2,59,7,59,1,EventType::NoteOff,501),
+          "input IDs carry held-note ownership across multiple wraps independently of the audible voice");
+    check(event(7,2,80,28,79,0,EventType::NoteOn,502) &&
+          event(8,2,80,28,80,0,EventType::NoteOff,502) &&
+          f.instrument->heard[0].e.noteId != 500,
+          "capture excludes the pre-epoch key and preserves the order and raw stamp of late input");
+    transport.locate(12);
+    check(start() && capture.epoch() == epoch + 1, "draining permits a new independent recording epoch");
+    f.render(12);
+    f.session.resetMidiInput();
+    capture.stop();
+    f.render(12);
+    check(capture.state() == MidiCaptureState::InputReset && capture.drain(packets) == 1,
+          "losing the source terminates the epoch without a partial next slice");
+    check(start(), "start a capture for the seek test");
+    f.render(8);
+    transport.locate(17);
+    f.render(8);
+    check(capture.state() == MidiCaptureState::Discontinuity && capture.drain(packets) > 0,
+          "a seek finishes the epoch with an explicit discontinuity");
+    check(start(), "start a capture for the physical stream gap");
+    f.render(8);
+    ++f.clock;
+    f.render(8);
+    check(capture.state() == MidiCaptureState::Discontinuity && capture.drain(packets) > 0,
+          "a missing driver frame cannot be joined onto the recording");
+    check(start(), "start and wait through count-in");
+    transport.locate(10);
+    transport.countIn(5);
+    const auto beforeLead = f.clock;
+    check(send(beforeLead+4,EventType::NoteOn,503) && send(beforeLead+5,EventType::NoteOn,504),
+          "count-in and first downbeat receive separate input stamps");
+    f.render(8);
+    check(capture.drain(packets) == 2 && packets[0].streamSample == beforeLead+5 &&
+          packets[0].timelineSample == 10 && packets[0].frames == 3 &&
+          packets[1].event.noteId == 504 && packets[1].event.frame == 0,
+          "count-in emits no packets and the first downbeat records the event at its exact sample");
+    capture.stop();
+    f.render(2);
+    check(capture.state() == MidiCaptureState::Complete, "stop the count-in epoch");
+    transport.loop(0,1,true);
+    transport.locate(0);
+    check(start(), "start shortest-loop overflow test");
+    for (int block = 0; block < 63; ++block) f.render();
+    f.render(63);
+    f.render(2);
+    std::vector<MidiCapturePacket> ring(4096);
+    check(capture.state() == MidiCaptureState::Overflow && capture.drain(ring) == 4095 &&
+          ring[4094].pass == 4094, "overflow publishes no partial slice and preserves the complete prefix");
+    check(start(), "restart after draining the failed capture");
+    f.session.release();
+    check(capture.state() == MidiCaptureState::DeviceStopped && capture.drain(packets) == 0,
+          "closing the audio device terminates even a capture waiting for its first slice");
+}
 void placement(){
     for(double rate:{44100.,48000.,88200.,96000.,176400.,192000.})for(int block:{64,128,256,512,1024,2048,4096}){
         Fixture f(rate,block);f.clip();f.load();
@@ -183,6 +432,46 @@ void overflowRelease(){
     for(int i=0;i<4;++i)graph->pushInputEvent(target,filler);
     f.render();check(f.instrument->balance()==1,"full destination refused the scheduled off");
     f.render();check(f.instrument->balance()==0,"a dropped forwarded off is retried without hanging");
+}
+void trimSourcePrefix(){
+    Fixture f(48000,4096);f.clip(1,0,5765760,5765760);
+    f.store->db().exec("UPDATE clips SET pos_ticks=11531520");
+    const std::array<std::int64_t,1> tracks{1};
+    edit_plan::Options options;options.policy.automationFollowsClips=false;
+    const auto prepared=edit_plan::prepareTrim(*f.store,
+        edit_plan::materialScope(tracks,edit_plan::PlacementClock::Ticks,{0,4*5765760}),
+        {1,{0,5765760}},options);
+    check(prepared.ok && clip_edit::commitPrepared(*f.store,prepared).ok,
+          "MIDI left extension commits a signed source prefix through the material planner");
+    const auto details=readClipDetails(*f.store,1);
+    check(details.clip && details.clip->contentOffsetTicks==-5765760 &&
+              details.clip->endMarkerTicks==5765760 && details.clip->propertiesProblem.empty(),
+          "Clip View derives the original End from a signed Start and extended visible span");
+    f.load();while(f.clock<76000)f.render();
+    bool on=false,off=false;
+    for(std::size_t i=0;i<f.instrument->count;++i) {
+        const auto& heard=f.instrument->heard[i];
+        if(heard.e.type==EventType::NoteOn)on=on || heard.clock==48000;
+        if(heard.e.type==EventType::NoteOff)off=off || heard.clock==72000;
+    }
+    check(on && off && f.instrument->balance()==0,
+          "MIDI signed source prefix preserves anchored note-on/off and releases at the original end");
+    OpRequest marker;marker.opType="clip.setStartMarker";marker.payload={{"id",1},{"ticks",0}};
+    check(OpJournal(*f.store).commit(marker).ok &&
+              f.store->db().execAndGet("SELECT end_marker_ticks FROM clip_properties WHERE clip_id=1").getInt64()==5765760,
+          "moving Start after a signed trim pins the original derived End");
+    check(History(*f.store).undo().ok &&
+              f.store->db().execAndGet("SELECT content_offset_ticks FROM clips WHERE id=1").getInt64()==-5765760,
+          "marker undo restores the signed trimmed source prefix");
+    for(const int begin:{0,5}) {
+        Fixture tie(44100,2048);tie.clip(1,0,5765760,5765760);
+        SQLite::Statement row(tie.store->db(),"UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=?,length_ns=?");
+        row.bind(1,begin);row.bind(2,35000000-begin);row.exec();tie.load();tie.render();
+        bool end=false;
+        for(std::size_t i=0;i<tie.instrument->count;++i)
+            if(tie.instrument->heard[i].e.type==EventType::NoteOff)end=end || tie.instrument->heard[i].clock==1544;
+        check(end && tie.instrument->balance()==0,"linear MIDI retains the native end sample when its left edge changes");
+    }
 }
 void nanosecondEnd(){
     Fixture f;f.clip(1,0,5765760);
@@ -633,7 +922,11 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "take-lanes") takeLanePlayback(); }
     catch (const std::exception& e) { check(false, e.what()); }
-    try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
+    try { if (only == "all" || only == "live-input") liveInput(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

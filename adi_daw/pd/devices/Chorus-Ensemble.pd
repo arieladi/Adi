@@ -6,7 +6,7 @@
 #X msg 300 60 p 0 \$1;
 #X obj 300 120 adi.param \$0 2 0 1 0 - int HighPassOn;
 #X msg 300 160 p 1 \$1;
-#X obj 300 220 adi.param \$0 3 20 2000 100 Hz log HighPass;
+#X obj 300 220 adi.param \$0 3 20 2000 50 Hz log HighPass;
 #X msg 300 260 p 2 \$1;
 #X obj 300 320 adi.param \$0 4 0 200 100 % lin Width;
 #X msg 300 360 p 3 \$1;
@@ -20,15 +20,15 @@
 #X msg 300 760 p 7 \$1;
 #X obj 600 20 adi.param \$0 9 0 100 0 % lin Shape;
 #X msg 600 60 p 8 \$1;
-#X obj 600 120 adi.param \$0 10 0.01 20 1 Hz log Rate;
+#X obj 600 120 adi.param \$0 10 0.1 15 0.9 Hz log Rate;
 #X msg 600 160 p 9 \$1;
 #X obj 600 220 adi.param \$0 11 0 100 50 % lin Amount;
 #X msg 600 260 p 10 \$1;
-#X obj 600 320 adi.param \$0 12 0 95 0 % lin Feedback;
+#X obj 600 320 adi.param \$0 12 0 99 0 % lin Feedback;
 #X msg 600 360 p 11 \$1;
 #X obj 600 420 adi.param \$0 13 0 1 0 - int Invert;
 #X msg 600 460 p 12 \$1;
-#X obj 600 520 adi.param \$0 14 -60 12 0 dB lin Output;
+#X obj 600 520 adi.param \$0 14 -60 6 0 dB lin Output;
 #X msg 600 560 p 13 \$1;
 #X obj 600 620 adi.param \$0 15 0 100 0 % lin Warmth;
 #X msg 600 660 p 14 \$1;

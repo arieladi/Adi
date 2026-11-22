@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
+#include "adi/render/queue.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
+#include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
 #include "juce/juce_device_loader.hpp"
+#include "juce/plugin_search_settings.hpp"
 #include "app_audio_page.hpp"
+#include "app_midi_ports.hpp"
+#include "ui_export.hpp"
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
 #include "mix_function_host.hpp"
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -16,8 +23,10 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stop_token>
 #include <thread>
+#include <future>
 namespace adi::ui {
 namespace {
 // A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
@@ -85,6 +94,11 @@ class AdiApplication final : public juce::JUCEApplication,
             settings_ = std::make_unique<settings::AppSettings>(
                 settings::AppSettings::forApp(appdata::App::Daw));
         commands_ = std::make_unique<AppCommands>(*settings_);
+        configurePluginSources();
+        pluginSourcesKey_ = pluginSourcesKey();
+        // The plug-in catalogue's service (DF-W34, N58); its first job starts once the window is open.
+        if (smokeOutput_ == juce::File{})
+            startPluginCatalogue();
         manager_.addChangeListener(this);
         if (project == juce::File{}) {
             // ADI has no unsaved state: every op is committed to a file, so a new
@@ -101,6 +115,30 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         startLibrary();
+        // The catalogue the first project read is listed at once; an Incremental discovery then finds
+        // what was installed or removed since, in the background (engine-win's N58 handoff).
+        if (catalogue_) {
+            catalogue_->showCatalogue();
+            catalogue_->request(DiscoveryMode::Incremental);
+        }
+        // The MIDI ports (SRF-05): listed and opened by the Settings' MIDI Ports; never in a smoke run.
+        if (smokeOutput_ == juce::File{}) {
+            midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); });
+            // A port plugged in or out, or a switch thrown: the Settings' table follows.
+            // Posted: a refresh can run inside a Settings row's own commit, which the page must outlive.
+            midiPorts_->onChange = [this] {
+                juce::MessageManager::callAsync([this] {
+                    if (juce::JUCEApplicationBase::getInstance() != this || !settingsWindow_)
+                        return;
+                    auto &panel = settingsWindow_->panel();
+                    if (auto *table = dynamic_cast<MidiPortsTable *>(panel.midiPortsTable())) {
+                        table->rebuild();
+                        if (panel.page() == "Tempo & MIDI" && !panel.finding())
+                            panel.relayout(); // its height may have changed; its rows and scroll stay
+                    }
+                });
+            };
+        }
         startTimer(20);
     }
     // The browser's Samples and Places (D1): the library index (#102) at its app-data file, on one
@@ -174,6 +212,311 @@ class AdiApplication final : public juce::JUCEApplication,
             index.reset();
         });
     }
+    // Live's Export Audio/Video (EX-11; manual 5.2.1): the page with the choices, Export asks for a file,
+    // and the render runs on a worker of its own while the window works on. The renderer (render::renderWav)
+    // opens the project's file read-only on its own connection, so it reads the project as committed.
+    // Devices are made on the message thread, as a session makes them; a project with a VST3 or CLAP
+    // device waits for the engine's render worker (EX-11's engine half), and is refused with that reason.
+    void openExport(const ExportChoices &initial) {
+        if (exportWindow_) {
+            // Shown again while it is up or rendering; one Escape or the close button hid is made afresh,
+            // with the choices of now.
+            if (exportWindow_->isVisible() || render_.joinable()) {
+                exportWindow_->setVisible(true);
+                exportWindow_->toFront(true);
+                return;
+            }
+            closeExport();
+        }
+        if (!document_ || !root_)
+            return;
+        // Rendered Track: the tracks in the lanes' order, as the Arrangement shows them.
+        std::vector<std::pair<std::int64_t, std::string>> tracks;
+        std::vector<textproj::Meter> meters;
+        for (const auto &row : root_->arrangement.geometry.rows(root_->reader()))
+            if (row.track != nullptr && row.track->kind != "master")
+                tracks.emplace_back(row.track->id, row.track->name);
+        meters = root_->reader().meters();
+        auto page = std::make_unique<ExportPage>(initial, std::move(tracks), std::move(meters));
+        exportPage_ = page.get();
+        page->onCancel = [this] {
+            if (render_.joinable()) {
+                renderStop_.request_stop();
+                return;
+            }
+            closeExport();
+        };
+        page->onExport = [this](const ExportChoices &c) { chooseExportFile(c); };
+        juce::DialogWindow::LaunchOptions options;
+        options.dialogTitle = "Export Audio/Video";
+        options.content.setOwned(page.release());
+        options.escapeKeyTriggersCloseButton = true;
+        options.useNativeTitleBar = true;
+        options.resizable = false;
+        exportWindow_.reset(options.create());
+        exportWindow_->setVisible(true);
+    }
+    void closeExport() {
+        exportPage_ = nullptr;
+        exportWindow_.reset();
+    }
+    void chooseExportFile(const ExportChoices &c) {
+        if (chooser_ || render_.joinable() || !document_)
+            return;
+        // A plug-in of another maker cannot be rendered here yet.
+        {
+            SQLite::Statement q(document_->store().db(),
+                                "SELECT count(*) FROM devices d JOIN plugin_refs r ON r.id = d.plugin_ref_id "
+                                "WHERE r.format <> 'internal'");
+            if (q.executeStep() && q.getColumn(0).getInt() > 0) {
+                if (exportPage_)
+                    exportPage_->showDone("A project with VST3 or CLAP plug-ins renders once the engine's render "
+                                          "worker is on main (EX-11).");
+                return;
+            }
+        }
+        const auto project = juce::File(juce::String::fromUTF8(media::pathUtf8(document_->store().path()).c_str()));
+        chooser_ = std::make_unique<juce::FileChooser>("Export Audio", project.getParentDirectory().getChildFile(
+                                                                           project.getFileNameWithoutExtension() + ".wav"),
+                                                       "*.wav");
+        const int flags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
+                          juce::FileBrowserComponent::warnAboutOverwriting;
+        chooser_->launchAsync(flags, [this, c](const juce::FileChooser &chosen) {
+            auto file = chosen.getResult();
+            juce::MessageManager::callAsync([this] {
+                if (juce::JUCEApplicationBase::getInstance() == this)
+                    chooser_.reset();
+            });
+            if (file == juce::File{} || !document_)
+                return;
+            // ".wav" is added to a name without it, never swapped for another extension the name holds; a
+            // file the chooser did not ask about is never replaced.
+            const auto chosenFile = file;
+            file = withExtension(file, "wav");
+            if (file != chosenFile && file.exists()) {
+                if (exportPage_)
+                    exportPage_->showDone(file.getFileName().toStdString() + " already exists; choose it to replace it.");
+                return;
+            }
+            // The renderer writes the name as given or not at all.
+            const auto stem = file.getFileNameWithoutExtension().toStdString();
+            std::string resolved;
+            try {
+                resolved = render::resolveName(literalTemplate(stem), {});
+            } catch (const std::exception &) {
+            }
+            if (resolved != stem) {
+                if (exportPage_)
+                    exportPage_->showDone("A WAV cannot be named \"" + stem + "\"; choose another name.");
+                return;
+            }
+            // The user chose to replace it: the old file goes to the trash, so a failed render loses nothing.
+            if (file.existsAsFile() && !file.moveToTrash()) {
+                if (exportPage_)
+                    exportPage_->showDone("The existing file could not be moved to the trash; choose another name.");
+                return;
+            }
+            const auto current = document_->view().current();
+            if (!current || !current->tempo)
+                return;
+            startRender(exportJob(c, document_->store().path(), pathFromUtf8(file.getFullPathName().toStdString()),
+                                  *current->tempo));
+        });
+    }
+    void startRender(render::Job job) {
+        renderStop_ = std::stop_source{};
+        auto alive = renderAlive_;
+        if (exportPage_)
+            exportPage_->showProgress(0);
+        // Each device is made on the message thread and handed back; Cancel or Quit stops the wait.
+        engine::DeviceLoader made = [this, alive, stop = renderStop_.get_token()](const engine::DeviceRequest &rq,
+                                                                                  std::string &error) {
+            if (stop.stop_requested() || !alive->load()) {
+                error = "the export was stopped";
+                return std::unique_ptr<device::DeviceInstance>{};
+            }
+            // Only ADI's own devices render here; another maker's plug-in waits for the engine's render
+            // worker, whatever the project held when Export was pressed.
+            if (rq.ref == nullptr || rq.ref->format != "internal") {
+                error = "A project with VST3 or CLAP plug-ins renders once the engine's render worker is on main (EX-11).";
+                return std::unique_ptr<device::DeviceInstance>{};
+            }
+            // The posted call owns copies of what it reads: the render's rows may be gone when it runs.
+            auto row = std::make_shared<rows::Device>(*rq.device);
+            auto ref = std::make_shared<rows::PluginRef>(*rq.ref);
+            engine::DeviceRequest owned = rq;
+            owned.device = row.get();
+            owned.ref = ref.get();
+            auto promise = std::make_shared<std::promise<std::unique_ptr<device::DeviceInstance>>>();
+            auto future = promise->get_future();
+            auto why = std::make_shared<std::string>();
+            juce::MessageManager::callAsync([this, alive, stop, owned, row, ref, promise, why] {
+                std::unique_ptr<device::DeviceInstance> instance;
+                if (alive->load() && !stop.stop_requested())
+                    instance = loader_.fn()(owned, *why);
+                promise->set_value(std::move(instance));
+            });
+            while (future.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready)
+                if (stop.stop_requested() || !alive->load()) {
+                    error = "the export was stopped";
+                    return std::unique_ptr<device::DeviceInstance>{};
+                }
+            error = *why;
+            return future.get();
+        };
+        render::Control control;
+        control.stop = renderStop_.get_token();
+        control.progress = [this, alive](render::JobId, std::uint64_t written, std::uint64_t total) {
+            const double fraction = total > 0 ? static_cast<double>(written) / static_cast<double>(total) : 0.0;
+            juce::MessageManager::callAsync([this, alive, fraction] {
+                if (alive->load() && exportPage_)
+                    exportPage_->showProgress(fraction);
+            });
+        };
+        render_ = std::thread([this, alive, job = std::move(job), made, control, stop = renderStop_.get_token()] {
+            auto result = render::renderWav(job, made, control);
+            // A Cancel while devices were made reads as the cancel it is.
+            if (stop.stop_requested() && result.state != render::JobState::Completed)
+                result.state = render::JobState::Cancelled;
+            juce::MessageManager::callAsync([this, alive, result] {
+                if (!alive->load())
+                    return;
+                if (render_.joinable())
+                    render_.join();
+                std::string message;
+                if (result.state == render::JobState::Completed)
+                    message = "Exported " + media::pathUtf8(result.output.filename()) + ".";
+                else if (result.state == render::JobState::Cancelled)
+                    message = "The export was cancelled.";
+                else
+                    message = "The export failed: " + result.error;
+                if (exportPage_)
+                    exportPage_->showDone(message);
+                if (root_)
+                    root_->say(message);
+            });
+        });
+    }
+    void stopRender() {
+        renderStop_.request_stop();
+        renderAlive_->store(false);
+        if (render_.joinable())
+            render_.join();
+        renderAlive_ = std::make_shared<std::atomic<bool>>(true);
+    }
+    // The plug-in catalogue's service (DF-W34): engine-win's discovery jobs (N58), started, read and
+    // adopted on the message thread; the loader runs each on its own worker. Never in a smoke run.
+    void startPluginCatalogue() {
+        catalogue_ = std::make_unique<PluginCatalogueService>(discoveryPort());
+        catalogue_->onChange = [this] {
+            if (root_ && catalogue_)
+                root_->browser.setPluginScan(catalogue_->state());
+        };
+    }
+    // The loader's job API (N58) in the service's words.
+    DiscoveryPort discoveryPort() {
+        DiscoveryPort p;
+        p.start = [this](DiscoveryMode mode) {
+            const auto admission = loader_.startDiscovery(mode == DiscoveryMode::Refresh       ? device::DiscoveryMode::Refresh
+                                                          : mode == DiscoveryMode::Incremental ? device::DiscoveryMode::Incremental
+                                                                                               : device::DiscoveryMode::CacheOnly);
+            DiscoveryAdmission out;
+            if (admission.status == device::DiscoveryStart::Started) {
+                out.job = admission.job;
+                return out;
+            }
+            const auto why = admission.error.empty() ? std::string("no reason given") : admission.error;
+            out.refusal = admission.status == device::DiscoveryStart::Unavailable
+                              ? "the plug-in scanner could not run (" + why + ")"
+                              : "the plug-in scan could not start (" + why + ")";
+            return out;
+        };
+        p.progress = [this] {
+            const auto progress = loader_.discoveryProgress();
+            return DiscoveryProgressRead{progress.job, progress.hasCandidateTotal, progress.completed, progress.total};
+        };
+        p.adopt = [this](std::uint64_t job) -> std::optional<DiscoveryEnd> {
+            const auto result = loader_.adoptDiscovery(job);
+            if (!result)
+                return std::nullopt;
+            using O = device::DiscoveryOutcome;
+            using E = DiscoveryEnd::Outcome;
+            DiscoveryEnd end;
+            switch (result->outcome) {
+            case O::Published: end.outcome = E::Published; break;
+            case O::Missing: end.outcome = E::Missing; break;
+            case O::Legacy: end.outcome = E::Legacy; break;
+            case O::Failed: end.outcome = E::Failed; break;
+            case O::Cancelled: end.outcome = E::Cancelled; break;
+            case O::Stale: end.outcome = E::Stale; break;
+            }
+            end.report = result->report;
+            end.error = result->error;
+            return end;
+        };
+        p.cancel = [this](std::uint64_t job) { return loader_.cancelDiscovery(job); };
+        p.listing = [this] { return listingOf(loader_.catalogue().get()); };
+        return p;
+    }
+    // The Browser's list from the loader's catalogue: each VST3 with its kind from the catalogue's
+    // instrument flag (N58), named as the loader names it (`device::identityOf`), and each CLAP from its
+    // descriptor.
+    static PluginListing listingOf(const device::DiscoveryCatalogue *catalogue) {
+        PluginListing out;
+        if (catalogue == nullptr)
+            return out;
+        for (const auto &d : catalogue->vst3) {
+            const auto id = device::identityOf(d);
+            out.plugins.push_back({"vst3", id.uid, id.name, id.vendor, id.version, d.fileOrIdentifier.toStdString(),
+                                   d.isInstrument ? PluginEntry::Kind::Instrument : PluginEntry::Kind::Effect});
+        }
+        for (const auto &c : catalogue->clap)
+            out.plugins.push_back({"clap", c.id, c.name, c.vendor, c.version, c.bundlePath, clapKind(c.isInstrument, c.features)});
+        return out;
+    }
+    // The Settings changed: the loader takes the plug-in folders they name (a running discovery is left
+    // stale and runs again); when they differ from before, an Incremental discovery searches them.
+    void pluginSourcesChanged() {
+        configurePluginSources();
+        const auto key = pluginSourcesKey();
+        if (key == pluginSourcesKey_)
+            return;
+        pluginSourcesKey_ = key;
+        if (catalogue_)
+            catalogue_->request(DiscoveryMode::Incremental);
+    }
+    // The folders the Settings name for both formats, as one string to compare.
+    std::string pluginSourcesKey() const {
+        std::string error;
+        const auto paths = device::pluginSearchPathsFromSettings(*settings_, loader_.defaultSearchPaths(),
+                                                                 juce::File::getCurrentWorkingDirectory(), error);
+        if (!paths)
+            return "error: " + error;
+        auto key = paths->vst3.toString().toStdString();
+        for (const auto &c : paths->clap)
+            key += '\n' + c;
+        return key;
+    }
+    // A project opened while a discovery runs waits for its adoption, so the plug-ins it finds load
+    // (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits.
+    void openSettled(const juce::File &file, bool create) {
+        if (!catalogue_ || !catalogue_->running()) {
+            install(file, create);
+            return;
+        }
+        if (root_)
+            root_->say("Opening " + file.getFileName().toStdString() + " once the plug-in scan has finished…");
+        catalogue_->settleThen([this, file, create] {
+            // A refused open leaves the project as it was; its alert says why, and the waiting line goes.
+            if (!install(file, create) && root_)
+                root_->say({});
+        });
+    }
+    void stopPluginCatalogue() {
+        if (catalogue_)
+            catalogue_->stop();
+        catalogue_.reset();
+    }
     void stopLibrary() {
         if (!libraryThread_.joinable())
             return;
@@ -196,7 +539,10 @@ class AdiApplication final : public juce::JUCEApplication,
         importStop_.request_stop();
         if (import_.joinable())
             import_.join();
+        stopRender();
         stopLibrary();
+        stopPluginCatalogue();
+        midiPorts_.reset();
         stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
@@ -204,6 +550,9 @@ class AdiApplication final : public juce::JUCEApplication,
             delete snapshotPrompt_.getComponent();
         manager_.removeChangeListener(this);
         detachAudio();
+        // A take still recording or landing goes into its project before the project closes (MX-09).
+        if (document_)
+            document_->settleRecording();
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
@@ -217,10 +566,14 @@ class AdiApplication final : public juce::JUCEApplication,
     void anotherInstanceStarted(const juce::String &commandLine) override {
         auto file = juce::File(commandLine.unquoted());
         if (file.existsAsFile())
-            install(file, false);
+            openSettled(file, false);
     }
 
   private:
+    void configurePluginSources() {
+        std::string error;
+        if(!device::configurePluginSearchPaths(loader_,*settings_,error))report(error);
+    }
     void report(const std::string &text) {
         if (smokeOutput_ != juce::File{}) {
             std::fprintf(stderr, "ADI: %s\n", text.c_str());
@@ -248,6 +601,8 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool install(const juce::File &file, bool create) {
         std::string error;
+        std::string catalogueError;
+        (void)loader_.hydrateCatalogue(catalogueError); // no scanner child or root enumeration
         auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
                                           &commands_->recordingDefaults());
         if (!next) {
@@ -257,8 +612,19 @@ class AdiApplication final : public juce::JUCEApplication,
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
         importStop_.request_stop();
+        juce::PopupMenu::dismissAllActiveMenus();
+        // An export of the old project stops, and its page goes: its tracks and range were that project's.
+        stopRender();
+        closeExport();
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
+        // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
+        // could not be kept says so before that project goes.
+        if (document_) {
+            document_->settleRecording();
+            if (auto landed = document_->takeLanded(); landed && !landed->ok)
+                report(landed->message);
+        }
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
@@ -292,27 +658,27 @@ class AdiApplication final : public juce::JUCEApplication,
         root->devices.functionAvailability = device::mixFunctionAvailability;
         root->devices.addFunction = [this](mix::Function kind, std::int64_t track) {
             const bool ok = document_->addMixFunction(kind, track);
-            if (!ok && root_) root_->say(document_->error());
+            if (root_) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.moveFunction = [this](const DevicePanelData &expected, std::int64_t track,
                                            std::optional<std::int64_t> before) {
             const bool ok = document_->moveMixFunction(expected, track, before);
-            if (!ok && root_) root_->say(document_->error());
+            if (root_) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
             const bool ok = document_->parameterGesture(id, param, kind, value);
-            if (!ok && root_)
-                root_->say(document_->error());
+            if (root_ && (!ok || kind == engine::ParamEventKind::Begin))
+                root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.guardedGesture = [this](std::int64_t id, const std::string &param,
                                              engine::ParamEventKind kind, double value,
                                              const engine::DeviceRuntimeToken &expected, std::uint64_t instance) {
             const bool ok = document_->parameterGestureExpected(id, param, kind, value, expected, instance);
-            if (!ok && root_) root_->say(document_->error());
+            if (root_ && (!ok || kind == engine::ParamEventKind::Begin)) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.targetCurrent = [this](std::int64_t id, const engine::DeviceRuntimeToken &expected,
@@ -321,8 +687,8 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->devices.submit = [this](const std::string &op, Payload p) {
             const bool ok = document_->deviceAction(op, std::move(p));
-            if (!ok && root_)
-                root_->say(document_->error());
+            if (root_)
+                root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.copy = [this](std::int64_t id, bool cut) {
@@ -332,8 +698,8 @@ class AdiApplication final : public juce::JUCEApplication,
             bool ok = document_->copyDevice(id, copy) && (!cut || document_->deviceAction("device.remove", {{"id", id}}));
             if (ok)
                 deviceClipboard_ = std::move(copy);
-            if (!ok && root_)
-                root_->say(document_->error());
+            if (root_)
+                root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.paste = [this](std::int64_t track, std::optional<std::int64_t> before) {
@@ -345,11 +711,18 @@ class AdiApplication final : public juce::JUCEApplication,
         root->devices.duplicate = [this](std::int64_t id, std::int64_t track, std::optional<std::int64_t> before) {
             adi::DeviceCopy copy;
             const bool ok = document_->copyDevice(id, copy) && document_->pasteDevice(copy, track, before);
-            if (!ok && root_)
-                root_->say(document_->error());
+            if (root_)
+                root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        root->devices.keyChoices=[this](const DevicePanelData& target){return document_->deviceKeyChoices(target);};
+        root->devices.setKey=[this](const DevicePanelData& target,const DeviceKeyChoice& choice){
+            const bool ok=document_->setDeviceKeyChoice(target,choice);
+            if(root_)
+                root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
         // A device's sample slot (D5): a file assigned, or the slot cleared; one undo step each.
         root->devices.assignSample = [this](std::int64_t device, std::int32_t slot, const std::string &path) {
             const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -366,12 +739,55 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // The Browser's Plug-Ins (DF-W9): the catalogue of the app's one loader, kept by its discovery
+        // service (DF-W34, N58); the projects load from the same loader. A smoke run scans nothing.
+        if (catalogue_) {
+            root->browser.scanPlugins = [this] {
+                if (catalogue_)
+                    catalogue_->request(DiscoveryMode::Incremental);
+            };
+            root->browser.setPluginScan(catalogue_->state());
+        }
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
             const bool ok = document_->insertBuiltin(uid, track, before);
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
+        };
+        // A VST3 or CLAP plug-in from the browser (DF-W9 on N57): one undo step. The Browser lists the
+        // loader's catalogue (N58), so the session makes it from a catalogue hit, which the loader serves
+        // while a discovery runs too. Every listed plug-in carries its kind; `kindGuessed` is the
+        // fallback for one that does not.
+        root->loadPlugin = [this](rows::PluginRef ref, std::int64_t track, std::optional<std::int64_t> before,
+                                  bool kindGuessed) {
+            // A plug-in the project already holds keeps the kind its reference stores.
+            std::optional<std::string> stored;
+            if (kindGuessed)
+                if ((stored = storedSubtype(document_->store(), ref.format, ref.uid)))
+                    ref.subtype = *stored;
+            const auto newest = [this] {
+                return document_->store().db().execAndGet("SELECT COALESCE(MAX(id), 0) FROM devices").getInt64();
+            };
+            const auto before_ = newest();
+            if (!document_->insertPlugin(ref, track, before)) {
+                if (root_)
+                    root_->say(document_->error());
+                return false;
+            }
+            if (!root_)
+                return true;
+            // A plug-in that did not load stays in the chain as a placeholder, bypassed: say so and why.
+            const auto made = newest();
+            if (const auto *entry = made > before_ ? document_->session().entryFor(made) : nullptr; entry && entry->placeholder) {
+                root_->say(ref.name + " did not load (" + entry->error + "); it stays in the chain, bypassed. Undo removes it.");
+                return true;
+            }
+            const auto kind = ref.subtype == "instrument" ? "an instrument" : ref.subtype == "midi_effect" ? "a MIDI effect" : "an audio effect";
+            if (kindGuessed)
+                root_->say(stored ? ref.name + " went in as " + kind + ", as this project holds it." :
+                                    ref.name + " went in as " + kind + ": its plug-in catalogue does not say its kind.");
+            return true;
         };
         // The control bar's Re-Enable Automation and Automation Arm (manual 25.4, 25.1; N26): the
         // session's state, through the document.
@@ -381,8 +797,51 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        root->reenableLane = [this](std::int64_t lane) {
+            const bool ok = document_->reenableAutomation(lane);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
+        // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
+        root->readRecordStates = [this] { return document_->recordStates(); };
+        root->setRecordStates(document_->recordStates());
+        root->startRecording = [this](std::int64_t insertTick, bool playing) {
+            const auto *device = manager_.getCurrentAudioDevice();
+            const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
+            if (device == nullptr) {
+                root_->say("Recording needs an audio device. Choose one in the Settings' Audio page.");
+                return false;
+            }
+            if (!document_->startRecording(insertTick, inputs, playing)) {
+                root_->say(document_->error());
+                return false;
+            }
+            root_->say(playing ? "Recording from the playhead." : "Recording.");
+            return true;
+        };
+        root->stopRecording = [this] { document_->stopRecording(); };
+        root->recording = [this] { return document_->recording(); };
+        // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
+        root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
+        // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.
+        root->beginMixerDrag = [this](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
+                                      const std::string &label) {
+            const bool ok = document_->beginMixerDrag(selection, value, label);
+            if (!ok)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->mixerDrag = [this](double value) { return document_->mixerDrag(value); };
+        root->endMixerDrag = [this] {
+            const bool ok = document_->endMixerDrag();
+            if (!ok)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->cancelMixerDrag = [this] { document_->cancelMixerDrag(); };
         for (auto *panel : {&root->mixer, &root->mixerView}) {
             // The strips' meters: the engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381),
             // through the session; null until the session has a strip for the track. The strips
@@ -535,6 +994,14 @@ class AdiApplication final : public juce::JUCEApplication,
             report(error.toStdString());
             return;
         }
+        document_->configureGraphWorkers([this](std::int32_t granted) -> std::uint32_t {
+            if (!settings::graphWorkersEnabled(settings_->get(settings::kGraphWorkersKey), granted))
+                return 0;
+            // The device callback also renders. The graph caps this further by its available work.
+            const auto cores = std::thread::hardware_concurrency();
+            return cores > 1 ? (std::min)(cores - 1U, static_cast<unsigned>(engine::RenderWorkers::maximum))
+                             : 0U;
+        }, settings::kGraphWorkersMinimumFrames);
         bridge_ = std::make_unique<device::DeviceBridge>(*document_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
         manager_.addAudioCallback(bridge_.get());
@@ -733,7 +1200,31 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
                 // settings, and every open window follows at its next frame.
-                settingsWindow_->panel().onChange = [this] { commands_->reload(); };
+                // Live's Rescan on the Plug-Ins page (DF-W34): a Refresh discovery, in the background.
+                if (catalogue_)
+                    settingsWindow_->panel().onRescanPlugins = [this] {
+                        if (!catalogue_)
+                            return std::string();
+                        catalogue_->request(DiscoveryMode::Refresh);
+                        // Started, queued behind the running job, or refused (said, with why).
+                        return catalogue_->state().phase == PluginScan::Phase::Scanning
+                                   ? std::string()
+                                   : pluginScanStatus(catalogue_->state());
+                    };
+                // Live's MIDI Ports table on the Tempo & MIDI page (SRF-05).
+                if (midiPorts_)
+                    settingsWindow_->panel().midiPorts = [this]() -> std::unique_ptr<juce::Component> {
+                        return std::make_unique<MidiPortsTable>(*midiPorts_, *settings_);
+                    };
+                settingsWindow_->panel().onChange = [this] {
+                    commands_->reload();
+                    pluginSourcesChanged();
+                    // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
+                    juce::MessageManager::callAsync([this] {
+                        if (juce::JUCEApplicationBase::getInstance() == this && midiPorts_)
+                            midiPorts_->refresh();
+                    });
+                };
             }
             settingsWindow_->setVisible(true);
             settingsWindow_->toFront(true);
@@ -754,7 +1245,7 @@ class AdiApplication final : public juce::JUCEApplication,
             if (file != juce::File{}) {
                 if (create)
                     file = withAdiExtension(file);
-                install(file, create);
+                openSettled(file, create);
             }
             // Do not destroy the chooser while its completion callback is on the stack.
             juce::MessageManager::callAsync([this] {
@@ -789,9 +1280,29 @@ class AdiApplication final : public juce::JUCEApplication,
             settingsWindow_->panel().refreshValues();
     }
     void timerCallback() override {
+        // The plug-in catalogue's running discovery: its progress, and its result once it has finished.
+        if (catalogue_)
+            catalogue_->poll();
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        if (root_) {
+            root_->setRecordStates(document_->recordStates());
+            // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
+            if (auto landed = document_->takeLanded()) {
+                root_->say(landed->message);
+                if (landed->ok && !landed->clips.empty())
+                    root_->selectClip(landed->clips.front());
+            }
+        }
+        if (midiPorts_ && root_) {
+            // The ports' events go to the engine's live MIDI input once it is on main (ADR-0248 d6 item
+            // 4); until then they light the MIDI Indicators for 150 ms and are let go.
+            const auto now = juce::Time::getMillisecondCounter();
+            if (midiPorts_->drain({}) > 0)
+                midiLitUntil_ = now + 150;
+            root_->setMidiIn(now < midiLitUntil_);
+        }
         if (floating_) {
             floating_->collect();
             syncMixView(*floating_, *root_);
@@ -828,6 +1339,13 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
+    // The plug-in catalogue's service (DF-W34, N58), declared after the loader it drives so it goes
+    // first, and the Settings' plug-in folders the last discovery searched.
+    std::unique_ptr<PluginCatalogueService> catalogue_;
+    std::string pluginSourcesKey_;
+    // The MIDI port host (SRF-05) and until when the MIDI Indicators stay lit.
+    std::unique_ptr<MidiPortHost> midiPorts_;
+    juce::uint32 midiLitUntil_ = 0;
     std::unique_ptr<ProjectDocument> document_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
@@ -855,6 +1373,13 @@ class AdiApplication final : public juce::JUCEApplication,
     std::shared_ptr<std::atomic<bool>> exportRunning_ = std::make_shared<std::atomic<bool>>(false);
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
+    // The Export page (EX-11) and its render: the worker, its stop, and the job counter the renderer
+    // names files by.
+    std::unique_ptr<juce::DialogWindow> exportWindow_;
+    ExportPage *exportPage_ = nullptr;
+    std::thread render_;
+    std::stop_source renderStop_;
+    std::shared_ptr<std::atomic<bool>> renderAlive_ = std::make_shared<std::atomic<bool>>(true);
     std::unique_ptr<UndoHistoryWindow> historyWindow_; // shows the main root's list; goes before it
 };
 } // namespace adi::ui

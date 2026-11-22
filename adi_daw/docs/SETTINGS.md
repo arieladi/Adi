@@ -16,6 +16,7 @@ One typed table of every setting:
 - **scope** (R-03 badge): App, Project or Device.
 - **page**: the left-hand list (R-01). Live's ten tab names for the settings Live has
   (ADR-0203 d11; Live 12 manual 2.3), in Live's order, then ADI's own pages.
+  Internal app preferences have an empty page and are excluded from Find.
 - **section**: Live's section within the tab ("Audio Device", "Latency", "Plug-In
   Windows"); empty for the tab's own group. A setting of ADI's on a Live tab has no
   section: the window draws it after Live's sections, under the tab's name.
@@ -32,6 +33,23 @@ One typed table of every setting:
 
 A setting that is not in the registry does not exist: the store refuses an
 unknown key from a caller.
+
+`midi.ports` stores a MIDI port's last known `name` inside its record. Input
+and output identifiers have separate records. The device-scoped `midi.port.name`
+row validates the text field and defaults to empty. The port host can match a
+saved name when the identifier changes.
+
+`record.autoArmOnSelect` defaults to `none`. Saved choices still apply when a
+user has selected `instrumentAndMidi` or `all`.
+
+### Graph worker admission (DEV-23)
+
+`audio.graphWorkers` is an internal app preference. Its `auto` value
+enables graph workers when the device grants at least 1,024 samples per
+buffer. An unknown size or a smaller buffer keeps serial processing, and
+`off` explicitly selects serial processing at any buffer. The engine
+owner reads the setting with `graphWorkersEnabled` when configuring the
+graph. ADR-0248 d6 sets the threshold. DF-E23 measured 2,048 and 256 samples.
 
 ### The settings of ADR-0145
 

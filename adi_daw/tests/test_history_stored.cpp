@@ -492,12 +492,18 @@ void legacyCheckpoint() {
     p.name("3");
     p.name("4");
     auto state = history_detail::checkpointAt(*p.store, 2);
-    const auto laterTables = tablesAddedAfter(20);
-    std::erase_if(state.at("tables").get_ref<Payload::array_t&>(), [&](const auto& table) {
-        const auto name = table.at("name").template get<std::string>();
-        return std::find(laterTables.begin(), laterTables.end(), name) != laterTables.end();
-    });
     state["schema_minor"] = 20;
+    // A 1.20 writer knew no table a later minor added, in its file or in its
+    // checkpoint. Named by the migration table (tablesAddedAfter), never by a
+    // literal list: a list of "the 1.21 tables" stops describing a 1.20 file
+    // the day a later minor adds one, and the upgrade then meets a table that
+    // already exists and refuses the file (1.22, routing_key_taps).
+    const auto later = tablesAddedAfter(20);
+    Payload known = Payload::array();
+    for (const auto &table : state.at("tables"))
+        if (std::find(later.begin(), later.end(), table.at("name").get<std::string>()) == later.end())
+            known.push_back(table);
+    state["tables"] = std::move(known);
     const auto bytes = encodePayload(state);
     {
         SQLite::Transaction transaction(p.store->db());
@@ -518,14 +524,16 @@ void legacyCheckpoint() {
     p.store.reset();
     {
         SQLite::Database db(path.string(), SQLite::OPEN_READWRITE);
-        for (auto table = laterTables.rbegin(); table != laterTables.rend(); ++table)
+        // Newest first, so a table goes before the one it references.
+        for (auto table = later.rbegin(); table != later.rend(); ++table)
             db.exec("DROP TABLE \"" + *table + "\"");
         db.exec("PRAGMA user_version=1020; UPDATE adi_meta SET value='20' WHERE key='schema_minor'");
     }
     StoreError error{};
     p.store = Store::open(path, error);
     require(p.store != nullptr, toString(error));
-    check(p.store->schemaMinor() == kSchemaMinor && rows(*p.store, "history_roots") == 0,
+    check(p.store->schemaMinor() == kSchemaMinor && p.store->upgradedFromMinor() == 20 &&
+              rows(*p.store, "history_roots") == 0,
           "real legacy checkpoint file upgrades additively without inventing archived states");
     for (int i = 5; i <= 9; ++i)
         p.name(std::to_string(i));
@@ -539,7 +547,7 @@ void legacyCheckpoint() {
     require(hash.has_value(), "legacy point converted");
     const auto normalized = history_detail::readCheckpointContent(p.store->db(), *hash);
     check(normalized.at("schema_minor") == kSchemaMinor && checkProject(*p.store).clean(),
-          "restored legacy image is normalized and versioned for the current schema");
+          "restored legacy image is normalized and versioned for the current schema's semantics");
 }
 
 void corruptionRollback() {

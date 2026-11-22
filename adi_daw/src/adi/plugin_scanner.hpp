@@ -13,6 +13,7 @@ struct Plugin {
 };
 inline constexpr std::size_t kMaximumPlugins = 65536;
 inline constexpr std::size_t kMaximumPacket = 8U * 1024U * 1024U;
+inline constexpr unsigned kPacketSchema = 1;
 
 /// Owner protocol APIs: strict schema 1, exact format/path, no duplicate keys,
 /// ids or unknown fields, bounded tokens/depth/string bytes. No partial result.
@@ -22,16 +23,40 @@ std::optional<std::string> encodeMetadata(const std::string& format,
     const std::string& path, const std::vector<Plugin>& plugins, std::string& error);
 
 std::filesystem::path defaultScannerExecutable(); // sibling of current executable
+/// Enumerate a plug-in format without loading its modules. Returns sorted,
+/// canonical UTF-8 paths, and follows native links without repeating folders.
+std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
+                                        std::string_view extension);
 std::int64_t systemUtcMicros() noexcept;
+struct BatchProgress {
+    std::atomic<std::size_t> total{0};
+    std::atomic<std::size_t> completed{0};
+    std::atomic<bool> enumerated{false};
+};
 struct Config {
     std::filesystem::path executable; // empty => sibling adi_plugin_scanner[.exe]
     std::filesystem::path registry;   // empty => appdata::pluginRegistryFile()
     ProcessOptions process;
     std::int64_t (*clock)() noexcept = systemUtcMicros;
+    // Explicit batch concurrency. A custom clock must be thread-safe above one worker.
+    unsigned workers = 1;
+    // Explicit Refresh bypasses successful/rejected cache metadata, not blocks.
+    // It neither purges other candidates nor changes the persisted schema.
+    ScanCacheMode cacheMode = ScanCacheMode::Reuse;
+    BatchProgress* progress = nullptr; // borrowed by one ordered batch through return
 };
-enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused };
+inline constexpr unsigned kMaximumProbeWorkers = 4;
+enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused, HelperCouldNotStart };
+[[nodiscard]] constexpr bool stopsDiscovery(State state) noexcept {
+    return state==State::Cancelled || state==State::Unavailable || state==State::Invalid ||
+           state==State::HelperCouldNotStart;
+}
 struct Result {
     State state = State::Invalid;
+    bool cacheHit = false; // validated success packet; does not mean instantiated
+    bool failureCacheHit = false; // no child; matching deterministic/two-strike failure
+    unsigned failureStrikes = 0; // consecutive stable-stamp crashes/timeouts, capped at two
+    std::string cacheWarning; // no reliable bounded stamp: fresh child result is not cached
     std::string path, error; // canonical request path; error is an owned diagnostic
     std::vector<Plugin> plugins;
 };
@@ -48,15 +73,28 @@ using Validator = bool(*)(const std::vector<Plugin>&, const std::string&,
                           void*, std::string&);
 class Scanner {
 public:
-    static std::unique_ptr<Scanner> open(const Config&, std::string& error);
-    /// Canonicalize an existing file/bundle, commit pending, launch one helper,
-    /// validate whole metadata, then token-check completion. Never loads a
+    // The optional reason describes an open failure before any candidate is probed.
+    static std::unique_ptr<Scanner> open(const Config&, std::string& error, State* reason = nullptr);
+    /// Same helper identity and configuration, with an independent registry connection.
+    [[nodiscard]] std::unique_ptr<Scanner> openPeer(std::string& error) const;
+    /// Canonicalize/stamp an existing file/bundle, commit pending, validate a
+    /// matching cached packet or launch one helper, then token-check completion.
+    /// The stamp is checked again after validation. Never loads a
     /// plug-in in this process, and never falls back in process. Owner only.
     Result probe(const std::string& format, const std::filesystem::path& path,
                  Validator validate = nullptr, void* context = nullptr);
+    /// Explicit owner retry/re-enable, resolving existing aliases exactly as
+    /// probe does. Clears manual/legacy/automatic blocks and both cache kinds.
+    /// Missing paths refuse; callers holding a stored canonical missing key may
+    /// use PluginRegistry::unblockScan directly. Never runs a child itself.
+    bool retry(const std::string& format, const std::filesystem::path& path, std::string& error);
 private:
-    Scanner(Config config, std::unique_ptr<PluginRegistry> registry);
+    Scanner(Config config, std::unique_ptr<PluginRegistry> registry, std::string buildHash,
+            std::uintmax_t helperSize, std::filesystem::file_time_type helperTime);
     Config config_;
     std::unique_ptr<PluginRegistry> registry_;
+    std::string helperBuildHash_;
+    std::uintmax_t helperSize_ = 0;
+    std::filesystem::file_time_type helperTime_;
 };
 } // namespace adi::scan

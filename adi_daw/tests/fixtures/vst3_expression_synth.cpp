@@ -40,6 +40,8 @@
 // `adiFixtureInProcess`, how many process calls are inside a plugin now; and
 // `adiFixtureOverlaps`, how many setActive or setupProcessing calls arrived
 // while a process call was inside the same plugin.
+// `adiFixtureCompletedProcessCalls` counts successfully rendered nonempty
+// blocks, so a passthrough fixture can prove it participated in a Session.
 //
 // Each voice is a sine at the note's pitch, with pressure as amplitude
 // (0.25 + 0.75 p) and timbre as a 3rd harmonic (0.05 + 0.95 t) -- chosen so a
@@ -84,6 +86,7 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include "scanner_case_controls.hpp"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -125,6 +128,11 @@ std::atomic<int> g_overlaps{0};
 /// Process calls inside a plugin now, across every plugin object.
 std::atomic<int> g_inProcess{0};
 std::atomic<int> g_workerProcessCalls{0};
+// Owned headless auxiliary-bus observations; never contribute to the output.
+std::atomic<double> g_keyFirst{0}, g_keyLast{0};
+std::atomic<int> g_keyChannels{0},g_mainInPlace{0};
+std::atomic<std::uint64_t> g_completedProcessCalls{0};
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 std::array<std::atomic<double>, 12> g_transport{};
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
@@ -216,7 +224,7 @@ public:
     tresult PLUGIN_API getControllerClassId(TUID) override { return kResultFalse; }   // we ARE it
     tresult PLUGIN_API setIoMode(IoMode) override { return kResultOk; }
     int32 PLUGIN_API getBusCount(MediaType type, BusDirection dir) override {
-        if (type == kAudio) return variant_ == Variant::NoteExpr && dir == kInput ? 2 : 1;
+        if (type == kAudio) return dir == kInput ? 2 : 1; // main + optional key, stereo out
         if (type == kEvent && dir == kInput) return 1;
         return 0;
     }
@@ -224,10 +232,10 @@ public:
         if (index < 0 || index >= getBusCount(type, dir)) return kInvalidArgument;
         bus.mediaType = type;
         bus.direction = dir;
-        bus.channelCount = type == kAudio ? 2 : 16;
-        copy128(bus.name, index == 1 ? "Key" : (type == kAudio ? (dir == kInput ? "In" : "Out") : "Notes"));
+        bus.channelCount = type == kAudio ? (index == 1 && variant_ == Variant::Plain ? 1 : 2) : 16;
+        copy128(bus.name, type == kAudio ? (dir == kInput ? "In" : "Out") : "Notes");
         bus.busType = index == 1 ? kAux : kMain;
-        bus.flags = index == 1 ? 0u : static_cast<uint32>(BusInfo::kDefaultActive);
+        bus.flags = index == 1 && variant_ != Variant::Plain ? 0 : BusInfo::kDefaultActive;
         return kResultOk;
     }
     tresult PLUGIN_API getRoutingInfo(RoutingInfo&, RoutingInfo&) override { return kNotImplemented; }
@@ -276,7 +284,7 @@ public:
     }
     tresult PLUGIN_API getBusArrangement(BusDirection dir, int32 index, SpeakerArrangement& arr) override {
         if (index < 0 || index >= getBusCount(kAudio, dir)) return kInvalidArgument;
-        arr = SpeakerArr::kStereo;
+        arr = index == 1 && variant_ == Variant::Plain ? SpeakerArr::kMono : SpeakerArr::kStereo;
         return kResultOk;
     }
     tresult PLUGIN_API canProcessSampleSize(int32 size) override {
@@ -325,7 +333,27 @@ public:
             std::this_thread::sleep_for(kSlowBlockFor);
         }
         applyEvents(data.inputEvents);
+        bool inPlace=data.numInputs>0 && data.numOutputs>0 && data.inputs[0].numChannels==data.outputs[0].numChannels;
+        if(inPlace)for(int32 c=0;c<data.inputs[0].numChannels;++c) {
+            if(data.symbolicSampleSize==kSample64)inPlace=inPlace && data.inputs[0].channelBuffers64[c]==data.outputs[0].channelBuffers64[c];
+            else inPlace=inPlace && data.inputs[0].channelBuffers32[c]==data.outputs[0].channelBuffers32[c];
+        }
+        g_mainInPlace=inPlace?1:0;
+        g_keyChannels = data.numInputs > 1 ? data.inputs[1].numChannels : 0;
+        g_keyFirst = 0; g_keyLast = 0;
+        if (data.numInputs > 1 && data.inputs[1].numChannels > 0 && data.numSamples > 0) {
+            const auto& key = data.inputs[1];
+            const auto lastChannel = key.numChannels - 1;
+            if (data.symbolicSampleSize == kSample64 && key.channelBuffers64) {
+                g_keyFirst = key.channelBuffers64[0][0];
+                g_keyLast = key.channelBuffers64[lastChannel][data.numSamples-1];
+            } else if (key.channelBuffers32) {
+                g_keyFirst = key.channelBuffers32[0][0];
+                g_keyLast = key.channelBuffers32[lastChannel][data.numSamples-1];
+            }
+        }
         render(data);
+        if (data.numSamples > 0) g_completedProcessCalls.fetch_add(1, std::memory_order_relaxed);
         return kResultOk;
     }
 
@@ -594,25 +622,10 @@ private:
             if (out.channelBuffers64 != nullptr)
                 renderInto(in != nullptr ? in->channelBuffers64 : nullptr, numIn, out.channelBuffers64,
                            out.numChannels, data.numSamples);
-            if (data.numInputs > 1)
-                mixKey(data.inputs[1].channelBuffers64, data.inputs[1].numChannels, out.channelBuffers64,
-                       out.numChannels, data.numSamples);
         } else if (out.channelBuffers32 != nullptr) {
             renderInto(in != nullptr ? in->channelBuffers32 : nullptr, numIn, out.channelBuffers32,
                        out.numChannels, data.numSamples);
-            if (data.numInputs > 1)
-                mixKey(data.inputs[1].channelBuffers32, data.inputs[1].numChannels, out.channelBuffers32,
-                       out.numChannels, data.numSamples);
         }
-    }
-
-    template <typename Sample>
-    void mixKey(Sample** key, int32 keyChannels, Sample** output, int32 channels, int32 frames) {
-        if (!key || !output) return;
-        for (int32 channel = 0; channel < keyChannels && channel < channels; ++channel)
-            if (key[channel] && output[channel])
-                for (int32 frame = 0; frame < frames; ++frame)
-                    output[channel][frame] += key[channel][frame];
     }
 
     /// The input passes through under the voices, as an instrument with an
@@ -691,6 +704,7 @@ public:
     uint32 PLUGIN_API release() override { return 1; }
 
     tresult PLUGIN_API getFactoryInfo(PFactoryInfo* info) override {
+        scanner_case::receipt("getFactoryInfo");
         if (info == nullptr) return kInvalidArgument;
         *info = PFactoryInfo{};
         std::snprintf(info->vendor, sizeof info->vendor, "adi_daw tests");
@@ -698,8 +712,12 @@ public:
         info->flags = PFactoryInfo::kNoFlags;
         return kResultOk;
     }
-    int32 PLUGIN_API countClasses() override { return 3; }
+    int32 PLUGIN_API countClasses() override {
+        scanner_case::receipt("countClasses");
+        return scanner_case::enabled()?(scanner_case::option("ADI_SCAN_ONE_CLASS")?1:2):3;
+    }
     tresult PLUGIN_API getClassInfo(int32 index, PClassInfo* info) override {
+        scanner_case::receipt("getClassInfo");
         PClassInfo2 i2{};
         if (getClassInfo2(index, &i2) != kResultOk || info == nullptr) return kInvalidArgument;
         *info = PClassInfo{};
@@ -710,6 +728,7 @@ public:
         return kResultOk;
     }
     tresult PLUGIN_API getClassInfo2(int32 index, PClassInfo2* info) override {
+        scanner_case::receipt("getClassInfo2");
         if (info == nullptr || index < 0 || index > 2) return kInvalidArgument;
         *info = PClassInfo2{};
         const TUID* cids[3] = {&kMpeCid, &kNoteExprCid, &kPlainCid};
@@ -720,11 +739,13 @@ public:
         std::snprintf(info->name, sizeof info->name, "%s", names[index]);
         std::snprintf(info->subCategories, sizeof info->subCategories, "Instrument|Synth");
         std::snprintf(info->vendor, sizeof info->vendor, "adi_daw tests");
-        std::snprintf(info->version, sizeof info->version, "1.0.0");
+        std::snprintf(info->version, sizeof info->version, "%s",
+            scanner_case::enabled() && scanner_case::option("ADI_SCAN_VERSION_TWO")?"2.0.0":"1.0.0");
         std::snprintf(info->sdkVersion, sizeof info->sdkVersion, "%s", kVstVersionString);
         return kResultOk;
     }
     tresult PLUGIN_API createInstance(FIDString cid, FIDString wanted, void** obj) override {
+        scanner_case::receipt("createInstance");
         if (obj == nullptr) return kInvalidArgument;
         *obj = nullptr;
         TUID want;
@@ -745,6 +766,13 @@ public:
 }  // namespace
 
 extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
+    scanner_case::receipt("GetPluginFactory");
+    if(scanner_case::enabled()) {
+        const auto failure=scanner_case::option("ADI_SCAN_FAIL");
+        if(failure==1)return nullptr;
+        if(failure==2)std::this_thread::sleep_for(std::chrono::seconds(15));
+        if(failure==3)std::_Exit(73);
+    }
     static Factory factory;
     return &factory;
 }
@@ -754,6 +782,9 @@ extern "C" SMTG_EXPORT_SYMBOL int adiFixtureLiveSynths() { return g_liveSynths.l
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureOverlaps() { return g_overlaps.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureInProcess() { return g_inProcess.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureWorkerProcessCalls() { return g_workerProcessCalls.load(); }
+extern "C" SMTG_EXPORT_SYMBOL std::uint64_t adiFixtureCompletedProcessCalls() {
+    return g_completedProcessCalls.load(std::memory_order_relaxed);
+}
 extern "C" SMTG_EXPORT_SYMBOL void adiFixtureReadTransport(double* output) {
     for (std::size_t i = 0; i < g_transport.size(); ++i)
         output[i] = g_transport[i].load(std::memory_order_relaxed);
@@ -785,3 +816,9 @@ extern "C" SMTG_EXPORT_SYMBOL bool bundleExit() { return true; }
 extern "C" SMTG_EXPORT_SYMBOL bool ModuleEntry(void*) { return true; }
 extern "C" SMTG_EXPORT_SYMBOL bool ModuleExit() { return true; }
 #endif
+
+extern "C" SMTG_EXPORT_SYMBOL double adiFixtureKeyFirst() { return g_keyFirst.load(); }
+extern "C" SMTG_EXPORT_SYMBOL double adiFixtureKeyLast() { return g_keyLast.load(); }
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureKeyChannels() { return g_keyChannels.load(); }
+
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureMainInPlace() { return g_mainInPlace.load(); }

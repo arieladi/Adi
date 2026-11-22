@@ -68,6 +68,8 @@ struct TempoMap {
     /// audio thread may call it.
     [[nodiscard]] double ticksToSeconds(std::int64_t ticks) const noexcept;
     [[nodiscard]] std::int64_t secondsToTicks(double seconds) const noexcept;
+    /// Project an integer nanosecond, preserving an exact tick rounded to those bytes.
+    [[nodiscard]] std::int64_t storedNanosecondsToTicks(std::int64_t nanos) const noexcept;
     [[nodiscard]] double bpmAt(std::int64_t ticks) const noexcept;
 };
 
@@ -87,6 +89,12 @@ struct AudioClipSource {
     friend bool operator==(const AudioClipSource&,const AudioClipSource&)=default;
 };
 
+struct ClipFadeHandles {
+    // Distances inward from the corresponding clip edge in musical ticks.
+    std::int64_t zeroTicks=0,peakTicks=0;
+    friend bool operator==(const ClipFadeHandles&,const ClipFadeHandles&)=default;
+};
+
 struct ClipNode {
     std::string name;
     std::int64_t id = 0;
@@ -101,6 +109,10 @@ struct ClipNode {
     std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain
     std::optional<AudioClipSource> audio;
     std::vector<controllers::Lane> controllers = {};
+    ClipFadeHandles fadeInHandles,fadeOutHandles;
+    // posTicks and lengthTicks are the timeline projection for either clock.
+    std::int64_t timeBase=0;
+    std::optional<std::int64_t> posNs,lengthNs;
 };
 
 struct TrackNode {

@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.19 (prior minors frozen under history/)
+--  Normative schema, version 1.23 (prior minors frozen under history/)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1022;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1023;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '21'),
+    ('schema_minor',        '23'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -373,7 +373,15 @@ CREATE TABLE routing (
 CREATE INDEX idx_routing_src ON routing(src_kind, src_id);
 CREATE INDEX idx_routing_dst ON routing(dst_kind, dst_id);
 
--- Since 1.22: a send may choose its own tap (ADR-0245 d10).
+-- ADR-0203 d3, DEV-05/MX-24: a device key's source tap. No row means Post Mixer.
+-- The polymorphic routing endpoints stay in routing; deleting the connection
+-- cascades only its owned tap. Device/track deletion captures both in its Undo.
+CREATE TABLE routing_key_taps (
+    routing_id INTEGER PRIMARY KEY REFERENCES routing(id) ON DELETE CASCADE,
+    tap TEXT NOT NULL CHECK (tap IN ('pre_fx','post_fx','post_mixer'))
+) STRICT;
+
+-- Since 1.23: a send may choose its own tap (ADR-0245 d10).
 -- An absent row inherits the return or legacy pre_fader setting.
 CREATE TABLE routing_send_taps (
     routing_id INTEGER PRIMARY KEY REFERENCES routing(id) ON DELETE CASCADE,

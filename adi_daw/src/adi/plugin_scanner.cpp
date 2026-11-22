@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/plugin_scanner.hpp"
+#include "adi/scan_helper_protocol.hpp"
 #include "adi/appdata.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/scan_stamp.hpp"
+#include "adi/media/blake3.hpp"
 #include <nlohmann/json.hpp>
 #include <utf8proc.h>
 #include <array>
@@ -22,6 +25,7 @@
 namespace adi::scan {
 namespace {
 using Json = nlohmann::json;
+constexpr auto helperCouldNotStart = "scanner helper could not start";
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 bool text(std::string_view value, std::size_t maximum = 65536) {
     if (value.size()>maximum || value.find('\0')!=value.npos) return false;
@@ -120,7 +124,7 @@ std::optional<std::vector<Plugin>> decodeMetadata(std::string_view packet,
         UniqueKeys keys;require(Json::sax_parse(packet,&keys),"invalid/duplicate scanner fields");
         const auto document=Json::parse(packet);
         fields(document,rootFields);
-        require(document.at("schema").is_number_integer() && document.at("schema")==1,"unsupported scanner schema");
+        require(document.at("schema").is_number_integer() && document.at("schema")==kPacketSchema,"unsupported scanner schema");
         require(string(document,"format")==format && string(document,"path")==path,"scanner reply identity mismatch");
         const auto& rows=document.at("plugins");
         require(rows.is_array() && rows.size()<=kMaximumPlugins,"scanner descriptor count");
@@ -150,7 +154,7 @@ std::optional<std::string> encodeMetadata(const std::string& format,const std::s
             rows.push_back({{"id",value.id},{"name",value.name},{"vendor",value.vendor},{"version",value.version},
                 {"features",value.features},{"instrument",value.instrument},{"data",value.data}});
         }
-        auto result=Json{{"schema",1},{"format",format},{"path",path},{"plugins",std::move(rows)}}.dump();
+        auto result=Json{{"schema",kPacketSchema},{"format",format},{"path",path},{"plugins",std::move(rows)}}.dump();
         // Escapes/field overhead count in the actual packet, not just authored
         // text. Keep encoder and decoder bounds identical before child output.
         preflight(result);return result;
@@ -183,16 +187,56 @@ std::filesystem::path defaultScannerExecutable() {
     return executable.parent_path()/"adi_plugin_scanner";
 #endif
 }
+std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
+                                        std::string_view extension) {
+    if (audio::onAudioThread) return {};
+    namespace fs = std::filesystem;
+    std::vector<fs::path> pending;
+    for (const auto& bytes : roots)
+        pending.emplace_back(std::u8string(bytes.begin(), bytes.end()));
+    std::set<fs::path> visited;
+    std::set<std::string> candidates;
+    const fs::directory_iterator end;
+    while (!pending.empty()) {
+        std::error_code ec;
+        const auto dir = fs::canonical(pending.back(), ec);
+        pending.pop_back();
+        if (ec || !visited.insert(dir).second) continue;
+        fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
+        for (; !ec && it != end; it.increment(ec)) {
+            auto suffix = utf8(it->path().extension());
+            for (char& c : suffix) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+            std::error_code entryError;
+            if (suffix == extension) {
+                const auto module = fs::canonical(it->path(), entryError);
+                if (!entryError) candidates.insert(utf8(module));
+                continue; // A bundle is a candidate, not another search directory.
+            }
+            if (it->is_directory(entryError)) pending.push_back(it->path());
+        }
+    }
+    return {candidates.begin(), candidates.end()};
+}
+
 std::int64_t systemUtcMicros() noexcept {
     return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
-Scanner::Scanner(Config config,std::unique_ptr<PluginRegistry> registry)
-    :config_(std::move(config)),registry_(std::move(registry)){}
-std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error) {
-    if(audio::onAudioThread)return nullptr;
+Scanner::Scanner(Config config,std::unique_ptr<PluginRegistry> registry,std::string buildHash,
+    std::uintmax_t helperSize,std::filesystem::file_time_type helperTime)
+    :config_(std::move(config)),registry_(std::move(registry)),helperBuildHash_(std::move(buildHash)),
+     helperSize_(helperSize),helperTime_(helperTime){}
+std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error,State* reason) {
+    if(reason)*reason=State::Unavailable;
+    if(audio::onAudioThread) {
+        if(reason)*reason=State::CallbackRefused;
+        return nullptr;
+    }
     error.clear();
+    auto failureState=State::Unavailable;
     try {
         Config resolved=config;
+        require(resolved.cacheMode==ScanCacheMode::Reuse || resolved.cacheMode==ScanCacheMode::Refresh,
+                "invalid scanner cache mode");
         if(resolved.executable.empty())resolved.executable=defaultScannerExecutable();
         if(resolved.registry.empty())resolved.registry=appdata::pluginRegistryFile();
         require(resolved.executable.is_absolute() && resolved.registry.is_absolute() &&
@@ -200,9 +244,39 @@ std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error) 
         const auto& process=resolved.process;
         require(process.timeout.count()>0 && process.timeout.count()<=300000 && process.maximumOutput>0 &&
             process.maximumOutput<=kMaximumPacket,"invalid scanner process bounds");
+        failureState=State::HelperCouldNotStart;
+        const auto helperSize=std::filesystem::file_size(resolved.executable);
+        const auto helperTime=std::filesystem::last_write_time(resolved.executable);
+        const auto build=media::blake3File(resolved.executable);
+        require(static_cast<bool>(build),"scanner helper build identity unavailable");
+        require(helperSize==std::filesystem::file_size(resolved.executable) &&
+                helperTime==std::filesystem::last_write_time(resolved.executable),"scanner helper changed during identification");
+        failureState=State::Unavailable;
         auto registry=PluginRegistry::open(resolved.registry,error);if(!registry)return nullptr;
-        return std::unique_ptr<Scanner>(new Scanner(std::move(resolved),std::move(registry)));
-    } catch(const std::exception&) {error="scanner configuration unavailable";return nullptr;}
+        return std::unique_ptr<Scanner>(new Scanner(std::move(resolved),std::move(registry),build.hex,helperSize,helperTime));
+    } catch(const std::exception&) {
+        if(reason)*reason=failureState;
+        error=failureState==State::HelperCouldNotStart?helperCouldNotStart:"scanner configuration unavailable";
+        return nullptr;
+    }
+}
+std::unique_ptr<Scanner> Scanner::openPeer(std::string& error) const {
+    if (audio::onAudioThread) return nullptr;
+    auto registry = PluginRegistry::open(config_.registry, error);
+    if (!registry) return nullptr;
+    return std::unique_ptr<Scanner>(new Scanner(config_, std::move(registry), helperBuildHash_,
+                                                helperSize_, helperTime_));
+}
+
+bool Scanner::retry(const std::string& format,const std::filesystem::path& path,std::string& error) {
+    if(audio::onAudioThread)return false;
+    error.clear();
+    try {
+        if(format!="clap" && format!="vst3"){error="unsupported scanner format";return false;}
+        std::error_code ec;const auto canonical=std::filesystem::canonical(path,ec);
+        if(ec){error="retry candidate path unavailable";return false;}
+        return registry_->unblockScan(format,utf8(canonical),error);
+    } catch(const std::exception&){error="scan retry unavailable";return false;}
 }
 Result Scanner::probe(const std::string& format,const std::filesystem::path& path,Validator validate,void* context) {
     Result result;
@@ -212,34 +286,166 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         if(format!="clap" && (format!="vst3" || validate==nullptr)) {
             result.error="unsupported scanner format/validator";return result;
         }
+        std::uintmax_t helperSize=0;
+        std::filesystem::file_time_type helperTime;
+        try {
+            helperSize=std::filesystem::file_size(config_.executable);
+            helperTime=std::filesystem::last_write_time(config_.executable);
+            if(helperSize!=helperSize_ || helperTime!=helperTime_) {
+                const auto build=media::blake3File(config_.executable);
+                require(static_cast<bool>(build) && helperSize==std::filesystem::file_size(config_.executable) &&
+                        helperTime==std::filesystem::last_write_time(config_.executable),"scanner helper changed during identification");
+                helperBuildHash_=build.hex;helperSize_=helperSize;helperTime_=helperTime;
+            }
+        } catch(const std::exception&) {
+            result.state=State::HelperCouldNotStart;
+            result.error=helperCouldNotStart;
+            return result;
+        }
         std::error_code ec;const auto canonical=std::filesystem::canonical(path,ec);
         if(ec){result.state=State::Unavailable;result.error="scan candidate path unavailable";return result;}
         result.path=utf8(canonical);require(identity(format,result.path),"invalid canonical scan identity");
-        auto ticket=registry_->beginScan(format,result.path,config_.clock(),result.error);
-        if(!ticket){result.state=State::Quarantined;return result;}
+        const auto stamp=candidateStamp(format,canonical,helperBuildHash_,result.error);
+        if(!stamp){result.cacheWarning=result.error;result.error.clear();}
+        std::optional<ScanTicket> ticket;
+        auto stable=[&]() {
+            const auto after=candidateStamp(format,canonical,helperBuildHash_,result.error);
+            std::error_code sizeError,timeError;
+            const auto currentSize=std::filesystem::file_size(config_.executable,sizeError);
+            const auto currentTime=std::filesystem::last_write_time(config_.executable,timeError);
+            if(after && *after==*stamp && !sizeError && !timeError &&
+               currentSize==helperSize && currentTime==helperTime)return true;
+            std::string finishError;
+            if(ticket && !registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),finishError)) {
+                result.state=State::Quarantined;result.error=finishError;
+            } else {result.state=State::Unavailable;result.error="scan candidate or helper changed during probe; retry required";}
+            return false;
+        };
+        if(stamp && config_.cacheMode==ScanCacheMode::Reuse) {
+            const auto read=registry_->readScanSuccess(format,result.path,*stamp,result.error);
+            if(read && read->packet().size()<=config_.process.maximumOutput) {
+                auto plugins=decodeMetadata(read->packet(),format,result.path,result.error);
+                if(plugins && plugins->empty())plugins.reset();
+                if(plugins && validate && !validate(*plugins,result.path,context,result.error))plugins.reset();
+                const bool cancelled=config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed);
+                if(cancelled) {
+                    // A late block/ticket remains authoritative even when the
+                    // validator also cancels. Let ordinary admission decide it.
+                    if(registry_->confirmScanSuccess(*read,result.error)) {
+                        result.state=State::Cancelled;result.error.clear();return result;
+                    }
+                } else if(plugins) {
+                    if(!stable()) {
+                        // Ticketed completion would refuse a late block even
+                        // when the candidate changed too. Preserve that priority
+                        // without inserting or completing a ticket on this path.
+                        std::string blockError;
+                        const auto blocked=registry_->hasScanBlock(format,result.path,blockError);
+                        if(!blocked || *blocked) {
+                            result.state=State::Quarantined;
+                            result.error=blocked ? "scan became blocked or pending during validation" : blockError;
+                        }
+                        return result;
+                    }
+                    if(registry_->confirmScanSuccess(*read,result.error)) {
+                        if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
+                            result.state=State::Cancelled;return result;
+                        }
+                        result.state=State::Ready;result.cacheHit=true;result.plugins=std::move(*plugins);return result;
+                    }
+                }
+            }
+            // Misses, blocked/changed rows and malformed metadata retain the
+            // original ticketed admission/repair path and its failure policy.
+            result.error.clear();
+        }
+        std::optional<ScanFailure> cachedFailure;
+        if(stamp) {
+            auto admission=registry_->beginStampedScan(format,result.path,*stamp,config_.clock(),result.error,config_.cacheMode);
+            if(admission){ticket=std::move(admission->ticket);cachedFailure=std::move(admission->cachedFailure);}
+        } else ticket=registry_->beginScan(format,result.path,config_.clock(),result.error);
+        if(!ticket && !cachedFailure){result.state=State::Quarantined;return result;}
+        if(cachedFailure) {
+            if(!stable())return result;
+            if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
+                result.state=State::Cancelled;return result;
+            }
+            result.state=cachedFailure->kind==ScanFailureKind::Rejected?State::Failed:State::Quarantined;
+            result.failureCacheHit=true;
+            result.failureStrikes=cachedFailure->strikes;result.error=cachedFailure->reason;return result;
+        }
+        auto cached=stamp && config_.cacheMode==ScanCacheMode::Reuse?
+            registry_->cachedScan(*ticket,*stamp,result.error):std::nullopt;
+        if(!result.error.empty()) {
+            std::string finishError;
+            if(!registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),finishError)) {
+                result.state=State::Quarantined;result.error=finishError;
+            } else result.state=State::Unavailable;
+            return result;
+        }
+        if(cached && cached->size()<=config_.process.maximumOutput) {
+            auto plugins=decodeMetadata(*cached,format,result.path,result.error);
+            if(plugins && plugins->empty())plugins.reset();
+            if(plugins && validate && !validate(*plugins,result.path,context,result.error))plugins.reset();
+            if(plugins) {
+                if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
+                    result.state=registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),result.error)?
+                        State::Cancelled:State::Quarantined;return result;
+                }
+                if(!stable())return result;
+                if(!registry_->finishScan(*ticket,ScanDisposition::Succeeded,"",config_.clock(),result.error)) {
+                    result.state=State::Quarantined;return result;
+                }
+                result.state=State::Ready;result.cacheHit=true;result.plugins=std::move(*plugins);return result;
+            }
+            // Corrupt/obsolete stored metadata is not a plug-in crash. Reprobe
+            // under the same admission ticket; fresh replies still validate.
+            result.error.clear();
+        }
         const auto process=runProcess(config_.executable,{"--scan",format,result.path},config_.process);
         const bool cancel=process.succeeded() && config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed);
+        // These exits can also come from a plug-in during load. The prefix
+        // only indicates that the helper had passed its pre-open setup.
+        const bool enteredProbe = !process.output.empty() && process.output.front()==kModuleOpening;
+        const bool setupExit = !enteredProbe &&
+            (process.exitCode==64 || process.exitCode==74 || process.exitCode==75 || process.exitCode==78);
+        // A partial payload can only follow the helper's enumeration phase.
+        const bool writeExit = process.exitCode==75 && enteredProbe && process.output.size()>1;
+        const bool helperFailure = process.status==ProcessStatus::Exited && (setupExit || writeExit);
         const bool abandoned=cancel || process.status==ProcessStatus::Cancelled || process.status==ProcessStatus::LaunchFailed ||
             process.status==ProcessStatus::Invalid || process.status==ProcessStatus::CallbackRefused ||
-            (process.status==ProcessStatus::Exited && process.exitCode==78);
+            process.status==ProcessStatus::IoFailed || helperFailure;
         if(abandoned) {
-            const auto state=cancel || process.status==ProcessStatus::Cancelled?State::Cancelled:State::Unavailable;
+            auto state=State::Unavailable;
+            if(cancel || process.status==ProcessStatus::Cancelled)state=State::Cancelled;
+            else if(process.status==ProcessStatus::LaunchFailed)state=State::HelperCouldNotStart;
             std::string error;
             if(!registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),error)) {
                 result.state=State::Quarantined;result.error=error;return result;
             }
-            result.state=state;result.error="scanner helper unavailable or scan cancelled";return result;
+            result.state=state;
+            result.error=state==State::HelperCouldNotStart?helperCouldNotStart:"scanner helper unavailable or scan cancelled";
+            return result;
         }
         std::optional<std::vector<Plugin>> plugins;
         if(process.succeeded())plugins=decodeMetadata(process.output,format,result.path,result.error);
         else result.error=failure(process);
+        if(plugins && plugins->empty()){plugins.reset();result.error="scanner returned no plug-in classes";}
         if(plugins && validate && !validate(*plugins,result.path,context,result.error))plugins.reset();
+        if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
+            result.state=registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),result.error)?
+                State::Cancelled:State::Quarantined;return result;
+        }
         if(plugins) {
             if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
                 result.state=registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),result.error)?
                     State::Cancelled:State::Quarantined;return result;
             }
-            if(!registry_->finishScan(*ticket,ScanDisposition::Succeeded,"",config_.clock(),result.error)) {
+            if(stamp && !stable())return result;
+            const bool finished=stamp?
+                registry_->finishCachedScan(*ticket,*stamp,process.output,config_.clock(),result.error):
+                registry_->finishScan(*ticket,ScanDisposition::Succeeded,"",config_.clock(),result.error);
+            if(!finished) {
                 result.state=State::Quarantined;return result;
             }
             result.state=State::Ready;result.plugins=std::move(*plugins);return result;
@@ -248,8 +454,20 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         // Only bounded known diagnostics enter durable shared data. A validator
         // may return arbitrary diagnostic text; use a stable fallback if needed.
         if(!text(result.error,4096))result.error="scanner format validation failed";
+        const auto diagnostic=result.error;
+        if(stamp && !stable())return result;
+        result.error=diagnostic;
         std::string finishError;
-        if(!registry_->finishScan(*ticket,ScanDisposition::Failed,result.error,config_.clock(),finishError)) {
+        bool finished=false;
+        const auto kind=process.status==ProcessStatus::Crashed?ScanFailureKind::Crashed:
+            (process.status==ProcessStatus::TimedOut?ScanFailureKind::TimedOut:ScanFailureKind::Rejected);
+        if(stamp) {
+            const auto strikes=registry_->finishFailedScan(*ticket,*stamp,kind,result.error,config_.clock(),finishError);
+            finished=strikes.has_value();if(strikes)result.failureStrikes=*strikes;
+        } else finished=kind==ScanFailureKind::Rejected?
+            registry_->finishScan(*ticket,ScanDisposition::Rejected,"",config_.clock(),finishError):
+            registry_->finishScan(*ticket,ScanDisposition::Failed,result.error,config_.clock(),finishError);
+        if(!finished) {
             result.state=State::Quarantined;result.error=finishError;return result;
         }
         result.state=State::Failed;return result;

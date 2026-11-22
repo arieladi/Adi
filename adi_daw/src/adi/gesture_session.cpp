@@ -22,7 +22,7 @@ struct Domain : std::enable_shared_from_this<Domain> {
     Store* store = nullptr;
     AppliedSource source;
     std::thread::id thread;
-    std::atomic<std::uint64_t> fence{0}, faultEpoch{0};
+    std::atomic<std::uint64_t> fence{0};
     std::atomic<bool> hardFault{false};
     std::vector<std::shared_ptr<std::atomic<bool>>> producerFaults;
     std::uint64_t capacity = 0, leases = 0, nextOwner = 1;
@@ -48,7 +48,8 @@ struct DomainAccess {
 constexpr std::uint64_t navigationBit = std::uint64_t{1} << 63;
 constexpr std::uint64_t closedBit = std::uint64_t{1} << 62;
 constexpr std::uint64_t faultBit = std::uint64_t{1} << 61;
-constexpr std::uint64_t countMask = faultBit - 1;
+constexpr std::uint64_t recoveryInterruptedBit = std::uint64_t{1} << 60;
+constexpr std::uint64_t countMask = recoveryInterruptedBit - 1;
 } // namespace detail
 
 struct OwnerToken::Data { std::weak_ptr<detail::Domain> domain; std::uint64_t identity = 0; };
@@ -164,19 +165,26 @@ Status usable(const std::shared_ptr<Domain>& domain, bool allowBusy = false) {
 }
 void fault(const std::shared_ptr<Domain>& domain, const std::shared_ptr<std::atomic<bool>>& producer = {}) noexcept {
     if (!domain) return;
-    domain->faultEpoch.fetch_add(1, std::memory_order_relaxed);
     if (producer) producer->store(true, std::memory_order_release);
     else domain->hardFault.store(true, std::memory_order_release);
-    domain->fence.fetch_or(faultBit, std::memory_order_release);
+    domain->fence.fetch_or(faultBit | recoveryInterruptedBit, std::memory_order_release);
 }
 void recoverFault(const std::shared_ptr<Domain>& domain, const std::shared_ptr<std::atomic<bool>>& producer) noexcept {
-    const auto epoch = domain->faultEpoch.load(std::memory_order_acquire);
+    // Keep admission closed while scanning ownership. Any newly published
+    // fault sets the interruption bit in the same word as the latch, so a
+    // producer racing this scan can prevent the clear with one atomic update.
+    domain->fence.fetch_and(~recoveryInterruptedBit, std::memory_order_acq_rel);
     producer->store(false, std::memory_order_release);
     if (domain->hardFault.load(std::memory_order_acquire)) return;
     for (const auto& pending : domain->producerFaults)
         if (pending->load(std::memory_order_acquire)) return;
-    domain->fence.fetch_and(~faultBit, std::memory_order_acq_rel);
-    if (domain->faultEpoch.load(std::memory_order_acquire) != epoch) domain->fence.fetch_or(faultBit, std::memory_order_release);
+    auto observed = domain->fence.load(std::memory_order_acquire);
+    while ((observed & (faultBit | recoveryInterruptedBit)) == faultBit) {
+        if (domain->fence.compare_exchange_weak(observed, observed & ~faultBit,
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+            return;
+    }
 }
 ProducerFence::Reservation reserve(const std::shared_ptr<Domain>& domain) noexcept {
     if (!domain) return ProducerFence::Reservation::RejectedClosed;
@@ -972,10 +980,10 @@ DrainOutcome Coordinator::drain(std::int64_t nowMs) {
         }
     }
     bool keepNotices = false;
-    // A completed owner no longer receives reapplication, but its concrete
-    // native presentation still has to hear subsequent Undo/Redo and foreign
-    // commits. Use the registered/default presentation, not a finished private
-    // device presentation: ParamOps' receipt FIFO owns SDK delivery separately.
+    // Open gestures reapply from the current Store revision, so they do not
+    // need individual commit notices. With no open gesture, the registered
+    // presentation adopts the current revision after Undo/Redo or a foreign
+    // commit. ParamOps' receipt FIFO owns SDK delivery separately.
     if (!domain->notices.empty() && std::none_of(domain->entries.begin(), domain->entries.end(),
             [](const auto& entry) { return detail::terminal(entry->state) == false; })) {
         try {

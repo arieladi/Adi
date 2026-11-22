@@ -4,6 +4,7 @@
 
 #include "juce/vst3_host.hpp"
 #include "juce/vst3_scan_host.hpp"
+#include "adi/scan_batch.hpp"
 
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivstphysicalui.h>
@@ -12,7 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <type_traits>
+#include <stdexcept>
 
 namespace adi::device {
 
@@ -36,19 +37,6 @@ bool Vst3Device::hostMutationOnCurrentThread() const noexcept {
 }
 
 namespace {
-
-template<class Sample>
-void copyKeyInput(const engine::NodeIo& io, int channel, int frames, Sample* destination) noexcept {
-    if (channel < io.channels && io.sidechain64 && io.sidechain64[channel]) {
-        const auto* input = io.sidechain64[channel] + io.blockOffset;
-        std::transform(input, input + frames, destination, [](double x) { return static_cast<Sample>(x); });
-    } else if (channel < io.channels && io.sidechain && io.sidechain[channel]) {
-        const auto* input = io.sidechain[channel] + io.blockOffset;
-        std::copy_n(input, frames, destination);
-    } else {
-        std::fill_n(destination, frames, Sample{});
-    }
-}
 
 /// VST3 identifies a parameter by a 32-bit `ParamID`, and `plugin_params`
 /// stores TEXT. The conversion is fixed-width hex so it sorts stably and can
@@ -96,25 +84,38 @@ scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPlu
                            const scan::Config& config) {
     scan::Report report;
     if(audio::onAudioThread){report.complete=false;return report;}
-    if(files.empty()){into.clear();return report;}
-    std::string error;auto scanner=scan::Scanner::open(config,error);
-    if(!scanner){report.complete=false;report.failures.push_back({"",error,scan::State::Unavailable});return report;}
     std::vector<juce::PluginDescription> found;
-    for(const auto& file:files) {
-        const auto bytes=file.toStdString();
+    const auto probe = [&](scan::Scanner& scanner, std::size_t index) {
         std::vector<juce::PluginDescription> descriptions;
-        const auto result=scanVst3File(*scanner,file,descriptions);
+        auto result = scanVst3File(scanner, files[index], descriptions);
+        // The validated descriptions already carry the VST3 metadata.
+        result.plugins.clear();
+        return std::pair(std::move(result), std::move(descriptions));
+    };
+    const auto accept = [&](std::size_t index, auto row) {
+        auto& [result, descriptions] = row;
+        const auto bytes = files[index].toStdString();
         if(result.state!=scan::State::Ready) {
             report.failures.push_back({result.path.empty()?bytes:result.path,result.error,result.state});
-            if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
-                report.complete=false;report.cancelled=result.state==scan::State::Cancelled;return report;
+            if(scan::stopsDiscovery(result.state)) {
+                report.cancelled=result.state==scan::State::Cancelled;
+                return false;
             }
-            continue;
+            return true;
         }
         if(descriptions.size()>scan::kMaximumPlugins-found.size()) {
-            report.complete=false;report.failures.push_back({bytes,"VST3 catalogue descriptor bound",scan::State::Invalid});return report;
+            report.failures.push_back({bytes,"VST3 catalogue descriptor bound",scan::State::Invalid});
+            return false;
         }
         for(auto& description:descriptions)found.push_back(std::move(description));
+        return true;
+    };
+    std::string error;
+    auto openFailure=scan::State::Unavailable;
+    report.complete = scan::detail::visitProbes(files.size(), config, probe, accept, error, &openFailure);
+    if (!report.complete) {
+        if (!error.empty()) report.failures.push_back({"", std::move(error), openFailure});
+        return report;
     }
     into.clear();for(const auto& description:found)into.addType(description);return report;
 }
@@ -123,14 +124,14 @@ scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPlu
 scan::Report Vst3Host::scan(const juce::FileSearchPath& paths,juce::KnownPluginList& into,
                             const scan::Config& config) {
     if(audio::onAudioThread){scan::Report report;report.complete=false;return report;}
+    std::vector<std::string> roots;
+    for (int i = 0; i < paths.getNumPaths(); ++i)
+        roots.push_back(paths[i].getFullPathName().toStdString());
+    const auto candidates = scan::findCandidates(roots, ".vst3");
     std::vector<juce::String> files;
-    for (int i = 0; i < formats_.getNumFormats(); ++i) {
-        // Pinned JUCE VST3 searchPathsForPlugins only walks files/bundles;
-        // findAllTypesForFile (factory code) belongs solely to the child.
-        const auto candidates=formats_.getFormat(i)->searchPathsForPlugins(paths,true,false);
-        for(const auto& file:candidates)files.push_back(file);
-    }
-    std::sort(files.begin(),files.end());files.erase(std::unique(files.begin(),files.end()),files.end());
+    files.reserve(candidates.size());
+    for (const auto& candidate : candidates)
+        files.push_back(juce::String::fromUTF8(candidate.c_str()));
     return scanVst3Files(files,into,config);
 }
 scan::Report Vst3Host::scanFile(const juce::String& file,juce::KnownPluginList& into,
@@ -291,12 +292,89 @@ Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceId
         // ADR-0207 d2: what the graph asks, before it prepares. Here, because
         // it asks the processor, and that is a message-thread question.
         canDouble_ = inst_->supportsDoublePrecisionProcessing();
+        readInputBusRoles();
+        if(keyInputBus_>=0)if(auto* bus=inst_->getBus(true,keyInputBus_))
+            defaultKeyEnabled_=bus->isEnabled();
     }
     // The graph asks before it prepares this device, so the tail is read now,
     // at the rate the instance was created at (0 with no instance, as before).
     tail_.store(readTail(), std::memory_order_release);
     router_.configure(engine::resolveRoute(engine::RouteChoice::Auto, caps_), caps_);
     routeInUse_.store(static_cast<std::uint8_t>(router_.current()), std::memory_order_release);
+}
+
+void Vst3Device::readInputBusRoles() {
+    mainInputBus_=inst_ && inst_->getBusCount(true)>0?0:-1;
+    keyInputBus_=inst_ && inst_->getBusCount(true)>1?1:-1;
+    keyChannels_=0;
+    if(!inst_)return;
+    if(const auto* client=inst_->getVST3Client())if(auto* component=client->getIComponentPtr()) {
+        mainInputBus_=-1;keyInputBus_=-1;
+        for(int i=0;i<inst_->getBusCount(true);++i) {
+            Steinberg::Vst::BusInfo info{};
+            if(component->getBusInfo(Steinberg::Vst::kAudio,Steinberg::Vst::kInput,i,info)!=Steinberg::kResultOk)continue;
+            if(info.busType==Steinberg::Vst::kMain && mainInputBus_<0)mainInputBus_=i;
+            if(info.busType==Steinberg::Vst::kAux && keyInputBus_<0)keyInputBus_=i;
+        }
+    }
+    if(keyInputBus_>=0)if(auto* bus=inst_->getBus(true,keyInputBus_)) {
+        const auto width=bus->getLastEnabledLayout().size();
+        if(width>0 && width<=64)keyChannels_=width;
+    }
+}
+void Vst3Device::prepareAudioBuses() {
+    inputLayout_.clear();outputLayout_.clear();
+    const auto layout=[&](bool input,std::vector<PreparedBus>& buses) {
+        int channels=0;const auto count=inst_->getBusCount(input);
+        if(count>64)throw std::runtime_error("VST3 declares too many audio buses");
+        for(int b=0;b<count;++b) {
+            const auto* bus=inst_->getBus(input,b);
+            const auto width=bus && bus->isEnabled()?bus->getNumberOfChannels():0;
+            if(width<0 || width>64 || channels>4096-width)throw std::runtime_error("VST3 declares an unsupported audio bus width");
+            buses.push_back({width,channels});channels+=width;
+        }
+        return channels;
+    };
+    const int inputs=layout(true,inputLayout_),outputs=layout(false,outputLayout_);
+    mainOutputChannels_=outputLayout_.empty()?0:outputLayout_.front().channels;
+    const int flat=std::max({inputs,outputs,channels_,1});
+    inputScratch_.setSize(std::max(inputs,1),maxFrames_,false,true,true);
+    scratch_.setSize(flat,maxFrames_,false,true,true);
+    if(double_) {
+        inputScratch64_.setSize(std::max(inputs,1),maxFrames_,false,true,true);
+        scratch64_.setSize(flat,maxFrames_,false,true,true);
+    } else {inputScratch64_.setSize(0,0);scratch64_.setSize(0,0);}
+    rawIn_.resize(static_cast<std::size_t>(inputs));rawOut_.resize(static_cast<std::size_t>(outputs));
+    rawIn64_.resize(double_?static_cast<std::size_t>(inputs):0);
+    rawOut64_.resize(double_?static_cast<std::size_t>(outputs):0);
+    for(int c=0;c<inputs;++c) {
+        rawIn_[static_cast<std::size_t>(c)]=inputScratch_.getWritePointer(c);
+        if(double_)rawIn64_[static_cast<std::size_t>(c)]=inputScratch64_.getWritePointer(c);
+    }
+    for(int c=0;c<outputs;++c) {
+        rawOut_[static_cast<std::size_t>(c)]=scratch_.getWritePointer(c);
+        if(double_)rawOut64_[static_cast<std::size_t>(c)]=scratch64_.getWritePointer(c);
+    }
+    // Preserve the existing main in-place SDK fast path. Auxiliary inputs
+    // need independent storage, but matching primary buses can still share
+    // pointers so plug-ins need not introduce an extra internal audio copy.
+    if(mainInputBus_>=0 && !outputLayout_.empty()) {
+        const auto& main=inputLayout_[static_cast<std::size_t>(mainInputBus_)];
+        const auto& output=outputLayout_.front();
+        if(main.channels==output.channels)for(int c=0;c<main.channels;++c) {
+            rawIn_[static_cast<std::size_t>(main.offset+c)]=rawOut_[static_cast<std::size_t>(output.offset+c)];
+            if(double_)rawIn64_[static_cast<std::size_t>(main.offset+c)]=rawOut64_[static_cast<std::size_t>(output.offset+c)];
+        }
+    }
+    const auto bind=[&](const auto& layouts,auto& buses,auto& narrow,auto& wide) {
+        buses.assign(layouts.size(),Steinberg::Vst::AudioBusBuffers{});
+        for(std::size_t i=0;i<layouts.size();++i) {
+            auto& bus=buses[i];const auto& shape=layouts[i];bus.numChannels=shape.channels;
+            if(double_)bus.channelBuffers64=shape.channels?wide.data()+shape.offset:nullptr;
+            else bus.channelBuffers32=shape.channels?narrow.data()+shape.offset:nullptr;
+        }
+    };
+    bind(inputLayout_,inputBuses_,rawIn_,rawIn64_);bind(outputLayout_,outputBuses_,rawOut_,rawOut64_);
 }
 
 Vst3Device::~Vst3Device() {
@@ -472,8 +550,9 @@ std::string Vst3Device::paramText(const std::string& paramId,
 void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     if (inst_ == nullptr) return;
 
-    const std::int32_t chans = std::max(inst_->getMainBusNumInputChannels(),
-                                        inst_->getMainBusNumOutputChannels());
+    const auto* mainInput=mainInputBus_>=0?inst_->getBus(true,mainInputBus_):nullptr;
+    const std::int32_t chans=std::max(mainInput?mainInput->getNumberOfChannels():0,
+                                    inst_->getMainBusNumOutputChannels());
 
     // ALREADY RUNNING AND NOTHING CHANGED: DO NOTHING. The same rule as
     // `ClapDevice::prepare`, for the same reason and with the same evidence
@@ -491,7 +570,7 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // now hands this device the other width is a reactivation too.
     const bool wantDouble = handed64_ && canDouble_;
     if (prepared_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
-        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_ &&
+        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_ && preparedShape_==preparationShapeEpoch() &&
         inst_->isNonRealtime() == requestedOffline_) {
         return;
     }
@@ -501,8 +580,12 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // (`ReactivationGate`, as in `ClapDevice::prepare`).
     const ReactivationGate::Hold hold(gate_);
 
+    const auto oldRate=sampleRate_;const auto oldFrames=maxFrames_;const bool oldDouble=double_;
+    const bool oldPrepared=prepared_;const auto oldChannels=channels_;
     maxFrames_ = maxFrames;
     sampleRate_ = sampleRate;
+    channels_ = chans;
+    if (channels_ < 1) channels_ = 2;
 
     // ADR-0049: the GRANTED size. Everything allocated here is sized from what
     // the driver returned, never from what was requested, and the plugin is
@@ -515,8 +598,8 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // ADR-0043 requires a LIVE SIDECHAIN to prevent suspension and ADR-0056
     // added `Bus::Sidechain` to express it, so a compressor keyed from another
     // track would have had its key input disabled by the host, at prepare,
-    // with nothing reported. The plugin's own bus layout is left alone and
-    // only the rate and block size are set.
+    // with nothing reported. Only the declared key bus is enabled when an
+    // owner route requests it; other bus layouts are retained.
     //
     // RELEASED FIRST. JUCE's own `prepareToPlay` returns at once when the
     // instance is active at the rate and block it is handed -- and the line
@@ -527,16 +610,27 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // and a change of width alone (ADR-0207 d2) would have left it set up at
     // the old sample size. Releasing an instance that is not active does
     // nothing.
+    prepared_=false;
     inst_->releaseResources();
-    // The graph has one key bus. Enable the plug-in's first auxiliary input
-    // on the owner thread before setup, then use its negotiated channel count.
-    if (auto* bus = inst_->getBus(true, 1); bus != nullptr && !bus->isEnabled())
-        bus->enable();
-    channels_ = std::max(inst_->getMainBusNumInputChannels(), inst_->getMainBusNumOutputChannels());
-    if (channels_ < 1) channels_ = 2;
-    keyChannels_ = inst_->getChannelCountOfBus(true, 1);
-    keyOffset_ = keyChannels_ > 0 ? inst_->getChannelIndexInProcessBlockBuffer(true, 1, 0) : 0;
-    wrapperChannels_ = std::max(inst_->getTotalNumInputChannels(), inst_->getTotalNumOutputChannels());
+    const auto refuseKey=[&]() {
+        maxFrames_=oldFrames;sampleRate_=oldRate;channels_=oldChannels;
+        if(oldPrepared) {
+            inst_->setProcessingPrecision(oldDouble?juce::AudioProcessor::doublePrecision:juce::AudioProcessor::singlePrecision);
+            inst_->setRateAndBufferSizeDetails(oldRate,oldFrames);inst_->prepareToPlay(oldRate,oldFrames);
+            prepared_=true;
+        }
+        throw std::runtime_error("VST3 refused its first auxiliary input layout");
+    };
+    if(auto* key=keyInputBus_>=0?inst_->getBus(true,keyInputBus_):nullptr) {
+        const bool wanted=wantsKeyBusEnabled();
+        if(key->isEnabled()!=wanted && !key->enable(wanted))refuseKey();
+    } else if(keyRequested_)refuseKey();
+    readInputBusRoles();
+    const auto* grantedMain=mainInputBus_>=0?inst_->getBus(true,mainInputBus_):nullptr;
+    channels_=std::max(grantedMain?grantedMain->getNumberOfChannels():0,inst_->getMainBusNumOutputChannels());
+    if(channels_<1)channels_=2;
+    // After the key layout is granted, not before: a refused key re-prepares
+    // the old state above, and that state includes the old realtime mode.
     inst_->setNonRealtime(requestedOffline_);
     inst_->setPlayHead(&playHead_);
     // The width, before `prepareToPlay`: it hands `setupProcessing`
@@ -587,24 +681,9 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     injected_.assign(static_cast<std::size_t>((perNote > 0 ? perNote : 8) * 16),
                      engine::Event{});
     injectedUsed_ = 0;
-    rawIn_.resize(static_cast<std::size_t>(channels_));
-    rawOut_.resize(static_cast<std::size_t>(channels_));
-    rawIn64_.resize(static_cast<std::size_t>(channels_));
-    rawOut64_.resize(static_cast<std::size_t>(channels_));
-    rawKey_.resize(static_cast<std::size_t>(keyChannels_));
-    rawKey64_.resize(static_cast<std::size_t>(keyChannels_));
-
-    // Allocated at prepare, never in process (ADR-0010). One width in use.
-    const int scratchChannels = std::max(channels_ + keyChannels_, wrapperChannels_);
-    scratch_.setSize(scratchChannels, maxFrames, false, true, true);
-    if (double_) scratch64_.setSize(scratchChannels, maxFrames, false, true, true);
-    else scratch64_.setSize(0, 0);
-    if (processor_ == nullptr && wrapperChannels_ > 0) {
-        if (double_)
-            view64_.setDataToReferTo(scratch64_.getArrayOfWritePointers(), wrapperChannels_, maxFrames);
-        else
-            view_.setDataToReferTo(scratch_.getArrayOfWritePointers(), wrapperChannels_, maxFrames);
-    }
+    readInputBusRoles();
+    prepareAudioBuses();
+    preparedShape_=preparationShapeEpoch();
     midi_.ensureSize(4096);
 
     // HERE, and it was not. Since ADR-0073 this line sat after the `return`
@@ -648,6 +727,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     const ReactivationGate::Pass pass(gate_);
     if (!pass) { passThrough(io); return; }
     if (inst_ == nullptr || (!io.wide() && io.out == nullptr)) return;
+    if(!prepared_) {passThrough(io);return;}
 
     const std::int32_t n = std::min(io.frames, maxFrames_);
     const std::int32_t ch = std::min(io.channels, channels_);
@@ -739,54 +819,16 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         // ADR-0207 d2: the width the plug-in was set up at. `channelBuffers32`
         // and `channelBuffers64` share their storage, and `symbolicSampleSize`
         // says which one is meant; it must match `setupProcessing`.
-        std::array<Steinberg::Vst::AudioBusBuffers, 2> inputs{};
-        auto& inBus = inputs[0];
-        inBus.numChannels = ch;
-        inBus.silenceFlags = 0;
-        Steinberg::Vst::AudioBusBuffers outBus = inBus;
-        if (double_) {
-            for (std::int32_t c = 0; c < ch; ++c) {
-                rawIn64_[static_cast<std::size_t>(c)]  = scratch64_.getWritePointer(c);
-                rawOut64_[static_cast<std::size_t>(c)] = scratch64_.getWritePointer(c);
-            }
-            inBus.channelBuffers64 = rawIn64_.data();
-            outBus.channelBuffers64 = rawOut64_.data();
-        } else {
-            for (std::int32_t c = 0; c < ch; ++c) {
-                rawIn_[static_cast<std::size_t>(c)]  = scratch_.getWritePointer(c);
-                rawOut_[static_cast<std::size_t>(c)] = scratch_.getWritePointer(c);
-            }
-            inBus.channelBuffers32 = rawIn_.data();
-            outBus.channelBuffers32 = rawOut_.data();
-        }
-
-        if (keyChannels_ > 0) {
-            auto& key = inputs[1];
-            key.numChannels = keyChannels_;
-            for (int c = 0; c < keyChannels_; ++c) {
-                const auto index = static_cast<std::size_t>(c);
-                if (double_) {
-                    auto* dst = scratch64_.getWritePointer(channels_ + c);
-                    rawKey64_[index] = dst;
-                    copyKeyInput(io, c, n, dst);
-                } else {
-                    auto* dst = scratch_.getWritePointer(channels_ + c);
-                    rawKey_[index] = dst;
-                    copyKeyInput(io, c, n, dst);
-                }
-            }
-            if (double_) key.channelBuffers64 = rawKey64_.data();
-            else key.channelBuffers32 = rawKey_.data();
-        }
-
         Steinberg::Vst::ProcessData pd{};
         pd.processMode = inst_->isNonRealtime() ? Steinberg::Vst::kOffline : Steinberg::Vst::kRealtime;
         pd.symbolicSampleSize = double_ ? Steinberg::Vst::kSample64 : Steinberg::Vst::kSample32;
         pd.numSamples = n;
-        pd.numInputs = keyChannels_ > 0 ? 2 : 1;
-        pd.numOutputs = 1;
-        pd.inputs = inputs.data();
-        pd.outputs = &outBus;
+        for(auto& bus:inputBuses_)bus.silenceFlags=0;
+        for(auto& bus:outputBuses_)bus.silenceFlags=0;
+        pd.numInputs = static_cast<Steinberg::int32>(inputBuses_.size());
+        pd.numOutputs = static_cast<Steinberg::int32>(outputBuses_.size());
+        pd.inputs = inputBuses_.empty()?nullptr:inputBuses_.data();
+        pd.outputs = outputBuses_.empty()?nullptr:outputBuses_.data();
         pd.inputEvents = &events_;
         pd.outputEvents = nullptr;
         pd.inputParameterChanges = &paramChanges_;
@@ -841,42 +883,41 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     // right, which is not. ADR-0057 has the route.
 
     playHead_.clock = io.deviceTransport;
-    // The wrapper uses a single buffer with each enabled bus at its declared
-    // channel offset. The view's channel storage was prepared on the owner.
-    auto prepareView = [&](auto& scratch, auto& view) {
-        using Sample = typename std::remove_reference_t<decltype(scratch)>::SampleType;
-        for (int c = ch; c < wrapperChannels_; ++c)
-            std::fill_n(scratch.getWritePointer(c), n, Sample{});
-        for (int c = 0; c < keyChannels_; ++c)
-            copyKeyInput(io, c, n, scratch.getWritePointer(keyOffset_ + c));
-        view.setDataToReferTo(scratch.getArrayOfWritePointers(), wrapperChannels_, n);
-    };
     if (double_) {
-        prepareView(scratch64_, view64_);
-        inst_->processBlock(view64_, midi_);
+        juce::AudioBuffer<double> view(scratch64_.getArrayOfWritePointers(), scratch64_.getNumChannels(), n);
+        inst_->processBlock(view, midi_);
     } else {
-        prepareView(scratch_, view_);
-        inst_->processBlock(view_, midi_);
+        juce::AudioBuffer<float> view(scratch_.getArrayOfWritePointers(), scratch_.getNumChannels(), n);
+        inst_->processBlock(view, midi_);
     }
     playHead_.clock = nullptr;
     copyOut(io, n, ch);
 }
 
-void Vst3Device::copyIn(const engine::NodeIo& io, std::int32_t n, std::int32_t ch) noexcept {
-    const std::int32_t off = io.blockOffset;
-    for (std::int32_t c = 0; c < ch; ++c) {
-        if (double_) {
-            double* dst = scratch64_.getWritePointer(c);
-            if (io.wide() && io.in64 != nullptr) std::copy(io.in64[c] + off, io.in64[c] + off + n, dst);
-            else if (!io.wide() && io.in != nullptr)
-                for (std::int32_t i = 0; i < n; ++i) dst[i] = io.in[c][off + i];   // widened, exactly
-            else std::fill(dst, dst + n, 0.0);
-        } else {
-            float* dst = scratch_.getWritePointer(c);
-            if (!io.wide() && io.in != nullptr) std::copy(io.in[c] + off, io.in[c] + off + n, dst);
-            else if (io.wide() && io.in64 != nullptr)
-                for (std::int32_t i = 0; i < n; ++i) dst[i] = static_cast<float>(io.in64[c][off + i]);
-            else std::fill(dst, dst + n, 0.0f);
+void Vst3Device::copyIn(const engine::NodeIo& io, std::int32_t n, std::int32_t /*ch*/) noexcept {
+    const auto off=io.blockOffset;
+    auto& narrow=processor_?inputScratch_:scratch_;
+    auto& wide=processor_?inputScratch64_:scratch64_;
+    for(std::size_t b=0;b<inputLayout_.size();++b) {
+        const auto& bus=inputLayout_[b];
+        const bool main=mainInputBus_>=0 && b==static_cast<std::size_t>(mainInputBus_);
+        const bool key=keyInputBus_>=0 && b==static_cast<std::size_t>(keyInputBus_);
+        const auto* source32=main?io.in:key?io.sidechain:nullptr;
+        const auto* source64=main?io.in64:key?io.sidechain64:nullptr;
+        for(int c=0;c<bus.channels;++c) {
+            const auto* src32=c<io.channels && source32?source32[c]:nullptr;
+            const auto* src64=c<io.channels && source64?source64[c]:nullptr;
+            if(double_) {
+                auto* dst=processor_?rawIn64_[static_cast<std::size_t>(bus.offset+c)]:wide.getWritePointer(bus.offset+c);
+                if(io.wide() && src64)std::copy_n(src64+off,n,dst);
+                else if(!io.wide() && src32)for(int i=0;i<n;++i)dst[i]=src32[off+i];
+                else std::fill_n(dst,n,0.);
+            } else {
+                auto* dst=processor_?rawIn_[static_cast<std::size_t>(bus.offset+c)]:narrow.getWritePointer(bus.offset+c);
+                if(!io.wide() && src32)std::copy_n(src32+off,n,dst);
+                else if(io.wide() && src64)for(int i=0;i<n;++i)dst[i]=static_cast<float>(src64[off+i]);
+                else std::fill_n(dst,n,0.f);
+            }
         }
     }
 }
@@ -890,16 +931,16 @@ void Vst3Device::copyOut(const engine::NodeIo& io, std::int32_t n, std::int32_t 
             double* out = io.out64[c];
             if (out == nullptr) continue;
             out += off;
-            if (c < ch && double_) std::copy(scratch64_.getReadPointer(c), scratch64_.getReadPointer(c) + n, out);
-            else if (c < ch)       for (std::int32_t i = 0; i < n; ++i) out[i] = scratch_.getReadPointer(c)[i];
+            if (c < ch && c < mainOutputChannels_ && double_) std::copy(scratch64_.getReadPointer(c), scratch64_.getReadPointer(c) + n, out);
+            else if (c < ch && c < mainOutputChannels_)       for (std::int32_t i = 0; i < n; ++i) out[i] = scratch_.getReadPointer(c)[i];
             else                   std::fill(out, out + n, 0.0);
             for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0;
         } else {
             float* out = io.out[c];
             if (out == nullptr) continue;
             out += off;
-            if (c < ch && !double_) std::copy(scratch_.getReadPointer(c), scratch_.getReadPointer(c) + n, out);
-            else if (c < ch)
+            if (c < ch && c < mainOutputChannels_ && !double_) std::copy(scratch_.getReadPointer(c), scratch_.getReadPointer(c) + n, out);
+            else if (c < ch && c < mainOutputChannels_)
                 for (std::int32_t i = 0; i < n; ++i) out[i] = static_cast<float>(scratch64_.getReadPointer(c)[i]);
             else std::fill(out, out + n, 0.0f);
             for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0f;

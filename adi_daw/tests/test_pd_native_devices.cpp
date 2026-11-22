@@ -57,13 +57,15 @@ struct Fixture {
     int inputs;
     std::array<Change, 4> changes;
 };
-constexpr std::array<Fixture, 17> fixtures{{
+constexpr std::array<Fixture, 19> fixtures{{
+    {"ADI-Shaper.pd", 2, {{{2, 3}, {128, 1}, {131, 2}, {23, 24}}}},
     {"AutoFilter.pd", 4, {{{3, 2500}, {11, 38}, {33, 1}, {34, 65}}}},
     {"Chord Comb.pd", 2, {{{1, 3}, {3, 0.2f}, {4, 0.4f}, {5, 0.7f}}}},
     {"Chorus-Ensemble.pd", 2, {{{3, 160}, {10, 2.3f}, {11, 70}, {16, 75}}}},
     {"Color Cab.pd", 2, {{{2, 0.7f}, {0, 0}, {0, 0}, {0, 0}}}},
     {"Delay.pd", 2, {{{3, 1}, {5, 1}, {10, 55}, {25, 80}}}},
     {"EQEight.pd", 2, {{{3, 1100}, {4, 6}, {83, 0}, {87, 1}}}},
+    {"Hybrid Reverb.pd", 2, {{{1, 2}, {8, 2.5f}, {13, 120}, {14, 70}}}},
     {"Echo.pd", 2, {{{4, 1}, {6, 0.0625f}, {15, 48}, {0, 0}}}},
     {"MultibandDynamics.pd", 4, {{{17, -32}, {23, 0.6f}, {35, 1}, {37, 70}}}},
     {"Overdrive.pd", 2, {{{1, 700}, {3, 75}, {4, 31}, {6, 60}}}},
@@ -216,19 +218,12 @@ void parity(const Fixture& fixture) {
     // Same core, input floats, message precision and 64-sample process calls:
     // only dac~'s zero-sign normalization may differ. This catches a default
     // rounded differently, even by one ulp, with no numeric tolerance.
-#if PD_FLOATSIZE == 64
-    // DEV-09 AR17: with PD_FLOATSIZE=64 the canvas does its parameter
-    // arithmetic in double before the float core rounds it once; the native
-    // path rounds the same value from float. Measured: AutoFilter and EQ Eight
-    // differ by 2^-25, one float ulp at 0.5, every other device by nothing.
-    // One float ulp at full scale is allowed, and nothing more.
-    (void)bitExact;
-    check(finite && maxError <= 0x1p-24, fixture.file,
-          "native and real-Pd renders match within one float ulp (PD_FLOATSIZE=64)");
-#else
+    // At PD_FLOATSIZE=64 too: every external rounds a parameter through float,
+    // as the native path does, so a default that float cannot hold exactly
+    // (0.9 Hz, 0.7) reaches both paths as the same number. Before, at 64,
+    // the external passed the double on and the two paths drifted apart.
     check(finite && bitExact && maxError == 0, fixture.file,
           "native and real-Pd renders match exactly apart from zero signs");
-#endif
     check(allocations == 0, fixture.file, "native parameters and processing allocate nothing");
     check(guards && extraSilent, fixture.file, "segment guards and extra channels respected");
     check(wrongDelayError > 1e-5, fixture.file, "one-sample delay plant fails parity");

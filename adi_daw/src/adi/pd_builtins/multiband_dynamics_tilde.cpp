@@ -53,7 +53,7 @@ void parameter(Object *x, t_symbol *, int n, t_atom *a) {
         id >= static_cast<float>(adi::dsp::MultibandDynamics::Count))
         return;
     x->core->set(static_cast<adi::dsp::MultibandDynamics::Param>(static_cast<int>(id)),
-                 atom_getfloat(a + 1));
+                 static_cast<float>(atom_getfloat(a + 1)));
 }
 } // namespace
 extern "C" void adi_multiband_dynamics_tilde_setup() {

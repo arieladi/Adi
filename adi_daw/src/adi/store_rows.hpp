@@ -258,6 +258,7 @@ struct Routing {
     std::string origin = "user";
     std::optional<bool> storedPreFader{}; // set when a return policy overrides the raw row
     std::optional<IndividualSendTap> sendTap{};
+    std::string keyTap = "post_mixer"; // routing_key_taps absent: ADR-0203 d3
 };
 
 // --- the whole readable project ---------------------------------------------

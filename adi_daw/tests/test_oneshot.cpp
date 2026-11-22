@@ -58,12 +58,36 @@ std::vector<float> tone(std::size_t n = 65536) {
     return s;
 }
 void configure(OneShot &d) {
-    set(d, OneShot::Attack, 0);
-    set(d, OneShot::Release, 0);
+    // Live 12.4's shortest times: Attack 0.1 ms, Release 1 ms (its ranges, DEV-21).
+    set(d, OneShot::Attack, .1);
+    set(d, OneShot::Release, 1);
     set(d, OneShot::Volume, 0);
+    set(d, OneShot::FadeIn, 0);
     set(d, OneShot::FadeOut, 0);
+    // The oracles below test mechanics, not defaults: Live's defaults (filter
+    // on at 22 kHz, Loop and Snap on, Vel > Vol 35 %) are pinned by their own
+    // test, and switched off here so each oracle sees the raw voice.
+    set(d, OneShot::FilterOn, 0);
+    set(d, OneShot::Snap, 0);
+    set(d, OneShot::LoopOn, 0);
+    set(d, OneShot::VelToVol, 100);
+}
+// The 0.1 ms attack at 48 kHz, as the voice runs it: +1/4.8 a sample from 0,
+// so full level from the fifth sample on.
+constexpr int kAttackFrames = 5;
+double attackGain(int frame) {
+    double env = 0;
+    for (int i = 0; i <= frame; ++i) env = std::min(1., env + 1 / 4.8);
+    return env;
+}
+// Spectral oracles read one 4096-sample window after the attack: 64 frames in
+// is one period of 750 Hz and two of 1500 Hz, so the bins stay exact.
+constexpr int kSteadyFrames = 4096 + 64;
+std::vector<float> steady(const std::vector<float> &x) {
+    return {x.begin() + 64, x.begin() + 64 + 4096};
 }
 std::vector<float> render(OneShot &d, int block, int count = 4096, int key = 60, int off = -1) {
+    d.release(); // each render starts from silence; prepare() alone is idempotent (DF-E37 f)
     d.prepare(48000, block);
     std::vector<float> out(static_cast<std::size_t>(count));
     std::array<float, 4096> l{}, r{};
@@ -124,7 +148,8 @@ void parameterModulation() {
     // velocity, and the requested dB gain. No sampler output feeds the oracle.
     for (int i = 0; i < frames; ++i) {
         const double db = i < 17 ? 0 : i < 65 ? -6 : i < 129 ? -9 : i < 193 ? 3 : -3;
-        expected[static_cast<std::size_t>(i)] = static_cast<float>(.5 * .625 * std::pow(10., db / 20.));
+        expected[static_cast<std::size_t>(i)] =
+            static_cast<float>(.5 * .625 * std::pow(10., db / 20.) * attackGain(i));
     }
     for (int block : {1, 7, 17, 32, 64, 127, 256, 513}) {
         OneShot sampler;
@@ -133,12 +158,12 @@ void parameterModulation() {
               "modulation oracle sample publishes");
         sampler.prepare(48000, frames);
         const double stored = sampler.getParam("volume").normalized;
-        constexpr double automated = 87. / 102.; // -3 dB in the declared -90..12 range.
+        constexpr double automated = 33. / 72.; // -3 dB in Live's -36..36 dB range.
         const std::array<engine::Event, 5> events{{
             {0, engine::EventType::NoteOn, 0, 60, 1, 0, .625},
-            {17, engine::EventType::ParamMod, 0, 0, 0, OneShot::Volume, -6. / 102.},
+            {17, engine::EventType::ParamMod, 0, 0, 0, OneShot::Volume, -6. / 72.},
             {65, engine::EventType::ParamValue, 0, 0, 0, OneShot::Volume, automated},
-            {129, engine::EventType::ParamMod, 0, 0, 0, OneShot::Volume, 6. / 102.},
+            {129, engine::EventType::ParamMod, 0, 0, 0, OneShot::Volume, 6. / 72.},
             {193, engine::EventType::ParamMod, 0, 0, 0, OneShot::Volume, 0.}
         }};
         std::vector<float> left(frames), right(frames);
@@ -215,8 +240,9 @@ void preparedSamples() {
         audit = false;
         realtime &= allocations == 0 && deallocations == 0;
     };
+    // From the end of the 0.1 ms attack on (a note starts at frame 0 here).
     auto constant = [&](float value) {
-        return std::all_of(left.begin(), left.end(), [value](float x) {
+        return std::all_of(left.begin() + kAttackFrames, left.end(), [value](float x) {
             return std::isfinite(x) && std::abs(x - value) < 1e-7f;
         }) && left == right;
     };
@@ -237,9 +263,10 @@ void preparedSamples() {
     process(a.get(), 0, true);
     check(constant(0), "unpublished generation zero cannot play");
     process(a.get(), 6, true);
+    core.release();
     core.prepare(48000, 64);
     process(a.get(), 6, false);
-    check(constant(0), "same-rate reprepare resets borrowed voices");
+    check(constant(0), "release then a same-rate prepare resets borrowed voices (DF-E37 f)");
     check(realtime, "borrowed rendering and replacement neither allocate nor deallocate");
     set(core, OneShot::LoopOn, 1);
     set(core, OneShot::Retrigger, 0);
@@ -251,8 +278,10 @@ void preparedSamples() {
     };
     repeated.note(60, 127, 1); midiBlock();
     repeated.note(60, 127, 1); midiBlock();
+    midiBlock();   // the released voice's 1 ms release has ended
     check(constant(.25f), "Pd repeated key releases the previous looping voice with Retrigger off");
     repeated.note(60, 0, 1); midiBlock();
+    midiBlock();
     check(constant(0), "Pd repeated key note-off leaves no orphaned loop");
     auto invalid = std::make_unique<device::PdSampleBuffer>();
     invalid->id = 1; invalid->channels = 2; invalid->frames = 2;
@@ -298,8 +327,124 @@ void pdMidi() {
     check(!midi.needsVoiceReset() && midi.events().count == 1,
           "MIDI delivery recovers on the tick after overflow");
 }
+// DEV-21: OneShot's controls carry Live's ranges, units and defaults. The
+// numbers are Live 12.4's (the build of 24 April 2026), read from the default
+// Simpler preset that build ships, on the director's research machine on 19
+// November; the file itself stays there. Live stores Sustain as a level
+// 0.000316..1; ADI shows it in dB as Live does (-70..0 dB). Resonance is
+// Live's 0..1.25, shown as 0..125 %. Voices: Live's default is the sixth entry
+// of its chooser, 6 under any list that begins 1..6; the chooser's list is a
+// reading still to take, so ADI keeps every whole number from 1 to 32.
+// Several note-ons at their frames, one 64-sample block at a time; the left channel.
+std::vector<float> playNotes(OneShot &d, int count, std::initializer_list<std::pair<int, int>> notes) {
+    d.release();
+    d.prepare(48000, 64);
+    std::vector<float> out(static_cast<std::size_t>(count));
+    std::array<float, 64> l{}, r{};
+    float *ptrs[]{l.data(), r.data()};
+    for (int at = 0; at < count; at += 64) {
+        engine::Event events[8]{};
+        int size = 0;
+        for (const auto &[frame, key] : notes)
+            if (frame >= at && frame < at + 64 && size < 8)
+                events[size++] = {frame - at, engine::EventType::NoteOn, 0,
+                                  static_cast<std::uint16_t>(key), 1, 0, 1};
+        engine::NodeIo io{};
+        io.out = ptrs;
+        io.channels = 2;
+        io.frames = std::min(64, count - at);
+        io.events = {events, size};
+        d.process(io);
+        std::copy_n(l.begin(), io.frames, out.begin() + at);
+    }
+    return out;
+}
+// DF-E46: in Slice mode a key with no slice plays nothing and steals nothing;
+// a Transient or Manual slice is refused past End and cut at End.
+void sliceKeys() {
+    std::vector<float> regions(4096);
+    for (std::size_t i = 0; i < regions.size(); ++i)
+        regions[i] = static_cast<float>(i / 1024 + 1) * .1f;  // .1 .2 .3 .4, 1,024 samples each
+    {
+        OneShot d;
+        configure(d);
+        set(d, OneShot::Mode, 2);
+        set(d, OneShot::Regions, 4);  // keys 36..39
+        set(d, OneShot::SlicePlayback, 0);  // Mono
+        d.publishSample(regions, 1, 48000);
+        const auto mono = playNotes(d, 512, {{0, 37}, {256, 46}});
+        check(std::abs(mono[300] - .2f) < 1e-6f, "Mono: a key with no slice does not cut the playing slice (DF-E46 a)");
+        set(d, OneShot::SlicePlayback, 1);  // Poly
+        set(d, OneShot::Voices, 2);
+        const auto poly = playNotes(d, 512, {{0, 36}, {100, 37}, {200, 46}});
+        check(std::abs(poly[300] - .3f) < 1e-6f, "Poly: a key with no slice does not kill the oldest voice (DF-E46 a)");
+        // A refused note still takes the per-note gain queued for it, so the
+        // next note gets its own (the Sampler queues one per forwarded note-on).
+        set(d, OneShot::SlicePlayback, 0);
+        d.release();
+        d.prepare(48000, 64);
+        d.queueNoteGain(.5);
+        d.queueNoteGain(1);
+        const auto gains = playNotes(d, 256, {{0, 46}, {64, 37}});
+        check(std::abs(gains[100] - .2f) < 1e-6f, "a refused key takes its queued gain; the next note keeps its own");
+    }
+    {
+        OneShot d;
+        configure(d);
+        set(d, OneShot::Mode, 2);
+        set(d, OneShot::SliceBy, 3);  // Manual
+        set(d, OneShot::SlicePlayback, 0);
+        set(d, OneShot::End, 50);  // End at 2,048
+        const std::array<std::size_t, 3> marks{0, 1024, 3072};
+        d.publishSample(regions, 1, 48000, marks);
+        const auto cut = playNotes(d, 2048, {{0, 37}});  // slice 1024..3072, End 2048
+        check(std::abs(cut[500] - .2f) < 1e-6f && cut[1100] == 0, "a Manual slice running past End is cut at End (DF-E46 b)");
+        const auto past = playNotes(d, 512, {{0, 38}});  // slice from 3072, past End
+        check(energy(past) == 0, "a Manual slice beginning past End is refused: no click (DF-E46 b)");
+        set(d, OneShot::SliceBy, 2);  // Transient
+        std::vector<float> onsets(4096, 0.f);
+        onsets[3072] = .8f;
+        d.publishSample(onsets, 1, 48000);
+        check(energy(playNotes(d, 512, {{0, 37}})) == 0, "a Transient slice beginning past End is refused too");
+    }
+}
+void liveDefaults() {
+    struct Row {
+        OneShot::Param param;
+        double low, high, value;
+        const char *unit;
+    };
+    const Row rows[] = {
+        {OneShot::Mode, 0, 2, 0, ""},            {OneShot::Start, 0, 100, 0, "%"},
+        {OneShot::Length, .01, 100, 100, "%"},   {OneShot::LoopOn, 0, 1, 1, ""},
+        {OneShot::LoopLength, .01, 100, 100, "%"}, {OneShot::Fade, 0, 100, 0, "%"},
+        {OneShot::Snap, 0, 1, 1, ""},            {OneShot::Voices, 1, 32, 6, ""},
+        {OneShot::Retrigger, 0, 1, 1, ""},       {OneShot::Volume, -36, 36, -12, "dB"},
+        {OneShot::Transpose, -48, 48, 0, "st"},  {OneShot::Detune, -50, 50, 0, "cents"},
+        {OneShot::Attack, .1, 20000, .1, "ms"},  {OneShot::Decay, 1, 60000, 600, "ms"},
+        {OneShot::Sustain, -70, 0, 0, "dB"},     {OneShot::Release, 1, 60000, 50, "ms"},
+        {OneShot::FadeIn, 0, 2000, .1, "ms"},    {OneShot::FadeOut, 0, 2000, .1, "ms"},
+        {OneShot::FilterOn, 0, 1, 1, ""},        {OneShot::FilterType, 0, 3, 0, ""},
+        {OneShot::Slope, 0, 1, 1, ""},           {OneShot::Cutoff, 30, 22000, 22000, "Hz"},
+        {OneShot::Resonance, 0, 125, 0, "%"},    {OneShot::LfoOn, 0, 1, 1, ""},
+        {OneShot::LfoShape, 0, 5, 0, ""},        {OneShot::LfoRate, .01, 30, 1, "Hz"},
+        {OneShot::LfoSync, 0, 1, 0, ""},         {OneShot::VelToVol, 0, 100, 35, "%"},
+    };
+    OneShot d;
+    for (const auto &row : rows) {
+        const auto *p = d.paramAt(row.param);
+        const bool same = p != nullptr && p->minReal == row.low && p->maxReal == row.high &&
+                          std::abs(p->defaultValue.real - row.value) < 1e-12 &&
+                          p->unit == row.unit &&
+                          std::abs(d.getParam(p->id).real - row.value) < 1e-12;
+        check(same, (std::string("Live 12.4's range, unit and default: ") +
+                     (p != nullptr ? p->id : std::string("?"))).c_str());
+    }
+}
 } // namespace
 int main() {
+    sliceKeys();
+    liveDefaults();
     parameterModulation();
     preparedSamples();
     pdMidi();
@@ -308,21 +453,23 @@ int main() {
     OneShot d;
     configure(d);
     check(d.publishSample(sample, 1, 48000), "immutable sample publication");
-    auto base = render(d, 64);
-    check(bin(base, 733) < 1e-6, "far bin is at floor first");
-    check(std::abs(bin(base, 64) - .4) < 1e-6, "original pitch plays at MIDI 60");
-    auto octave = render(d, 127, 4096, 72);
-    check(bin(octave, 733) < 1e-6 && std::abs(bin(octave, 128) - .4) < 1e-6,
+    auto base = render(d, 64, kSteadyFrames);
+    check(bin(steady(base), 733) < 1e-6, "far bin is at floor first");
+    check(std::abs(bin(steady(base), 64) - .4) < 1e-6, "original pitch plays at MIDI 60");
+    auto octave = render(d, 127, kSteadyFrames, 72);
+    check(bin(steady(octave), 733) < 1e-6 && std::abs(bin(steady(octave), 128) - .4) < 1e-6,
           "octave doubles measured frequency");
     bool identical = true;
     for (int b = 32; b <= 4096; ++b)
-        if (render(d, b) != base) {
+        if (render(d, b, kSteadyFrames) != base) {
             identical = false;
             break;
         }
     check(identical, "every block size 32 through 4096 is sample-identical");
     auto gated = render(d, 64, 4096, 60, 512);
-    check(energy(gated, 512) == 0, "Classic note-off follows amp release");
+    // Release 1 ms (Live's shortest): 48 frames at 48 kHz, then silence.
+    check(energy(gated, 512) > 0 && energy(gated, 512 + 50) == 0,
+          "Classic note-off follows amp release");
     set(d, OneShot::Mode, 1);
     auto triggered = render(d, 64, 4096, 60, 512);
     check(energy(triggered, 512) > 1, "1-Shot Trigger ignores note-off");
@@ -367,13 +514,13 @@ int main() {
     set(d, OneShot::FilterOn, 1);
     set(d, OneShot::Cutoff, 100);
     set(d, OneShot::Slope, 1);
-    check(energy(render(d, 64)) < energy(base) * .01,
+    check(energy(render(d, 64, kSteadyFrames)) < energy(base) * .01,
           "24 dB low-pass attenuates 750 Hz above cutoff");
     set(d, OneShot::FilterOn, 0);
     set(d, OneShot::LfoOn, 1);
     set(d, OneShot::LfoVolume, 100);
     set(d, OneShot::LfoRate, 10);
-    check(energy(render(d, 64)) < energy(base) * .7, "per-voice LFO changes volume");
+    check(energy(render(d, 64, kSteadyFrames)) < energy(base) * .7, "per-voice LFO changes volume");
     const auto modulated = render(d, 32, 8192);
     bool modInvariant = true;
     for (int size : {33, 127, 256, 513, 1024, 2048, 4096})
@@ -388,14 +535,14 @@ int main() {
     const auto wave = dir.path() / "oneshot.wav";
     {
         audio::WavWriter w(wave, 48000, 1, audio::WavFormat::Float32);
-        w.write(base.data(), static_cast<std::uint32_t>(base.size()));
+        w.write(sample.data(), static_cast<std::uint32_t>(sample.size()));
         w.close();
     }
     std::string fileError;
     OneShot fromFile;
     check(fromFile.loadSample(wave, fileError), "file sample loads");
     configure(fromFile);
-    check(render(fromFile, 64) == base, "float WAV sample round trip keeps exact values");
+    check(render(fromFile, 64, kSteadyFrames) == base, "float WAV sample round trip keeps exact values");
     {
         OneShot envelope;
         configure(envelope);
@@ -403,7 +550,7 @@ int main() {
         envelope.publishSample(constant, 1, 48000);
         set(envelope, OneShot::Attack, 10);
         set(envelope, OneShot::Decay, 10);
-        set(envelope, OneShot::Sustain, 50);
+        set(envelope, OneShot::Sustain, 20 * std::log10(.5)); // a level of 0.5, in dB as Live shows it
         set(envelope, OneShot::Release, 10);
         const auto curve = render(envelope, 127, 2048, 60, 1200);
         check(std::abs(curve[479] - .5f) < 1e-5 && std::abs(curve[960] - .25f) < 1e-5,
@@ -448,11 +595,56 @@ int main() {
         OneShot loop;configure(loop);std::vector<float> ramp(1024);
         for(std::size_t i=0;i<ramp.size();++i)ramp[i]=static_cast<float>(i)/1024-.5f;
         loop.publishSample(ramp,1,48000);set(loop,OneShot::LoopOn,1);
-        auto step=[](const std::vector<float>& audio){float peak=0;for(std::size_t i=1;i<audio.size();++i)peak=std::max(peak,std::abs(audio[i]-audio[i-1]));return peak;};
+        auto step=[](const std::vector<float>& audio){float peak=0;for(std::size_t i=kAttackFrames+1;i<audio.size();++i)peak=std::max(peak,std::abs(audio[i]-audio[i-1]));return peak;};
         const auto hard=step(render(loop,64));set(loop,OneShot::Fade,50);
         check(step(render(loop,64))<hard*.1f,"loop crossfade smooths wrap without replaying overlap");
         set(loop,OneShot::Start,1);set(loop,OneShot::Snap,1);
         check(std::abs(render(loop,64)[0])<1e-6,"Snap places region start at left-channel zero crossing");
+    }
+    {
+        // DF-E37 (d): a Classic voice with Loop on keeps looping through its
+        // release. Before, it looped only while held: a 100 ms loop with a
+        // 1000 ms Release stopped dead at the loop's end, with a click.
+        OneShot loop;configure(loop);
+        std::vector<float> sine(96000);   // 2 s of 100 Hz: 480 samples a period
+        for(std::size_t i=0;i<sine.size();++i)sine[i]=static_cast<float>(.4*std::sin(2*3.141592653589793*100*static_cast<double>(i)/48000));
+        loop.publishSample(sine,1,48000);
+        set(loop,OneShot::LoopOn,1);set(loop,OneShot::LoopLength,5);   // the last 4800 samples, 10 periods
+        set(loop,OneShot::Release,1000);
+        constexpr int off=120000;                                        // 2.5 s: well inside the loop
+        const auto audio=render(loop,512,off+72000,60,off);
+        double rms=0;for(int i=off+9600;i<off+14400;++i)rms+=audio[static_cast<std::size_t>(i)]*audio[static_cast<std::size_t>(i)];
+        rms=std::sqrt(rms/4800);
+        const double expected=.4/std::sqrt(2.)*(1-.2-.05);   // the release's level 200..300 ms after note-off, on average
+        std::printf("METRIC looped release 200..300 ms after note-off: rms %.4f (a release through the loop: about %.4f)\n",rms,expected);
+        check(rms>expected*.9,"a looped Classic voice keeps sounding through its release");
+        double last=0;for(int i=off+48000+480;i<off+72000;++i)last=std::max(last,static_cast<double>(std::abs(audio[static_cast<std::size_t>(i)])));
+        check(last==0,"and ends when the release reaches zero");
+        double step=0;for(int i=off-480;i<off+48000;++i)step=std::max(step,static_cast<double>(std::abs(audio[static_cast<std::size_t>(i)+1]-audio[static_cast<std::size_t>(i)])));
+        check(step<=.4*2*3.141592653589793*100/48000*1.2,"without a click through the release");
+        set(loop,OneShot::LoopOn,0);
+        const auto plain=render(loop,512,off+72000,60,off);
+        check(std::all_of(plain.begin()+96000,plain.end(),[](float v){return v==0;}),"Loop off still ends at the sample's end");
+    }
+    {
+        // DF-E37 (f): prepare() at an unchanged rate and block size does
+        // nothing (ADR-0090 d5); a graph rebuild must not cut a sounding note.
+        OneShot held;configure(held);
+        std::vector<float> dc(4800,.5f);held.publishSample(dc,1,48000);
+        held.prepare(48000,64);
+        std::array<float,64> l{},r{};float* out[]{l.data(),r.data()};
+        engine::Event note{0,engine::EventType::NoteOn,0,60,7,0,1};
+        engine::NodeIo io{};io.out=out;io.channels=2;io.frames=64;io.events={&note,1};
+        held.process(io);
+        held.prepare(48000,64);
+        io.events={};held.process(io);
+        check(std::abs(l[10]-.5f)<1e-6f,"a same-format prepare keeps a sounding note (DF-E37 f)");
+        held.prepare(44100,64);
+        held.process(io);
+        check(l[10]==0,"a changed rate still resets the voices");
+        held.prepare(44100,64);held.process(io);
+        held.release();held.prepare(44100,64);held.process(io);
+        check(l[10]==0,"release() then prepare() resets them");
     }
     // One reader renders while the message thread publishes and collects old buffers.
     std::atomic<bool> running{true}, bad{false};
@@ -525,15 +717,15 @@ int main() {
         configure(*native);
         native->publishSample(sample, 1, 48000);
         session.transport().play();
-        std::vector<float> output(4096);
+        std::vector<float> output(kSteadyFrames);
         std::array<float, 64> l{}, r{};
         float *out[]{l.data(), r.data()};
-        for (int b = 0; b < 64; ++b) {
+        for (int b = 0; b < kSteadyFrames / 64; ++b) {
             session.process({out, nullptr, 2, 0, 64, 0});
             std::copy(l.begin(), l.end(), output.begin() + b * 64);
         }
-        check(bin(output, 733) < 1e-6, "Session render far bin floor first");
-        check(bin(output, 64) > .1, "native sampler makes sound through ADI Session");
+        check(bin(steady(output), 733) < 1e-6, "Session render far bin floor first");
+        check(bin(steady(output), 64) > .1, "native sampler makes sound through ADI Session");
         audio::WavWriter w(dir.path() / "oneshot-session.wav", 48000, 1, audio::WavFormat::Float32);
         w.write(output.data(), 4096);
         w.close();

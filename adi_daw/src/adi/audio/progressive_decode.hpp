@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/audio/pcm_stream.hpp"
 #include <functional>
+#include <string_view>
 namespace adi::audio {
 // Header/codec initialization only. Exact cheap length stays optional. AAC
 // transport bounds are those of readAacAudioMovie/readAdts; no PCM predecode.
@@ -49,7 +50,17 @@ public:
     ProgressiveDecoder& operator=(const ProgressiveDecoder&)=delete;
     // stop governs admission/hash/probe only; use the returned file for job cancellation.
     [[nodiscard]] std::shared_ptr<ProgressiveFile> open(const std::filesystem::path&,std::stop_token={});
+    // A complete owned cache entry addressed by the saved digest can serve
+    // the saved PCM after header inspection. A miss or dimension difference
+    // verifies the source bytes before sharing/starting work or diagnosing
+    // damaged cached PCM. The supplied info is the current inspected header.
+    [[nodiscard]] std::shared_ptr<ProgressiveFile> openSaved(const std::filesystem::path&,
+        const PcmStreamInfo&, std::string_view savedBlake3, std::stop_token={});
+    // Whole-file source digests attempted by admission and worker threads.
+    [[nodiscard]] std::uint64_t sourceHashReads() const noexcept;
 private:
+    std::shared_ptr<ProgressiveFile> openHashed(const std::filesystem::path&,
+        const PcmStreamInfo*, std::string_view, std::stop_token);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

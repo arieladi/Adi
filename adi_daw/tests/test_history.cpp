@@ -9,16 +9,25 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/applied_batches.hpp"
+#include "adi/audio/wav_file.hpp"
 #include "adi/history.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/take_lane_ops.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -134,6 +143,146 @@ void testTransactionUndoesAsOne() {
     check(trackCount(*s) == 3, "three again");
 }
 
+void testLoopPassUndoGroups() {
+    section("CT-02 loop passes share one commit and undo separately");
+    Scratch sc("loop_pass_groups");
+    const auto path = sc / "p.adi";
+    auto s = project(path);
+    if (!s) return;
+    OpJournal j(*s);
+    History h(*s);
+    auto request = [](const char* type, Payload payload) {
+        OpRequest op;
+        op.opType = type;
+        op.payload = std::move(payload);
+        return op;
+    };
+    const auto clip = [&](int id, const char* name) {
+        return request("clip.create", {{"id",id},{"track",1},{"kind","audio"},{"name",name},{"pos",0},{"length",960}});
+    };
+    auto track = mkTrack(1,"Recorded");
+    track.payload["kind"] = "audio";
+    const std::array initial{track, clip(1,"Before recording")};
+    check(j.commit(initial).ok, "the track and its original main clip commit");
+    const auto baseline = h.head();
+    const auto baselineCount = j.count();
+    const auto laneCount = [&] { return s->db().execAndGet("SELECT COUNT(*) FROM lanes").getInt(); };
+    const auto mediaCount = [&] { return s->db().execAndGet("SELECT COUNT(*) FROM media_files").getInt(); };
+    const auto mainName = [&] { return s->db().execAndGet("SELECT name FROM clips WHERE id=1").getString(); };
+
+    const auto audioPath = sc / "capture.wav";
+    {
+        std::array<float,64> silence{};
+        audio::WavWriter wave(audioPath,48000,1,audio::WavFormat::Float32);
+        wave.write(silence.data(),static_cast<std::uint32_t>(silence.size()));
+        wave.close();
+    }
+    OpRequest mediaRequest;
+    const auto imported = media::prepareImport(*s,audioPath,7,0,mediaRequest);
+    check(imported.ok && !imported.existing, "prepare one recorded media row for all four takes");
+    if (!imported.ok) return;
+    std::vector<OpRequest> passes;
+    std::array<std::size_t,4> ends{};
+    for (int pass = 1; pass <= 4; ++pass) {
+        const auto name = "Pass " + std::to_string(pass);
+        if (pass == 1) {
+            mediaRequest.label = "Record " + name;
+            mediaRequest.selBefore = Payload{{"clips", {pass}}};
+            passes.push_back(std::move(mediaRequest));
+        }
+        auto lane = createTakeLane(*s, pass+10, 1, name);
+        lane.label = "Record " + name;
+        lane.selBefore = Payload{{"clips", {pass}}};
+        passes.push_back(std::move(lane));
+        passes.push_back(clip(pass+20, name.c_str()));
+        passes.push_back(request("clip.attachAudio", {{"id",pass+20},{"media",imported.mediaId},{"frames",64}}));
+        passes.push_back(request("clip.setLane", {{"id",pass+20},{"lane",pass+10}}));
+        passes.push_back(request("clip.setName", {{"id",1},{"name",name}}));
+        ends[static_cast<std::size_t>(pass-1)] = passes.size();
+    }
+
+    struct Recorder final : AppliedObserver {
+        std::vector<std::shared_ptr<const AppliedBatch>> batches;
+        void committed(std::shared_ptr<const AppliedBatch> batch) override { batches.push_back(std::move(batch)); }
+        void sourceInvalidated(const AppliedSource&, AppliedSourceInvalidation) override {}
+    };
+    auto recorder = std::make_shared<Recorder>();
+    const auto subscription = appliedSource(*s).observe(recorder);
+    check(subscription.ok, "observe durable applied batches");
+    SQLite::Database outside(path.string(), SQLite::OPEN_READONLY);
+    check(!j.commitGrouped(passes, {}).ok &&
+          !j.commitGrouped(passes, std::array<std::size_t,2>{passes.size(),passes.size()}).ok &&
+          !j.commitGrouped(passes, std::array<std::size_t,1>{passes.size()-1}).ok &&
+          h.head() == baseline && recorder->batches.empty(),
+          "empty, repeated or incomplete group ends cannot change the project");
+
+    s->db().exec("CREATE TRIGGER refuse_last_pass BEFORE UPDATE OF name ON clips "
+                 "WHEN NEW.name='Pass 4' BEGIN SELECT RAISE(ABORT,'last pass refused'); END;");
+    const auto late = j.commitGrouped(passes, ends);
+    check(!late.ok && late.seqs.empty() && late.groupTxnIds.empty() && late.txnId == 0 &&
+          laneCount() == 0 && mediaCount() == 0 && mainName() == "Before recording" && h.head() == baseline &&
+          j.count() == baselineCount && recorder->batches.empty(),
+          "a handler failure in the last pass rolls back every preceding pass and publishes nothing");
+    s->db().exec("DROP TRIGGER refuse_last_pass");
+    CommitOptions refusal;
+    refusal.beforeCommit = [](SQLite::Database& db, std::int64_t, std::string& error) {
+        db.exec("UPDATE project SET name='Uncommitted recorder metadata'");
+        error = "publication refused";
+        return false;
+    };
+    check(!j.commitGrouped(passes, ends, refusal).ok && laneCount() == 0 && mediaCount() == 0 &&
+          s->db().execAndGet("SELECT name FROM project").getString() == "Untitled" &&
+          recorder->batches.empty(), "a refused publication rolls back its metadata and all pass operations");
+
+    int hooks = 0;
+    std::int64_t firstHookTxn = 0;
+    CommitOptions options;
+    options.expectHead = baseline;
+    options.beforeCommit = [&](SQLite::Database& db, std::int64_t txnId, std::string&) {
+        ++hooks;
+        firstHookTxn = txnId;
+        return db.execAndGet("SELECT COUNT(*) FROM lanes").getInt() == 4 &&
+               db.execAndGet("SELECT COUNT(*) FROM media_files").getInt() == 1 &&
+               db.execAndGet("SELECT COUNT(DISTINCT txn_id) FROM ops").getInt() == 5 &&
+               outside.execAndGet("SELECT COUNT(*) FROM lanes").getInt() == 0 &&
+               outside.execAndGet("SELECT COUNT(*) FROM media_files").getInt() == 0;
+    };
+    const auto result = j.commitGrouped(passes, ends, options);
+    check(result.ok && hooks == 1 && result.txnId == firstHookTxn && result.groupTxnIds.size() == ends.size() &&
+          result.seqs.size() == passes.size() && outside.execAndGet("SELECT COUNT(*) FROM lanes").getInt() == 4,
+          "one SQL commit publishes all pass groups together to an independent reader");
+    if (!result.ok || result.groupTxnIds.size() != ends.size()) return;
+    const auto batch = recorder->batches.empty() ? nullptr : recorder->batches.front();
+    bool notice = recorder->batches.size() == 1 && batch && batch->beforeHead() == baseline &&
+                  batch->afterHead() == h.head() && batch->operations().size() == passes.size();
+    if (notice) {
+        std::size_t index = 0;
+        for (std::size_t group = 0; group < ends.size(); ++group)
+            for (; index < ends[group]; ++index)
+                notice = notice && batch->operations()[index].txnId == result.groupTxnIds[group];
+    }
+    check(notice, "one applied-batch notice carries each operation's actual Undo ID");
+
+    for (int pass = 4; pass > 0; --pass) {
+        const auto step = h.nextUndo();
+        check(step && step->txnId == result.groupTxnIds[static_cast<std::size_t>(pass-1)] &&
+              step->opCount == (pass == 1 ? 6 : 5) && step->label == "Record Pass " + std::to_string(pass),
+              "Undo names the last completed pass and its operations");
+        const auto undone = h.undo();
+        check(undone.ok && undone.selBefore == Payload{{"clips",{pass}}} && laneCount() == pass-1 &&
+              mediaCount() == (pass == 1 ? 0 : 1) &&
+              mainName() == (pass == 1 ? "Before recording" : "Pass " + std::to_string(pass-1)),
+              "one Undo removes just its take and restores the preceding main clip");
+    }
+    check(h.head() == baseline, "all passes undo back to the original head");
+    for (int pass = 1; pass <= 4; ++pass)
+        check(h.redo().ok && laneCount() == pass && mediaCount() == 1 &&
+              mainName() == "Pass " + std::to_string(pass),
+              "redo restores one take and its main clip at a time");
+    check(h.head() == result.seqs.back() && j.count() == baselineCount + static_cast<std::int64_t>(passes.size()),
+          "Undo and Redo preserve the durable pass journal");
+}
+
 void testSurvivesRestart() {
     section("undo survives a restart -- the whole point (RATIONALE 5.3)");
     Scratch sc("restart");
@@ -227,6 +376,72 @@ void testUndoRedoStack() {
     check(trackName(*s, 4) == "T4", "and in the right order");
 }
 
+void testBranchSwitchPreservesRedoTip() {
+    section("switching branches preserves the departing redo tip through compaction");
+    Scratch sc("branch-redo-tip");
+    auto s = project(sc / "p.adi");
+    if (!s) return;
+    OpJournal j(*s);
+    History h(*s);
+
+    const auto original = j.currentBranchId();
+    check(j.commit(mkTrack(1, "Common")).ok && j.commit(mkTrack(2, "Old")).ok &&
+              h.undo().ok && j.commit(mkTrack(3, "New")).ok, "made two diverging lines");
+    const auto departingHead = h.head();
+    const auto branches = h.branches();
+    const auto old = std::find_if(branches.begin(), branches.end(),
+                                  [](const auto& branch) { return !branch.isCurrent; });
+    if (old == branches.end()) {
+        check(false, "the fork created a branch");
+        return;
+    }
+
+    check(j.commit(mkTrack(4, "New tail")).ok, "extended the departing line");
+    const auto tip = h.head();
+    check(h.undo().ok && h.head() == departingHead && h.switchToBranch(old->id).ok &&
+              trackName(*s, 2) == "Old" && trackName(*s, 4) == "<gone>",
+          "switching from an undone head opens the other line");
+    const auto saved = h.branches();
+    const auto kept = std::find_if(saved.begin(), saved.end(), [&](const auto& branch) {
+        return !branch.isCurrent && branch.headSeq == tip;
+    });
+    check(kept != saved.end(), "the unheld departing tip has a system branch immediately");
+    check(h.switchToBranch(original).ok && h.head() == departingHead &&
+              h.switchToBranch(old->id).ok && h.branches().size() == saved.size(),
+          "the named head remains at its undone point and repeat switches do not duplicate the tip");
+
+    UndoRetentionPolicy policy;
+    policy.maxTransactions = 2;
+    const auto compacted = h.setUndoRetentionPolicy(policy);
+    check(compacted.ok && compacted.baseSeq == h.head() && !h.canRedo(),
+          "compaction stores the current old line below the cut");
+    check(kept != saved.end() &&
+              h.switchToBranch(kept->id, History::StoredRestore::SessionReloadPrepared).ok &&
+              h.head() == tip && trackName(*s, 4) == "New tail" && trackName(*s, 2) == "<gone>",
+          "the same saved tip remains reachable after compaction discards its old bridge");
+}
+
+void testNavigationRefusesRedoCycle() {
+    section("navigation rejects a damaged redo cycle");
+    Scratch sc("redo-cycle");
+    auto s = project(sc / "p.adi");
+    if (!s) return;
+    OpJournal j(*s);
+    History h(*s);
+    check(j.commit(mkTrack(1, "First")).ok, "first edit");
+    const auto target = h.head();
+    const auto snap = h.takeSnapshot("Before cycle", 1, 0);
+    check(snap.ok && j.commit(mkTrack(2, "Second")).ok, "snapshot and second edit");
+    const auto head = h.head();
+    s->db().exec("UPDATE ops SET parent_seq=seq WHERE seq=(SELECT MAX(seq) FROM ops)");
+    const auto move = h.moveTo(target);
+    const auto revert = h.revertToSnapshot(snap.id, 2);
+    check(!move.ok && move.error.find("redo chain loops") != std::string::npos &&
+              !revert.ok && revert.error.find("redo chain loops") != std::string::npos &&
+              h.head() == head && h.branches().size() == 1 && trackCount(*s) == 2,
+          "move and snapshot revert return a cycle error without mutation");
+}
+
 // --- the properties that are easy to get wrong ------------------------------------
 
 void testUndoDoesNotGrowTheLog() {
@@ -250,7 +465,7 @@ void testUndoDoesNotGrowTheLog() {
 }
 
 void testEphemeralSkipped() {
-    section("OPS.md 10: ephemeral ops are outside the tree");
+    section("OPS.md 10: ephemeral ops stay outside the tree while undone");
     Scratch sc("ephemeral");
     auto s = project(sc / "p.adi");
     if (!s) return;
@@ -258,22 +473,57 @@ void testEphemeralSkipped() {
     History h(*s);
 
     check(j.commit(mkTrack(1, "Real")).ok, "a real edit");
-    const auto headAfterEdit = h.head();
+    check(j.commit(mkTrack(2, "Original")).ok, "a second edit to leave in the redo tail");
+    const auto originalTip = h.head();
+    check(h.undo().ok, "undo the second edit");
+    const auto fork = h.head();
+    const auto before = h.branches().size();
 
-    // No ephemeral op is registered yet, so simulate one as the journal writes
-    // it: in the log, tagged, with no parent, and not moving the head.
-    s->db().exec(
-        "INSERT INTO ops(txn_id, parent_seq, ts_utc, actor, op_type, label, tags) "
-        "VALUES (99, NULL, 0, 'user', 'transport.play', 'Play', 'ephemeral')");
-
-    check(h.head() == headAfterEdit, "an ephemeral op does not move the head");
+    OpRequest play, stop;
+    play.opType = "transport.play";
+    stop.opType = "transport.stop";
+    play.payload = Payload::object();
+    stop.payload = Payload::object();
+    for (const auto& op : {play, stop, play, stop})
+        check(j.commit(op).ok, "Play or Stop commits to the audit log while undone");
+    const std::array transport{play, stop};
+    check(j.commit(transport).ok, "a whole batch of Play and Stop commits");
+    check(h.branches().size() == before, "Play and Stop while undone create no history branches");
+    check(h.head() == fork, "an ephemeral batch does not move the head");
     const auto step = h.nextUndo();
     check(step && step->label == "Create Real",
-          "Ctrl-Z still lands on the last real EDIT, not on Play");
-    check(j.count() == 2, "but it is in the log -- the audit trail keeps it");
+          "Undo still lands on the last real edit");
+    const auto redo = h.nextRedo();
+    check(redo && redo->label == "Create Original", "the existing redo tail survives performance");
+    check(j.count() == 8, "the audit trail keeps two edits and six performance ops");
     const auto audited = s->db()
-        .execAndGet("SELECT COUNT(*) FROM ops WHERE tags='ephemeral'").getInt();
-    check(audited == 1, "and is queryable as ephemeral");
+        .execAndGet("SELECT COUNT(*) FROM ops WHERE tags='ephemeral' AND parent_seq IS NULL AND inverse IS NULL")
+        .getInt();
+    check(audited == 6, "ephemeral audit rows have no parent or inverse");
+    if (!originalTip) return;
+
+    const auto beforeMixed = h.branches().size();
+    const std::array mixed{play, mkTrack(3, "Mixed")};
+    check(j.commit(mixed).ok && trackCount(*s) == 2, "mixed Play and edit applies a real edit");
+    check(h.branches().size() == beforeMixed + 1, "a mixed batch preserves the branch it diverges from");
+    SQLite::Statement original(s->db(), "SELECT 1 FROM op_branches WHERE is_current=0 AND head_seq=?");
+    original.bind(1, *originalTip);
+    check(original.executeStep(), "the preserved branch points to the original redo tip");
+    original.reset();
+
+    const auto mixedTip = h.head();
+    check(h.undo().ok && h.head() == fork && trackName(*s, 3) == "<gone>",
+          "Undo of the mixed batch reverts its durable edit");
+    if (!mixedTip) return;
+    SQLite::Statement pin(s->db(),
+        "INSERT INTO op_branches(name,head_seq,created_utc,is_current,created_by) VALUES('Kept mix',?,0,0,'user')");
+    pin.bind(1, *mixedTip);
+    pin.exec();
+    const auto beforePinned = h.branches().size();
+    check(j.commit(mkTrack(4, "Alternate")).ok, "a subsequent edit diverges from the pinned tip");
+    check(h.branches().size() == beforePinned, "a fork preserves an existing named tip without a duplicate branch");
+    check(h.undo().ok && h.redo().ok && trackName(*s, 4) == "Alternate",
+          "redo follows the latest durable line");
 }
 
 void testSelBeforeIsCarried() {
@@ -320,13 +570,45 @@ void testUndoIsAtomic() {
 
     const auto headBefore = h.head();
     const auto r = h.undo();
-    check(!r.ok, "the undo fails");
+    check(!r.ok && r.opsApplied == 0, "the rolled-back undo reports zero applied ops");
     check(r.error.find("no stored inverse") != std::string::npos,
           "and says why: " + r.error);
     check(trackCount(*s) == 2,
           "BOTH tracks are still there -- the partial undo rolled back, saw " +
               std::to_string(trackCount(*s)));
     check(h.head() == headBefore, "and the head did not move");
+}
+
+void testReplayRollbackCount() {
+    section("undo and redo report only committed operations");
+    Scratch sc("rolled-back-count");
+    auto s = project(sc / "p.adi");
+    if (!s) return;
+    OpJournal j(*s);
+    History h(*s);
+    const OpRequest batch[] = {mkTrack(1, "A"), mkTrack(2, "B")};
+    check(j.commit(batch).ok, "batch committed");
+    const auto savedHead = h.head();
+    const auto blockHead =
+        "CREATE TEMP TRIGGER block_head BEFORE UPDATE OF head_seq ON op_branches "
+        "BEGIN SELECT RAISE(IGNORE); END";
+    s->db().exec(blockHead);
+    const auto undo = h.undo();
+    check(!undo.ok && undo.opsApplied == 0 && undo.error == "could not move the undo head" &&
+              h.head() == savedHead && trackCount(*s) == 2, "Undo rolls back when the head cannot move");
+    s->db().exec("DROP TRIGGER block_head");
+    check(h.undo().ok && !h.head() && trackCount(*s) == 0, "undo succeeds once the head can move");
+
+    s->db().exec(blockHead);
+    const auto redo = h.redo();
+    check(!redo.ok && redo.opsApplied == 0 && redo.error == "could not move the undo head" &&
+              !h.head() && trackCount(*s) == 0, "Redo rolls back when the head cannot move");
+    s->db().exec("DROP TRIGGER block_head");
+    s->db().exec("UPDATE ops SET payload=x'00' WHERE seq=2");
+    const auto malformed = h.redo();
+    check(!malformed.ok && malformed.opsApplied == 0 &&
+              malformed.error.find("redoing track.create") != std::string::npos &&
+              !h.head() && trackCount(*s) == 0, "the bad second Redo payload rolls back the first");
 }
 
 void testReadOnlyRefuses() {
@@ -356,13 +638,17 @@ int runAll() {
     std::printf("adi_history_tests -- SPEC 8.2, ADR-0003/0021/0030\n\n");
     testUndoRedoRoundTrip();
     testTransactionUndoesAsOne();
+    testLoopPassUndoGroups();
     testSurvivesRestart();
     testForkPreservesTheAbandonedLine();
+    testBranchSwitchPreservesRedoTip();
+    testNavigationRefusesRedoCycle();
     testUndoRedoStack();
     testUndoDoesNotGrowTheLog();
     testEphemeralSkipped();
     testSelBeforeIsCarried();
     testUndoIsAtomic();
+    testReplayRollbackCount();
     testReadOnlyRefuses();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);

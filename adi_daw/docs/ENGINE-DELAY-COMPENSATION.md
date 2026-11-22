@@ -37,3 +37,17 @@ it was off may need new delay history, as any newly introduced delay does; the
 existing graph policy owns that transition. No hardware or Live parity timing
 is claimed by the synthetic signal/event tests. The window/registry integration
 remains their lane's part of N24.
+
+## Inspecting reported device latency in a saved project
+
+`session_state` stores a derived report under `devices.reported_latency`. The
+report records the prepared sample rate, the history head at measurement, and
+the sample count and identity of each loaded device published by the document.
+A loaded zero-latency device reports zero. An unavailable device has no entry.
+The owner refreshes the report from settled settings during the existing
+document update or immediately before Save. The report can be read with the
+project closed.
+
+The `devices.latency_samples` field still follows the explicit
+`device.setLatency` edit and Undo. Opening the project prepares the devices and
+asks them for current latency for delay compensation (ADR-0066 d6).

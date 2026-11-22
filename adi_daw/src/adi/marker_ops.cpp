@@ -3,11 +3,25 @@
 #include "adi/row_capture.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <limits>
 #include <stdexcept>
 
 namespace adi::marker {
 namespace {
 using detail::signedInteger;
+constexpr std::int64_t tickLimit = std::int64_t{1} << 50;
+
+void validateRange(const OpContext& context, bool linear, std::int64_t position,
+                   std::int64_t length) {
+    // Replay can contain marker positions accepted by earlier versions.
+    if (context.replay) return;
+    const auto limit = linear ? std::numeric_limits<std::int64_t>::max() : tickLimit;
+    if (position < 0 || position > limit)
+        throw std::runtime_error("marker position outside supported range");
+    if (length < 0 || length > limit - position)
+        throw std::runtime_error("marker end outside supported range");
+}
+
 std::int64_t id(const Payload& payload) { return signedInteger(payload.at("id")); }
 Payload row(OpContext& context, const Payload& payload) {
     auto value = detail::captureRow(context.db, "markers", "id", id(payload));
@@ -70,16 +84,18 @@ bool create(OpContext& context, const Payload& payload, std::string& error) {
         if (base != 0 && base != 1) throw std::runtime_error("invalid marker time base");
         if (kind != "position" && kind != "cycle" && kind != "chapter" && kind != "sync")
             throw std::runtime_error("invalid marker kind");
-        if (kind == "cycle" && (!payload.contains("length") || signedInteger(payload.at("length")) <= 0))
+        const auto length = payload.contains("length") ? signedInteger(payload.at("length")) : 0;
+        if (kind == "cycle" && length <= 0)
             throw std::runtime_error("cycle marker needs positive length");
         if (kind != "cycle" && payload.contains("length"))
             throw std::runtime_error("only cycle markers have length");
+        validateRange(context, base == 1, position, length);
         Payload captured = {{"id", id(payload)}, {"time_base", base}, {"pos_ticks", nullptr}, {"pos_ns", nullptr},
             {"length_ticks", nullptr}, {"length_ns", nullptr}, {"name", payload.value("name", std::string{})},
             {"kind", kind}, {"color", nullptr}};
         captured[base == 0 ? "pos_ticks" : "pos_ns"] = position;
         if (payload.contains("length"))
-            captured[base == 0 ? "length_ticks" : "length_ns"] = signedInteger(payload.at("length"));
+            captured[base == 0 ? "length_ticks" : "length_ns"] = length;
         if (payload.contains("color")) {
             const auto index = signedInteger(payload.at("color"));
             if (index < 0 || index >= 70) throw std::runtime_error("marker color is not a Live palette index");
@@ -117,9 +133,13 @@ bool eraseInverse(OpContext& context, const Payload& payload, Payload& inverse, 
 bool move(OpContext& context, const Payload& payload, std::string& error) {
     try {
         const auto old = row(context, payload);
-        SQLite::Statement update(context.db, old.at("time_base") == 0
-            ? "UPDATE markers SET pos_ticks=? WHERE id=?" : "UPDATE markers SET pos_ns=? WHERE id=?");
-        update.bind(1, signedInteger(payload.at("pos"))); update.bind(2, id(payload)); update.exec();
+        const bool linear = old.at("time_base") == 1;
+        const auto position = signedInteger(payload.at("pos"));
+        const auto& length = old.at(linear ? "length_ns" : "length_ticks");
+        validateRange(context, linear, position, length.is_null() ? 0 : signedInteger(length));
+        SQLite::Statement update(context.db, linear
+            ? "UPDATE markers SET pos_ns=? WHERE id=?" : "UPDATE markers SET pos_ticks=? WHERE id=?");
+        update.bind(1, position); update.bind(2, id(payload)); update.exec();
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
@@ -164,11 +184,14 @@ bool resize(OpContext& context, const Payload& payload, std::string& error) {
     try {
         if (restoreCore(context, payload)) return true;
         const auto old = row(context, payload);
-        if (old.at("kind") != "cycle" || signedInteger(payload.at("length")) <= 0)
+        const auto length = signedInteger(payload.at("length"));
+        if (old.at("kind") != "cycle" || length <= 0)
             throw std::runtime_error("resize requires a cycle marker and positive length");
-        SQLite::Statement update(context.db, old.at("time_base") == 0
-            ? "UPDATE markers SET length_ticks=? WHERE id=?" : "UPDATE markers SET length_ns=? WHERE id=?");
-        update.bind(1, signedInteger(payload.at("length"))); update.bind(2, id(payload)); update.exec();
+        const bool linear = old.at("time_base") == 1;
+        validateRange(context, linear, signedInteger(old.at(linear ? "pos_ns" : "pos_ticks")), length);
+        SQLite::Statement update(context.db, linear
+            ? "UPDATE markers SET length_ns=? WHERE id=?" : "UPDATE markers SET length_ticks=? WHERE id=?");
+        update.bind(1, length); update.bind(2, id(payload)); update.exec();
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }

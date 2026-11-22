@@ -48,6 +48,8 @@ bool CLAP_ABI initialize(const char* path) {
     marker<<getpid()<<'\n';
 #endif
     marker.close();
+    if(mode.find("init-exit74")!=mode.npos)std::exit(74);
+    if(mode.find("init-exit75")!=mode.npos)std::exit(75);
     if(mode.find("init-crash")!=mode.npos)crash();
     if(mode.find("init-hang")!=mode.npos)std::this_thread::sleep_for(std::chrono::seconds(30));
     if(mode.find("noisy")!=mode.npos){std::printf("plug-in stdout chatter\n{not metadata}\n");std::fprintf(stderr,"plug-in stderr chatter\n");}
@@ -63,6 +65,7 @@ const clap_plugin_descriptor_t second{CLAP_VERSION,"org.adi.scan.second","Second
 std::uint32_t CLAP_ABI count(const clap_plugin_factory_t*) {
     if(mode.find("factory-crash")!=mode.npos)crash();
     if(mode.find("too-many")!=mode.npos)return 65537;
+    if(mode.find("no-classes")!=mode.npos)return 0;
     return 2;
 }
 const clap_plugin_descriptor_t* CLAP_ABI descriptor(const clap_plugin_factory_t*,std::uint32_t index) {

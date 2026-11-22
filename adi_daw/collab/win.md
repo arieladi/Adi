@@ -1,8 +1,190 @@
 # win — log
 
-ORC-VST, Windows 10 IoT Enterprise LTSC · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.5
-(on salon-tv, Windows 11, until 2026-09-30).
+The lead PC, Windows 10 IoT Enterprise LTSC · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.5
+(on the director's second PC, Windows 11, until 2026-09-30).
 Only the `win` agent writes to this file. Newest entry at the top.
+
+---
+
+## 2026-11-21 — win takes #677's merge reconciliation (the engine seat has been silent since 20 November)
+
+**For the engine seat — read first.** #677 blocks the 3 December session's step 5 (a return inside a group), and your log has had no entry since 20 November. Win does the reconciliation of ADR-0248 d4 now, on `engine/df-e23-plugin-workers`: main merged, the send taps renumbered to schema 1.23 with their line in `store.hpp`'s comment, the Mix View's per-bus `inputBuses_` kept. **Do not start that merge.** When you are back: fetch, review win's merge on the branch, then DF-E30 and the one-click Post on it, as ADR-0248 d6 says; then the same-transaction MIDI note API (N63's neighbour, engine-win waits on it), N64, DF-E63 and your other rows. DF-E64 is lent to engine-win.
+
+---
+
+## 2026-11-20, night — WTS-01's first run: where the 3 December session stands
+
+**For every seat — read first.** WTS-01, the weekly headless proof (ADR-0248 d12), now exists:
+`tests/acceptance/`, built with `-DADI_ACCEPTANCE=ON` and run with `ctest -L acceptance`. It drives the app's own
+document calls (`ProjectDocument`, the window's edit builders, `ops().submit`) with a simulated driver, no window.
+Each PASS was checked by breaking its feature on purpose and seeing the step fail. First run, on main 0383ac26:
+
+| Step | Result | What is missing, and whose |
+|---|---|---|
+| 1 New project | PASS | |
+| 2a Record 4 bars | PASS, every sample equals the input | |
+| 2b Play the take back | **FAIL** | the first block after Play underruns: DF-E64, engine |
+| 3a OneShot on a MIDI track | PASS | |
+| 3b Live keyboard into OneShot | NOT BUILT | the app drains the MIDI port rings only for the indicators; N60's window half (`enqueueMidiInput` from the rings), window-fn |
+| 3c A VST3 instrument loaded | PASS | |
+| 3d Live keyboard into the VST3 | NOT BUILT | as 3b |
+| 4 Fader drag heard, one Undo | PASS | |
+| 5a Returns with two sends | PASS | |
+| 5b A return inside a group | NOT BUILT | #677 (engine), then the window's grouping rule |
+| 6a Volume automation heard | PASS | |
+| 6b A built-in's parameter automated | NOT BUILT | the window's lane chooser: DF-W37, window-fn |
+| 7a, 7b Save, reopen, same sound | PASS, bit for bit | |
+| 7c Export a WAV | PASS, equals the offline render and the live play | |
+| 7d Export with a VST3 on a track | NOT BUILT | the render worker's plug-in contract: N62, engine-win |
+
+So before 3 December: **engine** #677 (DF-E64 is lent to engine-win, which takes it now; the engine seat
+reviews it and does not start it); **window-fn** the MIDI drain (N60) and DF-W37; **engine-win** N62.
+
+---
+
+## 2026-11-20, night — window-fn's ten needs reserved (N59 to N68)
+
+**For window-fn, the engine and engine-win.** The ten "Reserve: one N row" needs in `collab/window-fn.md` are N59 to N68 (`collab/RESERVATIONS.md`). Already met on main: N59 (#694), N61 (the `midi.port.name` row), N65 (#685, the input monitor), and N60's engine seam (#685); their window halves are window-fn's: drain the per-port rings into `Session::enqueueMidiInput` on the audio thread, heal a port's record by name, wire Arm and the monitor switch to `setAudioMonitorInputs`. Ruled by win under ADR-0203 d1: **N67, a new track monitors on Auto, as in Live**; the engine's `track.create` default and New's tracks change with it. Open: N62, N66 and N68 for engine-win; N63 and N64 for the engine, after #677.
+
+---
+
+## 2026-11-20, night — round two of the landing windows; DF-E63
+
+**For the seats.** #694 (engine-win) and #696 (engine) landed; #697 (devices) follows. Two faults were fixed on the windows, in the product: the scanner now checks a helper is a real program before starting it (on the Windows runner a text file as helper raised a modal "16-bit application" box and hung the scan), and `ClipPlayback` converts a nanosecond clip's time to ticks as the edit code does (a split clip went silent). **For the engine seat:** DF-E63, three more readers with the same round-down conversion. **For engine-win:** your three branches for DF-E51, DF-E45 and DF-E54 (a) will not land; the engine's fixes landed in #696 (win's loan of #693 was withdrawn: the engine had done them first). Port any test of yours that the engine's fixes fail as a small pull request.
+
+---
+
+## 2026-11-20, evening — the outside review of bundles 41 to 45: five rows (DF-E59 to DF-E62, DF-W36)
+
+**For the seats — read first.** The review covered the code that landed on 20 November: the keyboard path, the built-in host, ADI-Shaper, the plug-in registry and the scanner. Every quoted line was real; each of its 10 findings was checked by a probe against main and a second skeptic.
+- **clones seat: DF-E59 first, then DF-E60, before the panel work.** One NaN or infinite sample from any plug-in before ADI-Shaper silences that channel for good (a probe: 239,871 NaN samples of 479,744); and Drive jumps about 3.3 dB the moment it leaves exactly 0 %.
+- **devices lane: DF-E61** with DF-E57 (a stored value skipped after automation moved it).
+- **engine-win: DF-E62** (the scan cache keeps stale rows in five edge cases), (a) and (d) before the Plug-Ins browser reads the catalogue.
+- **window (window-fn): DF-W36**, a comment that promises thread safety `dropped()` does not have.
+Not entered: the stuck note when an instrument stops processing (false: the route clears `armedTrack` then). The next free ids are DF-E63 and DF-W37.
+
+---
+
+## 2026-11-20, later — three engine rows lent to engine-win while the engine reconciles #677
+
+**For the engine seat and engine-win.** Engine-win finished DF-E44, PD-06 and EX-06 and its own queue; the
+engine seat's next item is #677. So the engine lends engine-win three of its rows (collab/README.md, loans);
+the engine seat reviews each hunk:
+- **DF-E51 (a) and (b), urgent:** the keyboard reaches the MIDI parser since window-fn's window landed; a
+  retriggered key leaves a stuck note, and a zone change orphans held notes. `engine/mpe_input.*`,
+  `mpe_output.cpp`'s `noteOff`.
+- **DF-E45:** MIDI capture refuses ordinary tempos through `secondsToTicks`' truncation.
+  `midi_capture.cpp`, `TempoMap::secondsToTicks`.
+- **DF-E54 (a):** `checkProject`'s false error on journal rows, which makes Collect and Export refuse.
+  `check.cpp`.
+Then engine-win's own #642 (`rankable()` out, ADR-0248 d7) and PD-05. The engine seat keeps DF-E51 (c) and
+(d), DF-E52, DF-E53, DF-E54 (b), DF-E55 and DF-E56.
+
+---
+
+## 2026-11-20 — the devices lane's four questions answered
+
+**For the devices lane — read first.** Your entries of 19 November asked win for four things:
+- **The Sampler's sample path: option 1, now.** Its catalogue entry declares 32 sample slots in a small canonical declaration; the slot ops fill them; a filled slot is a zone over the full key and velocity range until the engine's zone op edits it, as a sample dropped into Live's Sampler plays at once. The native Sampler is dispatched by `makeBuiltinDevice` on the existing loan. It goes ahead before 3 December: a keyboard into an instrument is the session's (ADR-0248 d2).
+- **The three gaps in the effects queue** (PLAN DEV-22, after 3 December like every new effect, ADR-0249): Auto Shift after Tuner, sharing one pitch detector; External Audio Effect is the engine's (routing, MX-24, DEV-05's compensation), this lane giving its canvas and panel contract; Spectrum is the Mix View's shared analyser as a device on a track, with this lane's canvas. Auto Pan's uid and browser name are Live 12.4's "Auto Pan-Tremolo".
+- **The double-precision fixes:** OneShot's outputs landed with your window #688; `devices/pd-param-float` goes into your next window, being built.
+- **New effects before 3 December: no** (ADR-0248 d2, ADR-0249 d7). The Compressor's core waits on its branch.
+Until 3 December, after the Sampler: DF-E57 once the clones window (#689) lands; your other DEFERRED rows; then the rows of your ADR-0248 d8 order that are not new effects (the Pd safety overlays, DEV-09; the loudness meter, DEV-28; the limiter's true-peak path, EX4 and LD5, with export). Live's readings 1 to 18 wait for the director's session.
+
+---
+
+## 2026-11-20 — the first landing window is on main (#685, with #651); #677 is the engine's now
+
+**For the engine seat — read first.** #685, your landing window of 19 November, landed with #651 inside it,
+so schema 1.22 (the Mix View's key taps) is on main. #677's reconciliation is your next item (ADR-0248 d4,
+d6): merge main (it conflicts in 11 files: schema.sql, store.*, store_rows.*, ops_catalog.cpp, vst3_host.*,
+the VST3 expression fixture, test_history_stored.cpp, validate_schema.py), renumber the send taps to 1.23
+with their line in `store.hpp`'s comment, keep the Mix View's per-bus `inputBuses_`, then DF-E30 and the
+one-click Post. #677 and #665 stay drafts until you mark them ready; win did not touch the merge.
+Requested branches that arrived after the window was built go in the next window.
+
+**For engine-win.** Your window (#686) needed five fixes the Windows build cannot show; write new code so
+they do not recur:
+- GCC and Clang `-Wmisleading-indentation`: no second statement on the line of an unbraced `if` or `for`
+  body (`if(x)a;return b;`), and no statement after a body that sits under an unbraced header.
+- GCC `-Wignored-attributes`: no `std::unique_ptr<FILE, decltype(&std::fclose)>`; use a deleter struct.
+- `-Wunused-function`: a helper used only under `#if defined(_WIN32)` is defined under it too.
+- Paths in tests: a published file's path is `fs::canonical(parent)/name`, and temp folders are not
+  canonical (macOS `/var` is `/private/var`; the Windows runner's TEMP is an 8.3 short path); compare with
+  the canonical parent. Case-insensitive volumes (APFS, NTFS) make two spellings one file.
+- A plug-in that is not in the catalogue loads only from its saved path (ENGINE-PLUGIN-SCANNER.md); a CI step
+  that renders through one scans it first (`adi_play --list --search-only`), in its own `ADI_HOME`.
+
+---
+
+## 2026-11-19, night — the outside review of bundles 36 to 40: nine rows (DF-E50 to DF-E57, DF-W35)
+
+**For the seats — read first.** The review covered automation, MIDI input and MPE, the Pd runtime, built-in devices in the graph, returns and sends, and the project check. Every quoted line was real; each of its 27 findings was checked by a probe against main and a second skeptic. Two touch the 3 December session now:
+- **devices: DF-E50 first.** Automation on a built-in device is bound and silent (a probe: a Utility lane at 0 dB still plays +6 dB, live and rendered). The session's automated parameter needs it. Fix in `BuiltinDevice::process` on the lent value mapping, the engine seat reviewing. Then DF-E57 when a built-in gains parameters.
+- **window (window-fn until Sunday): DF-W35 (a).** A new track's send shows Enable Send ticked and cannot be unticked until its knob moves.
+- **engine:** DF-E51 (a) and (b) before the keyboard reaches the MIDI parser (stuck notes on a retriggered key; zone changes); DF-E54 (a) before Collect and Export is offered; DF-E52, DF-E53, DF-E55, DF-E56 in your order.
+Not entered: 18 findings that are by design (2), not reachable on main (10), false (1: the Pd loader overlay does refuse native code in a subfolder or behind an abstraction), or too narrow to matter (5).
+
+---
+
+## 2026-11-19, night — the outside review of bundles 31 to 35: six rows (DF-E44 to DF-E49)
+
+**For the seats — read first.** The review covered recording, MIDI capture and OneShot, the snapshot, Freeze and Bounce, and the gesture path. Every quoted line was real; each of its 15 findings was checked by a probe against main and a second skeptic. Six rows hold; none is reachable on main today, and three sit on the 3 December path:
+- **engine-win:** DF-E44, the recorder stuck after a disk error and a cancel, before Record is wired.
+- **engine:** DF-E45, MIDI capture refusing ordinary tempos (110 BPM, beat 2) through `secondsToTicks`' truncation, before anything calls `prepareMidi`; DF-E47 (linear clips in the snapshot), DF-E48 (Freeze and muted clips) and DF-E49 (a fault latch race) in your order.
+- **devices:** DF-E46, OneShot's Slice mode (an unmapped key kills a sounding slice; slices past End), your first item after OneShot lands as an instrument.
+Not entered: the take-lane snapshot finding (it is DF-E35 (a)); the cross-volume publication (DF-E32 (b)); an old-schema snapshot failure (false: `Store::open` migrates first); `Session::update(nullptr)` after a durable commit (no caller can pass it).
+
+---
+
+## 2026-11-19, night — the classic scope is Classic Scope (ADR-0251)
+
+**For the Mix View seat.** The director ruled: the classic scope keeps its source's own bitmap images (ADR-0244 d5 rules for this scope; the only exception to d4's no-bitmaps rule), and ADI shows it as "Classic Scope" everywhere: pages, menus, the Analysers, tooltips, the catalogue. Rename it on your branches before your stack top lands; the images stay. The source's name stays only in the source's own files and notice.
+
+**For the engine seat: one API engine-win waits on.** Recording MIDI into a take lane needs an engine API that
+prepares notes for a MIDI clip created in the same transaction (today the note ops need the clip to exist
+first). It serves the take-lane rows (CT-01, CT-04) after #677; put it in your ADR-0248 d6 order after the
+items already there, and say in your log when it is on a branch, so engine-win can build MIDI takes on it.
+
+**For engine-win.** Your two parked questions are answered (ADR-0250, above). Until #677 lands and the API
+above exists, take DF-E35 (b) on its loan, then the registry and scanner needs of the window-fn work
+(`midi.port.name`, the auto-arm-on-select default "none", a scan state for a helper that could not start,
+N58's open parts), then the rest of your d7 order. The next free DF-E id is DF-E58 (DF-E44 to DF-E57 are the outside reviews' rows below): reserve
+it in your log first.
+
+---
+
+## 2026-11-19, night — two window loans to the Mix View seat; DF-E35 (b) lent to engine-win
+
+**For engine-win.** The director answered the two questions at the top of your log: Q-I yes, an interrupted recording comes back as Stop would have placed it, one undo step; Q-J, Live's three Pow-r slots are Shaped 1, 2 and 3 (SoX's Lipshitz, improved E-weighted and Shibata tables). ADR-0250; PD-06 and EX-06 stay M5's rows and wait their turn.
+
+**For engine-win and the engine seat.** DF-E35 (b), the Freeze and Bounce in Place refusals a silent take causes, does not wait for #677: the engine lends engine-win Freeze's extent loop in `src/adi/freeze_commands.cpp` (read `engine::timelineClips` instead of every stored clip) and Bounce in Place's extent query in `src/adi/bounce_commands.cpp` (`lane_id IS NULL`), the two-file candidate in `collab/engine-win.md`, with its eight cases as a test in the repository and the engine seat reviewing the hunk. No open branch touches either file. DF-E35 (a), the snapshot's lane id, still waits for #677 (ADR-0248 d3); main-row hit testing and paint are the window's half.
+
+**For the Mix View seat and the window lane.** Both requests in `collab/mixview.md` of 19 November are granted, each hunk reviewed by the window lane before it lands (collab/README.md's loans paragraph):
+- **DF-M60 (a): the retiree detach loop of `ProjectDocument::synchronise`.** Only that loop, keyed by the capture's generation as `ParamOps::attachSession` already is; no open branch touches `synchronise`. It goes in DF-M60's order of ADR-0248 d10: after #651's EQ fix (DF-M60 (c)).
+- **Focus Match's stale-capture guard: the command-drain block of `src/adi/ui/window_state.hpp` and one pass-through accessor in `src/juce/ui_shell.hpp`.** The drain publishes the applied Locate revision before it acknowledges the command; a test shows an empty drain does no added work, and the transport's behaviour is otherwise unchanged. No open branch touches `window_state.hpp`; `window/input-clock` and `window/undo-settles` touch other parts of `ui_shell.hpp`, so whichever lands second merges main. It comes after DF-M60, as a fix to a built feature, before any new Mix View item.
+
+---
+
+## 2026-11-19, night — racks first after 3 December; Live's Beat Repeat the first device for his glitch-effect racks; his rack presets read-only (ADR-0249)
+
+**For the seats — read first.** Text only: nothing here changes a queue before 3 December, except the clones seat's scrub of its public log, a public-rule fix, and its handoff entry (ADR-0249 d8); the function-first order of ADR-0248 d2 stands until then. A seat proposed to build a collection of glitch-effect racks the director owns as Pd devices, one device per rack. Win approved the goal with changes and the director agreed every recommendation (his words: "agree with all your recommendations"). The racks play the Live way: ADI Racks with Live's rack structure, macros and modulation, filled with ADI's equivalents of Live's devices, each already a Pd canvas over a native core (ADR-0249 d1).
+- **Engine seat.** After 3 December, once your ADR-0248 d6 list is done: DEV-01, then DEV-03 (rack structure operations, exact undo, rack paste), then DEV-06 (macros), then DEV-07 (the evaluator, the route tables, the modulator nodes), then DEV-32 (the director's own rack presets, `.adg`, read-only with a loss report), ahead of any other engine row of M2 to M7. The trade he accepted: TM-SV-01 and the other rows you would have taken next wait behind DEV-01, DEV-03, DEV-06 and DEV-07; DEV-32 follows them, ahead of TM-SV-01, by win's placement (ADR-0249 d3). Live's note-driven modulators still follow DEV-18, and the envelope follower keyed from another track follows DEV-05 and MX-24. `src/adi/device_copy.*` is yours from now, with the rack work; the window keeps `ProjectDocument::pasteDevice`, and its loan to the Mix View seat for DF-M60 stands (d8). A song jump by ±N beats is not wanted now (DF-E41).
+- **Devices lane.** After 3 December, in your ADR-0248 d8 order: DF-E37, OneShot and the Sampler loadable, DF-E36, then Compressor, Glue Compressor, Gate and Limiter, then Live's Beat Repeat (ADR-0249 d7): `org.adidaw.builtin.beat-repeat`, one pull request in your trees; a bounded stereo history of its INPUT allocated in prepare, not a feedback delay; a resampling read head; song position delivered to the core. Put its questions on your ONE list of Live readings: the capture direction, a Grid change while repeating, the fractional phase of a slice, the joins, its behaviour at a locate, the longest history needed at 20 BPM. It is "built, not verified" until a Live 12.4 render agrees. Then the LFO and Shaper modulator kernels, DEV-07's device side, before the rest of DEV-22 (d8). The older device versions the director's rack presets name come behind the current devices (d2). Local jumps inside a device's own history are yours, as Beat Repeat's own behaviour (d9). The clones seat leaves you a handoff entry marked for after 3 December; it changes nothing in your order before then.
+- **Window lane.** The rack and macro panels, Map mode and the modulation ring are yours, each from a sheet the director agrees first (ADR-0243, ADR-0244; one new sheet a week, ADR-0248 d14). Nothing of it before that sheet, and nothing before 3 December.
+- **Clones seat.** ADI-Shaper only. First, now: scrub your public log in a new commit of the names ADR-0249 d11 keeps out of the repository and of the collection's structure, the machine name, the misspelt device name and your path reservation request, which is refused (the repeat core is Live's Beat Repeat, the devices lane's). Then one handoff entry addressed to the devices lane and marked "for after 3 December": your prototype's test method, the Beat Repeat reading questions, and whether Beat Repeat's input history and ADI-Shaper's Time stage share one stereo-history kernel. Then continue your ADR-0248 d11 order. No clone of the collection's third-party Max for Live devices until the director says yes and gives the name (DF-E43). Nothing of the collection enters the repository (ADR-0249 d11).
+
+**What happened.** Win checked the proposal against main and the director's research: nearly all of the collection's device slots are Live's stock devices, and nearly all of its Max for Live slots are Live's LFO and Shaper. No rack plays on main: the session skips every rack and every device inside one. The director's five answers, each win's recommendation: his own rack presets read in ADI, read-only, once racks, macros and modulation play (d2); racks, macros and modulation brought forward to right after 3 December, with TM-SV-01 and the engine's other next rows behind them (d3); no song jump by ±N beats now (d4); no commitment to modulation beyond Live's, an item-by-item list from win after 3 December (d5); clones of the collection's third-party Max for Live devices later, only those he plays, under his names (d6). Expected, not promised: the first rack plays about January to February 2027, the hardest rack about February to March, with any slot ADI cannot yet fill, such as an older device version, reported missing.
+
+**Text only.** ADR-0249; PLAN: step R (DEV-01, DEV-03, DEV-06, DEV-07 and the new DEV-32), DEV-22's queue after Limiter, DEV-16, TM-SV-01 behind R, §1.6, §4's R takes; LANES §1 and §2 item 5; FEATURES §6 and OPS §9.7 priorities; DEFERRED: DF-E41 to DF-E43; RESERVATIONS: ADR-0250 and DF-E44 next free; `collab/README.md`: `src/adi/device_copy.*` in the engine's paths.
+
+---
+
+## 2026-11-19, late — Live's Limiter, Auto Pan and Tuner back in the devices queue; machine names out of the logs
+
+**For the devices lane.** Live's Limiter device is not built. The queue said "Limiter merged, #259", but #259 was a release-time fix in ADI's own limiter core (`src/adi/dsp/limiter`), which the export's brickwall uses; no Live Limiter canvas, panel or measured render exists. It is queued after Gate (DEV-22 in PLAN, LANES §2 item 5, the prompt of 5 November). Auto Pan and Tuner were in no queue; they follow Align Delay. When you reach item 5 of your queue, check the whole list against the Live 12.4 manual's audio effects chapter and log any other gap for win; this does not move ahead of ADR-0248's order (fix before new, d2's session goal until 3 December).
+
+**Text only.** The lead PC and the director's second PC are no longer named in `collab/win.md`, `collab/window.md`, LANES, one quotation in DECISIONS and the clones reading prompt of 4 November. The clones seat scrubs its own log on its branch.
 
 ---
 
@@ -423,7 +605,7 @@ fix; code and doc never drift silently.
 review applied before the merge; its one open item (O4, the engine's per-instance token) becomes a
 needs row with W2.
 
-**Eleven window surfaces, one batch, on this PC.** The window lane's seat has been on ORC-VST since
+**Eleven window surfaces, one batch, on this PC.** The window lane's seat has been on this PC since
 the 3rd, so win ran the 5 November work list (#459) as a batch: one agent per surface, each with its
 gate, picture and PR, a poller landing them in stack order. On main tonight: #465 A1 Save As (N3's
 window half), #467 A2 the batch commit, #470 A3 one undo step per strip drag (N7), #472 C1 Automation
@@ -441,7 +623,7 @@ clang's FMA contraction made a typed 10 ms read 10.000000000000021, the test now
 outage, a stash of uncommitted fixes) and a second workflow finished them: a batch plans its
 finisher from the start.
 
-**The Live 12 readings, first checkpoint.** His seats on SALON-TV ran the brief of the 5th: measured
+**The Live 12 readings, first checkpoint.** His seats on his second PC ran the brief of the 5th: measured
 the 70-colour palette in both themes, the Pre/Post colours through save and reopen, Insert Return with
 its undo; read the build, the settings census and the export census; the rest not run, the true-peak
 method invalid. Mission 2 is written, `NowWeReverse/Live12-readings/MISSION-2-2026-11-08.md`: 113
@@ -528,7 +710,7 @@ StackModel, whose PR #463 opened in the evening.
 
 **The Live 12 readings and ADI-View.** The readings brief is written,
 `NowWeReverse/Live12-readings/BRIEF-2026-11-05.md`: 122 readings by milestone, on a fresh Live profile
-on SALON-TV; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
+on his second PC; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
 current builds good enough and handed a new brief, the ADI-View combined retest against five analyser
 references, with a standalone test app to be built by Codex; the plan is in
 `NowWeReverse/UI-Testing/20261105T1420-adi-view-combined-reference` (plan, handoff to Codex, report,
@@ -1021,17 +1203,16 @@ short paths, and the main checkout is the drone's.
 
 ---
 
-## 2026-10-01 — win moves from salon-tv to ORC-VST
+## 2026-10-01 — win moves to a new PC
 
-**Why:** the director moved the Windows lead to a new PC. salon-tv keeps its own roles (Plex and home
-monitoring); its ADI drone tasks stop there and move here.
+**Why:** the director moved the Windows lead to a new PC. The old PC keeps its other roles; its ADI drone tasks stop there and move here.
 
-**The machine:** ORC-VST, Windows 10 IoT Enterprise LTSC 2021 (build 19044), i7-4930K (no AVX2),
+**The machine:** Windows 10 IoT Enterprise LTSC 2021 (build 19044), i7-4930K (no AVX2),
 16 GB, GTX 1070 (8 GB). The repo is at `D:\Documents\GitHub\Adi`, no longer
 `C:\Users\Adi\Documents\GitHub\Adi`; worktrees go under `D:\Documents\GitHub\Adi-wt\`.
 
-**The toolchain is salon-tv's, component for component:**
-- VS 2022 Community 17.14.41 at the default path, installed from salon-tv's exported `.vsconfig`
+**The toolchain is the old PC's, component for component:**
+- VS 2022 Community 17.14.41 at the default path, installed from the old PC's exported `.vsconfig`
   (27 components). MSVC 14.44.35207 (cl 19.44.35229), with the bundled CMake 3.31.6 and Ninja 1.12.1.
 - Python 3.14.7 and Node 24.19 LTS.
 - Ollama 0.35.0 with qwen2.5-coder:7b, 100% on the 1070. It runs through the CUDA 12 runner, because
@@ -1044,7 +1225,7 @@ monitoring); its ADI drone tasks stop there and move here.
 
 **The copy was checked, not re-cloned:**
 - `git fsck` is clean, and every branch's commits are on origin.
-- salon-tv's eight worktree registrations are pruned.
+- The old PC's eight worktree registrations are pruned.
 - The AdiGuard worktree `adiguard-osc4` is re-pointed at the D: path.
 
 **Still to do:**

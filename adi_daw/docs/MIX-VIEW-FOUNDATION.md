@@ -191,8 +191,9 @@ output; it is not a double-precision engine. Finite audio within float range is 
 precondition, avoiding a redundant whole-buffer scan. Curve storage is prepared off audio,
 coefficients use a bounded per-instance cache, invariant control work is retained, and a fixed
 fully linked stream evaluates its identical detector envelope once. These are structural work
-properties, not a measured CPU or whole-product parity claim. The component remains unregistered
-until the complete controller/state/style/quality and real key-route paths are ready.
+properties, not a measured CPU or whole-product parity claim. The bounded internal-key Clean device is now registered through the common
+function/controller/state path (see MIX-CLEAN-NATIVE.md). External keys and the
+remaining style/quality combinations remain later capabilities.
 
 ## Build and verification
 

@@ -9,6 +9,11 @@ Payload captureTrack(SQLite::Database&,std::int64_t);
 // FK dependants, with no delete/restore safety relaxation. Freeze metadata and
 // purely visual/controller layout rows are excluded to avoid self-reference.
 Payload captureTrackSource(SQLite::Database &, std::int64_t);
+// Same causal image authority for devices, including nested chains, polymorphic
+// key connections and their owned taps. No parallel row-copy implementation.
+Payload captureDevice(SQLite::Database&,std::int64_t);
+void deleteDevice(SQLite::Database&,std::int64_t);
+void restoreDevice(SQLite::Database&,std::int64_t,const Payload&);
 void deleteTrack(SQLite::Database&,std::int64_t);
 void restoreTrack(SQLite::Database&,std::int64_t,const Payload&);
 }

@@ -95,11 +95,12 @@ struct Fixture {
     Instrument* instrument=nullptr;
     std::array<Instrument*,4> instruments{};
     Precision width;
+    int blockFrames;
     std::int64_t clock=0;
     unsigned loads=0;
-    std::array<float,200> narrow{};
-    std::array<double,200> wide{};
-    explicit Fixture(Precision precision):width(precision) {
+    std::array<float,1024> narrow{};
+    std::array<double,1024> wide{};
+    explicit Fixture(Precision precision,int frames=100):width(precision),blockFrames(frames) {
         StoreError error{};store=Store::createEmpty(temp.path()/"session.adi",error);
         if(!store)throw std::runtime_error("create session");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Main',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','continuity','Test','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Test'); INSERT INTO clips(id,track_id,kind,time_base,pos_ticks,length_ticks) VALUES(1,1,'midi',0,0,23063040); DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0)");
@@ -132,7 +133,7 @@ struct Fixture {
         if(stopped)store->db().exec("UPDATE devices SET name='Stop' WHERE id=3");
     }
     void load() {
-        SessionSpec spec{2,48000,100,width};
+        SessionSpec spec{2,48000,blockFrames,width};
         if(!session.load(*store,[this](const DeviceRequest& request,std::string&)->std::unique_ptr<device::DeviceInstance>{
             if(request.device->name.starts_with("Delay"))return std::make_unique<Delay>();
             if(request.device->name=="Stop")return std::make_unique<Delay>(EventFlow::Stop);
@@ -147,14 +148,14 @@ struct Fixture {
         if(!session.setExternalTempoAt(*store,240.,240240))throw std::runtime_error(session.error());
     }
     bool render(Session::RenderBlock* held=nullptr) {
-        float* out[]{narrow.data(),narrow.data()+100};double* out64[]{wide.data(),wide.data()+100};
-        AudioIo io;io.frames=100;io.numOut=2;io.streamTimeSamples=clock;
+        float* out[]{narrow.data(),narrow.data()+blockFrames};double* out64[]{wide.data(),wide.data()+blockFrames};
+        AudioIo io;io.frames=blockFrames;io.numOut=2;io.streamTimeSamples=clock;
         if(width==Precision::Float64)io.out64=out64;else io.out=out;
         for(auto* instance:instruments)if(instance)instance->clock=clock;
         if(held)(void)held->process(io);else session.process(io);
-        clock+=100;
-        return width==Precision::Float64?std::all_of(wide.begin(),wide.end(),[](double value){return value==0.25;}):
-            std::all_of(narrow.begin(),narrow.end(),[](float value){return value==0.25f;});
+        clock+=blockFrames;
+        return width==Precision::Float64?std::all_of(wide.begin(),wide.begin()+2*blockFrames,[](double value){return value==0.25;}):
+            std::all_of(narrow.begin(),narrow.begin()+2*blockFrames,[](float value){return value==0.25f;});
     }
     void start(){load();for(int i=0;i<10;++i)render();}
 };
@@ -244,6 +245,27 @@ void queuedEvents(Precision width) {
         }
         check(equal,"actual delayed event stream equals the no-rebuild native reference");
         check(changeBeforeOn?observed==0:observed==2,"queue regression actually swaps while the selected on/off is still deferred");
+    }
+}
+void queuedNoteAtSwap(Precision width) {
+    constexpr int block = 512;
+    for (const int release : {block-1, block, block+1}) {
+        Fixture f(width, block);
+        f.delay();
+        f.write({Fixture::note(42, 0, static_cast<std::int64_t>(release)*24024/100)});
+        f.load();
+        f.render();
+        check(f.instrument->count == 0, "the delayed onset is still queued when the graph swaps");
+        f.refresh();
+        f.render();
+        f.render();
+        const auto& instrument = *f.instrument;
+        check(instrument.count == 2 && instrument.heard[0].event.type == EventType::NoteOn &&
+              instrument.heard[0].sample == block && instrument.heard[1].event.type == EventType::NoteOff &&
+              instrument.heard[1].sample == block+release &&
+              instrument.heard[0].event.noteId == instrument.heard[1].event.noteId,
+              release == block ? "the queued note-on and exact-boundary release survive the graph swap" :
+                                 "the queued onset and adjacent release keep their compensated sample positions");
     }
 }
 void delayedCurve(Precision width) {
@@ -427,4 +449,4 @@ void fanoutReleases(Precision width) {
           silent(*stopped.instruments[0]),"a delayed dead-end Stop branch cannot retain released ownership and exhaust the bounded voice table");
 }
 }
-int main(){try{for(auto width:{Precision::Float32,Precision::Float64}){heldClock(width);identities(width);transportAndLegacy(width);pedalEdit(width);rejection(width);skippedControllers(width);exactBoundary(width);queuedEvents(width);delayedCurve(width);acquiredLocate(width);multiHopLocate(width);destinationIdentity(width);fanoutReleases(width);}check(allocations.load()==0 && frees.load()==0 && audio::callbackFileIo.load()==0,"every tested callback, queued handover, retry and acquired transport edit has zero allocation/free/file I/O");}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{for(auto width:{Precision::Float32,Precision::Float64}){heldClock(width);identities(width);transportAndLegacy(width);pedalEdit(width);rejection(width);skippedControllers(width);exactBoundary(width);queuedEvents(width);queuedNoteAtSwap(width);delayedCurve(width);acquiredLocate(width);multiHopLocate(width);destinationIdentity(width);fanoutReleases(width);}check(allocations.load()==0 && frees.load()==0 && audio::callbackFileIo.load()==0,"every tested callback, queued handover, retry and acquired transport edit has zero allocation/free/file I/O");}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

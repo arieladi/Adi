@@ -81,6 +81,34 @@ std::wstring quote(const std::wstring& arg) {
     out.append(slashes * 2U, L'\\'); out.push_back(L'"');
     return out;
 }
+// CreateProcessW hands a file that is not a PE image (no "MZ", or an MZ stub
+// without "PE\0\0", as a 16-bit program has) to the 16-bit path. 64-bit Windows
+// answers that with a MODAL "Unsupported 16-Bit Application" hard error and
+// does not return until someone presses OK, unless the PROCESS error mode has
+// SEM_FAILCRITICALERRORS (SetThreadErrorMode does not suppress it). Unattended,
+// nobody presses it: a non-image helper parked CreateProcessW for good on the
+// windows-latest runner (PR #694). Refuse such a file here with the code the
+// OS returns when the dialog is suppressed, so a scan always ends.
+bool portableExecutable(const std::filesystem::path& executable, DWORD& error) {
+    Handle file;
+    file.value = CreateFileW(executable.c_str(), GENERIC_READ,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file.value == INVALID_HANDLE_VALUE) { error = GetLastError(); return false; }
+    error = ERROR_BAD_EXE_FORMAT;
+    IMAGE_DOS_HEADER dos{};
+    DWORD read = 0;
+    if (!ReadFile(file.value, &dos, sizeof dos, &read, nullptr) || read != sizeof dos ||
+        dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0) return false;
+    LARGE_INTEGER offset{};
+    offset.QuadPart = dos.e_lfanew;
+    DWORD signature = 0;
+    if (!SetFilePointerEx(file.value, offset, nullptr, FILE_BEGIN) ||
+        !ReadFile(file.value, &signature, sizeof signature, &read, nullptr) ||
+        read != sizeof signature || signature != IMAGE_NT_SIGNATURE) return false;
+    error = 0;
+    return true;
+}
 
 ProcessResult launch(const std::filesystem::path& executable,
                      const std::vector<std::string>& arguments, const ProcessOptions& options) {
@@ -93,6 +121,8 @@ ProcessResult launch(const std::filesystem::path& executable,
         command += L' '; command += quote(value);
     }
     if (command.size() >= 32767) { result.status = ProcessStatus::Invalid; return result; }
+    DWORD imageError = 0;
+    if (!portableExecutable(executable, imageError)) { result.osError = imageError; return result; }
     Handle reader, writer, null, job, process, thread;
     SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     auto failed = [&]() { result.osError = GetLastError(); return result; };

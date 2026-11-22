@@ -26,6 +26,7 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include "../../tests/temp_directory.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1104,14 +1105,67 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
         } else {
             check(false, "the transport fixture loaded through the raw VST3 processor");
         }
+
+        adi::test::TempDirectory directory{"vst3_fixture", "rounded_bar"};
+        adi::StoreError error{};
+        const auto project = adi::Store::createEmpty(directory.path() / "transport.adi", error);
+        check(static_cast<bool>(project), "create the native rounded VST3 bar project");
+        if (project) {
+            auto& db = project->db();
+            db.exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Instrument',0),(9,'master','Main',1);"
+                "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','fixture.clock','Clock','instrument');"
+                "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
+                "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,always_process) VALUES(1,1,0,1,'Clock',1);"
+                "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,117,0);"
+                "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(0,4,4)");
+            SQLite::Statement meter(db, "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(?,3,4)");
+            meter.bind(1, 8 * adi::textproj::kPPQ);
+            meter.exec();
+            for (const double rate : {48000.0, 44100.0}) {
+                adi::engine::Session session;
+                adi::engine::SessionSpec spec;
+                spec.sampleRate = rate;
+                spec.maxFrames = 64;
+                const auto load = [&](const adi::engine::DeviceRequest&, std::string& details) {
+                    return host.makeDevice(*d, rate, spec.maxFrames, details);
+                };
+                if (!session.load(*project, load, spec)) {
+                    check(false, "load the rounded VST3 bar session: " + session.error());
+                    continue;
+                }
+                const auto boundary = std::llround(8.0 * 60.0 / 117.0 * rate);
+                session.transport().locate(boundary - 32);
+                session.transport().play();
+                adi::engine::AudioIo io;
+                io.frames = 64;
+                session.process(io);
+                std::array<double, 12> received{};
+                readTransport(received.data());
+                check(received[1] == rate && received[2] == static_cast<double>(boundary) &&
+                          received[3] == 8.0 && received[4] == 8.0 && received[8] == 3.0 && received[9] == 4.0,
+                      "VST3's rounded meter boundary splits on time and aligns musical position with bar start");
+            }
+        }
     }
 
-    {
+    // DF-E20 (b) through the per-bus input tables (ADR-0248 d4): the device's
+    // owner requests the key, and the fixture reports what its auxiliary bus
+    // received (the first sample of the segment and the last channel's last).
+    using KeySample = double (*)();
+    const auto keyFirst = reinterpret_cast<KeySample>(lib.getFunction("adiFixtureKeyFirst"));
+    const auto keyLast = reinterpret_cast<KeySample>(lib.getFunction("adiFixtureKeyLast"));
+    const auto keyChannels = reinterpret_cast<Count>(lib.getFunction("adiFixtureKeyChannels"));
+    check(keyFirst != nullptr && keyLast != nullptr && keyChannels != nullptr,
+          "the VST3 fixture reports what its auxiliary input received");
+    if (keyFirst && keyLast && keyChannels) {
         auto dev = make(256);
         if (auto* v3 = dynamic_cast<Vst3Device*>(dev.get()); v3 && v3->usingRawProcessor()) {
+            check(v3->configureSidechain(true), "the owner requests the fixture's stereo key input");
+            v3->prepare(sr, 256);
             std::array<float, 256> left{}, right{}, keyLeft{}, keyRight{};
-            keyLeft[40] = 0.25f;
-            keyRight[40] = -0.5f;
+            keyLeft[31] = 0.75f;
+            keyLeft[32] = 0.25f;
+            keyRight[95] = -0.5f;
             const float* key[]{keyLeft.data(), keyRight.data()};
             float* out[]{left.data(), right.data()};
             adi::engine::NodeIo io;
@@ -1120,16 +1174,18 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
             io.frames = 64;
             io.blockOffset = 32;
             io.sidechain = key;
+            io.sidechainSilent = false;
             v3->process(io);
-            check(left[40] == 0.25f && right[40] == -0.5f && left[39] == 0.0f,
+            check(keyChannels() == 2 && keyFirst() == 0.25 && keyLast() == -0.5,
                   "the VST3 auxiliary input receives the segment's stereo key at the right offset");
             io.sidechain = nullptr;
+            io.sidechainSilent = true;
             v3->process(io);
-            check(left[40] == 0.0f && right[40] == 0.0f, "an unconnected key is silent on the next call");
+            check(keyFirst() == 0.0 && keyLast() == 0.0, "an unconnected key is silent on the next call");
 
             std::array<double, 256> wideLeft{}, wideRight{}, wideKeyLeft{}, wideKeyRight{};
-            wideKeyLeft[40] = 0.1;
-            wideKeyRight[40] = -0.2;
+            wideKeyLeft[32] = 0.1 + 1e-11;   // bits a float cannot carry
+            wideKeyRight[95] = -0.2 - 3e-11;
             const double* wideKey[]{wideKeyLeft.data(), wideKeyRight.data()};
             double* wideOut[]{wideLeft.data(), wideRight.data()};
             v3->willBeHanded(adi::engine::Precision::Float64);
@@ -1137,8 +1193,9 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
             io.out = nullptr;
             io.out64 = wideOut;
             io.sidechain64 = wideKey;
+            io.sidechainSilent = false;
             v3->process(io);
-            check(v3->processingDouble() && wideLeft[40] == 0.1 && wideRight[40] == -0.2,
+            check(v3->processingDouble() && keyFirst() == 0.1 + 1e-11 && keyLast() == -0.2 - 3e-11,
                   "the auxiliary input preserves double precision at both channels");
         } else {
             check(false, "the side-chain fixture loaded through the raw VST3 processor");
@@ -1512,7 +1569,8 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
         for (const auto& t : types) if (t.name == name) return &t;
         return nullptr;
     };
-    auto render = [&](const juce::PluginDescription& d, RouteChoice choice, const std::vector<Event>& ev) {
+    auto render = [&](const juce::PluginDescription& d, RouteChoice choice, const std::vector<Event>& ev,
+                      const std::vector<Event>& later = {}) {
         std::string err;
         auto dev = host.makeDevice(d, sr, 512, err);
         auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get());
@@ -1520,6 +1578,10 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
         v3->setExpressionRoute(choice);
         v3->prepare(sr, 512);
         auto a = pr::render(*v3, ev, 64, 512, sr);
+        if (!later.empty()) {
+            const auto tail = pr::render(*v3, later, 64, 512, sr);
+            a.insert(a.end(), tail.begin(), tail.end());
+        }
         check(v3->eventsDropped() == 0 && v3->paramsDropped() == 0 && v3->eventsOutOfRange() == 0,
               "nothing dropped: events, parameter points or offsets");
         return a;
@@ -1611,9 +1673,20 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
     if (const auto* mpe = find("ADI Test MPE"))
         check(octave(render(*mpe, RouteChoice::NoteExpression, {note(1, 60, 2), bend(1, 12.0, 2)})) == "unbent",
               "ADI Test MPE on NoteExpression: unbent -- it reads MIDI as parameters, not note expression");
-    if (const auto* ne = find("ADI Test NoteExpr"))
+    if (const auto* ne = find("ADI Test NoteExpr")) {
         check(octave(render(*ne, RouteChoice::MpeMidi, {note(1, 60, 2), bend(1, 12.0, 2)})) == "unbent",
               "ADI Test NoteExpr on MpeMidi: unbent -- no mapping, and it ignores legacy MIDI events");
+        const auto clip = (std::uint64_t{1} << 32) | 1;
+        const auto live = adi::engine::kLiveNoteIdPrefix | 1;
+        const auto audio = render(*ne, RouteChoice::NoteExpression,
+                                  {note(clip, 60, 2), note(live, 60, 2), bend(live, 12.0, 2)},
+                                  {off(live, 60, 0)});
+        const double c4 = pr::toneLevel(audio, 2048, 4096, sr, pr::midiHz(60));
+        const double c5 = pr::toneLevel(audio, 2048, 4096, sr, pr::midiHz(72));
+        const double remaining = pr::estimateHz(audio, 32768 + from, n, sr, 80.0, 1200.0);
+        check(c4 > 1e-3 && c5 > 1e-3 && std::abs(pr::centsBetween(remaining, pr::midiHz(60))) < 15,
+              "VST3 bends just the live same-pitch voice and releases it without stopping the clip");
+    }
 
     fixtureGesture(host);
     fixtureState(host);

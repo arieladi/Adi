@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
 #include "ControlMapping.hpp"
+#include "adi/mix/filters/FiniteInput.hpp"
+#include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -372,16 +374,17 @@ struct Core::Impl {
                     return Status::InvalidBuffers;
             }
         }
+        [[maybe_unused]] filters::FlushDenormals flush;
         if (s != controls)
             update(s);
         const bool stereo = spec.mainChannels == 2;
         for (std::int32_t i = offset; i < offset + frames; ++i) {
-            const float left = static_cast<float>(main[0][i]);
-            const float right = stereo ? static_cast<float>(main[1][i]) : left;
+            const float left = filters::finiteInput(main[0][i]);
+            const float right = stereo ? filters::finiteInput(main[1][i]) : left;
             float kl = left, kr = right;
             if (s.keySource == KeySource::External) {
-                kl = keyChannels > 0 ? static_cast<float>(key[0][i]) : 0;
-                kr = keyChannels > 1 ? static_cast<float>(key[1][i]) : kl;
+                kl = keyChannels > 0 ? filters::finiteInput(key[0][i]) : 0;
+                kr = keyChannels > 1 ? filters::finiteInput(key[1][i]) : kl;
             }
             const float al = std::abs(kl), ar = std::abs(kr), maximum = std::max(al, ar);
             float dl = al + (maximum - al) * s.stereoLink;
@@ -395,7 +398,10 @@ struct Core::Impl {
             // Prepared routing cannot change. At and above full linking both
             // detectors start together and remain identical for this stream.
             const float gl = gain(dl, 0), gr = s.stereoLink >= 1.0f ? gl : gain(dr, 1);
-            float outL = left * gl, outR = right * gr;
+            // A unity gain is a copy even when detector arithmetic flushes
+            // denormals. Preserve the neutral signal's original float bits.
+            float outL = gl == 1.f ? left : left * gl;
+            float outR = gr == 1.f ? right : right * gr;
             if (s.stereoLink > 1.0f) {
                 // This fixed routing uses the shared linked detector gain.
                 const float other = gr + (1.0f - gr) * (s.stereoLink - 1.0f);
@@ -405,7 +411,7 @@ struct Core::Impl {
                 outL = mid + difference;
                 outR = mid - difference;
             }
-            if (s.autoGain) {
+            if (s.autoGain && makeup != 1.f) {
                 outL *= makeup;
                 outR *= makeup;
             }

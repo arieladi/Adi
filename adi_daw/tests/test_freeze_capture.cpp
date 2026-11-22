@@ -122,11 +122,47 @@ void failureCases() {
     check(cancelled.cancelled() && !cancelled.ready() && p.stages().empty(),
           "cancellation closes streams and removes only the owned private directory");
 }
+
+void scopesOnlyPlayingAssets() {
+    Project p;
+    auto& db=p.store->db();
+    db.exec("INSERT INTO lanes(id,track_id,kind) VALUES(7,1,'take');"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,orig_name,format) VALUES"
+            "(2,'muted-missing','muted.wav','muted.wav','wav'),"
+            "(3,'take-missing','take.wav','take.wav','wav'),"
+            "(4,'unrelated-missing','unrelated.wav','unrelated.wav','wav');"
+            "INSERT INTO clips(id,track_id,kind,lane_id,pos_ticks,length_ticks,muted) VALUES"
+            "(3,1,'audio',NULL,0,100,1),(4,1,'audio',7,0,100,0),(5,2,'audio',NULL,0,100,0);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES"
+            "(3,2,20),(4,3,20),(5,4,20)");
+    Counts counts;
+    auto spec=p.spec();
+    spec.tracks={1};
+    const auto scoped=render::captureFreezeAudio(*p.store,spec,p.loader(counts));
+    check(scoped.ready() && scoped.streams().size()==1 &&
+          samples(scoped.streams().front().preFx,1.0f),
+          "Freeze ignores missing muted, take and unrelated sources while rendering the selected PCM");
+    if(scoped.ready()) {
+        check(fs::exists(scoped.directory()/"asset-1.wav") &&
+              !fs::exists(scoped.directory()/"asset-2.wav") &&
+              !fs::exists(scoped.directory()/"asset-3.wav") &&
+              !fs::exists(scoped.directory()/"asset-4.wav"),
+              "only the playing media is pinned into the private generation");
+    }
+    check(db.execAndGet("SELECT muted FROM clips WHERE id=5").getInt()==0,
+          "capture scope leaves the original unrelated clip unchanged");
+
+    db.exec("UPDATE clips SET muted=0 WHERE id=3");
+    const auto audible=render::captureFreezeAudio(*p.store,spec,p.loader(counts));
+    check(!audible.ready() && audible.error().find("muted.wav")!=std::string::npos,
+          "the same missing source refuses Freeze once made playable");
+}
 } // namespace
 int main() {
     try {
         sharedPass();
         failureCases();
+        scopesOnlyPlayingAssets();
     } catch (const std::exception &error) {
         check(false, error.what());
     }
