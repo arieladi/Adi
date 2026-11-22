@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Room compared with the installed reference after optimization
+
+On 48 kHz stereo kick and bass the registered Room at `97f9ffd7` took a gross median of 70.25 µs at 256 frames and 525.30 µs at 2,048. The corresponding reference readings were 92.35 and 635.53 µs. Subtracting bypass within the balanced runs yielded 66.55 and 501.00 µs for ADI versus 71.90 and 594.48 µs for the reference. Gross p99 was 1,008.75 and 7,602.70 µs versus 1,238.85 and 14,853.35 µs. ADI missed 71 and 9 deadlines out of 16,384 active callbacks at each size. The reference missed 52 and 37. Small-block median and p99 improved while the number of small-block misses remained higher for ADI.
+
+Both hosts used matching controls, all 16 enabled stereo outputs matched their respective verified recordings, all 16 bypass captures matched dry and all paths reported zero latency. The sources use different room responses. An initial batch where the reference response had yet to load was excluded. The repeat allowed initialization before timing and checked the entire wet waveform for every run. These readings compare callback wall time across hosts. The earlier 27% steady-control cycle reduction compares the two ADI implementations on the same thread.
+
 ## 22 November 2026 — Stereo reflection processing for Room
 
 `clones/shaper-reverb-port` at `97f9ffd7` — Accumulate stereo room reflections in one ordered pass. **Lands after 3 December.** This updates the existing generated Room submission. Each reflection now stores its two gains together. The processor finds the valid end of the reflection list once per frame, then accumulates both channels in the original order. Other architectures retain a scalar path. A 32-bit scalar build passed the expanded Room suite.
