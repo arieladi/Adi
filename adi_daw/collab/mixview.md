@@ -11,6 +11,11 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Native sound checks for external keys
+
+- **DF-M3 — Clip → Limiter with external key passed.** Exact scheduled Release `8ba1d810`, 48 kHz / 256, 400,128 stereo frames per control. Both the active signed stereo key and the silent key held 527 samples of declared delay throughout and passed the full-array peak/RMS gates. Omitting the upstream Clip delay on the reference key broke the comparison by more than three orders of magnitude. The private fixture and hashes are sealed. This verifies the registered processor boundary. The durable export-history handoff remains open.
+- **DF-M3 — Ordinary and spectral EQ gaps isolated.** The independent ordinary-Bell model passes 25 of 29 saved and prospective static cases. Extreme Q and the exact Nyquist boundary remain open. The spectral replay now maps the threshold behavior verified by the threshold sweep. The six fixed routed-key cases still disagree on delay and mask shoulders after respecting each processor's declared delay. Diagnostic motion settings do not explain the gap. The matching and failed cells stay private. No product audio or CPU timing changed.
+
 ## 2026-11-22 — Scheduled Windows Release for review
 
 - **PR requested — `mixview/review-scope-lands-after-2026-12-03` `8ba1d810`; lands after 3 December.** Supersedes the `2e8896e7` preview. It brings both cold-export fixes into the Focus Scope preview and adds the strip audio-isolation gate and Device Spectrum producer. All 24 CTests passed, including 706 shared-analysis and 325 Mix View function component checks. The three headless shell suites passed 906 Mix View, 329 Arrangement and 7 appearance checks.
