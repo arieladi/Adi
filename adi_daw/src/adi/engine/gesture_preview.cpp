@@ -441,7 +441,8 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         playback.tempo=owner->playbackTempo(image->model);
         out->clips=std::make_shared<ClipPlayback>(image->clips,owner->transport_,owner->spec_.sampleRate,
             owner->spec_.channels,owner->spec_.maxFrames,owner->spec_.progressiveDecoder);
-        out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_,owner->eventPathFor(image->model));
+        out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_,
+                                             owner->eventPathFor(image->model),clipNoteExpressions(*image->clips));
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         auto excluded=committedOverrides?*committedOverrides:owner->overridden_;excluded.insert(owner->writingAutomation_.begin(),owner->writingAutomation_.end());
         out->strips=bindStripAutomation(program,excluded);

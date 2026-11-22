@@ -4,6 +4,7 @@
 
 #include "juce/clap_host.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/engine/graph.hpp"
 #include "adi/scan_batch.hpp"
 
 #include <algorithm>
@@ -1168,23 +1169,20 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     inBufs_.assign(inBuses_.size(), clap_audio_buffer_t{});
     outBufs_.assign(outBuses_.size(), clap_audio_buffer_t{});
 
-    // ADR-0056's arithmetic, applied to this device rather than re-derived:
-    // 500 Hz MPE+ across the block, three dimensions per note, at the
-    // polyphony the graph is configured for -- plus room for note on/off.
-    const double frames = static_cast<double>(maxFrames);
-    const double updateFrames = (sampleRate > 0.0) ? (frames / sampleRate) * 500.0 : 1.0;
-    const auto perNote = static_cast<std::int32_t>(updateFrames * 3.0) + 2;
-    events_.reserve((perNote > 0 ? perNote : 8) * 16);
-    // The route can turn one note-on into four outputs (three channel resets
-    // and the note), plus the Configuration Message once.
-    const std::int32_t routedCap = (perNote > 0 ? perNote : 8) * 16 + 16 * 4 + 8;
+    // The plug-in input must hold the same expression block as the graph.
+    const auto eventCapacity = engine::Graph::deriveEventCapacity(sampleRate, maxFrames, 16);
+    events_.reserve(eventCapacity);
+    // Room for channel resets on note-on and one configuration message.
+    constexpr std::int32_t routerHeadroom = 16 * 4 + 8;
+    const auto routedCap =
+        std::min(eventCapacity, std::numeric_limits<std::int32_t>::max() - routerHeadroom) + routerHeadroom;
     routedStore_.assign(static_cast<std::size_t>(routedCap), engine::MpeOut{});
     routed_ = engine::MpeOutList(routedStore_.data(), routedCap);
 
     pending_.assign(257, PendingParam{}); // 256 usable slots plus the SPSC sentinel
     pendingRead_.store(0,std::memory_order_relaxed);
     pendingWrite_.store(0,std::memory_order_relaxed);
-    injected_.assign(static_cast<std::size_t>((perNote > 0 ? perNote : 8) * 16),
+    injected_.assign(static_cast<std::size_t>(eventCapacity),
                      engine::Event{});
     injectedUsed_ = 0;
 

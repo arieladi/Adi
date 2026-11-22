@@ -992,6 +992,106 @@ void testEventOverflowIsCountedNotTruncated() {
 
 // --- the whole pipeline, through the real scheduler --------------------------
 
+void testSavedExpressionBurstThroughClap() {
+    section("MI-08 -- five dimensions at the CLAP segment boundary");
+    constexpr std::int32_t block = 4096, frames = 43, voices = 16;
+    constexpr std::array dimensions{ExpressionDim::Pitch, ExpressionDim::Pressure,
+                                    ExpressionDim::Timbre, ExpressionDim::Gain, ExpressionDim::Pan};
+    const auto authored = [](std::int32_t update) {
+        const double position = static_cast<double>(update) / frames;
+        return std::array{12.0 * position, position, position, -12.0 * (1.0 - position), position - 0.5};
+    };
+    struct Log final : Fake {
+        std::vector<std::pair<std::int64_t, clap_event_note_expression_t>> expression;
+        std::vector<std::int32_t> onset, release;
+        Log() {
+            declareNotePorts = true;
+            expression.reserve(3440);
+            onset.reserve(16);
+            release.reserve(16);
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
+                auto& log = static_cast<Log&>(Fake::self(p));
+                const auto* events = pd->in_events;
+                for (std::uint32_t i = 0; i < events->size(events); ++i) {
+                    const auto* header = events->get(events, i);
+                    if (header->type == CLAP_EVENT_NOTE_EXPRESSION) {
+                        const auto* value = reinterpret_cast<const clap_event_note_expression_t*>(header);
+                        log.expression.emplace_back(pd->steady_time + header->time, *value);
+                    } else if (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF) {
+                        const auto* note = reinterpret_cast<const clap_event_note_t*>(header);
+                        auto& logNotes = header->type == CLAP_EVENT_NOTE_ON ? log.onset : log.release;
+                        logNotes.push_back(note->note_id);
+                    }
+                }
+                return CLAP_PROCESS_CONTINUE;
+            };
+        }
+    };
+    for (std::int32_t spacing : {96, 1}) {
+        Log log;
+        DeviceIdentity identity;
+        identity.format = "clap";
+        ClapDevice device(&log.plugin, identity);
+        DeviceNode node(device);
+        engine::Graph graph;
+        const auto receiver = graph.addNode(node);
+        graph.setOutput(receiver);
+        graph.prepare(48000.0, block);
+
+        bool queued = true;
+        for (std::int32_t voice = 1; voice <= voices; ++voice)
+            queued = graph.pushInputEvent(receiver, noteOn(static_cast<std::uint64_t>(voice), 47 + voice, .75)) && queued;
+        for (std::int32_t update = 0; update < frames; ++update) {
+            const auto values = authored(update);
+            for (std::int32_t voice = 1; voice <= voices; ++voice) {
+                for (std::size_t dimension = 0; dimension < dimensions.size(); ++dimension) {
+                    auto event = expr(static_cast<std::uint64_t>(voice), dimensions[dimension], values[dimension]);
+                    event.frame = update * spacing;
+                    event.paramId = engine::kNativeNoteExpressionUnits;
+                    queued = graph.pushInputEvent(receiver, event) && queued;
+                }
+            }
+        }
+        for (std::int32_t voice = 1; voice <= voices; ++voice) {
+            auto event = noteOn(static_cast<std::uint64_t>(voice), 47 + voice, .5, (frames - 1) * spacing + 1);
+            event.type = engine::EventType::NoteOff;
+            queued = graph.pushInputEvent(receiver, event) && queued;
+        }
+        std::array<float, block> left{}, right{};
+        float* output[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = output;
+        io.numOut = 2;
+        io.frames = block;
+        graph.process(io);
+
+        constexpr auto expected = frames * voices * dimensions.size();
+        bool exact = log.expression.size() == expected;
+        std::size_t index = 0;
+        for (std::int32_t update = 0; exact && update < frames; ++update) {
+            auto values = authored(update);
+            values[3] = std::pow(10.0, values[3] / 20.0);
+            values[4] = (values[4] + 1) / 2;
+            for (std::int32_t voice = 1; voice <= voices; ++voice) {
+                for (std::size_t dimension = 0; dimension < dimensions.size(); ++dimension) {
+                    const auto& [time, expression] = log.expression[index++];
+                    exact = exact && time == update * spacing && expression.note_id == voice &&
+                        expression.key == 47 + voice && expression.expression_id == clapExprFor(dimensions[dimension]) &&
+                        std::abs(expression.value - values[dimension]) < 1e-12;
+                }
+            }
+        }
+        check(queued && graph.stats().eventsDropped == 0, "the outer graph admits every event");
+        check(graph.stats().segments == (spacing == 1 ? 1 : 43),
+              "dense authored points share one segment while grid points split");
+        std::printf("  spacing %d: %zu/%zu expressions, %zu/%d releases, %lld reported host drops\n",
+                    spacing, log.expression.size(), expected, log.release.size(), voices,
+                    static_cast<long long>(device.eventsDropped()));
+        check(exact, "every tagged expression reaches the CLAP processor at its exact time");
+        check(log.onset.size() == voices && log.release == log.onset, "every sounding note receives its release");
+    }
+}
+
 void testMpePlusReachesThePluginThroughTheGraph() {
     section("ADR-0054/0075 -- 500 Hz MPE+ through the real split path, no quantisation");
 
@@ -3602,6 +3702,7 @@ int main() {
     testClapProcessHonoursTheSegmentOffset();
     testProcessErrorSilencesRatherThanLeaking();
     testEventOverflowIsCountedNotTruncated();
+    testSavedExpressionBurstThroughClap();
     testMpePlusReachesThePluginThroughTheGraph();
     testTheSegmentBoundItself();
     testRestartCausesAreDistinguished();

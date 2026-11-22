@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/graph.hpp"
+#include "adi/blob.hpp"
 #include "adi/engine/scope.hpp"
 #include "adi/engine/render_workers.hpp"
 #include "adi/engine/transport.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -72,15 +74,16 @@ bool Graph::pushInputEvent(NodeId to, const Event& e) {
 
 std::int32_t Graph::deriveEventCapacity(double sampleRate, std::int32_t maxFrames,
                                         std::int32_t polyphony) noexcept {
-    // ADR-0054's instrument at ADR-0049's largest block: 500 Hz update frames
-    // x three dimensions x polyphony, plus a note-on and note-off each, plus a
-    // floor so a 64-frame block still holds a chord arriving at once.
-    if (sampleRate <= 0.0 || maxFrames <= 0) return 1024;
-    const double frames = 500.0 * (static_cast<double>(maxFrames) / sampleRate);
-    const double total = frames * 3.0 * static_cast<double>(polyphony)
-                       + 2.0 * static_cast<double>(polyphony);
-    const auto v = static_cast<std::int32_t>(total) + 64;
-    return v < 256 ? 256 : v;
+    // Count whole grid updates in the worst-aligned block. Stored note
+    // expression can vary all five standard dimensions at each update.
+    // Each voice can also start or be chased before the first grid sample.
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0 || maxFrames <= 0) return 1024;
+    const double step = std::max(1.0, std::floor(sampleRate / 500.0));
+    const double updates = std::ceil(static_cast<double>(maxFrames) / step);
+    const double perVoice = (updates + 1.0) * static_cast<double>(kStandardExpressionDimensionCount) + 2.0;
+    const double total = perVoice * static_cast<double>(std::max(polyphony, 0)) + 64.0;
+    return static_cast<std::int32_t>(
+        std::clamp(total, 256.0, static_cast<double>(std::numeric_limits<std::int32_t>::max())));
 }
 
 std::int32_t Graph::maxFloorFor(double sampleRate) noexcept {

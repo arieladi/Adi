@@ -4,6 +4,7 @@
 
 #include "juce/vst3_host.hpp"
 #include "juce/vst3_scan_host.hpp"
+#include "adi/engine/graph.hpp"
 #include "adi/scan_batch.hpp"
 
 #include <pluginterfaces/vst/ivsteditcontroller.h>
@@ -660,25 +661,24 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
         }
     }
 
-    // Sized from the GRANTED block (ADR-0049) and allocated here, never in
-    // process (ADR-0010). Capacity is ADR-0056's arithmetic: a 500 Hz MPE+
-    // stream across this block, three dimensions, at polyphony 16.
-    const double updates = (sampleRate > 0.0)
-                             ? (static_cast<double>(maxFrames) / sampleRate) * 500.0 : 1.0;
-    const auto perNote = static_cast<std::int32_t>(updates * 3.0) + 2;
-    events_.reserve((perNote > 0 ? perNote : 8) * 16);
+    // Allocate for the graph's full note and expression block during prepare.
+    const auto eventCapacity = engine::Graph::deriveEventCapacity(sampleRate, maxFrames, 16);
+    events_.reserve(eventCapacity);
     // ADR-0097: every queue holds a block's worth of one dimension's stream,
     // which is what MpeMidi's IMidiMapping path puts into one parameter.
-    const std::int32_t points = (perNote > 0 ? perNote : 8) + 8;
+    const double updates = (sampleRate > 0.0)
+                             ? (static_cast<double>(maxFrames) / sampleRate) * 500.0 : 1.0;
+    const auto points = static_cast<std::int32_t>(updates * 3.0) + 10;
     paramChanges_.reserve(256, points);
     outParams_.reserve(256, points);
-    // The router can turn one note-on into four outputs (three channel resets
-    // and the note), plus the Configuration Message once.
-    const std::int32_t routedCap = (perNote > 0 ? perNote : 8) * 16 + 16 * 4 + 8;
+    // Room for channel resets on note-on and one configuration message.
+    constexpr std::int32_t routerHeadroom = 16 * 4 + 8;
+    const auto routedCap =
+        std::min(eventCapacity, std::numeric_limits<std::int32_t>::max() - routerHeadroom) + routerHeadroom;
     routedStore_.assign(static_cast<std::size_t>(routedCap), engine::MpeOut{});
     routed_ = engine::MpeOutList(routedStore_.data(), routedCap);
     router_.reset();
-    injected_.assign(static_cast<std::size_t>((perNote > 0 ? perNote : 8) * 16),
+    injected_.assign(static_cast<std::size_t>(eventCapacity),
                      engine::Event{});
     injectedUsed_ = 0;
     readInputBusRoles();

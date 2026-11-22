@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Owned SDK fixture only. No editor, desktop input or audio device.
+#include "adi/blob.hpp"
 #include "juce/vst3_host.hpp"
 #include "temp_directory.hpp"
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <stdexcept>
+#include <vector>
 using namespace adi;
 namespace {
 int checks = 0, failures = 0;
@@ -17,6 +21,62 @@ void check(bool yes, const char *label) {
 }
 std::filesystem::path native(const std::string &s) {
     return std::filesystem::path(std::u8string(s.begin(), s.end()));
+}
+void expressionBlock(device::Vst3Host& host, const juce::PluginDescription& desc,
+                     std::uint64_t (*completedProcessCalls)()) {
+    constexpr double sampleRate = 48000.0;
+    constexpr std::int32_t frames = 4096;
+    constexpr std::uint64_t voices = 16;
+    constexpr std::int32_t updates = 44;
+    constexpr std::int32_t updateFrames = 96;
+    constexpr std::array dimensions{ExpressionDim::Pitch, ExpressionDim::Pressure, ExpressionDim::Timbre,
+                                    ExpressionDim::Gain, ExpressionDim::Pan};
+    std::string error;
+    auto instance = host.instantiate(desc, sampleRate, frames, error);
+    if (!instance)
+        throw std::runtime_error(error);
+    device::Vst3Device vst(std::move(instance), device::identityOf(desc));
+    vst.prepare(sampleRate, frames);
+    check(vst.usingRawProcessor(), "expression budget exercises the raw VST3 host");
+
+    std::vector<engine::Event> events;
+    events.reserve(voices * (static_cast<std::size_t>(updates) * dimensions.size() + 2));
+    for (std::uint64_t voice = 1; voice <= voices; ++voice)
+        events.push_back({0, engine::EventType::NoteOn, 0, static_cast<std::uint16_t>(47 + voice), voice, 0, 0.8});
+    for (std::int32_t update = 0; update < updates; ++update) {
+        // Chase at the start, then a 500 Hz stream whose first grid point is frame 1.
+        const auto frame = update == 0 ? 0 : 1 + (update - 1) * updateFrames;
+        for (std::uint64_t voice = 1; voice <= voices; ++voice) {
+            for (const auto dimension : dimensions) {
+                events.push_back({frame, engine::EventType::NoteExpression, 0,
+                                  static_cast<std::uint16_t>(dimension), voice, engine::kNativeNoteExpressionUnits,
+                                  static_cast<double>(update) / updates});
+            }
+        }
+    }
+    for (std::uint64_t voice = 1; voice <= voices; ++voice)
+        events.push_back({frames - 1, engine::EventType::NoteOff, 0,
+                          static_cast<std::uint16_t>(47 + voice), voice, 0, 0.0});
+
+    std::array<float, frames> left{}, right{};
+    float* output[]{left.data(), right.data()};
+    engine::NodeIo io;
+    io.out = output;
+    io.channels = 2;
+    io.frames = frames;
+    io.sampleRate = sampleRate;
+    io.events = {events.data(), static_cast<std::int32_t>(events.size())};
+    const auto completedBefore = completedProcessCalls();
+    vst.process(io);
+    check(completedProcessCalls() == completedBefore + 1, "the fixture processes one unsplit expression block");
+    check(vst.expressionRoute() == engine::ExpressionRoute::NoteExpression, "the fixture uses VST3 note expression");
+    const auto dropped = vst.eventsDropped();
+    const auto outOfRange = vst.eventsOutOfRange();
+    if (dropped != 0 || outOfRange != 0)
+        std::printf("VST3 block of %zu events: %lld dropped, %lld out of range\n",
+                    events.size(), static_cast<long long>(dropped), static_cast<long long>(outOfRange));
+    check(dropped == 0, "the host keeps the full five-dimension expression block");
+    check(outOfRange == 0, "the host keeps every event inside the full block");
 }
 void contract() {
     test::TempDirectory temp("vst3_key", "owned");
@@ -41,9 +101,17 @@ void contract() {
     auto last = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureKeyLast"));
     auto channels = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureKeyChannels"));
     auto inPlace=reinterpret_cast<int(*)()>(module.getFunction("adiFixtureMainInPlace"));
-    if (!first || !last || !channels || !inPlace)
+    const auto completedProcessCalls = reinterpret_cast<std::uint64_t (*)()>(
+        module.getFunction("adiFixtureCompletedProcessCalls"));
+    if (!first || !last || !channels || !inPlace || !completedProcessCalls)
         throw std::runtime_error("owned fixture observations unavailable");
-    for (const auto &desc : list.getTypes())
+    const auto types = list.getTypes();
+    const auto expression = std::find_if(types.begin(), types.end(),
+        [](const auto& desc) { return desc.name == "ADI Test NoteExpr"; });
+    if (expression == types.end())
+        throw std::runtime_error("owned VST3 expression fixture not discovered");
+    expressionBlock(host, *expression, completedProcessCalls);
+    for (const auto &desc : types)
         for (bool wide : {false, true}) {
             std::string error;
             auto instance = host.instantiate(desc, 48000, 32, error);

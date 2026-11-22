@@ -2,15 +2,19 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
+#include <string_view>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -881,6 +885,319 @@ void signedOrigins() {
 
 }
 namespace {
+bool sustainedExpressionBlock(Precision width, int capacity = 0) {
+    constexpr int block = 4096;
+    constexpr int end = 2 * block;
+    constexpr int grid = 96; // 500 Hz at 48 kHz
+    constexpr int begin = grid - 1; // chase, then a full set of updates in block one
+    constexpr int firstGrid = 1;
+    constexpr auto ticksPer100Samples = 24024;
+    constexpr auto startTicks = static_cast<std::int64_t>(begin) * ticksPer100Samples / 100;
+    constexpr auto duration = static_cast<std::int64_t>(end) * ticksPer100Samples / 100;
+    constexpr std::size_t voices = 16;
+    constexpr std::array<std::array<float, 2>, 5> values{{
+        {0, 8}, {0, 1}, {0, 1}, {-12, 0}, {-.5f, .5f},
+    }};
+    constexpr std::size_t updates = 2 + (end - 1 - firstGrid) / grid;
+    constexpr std::size_t expected = updates * voices * values.size();
+
+    Fixture f(48000, block, width);
+    f.clip();
+    std::array<NoteRecord, voices> notes{};
+    for (std::size_t voice = 0; voice < notes.size(); ++voice) {
+        auto& note = notes[voice];
+        note.note_id = voice + 1;
+        note.start_ticks = startTicks;
+        note.dur_ticks = duration;
+        note.key = static_cast<std::uint8_t>(48 + voice);
+        note.channel = 3;
+        note.vel_on = note.vel_off = 64;
+        note.probability = 10000;
+        for (std::size_t dimension = 0; dimension < values.size(); ++dimension) {
+            std::array<ExpressionPoint, 2> points{};
+            points[0].value = values[dimension][0];
+            points[0].curve = static_cast<std::uint8_t>(Curve::Linear);
+            points[1].time_ticks = duration;
+            points[1].value = values[dimension][1];
+            const auto blob = writeStream<ExpressionPoint>(FourCC::Expression, points);
+            SQLite::Statement row(f.store->db(),
+                "INSERT INTO note_expression(clip_id,note_id,dimension,data) VALUES(1,?,?,?)");
+            row.bind(1, static_cast<std::int64_t>(note.note_id));
+            row.bind(2, static_cast<int>(dimension));
+            row.bind(3, blob.data(), static_cast<int>(blob.size()));
+            row.exec();
+        }
+    }
+    if (!f.store->putEventStream(1, "notes", writeStream<NoteRecord>(FourCC::Notes, notes)))
+        throw std::runtime_error("write sustained expression's notes");
+
+    f.load();
+    if (capacity > 0) {
+        auto* graph = f.session.graph().currentGraph();
+        graph->setEventCapacity(capacity);
+        graph->prepare(48000, block);
+    }
+    f.session.transport().locate(begin);
+    f.render();
+    f.render();
+    f.render(1);
+
+    std::array<std::uint64_t, voices> liveIds{};
+    std::array<bool, voices> released{};
+    std::array<bool, expected> seen{};
+    std::size_t received = 0;
+    bool exact = true;
+    const auto& instrument = *f.instrument;
+    for (std::size_t i = 0; i < instrument.count; ++i) {
+        const auto& [event, clock] = instrument.heard[i];
+        if (event.type == EventType::NoteOn || event.type == EventType::NoteOff) {
+            if (event.dim < 48 || event.dim >= 48 + voices) {
+                exact = false;
+                continue;
+            }
+            const auto voice = static_cast<std::size_t>(event.dim - 48);
+            if (event.type == EventType::NoteOn) {
+                exact = exact && clock == 0 && event.noteId != 0 && liveIds[voice] == 0;
+                liveIds[voice] = event.noteId;
+            } else {
+                exact = exact && clock == end && event.noteId == liveIds[voice] && !released[voice];
+                released[voice] = true;
+            }
+            continue;
+        }
+        if (event.type != EventType::NoteExpression) continue;
+        const auto voice = std::find(liveIds.begin(), liveIds.end(), event.noteId);
+        if (event.noteId == 0 || voice == liveIds.end() ||
+            (event.dim >= values.size() || clock < 0 || clock >= end) ||
+            (clock > 0 && (clock - firstGrid) % grid != 0)) {
+            exact = false;
+            continue;
+        }
+        const auto voiceIndex = static_cast<std::size_t>(voice - liveIds.begin());
+        const auto update = clock == 0 ? 0 : 1 + (clock - firstGrid) / grid;
+        const auto index = (static_cast<std::size_t>(update) * voices + voiceIndex) *
+            values.size() + event.dim;
+        const auto ticks = clock > 0 ? (static_cast<double>(clock + begin) * ticksPer100Samples / 100.0
+                                       - startTicks) : 0.0;
+        const auto fraction = ticks / duration;
+        const auto& endpoints = values[event.dim];
+        const auto value = endpoints[0] + (endpoints[1] - endpoints[0]) * fraction;
+        exact = exact && !seen[index] && event.paramId == kNativeNoteExpressionUnits &&
+            std::abs(event.value - value) < 1e-7;
+        seen[index] = true;
+        ++received;
+    }
+    if (capacity > 0 || received != expected)
+        std::printf("stored expression grid %zu/%zu updates delivered\n", received, expected);
+    check(std::all_of(released.begin(), released.end(), [](bool done) { return done; }) &&
+              instrument.balance() == 0,
+          "16 sustained voices receive all note-offs at the block boundary");
+    return exact && received == expected;
+}
+
+void sessionExpressionCapacity() {
+    for (auto width : {Precision::Float32, Precision::Float64})
+        check(sustainedExpressionBlock(width),
+              "all five saved curves reach all 16 voices on each 500 Hz update");
+    check(!sustainedExpressionBlock(Precision::Float32, 2144),
+          "the former three-dimension event capacity loses the stored expression grid");
+    check(!sustainedExpressionBlock(Precision::Float32, 3536),
+          "a five-dimension grid without room for chased values still loses expression");
+}
+
+void coherentSessionExpression() {
+    for (const bool refreshing : {false, true}) for (const bool borrow : {false, true}) {
+        Fixture f;
+        f.clip();
+        if (refreshing) f.load();
+        ExpressionPoint initial{};
+        initial.value = 0.25f;
+        const auto initialCurve = writeStream<ExpressionPoint>(FourCC::Expression, std::vector{initial});
+        {
+            SQLite::Statement create(f.store->db(),
+                "INSERT INTO note_expression(clip_id,note_id,dimension,data) VALUES(1,42,2,?)");
+            create.bind(1, initialCurve.data(), static_cast<int>(initialCurve.size()));
+            create.exec();
+        }
+        auto updated = initial;
+        updated.value = 0.75f;
+        const auto changedCurve = writeStream<ExpressionPoint>(FourCC::Expression, std::vector{updated});
+        NoteRecord note{};
+        note.start_ticks = 48048;
+        note.dur_ticks = 480480;
+        note.note_id = 42;
+        note.key = 60;
+        note.channel = 3;
+        note.vel_on = 93;
+        note.vel_off = 37;
+        note.probability = 10000;
+        note.tuning_cents = 31.25f;
+        const auto changedNotes = writeStream<NoteRecord>(FourCC::Notes, std::vector{note});
+        SQLite::Database writer(media::pathUtf8(f.store->path()), SQLite::OPEN_READWRITE);
+        struct Race {
+            SQLite::Database& writer;
+            const std::vector<std::byte>& notes;
+            const std::vector<std::byte>& curve;
+            bool fired = false;
+            bool committed = false;
+        } race{writer, changedNotes, changedCurve};
+        auto* reader = f.store->db().getHandle();
+        std::optional<SQLite::Transaction> outer;
+        if (borrow) outer.emplace(f.store->db(), SQLite::TransactionBehavior::DEFERRED);
+        sqlite3_trace_v2(reader, SQLITE_TRACE_STMT, [](unsigned, void* context, void* statement, void*) {
+            auto& state = *static_cast<Race*>(context);
+            const auto* sql = sqlite3_sql(static_cast<sqlite3_stmt*>(statement));
+            if (state.fired || !sql ||
+                !std::string_view(sql).starts_with("SELECT id,clip_id,note_id,dimension,data FROM note_expression"))
+                return 0;
+            state.fired = true;
+            try {
+                SQLite::Transaction edit(state.writer);
+                SQLite::Statement notes(state.writer,
+                    "UPDATE event_streams SET data=? WHERE clip_id=1 AND stream_kind='notes'");
+                notes.bind(1, state.notes.data(), static_cast<int>(state.notes.size()));
+                SQLite::Statement expression(state.writer,
+                    "UPDATE note_expression SET data=? WHERE clip_id=1 AND note_id=42 AND dimension=2");
+                expression.bind(1, state.curve.data(), static_cast<int>(state.curve.size()));
+                const auto noteCount = notes.exec();
+                const auto expressionCount = expression.exec();
+                edit.commit();
+                state.committed = noteCount == 1 && expressionCount == 1;
+            } catch (const std::exception& error) {
+                std::printf("coherence writer: %s\n", error.what());
+            }
+            return 0;
+        }, &race);
+        if (refreshing) f.refresh();
+        else f.load();
+        sqlite3_trace_v2(reader, 0, nullptr, nullptr);
+        f.render();
+        const auto timbreAt = [&](std::int64_t sample) {
+            for (std::size_t i = 0; i < f.instrument->count; ++i) {
+                const auto& received = f.instrument->heard[i];
+                if (received.clock == sample && received.e.type == EventType::NoteExpression &&
+                    received.e.dim == static_cast<std::uint16_t>(ExpressionDim::Timbre))
+                    return received.e.value;
+            }
+            return -1.0;
+        };
+        std::printf("coherence %s%s: writer committed=%d, timbre at sample 100 %.2f, at 200 %.2f\n",
+                    refreshing ? "refresh" : "load", borrow ? " borrowed" : "",
+                    race.committed ? 1 : 0, timbreAt(100), timbreAt(200));
+        check(race.fired && race.committed, "a second connection committed both streams inside the read");
+        check(timbreAt(100) == 0.25 && timbreAt(200) < 0,
+              refreshing ? "refresh hears old ANOT and AEXP from their shared read"
+                         : "load hears old ANOT and AEXP from their shared read");
+        check((sqlite3_get_autocommit(reader) == 0) == borrow,
+              "only the caller owns the surrounding read transaction");
+        if (outer) outer->commit();
+        f.refresh();
+        f.session.transport().locate(0);
+        f.clock = 0;
+        f.instrument->count = 0;
+        f.render();
+        check(timbreAt(200) == 0.75 && timbreAt(100) < 0,
+              "a subsequent refresh hears both streams from the new revision");
+    }
+}
+
+void sessionExpression() {
+    for(const auto width:{Precision::Float32,Precision::Float64})for(int block:{64,257}) {
+        Fixture f(48000,block,width);
+        f.clip();
+        auto& db=f.store->db();
+        const auto put=[&](int dimension,const std::vector<ExpressionPoint>& points) {
+            const auto bytes=writeStream<ExpressionPoint>(FourCC::Expression,points);
+            SQLite::Statement row(db,"INSERT INTO note_expression(clip_id,note_id,dimension,data) VALUES(1,42,?,?)");
+            row.bind(1,dimension);row.bind(2,bytes.data(),static_cast<int>(bytes.size()));row.exec();
+        };
+        ExpressionPoint a{},b{};
+        a.curve=1;b.time_ticks=24024;b.value=12.0f;
+        put(0,{a,b});
+        a.value=-12.0f;put(3,{a});
+        a.value=-0.5f;put(4,{a});
+        if(width==Precision::Float32 && block==64) {
+            Transport transport;
+            transport.play();
+            MidiClips midi(rows::readModel(*f.store),transport,48000,makeMidiClipState(),{},readNoteExpressions(*f.store));
+            const auto source=midi.sourcesFor(1).at(0);
+            std::array<Event,3> shortBuffer{};
+            EventList crowded(shortBuffer.data(),3);
+            source->sourceEvents(crowded,256);
+            check(crowded.size()==2 && shortBuffer[0].type==EventType::NoteOn,
+                  "expression preserves space for the owned note release under pressure");
+            transport.advance(256);
+            std::array<Event,8> availableBuffer{};
+            EventList available(availableBuffer.data(),8);
+            source->sourceEvents(available,256);
+            bool recoveredGain=false;
+            for(std::int32_t i=0;i<available.size();++i) {
+                const auto& event=availableBuffer[static_cast<std::size_t>(i)];
+                if(event.type==EventType::NoteExpression && event.dim==3 && event.frame==0 &&
+                   event.noteId==shortBuffer[0].noteId && event.value==-12)recoveredGain=true;
+            }
+            check(recoveredGain,"the next block delivers the latest expression after a full event buffer");
+        }
+        f.load();
+        while(f.clock<400)f.render();
+        const auto& heard=f.instrument->heard;
+        const auto count=f.instrument->count;
+        const auto pitchOnsets=std::count_if(heard.data(),heard.data()+count,[](const auto& event) {
+            return event.e.type==EventType::NoteExpression && event.e.dim==0 && event.clock==100;
+        });
+        const auto find=[&](std::int64_t sample,ExpressionDim dimension,double value) {
+            for(std::size_t i=0;i<count;++i) {
+                const auto& event=heard[i];
+                if(event.e.type==EventType::NoteExpression && event.e.dim==static_cast<std::uint16_t>(dimension) &&
+                   event.clock==sample && std::abs(event.e.value-value)<1e-7 &&
+                   event.e.noteId==heard[0].e.noteId && event.e.paramId==kNativeNoteExpressionUnits)return true;
+            }
+            return false;
+        };
+        check(count>=6 && heard[0].e.type==EventType::NoteOn && heard[0].clock==100 && pitchOnsets==1 &&
+              find(100,ExpressionDim::Pitch,0.3125) && find(100,ExpressionDim::Gain,-12) && find(100,ExpressionDim::Pan,-.5),
+              "saved AEXP reaches the instrument after Note On with native gain and pan and combined tuning");
+        check(find(192,ExpressionDim::Pitch,11.3525) && find(200,ExpressionDim::Pitch,12.3125),
+              "the 500 Hz grid and off-grid curve knot reach the same note at exact samples");
+        f.session.transport().locate(250);
+        const auto before=f.instrument->count;
+        const auto at=f.clock;
+        f.render();
+        bool chased=false;
+        std::uint64_t voice=0;
+        for(std::size_t i=before;i<f.instrument->count;++i) {
+            const auto& event=heard[i];
+            if(event.e.type==EventType::NoteOn)voice=event.e.noteId;
+            if(event.e.type==EventType::NoteExpression && event.e.dim==0 && event.e.noteId==voice &&
+               event.e.noteId!=heard[0].e.noteId && event.clock==at && event.e.value==12.3125)chased=true;
+        }
+        check(chased,"Locate restores the held expression on the new chased note ID");
+        f.refresh();
+        const auto previousCount=f.instrument->count;
+        f.render();
+        const bool retained=std::none_of(heard.data()+previousCount,heard.data()+f.instrument->count,[](const auto& event) {
+            return event.e.type==EventType::NoteOn || event.e.type==EventType::NoteOff;
+        });
+        check(retained && f.instrument->balance()==1,"unchanged expression keeps the sounding note across a graph refresh");
+
+        db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=36036,loop_len_ticks=48048 WHERE id=1");
+        f.refresh();
+        f.session.transport().locate(0);
+        f.clock=0;
+        f.instrument->count=0;
+        while(f.clock<460)f.render();
+        std::uint64_t repeatedVoice=0;
+        bool repeated=false;
+        for(std::size_t i=0;i<f.instrument->count;++i) {
+            const auto& event=heard[i];
+            if(event.clock!=350)continue;
+            if(event.e.type==EventType::NoteOn) repeatedVoice=event.e.noteId;
+            if(event.e.type==EventType::NoteExpression && event.e.dim==0 && repeatedVoice &&
+               event.e.noteId==repeatedVoice && event.e.value==6.3125)repeated=true;
+        }
+        check(repeated,"a clip loop chases a spanning note's expression from the cycle's source offset");
+    }
+}
 void sessionControllers() {
     Fixture f;
     f.clip(1, 0, 5765760);
@@ -1002,6 +1319,73 @@ void storedSplitClock() {
         check(OpJournal(*f.store).commit(fade).ok, "the full projected faded split span is accepted");
     }
 }
+void expressionKnotFollowsNoteClock() {
+    Fixture f;
+    f.clip(1, 0);
+    auto& db = f.store->db();
+    db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,"
+            "pos_ns=500000000,length_ns=750000000 WHERE id=1");
+    constexpr std::int64_t knotTicks = 69069;
+    constexpr std::int64_t knotSample = 24287;
+    NoteRecord sustained{};
+    sustained.dur_ticks = 480480;
+    sustained.note_id = 42;
+    sustained.key = 60;
+    sustained.vel_on = 100;
+    sustained.vel_off = 64;
+    sustained.probability = 10000;
+    auto cue = sustained;
+    cue.note_id = 43;
+    cue.key = 65;
+    cue.start_ticks = knotTicks;
+    const auto notes = writeStream<NoteRecord>(FourCC::Notes, std::vector{sustained,cue});
+    if (!f.store->putEventStream(1,"notes",notes))
+        throw std::runtime_error("write native half-sample note stream");
+
+    ExpressionPoint initial{};
+    initial.value = 0.25f;
+    auto knot = initial;
+    knot.time_ticks = knotTicks;
+    knot.value = 0.75f;
+    const auto expression = writeStream<ExpressionPoint>(FourCC::Expression, std::vector{initial,knot});
+    {
+        SQLite::Statement row(db, "INSERT INTO note_expression(clip_id,note_id,dimension,data) VALUES(1,42,2,?)");
+        row.bind(1,expression.data(),static_cast<int>(expression.size()));
+        row.exec();
+    }
+    f.load();
+    const auto when = [&](EventType type,std::uint16_t dim,std::optional<double> value = std::nullopt) {
+        for (std::size_t i=0;i<f.instrument->count;++i) {
+            const auto& heard=f.instrument->heard[i];
+            if (heard.e.type==type && heard.e.dim==dim && (!value || heard.e.value==*value))
+                return heard.clock;
+        }
+        return std::int64_t{-1};
+    };
+    constexpr auto timbre = static_cast<std::uint16_t>(ExpressionDim::Timbre);
+    f.clock=23936;
+    f.session.transport().locate(f.clock);
+    f.render();
+    const auto attack=when(EventType::NoteOn,65);
+    const auto transition=when(EventType::NoteExpression,timbre,0.75);
+    check(attack==knotSample,"native linear note still lands on its original half-sample boundary");
+    check(transition==attack,
+          "an off-grid AEXP knot shares the sample of the same-tick note attack");
+
+    f.instrument->count=0;
+    f.clock=knotSample;
+    f.session.transport().locate(knotSample);
+    f.render(64);
+    const auto chased=when(EventType::NoteExpression,timbre);
+    const auto chasedValue=when(EventType::NoteExpression,timbre,0.75);
+    check(chased==knotSample && chasedValue==knotSample,
+          "locating onto the shared boundary chases the new expression immediately");
+    if (transition!=attack || chasedValue!=knotSample)
+        std::printf("half-sample clock: note %lld, knot %lld, first chased %lld, new chased %lld\n",
+                    static_cast<long long>(attack),static_cast<long long>(transition),
+                    static_cast<long long>(chased),static_cast<long long>(chasedValue));
+}
+
 } // namespace
 
 int main(int argc,char** argv){
@@ -1010,11 +1394,19 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "take-lanes") takeLanePlayback(); }
     catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "expression-capacity") sessionExpressionCapacity(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "coherence") coherentSessionExpression(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if(only=="all" || only=="expression")sessionExpression(); }
+    catch(const std::exception& e) {check(false,e.what());}
     try { if (only == "all" || only == "live-input") liveInput(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
+    try { if (only == "all" || only == "knot-clock") expressionKnotFollowsNoteClock(); }
+    catch (const std::exception& e) { check(false,e.what()); }
     try { if (only=="all" || only=="stored") storedSplitClock(); }
     catch(const std::exception& e) { check(false,e.what()); }
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
