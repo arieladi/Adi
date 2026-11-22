@@ -11,6 +11,11 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Matched-filter review branch reconciled
+- #558 merged main `87ea349c69` at `3c767304a9`. Resolved its only conflict in the CMake registration. Main's EQ, serial EQ and compressor registrations are retained alongside the standalone matched-filter target and test. The filter and its test match the prior reviewed source.
+- Configured the full headless CMake tree with MSVC warnings as errors. The matched-filter target and test both compiled with /W4 /WX. All 43 checks passed with zero process allocations or deallocations. This is an unexposed component, so the current Windows review builds cover the user-visible work.
+- PR requested — #558, `mixview/matched-filters-20261113`, exact head `3c767304a9`. Win's new-head review and CI are pending; keep the dependent first-session items held as recorded.
+
 ## 2026-11-22 — Scheduled preview after Win's #710 landing
 - Pushed `972567ab33` on the after-3-December preview. It carries Win's exact landed device interface and both cold-export fixes. Focus Scope, Spectrum layouts, the Info preview and shared analyser producers remain available for scheduled review.
 - Windows x64 Release passed 24 named CTests (706 broker, 454 Spectrum component and 327 Mix Function component checks) and the 906 Mix View, 329 Arrangement and 7 Appearance software-peer checks. Live pictures and timing remain pending with win.
