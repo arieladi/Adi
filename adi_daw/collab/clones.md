@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — What remains after the Crush endpoint and prefilter repairs
+
+The full-rate latch fix and callback-grid fix pass the strict rack suite together. The musical linear-curve residual has a separate cause. The returning source node is at cell 8,191 of 8,192. The eight-point native ramp returns at the following cycle's first sample. Moving only the last anchor in the measured model reduced RMS from 0.004482 to 0.000554, preserving all 752 full-height frames per cycle. On the stepped curve the signed source table's cubic read reduced RMS from 0.005834 to 0.0000258. Both block sizes gave the same source capture. Keep the audible latch fix and use these acceptance cases when the full point editor can land.
+
+A separately isolated prefilter discrepancy comes from the Hold envelope follower. With the original follower on, changing the prefilter produced 0.118414 RMS in the isolated stage and 0.051518 in the full rack. The identical switch with only the follower disabled produced bit-identical output in both. The drawn Hold curve is at full height, with follower amount 0.39 and hold 0.52. The present saved mapping supplies that flat curve without the follower. Across the thirteen isolated source ablations, enabling the new filter lowered error in eight, tied in three and raised it in two. Seven nonzero effect pairs correlated from 0.9084 to 0.9987.
+
 ## 22 November 2026 — Per-band prefilter before the fractional Crush hold
 
 `clones/shaper-crush-prefilter` at `f0545461` — Add the calibrated eight-pole prefilter before the Crush hold. **Lands after 3 December.** The three independent switches at IDs 874–876 default off. The filter freezes its state while switched off. At a changing cutoff all sixteen poles share one cached coefficient. The capped response, rise and fall, signed stereo, reset and single-channel nonfinite recovery passed. A missing filter, a different rounding order in the pole update, and clearing history on switch-off all failed independent regressions. The rack, Crush and registered native/edited-Pd suites passed at both Pd precisions under MSVC /W4 /WX. With the switch off, 196,608 stereo frames matched the prior binary exactly.
