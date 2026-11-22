@@ -36,6 +36,10 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MI-08 note expression journal ops parked
+
+MI-08's write and clear journal operations still wait for Win to reserve `noteExpression.write` and `noteExpression.clear` on main.
+
 ## 2026-11-22 — DEV-28 Main loudness and LD7 readout, lands after 3 December
 
 Branch `engine/dev28-main-loudness-meter` at `f8308a5554f65d5e4b3be7bdb2077aa150c20053`, from `87ea349c`. Suggested PR title **Measure Main with the shared loudness meter**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev28-main-loudness-meter)
