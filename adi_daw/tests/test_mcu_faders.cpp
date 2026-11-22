@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/mcu_faders.hpp"
 #include "adi/engine/hui_wire.hpp"
+#include "adi/engine/mcu_lcd.hpp"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace {
@@ -142,6 +144,56 @@ void huiHeartbeat() {
     check(heartbeat.poll(13) == ping && !heartbeat.poll(13),
           "a reconnected HUI port pings immediately");
 }
+
+void lcdWire() {
+    LcdFrame frame;
+    const bool formatted = frame.setStrip(0, 0, "Long label") &&
+                           frame.setStrip(1, 7, "R\t");
+    LcdFeedback output(LcdDevice::Main);
+    const auto first = output.prepare(frame);
+    check(formatted && first[0] && first[1], "an unknown MCU display prepares both full rows");
+    if (!first[0] || !first[1])
+        return;
+    const auto top = first[0]->bytes(), bottom = first[1]->bytes();
+    constexpr std::array<std::uint8_t, 7> header{0xf0, 0x00, 0x00, 0x66, 0x14, 0x12, 0x00};
+    check(top.size() == 64 && bottom.size() == 64 &&
+              std::ranges::equal(header, top.first(header.size())) &&
+              top.back() == 0xf7 && bottom.back() == 0xf7 && bottom[6] == 0x38,
+          "standard MCU display wire messages use the proper row addresses and SysEx command");
+    constexpr std::array<std::uint8_t, 7> abbreviated{'L', 'o', 'n', 'g', ' ', 'l', ' '};
+    check(std::ranges::equal(abbreviated, top.subspan(7, abbreviated.size())) &&
+              bottom[7 + 49] == 'R' && bottom[7 + 50] == '?' && bottom[7 + 55] == ' ',
+          "labels are six printable ASCII cells with a seven-byte pitch");
+    output.sent(*first[0]);
+    const auto retry = output.prepare(frame);
+    check(!retry[0] && retry[1] && std::ranges::equal(retry[1]->bytes(), bottom),
+          "a row whose send failed remains dirty independently of a confirmed row");
+    output.sent(*first[1]);
+    check(!output.prepare(frame)[0] && !output.prepare(frame)[1], "unchanged LCD frames send nothing");
+
+    check(frame.setStrip(0, 0, "Lo") && frame.setStrip(0, 1, "Next") &&
+              !frame.setStrip(0, lcdStrips, "invalid") && !frame.setLine(lcdRows, "invalid"),
+          "valid label changes succeed and out-of-bounds display writes are refused");
+    const auto updated = output.prepare(frame);
+    constexpr std::array<std::uint8_t, 17> patch{0xf0, 0, 0, 0x66, 0x14, 0x12, 2,
+                                                 ' ', ' ', ' ', ' ', ' ', 'N', 'e', 'x', 't', 0xf7};
+    check(updated[0] && !updated[1] && std::ranges::equal(updated[0]->bytes(), patch),
+          "coalesced row output changes the minimum span and clears shorter labels");
+    if (updated[0])
+        output.sent(*updated[0]);
+    check(!output.prepare(frame)[0], "successful partial patches become the new feedback baseline");
+    output.reset();
+    const auto reconnected = output.prepare(frame);
+    check(reconnected[0] && reconnected[1] && reconnected[0]->bytes().size() == 64,
+          "reconnect discards the previous display baseline");
+
+    LcdFeedback extender(LcdDevice::Extender);
+    extender.sent(*first[0]);
+    const auto extension = extender.prepare(frame);
+    check(extension[0] && extension[1] && extension[0]->bytes()[4] == 0x15 &&
+              extension[1]->bytes()[4] == 0x15,
+          "MCU Extender uses its own SysEx device ID and baseline");
+}
 } // namespace
 
 int main() {
@@ -150,6 +202,7 @@ int main() {
     separateStrips();
     huiFaders();
     huiHeartbeat();
+    lcdWire();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
