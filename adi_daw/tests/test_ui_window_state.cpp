@@ -195,8 +195,8 @@ void midiPortsCore() {
         check(!other, "a port of another name adopts no record");
         const auto stillThere = reconcileMidiPorts(kept, {{"in:old", "Keys"}, {"in:new", "Keys"}});
         check(!stillThere, "a record whose port is still listed stays with it; the second port of that name gets none");
-        const auto two = reconcileMidiPorts(kept, {{"in:new", "Keys"}, {"in:newer", "Keys"}});
-        check(!two, "two new ports of one name: which one the record was is unknown, so neither takes it");
+        const auto twoNew = reconcileMidiPorts(kept, {{"in:new", "Keys"}, {"in:newer", "Keys"}});
+        check(!twoNew, "two new ports of one name: which one the record was is unknown, so neither takes it");
         auto pair = kept;
         pair["in:older"] = {{"sync", true}, {"name", "Keys"}};
         const auto ambiguous = reconcileMidiPorts(pair, {{"in:new", "Keys"}});
