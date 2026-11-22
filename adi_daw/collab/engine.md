@@ -36,6 +36,18 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — SRF-04 surface nudge and takeover — PR requested
+
+- Ready at `45e69a22d5ca0e283dd4170a8e72d3089ce115bc` on `engine/srf04-controller-nudge`, stacked on SRF-03 `169fd401` for after 3 December.
+- The per-binding atomic counter preserves signed ticks and every rising toggle edge through a message-thread stall. The resolver uses the sounding value for a driven control and returns an absolute normalized edit. Discrete controls move one choice per tick, and eligible continuous sources get the ADR-0188 curve on the owner. Existing ParamOps applies each burst immediately and settles one absolute edit with the first-touch origin.
+- Pick-Up waits for a crossing and re-arms on a competing write. Its own applied value does not re-arm it. None and provisional Value Scaling use the same gate. Relative sources reach the resolver directly.
+- Both strict Linux toolchains passed all seven suites and 2,032 checks each. Controller Maps exercised 1,000 ticks through a 50 ms stall, concurrent signed drains, each toggle edge and all Takeover modes. Param Ops exercised immediate sound-side value, one settled edit and stable first-touch origin. OPS and the five portability patterns passed.
+- **Parked SRF-05/SRF-06, window-fn and Win** — the MIDI port host, settings ownership and Focus Dial presentation remain separate. The engine provides the relative and absolute owner helpers for the existing gesture path.
+
+#### FOR THE DIRECTOR — SRF-04
+
+- SF-22c is still pending. Recommendation is to start continuous nudges at 1% of normalized range, one tenth in Fine, and keep Pick-Up as the default. The branch uses that step and keeps Value Scaling's endpoint-anchored law provisional pending the Live reading.
+
 ## 2026-11-22 — SRF-03 native controller encoders and project keyboard rows — PR requested
 
 - Ready at `169fd401c72d978db66a5b163b3aea69de6c4baf` on `engine/srf03-controller-encoders`, lands after 3 December. Controller bindings keep numeric mode 1 as two's complement and admit codes 3–9. A witnessed slow left turn resolves the wire polarity. Linear variants keep the same signed wire counts. Native signal helpers cover seven- and fourteen-bit input, exact pitch-bend center, note-like CC threshold and inverted activator membership.
