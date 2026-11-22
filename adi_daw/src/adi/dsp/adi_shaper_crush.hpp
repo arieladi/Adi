@@ -16,6 +16,7 @@ public:
     void setDither(bool enabled) noexcept { dither_ = enabled; }
     void processStereo(float& left, float& right, float bitsHeight,
                        float resampleHeight) noexcept;
+    bool finishBlock() noexcept;
 
 private:
     using Stereo = std::array<double, 2>;

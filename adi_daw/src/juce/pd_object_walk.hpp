@@ -61,6 +61,7 @@ enum class PdObjectRefusal : std::uint8_t {
     Recursive,     ///< an abstraction that contains itself, directly or not
     TooDeep,       ///< nesting past kMaxDepth (subpatches and abstractions)
     Malformed,     ///< a `#X restore` with no canvas open, or a canvas never closed
+    PathNamed,     ///< an absolute, drive-letter or `..` path in the class position
 };
 [[nodiscard]] const char* toString(PdObjectRefusal) noexcept;
 

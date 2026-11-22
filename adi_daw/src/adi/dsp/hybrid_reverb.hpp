@@ -56,6 +56,13 @@ class HybridReverb {
 
   private:
     void partition(const HybridImpulse *) noexcept;
+    /// The older partitions' share of the NEXT block's convolution, spread
+    /// over the 256 samples before it: by sample `position` (1 to 256) that
+    /// share is position/256 done. It is the bulk of the work for a long IR,
+    /// and the boundary is left with the newest partition and the FFTs, so no
+    /// callback carries a whole block's accumulation (the performance pass).
+    void accumulate(std::size_t position, const HybridImpulse *ir) noexcept;
+    void accumulatePartition(std::size_t p) noexcept;
     std::array<double, Count> p_{};
     RealFft fft_;
     LiveReverb algorithm_;
@@ -63,6 +70,11 @@ class HybridReverb {
     std::array<std::array<double, 256>, 2> input_{}, output_{}, overlap_{}, dry_{}, aligned_{};
     std::array<std::vector<float>, 2> predelay_;
     std::size_t cursor_ = 0, head_ = 0, used_ = 0, delayAt_ = 0;
+    // The next block's older partitions: summed so far, how many are done of
+    // how many, and the impulse they were taken from.
+    std::array<std::array<std::complex<double>, HybridImpulse::fftSize / 2 + 1>, 2> pending_{};
+    std::size_t pendingDone_ = 0, pendingParts_ = 0;
+    const HybridImpulse *pendingIr_ = nullptr;
     double rate_ = 48000, bpm_ = 120, mix_ = 0.5, blend_ = 0.5;
 };
 } // namespace adi::dsp
