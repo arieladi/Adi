@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Linear rebuild of the four panel branches
+
+For Win, the four pushed heads in order are `clones/shaper-linear-reconcile` (`e8ff2ead`), `clones/shaper-linear-rack` (`aea61bfc`), `clones/shaper-linear-grid` (`ffcc76a3`) and `clones/shaper-linear-trim` (`3e8e20f5`). There are six commits and zero merges after the landing base `e5d3c6dd`. Twenty-five of the 26 changed files match the old Trim top byte for byte. The transport file keeps the landed exact-position helper and the legacy 64-frame tolerance.
+
+The ten registered device suites passed at each Pd precision, including all six ADI-Shaper DSP suites under MSVC /W4 /WX. The ordinary rack/editor replay passed all 46 checks and produced two 1920 × 1080 headless captures. Rebuild complete. Panel landing awaits Win’s #708 ruling and the window owner’s follow-up review.
+
 ## 22 November 2026 — External-key Width and note retrigger
 
 DEV-31-KEY-MIDI-CORE is parked until the independent follower and audio-retrigger ports reach main. On their private integration the five key plateaus matched within 0.00005 side gain and all four note-ons restarted at their exact frames in looping and one-shot mode at 256 and 2,048 frames. Devices owns delivery of the two key planes and notes from the host.
