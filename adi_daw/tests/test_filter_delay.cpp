@@ -23,6 +23,7 @@
 namespace {
 bool counting = false;
 std::size_t allocations = 0;
+int failAfter = -1;   ///< the allocations to allow before one fails (-1: never)
 int checks = 0, failures = 0;
 void check(bool ok, const std::string& what) {
     ++checks;
@@ -35,6 +36,13 @@ void check(bool ok, const std::string& what) {
 void* operator new(std::size_t n) {
     if (counting) {
         ++allocations;
+    }
+    if (failAfter == 0) {
+        failAfter = -1;
+        throw std::bad_alloc();
+    }
+    if (failAfter > 0) {
+        --failAfter;
     }
     if (void* p = std::malloc(n ? n : 1)) {
         return p;
@@ -276,7 +284,42 @@ void identityAndRobustness() {
 
 }  // namespace
 
+/// prepare() never throws, and never leaves size_ larger than a line (the
+/// review of ecfcad4a: a failed second line left the first resized and the
+/// rest short, and the next process() read past them). It is then inert:
+/// the dry signal alone. The next prepare that can allocate restores it.
+void preparing() {
+    F f;
+    bool threw = false;
+    failAfter = 1;   // the first line's ring is had, the second's is not
+    try {
+        f.prepare(96000);
+    } catch (...) {
+        threw = true;
+    }
+    failAfter = -1;
+    std::vector<float> x(9600), y(9600), l(9600), r(9600);
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        x[i] = static_cast<float>(0.4 * std::sin(0.01 * static_cast<double>(i)));
+        y[i] = static_cast<float>(0.2 * std::sin(0.03 * static_cast<double>(i)));
+    }
+    f.process(x.data(), y.data(), l.data(), r.data(), x.size());
+    check(!threw && l == x && r == y, "a prepare that cannot allocate does not throw; the device passes the dry signal");
+    F g = alone(0);
+    g.set(F::param(0, F::Time), 10);
+    failAfter = 2;
+    g.prepare(kRate);
+    failAfter = -1;
+    g.prepare(kRate);
+    const auto pulse = impulse(4800);
+    const std::vector<float> zero(4800, 0.f);
+    std::vector<float> a, b;
+    run(g, pulse, zero, a, b);
+    check(a[480] == 1.f, "the next prepare restores it");
+}
+
 int main() {
+    preparing();
     echoes();
     sync();
     band();
