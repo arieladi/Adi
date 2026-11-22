@@ -2850,6 +2850,37 @@ void deviceSpectrumLease() {
               closed.transforms == idle.transforms,
           "closing the last panel releases the tap and schedules no analysis work for new audio");
 }
+void parkedDeviceSpectrum() {
+    using Request = SharedAnalysis::DeviceSpectrumRequest;
+    auto tap = std::make_shared<ScopeTap>(48000, .25);
+    SharedAnalysis broker([&](adi::engine::ScopeSource, double) { return tap; },
+                          [](adi::engine::ScopeSource) {}, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireDeviceSpectrum({1, 7, 1024, Request::Channel::Left, 3, true});
+    const float *silent = nullptr;
+    tap->write(silent, silent, 1536, 0, false, 1);
+    check(broker.pump() == 0 && lease.readBlockAverage() && lease.readMaximum() &&
+              lease.readBlockAverage()->binsDbfs[16] == adi::dsp::kDbFloor,
+          "a parked device spectrum completes a silent average without executing FFTs");
+    const auto parked = broker.stats();
+    const auto quiet = lease.readBlockAverage();
+    for (int block = 0; block < 64; ++block) {
+        tap->write(silent, silent, 256, 0, false, 1);
+        broker.pump();
+    }
+    const auto idle = broker.stats();
+    check(quiet && lease.readBlockAverage() == quiet && parked.cursorReads == idle.cursorReads &&
+              parked.workerPasses == idle.workerPasses && parked.transforms == idle.transforms,
+          "a visible settled device spectrum does no work over certified parked silence");
+    std::array<float, 1536> waveform{};
+    for (std::size_t i = 0; i < waveform.size(); ++i)
+        waveform[i] = .25f * static_cast<float>(std::sin(2. * std::numbers::pi * 16. * static_cast<double>(i) / 1024.));
+    tap->write(waveform.data(), waveform.data(), 1536, 0, true, 2);
+    broker.pump();
+    const auto running = lease.readBlockAverage();
+    check(running && running != quiet && running->window->transportRevision == 2 &&
+              near(running->binsDbfs[16], -12.041199826) && broker.stats().transforms == idle.transforms + 3,
+          "resuming starts a complete new group without analysing the skipped parked blocks");
+}
 void boundsAndDeviceSources() {
     auto tap = std::make_shared<ScopeTap>(48000, .1);
     std::vector<adi::engine::ScopeSource> acquired, released;
@@ -3532,7 +3563,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
