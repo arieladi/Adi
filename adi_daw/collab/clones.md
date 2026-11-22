@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — First half-step after Filter silence
+
+On affected clean Filter restarts, the first of the two updates in a sample behaves as if damping increases by 2. The second update uses the ordinary law. Signed low-pass, high-pass and band-pass outputs independently constrain the two updates. Across 156 per-channel recordings at 26 rate and control settings, the magnitude of the preceding band-pass sample correctly classified all 25 exceptional and 131 ordinary restarts, including 11 with exactly zero prior state.
+
+Expressed in units of the smallest positive normal binary32 value, the exceptional measurements ranged from 1.02958 to 1.88363. The nearest ordinary nonzero value was 2.04417. An exact value of 2 was not sampled. The largest first-update damping error was 0.0000275. The current ADI filter clears this residual state at a substantially larger amplitude. These readings bound the discrepancy and leave the exact boundary open.
+
 ## 22 November 2026 — Filter response when audio resumes after silence
 
 An isolated stereo marker followed by exact silence exposes a short restart difference in the original 12 dB Filter. In independent 48 kHz runs the peak differences between a run with the earlier marker and a run without it were 0.00116021 for low-pass and 0.00197680 for high-pass. The ADI core on main produced identical audio for each pair. Without the earlier marker its peak error was below 0.00000003. This also affects the first few resumed samples of the corresponding steep responses.
