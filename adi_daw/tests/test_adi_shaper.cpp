@@ -910,6 +910,28 @@ void followerLevels() {
     check(near(measure(-.2f,.02f), 1.0375), "the follower feeds the existing master and band dry/wet mix");
     set(Shaper::FollowerOn, 0);
     check(near(measure(-.2f,.02f), .875), "disabling the detector restores the independent Width contour");
+
+    flat(rack, Stage::Width, Band::Mid, 25);
+    rack.set(Shaper::MasterMix, 100);
+    rack.set(Shaper::bandParam(Stage::Width, Band::Mid, Shaper::Mix), 100);
+    set(Shaper::FollowerOn, 1);
+    set(Shaper::FollowerAmount, 50);
+    set(Shaper::FollowerOffset, 0);
+    check(near(measure(.25f,.125f), -1.9375, 1e-6),
+          "negative Multiply offset reverses the stereo difference");
+    std::array<float, 64> left, right;
+    left.fill(.25f);
+    right.fill(.125f);
+    rack.process(left.data(), right.data(), left.data(), right.data(), left.size());
+    for (std::size_t i = 0; i < left.size(); ++i)
+        check(near(left[i] + right[i], .375, 1e-7), "signed Width preserves the sum");
+    set(Shaper::FollowerMode, 0);
+    check(near(measure(.25f,.125f), 0, 1e-6), "Add stops at mono at the same minimum offset");
+    set(Shaper::FollowerMode, 1);
+    set(Shaper::FollowerAmount, 100);
+    set(Shaper::FollowerDepth, 2);
+    set(Shaper::FollowerOffset, 100);
+    check(near(measure(.75f,.375f), 2, 1e-6), "Multiply limits a positive side gain to two");
 }
 
 void followerTimeConstants() {
