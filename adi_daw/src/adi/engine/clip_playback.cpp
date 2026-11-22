@@ -153,7 +153,7 @@ struct Clip {
     }
     std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames,bool lookAhead=true) const noexcept {
         std::array<std::int64_t,slots> out; out.fill(-1);
-        if (monitorInputOnly || !t.playing()) return out;
+        if (monitorInputOnly) return out;
         std::size_t used = 0;
         auto sourceRange = [&](std::int64_t from, std::int64_t count) {
             // sourceAt never reads at or past the effective source End.
@@ -406,7 +406,13 @@ public:
     void play(const NodeIo& io, T* const* out) noexcept {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
         if(!transport.playing() || (!clips.empty() && clips.front()->monitorInputOnly)){
-            for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex)clips[clipIndex]->releaseAdmission();
+            if(io.blockOffset==0) {
+                for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex) {
+                    auto* clip=clips[clipIndex];
+                    clip->releaseAdmission();
+                    clip->request(clip->wanted(transport,maxFrames));
+                }
+            }
             return;
         }
         // One clip is not a sum: its samples go straight out, bit for bit.
@@ -712,7 +718,7 @@ bool ClipPlayback::prime(std::chrono::milliseconds timeout) {
 }
 ClipPlayback::Readiness ClipPlayback::readiness() const {
     if(audio::onAudioThread)return {};
-    return [held=impl_](const Transport& snapshot,std::int32_t frames) noexcept {
+    return {[held=impl_](const Transport& snapshot,std::int32_t frames,bool allowFailedSources) noexcept {
         if(frames<1 || frames>held->maxFrames)return false;
         // One producer, the audio driver. This fixed target is shared by the
         // admission check and the source immediately rendered after it.
@@ -727,14 +733,18 @@ ClipPlayback::Readiness ClipPlayback::readiness() const {
         for(std::size_t i=0;i<held->clips.size();++i) {
             auto& clip=held->clips[i];
             if(clip->monitorInputOnly)continue;
-            if(clip->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
+            if(clip->errors.load(std::memory_order_relaxed)) {
+                if(allowFailedSources)continue;
+                releaseAll();
+                return false;
+            }
             for(const auto number:clip->wanted(target,frames,false)) {
                 if(number<0)continue;
                 if(!clip->reserve(number)){releaseAll();return false;}
             }
         }
         return true;
-    };
+    }};
 }
 bool ClipPlayback::primeAt(const Transport& snapshot,std::chrono::milliseconds timeout) {
     return primeTargets(snapshot,nullptr,timeout);

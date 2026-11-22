@@ -303,8 +303,10 @@ public:
         [[nodiscard]] double bpmAtTick(std::int64_t) const noexcept;
         /// Driver only, immediately before rendering this target. Posts bounded
         /// read-ahead and checks mandatory pages without waiting or doing I/O.
-        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept;
-        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames) const noexcept;
+        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames,
+                                          bool allowFailedSources = false) const noexcept;
+        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames,
+                                        bool allowFailedSources = false) const noexcept;
         /// Driver command between slices. Saved song start overrides the
         /// insert marker; only a record start uses the saved count-in. Prepare
         /// the recorder on its owner first. Explicit locate/play bypasses this

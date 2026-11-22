@@ -2175,21 +2175,23 @@ double Session::RenderBlock::beatAtSample(std::int64_t sample) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     return timing && sample > 0 ? timing->quartersAt(sample) : 0;
 }
-bool Session::RenderBlock::sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept {
+bool Session::RenderBlock::sourcesReadyAt(std::int64_t sample, std::int32_t frames,
+                                         bool allowFailedSources) const noexcept {
     if (sample < 0) return false;
     Transport requested = session_.transport_; // this is the single driver, not the owner
     requested.locate(sample);
     requested.play();
-    return sourcesReady(requested, frames);
+    return sourcesReady(requested, frames, allowFailedSources);
 }
-bool Session::RenderBlock::sourcesReady(const Transport& requested, std::int32_t frames) const noexcept {
+bool Session::RenderBlock::sourcesReady(const Transport& requested, std::int32_t frames,
+                                        bool allowFailedSources) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     if (!timing || frames <= 0 || frames > timing->spec.maxFrames || !timing->sourceReadiness)
         return false;
     Transport target = requested;
     if (timing->settings.hasLoop)
         target.retimeLoop(timing->loopBegin, timing->loopEnd, timing->settings.loopEnabled);
-    return timing->sourceReadiness(target, frames);
+    return timing->sourceReadiness(target, frames, allowFailedSources);
 }
 std::int64_t Session::RenderBlock::sampleAtTick(std::int64_t tick) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());

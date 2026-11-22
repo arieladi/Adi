@@ -58,7 +58,14 @@ public:
     // page set cannot fit the existing bounded page slots.
     bool primeAt(const Transport& snapshot,const Transport& alternate,
                  std::chrono::milliseconds timeout = std::chrono::seconds(10));
-    using Readiness = std::function<bool(const Transport&,std::int32_t)>;
+    struct Readiness {
+        std::function<bool(const Transport&,std::int32_t,bool)> check;
+        explicit operator bool() const noexcept { return static_cast<bool>(check); }
+        bool operator()(const Transport& transport,std::int32_t frames,
+                        bool allowFailedSources=false) const noexcept {
+            return check && check(transport,frames,allowFailedSources);
+        }
+    };
     // Owner-created query retained with the graph's source generation. Calling
     // it on the single audio driver requests read-ahead and checks only the
     // pages needed for the given frames, without allocation, waits or I/O.

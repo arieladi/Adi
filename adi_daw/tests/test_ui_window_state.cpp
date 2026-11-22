@@ -360,6 +360,33 @@ int main() {
     check(!mailbox.post(TransportMailbox::Command::Play), "full queue refuses without overwrite");
     mailbox.drain(transport);
     check(!transport.playing(), "queued stop survives saturation");
+    {
+        bool ready = false;
+        std::int64_t requested = -1;
+        const auto apply = [&] {
+            mailbox.drain(transport, [](std::int64_t) noexcept {},
+                [&](std::int64_t sample) noexcept { requested = sample; return ready; });
+        };
+        check(mailbox.post(TransportMailbox::Command::Play), "request a cold Play");
+        apply();
+        transport.advance(64);
+        check(requested == 64 && transport.position() == 64 && !mailbox.playing() && mailbox.desiredPlaying(),
+              "pending Play holds the timeline and still exposes the intent for Stop");
+        check(mailbox.post(TransportMailbox::Command::Locate, 1024), "locate during a pending Play");
+        apply();
+        check(requested == 1024 && !transport.playing(), "the readiness target follows the latest Locate");
+        ready = true;
+        apply();
+        check(transport.playing() && transport.position() == 1024, "the first running block starts at that Locate");
+        mailbox.post(TransportMailbox::Command::Stop);
+        mailbox.post(TransportMailbox::Command::Play);
+        ready = false;
+        apply();
+        mailbox.post(TransportMailbox::Command::Stop);
+        ready = true;
+        apply();
+        check(!mailbox.playing() && !mailbox.desiredPlaying(), "Stop cancels a cold Play");
+    }
     // Two actual threads exercise release/acquire ownership, with a final stop sentinel.
     std::atomic<bool> finished{false};
     std::thread driver([&] {

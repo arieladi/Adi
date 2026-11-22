@@ -218,7 +218,7 @@ void step2(Session &s, Report &report) {
     const auto underrunsBefore = driver.underruns();
     windowPlayFrom(doc, 0);
     Stereo heard;
-    driver.run(1, &heard); // the block Play starts in
+    const auto held = driver.firstPlayingBlock(heard);
     const auto firstBlockUnderruns = driver.underruns() - underrunsBefore;
     driver.run(1507, &heard);
     const auto underruns = driver.underruns() - underrunsBefore;
@@ -236,10 +236,10 @@ void step2(Session &s, Report &report) {
         }
     const auto playback = format("playback vs take max|d| %.3g at frame %zu (heard %.4f, take %.4f); %zu of %zu frames "
                                  "differ, from %zu to %zu; clip underruns %llu (%llu in the block Play starts in); "
-                                 "monitoring %s",
+                                 "monitoring %s, held %d callbacks before the first song frame",
                                  best, worstAt, heard.at(0, worstAt), s.take.at(0, worstAt), differing, s.take.size(),
                                  firstDiffering, lastDiffering, static_cast<unsigned long long>(underruns),
-                                 static_cast<unsigned long long>(firstBlockUnderruns), ui::monitorName(monitor));
+                                 static_cast<unsigned long long>(firstBlockUnderruns), ui::monitorName(monitor), held);
     const char *playbackExpected = "output == take delayed by 0 samples (max|d| <= 1e-6); the live input is not heard";
     std::string cause;
     // The same start with the locate one callback ahead of Play (the playhead already at 0 when Play comes):
@@ -383,7 +383,7 @@ void step4(Session &s, Report &report) {
     }
     windowPlayFrom(doc, 0);
     Stereo heard;
-    driver.run(24, &heard);
+    driver.runFromPlay(24, heard);
     const auto volume = [&] { return real(doc, "SELECT volume_db FROM mixer_strip WHERE track_id=4"); };
     const auto opsNow = [&] { return scalar(doc, "SELECT count(*) FROM ops"); };
     // The level heard over the last 12 of `blocks` blocks.
@@ -475,7 +475,7 @@ void step5(Session &s, Report &report) {
     const auto sendDb = real(doc, "SELECT MIN(gain_db) FROM routing WHERE kind='send' AND dst_id=6 AND src_id IN (4,5)");
     windowPlayFrom(doc, 0);
     Stereo heard;
-    driver.run(200, &heard);
+    driver.runFromPlay(200, heard);
     // x4 + x5 at each timeline sample of what was heard.
     Stereo both;
     for (std::size_t c = 0; c < 2; ++c)
@@ -536,7 +536,7 @@ void step5(Session &s, Report &report) {
             ++steps;
         windowPlayFrom(doc, 0);
         Stereo grouped0;
-        driver.run(200, &grouped0);
+        driver.runFromPlay(200, grouped0);
         windowStop(doc);
         driver.run(4);
         const double k = fitGain(grouped0, both, stepStart(16), grouped0.size());
@@ -585,7 +585,7 @@ void step6(Session &s, Report &report) {
     const auto env = ui::trackEnvelope(*snap, 4);
     windowPlayFrom(doc, 0);
     Stereo heard;
-    driver.run(1500, &heard);
+    driver.runFromPlay(1500, heard);
     windowStop(doc);
     driver.run(4);
     // Main = (1 + return)(g4 x4 + x5): g4 per block, against the envelope at the block's middle.
@@ -650,7 +650,7 @@ void step6(Session &s, Report &report) {
         ++steps;
     windowPlayFrom(doc, 0);
     Stereo gained;
-    driver.run(1500, &gained);
+    driver.runFromPlay(1500, gained);
     windowStop(doc);
     driver.run(4);
     double first = 0, second = 0, spread = 0, spreadGain = 0;
@@ -709,7 +709,7 @@ void step7(Session &s, Report &report) {
     const auto playTwice = [&](ui::ProjectDocument &d, Stereo &first, Stereo &second) {
         for (auto *heard : {&first, &second}) {
             windowPlayFrom(d, 0);
-            driver.run(static_cast<int>(liveBlocks), heard);
+            driver.runFromPlay(static_cast<int>(liveBlocks), *heard);
             windowStop(d);
             driver.run(4);
         }

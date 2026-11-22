@@ -975,6 +975,10 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
     mailbox_.drain(session_.transport(), [&block, this](std::int64_t insertTick) noexcept {
         if (!block.startPlayback(insertTick, true))
             session_.transport().play(true);
+    }, [&block, &io](std::int64_t sample) noexcept {
+        // Keep the first audible block at the held playhead. A source that
+        // has already failed is silent and cannot hold otherwise valid clips.
+        return block.sourcesReadyAt(sample, io.frames, true);
     });
     (void)block.process(io);
     mailbox_.publish(session_.transport());
