@@ -12,7 +12,7 @@ constexpr bool ready=true;
 #else
 constexpr bool ready=false;
 #endif
-constexpr std::array<BuiltinInfo,22> entries={{
+constexpr std::array<BuiltinInfo,23> entries={{
  {.uid="org.adidaw.builtin.adi-shaper",.name="ADI-Shaper",.category="ADI",.group="Audio Effects",
   .inputs=2,.available=ready,.usesTransportPosition=true,.resetMissingParameters=true},
  {"org.adidaw.builtin.auto-filter","Auto Filter","Audio Effects","EQ & Filters",4,ready,false},
@@ -38,7 +38,9 @@ constexpr std::array<BuiltinInfo,22> entries={{
  // DEV-21: the second authorized instrument; its declarations are not a canvas.
  {"org.adidaw.builtin.sampler","Sampler","Instruments","Instruments",0,ready,true,true},
  // DEV-22 (ADR-0249 d7, after 3 December): Live's Compressor, built, not verified (reading 17).
- {"org.adidaw.builtin.compressor","Compressor","Audio Effects","Dynamics",2,ready,false}
+ {"org.adidaw.builtin.compressor","Compressor","Audio Effects","Dynamics",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Glue Compressor, built, not verified (reading 19).
+ {"org.adidaw.builtin.glue-compressor","Glue Compressor","Audio Effects","Dynamics",2,ready,false}
 }};
 }
 std::span<const BuiltinInfo> builtinCatalog() noexcept{return entries;}
@@ -49,9 +51,9 @@ const BuiltinInfo* findBuiltin(std::string_view uid) noexcept {
 std::string_view builtinCanvas(std::string_view uid) noexcept {
 #if ADI_WITH_PD
     using namespace device::canonical;
-    constexpr std::array<std::string_view,22> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
+    constexpr std::array<std::string_view,23> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
         hybridReverb,multibandDynamics,overdrive,phaserFlanger,redux,resonators,reverb,saturator,shifter,utility,vocoder,
-        oneShot,std::string_view{},compressor};
+        oneShot,std::string_view{},compressor,glueCompressor};
     for(std::size_t i=0;i<entries.size();++i)if(entries[i].uid==uid)return canvases[i];
 #else
     (void)uid;
