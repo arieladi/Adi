@@ -125,6 +125,10 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export WAV encoding");
     if (!audio::validDither(j.encoding.dither))
         throw std::invalid_argument("unsupported export dither");
+    if (!audio::validWavSpeakerMask(static_cast<std::uint16_t>(j.session.channels), j.encoding.speakerMask) ||
+        (j.niStems && j.encoding.speakerMask != 0)) {
+        throw std::invalid_argument("An explicit WAV speaker mask must match the ordinary delivery's channels");
+    }
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
     if (j.exactWavFilename) {
@@ -536,7 +540,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         if(job.normalization.mode==NormalizeMode::Off)
             writer=std::make_unique<audio::WavWriter>(staged,static_cast<std::uint32_t>(job.session.sampleRate),
                 static_cast<std::uint16_t>(channels),job.encoding.format,nullptr,std::uint64_t{1}<<32,
-                job.encoding.dither,job.encoding.ditherSeed^counter);
+                job.encoding.dither,job.encoding.ditherSeed^counter,job.encoding.speakerMask);
         else normalized=std::make_unique<NormalizationCapture>(stage.path/"capture.f64",static_cast<std::uint32_t>(job.session.sampleRate),job.session.channels,job.normalization);
         auto write=[&](std::uint32_t frames) {
             if(normalized)normalized->append(std::span<const double>(interleaved.data(),static_cast<std::size_t>(frames)*channels),frames);
@@ -611,7 +615,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         service(); // include reports raised by the final process call
         if(normalized)result.normalization=normalized->finish(staged,job.encoding.format,job.encoding.dither,job.encoding.ditherSeed^counter,[&] {
             cancellation(control);if(control.serviceHost)control.serviceHost();cancellation(control);
-        });
+        }, job.encoding.speakerMask);
         else writer->close();
         cancellation(control);
         detail::publishVerifiedOutput(staged, result, control, "export destination already exists");
@@ -726,6 +730,7 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"dither", audio::ditherName(job.encoding.dither)},
                 {"effective_dither", audio::ditherName(effectiveDither)},
                 {"dither_seed", job.encoding.ditherSeed},
+                {"wave_speaker_mask", job.encoding.speakerMask},
                 {"normalization", {{"mode", job.normalization.mode == NormalizeMode::Off ? "off" :
                     (job.normalization.mode == NormalizeMode::Peak ? "peak" : "loudness")},
                     {"target_lufs", job.normalization.targetLufs},

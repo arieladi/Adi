@@ -33,7 +33,7 @@ public:
     NormalizationCapture& operator=(const NormalizationCapture&)=delete;
     void append(std::span<const double> interleaved,std::uint32_t frames);
     NormalizationReport finish(const std::filesystem::path& privateWav,audio::WavFormat,
-        audio::WavDither,std::uint64_t seed,const std::function<void()>& service={});
+        audio::WavDither,std::uint64_t seed,const std::function<void()>& service={}, std::uint32_t speakerMask=0);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

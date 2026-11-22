@@ -9,6 +9,10 @@
 
 namespace adi::audio {
 enum class WavFormat { Pcm16, Pcm24, Float32 };
+
+// Zero keeps direct channel order unspecified. An explicit mask assigns
+// every channel a speaker, in order of increasing bit significance.
+[[nodiscard]] bool validWavSpeakerMask(std::uint16_t channels, std::uint32_t mask) noexcept;
 struct WavMetadata {
     std::string description;
     std::string originator;
@@ -30,7 +34,7 @@ public:
               std::uint16_t channels, WavFormat,
               const WavMetadata* = nullptr,
               std::uint64_t promoteThresholdBytes = (std::uint64_t{1} << 32),
-              WavDither = WavDither::None, std::uint64_t ditherSeed = 0);
+              WavDither = WavDither::None, std::uint64_t ditherSeed = 0, std::uint32_t speakerMask = 0);
     ~WavWriter();
     WavWriter(const WavWriter&) = delete;
     WavWriter& operator=(const WavWriter&) = delete;

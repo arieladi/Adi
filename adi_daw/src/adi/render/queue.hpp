@@ -33,6 +33,7 @@ struct Encoding {
     // Mixed with the stable enqueue ordinal. Retry is reproducible; different
     // jobs get separate streams. Float32 ignores dither without adding noise.
     std::uint64_t ditherSeed = 0;
+    std::uint32_t speakerMask = 0; // WAV, in interleaved order; no implicit layout
 };
 struct NiStem {
     Source source;

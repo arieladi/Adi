@@ -504,6 +504,27 @@ void multichannelStem() {
     for(int i=0;i<866;++i)for(int c=0;c<6;++c) exact=exact && decoded[static_cast<std::size_t>(6*i+c)]==source(137+i,c);
     check(exact,"every multichannel stem sample survives planar capture and interleaving");
 }
+void waveSpeakerMask() {
+    Fixture f;
+    auto job = f.job("speaker-mask");
+    job.encoding.speakerMask = 3;
+    for (const auto mode : {NormalizeMode::Off, NormalizeMode::Peak}) {
+        job.normalization.mode = mode;
+        job.nameTemplate = mode == NormalizeMode::Off ? "speaker-mask" : "speaker-mask-normalized";
+        const auto rendered = renderWav(job, {});
+        std::ifstream file(rendered.output, std::ios::binary);
+        std::string header(80, '\0');
+        file.read(header.data(), static_cast<std::streamsize>(header.size()));
+        const auto fmt = header.find("fmt ");
+        check(rendered.state == JobState::Completed && fmt != std::string::npos &&
+              header.compare(fmt + 28, 4, "\x03\0\0\0", 4) == 0,
+              "rendered WAV retains the mask through ordinary and normalized encoding");
+    }
+    job.nameTemplate = "speaker-mask-invalid";
+    job.encoding.speakerMask = 1;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "invalid render channel-mask pair fails before staging");
+}
 void regionStems() {
     Fixture f;
     f.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,480480,60);"
@@ -1494,7 +1515,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); waveSpeakerMask(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
