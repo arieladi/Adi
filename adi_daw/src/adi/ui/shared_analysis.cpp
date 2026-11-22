@@ -1176,14 +1176,16 @@ struct SharedAnalysis::Domain {
         return parkedWindowSettled(quiet, bits) &&
                (!(bits & CumulativeMaximum) || cumulativeReady.load(std::memory_order_acquire));
     }
+    bool keepsParkedHop(std::uint32_t bits) const noexcept {
+        constexpr std::uint32_t windowed = Spectrum | Scope | Phase | RealtimeMaximum | RealtimeSigma;
+        return !(bits & ~windowed) || canParkAverage(bits) || spectrumLevelHistory;
+    }
     void skipCertifiedSilenceTo(std::int64_t next) noexcept {
         if (next <= cursor.next) return;
         const auto bits = outputs.load(std::memory_order_relaxed);
         const bool averageParked = canParkAverage(bits);
-        constexpr std::uint32_t ordinaryWindows = Spectrum | Scope | Phase;
-        const bool ordinaryWindow = !(bits & ~ordinaryWindows);
         if (spectrumLevelHistory) spectrumLevelHistory->skipSilence(cursor.next, next);
-        if (ordinaryWindow || averageParked || spectrumLevelHistory) {
+        if (keepsParkedHop(bits)) {
             // The retained history is exactly zero. Omitted samples still
             // belong to the audible sequence and retain the original hop phase.
             const auto frames = next - cursor.next + static_cast<std::int64_t>(sinceWindow);
@@ -1197,6 +1199,8 @@ struct SharedAnalysis::Domain {
                     averageWindow = windowSerial;
                     if (averageBins) averageBinsWindow = averageWindow;
                 }
+                if (maximum && maximum->lastWindow) maximum->lastWindow = windowSerial;
+                if (sigma && sigma->lastWindow) sigma->lastWindow = windowSerial;
                 spectralWindow = windowSerial;
                 firstSequence = complete - request.fftSize;
                 completedWindowEnd.store(complete, std::memory_order_release);
@@ -2920,9 +2924,9 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint3
         if (cumulative) found->second->cumulativeHistories.reserve(found->second->cumulativeHistories.size() + 1);
         if (cumulativeAverage) found->second->cumulativeAverages.reserve(found->second->cumulativeAverages.size() + 1);
         if (!found->second->ensureOutputPlans(request.outputs)) return {};
-        const auto newlyRequested = request.outputs & ~found->second->outputs.load(std::memory_order_acquire);
-        if (newlyRequested && (found->second->spectrumLevelHistory ||
-                               found->second->canParkAverage(found->second->outputs.load(std::memory_order_relaxed))))
+        const auto previousOutputs = found->second->outputs.load(std::memory_order_acquire);
+        const auto newlyRequested = request.outputs & ~previousOutputs;
+        if (newlyRequested && found->second->keepsParkedHop(previousOutputs))
             found->second->catchUpParkedSilence();
         const auto sequence = found->second->tap ? found->second->tap->written() : 0;
         auto blockAverage = found->second->admitBlockAverage(averageBlocks, sequence);

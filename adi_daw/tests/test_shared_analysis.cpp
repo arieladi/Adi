@@ -2691,9 +2691,11 @@ void parkedWindowHopPhase() {
     constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
     constexpr std::int64_t stamp = 800;
     constexpr std::uint64_t revision = 61;
-    constexpr std::array<std::uint32_t, 4> outputs{
-        SharedAnalysis::Scope, SharedAnalysis::Phase, SharedAnalysis::Spectrum,
-        SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Phase};
+    constexpr auto realtime = SharedAnalysis::RealtimeMaximum | SharedAnalysis::RealtimeSigma;
+    constexpr auto ordinary = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Phase;
+    constexpr std::array<std::uint32_t, 7> outputs{
+        SharedAnalysis::Scope, SharedAnalysis::Phase, SharedAnalysis::Spectrum, ordinary,
+        SharedAnalysis::RealtimeMaximum, SharedAnalysis::RealtimeSigma, ordinary | realtime};
     const std::array<float, window> zeros{};
     std::array<float, window> left, right;
     left.fill(.5f);
@@ -2716,6 +2718,8 @@ void parkedWindowHopPhase() {
         write(parked, silence, silence, window);
         write(reference, zeros.data(), zeros.data(), window);
         const auto first = view.read();
+        const auto firstMaximum = view.readMaximum(), firstControlMaximum = uninterrupted.readMaximum();
+        const auto firstSigma = view.readRealtimeSigma(), firstControlSigma = uninterrupted.readRealtimeSigma();
         const auto settled = parked.broker.stats();
         for (int i = 0; i < blocks; ++i) {
             write(parked, silence, silence, block);
@@ -2727,8 +2731,9 @@ void parkedWindowHopPhase() {
         check(first && view.read() == first && controlQuiet && controlQuiet->firstSequence == quietFrames - quietFrames % hop &&
                   parked.tap->oldest() > window && settled.workerPasses == idle.workerPasses &&
                   settled.cursorReads == idle.cursorReads && settled.transforms == idle.transforms &&
-                  settled.analysisWindows == idle.analysisWindows && settled.publications == idle.publications,
-              "plain windowed monitors hold one quiet frame with no extra work across a certified ring wrap");
+                  settled.analysisWindows == idle.analysisWindows && settled.publications == idle.publications &&
+                  view.readMaximum() == firstMaximum && view.readRealtimeSigma() == firstSigma,
+              "windowed monitors hold one quiet frame with no extra work across a certified ring wrap");
 
         write(parked, left.data(), right.data(), untilHop - 1);
         write(reference, left.data(), right.data(), untilHop - 1);
@@ -2745,9 +2750,101 @@ void parkedWindowHopPhase() {
                   audible->peak == std::array{.5f, .25f} && exactBins(audible->rms, expected->rms) &&
                   audible->correlation == expected->correlation && exactBins(audible->binsDbfs, expected->binsDbfs) &&
                   exactBins(audible->scopeLeft, expected->scopeLeft) && exactBins(audible->scopeRight, expected->scopeRight) &&
-                  parked.broker.stats().transforms == ((output & SharedAnalysis::Spectrum) != 0 ? 1u : 0u),
-              "Scope, Phase and Raw wake at the uninterrupted hop with matching samples, stamps and levels");
+                  parked.broker.stats().transforms == ((output & (SharedAnalysis::Spectrum | realtime)) != 0 ? 1u : 0u),
+              "windowed monitors wake at the uninterrupted hop with matching samples, stamps and levels");
+        const auto exactTrace = [&](const auto &resumed, const auto &control, const auto &initial, const auto &controlInitial) {
+            return resumed && initial && control && controlInitial && resumed != initial &&
+                   resumed->window == audible && control->window == expected &&
+                   exactBins(initial->binsDbfs, controlInitial->binsDbfs) &&
+                   exactBins(resumed->binsDbfs, control->binsDbfs);
+        };
+        if (output & SharedAnalysis::RealtimeMaximum)
+            check(exactTrace(view.readMaximum(), uninterrupted.readMaximum(), firstMaximum, firstControlMaximum),
+                  "parked maximum keeps exact floor and first audible bins without an additional transform");
+        if (output & SharedAnalysis::RealtimeSigma)
+            check(exactTrace(view.readRealtimeSigma(), uninterrupted.readRealtimeSigma(), firstSigma, firstControlSigma),
+                  "parked Sigma keeps exact floor and first audible bins without an additional transform");
     }
+}
+
+template <SharedAnalysis::Output Initial>
+void parkedRealtimeModeJoins() {
+    constexpr auto opposite = Initial == SharedAnalysis::RealtimeMaximum ? SharedAnalysis::RealtimeSigma
+                                                                         : SharedAnalysis::RealtimeMaximum;
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, monitor = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800, admission = window + quietFrames;
+    constexpr std::uint64_t revision = 21;
+    Fixture parked, reference;
+    parked.tap = std::make_shared<ScopeTap>(48000., .25);
+    reference.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    request.outputs = Initial;
+    auto existing = parked.broker.acquire(request), control = reference.broker.acquire(request);
+    const auto readExisting = [](const auto &lease) {
+        if constexpr (Initial == SharedAnalysis::RealtimeMaximum) return lease.readMaximum();
+        else return lease.readRealtimeSigma();
+    };
+    const auto readOpposite = [](const auto &lease) {
+        if constexpr (opposite == SharedAnalysis::RealtimeMaximum) return lease.readMaximum();
+        else return lease.readRealtimeSigma();
+    };
+    const float *silence = nullptr;
+    const std::array<float, window> zeros{};
+    const auto writePair = [&](const float *z, const float *referenceSamples, int frames) {
+        parked.tap->write(z, z, frames, stamp, false, revision);
+        reference.tap->write(referenceSamples, referenceSamples, frames, stamp, false, revision);
+        parked.broker.pump();
+        reference.broker.pump();
+    };
+    writePair(silence, zeros.data(), window);
+    const auto first = readExisting(existing);
+    for (int i = 0; i < blocks; ++i) writePair(silence, zeros.data(), block);
+    auto sameOutput = parked.broker.acquire(request);
+    check(first && readExisting(existing) == first && readExisting(sameOutput) == first &&
+              parked.tap->oldest() > window,
+          "a duplicate realtime observer shares the realized floor without waking a wrapped tap");
+
+    request.outputs = SharedAnalysis::Scope | opposite;
+    auto joined = parked.broker.acquire(request), joinedControl = reference.broker.acquire(request);
+    parked.broker.pump();
+    reference.broker.pump();
+    const auto rebased = readExisting(existing), expected = readExisting(control);
+    const auto before = parked.broker.stats();
+    check(first && rebased && expected && rebased->window == joined.read() && rebased->window == existing.read() &&
+              readExisting(sameOutput) == rebased && rebased->window->windowSerial == expected->window->windowSerial &&
+              rebased->window->firstSequence == quietFrames - quietFrames % hop &&
+              rebased->window->firstSequence == expected->window->firstSequence &&
+              rebased->window->firstStamp == stamp && rebased->window->transportRevision == revision &&
+              rebased->window->sourceEpoch == first->window->sourceEpoch &&
+              rebased->window->overrunCount == first->window->overrunCount &&
+              exactBins(rebased->binsDbfs, first->binsDbfs) && exactBins(rebased->window->scopeLeft, zeros) &&
+              !readOpposite(joined) && !readOpposite(joinedControl) &&
+              before.taps == 1 && before.domains == 1 && before.spectralPlans == 1 && before.transforms == 0,
+          "a new scope and opposite trace catch up the realized holder without admitting stale samples");
+
+    std::array<float, window> signal;
+    signal.fill(.5f);
+    writePair(signal.data(), signal.data(), monitor - 1);
+    check(readExisting(existing) == rebased && !readOpposite(joined),
+          "a partial resumed hop retains the published realtime metadata and keeps the fresh mode gated");
+    writePair(signal.data(), signal.data(), 1);
+    const auto audible = readExisting(existing), expectedAudible = readExisting(control);
+    check(audible && expectedAudible && audible != rebased && audible->window == joined.read() &&
+              audible->window->firstSequence == quietFrames + monitor &&
+              audible->window->windowSerial == expectedAudible->window->windowSerial &&
+              exactBins(audible->binsDbfs, expectedAudible->binsDbfs) && !readOpposite(joined) &&
+              parked.broker.stats().transforms == before.transforms + 1,
+          "the surviving realtime mode wakes on the original hop while the new mode rejects overlapping history");
+    writePair(signal.data(), signal.data(), window);
+    const auto fresh = readOpposite(joined), freshControl = readOpposite(joinedControl);
+    check(fresh && freshControl && fresh->window == joined.read() && fresh->window->firstSequence >= admission &&
+              fresh->window->firstSequence == freshControl->window->firstSequence &&
+              fresh->window->windowSerial == freshControl->window->windowSerial &&
+              exactBins(fresh->binsDbfs, freshControl->binsDbfs),
+          "the new mode first reads a wholly post-admission window on the existing tap and hop grid");
 }
 
 void parkedStereoBalance() {
@@ -4967,7 +5064,8 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
-          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedWindowHopPhase(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedWindowHopPhase();
+          parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); parkedSpectrumLevels(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
