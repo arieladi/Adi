@@ -152,6 +152,12 @@ class ProjectDocument final : public engine::BlockProcessor {
     // (the engine's live MIDI input is not on main yet), a device with no inputs, the engine's refusal.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
+    // How many inputs the audio device has open (N65's window half): every audio track is fed by inputs
+    // 1/2 (input 1 alone on a one-input device) until a track's input has its grammar (MX-25), as
+    // recording takes them, and the session hears them as each track's Arm and monitoring say (In
+    // always; Auto while armed and no clip plays; Off never). Set by the application when the device
+    // opens or changes; 0 disconnects monitoring.
+    void setInputChannels(std::int32_t inputs);
     // Stops the recorder (the transport is the caller's); the takes land on a later `tick()`.
     void stopRecording();
     // Lands a running or stopping take now, with the driver detached (a project replaced, Quit): call it
@@ -272,6 +278,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     [[nodiscard]] device::DeviceInstance* limiterReductionTarget(
         std::int64_t id, const engine::DeviceRuntimeToken& expected);
     void refreshLimiterReductionSources();
+    // The session's monitoring inputs for the tracks as they stand, given when they changed.
+    void syncMonitorInputs();
+    std::int32_t inputChannels_ = 0;
+    std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
     std::unique_ptr<Store> store_;

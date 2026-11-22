@@ -10399,7 +10399,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         return;
     }
     const auto states = [&] { return document->recordStates(); };
-    check(states().at(4).monitor == Monitor::Auto, "New audio tracks monitor on Auto");
+    check(states().at(4).monitor == Monitor::Auto && states().at(3).monitor == Monitor::Auto,
+          "New's audio and MIDI tracks monitor on Auto, as Live's (N67)");
     three->arm.onClick();
     frame();
     check(states().at(4).armed && three->arm.getToggleState() && root.error().empty(),
@@ -10440,7 +10441,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     frame();
     check(root.command(AppCommands::Undo), "undo");
     frame();
-    check(states().at(4).monitor == Monitor::Auto, "one Undo restores 3 Audio to Auto after choosing In twice");
+    check(states().at(4).monitor == Monitor::Auto, "the same choice again changed nothing: one Undo puts 3 Audio back on Auto");
     check(root.command(AppCommands::Redo), "redo");
     frame();
     check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring");

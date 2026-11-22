@@ -1412,11 +1412,12 @@ void audioDropAsOneStep() {
 
     // The same file again, below the tracks: the pool row is reused, and a new audio track holds it.
     auto again = ui::dropAudio(*view.current(), 0, 0, "snare", capture(2));
-    check(again.refusal.empty() && again.ops.size() == 3 && again.ops[0].opType == "track.create" &&
+    check(again.refusal.empty() && again.ops.size() == 4 && again.ops[0].opType == "track.create" &&
               again.ops[0].payload["kind"] == "audio" && again.ops[0].payload["id"] == 5 &&
-              again.ops[1].payload["track"] == 5 && again.ops[2].payload["media"] == 1 && again.select == 5 &&
+              again.ops[1].opType == "track.setMonitorMode" && again.ops[1].payload["mode"] == 2 &&
+              again.ops[2].payload["track"] == 5 && again.ops[3].payload["media"] == 1 && again.select == 5 &&
               again.clip == 2,
-          "the drop area: a new audio track, the pool's row reused");
+          "the drop area: a new audio track monitoring on Auto (N67), the pool's row reused");
     check(sub.submit(std::move(again.ops)).ok && view.current()->findTrack(5) != nullptr &&
               view.current()->findTrack(5)->clips.size() == 1,
           "and lands");
@@ -2325,7 +2326,9 @@ void recordingDefaultsRideTheBatch() {
         if (op.opType == "track.setRecordQuantize")
             off = !op.payload.at("on").get<bool>() && !op.payload.contains("grid");
     check(off, "record.quantize off: Rec-Q Free");
-    check(ui::insertTrack(none, 0, true).ops.size() == 1, "without defaults, the track alone, as before");
+    check(ui::insertTrack(none, 0, true).ops.size() == 2 && ui::insertTrack(none, 0, true).ops[1].opType == "track.setMonitorMode" &&
+              ui::insertTrack(none, 0, true).ops[1].payload["mode"] == 2,
+          "without defaults, the track and its monitoring on Auto, as Live's (N67)");
 }
 
 void reenableFindsThePlayedLane() {
