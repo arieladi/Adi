@@ -381,6 +381,7 @@ int main(int argc, char** argv) {
             }
         }
         if (!result.ok) std::fprintf(stderr, "%s: %s\n", cmd.c_str(), result.error.c_str());
+        if (!result.warning.empty()) std::fprintf(stderr, "%s: %s\n", cmd.c_str(), result.warning.c_str());
         return result.ok ? 0 : 1;
     }
     if (cmd == "layout") {

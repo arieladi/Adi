@@ -10,6 +10,11 @@ predecessor's last hand-off of 18 November reached win). From now on this machin
 
 HOW YOU WORK: UNTIL YOUR LIMIT
 This is not a one-answer task. Work through the queue below, item after item, until your usage limit ends the session.
+- Before each item: read adi_daw/collab/win.md on main and every log entry addressed to you: adi_daw/collab/engine.md
+  on engine/log (the cloud engine seat), and collab/window.md on window/log and collab/mixview.md on mixview/log
+  where they ask for the catalogue (ADR-0248 d12).
+- Confirmed review findings come before new queue items: the rows of adi_daw/docs/DEFERRED.md that name the
+  Windows engine seat as owner are taken before the next new item of THE QUEUE (ADR-0248 d1).
 - After each piece: build and test it on MSVC (/W4 /WX), commit, push the branch, write the log entry and
   "PR requested", then start the next piece in the same turn. Do not end your turn to report: the log is the report.
 - A question only the director can answer does not stop you. Write it at the top of your log under "FOR THE DIRECTOR"

@@ -1,0 +1,234 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Take lanes sheet</title>
+<style>html,body{margin:0;background:#101010}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script>
+<script>
+// ADI, take lanes and comping in the Arrangement, proposal 1 (19 November 2026). PLAN CT-04 with CT-01.
+// Live 12's layout (the Comping chapter: the main lane, one take lane per take, audition, highlighted
+// source spans, Copy Selection to Main Lane), drawn in the agreed language. ADI's own drawing.
+const W=1920,H=1080;let s=R(0,0,W,H,C.win);
+// The Control Bar, with the song position and the loop of this take: bars 9 to 17.
+s+=topBars(W,'Norway  ·  ADI','arr').replace('1.  1.  1','12.  3.  1').replace('3.  1.  1','9.  1.  1').replace('4.  0.  0','8.  0.  0');
+s+=R(1716,2,198,20,C.acc,{r:5});s+=T(1815,17,'TAKE LANES SHEET  ·  proposal 1',{z:11.5,w:700,a:'middle',f:C.ink});
+
+const BOT=782,SB=H-26;
+// ---------------- the Browser (as on the Arrangement sheet) ----------------
+const bx=6,bw=326,by=74,bh=BOT-by-6;s+=R(bx,by,bw,bh,C.panel,{r:6});
+s+=R(bx+8,by+8,bw-52,24,C.well,{r:5,s:'#3a3a3a'});s+=T(bx+18,by+24,'Search (Ctrl + F)',{z:11.5,f:C.faint});s+=btn(bx+bw-38,by+8,30,24,'',{r:5});s+=P(`M${bx+bw-30} ${by+16}h14M${bx+bw-27} ${by+20}h8M${bx+bw-25} ${by+24}h4`,{s:C.acc,sw:1.6});
+const cw=116;let yy=by+52;const cat=(t,o={})=>{if(o.sel)s+=R(bx+4,yy-13,cw-4,19,'#44444a',{r:4});s+=CI(bx+17,yy-4,4,o.c||'none',{s:o.c?null:C.dim,sw:1.3});s+=T(bx+29,yy,t,{z:11.5,f:o.sel?C.text:'#bdbdbd',w:o.sel?600:400});yy+=20};
+const sect=t=>{s+=T(bx+10,yy,t,{z:10.5,f:C.faint});yy+=20};
+sect('Collections');cat('Favorites',{c:C.rec});cat('Mix tools',{c:C.acc});yy+=8;
+sect('Library');['Sounds','Drums','Instruments','Audio Effects','MIDI Effects','Pd Devices','Plug-Ins','Clips'].forEach(t=>cat(t));cat('Samples');['Grooves','Tunings','Templates'].forEach(t=>cat(t));yy+=8;
+sect('Places');['Packs','User Library'].forEach(t=>cat(t));cat('Current Project',{sel:1});['Add Folder...'].forEach(t=>cat(t));
+s+=L(bx+cw,by+40,bx+cw,by+bh-34,'#1c1c1c');
+{let ty=by+44,tx=bx+cw+8;[['Recorded',1],['Imported',0],['Processed',0],['Frozen',0]].forEach(([t,on])=>{const w=14+t.length*6.2;if(tx+w>bx+bw-6){tx=bx+cw+8;ty+=22}s+=pill(tx,ty,w,17,t,{on:on,z:10});tx+=w+4});
+ ty+=30;s+=R(bx+cw+1,ty,bw-cw-2,20,C.head);s+=T(bx+cw+10,ty+14,'Name',{z:10.5,w:600});s+=T(bx+bw-10,ty+14,'5 results',{z:10,f:C.dim,a:'end'});ty+=22;
+ [['Backing Vox 0001',0,'0:16'],['Backing Vox 0002',0,'0:16'],['Lead Vocals 0001',0,'0:08'],['Lead Vocals 0002',0,'0:16'],['Lead Vocals 0003',1,'1:04']].forEach(([n,sel,d],i)=>{const ry=ty+i*21;if(sel)s+=R(bx+cw+3,ry,bw-cw-6,20,'#3f5866',{r:4});
+  s+=R(bx+cw+10,ry+5,10,10,'none',{r:2,s:C.dim,sw:1.3});s+=T(bx+cw+27,ry+14,n,{z:11});s+=T(bx+bw-10,ry+14,d,{z:9.5,f:sel?C.text:C.faint,a:'end'})});}
+s+=R(bx+4,by+bh-30,bw-8,24,C.well,{r:5});s+=CI(bx+18,by+bh-18,7,'none',{s:C.val,sw:1.6});s+=P(`M${bx+16} ${by+bh-21.5}L${bx+22} ${by+bh-18}L${bx+16} ${by+bh-14.5}Z`,{f:C.val});s+=T(bx+34,by+bh-14,'Preview',{z:10.5,f:C.faint});
+
+// ---------------- the Arrangement ----------------
+const ax=338,aw=W-ax-6,ay=74,HW=392,lw=aw-HW,hx=ax+lw;
+s+=R(ax,ay,aw,BOT-ay-6,'#202020',{r:6});
+const B0=5,PB=lw/16;                         // bars 5 to 21 in view, one bar = PB pixels
+const X=b=>ax+(b-B0)*PB;                     // bar (1-based, fractional) to x
+const XA=beat=>X(beat/4+1);                  // song beat (0 = bar 1) to x
+const XL=beat=>X(9)+beat*PB/4;               // beat from the loop start (bar 9) to x
+// overview of the whole song, with the part in view framed
+s+=R(ax+4,ay+4,lw-8,16,C.well,{r:3});{const r=rng(3);const cols=['#f08a5d','#f2e15a','#8f8cff','#c479ff','#5ec8ff','#5eb4ff','#ff6fb1'];for(let i=0;i<7;i++){let px=ax+6;while(px<ax+lw-10){const len=20+Math.floor(r()*150);if(r()>0.25)s+=R(px,ay+6+i*1.9,Math.min(len,ax+lw-8-px),1.3,cols[i]);px+=len+4}}s+=R(ax+4+(lw-8)*0.031,ay+4,(lw-8)*0.13,16,'none',{r:3,s:'#d0d0d0',sw:1.2})}
+// ruler: one bar per mark, the loop brace over bars 9 to 17, the locators
+const ry=ay+24;s+=R(ax,ry,lw,26,'#262626');for(let b=B0;b<21;b++){const x0=X(b);s+=L(x0,ry+14,x0,ry+26,'#5a5a5a');s+=T(x0+4,ry+12,String(b),{z:10.5,f:C.dim});for(let q=1;q<4;q++)s+=L(x0+q*PB/4,ry+21,x0+q*PB/4,ry+26,'#444')}
+s+=R(X(9),ry+16,X(17)-X(9),7,C.acc,{r:3,op:0.9});
+[[9,'Verse 2'],[17,'Chorus']].forEach(([b,t])=>{s+=P(`M${X(b)+22} ${ry+3}l8 5l-8 5z`,{f:C.dim});s+=T(X(b)+34,ry+12,t,{z:10,f:C.dim})});
+// the buttons over the track names
+{const by2=ry+3;s+=R(hx,ry,HW,26,'#262626');let x=hx+6;
+ s+=btn(x,by2,26,20,'',{r:4});s+=iSwap(x+13,by2+10,C.text);x+=30;
+ s+=btn(x,by2,112,20,'',{r:4});s+=T(x+7,by2+14,'Show',{z:10.5,f:C.dim});s+=T(x+40,by2+14,'All groups',{z:10.5,w:600});s+=P(`M${x+98} ${by2+8}l3.5 3.5l3.5 -3.5`,{s:C.dim,sw:1.5});x+=118;
+ s+=grp(x,by2,122,20);[['I·O',1],['S',1],['R',1],['M',1],['D',0]].forEach(([t,on],k)=>{if(on)s+=R(x+2+k*24,by2+2,22,16,C.acc,{r:4});s+=T(x+13+k*24,by2+14,t,{z:9.5,a:'middle',w:700,f:on?C.ink:C.dim})});x+=128;
+ s+=grp(x,by2,50,20);s+=T(x+13,by2+14,'H',{z:10,a:'middle',w:700,f:C.dim});s+=sep(x+25,by2,20);s+=T(x+37,by2+14,'W',{z:10,a:'middle',w:700,f:C.dim});x+=56;
+ s+=btn(x,by2,26,20,'',{r:4,on:1});s+=iArm(x+13,by2+10,C.ink).replace(/stroke-width="2.2"/,'stroke-width="1.8"');x+=30;
+ s+=btn(x,by2,22,20,'',{r:4});s+=R(x+6,by2+9,10,7,'none',{r:1.5,s:C.dim,sw:1.4})+P(`M${x+8} ${by2+9}v-2a3 3 0 0 1 6 0v2`,{s:C.dim,sw:1.4});}
+
+// ---------------- the music: Norway, C# minor, 120 BPM ----------------
+// The verse turns over C#m | A | E | B, two bars each.
+const CH=[{b:37,p:[49,56,61,64],k:[61,64,68]},{b:33,p:[45,52,57,61],k:[57,61,64]},{b:40,p:[52,56,59,64],k:[59,64,68]},{b:35,p:[47,54,59,63],k:[59,63,66]}];
+const chordAt=bar=>CH[Math.floor(((bar-1)%8)/2)];
+const bassNotes=(b0,b1)=>{const n=[];for(let b=b0;b<b1;b++){const r=chordAt(b).b,st=(b-1)*4;[[0,0.75,r],[0.75,0.25,r],[1.5,0.5,r+12],[2,0.75,r],[3,0.5,r+7],[3.5,0.5,r+12]].forEach(([o,l,p])=>n.push([st+o,l*0.92,p]))}return n};
+const keyNotes=(b0,b1,v)=>{const n=[];for(let b=b0;b<b1;b++){const c=chordAt(b),st=(b-1)*4;(v?[0,1.5,2.5,3.5]:[0,1.5,3]).forEach((o,k)=>{c.k.forEach(p=>n.push([st+o,(k===0?1.2:0.42),p]))})}return n};
+const padNotes=(b0,b1)=>{const n=[];for(let b=b0;b<b1;b+=2){const c=chordAt(b);c.p.forEach(p=>n.push([(b-1)*4,7.7,p]))}return n};
+
+// A sung line: syllables [start beat, length, level], phrased over the 8 bars of the loop.
+const LINE=[
+ [0.5,0.4,0.62],[1.0,0.45,0.66],[1.5,0.9,0.78],[2.5,0.4,0.6],[3.0,1.4,0.86],[4.75,0.4,0.6],[5.25,1.55,0.82],
+ [8.0,0.45,0.64],[8.5,0.45,0.66],[9.0,0.9,0.8],[10.0,0.4,0.6],[10.5,0.45,0.68],[11.0,1.8,0.9],[13.25,0.4,0.62],[13.75,1.05,0.76],
+ [16.0,0.45,0.66],[16.5,0.4,0.62],[17.0,0.95,0.84],[18.0,0.45,0.66],[18.5,1.55,0.92],[20.5,0.4,0.6],[21.0,0.45,0.66],[21.5,1.0,0.78],
+ [24.0,0.45,0.66],[24.5,0.45,0.68],[25.0,0.9,0.82],[26.0,0.45,0.64],[26.5,0.45,0.7],[27.0,3.5,0.95]];
+const BREATHS=[7.45,15.45,23.35];
+// Four passes of the loop: the same line, sung four times, each a little different.
+function take(seed,o={}){const r=rng(seed);return{syl:LINE.map(([st,d,a],i)=>{let s0=st+(r()-0.5)*0.1,dd=d*(0.9+0.18*r()),aa=a*(0.82+0.3*r());
+  if(o.lateA&&st<7){s0+=0.12;aa*=0.72}if(o.flatC&&st>=16&&st<20.3)aa*=0.7;if(o.hotB&&st>=8&&st<15)aa=Math.min(1,aa*1.15);return[s0,dd,aa]}),br:BREATHS.map(b=>b+(r()-0.5)*0.1),r}}
+const TAKES=[take(11,{lateA:1}),take(23),take(37,{flatC:1}),take(52,{hotB:1})];
+function vocalAmp(tk,t){let v=0.015;for(const[st,d,a]of tk.syl){if(t<st||t>st+d+0.14)continue;const u=t-st;let e=Math.min(1,u/0.05)*(1-0.22*u/Math.max(d,0.6));
+   if(d>1&&u>0.35)e*=1+0.13*Math.sin(u*2*Math.PI*2.75);if(u>d)e*=1-(u-d)/0.14;e+=0.35*Math.exp(-u/0.025)*(a>0.6?1:0.5);v=Math.max(v,a*e)}
+  for(const b of tk.br){const u=(t-b)/0.32;if(u>0&&u<1)v=Math.max(v,0.13*Math.sin(Math.PI*u))}return Math.min(1,v)}
+// Draw a waveform between x0 and x1 from an amplitude function of x; dark on the clip, as Live 12.
+function wave(x0,x1,mid,amp,f,seed,o={}){const r=rng(seed);let up='',dn='';const st=1.3;for(let x=x0;x<=x1;x+=st){const v=f(x)*(0.7+0.3*r());up+=(up?'L':'M')+x.toFixed(1)+' '+(mid-amp*v).toFixed(1);dn=`L${x.toFixed(1)} ${(mid+amp*v).toFixed(1)}`+dn}
+  return P(up+dn+'Z',{f:o.c||'#141414',op:o.op==null?0.85:o.op})}
+// Notes of a MIDI clip, dark on the clip.
+function notes(x0,x1,y,h,list,lo,hi){let g='';const nh=h/(hi-lo+1);list.forEach(([st,l,p])=>{let a=XA(st),b=XA(st+l);if(b<x0+2||a>x1-2)return;a=Math.max(a,x0+2);b=Math.min(b,x1-2);g+=R(a.toFixed(1),(y+(hi-p)*nh).toFixed(1),Math.max(2,b-a-1).toFixed(1),Math.max(2,nh-0.8).toFixed(1),'#141414',{r:1,op:0.9})});return g}
+// A clip: the name strip in the colour, the body a step dimmer, then its content. Clipped to the view.
+function clip(b0,b1,y,h,col,name,content,o={}){let x0=Math.max(X(b0),ax),x1=Math.min(X(b1),ax+lw);if(x1<=x0)return'';x0+=1;x1-=1;const w=x1-x0;let g='';
+  g+=R(x0,y+1,w,h-2,o.dim?C.ctl:col,{r:3,op:o.dim?1:0.30});g+=R(x0,y+1,w,13,o.dim?C.faint:col,{r:3});g+=T(x0+5,y+11.5,name,{z:10,f:C.ink,w:600});if(content)g+=content(x0,x1);return g}
+
+// ---------------- the tracks ----------------
+const LV='#5ec8ff',GD='#f08a5d';
+let y=ry+28;const rowEnd=h=>{s+=L(ax,y+h,ax+aw,y+h,'#1a1a1a');y+=h+1};
+const lanesBg=(h,sel,alt)=>{s+=R(ax,y,lw,h,sel?'#3a3a3a':(alt?C.lane2:C.lane));for(let b=B0+1;b<21;b++)s+=L(X(b),y,X(b),y+h,'#000',1,{op:0.2})};
+// The track header: name block in the colour, the fold switch for the take lanes, In/Out, mixer, meter.
+function header(tr,h,i){const sel=tr.sel;s+=R(hx,y,HW,h,sel?'#3a3a3a':C.panel);s+=R(hx,y,128,h,tr.c);
+  if(tr.folded)s+=CI(hx+12,y+12,6,'none',{s:C.ink,sw:1.6})+P(`M${hx+11} ${y+9}l3 3l-3 3`,{s:C.ink,sw:1.6});else s+=CI(hx+12,y+12,6,'none',{s:C.ink,sw:1.6})+P(`M${hx+9} ${y+11}l3 3l3 -3`,{s:C.ink,sw:1.6});
+  s+=T(hx+24,y+16,tr.n,{z:11.5,f:C.ink,w:700});
+  // the take lanes' show/hide switch, on its own row under the name: the shared button, a lanes glyph
+  // (the main lane's thick bar, its take lanes thinner and indented under it), and the lane count
+  if(tr.takes){const on=tr.takes.on,tx=hx+6,ty=y+24,gc=on?C.ink:C.dim;s+=btn(tx,ty,22,16,'',{r:4,on:on});
+    s+=R(tx+5,ty+3.5,12,2.8,gc,{r:1})+R(tx+8,ty+8,9,1.8,gc,{r:0.9})+R(tx+8,ty+11.5,9,1.8,gc,{r:0.9});
+    s+=T(tx+28,ty+12,tr.takes.n+' take lanes',{z:9.5,f:C.ink,w:600})}
+  if(h>=58&&!tr.grp){s+=chooser(hx+134,y+4,104,16,tr.k==='m'?'All Ins':'Ext. In',{z:9.5});s+=chooser(hx+134,y+22,104,16,tr.k==='m'?'All Channels':'1/2',{z:9.5});
+    s+=grp(hx+134,y+40,104,16);s+=T(hx+152,y+52,'In',{z:9.5,a:'middle',f:C.dim,w:600});s+=R(hx+170,y+42,34,12,C.acc,{r:3});s+=T(hx+187,y+52,'Auto',{z:9.5,a:'middle',f:C.ink,w:700});s+=T(hx+221,y+52,'Off',{z:9.5,a:'middle',f:C.dim,w:600})}
+  else s+=chooser(hx+134,y+4,104,16,tr.grp?'Main':(tr.k==='m'?'All Ins':'Ext. In'),{z:9.5});
+  const mx=hx+246;s+=btn(mx,y+4,34,16,String(tr.num),{on:1,r:4,z:10});s+=btn(mx+38,y+4,20,16,'S',{r:4,z:10,f:C.dim});if(!tr.grp){s+=btn(mx+62,y+4,20,16,'',{r:4,on:tr.arm,c:C.rec});s+=CI(mx+72,y+12,3.6,tr.arm?C.ink:C.dim)}
+  s+=box(mx,y+24,46,16,tr.vol,{fill:0.6,z:9.5});s+=knob(mx+68,y+32,7.5,0.5,C.val,'','',{bi:1,ring:2});
+  if(h>=58){s+=box(mx,y+42,28,14,'-12',{z:9});s+=box(mx+32,y+42,28,14,'-inf',{z:9,f:C.dim})}
+  s+=meterV(hx+HW-48,y+4,5,h-8,tr.m)+meterV(hx+HW-41,y+4,5,h-8,tr.m*0.94)}
+
+// Drums, a group, folded
+{const h=40,tr={n:'Drums',c:GD,grp:1,folded:1,num:1,vol:'-3.0',m:0.78};lanesBg(h,0,0);
+ [[1,9,'Drums'],[9,17,'Drums 2'],[17,25,'Drums 3']].forEach(([a,b,n])=>s+=clip(a,b,y,h,GD,n,(x0,x1)=>{let g='';for(let k=0;k<3;k++)g+=R(x0+3,y+17+k*7,x1-x0-6,5,C.ink,{r:1,op:0.35});return g}));
+ header(tr,h);rowEnd(h)}
+// Bass
+const notesRow=(tr,h,clips,lo,hi,alt)=>{lanesBg(h,0,alt);clips.forEach(([a,b,n,list])=>s+=clip(a,b,y,h,tr.c,n,(x0,x1)=>notes(x0,x1,y+17,h-21,list,lo,hi)));header(tr,h);rowEnd(h)};
+notesRow({n:'Bass',c:'#f2e15a',k:'m',num:5,vol:'-9.0',m:0.66},58,[[3,9,'Bass',bassNotes(3,9)],[9,17,'Bass 2',bassNotes(9,17)],[17,25,'Bass 3',bassNotes(17,21)]],31,53,1);
+// Keys: a MIDI track with three take lanes, folded away
+const KEYS_Y=y;notesRow({n:'Keys',c:'#8f8cff',k:'m',num:6,vol:'-7.5',m:0.44,takes:{on:0,n:3}},58,[[5,9,'Keys',keyNotes(5,9,0)],[9,13,'Take 1',keyNotes(9,13,0)],[13,17,'Take 3',keyNotes(13,17,1)],[17,25,'Keys 2',keyNotes(17,21,1)]],56,69,0);
+// Pads
+notesRow({n:'Pads',c:'#c479ff',k:'m',num:7,vol:'-12',m:0.38},40,[[1,17,'Pads',padNotes(1,17)],[17,25,'Pads 2',padNotes(17,21)]],44,65,1);
+
+// Lead Vocals: the main lane (the comp) and its four take lanes, shown
+const MAIN_H=72,TL_H=39,ADD_H=20;const LV_Y=y;
+const COMP=[[0,7.25,1],[7.25,15.25,3],[15.25,20.25,0],[20.25,23,1],[23,32,3]];   // [from, to (beats in the loop), take index]
+const SELN=[15.25,20.25];
+const takeAt=t=>{for(const[a,b,k]of COMP)if(t>=a&&t<b)return k;return -1};
+const xToBeat=x=>(x-X(9))/(PB/4);
+{const h=MAIN_H;lanesBg(h,1,0);
+ // verse 1 (in after a bar of intro) and the chorus, recorded without the loop
+ const ln=[[0.5,0.45,0.6],[1,0.9,0.75],[2,0.45,0.6],[2.5,1.4,0.82],[4.5,0.4,0.6],[5,0.45,0.66],[5.5,1.8,0.85],[8,0.45,0.62],[8.5,0.9,0.76],[9.5,0.45,0.6],[10,2.4,0.88],[12.75,0.45,0.62],[13.25,1.4,0.8]];
+ const v1={syl:ln,br:[7.4,12.3]};s+=clip(6,9,y,h,LV,'Lead Vocals',(x0,x1)=>wave(x0,x1,y+14+(h-16)/2,(h-20)/2,x=>vocalAmp(v1,(x-X(6))/(PB/4)),71));
+ const ch={syl:LINE.map(([a,d,l])=>[a,d*1.1,Math.min(1,l*1.08)]).filter(q=>q[0]<16),br:[7.4,15.4]};s+=clip(17,21.2,y,h,LV,'Lead Vocals 2',(x0,x1)=>wave(x0,x1,y+14+(h-16)/2,(h-20)/2,x=>vocalAmp(ch,(x-X(17))/(PB/4)),72));
+ // the comp: one copy per span, named after the take it came from
+ COMP.forEach(([a,b,k],i)=>{const x0=XL(a)+1,x1=XL(b)-1;s+=R(x0,y+1,x1-x0,h-2,LV,{r:3,op:0.30});s+=R(x0,y+1,x1-x0,13,LV,{r:3});s+=T(x0+5,y+11.5,'Take '+(k+1),{z:10,f:C.ink,w:600});
+   s+=wave(x0,x1,y+14+(h-16)/2,(h-20)/2,x=>vocalAmp(TAKES[k],xToBeat(x)),100+k*7+Math.floor(a))});
+ // where the selection on Take 3 will land
+ s+=R(XL(SELN[0])+1,y+2,XL(SELN[1])-XL(SELN[0])-2,h-4,'none',{r:3,s:C.text,sw:1.3,d:'4 3',op:0.9});
+ header({n:'Lead Vocals',c:LV,k:'a',num:8,vol:'0.0',m:0.7,sel:1,arm:0,takes:{on:1,n:4}},h);rowEnd(h)}
+// the take lanes
+const TL_Y=y;
+TAKES.forEach((tk,k)=>{const h=TL_H,aud=k===2;s+=R(ax,y,lw,h,aud?C.lane:C.lane2);for(let b=B0+1;b<21;b++)s+=L(X(b),y,X(b),y+h,'#000',1,{op:0.2});
+  const x0=X(9)+1,x1=X(17)-1,mid=y+14+(h-16)/2,amp=(h-20)/2;
+  // the whole take, dimmed
+  s+=R(x0,y+1,x1-x0,h-2,C.ctl,{r:3});s+=R(x0,y+1,x1-x0,13,C.faint,{r:3});
+  s+=wave(x0,x1,mid,amp,x=>vocalAmp(tk,xToBeat(x)),100+k*7,{op:0.55});
+  // the spans of it that are on the main lane, in the track's colour
+  COMP.filter(c=>c[2]===k).forEach(([a,b])=>{const p=XL(a)+(a?0:1),q=XL(b)-(b===32?1:0);s+=R(p,y+1,q-p,h-2,C.lane,{r:2});s+=R(p,y+1,q-p,h-2,LV,{r:2,op:0.30});s+=R(p,y+1,q-p,13,LV,{r:2});
+    s+=wave(p,q,mid,amp,x=>vocalAmp(tk,xToBeat(x)),100+k*7+Math.floor(a),{op:0.9})});
+  s+=T(x0+5,y+11.5,'Take '+(k+1),{z:10,f:C.ink,w:600});
+  if(aud){// the selection, about to be copied to the main lane
+    const p=XL(SELN[0]),q=XL(SELN[1]);s+=R(p,y+1,q-p,h-2,C.text,{op:0.22});s+=L(p,y+1,p,y+h-1,C.text,1.2);s+=L(q,y+1,q,y+h-1,C.text,1.2);
+    const tx=q+8,tw=232,ty=y+(h-22)/2;s+=`<g filter="url(#sh)">${R(tx,ty,tw,22,C.head,{r:5,s:C.edge})}</g>`;s+=R(tx+5,ty+3,40,16,C.acc,{r:4});s+=T(tx+25,ty+15,'Enter',{z:10.5,a:'middle',w:700,f:C.ink});s+=T(tx+52,ty+15,'Copy Selection to Main Lane',{z:11})}
+  // the lane header: the track's line, the lane's name, the audition switch, the Lane area
+  s+=R(hx,y,HW,h,aud?C.grp:'#262626');s+=R(hx,y,4,h,LV);s+=R(hx+8,y+4,116,h-8,aud?C.head:C.grp,{r:5,s:aud?C.edge:C.grpEdge});
+  s+=T(hx+16,y+h/2+4,'Take '+(k+1),{z:11.5,w:aud?700:600,f:aud?C.text:'#bdbdbd'});
+  const sx=hx+92,sy=y+h/2-8;s+=btn(sx,sy,26,16,'',{r:4,on:aud});const sc=aud?C.ink:C.dim;s+=P(`M${sx+6} ${sy+6}h3l4 -3v10l-4 -3h-3z`,{f:sc,s:sc,sw:1})+P(`M${sx+16} ${sy+5}a4 4 0 0 1 0 6`,{s:sc,sw:1.4})+(aud?P(`M${sx+18.5} ${sy+3}a7 7 0 0 1 0 10`,{s:sc,sw:1.4}):'');
+  s+=R(hx+134,y+(h-20)/2,104,20,C.grp,{r:5,s:C.grpEdge});s+=T(hx+144,y+h/2+4,'Lane',{z:10.5,f:C.dim});
+  if(aud)s+=T(hx+250,y+h/2+4,'Auditioned',{z:10.5,f:C.acc,w:600});
+  rowEnd(h)});
+// insert a take lane (ADI's button; Live keeps it in the Create menu)
+{const h=ADD_H;s+=R(ax,y,lw,h,C.lane2);s+=R(hx,y,HW,h,'#262626');s+=R(hx,y,4,h,LV);s+=btn(hx+8,y+2,116,16,'+  Insert Take Lane',{r:4,z:9.5,w:600,f:C.dim});s+=T(hx+134,y+14,'Shift + Alt + T',{z:9.5,f:C.dim});rowEnd(h)}
+const LV_END=y;
+// Backing Vox
+{const h=44,tr={n:'Backing Vox',c:'#5eb4ff',k:'a',num:9,vol:'-8.0',m:0.5};lanesBg(h,0,1);
+ const bv={syl:[[0,3.4,0.6],[4,3.3,0.66],[8,1.6,0.6],[9.75,5.6,0.72],[16,3.4,0.66],[20,3.6,0.7],[24,7.2,0.78]],br:[3.7,7.6,15.6]};
+ s+=clip(13,21.2,y,h,tr.c,'Backing Vox',(x0,x1)=>wave(x0,x1,y+14+(h-16)/2,(h-20)/2,x=>{const t=(x-X(13))/(PB/4);let v=0.015;for(const[a,d,l]of bv.syl){if(t<a||t>a+d+0.3)continue;const u=t-a;let e=Math.min(1,u/0.6)*(u>d?1-(u-d)/0.3:1)*(1+0.08*Math.sin(u*2*Math.PI*2.75));v=Math.max(v,l*e)}return v},81));
+ header(tr,h);rowEnd(h)}
+// FX: a riser into the chorus and the hit on its downbeat
+{const h=40,tr={n:'FX',c:'#ff6fb1',k:'a',num:10,vol:'-14',m:0.3};lanesBg(h,0,0);
+ s+=clip(15,17,y,h,tr.c,'Riser',(x0,x1)=>wave(x0,x1,y+14+(h-16)/2,(h-20)/2,x=>0.05+0.9*Math.pow((x-x0)/(x1-x0),2.2),91));
+ s+=clip(17,18.5,y,h,tr.c,'Impact',(x0,x1)=>wave(x0,x1,y+14+(h-16)/2,(h-20)/2,x=>{const u=(x-x0)/(x1-x0);return Math.min(1,u*60)*Math.exp(-u*4.5)+0.02},92));
+ header(tr,h);rowEnd(h)}
+// returns and Main at the foot
+const footH=3*24,dropBot=BOT-6-20-footH;s+=T(ax+lw*0.68,(y+dropBot)/2+4,'Drop Files and Devices Here',{z:11,f:C.faint});
+[['A Reverb','#b7b7c2','A'],['B Delay','#b7b7c2','B'],['Main','#e8e8ee','']].forEach(([n,c,l],i)=>{const yy=dropBot+i*24;s+=R(ax,yy,lw,23,'#2a2a2a');s+=R(hx,yy,HW,23,C.panel);s+=R(hx,yy,128,23,c);s+=T(hx+24,yy+15.5,n,{z:11.5,f:C.ink,w:700});s+=CI(hx+12,yy+11.5,6,'none',{s:C.ink,sw:1.6});
+  s+=chooser(hx+134,yy+3,104,16,i<2?'Main':'1/2',{z:9.5});const mx=hx+246;if(l){s+=btn(mx,yy+3,34,16,l,{on:1,r:4,z:10});s+=btn(mx+38,yy+3,20,16,'S',{r:4,z:10,f:C.dim});s+=btn(mx+62,yy+3,34,16,'Post',{r:4,z:9,f:C.dim})}else{s+=box(mx,yy+3,46,16,'0.0',{fill:0.7,z:9.5});s+=knob(mx+68,yy+11.5,7,0.5,C.val,'','',{bi:1,ring:2})}
+  s+=meterV(hx+HW-48,yy+3,5,17,[0.4,0.3,0.82][i])+meterV(hx+HW-41,yy+3,5,17,[0.38,0.28,0.8][i])});
+// the playhead (inside the loop), and the time ruler at the foot
+const PH=X(12.55);s+=L(PH,ry,PH,dropBot,'#f0f0f0',1.3);
+const fy=BOT-6-20;s+=R(ax,fy,lw,20,'#262626');for(let b=B0;b<21;b+=2){s+=L(X(b),fy,X(b),fy+6,'#5a5a5a');const sec=(b-1)*2;s+=T(X(b)+4,fy+14,Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'),{z:10,f:C.dim})}
+s+=R(hx,fy,HW,20,'#262626');s+=box(hx+6,fy+2,52,16,'1.00x',{z:9.5});s+=T(hx+HW-8,fy+14,'1/16',{z:10,f:C.dim,a:'end'});
+
+// ---------------- the Info box and the Device View ----------------
+// The Device View keeps the Lead Vocals chain of the Arrangement sheet (EQ, Compressor, Auto Filter...), scrolled
+// at its start; the sheet's notes sit to its right, outside the window's chrome.
+const ph=SB-BOT-6;s+=infoBox(6,BOT,326,ph,{seed:9,src:'Lead Vocals'});
+const dx=ax,LGW=744,dw=aw-LGW-8;s+=R(dx,BOT,dw,ph,'#202020',{r:6});
+{const py=BOT+8,h=ph-16;let px=dx+8;
+ s+=R(px,py,22,h,LV,{r:5});s+=`<text transform="translate(${px+15} ${py+h-10}) rotate(-90)" font-size="11.5" font-weight="700" fill="${C.ink}">Lead Vocals</text>`;px+=28;
+ s+=eqPanel(px,py,312,h);px+=320;s+=compPanel(px,py,250,h,1);px+=258;
+ // Auto Filter, cut by the Device View's edge: the chain goes on (Reverb, Saturator X)
+ s+=`<clipPath id="dvc"><rect x="${dx}" y="${BOT}" width="${dw-8}" height="${ph}"/></clipPath><g clip-path="url(#dvc)">`;
+ {const w=292;s+=panel(px,py,w,h,'Auto Filter','Clean ▾');s+=filterd(px+8,py+30,184,92);s+=knob(px+218,py+60,13,0.62,C.val,'Freq','1.2 kHz',{lz:9.5});s+=knob(px+264,py+60,13,0.4,C.val,'Res','40 %',{lz:9.5});
+  s+=pill(px+10,py+130,32,16,'LP',{on:1});s+=pill(px+46,py+130,32,16,'HP');s+=pill(px+82,py+130,32,16,'BP');s+=pill(px+118,py+130,42,16,'Notch');s+=pill(px+202,py+130,38,16,'12');s+=pill(px+244,py+130,38,16,'24',{on:1});
+  s+=T(px+10,py+166,'Envelope',{z:10,f:C.dim});s+=T(px+156,py+166,'LFO',{z:10,f:C.dim});s+=L(px+146,py+154,px+146,py+h-8,'#404044');
+  [['Amount','+12',0.6],['Attack','6 ms',0.2],['Release','200 ms',0.5]].forEach(([l,v,pv],n)=>s+=knob(px+28+n*44,py+188,10,pv,C.acc,l,v,{lz:9.5,bi:n===0}));
+  [['Amount','20 %',0.2],['Rate','1/8',0.45],['Phase','180°',1]].forEach(([l,v,pv],n)=>s+=knob(px+174+n*44,py+188,10,pv,C.acc,l,v,{lz:9.5}))}
+ s+='</g>'}
+
+// ---------------- the numbers ----------------
+s+=note(X(5)+37,LV_Y+40,1);
+s+=note(X(17)+18,TL_Y+20,2);
+s+=note(hx+262,TL_Y+20,3);
+s+=note(hx+334,TL_Y+2*(TL_H+1)+20,4);
+s+=note(X(9)-16,TL_Y+(TL_H+1)+21,5);
+s+=note(hx+113,LV_Y+32,6);
+s+=note(XL(SELN[1])+252,TL_Y+2*(TL_H+1)+20,7);
+s+=note(hx+113,KEYS_Y+32,8);
+s+=note(hx+258,LV_END-ADD_H+9,9);
+
+// ---------------- the sheet's notes (not part of the window) ----------------
+{const lx=dx+dw+8,ly=BOT,lwd=LGW,lh=ph;s+=R(lx+0.75,ly+0.75,lwd-1.5,lh-1.5,C.win,{s:C.acc,sw:1.5,d:'6 4'});
+ s+=T(lx+14,ly+20,'Take lanes and comping: the numbers',{z:12.5,w:700,f:C.acc});s+=T(lx+lwd-14,ly+20,'PLAN CT-04 with CT-01  ·  Live 12, Comping',{z:10.5,f:C.dim,a:'end'});
+ const cv=document.createElement('canvas').getContext('2d'),FONT='"Segoe UI", Arial, sans-serif';
+ const mw=(t,b)=>{cv.font=(b?'700 ':'400 ')+'10.5px '+FONT;return cv.measureText(t).width};
+ // one item: the bold head, then the body, wrapped to the column; returns its height
+ const item=(cx,cy,n,head,body,tw)=>{if(n==='?'){s+=CI(cx+11,cy+5,11,'none',{s:C.acc,sw:1.6});s+=T(cx+11,cy+9.5,'?',{z:13,w:700,a:'middle',f:C.acc})}else s+=note(cx+11,cy+5,n);
+   const words=[...head.split(' ').map(w=>[w,1]),...body.split(' ').map(w=>[w,0])];const lines=[[]];let cur=0;
+   words.forEach(([w,b])=>{const ww=mw(w+' ',b);if(cur+ww-mw(' ',b)>tw&&lines[lines.length-1].length){lines.push([]);cur=0}lines[lines.length-1].push([w,b]);cur+=ww});
+   lines.forEach((ln,k)=>{let t='';ln.forEach(([w,b],j)=>{t+=`<tspan font-weight="${b?700:400}" fill="${b?(n==='?'?C.acc:C.text):'#bdbdbd'}">${(j?' ':'')+w}</tspan>`});
+     s+=`<text x="${cx+28}" y="${cy+9+k*13.5}" font-size="10.5">${t}</text>`});return 9+lines.length*13.5};
+ const colW=(lwd-28-16)/2,tw=colW-30;
+ const items=[
+  [1,'Main lane.','The comp: the lane that plays. Each piece is a copy, named after the take it came from (Take 2, Take 4, Take 1).'],
+  [2,'Take lanes.','One lane per take under the main lane: four passes of the loop over bars 9 to 17. Heard only when auditioned.'],
+  [3,'Lane header.','The lane’s name (Ctrl + R to rename, as in Live), its speaker, the Lane area, and a line in the track’s colour at its left, under the track’s own header.'],
+  [4,'Audition.','The speaker, or T for the selected lane (both Live’s), plays that lane in place of the main lane; one lane per track.'],
+  [5,'Highlighted spans.','What the main lane took from each take is in the track’s colour; the rest of the take is dimmer. Take 3 is not used yet.'],
+  [6,'Show or hide the take lanes.','The switch in the track header (lit: shown), or Ctrl + Alt + U.'],
+  [7,'Copy a span.','Select it on a take lane, then Enter (Live’s Copy Selection to Main Lane); it lands in the dashed box. In Draw Mode, one drag over it does the same.'],
+  [8,'Folded.','Keys (MIDI) has three take lanes, hidden; the switch shows the count, and its main lane still shows the comp (pieces “Take 1”, “Take 3”).'],
+  [9,'Insert Take Lane.','ADI’s button under the last lane; in Live, Create › Insert Take Lane (Shift + Alt + T).'],
+  ['?','Still the director’s to choose.','The switch in the track header, or on the main lane as in Live; the + button, or the menu only; how dim an unused take is; seam crossfades (off by default, CT-05).']];
+ [items.slice(0,5),items.slice(5)].forEach((col,c)=>{let cy=ly+34;const cx=lx+14+c*(colW+16);col.forEach(([n,h,t])=>{cy+=item(cx,cy,n,h,t,tw)+5})})}
+
+// ---------------- the Status Bar ----------------
+s+=R(0,SB,W,26,'#0f0f10');s+=T(12,SB+17,'Lead Vocals  ·  Take 3  ·  12.4.2 to 14.1.2 selected  ·  Enter: Copy Selection to Main Lane  ·  T: audition  ·  Ctrl + Alt + U: show or hide take lanes',{z:11.5,f:C.dim});
+s+=grp(W-290,SB+3,284,20);s+=T(W-250,SB+17,'Lead Vocals',{z:11,a:'middle',w:600});s+=sep(W-210,SB+3,20);s+=T(W-182,SB+17,'Clip',{z:11,a:'middle',f:C.dim,w:600});s+=R(W-154,SB+5,68,16,C.acc,{r:4});s+=T(W-120,SB+17,'Devices',{z:11,a:'middle',f:C.ink,w:700});s+=T(W-48,SB+17,'Mixer',{z:11,a:'middle',f:C.dim,w:600});
+finish(W,H,s);
+</script></body></html>

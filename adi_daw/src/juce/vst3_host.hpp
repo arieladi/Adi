@@ -128,6 +128,7 @@ public:
     /// change what it supports.
     [[nodiscard]] bool processesDouble() const noexcept override { return canDouble_; }
     [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return true; }
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     /// The graph's width for the next `prepare`. A VST3 fixes its sample
     /// size in `setupProcessing`, at activation, so it is set up at 64 only
     /// when it will be handed double, and at 32 in a graph at 32 whatever it
@@ -137,6 +138,11 @@ public:
     }
     /// Set up at `kSample64` now. Message thread, or while not processing.
     [[nodiscard]] bool processingDouble() const noexcept { return double_; }
+    [[nodiscard]] std::int32_t sidechainInputChannels() const noexcept override { return keyChannels_; }
+    bool configureSidechain(bool active) override {
+        if(active && keyChannels_<=0)return false;
+        keyRequested_=active;return true;
+    }
 
     // --- the two declarations, mapped straight through ----------------------
 
@@ -203,7 +209,7 @@ public:
         if(!inst_)return 0;
         const auto input=static_cast<std::uint32_t>(inst_->getTotalNumInputChannels());
         const auto output=static_cast<std::uint32_t>(inst_->getTotalNumOutputChannels());
-        return (static_cast<std::uint64_t>(input)<<32)|output;
+        return ((static_cast<std::uint64_t>(input)<<32)|output) ^ (wantsKeyBusEnabled()?(std::uint64_t{1}<<63):0);
     }
     [[nodiscard]] std::uint64_t stateEpoch() const noexcept override {
         return stateEpoch_.load(std::memory_order_acquire);
@@ -329,6 +335,17 @@ private:
     juce::AudioBuffer<float> scratch_;
     /// The same at 64, when the plug-in is set up at `kSample64`.
     juce::AudioBuffer<double> scratch64_;
+    juce::AudioBuffer<float> inputScratch_;
+    juce::AudioBuffer<double> inputScratch64_;
+    struct PreparedBus { std::int32_t channels=0, offset=0; };
+    std::vector<PreparedBus> inputLayout_,outputLayout_;
+    std::vector<Steinberg::Vst::AudioBusBuffers> inputBuses_,outputBuses_;
+    std::int32_t mainInputBus_=0,keyInputBus_=-1,keyChannels_=0,mainOutputChannels_=0;
+    bool keyRequested_=false,defaultKeyEnabled_=false;
+    std::uint64_t preparedShape_=0;
+    [[nodiscard]] bool wantsKeyBusEnabled() const noexcept { return defaultKeyEnabled_ || keyRequested_; }
+    void readInputBusRoles(); // constructor / deactivated owner only
+    void prepareAudioBuses();
     juce::MidiBuffer midi_;
 
     /// The raw interface, when we could reach it. Null means JUCE's

@@ -33,6 +33,18 @@ juce::String text(const Value &v) {
     }
     return {};
 }
+bool legacyThemeChoice(const settings::Setting &setting, const Value &choice) {
+    return setting.key == "lookfeel.theme" && choice == "os";
+}
+juce::String choiceLabel(const settings::Setting &setting, const Value &choice) {
+    const auto name = text(choice);
+    if (setting.key == "lookfeel.theme" || setting.key == "lookfeel.density") {
+        if (name == "mixview") return "Mix View";
+        if (name == "midgrey") return "Mid Grey";
+        return name.substring(0, 1).toUpperCase() + name.substring(1);
+    }
+    return name;
+}
 // A list typed in the box: one entry per ";", blanks dropped.
 Value list(const juce::String &typed) {
     Value out = Value::array();
@@ -73,12 +85,12 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
     }
     case Type::Choice: {
         auto chooser = std::make_unique<juce::ComboBox>();
-        int id = 1;
-        for (const auto &choice : s.choices)
-            chooser->addItem(text(choice), id++);
+        for (std::size_t i = 0; i < s.choices.size(); ++i)
+            if (const auto &choice = s.choices[i]; !legacyThemeChoice(s, choice))
+                chooser->addItem(choiceLabel(s, choice), static_cast<int>(i) + 1);
         auto *raw = chooser.get();
         chooser->onChange = [this, raw] {
-            const int i = raw->getSelectedItemIndex();
+            const int i = raw->getSelectedId() - 1;
             if (i >= 0 && static_cast<std::size_t>(i) < setting.choices.size())
                 commit(setting.choices[static_cast<std::size_t>(i)]);
         };
@@ -164,11 +176,12 @@ void SettingRow::refresh() {
         button->setToggleState(on, juce::dontSendNotification);
         button->setButtonText(on ? "On" : "Off");
     } else if (auto *chooser = dynamic_cast<juce::ComboBox *>(control.get())) {
-        int index = -1;
+        const auto &choice = legacyThemeChoice(setting, value) ? setting.defaultValue : value;
+        int id = 0;
         for (std::size_t i = 0; i < setting.choices.size(); ++i)
-            if (setting.choices[i] == value)
-                index = static_cast<int>(i);
-        chooser->setSelectedItemIndex(index, juce::dontSendNotification);
+            if (setting.choices[i] == choice)
+                id = static_cast<int>(i) + 1;
+        chooser->setSelectedId(id, juce::dontSendNotification);
     } else if (auto *box = dynamic_cast<juce::Slider *>(control.get())) {
         if (value.is_number())
             box->setValue(value.get<double>(), juce::dontSendNotification);
@@ -403,10 +416,20 @@ SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
         for (auto &row : rows_)
             row->refresh();
     };
+    rescanPlugins.setTooltip("Scans the plug-in folders again, in the background.");
+    rescanPlugins.setColour(juce::TextButton::buttonColourId, look::button);
+    rescanPlugins.onClick = [this] {
+        if (onRescanPlugins) {
+            const auto why = onRescanPlugins();
+            setHelp(why.empty() ? juce::String("Scanning the plug-ins again; the Browser's Plug-Ins lists them when it is done.")
+                                : juce::String::fromUTF8(why.c_str()));
+        }
+    };
     scroll_.setViewedComponent(&content_, false);
     scroll_.setScrollBarsShown(true, false);
     for (auto *c : std::initializer_list<juce::Component *>{&search, &pageList, &scroll_, &defaults})
         addAndMakeVisible(c);
+    addChildComponent(rescanPlugins);
     if (!pageNames_.empty())
         showPage(pageNames_.front());
 }
@@ -424,6 +447,16 @@ void SettingsPanel::showPage(const std::string &name) {
         if (audio_)
             content_.addChildComponent(*audio_);
     }
+    if (name == "Tempo & MIDI" && midiPorts && !midi_) {
+        midi_ = midiPorts();
+        if (midi_)
+            content_.addChildComponent(*midi_);
+    }
+    if (midi_) {
+        midi_->setVisible(name == "Tempo & MIDI");
+        if (name == "Tempo & MIDI")
+            order_.push_back(midi_.get());
+    }
     if (audio_) {
         audio_->setVisible(name == "Audio");
         if (name == "Audio")
@@ -438,6 +471,9 @@ void SettingsPanel::showPage(const std::string &name) {
             order_.push_back(headings_.back().get());
             for (const auto *s : group.settings) {
                 // What the device chooser shows is not listed twice under it.
+                // The MIDI Ports table stands for the record's own row.
+                if (midi_ && name == "Tempo & MIDI" && s->key.rfind("midi.port", 0) == 0) // the record and its rows
+                    continue;
                 if (audio_ && name == "Audio" &&
                     (s->key == "audio.driverType" || s->key == "audio.inputDevice" ||
                      s->key == "audio.outputDevice" || s->key == "audio.sampleRate" ||
@@ -458,6 +494,7 @@ void SettingsPanel::showPage(const std::string &name) {
             }
         }
     defaults.setEnabled(true);
+    rescanPlugins.setVisible(name == "Plug-Ins" && onRescanPlugins != nullptr);
     scroll_.setViewPosition(0, 0);
     layoutRows();
     pageList.reveal();
@@ -492,8 +529,11 @@ void SettingsPanel::find(const juce::String &query) {
     }
     if (audio_)
         audio_->setVisible(false);
+    if (midi_)
+        midi_->setVisible(false);
     // Restoring defaults is a page's; the results are no page.
     defaults.setEnabled(false);
+    rescanPlugins.setVisible(false);
     setHelp(rows_.empty() ? juce::String("Nothing matches.")
                           : juce::String(static_cast<int>(rows_.size())) +
                                 (rows_.size() == 1 ? " setting matches." : " settings match."));
@@ -505,7 +545,7 @@ void SettingsPanel::layoutRows() {
     const int width = std::max(0, scroll_.getWidth() - scroll_.getScrollBarThickness());
     int y = 0;
     for (auto *c : order_) {
-        const int height = c == audio_.get()                                   ? audio_->getHeight()
+        const int height = c == audio_.get() || c == midi_.get()               ? c->getHeight()
                            : dynamic_cast<SettingsHeading *>(c) != nullptr ? SettingsHeading::kHeight
                                                                             : SettingRow::kHeight;
         c->setBounds(0, y, width, height);
@@ -551,6 +591,7 @@ void SettingsPanel::resized() {
     scroll_.setBounds(page.getX(), page.getY() + 36, page.getWidth(),
                       std::max(0, page.getHeight() - 36 - kHelpHeight));
     defaults.setBounds(page.getRight() - 133, page.getBottom() - 27, 120, 18);
+    rescanPlugins.setBounds(page.getRight() - 133 - 8 - 80, page.getBottom() - 27, 80, 18);
     layoutRows();
 }
 void SettingsPanel::paint(juce::Graphics &g) {

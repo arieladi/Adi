@@ -205,7 +205,8 @@ public:
     }
 
     /// Owner capture, followed by allocation-free audio-owner adoption. The
-    /// publishing generation retains config.keepAlive through every read.
+    /// publishing generation supplies its lane binding through TransportInfo.
+    /// Applying the scalar image leaves the owner's lane/holder pair intact.
     [[nodiscard]] StripControlImage captureControls() const;
     void applyPublishedControls(const StripControlImage&) noexcept;
 

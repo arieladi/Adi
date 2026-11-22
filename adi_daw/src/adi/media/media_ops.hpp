@@ -3,6 +3,7 @@
 #include "adi/ops.hpp"
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <stop_token>
 namespace adi::audio { class DecodeCache; }
 namespace adi::media {
@@ -35,6 +36,17 @@ MediaResult importMedia(Store&, const std::filesystem::path&, std::int64_t id,
                         std::int64_t importedUtc, Actor actor = Actor::User);
 MediaResult relinkMedia(Store&, std::int64_t id, const std::filesystem::path&,
                         Actor actor = Actor::User);
+struct RelinkTarget {
+    std::int64_t mediaId = 0;
+    std::filesystem::path path;
+};
+// Owner/off-callback: verify every selected candidate before committing any
+// paths. One transaction/Undo step, preserving media identities and metadata.
+// Empty selections, duplicate ids, embedded media and any mismatch refuse the
+// whole batch. This does not discover candidates or replace different content.
+// mediaId is populated only for a one-target result.
+MediaResult relinkMediaBatch(Store&, std::span<const RelinkTarget>,
+                             Actor actor = Actor::User);
 // The folder SQLite names the database file in: the base a rel_path is
 // resolved against. On unix SQLite resolves every symlink in that name (macOS:
 // /var is /private/var), so make rel_paths relative to this spelling.

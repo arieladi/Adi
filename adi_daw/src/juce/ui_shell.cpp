@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/edit_plan.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
@@ -17,6 +18,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <initializer_list>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -61,14 +63,13 @@ void AppCommands::reload() {
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
+    exclusiveArm_ = flag(settings_, "record.exclusiveArm", true);
     if (const auto quantize = settings_.get("record.quantize"); quantize.is_string())
         recordingDefaults_.quantize = quantize.get<std::string>();
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
     linkLoop_ = flag(settings_, "editing.linkLoopToSelection", false);
     splitAll_ = flag(settings_, "editing.splitAllWithNoSelection", true);
-    // The theme and the density (DF-W24): `lookfeel.theme` ("os" and anything unknown read as Dark,
-    // the default) and `lookfeel.density` (Compact until the registry has the key). A change
-    // repaints every window at once.
+    // Appearance is shared by the windows. Existing "os" profiles resolve to Dark.
     const auto word = [this](const char *key) {
         const auto v = settings_.get(key);
         return v.is_string() ? v.get<std::string>() : std::string{};
@@ -209,7 +210,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Delete Fades/Crossfades", "Invert Selection", "Quantize", "Quantize Settings...",
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
-                                  "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range"};
+                                  "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
+                                  "Arrangement Record", "Export Audio/Video..."};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -652,6 +654,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('j', cmd | alt);
         info.setActive(false);
         break;
+    case ArrangementRecord: // manual 21.1 and §41.6: F9
+        info.addDefaultKeypress(juce::KeyPress::F9Key, 0);
+        info.setTicked(active_ != nullptr && active_->isRecording());
+        break;
+    case ExportAudio: // manual 5.2.1 and §41.3: Ctrl/Cmd+Shift+R
+        info.addDefaultKeypress('r', cmd | shift);
+        break;
     case ExpandClipView: // manual 10.2; Live 12's View menu: Expand Clip View, Ctrl/Cmd+Alt+E
         info.addDefaultKeypress('e', cmd | alt);
         info.setTicked(active_ != nullptr && active_->clipViewFull());
@@ -712,7 +721,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
             info.setTicked(notes.time.grid.fixed);
         }
     }
-    if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
+    if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus() ||
+                    active_->mixViewPanel.hasChannelControlFocus()) && deviceOrTrackEditCommand(id))
         info.setActive(false);
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
@@ -932,12 +942,20 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addChildComponent(clipResizer);
     addAndMakeVisible(mixer);
     addAndMakeVisible(strip);
-    strip.flip.onClick = [this] { command(AppCommands::SwapPanels); };
+    addAndMakeVisible(namesBar);
     strip.tracks.onClick = [this] { command(AppCommands::LargeTracks); };
-    // Live's selectors at the strip's foot repeat the View menu's toggles (manual 18.1).
-    strip.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
-    strip.returns.onClick = [this] { command(AppCommands::ToggleReturnTracks); };
-    strip.delay.onClick = [this] { command(AppCommands::ToggleTrackOptions); };
+    // The bar over the track names (the Arrangement sheet): Flip Sides; the track row's sections, which
+    // repeat the View menu's toggles as Live's selectors do (manual 18.1); H and W; and the two that
+    // wait for the engine's automation.
+    namesBar.flip.onClick = [this] { command(AppCommands::SwapPanels); };
+    namesBar.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
+    namesBar.sends.onClick = [this] { command(AppCommands::ToggleSends); };
+    namesBar.returns.onClick = [this] { command(AppCommands::ToggleReturnTracks); };
+    namesBar.delay.onClick = [this] { command(AppCommands::ToggleTrackOptions); };
+    namesBar.height.onClick = [this] { command(AppCommands::OptimizeHeight); };
+    namesBar.width.onClick = [this] { command(AppCommands::OptimizeWidth); };
+    namesBar.automation.onClick = [this] { setAutomationMode(!automationMode_); };
+    namesBar.lock.onClick = [this] { say(NamesBar::kLockWaits); };
     // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
     addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
@@ -969,6 +987,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     frame();
 }
 AdiRootComponent::~AdiRootComponent() {
+    mixViewPanel.stack.persistWindowControls();
     commands_.detach(*this);
     setLookAndFeel(nullptr);
     undoHistory.setLookAndFeel(nullptr);
@@ -980,15 +999,27 @@ bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, 
         return fail("Devices load in the application.");
     if (track == 0 || reader().findTrack(track) == nullptr)
         return fail("Select a track to load " + name + " onto.");
+    const juce::Component::SafePointer<AdiRootComponent> alive(this);
     if (!loadBuiltin(uid, track, before))
         return false;
-    // The strip shows the new device on the next frame; the browser keeps the focus, as Live's.
-    devices.repaint();
+    if (alive) {
+        say({});
+        // The strip updates on the next frame and the browser keeps focus.
+        devices.repaint();
+    }
     return true;
 }
 std::string AdiRootComponent::pluginWindowKey(std::int64_t device) { return "plugin:" + std::to_string(device); }
 bool AdiRootComponent::pluginWindowOpen(std::int64_t device) const {
     return pluginHost != nullptr && pluginHost->contains(pluginWindowKey(device));
+}
+bool AdiRootComponent::openPluginWindow(std::int64_t device) {
+    if (!pluginWindowOpen(device)) return togglePluginWindow(device, false);
+    pluginWindowsShown_ = true;
+    commands_.manager.commandStatusChanged();
+    followPluginWindows();
+    if (auto *window = pluginHost->window(pluginWindowKey(device))) window->toFront(true);
+    return true;
 }
 bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
     if (pluginHost == nullptr || !pluginEditor)
@@ -1122,16 +1153,22 @@ void AdiRootComponent::frame() noexcept {
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
     infoSpectrum.setBounds(infoArea_.reduced(look::border));
     infoSpectrum.setVisible(infoShown_ && !infoArea_.isEmpty() && infoText_.isEmpty());
-    infoSpectrum.setMode(mixViewPanel.analysis.mode());
-    infoSpectrum.setSource(mixViewPanel.analysis.point());
-    infoSpectrum.setChannel(mixViewPanel.analysis.view.channel());
-    infoSpectrum.setPalette(mixViewPanel.analysis.view.palette(), mixViewPanel.analysis.view.paletteReversed());
-    infoSpectrum.setSpectrumSlope(mixViewPanel.analysis.view.spectrumSlope());
-    infoSpectrum.present(sharedAnalysis, analysisTrack(mixViewPanel.analysis.source() == AnalysisPane::Source::Selected));
-    infoSpectrum.frame();
+    if (infoSpectrum.isVisible()) {
+        const auto &analysis = mixViewPanel.analysis;
+        const auto &settings = analysis.detail;
+        using AnalysisMode = SharedSpectrumView::Mode;
+        infoSpectrum.setMode(settings.mode() == AnalysisMode::ClassicScope ? AnalysisMode::Scope : settings.mode());
+        infoSpectrum.setSource(settings.point());
+        infoSpectrum.setChannel(settings.view.channel());
+        infoSpectrum.setPalette(settings.view.palette(), settings.view.paletteReversed());
+        infoSpectrum.setSpectrumSlope(settings.view.spectrumSlope());
+        const auto &snapshot = reader();
+        infoSpectrum.present(sharedAnalysis, analysis.target(snapshot, analysisTrack(snapshot), analysisTrack(snapshot, true)));
+        infoSpectrum.frame();
+    }
     // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays,
     // unless an edit, a sideways scroll or a click on the ruler paused it.
-    if (state_.follow && playing_ && !arrangement.followPaused &&
+    if (arrangement.isVisible() && state_.follow && playing_ && !arrangement.followPaused &&
         arrangement.follow(timelineTick(), commands_.followByPage()))
         dirty_.mark(DirtySet::Content);
     lastDrain_ = dirty_.drain();
@@ -1226,6 +1263,31 @@ void AdiRootComponent::resized() {
     status.setBounds(0, h - look::statusBarHeight, w, look::statusBarHeight);
     const int top = look::controlBarHeight, bottom = h - look::statusBarHeight;
     const int body = std::max(0, bottom - top);
+    // The docked Mix View is a workspace switch. The Arrangement retains
+    // its geometry and panel preferences while the workspace is hidden.
+    mixViewDock_ = {0, top, w, body};
+    const bool fullMix = state_.mixView && !state_.mixViewDetached;
+    mixViewArea_ = fullMix ? mixViewDock_ : juce::Rectangle<int>{};
+    transport.mix.setToggleState(state_.mixView, juce::dontSendNotification);
+    transport.arrangementPage.setToggleState(!state_.mixView, juce::dontSendNotification);
+    if (fullMix) {
+        for (auto *child : std::initializer_list<juce::Component*>{
+                 &arrangement, &arrangement.overview, &namesBar, &mixer, &strip, &browser, &aiTab,
+                 &mixerView, &mixerViewResizer, &clipView, &clipResizer, &devices, &dockResizer, &infoSpectrum})
+            child->setVisible(false);
+        browserArea_ = chatArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
+        clipArea_ = deviceArea_ = infoArea_ = {};
+        if (mixViewPanel.getParentComponent() == this) {
+            mixViewPanel.setBounds(mixViewArea_);
+            if (!mixViewPanel.isVisible() && reader_) mixViewPanel.frame(reader());
+            mixViewPanel.setVisible(true);
+        }
+        dirty_.mark(DirtySet::All);
+        return;
+    }
+    if (mixViewPanel.getParentComponent() == this)
+        mixViewPanel.setVisible(false);
+    arrangement.setVisible(true);
     // The detail row: Live's Info View and Device View. The strip never goes below its
     // floor and grows upward only (ADR-0203 d7); it leaves the transport, the ruler and
     // a row when it can.
@@ -1347,41 +1409,33 @@ void AdiRootComponent::resized() {
     mixerViewResizer.setBounds(mixerViewArea_.getX(), mixerViewArea_.getY() - 3,
                                mixerViewArea_.getWidth(), 6);
     status.mixerToggle.setToggleState(state_.mixerView, juce::dontSendNotification);
-    strip.flip.setToggleState(!browserLeft, juce::dontSendNotification);
+    namesBar.flip.setToggleState(!browserLeft, juce::dontSendNotification);
     strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
-    strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
-    strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
-    strip.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
+    namesBar.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
+    namesBar.sends.setToggleState(state_.sends, juce::dontSendNotification);
+    namesBar.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
+    namesBar.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
-    // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
-    // View and its track controls, which a lane-less view has no use for. The browser, the strip
-    // down the edge and the Detail View stay.
-    mixViewDock_ = juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_);
-    mixViewArea_ = state_.mixView && !state_.mixViewDetached ? mixViewDock_ : juce::Rectangle<int>();
-    const bool mixing = !mixViewArea_.isEmpty();
-    // In its own window the panel is the window's; docked, it is laid out here. Framed before it shows,
-    // so the switch never shows what it held when it was last open (the director's R3).
-    if (mixViewPanel.getParentComponent() == this) {
-        mixViewPanel.setBounds(mixViewArea_);
-        if (mixing && !mixViewPanel.isVisible() && reader_)
-            mixViewPanel.frame(reader());
-        mixViewPanel.setVisible(mixing);
+    // The bar over the track names, their controls and the strip, level with the beat ruler (the
+    // Arrangement sheet); the strip's head under it.
+    {
+        const auto names = arrangement.headers.getBounds() + arrangement.getPosition();
+        auto span = names.getHorizontalRange();
+        for (const auto &r : {mixerArea_, stripArea_})
+            if (!r.isEmpty())
+                span = span.getUnionWith(r.getHorizontalRange());
+        const int barY = top + arrangement.overviewHeight();
+        // The sheet's row, 26 high: it ends above Set, which stands at the ruler's foot.
+        namesBar.setBounds(span.getStart(), barY, span.getLength(), ArrangementView::kRulerHeight - 3);
+        strip.setHead(arrangement.overviewHeight() + ArrangementView::kRulerHeight);
     }
-    arrangement.setVisible(!mixing);
-    if (mixing) {
-        mixer.setVisible(false);
-        mixerView.setVisible(false);
-        mixerViewResizer.setVisible(false);
-    }
-    transport.mix.setToggleState(state_.mixView, juce::dontSendNotification);
+    namesBar.setVisible(namesBar.getWidth() > 0);
     // The Overview runs from the lanes' left edge to Live's H and W buttons.
     const int overviewX = lanesX + ArrangementView::kLeftMargin;
-    const int overviewRight = browserLeft && !mixerArea_.isEmpty()
-                                  ? mixerArea_.getRight() - 48
-                                  : centreX + centreW - 4;
+    const int overviewRight = arrangement.getX() + arrangement.canvas.getRight() - 4;
     arrangement.overview.setBounds(overviewX, top + 4, std::max(0, overviewRight - overviewX),
                                    ArrangementView::kOverviewHeight - 4);
-    arrangement.overview.setVisible(state_.overview && !mixing);
+    arrangement.overview.setVisible(state_.overview);
     devices.setVisible(!deviceArea_.isEmpty());
     dockResizer.setVisible(!deviceArea_.isEmpty());
     devices.setBounds(deviceArea_.reduced(look::border));
@@ -1606,14 +1660,28 @@ std::int64_t AdiRootComponent::analysisTrack(const SnapshotReader &snapshot, boo
 }
 bool AdiRootComponent::setMixView(bool open, bool detached) {
     const bool wasOpen = state_.mixView, wasDetached = state_.mixViewDetached;
+    const int oldTab = state_.mixViewTab;
+    const auto focusMembers = open && !wasOpen ? MixFocus::soloedChannels(SnapshotReader(current()))
+                                               : std::vector<std::int64_t>{};
+    if (open && !wasOpen)
+        state_.mixViewTab = static_cast<int>(focusMembers.size() >= 2 ? MixViewPanel::Tab::Focus : MixViewPanel::Tab::Stack);
     state_.mixView = open;
     state_.mixViewDetached = detached;
     if (!persist()) {
         state_.mixView = wasOpen;
         state_.mixViewDetached = wasDetached;
+        state_.mixViewTab = oldTab;
         return fail(error_);
     }
-    if (!open || wasDetached != detached) {
+    const juce::Component::SafePointer<AdiRootComponent> alive(this);
+    if (open && !wasOpen) mixViewPanel.focusPage.setMembers(focusMembers);
+    if (!alive) return false;
+    mixViewPanel.focusPage.suspend(!open);
+    if (!alive) return false;
+    if (wasOpen != open) mixViewPanel.mainMeter.suspend(!open);
+    if (!alive) return false;
+    if (wasOpen != open || wasDetached != detached) {
+        mixViewPanel.song.cancelSeek();
         mixViewPanel.stack.cancelInteractions(); devices.cancelFunctionInteractions();
     }
     mixViewPanel.stack.suspendParameters(!open || (!detached && devices.parametersSuspended()));
@@ -1627,9 +1695,16 @@ bool AdiRootComponent::chooseMixViewTab(int tab) {
         state_.mixViewTab = was;
         return fail(error_);
     }
-    if (was == static_cast<int>(MixViewPanel::Tab::Stack) && state_.mixViewTab != was) {
+    const juce::Component::SafePointer<AdiRootComponent> alive(this);
+    if ((was == static_cast<int>(MixViewPanel::Tab::Stack) || was == static_cast<int>(MixViewPanel::Tab::Focus)) &&
+        state_.mixViewTab != was) {
         mixViewPanel.stack.cancelInteractions();
+        if (!alive) return false;
         devices.cancelFunctionInteractions();
+        if (!alive) return false;
+        if (was == static_cast<int>(MixViewPanel::Tab::Focus))
+            mixViewPanel.focusPage.setVisible(false);
+        if (!alive) return false;
     }
     dirty_.mark(DirtySet::Layout);
     return true;
@@ -1656,6 +1731,61 @@ bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
 }
 double AdiRootComponent::editRate() const noexcept {
     return sampleRate_ > 0 ? sampleRate_ : (reader_ ? reader_->sampleRate() : 48000.0);
+}
+bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const char *label) {
+    const auto current = view_.current();
+    if (!current || places.empty())
+        return fail("Select a clip to move.");
+    // The scope: every track a clip leaves or lands on, over the span from the earliest start to the
+    // latest end, where it was and where it goes.
+    std::vector<std::int64_t> tracks;
+    std::int64_t begin = std::numeric_limits<std::int64_t>::max(), end = 0;
+    std::vector<edit_plan::Move> moves;
+    for (const auto &place : places) {
+        const engine::ClipNode *clip = nullptr;
+        std::int64_t from = 0;
+        for (const auto &t : current->tracks)
+            if (t)
+                for (const auto &c : t->clips)
+                    if (c && c->id == place.clip) {
+                        clip = c.get();
+                        from = t->id;
+                    }
+        if (clip == nullptr)
+            return fail("That clip is gone.");
+        for (const auto id : {from, place.track})
+            if (std::find(tracks.begin(), tracks.end(), id) == tracks.end())
+                tracks.push_back(id);
+        begin = std::min({begin, clip->posTicks, place.position});
+        end = std::max({end, clip->posTicks + clip->lengthTicks, place.position + clip->lengthTicks});
+        moves.push_back({place.clip, {place.track, std::nullopt}, {0, place.position}});
+    }
+    const auto scope = edit_plan::materialScope(tracks, edit_plan::PlacementClock::Ticks, {begin, std::max(end, begin + 1)});
+    edit_plan::Options options;
+    options.referenceRate = editRate();
+    options.policy = edit_plan::capturePolicy(commands_.settings());
+    auto prepared = edit_plan::prepareMove(submitter_.store(), scope, moves, options);
+    if (!prepared.ok) {
+        // The planner will not place here yet (automation that follows its clips, AU-05; a frozen track;
+        // an editing setting off Live's rule; clips that already overlap): the clips move as before,
+        // keeping what they land on, and the Status Bar says why, as a range edit does.
+        std::vector<OpRequest> ops;
+        for (const auto &place : places) {
+            OpRequest op;
+            op.opType = "clip.move";
+            op.payload = {{"id", place.clip}, {"to", place.position}, {"track", place.track}};
+            op.label = label;
+            ops.push_back(std::move(op));
+        }
+        const auto why = prepared.error;
+        if (!submitEdits(std::move(ops)))
+            return false;
+        say("Moved, keeping what the clips land on: the engine does not place them here yet (" + why + ").");
+        return true;
+    }
+    if (!prepared.requests.empty())
+        prepared.requests.front().label = label;
+    return commitEdit(std::move(prepared));
 }
 bool AdiRootComponent::commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended) {
     if (!prepared.ok)
@@ -2229,6 +2359,9 @@ void AdiRootComponent::say(std::string message) {
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
 }
+void AdiRootComponent::sayStaleAddMenu() {
+    say("This Add menu is out of date. Reopen it and try again.");
+}
 juce::String AdiRootComponent::selectionText() const {
     // Live's Status Bar: the insert marker with its time, or the time selection.
     // Positions and lengths in the project's meters (#299).
@@ -2352,7 +2485,7 @@ bool AdiRootComponent::insertReturnTrack() {
     if (state_.hideReturns) {
         state_.hideReturns = false;
         persist();
-        strip.returns.setToggleState(true, juce::dontSendNotification);
+        namesBar.returns.setToggleState(true, juce::dontSendNotification);
     }
     arrangement.geometry.selection.track = id;
     arrangement.geometry.selection.toTrack = 0;
@@ -2636,6 +2769,132 @@ bool AdiRootComponent::soloTrack(std::int64_t id, bool add) {
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+void AdiRootComponent::selectClip(std::int64_t clip) {
+    // As a click on it selects it: its track, and its time.
+    const auto now = view_.current();
+    if (!now)
+        return;
+    for (const auto &t : now->tracks)
+        if (t)
+            for (const auto &c : t->clips)
+                if (c->id == clip) {
+                    auto &sel = arrangement.geometry.selection;
+                    sel.track = t->id;
+                    sel.toTrack = 0;
+                    sel.picked.clear();
+                    sel.clip = clip;
+                    sel.pickedClips.clear();
+                    sel.start = c->posTicks;
+                    sel.end = c->posTicks + c->lengthTicks;
+                    publishSelection();
+                    return;
+                }
+}
+TrackRecordState AdiRootComponent::recordState(std::int64_t track) const {
+    return ::adi::ui::recordState(recordStates_, track);
+}
+bool AdiRootComponent::armTrack(std::int64_t id, bool add) {
+    // From the CURRENT cell (ADR-0201) and the rows the application hands over; one batch.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Arming needs an open project.");
+    auto edit = armTracks(current->tracks, freshRecordStates(), id, arrangement.geometry.selectedTracks(reader()),
+                          commands_.exclusiveArm(), add);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Monitoring needs an open project.");
+    auto edit = ::adi::ui::setMonitor(current->tracks, freshRecordStates(), id, arrangement.geometry.selectedTracks(reader()), mode);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::toggleRecord() {
+    if (!startRecording || !stopRecording || !recording)
+        return fail("Recording runs in the application, with an audio device.");
+    if (recording()) {
+        // Live's Record button again: recording stops, playback goes on.
+        stopRecording();
+        mark(DirtySet::Transport);
+        return true;
+    }
+    const bool rolling = mailbox_.desiredPlaying();
+    if (!rolling && !mailbox_.hasRoom(1))
+        return fail("Transport command queue is full");
+    if (!startRecording(arrangement.geometry.selection.insert, rolling))
+        return false; // the application said why
+    // A recording start plays the transport: the same op Play writes, so the history's transport state
+    // agrees.
+    if (!rolling) {
+        OpRequest request;
+        request.opType = "transport.play";
+        request.payload = Payload::object();
+        (void)submitter_.submit(std::move(request));
+    }
+    mark(DirtySet::Transport);
+    return true;
+}
+ExportChoices AdiRootComponent::exportDefaults() const {
+    // Live renders the time selection, else the loop brace (manual 5.2.1); a project has a brace from New,
+    // so the whole song (its start to the end of its last clip or locator) is for a project without one.
+    ExportChoices c;
+    const auto &sel = arrangement.geometry.selection;
+    const auto current = view_.current();
+    if (sel.end != sel.start) {
+        // A selection made right to left is the same range.
+        c.startTicks = std::min(sel.start, sel.end);
+        c.lengthTicks = std::max(sel.start, sel.end) - c.startTicks;
+    } else if (current && current->transport.loopEndTicks > current->transport.loopStartTicks) {
+        // The loop brace, whether the loop is switched on or not, as Live's.
+        c.startTicks = current->transport.loopStartTicks;
+        c.lengthTicks = current->transport.loopEndTicks - current->transport.loopStartTicks;
+    } else {
+        c.startTicks = 0;
+        c.lengthTicks = arrangementEnd();
+    }
+    if (current && current->sampleRate > 0)
+        c.sampleRate = static_cast<int>(current->sampleRate);
+    return c;
+}
+void AdiRootComponent::setAutomationMode(bool on) {
+    automationMode_ = on;
+    namesBar.automation.setToggleState(on, juce::dontSendNotification);
+    say(on ? "Automation Mode: each track shows its Volume envelope; click a lane to add a breakpoint, drag one "
+             "to move it, double-click one to delete it."
+           : "");
+    arrangement.repaint();
+}
+bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value) {
+    const auto current = view_.current();
+    const auto *t = current ? current->findTrack(track) : nullptr;
+    if (t == nullptr)
+        return fail("That track is gone.");
+    auto &db = submitter_.store().db();
+    AutomationIds ids;
+    ids.lane = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes").getInt64();
+    ids.data = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data").getInt64();
+    ids.point = 1;
+    return submitEdits(::adi::ui::addAutomationPoint(trackEnvelope(*current, track), track, "volume", tick, value,
+                                                     t->volumeDb, ids));
+}
+bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value) {
+    const auto current = view_.current();
+    if (!current)
+        return false;
+    auto ops = ::adi::ui::moveAutomationPoint(trackEnvelope(*current, track), "volume", point, tick, value);
+    return !ops.empty() && submitEdits(std::move(ops));
+}
+bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t point) {
+    const auto current = view_.current();
+    if (!current)
+        return false;
+    auto ops = ::adi::ui::deleteAutomationPoint(trackEnvelope(*current, track), point);
+    return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::setSoloInPlace(bool on) {
     // Live's Solo in Place (manual 18.6): one project field for the Solo button's menu and the
@@ -3120,6 +3379,8 @@ bool AdiRootComponent::focusView(int id) {
         return true;
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
+        if (state_.mixView && !state_.mixViewDetached)
+            return mixViewPanel.focusChannelSearch();
         if (state_.panels.find(Panel::Browser)->collapsed && !command(AppCommands::ToggleBrowser))
             return false;
         if (id == AppCommands::FocusBrowser) {
@@ -3145,7 +3406,8 @@ bool AdiRootComponent::focusView(int id) {
     }
 }
 bool AdiRootComponent::command(int id) {
-    if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
+    if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus() ||
+         mixViewPanel.hasChannelControlFocus()) && deviceOrTrackEditCommand(id))
         return false;
     if (id == AppCommands::Undo || id == AppCommands::Redo) {
         mixViewPanel.stack.cancelInteractions();
@@ -3234,6 +3496,9 @@ bool AdiRootComponent::command(int id) {
         // Space plays from the insert marker, Shift+Space from where it stopped.
         const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();
         const bool fromMarker = play && id == AppCommands::PlayStop;
+        // Stopping the transport ends a recording (manual 21.1); its take lands on the next frames.
+        if (!play && recording && recording() && stopRecording)
+            stopRecording();
         if (!mailbox_.hasRoom(fromMarker ? 2 : 1))
             return fail("Transport command queue is full");
         OpRequest request;
@@ -3247,6 +3512,15 @@ bool AdiRootComponent::command(int id) {
         mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
         break;
     }
+    case AppCommands::ArrangementRecord:
+        if (!toggleRecord())
+            return false;
+        break;
+    case AppCommands::ExportAudio:
+        if (!exportAudio)
+            return fail("Export runs in the application.");
+        exportAudio(exportDefaults());
+        break;
     case AppCommands::Undo:
     case AppCommands::Redo: {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
@@ -3283,13 +3557,13 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::ShowChannelEq:
         // ADR-0204 d1's one window is the Mix View's STACK (ADR-0209 d11): opened there, wherever
         // it opens, on the selected track's row.
-        if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)))
-            return false;
         if (!state_.mixView) {
             if (state_.mixViewDetached ? !(applicationCommand && applicationCommand(AppCommands::ToggleMixView))
                                        : !setMixView(true, false))
                 return false;
         }
+        if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)))
+            return false;
         mixViewPanel.frame(reader());
         mixViewPanel.stack.focus(arrangement.geometry.selection.track);
         break;
@@ -3309,12 +3583,7 @@ bool AdiRootComponent::command(int id) {
             referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         return true;
     case AppCommands::ToggleMixView:
-        state_.mixView = !state_.mixView;
-        if (!persist()) {
-            state_.mixView = !state_.mixView;
-            return fail(error_);
-        }
-        break;
+        return setMixView(!state_.mixView, state_.mixViewDetached);
     case AppCommands::ToggleClipView:
         state_.clipView = !state_.clipView;
         if (!persist()) {
@@ -3365,8 +3634,9 @@ bool AdiRootComponent::command(int id) {
                 row->resized();
                 row->repaint();
             }
-        strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
-        strip.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
+        namesBar.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
+        namesBar.sends.setToggleState(state_.sends, juce::dontSendNotification);
+        namesBar.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
         break;
     }
     case AppCommands::FullScreen: {
@@ -3522,7 +3792,7 @@ bool AdiRootComponent::command(int id) {
         }
         arrangement.applyView();
         arrangement.firstShownIfHidden();
-        strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
+        namesBar.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
         break;
     case AppCommands::RenameTrack:
         // Rename acts on the selection: a selected time signature marker (Edit Time Signature), the
@@ -3591,10 +3861,10 @@ const std::vector<MenuEntries> &menuBar() {
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
         {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport}},
+                  C::CollectAndExport, 0, C::ExportAudio}},
 #else
         {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
-                  C::CollectAndExport, 0, C::Quit}},
+                  C::CollectAndExport, 0, C::ExportAudio, 0, C::Quit}},
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
@@ -3917,5 +4187,20 @@ void AdiRootComponent::ImportPrompt::resized() {
     cancel.setBounds(foot.removeFromRight(80));
     foot.removeFromRight(8);
     import.setBounds(foot.removeFromRight(80));
+}
+void AdiRootComponent::addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane) {
+    if (lane == nullptr)
+        return;
+    if (menu.getNumItems() > 0)
+        menu.addSeparator();
+    const auto id = lane->id;
+    menu.addItem("Re-Enable Automation", lane->overridden, false, [safe = SafePointer<AdiRootComponent>(this), id] {
+        if (!safe)
+            return;
+        if (!safe->reenableLane)
+            safe->say("Re-Enable Automation needs the project's session.");
+        else
+            safe->reenableLane(id); // a refusal says why
+    });
 }
 } // namespace adi::ui

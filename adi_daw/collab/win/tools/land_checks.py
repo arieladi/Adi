@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""What land_top.sh does next with a pull request, read from its checks.
+
+    { gh pr view N --repo arieladi/Adi --json statusCheckRollup,baseRefName,headRefOid
+      gh run view ID --repo arieladi/Adi --json databaseId,headSha,status,conclusion,url,jobs
+    } | python -I land_checks.py
+
+Stdin holds the pull request's JSON and, after it, optionally a second JSON
+document: the newest workflow_dispatch run of ui.yml on the head commit, which
+land_top.sh looks up with `gh run list --workflow ui.yml --event
+workflow_dispatch --commit <head>` (see "A STACK TOP" below). A bare rollup
+list, or an object without baseRefName, is read as a pull request into main.
+
+Prints one tab-separated line, the verdict first:
+
+    VERDICT  pending  bad-urls  cancelled-urls  legacy-ok  gate  gate-url
+
+    WAIT       something still runs, or nothing decisive has arrived yet
+    FAILED     a check failed; bad-urls are its job URLs, so land_top.sh can read
+               each log for a runner fault and rerun once
+    CANCELLED  nothing failed and nothing runs, but a check was cancelled;
+               land_top.sh reruns it once
+    GATE       adi_daw's "gate" concluded without SUCCESS and no other check
+               says why: land_top.sh stops and names it
+    LAND       "gate" is SUCCESS, nothing runs, nothing failed, and Step 7 UI
+               either never ran or shows its whole answer: all three
+               "GUI shell / ..." checks SUCCESS or SKIPPED, or the one skipped
+               placeholder of a Markdown-only change ("ui: which jobs run"
+               SUCCESS beside it)
+    LEGACY     the newest adi_daw run has no "gate" check (a run from before
+               the gate existed): the old rule, nothing runs, nothing failed and
+               at least 20 checks passed, and the GUI shell's answer is whole
+               by the same rule LAND uses; land_top.sh wants it twice in a row
+    UI         it would be LAND or LEGACY, but the pull request is a stack top
+               (base not main) and its head commit has no Step 7 UI run at
+               all: land_top.sh dispatches ui.yml on the head branch, once per
+               head commit, and waits for that run's whole answer
+
+Pure stdlib and no network, so test_land_checks.py runs it on sample rollups
+without GitHub. It was a jq expression inside land_top.sh until 19 November;
+it moved here so the decision can be tested.
+
+How the checks are read:
+  - ONLY EACH WORKFLOW'S NEWEST RUN COUNTS. A pull request closed and reopened
+    (land_queue.sh's refresh) or dispatched by hand carries the older run's
+    checks on the same head, and that run's gate says nothing about this one.
+    Run ids grow, and each check's details URL carries its run's id.
+  - Within that run the newest attempt of each check counts: a rerun replaces.
+    A check is its WORKFLOW AND NAME together, never its name alone:
+    console-plugin.yml and midi-helper.yml both name their jobs
+    "build (<os>)", and keyed by name a later passing one hid an earlier
+    failing one.
+  - A name GitHub never expanded ("matrix.name", or one still holding "${{")
+    belongs to a matrix job that was skipped or cancelled before its matrix
+    existed. It is never a pass, a failure or a cancellation of its own; the
+    gate, which needs that job, reports what it means.
+  - "gate" is left out of bad-urls and cancelled-urls: it fails BECAUSE a leg
+    failed or was cancelled, and the leg is the one to read or rerun.
+  - THE GUI SHELL IS COUNTED, NOT ASSUMED. Step 7 UI has no gate of its own,
+    and a check GitHub has not created yet is not "pending", it is absent:
+    after "ui: which jobs run" finishes there is a moment with no
+    "GUI shell / ..." check at all, or one of the three. "Every GUI shell
+    check passed" is true of none, so once any Step 7 UI check is present
+    LAND needs all GUI_SHELLS of them, or the single unexpanded
+    "GUI shell / ${{ matrix.os }}" SKIPPED that ui.yml leaves when its
+    `changes` job (SUCCESS) answered code=false. A draft's run leaves that
+    placeholder too, but with "ui: which jobs run" SKIPPED, and it is not
+    accepted: it says nothing about the ready pull request's run, which may
+    simply not have been created yet.
+  - A STACK TOP CAN CARRY GUI CODE NO RUN BUILT. ui.yml's pull_request `paths`
+    filter sees only the top's own diff against the pull request below it, so
+    a top that changes only what ui.yml does not watch (adi_daw/collab/**, a
+    workflow, a .github script) starts no Step 7 UI run; the lower pull
+    requests' runs are cancelled under the stack practice, and "Step 7 UI
+    never ran" would land the stack with its GUI code never built. So for a
+    base other than main, "never ran" is not a pass: the verdict is UI, and
+    land_top.sh dispatches ui.yml on the head branch (event workflow_dispatch:
+    markdown_only.sh answers code=true, every shell builds).
+  - A DISPATCHED RUN IS NOT IN THE ROLLUP. Check runs belong to a commit, but
+    GitHub leaves workflow_dispatch runs out of statusCheckRollup: #507's head
+    5376d15f carried run 42940396173 (dispatched, 20 jobs) and neither the
+    pull request's rollup nor the commit's own listed one of them. So
+    land_top.sh reads that run with `gh run list` and `gh run view` and passes
+    it on stdin; its jobs join the rollup as Step 7 UI checks, and its run id,
+    newer than any pull_request run before it, makes it the newest.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+
+GATE = "gate"
+GATE_WORKFLOW = "adi_daw"
+GUI_PREFIX = "GUI shell / "
+GUI_WORKFLOW = "Step 7 UI"
+GUI_PLAN = "ui: which jobs run"
+# ui.yml's shell matrix: windows-latest, macos-latest, ubuntu-latest.
+# test_land_checks.py reads ui.yml and fails if this and the matrix disagree.
+GUI_SHELLS = 3
+LEGACY_MIN_OK = 20
+FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR", "ACTION_REQUIRED"}
+PASSED = {"SUCCESS", "SKIPPED"}
+RUN_ID = re.compile(r"/runs/(\d+)")
+
+
+def placeholder(name: str) -> bool:
+    return name == "matrix.name" or "matrix." in name or "${{" in name
+
+
+def normalise(c: dict) -> dict:
+    """One rollup entry as name, conclusion (None while it runs), workflow, run, when."""
+    if c.get("__typename") == "StatusContext" or ("context" in c and "name" not in c):
+        state = (c.get("state") or "").upper()
+        concl = None if state in ("", "PENDING", "EXPECTED") else state
+        return {"name": c.get("context") or "", "conclusion": concl, "workflow": "",
+                "run": None, "url": c.get("targetUrl") or "",
+                "when": c.get("startedAt") or c.get("createdAt") or ""}
+    status = (c.get("status") or "").upper()
+    concl = (c.get("conclusion") or "").upper() or None
+    if status and status != "COMPLETED":
+        concl = None
+    url = c.get("detailsUrl") or ""
+    m = RUN_ID.search(url)
+    # A check that has not started may have no startedAt yet; it still sorts as
+    # the newest, so a queued rerun is never hidden behind its finished attempt.
+    when = c.get("startedAt") or c.get("completedAt") or ("~" if concl is None else "")
+    return {"name": c.get("name") or "", "conclusion": concl,
+            "workflow": c.get("workflowName") or "", "run": int(m.group(1)) if m else None,
+            "url": url, "when": when}
+
+
+def ui_checks(rows: list[dict]) -> list[dict]:
+    """Step 7 UI's checks among the rows."""
+    return [c for c in rows if c["workflow"] == GUI_WORKFLOW
+            or c["name"].startswith(GUI_PREFIX) or c["name"] == GUI_PLAN]
+
+
+def dispatched_checks(run: dict) -> list[dict]:
+    """A dispatched Step 7 UI run's jobs (`gh run view --json jobs`), shaped as
+    rollup entries. gh writes status and conclusion in lower case; normalise()
+    reads either."""
+    return [{"__typename": "CheckRun", "name": j.get("name") or "",
+             "status": j.get("status") or "", "conclusion": j.get("conclusion") or "",
+             "startedAt": j.get("startedAt"), "completedAt": j.get("completedAt"),
+             "detailsUrl": j.get("url") or "", "workflowName": GUI_WORKFLOW}
+            for j in run.get("jobs") or [] if isinstance(j, dict)]
+
+
+def gui_shell_ok(rows: list[dict]) -> bool:
+    """Whether Step 7 UI, in its newest run, has given its whole answer and it
+    is a pass. True when Step 7 UI never ran (its paths filter left it out);
+    decide() does not take that for a stack top."""
+    ui = ui_checks(rows)
+    if not ui:
+        return True
+    shells = [c for c in ui if c["name"].startswith(GUI_PREFIX)]
+    expanded = [c for c in shells if not placeholder(c["name"])]
+    if expanded:
+        return (len({c["name"] for c in expanded}) >= GUI_SHELLS
+                and all(c["conclusion"] in PASSED for c in expanded))
+    # No shell ran. Only ui.yml's Markdown-only answer may stand for it: its
+    # `changes` job succeeded and the shell matrix was skipped unexpanded.
+    plan = [c for c in ui if c["name"] == GUI_PLAN]
+    return (len(shells) == 1 and shells[0]["conclusion"] == "SKIPPED"
+            and len(plan) == 1 and plan[0]["conclusion"] == "SUCCESS")
+
+
+def decide(rollup: list[dict], base: str = "main", head_sha: str = "",
+           ui_run: dict | None = None) -> list[str]:
+    """base: the pull request's base branch. head_sha: its head commit.
+    ui_run: the newest dispatched Step 7 UI run on that commit, or None."""
+    stack_top = bool(base) and base != "main"
+    ui_pending = 0
+    ui_bad: list[str] = []
+    if ui_run is not None:
+        if head_sha and ui_run.get("headSha") and ui_run["headSha"] != head_sha:
+            ui_pending = 1  # the head moved between land_top.sh's two reads
+        else:
+            rollup = list(rollup) + dispatched_checks(ui_run)
+            if not ui_run.get("jobs"):
+                if (ui_run.get("status") or "").lower() != "completed":
+                    ui_pending = 1  # dispatched, no job created yet
+                else:
+                    ui_bad.append(ui_run.get("url") or "")  # ended with no job at all
+    checks = [normalise(c) for c in rollup]
+
+    newest: dict[str, int] = {}
+    for c in checks:
+        if c["run"] is not None:
+            newest[c["workflow"]] = max(newest.get(c["workflow"], c["run"]), c["run"])
+    current = [c for c in checks if c["run"] is None or c["run"] == newest.get(c["workflow"])]
+
+    # Newest attempt per (workflow, name); on a tie the later entry wins (jq's
+    # sort_by + last). Not per name: two workflows share "build (<os>)".
+    latest: dict[tuple[str, str], dict] = {}
+    for c in current:
+        key = (c["workflow"], c["name"])
+        prev = latest.get(key)
+        if prev is None or c["when"] >= prev["when"]:
+            latest[key] = c
+    rows = list(latest.values())
+    named = [c for c in rows if not placeholder(c["name"])]
+
+    pending = sum(1 for c in rows if c["conclusion"] is None) + ui_pending
+    bad = [c["url"] for c in named if c["name"] != GATE and c["conclusion"] in FAILED] + ui_bad
+    cancelled = [c["url"] for c in named if c["name"] != GATE and c["conclusion"] == "CANCELLED"]
+    # Distinct names, as the old jq rule counted them: the legacy threshold
+    # keeps its meaning now that two workflows' "build (<os>)" are two rows.
+    legacy_ok = len({c["name"] for c in named if c["conclusion"] in PASSED})
+
+    gate = next((c for c in named if c["name"] == GATE
+                 and c["workflow"] in (GATE_WORKFLOW, "")), None)
+    gate_state = "none" if gate is None else (gate["conclusion"] or "PENDING")
+    gate_url = "" if gate is None else gate["url"]
+    if gate is not None and gate["conclusion"] == "CANCELLED":
+        cancelled.append(gate["url"])  # the whole run was cancelled: rerun it
+    gui_ok = gui_shell_ok(rows)
+
+    if pending:
+        verdict = "WAIT"
+    elif bad:
+        verdict = "FAILED"
+    elif cancelled:
+        verdict = "CANCELLED"
+    elif gate is None:
+        # The old count says nothing about the GUI shell: 20 legs can pass
+        # while Step 7 UI has planned its shells and created none of them.
+        verdict = "LEGACY" if legacy_ok >= LEGACY_MIN_OK and gui_ok else "WAIT"
+    elif gate["conclusion"] == "SUCCESS":
+        # The GUI shell's whole answer, or wait for it: checks not created yet,
+        # one of three, or one that is neither a pass, a failure nor a
+        # cancellation (NEUTRAL, STALE) is not a pass.
+        verdict = "LAND" if gui_ok else "WAIT"
+    elif gate["conclusion"] == "SKIPPED":
+        # The newest run was a draft's, which builds nothing. land_top.sh marks
+        # the pull request ready, and that run is the one to wait for.
+        verdict = "WAIT"
+    else:
+        verdict = "GATE"
+
+    if verdict in ("LAND", "LEGACY") and stack_top and not ui_checks(rows):
+        # A stack top whose own diff started no Step 7 UI run: what it carries
+        # from below was never built by the GUI shell. Build it on the head.
+        verdict = "UI"
+
+    return [verdict, str(pending), " ".join(bad), " ".join(cancelled),
+            str(legacy_ok), gate_state, gate_url]
+
+
+def json_documents(raw: str) -> list:
+    """Every JSON document in raw, one after another (ValueError if any is bad)."""
+    dec = json.JSONDecoder()
+    docs, i = [], 0
+    while True:
+        while i < len(raw) and raw[i].isspace():
+            i += 1
+        if i >= len(raw):
+            return docs
+        doc, i = dec.raw_decode(raw, i)
+        docs.append(doc)
+
+
+def main() -> int:
+    raw = sys.stdin.read()
+    try:
+        docs = json_documents(raw)
+    except ValueError:
+        docs = []
+    if not docs or len(docs) > 2:
+        print("land_checks.py: not one or two JSON documents on stdin (gh failed?)", file=sys.stderr)
+        return 2
+    data = docs[0]
+    rollup = data.get("statusCheckRollup") if isinstance(data, dict) else data
+    if not isinstance(rollup, list):
+        print("land_checks.py: no statusCheckRollup list in the input", file=sys.stderr)
+        return 2
+    ui_run = docs[1] if len(docs) == 2 else None
+    if ui_run is not None and not isinstance(ui_run, dict):
+        print("land_checks.py: the second document is not a run", file=sys.stderr)
+        return 2
+    base = (data.get("baseRefName") if isinstance(data, dict) else None) or "main"
+    head_sha = (data.get("headRefOid") if isinstance(data, dict) else None) or ""
+    print("\t".join(decide(rollup, base, head_sha, ui_run)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

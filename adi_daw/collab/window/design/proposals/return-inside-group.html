@@ -1,0 +1,224 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Return Inside a Group</title>
+<style>html,body{margin:0;background:#101010}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script>
+<script>
+// ADI, a return inside a group, proposal 1 (19 November 2026). DF-W33; ADR-0245 d9 and d10.
+// The Arrangement as on the Arrangement sheet, with Live 12's Mixer in the lower panel at real size.
+// The Browser and the Info box are closed on this sheet to make room for the notes at the left.
+const W=1920,H=1080;let s=R(0,0,W,H,C.win);
+s+=topBars(W,'Norway  ·  ADI','arr').replace('1.  1.  1','18.  1.  1').replace('3.  1.  1','13.  1.  1').replace('4.  0.  0','8.  0.  0');
+s+=R(1696,2,218,20,C.acc,{r:5});s+=T(1805,17,'RETURN IN GROUP SHEET  ·  proposal 1',{z:11.5,w:700,a:'middle',f:C.ink});
+
+// text measured in the browser, for the notes
+const MC=document.createElement('canvas').getContext('2d');
+function wrap(x,y,text,maxW,z,lh,o={}){MC.font=`${o.w||400} ${z}px "Segoe UI", Arial, sans-serif`;const words=text.split(' ');let line='',lines=[];
+  words.forEach(w=>{const t=line?line+' '+w:w;if(MC.measureText(t).width>maxW&&line){lines.push(line);line=w}else line=t});if(line)lines.push(line);
+  return{g:lines.map((l,k)=>T(x,y+k*lh,l,{z,f:o.f||C.text,w:o.w||400})).join(''),h:lines.length*lh}}
+// a context menu: the language's panel, edge and shadow; the hovered row in the Browser's selection colour
+function menu(x,y,w,items){let h=6;items.forEach(it=>h+=it.sep?9:21);h+=4;let g=`<g filter="url(#sh)">`+R(x,y,w,h,C.panel,{r:6,s:C.edge})+'</g>';let yy=y+6;
+  items.forEach(it=>{if(it.sep){g+=L(x+8,yy+4.5,x+w-8,yy+4.5,'#404044');yy+=9;return}
+    if(it.hl)g+=R(x+4,yy,w-8,20,'#3f5866',{r:4});
+    if(it.tick)g+=P(`M${x+12} ${yy+10}l3.5 3.5l6.5 -7`,{s:C.acc,sw:2});
+    g+=T(x+30,yy+14.5,it.t,{z:11.5,f:it.dis?C.faint:C.text,w:it.hl||it.tick?600:400});
+    if(it.k)g+=T(x+w-12,yy+14.5,it.k,{z:10.5,f:C.dim,a:'end'});
+    it._y=yy;yy+=21});return{g,h}}
+// a return's Pre/Post switch, Live's 34 x 16 button. Mixed (its sends differ): a dash, as a mixed checkbox shows, in an accent edge
+function prePost(x,y,st){if(st==='pre')return btn(x,y,34,16,'Pre',{on:1,r:4,z:9});if(st==='post')return btn(x,y,34,16,'Post',{r:4,z:9,f:C.dim});
+  return R(x,y,34,16,C.ctl,{r:4,s:C.acc,sw:1.5})+L(x+11,y+8,x+23,y+8,C.text,1.6,{cap:'round'})}
+
+// ---------------- the song ----------------
+const GD='#f08a5d';
+const BW=36,PXB=72;                       // one bar is 36 px; a ruler step is two bars
+const TR=[
+ {n:'Drums',c:GD,k:'g',h:40,num:'1',vol:'-3.0',m:0.8,out:'Main',sends:[0.42,0.2,null]},
+ {n:'Kick',c:'#ff6f61',k:'a',h:44,num:'2',vol:'-4.5',m:0.78,lines:[GD],drum:'kick',in:'Ext. In',sel:1,sends:[0,0,0.32]},
+ {n:'Snare',c:'#e8b04a',k:'a',h:44,num:'3',vol:'-6.0',m:0.66,lines:[GD],drum:'snare',in:'Ext. In',sends:[0.3,0.1,0.62]},
+ {n:'Hats',c:'#f2cf5a',k:'a',h:44,num:'4',vol:'-11',m:0.42,lines:[GD],drum:'hats',in:'Ext. In',sends:[0.18,0.12,0.45]},
+ {n:'Drum Room',c:'#b7b7c2',k:'r',h:44,num:'DA',vol:'-8.0',m:0.36,lines:[GD],out:'Drums',sends:[0,0,null],dis:[1,1,0]},
+ {n:'Bass',c:'#f2e15a',k:'m',h:44,num:'5',vol:'-7.5',m:0.62,in:'All Ins',sends:[0,0,null]},
+ {n:'Keys',c:'#8f8cff',k:'m',h:44,num:'6',vol:'-9.0',m:0.46,in:'All Ins',sends:[0.34,0.22,null]},
+ {n:'Pads',c:'#c479ff',k:'m',h:44,num:'7',vol:'-14',m:0.38,in:'All Ins',sends:[0.52,0.1,null]},
+ {n:'Lead Vocals',c:'#5ec8ff',k:'a',h:52,num:'8',vol:'0.0',m:0.72,vox:'lead',in:'Ext. In',sends:[0.4,0.46,null]},
+ {n:'Backing Vox',c:'#5eb4ff',k:'a',h:44,num:'9',vol:'-8.5',m:0.5,vox:'bv',in:'Ext. In',sends:[0.56,0.3,null]},
+];
+// clips: [first bar, bars, name]
+TR[0].clips=[[5,8,'Drums Verse'],[13,8,'Drums Chorus'],[21,8,'Drums Verse 2']];
+TR[1].clips=[[5,8,'Kick Verse'],[13,8,'Kick Chorus'],[21,8,'Kick Verse 2']];
+TR[2].clips=[[5,8,'Snare Verse'],[13,8,'Snare Chorus'],[21,8,'Snare Verse 2']];
+TR[3].clips=[[3,2,'Hats Intro'],[5,8,'Hats Verse'],[13,8,'Hats Chorus'],[21,8,'Hats Verse 2']];
+TR[4].clips=[];
+TR[5].clips=[[5,8,'Bass Verse'],[13,8,'Bass Chorus'],[21,8,'Bass Verse 2']];
+TR[6].clips=[[1,4,'Keys Intro'],[5,8,'Keys Verse'],[13,8,'Keys Chorus'],[21,8,'Keys Verse 2']];
+TR[7].clips=[[1,4,'Pad Intro'],[13,8,'Pad Chorus']];
+TR[8].clips=[[5,8,'Lead Vox V1 tk3'],[13,8,'Lead Vox Chorus'],[21,8,'Lead Vox V2 tk2']];
+TR[9].clips=[[13,8,'Oohs Chorus']];
+// C#m, A, E, B: one chord a bar
+const ROOT=[37,33,40,35],VOI=[[56,61,64],[57,61,64],[56,59,64],[54,59,63]],PAD=[[49,56,61,64],[45,57,61,64],[52,56,59,64],[47,54,59,63]];
+function drumHits(kind,bar,chorus,last){ // [beat, amplitude, decay in beats]
+  if(kind==='kick')return(chorus?[0,1,2,2.5,3]:[0,1.5,2.5]).map(b=>[b,0.95,0.3]);
+  if(kind==='snare'){let h=[[1,0.9,0.32],[3,0.9,0.32],[3.75,0.28,0.12]];if(last)h=[[1,0.9,0.32],[2.5,0.55,0.15],[2.75,0.6,0.15],[3,0.75,0.2],[3.25,0.8,0.2],[3.5,0.9,0.2],[3.75,0.95,0.25]];return h}
+  let h=[];for(let k=0;k<8;k++)h.push([k*0.5,k%2?0.32:0.55,0.07]);if(chorus){h[3]=[1.5,0.5,0.32];h[7]=[3.5,0.5,0.32]}return h}
+function env(tr,bar0,bars,name,r){const chorus=/Chorus/.test(name);
+  if(tr.drum){const hits=[];for(let b=0;b<bars;b++)drumHits(tr.drum,b,chorus,b===bars-1&&bars>=8).forEach(([t,a,d])=>hits.push([b*4+t,a*(0.9+0.1*r()),d]));
+    return t=>{let v=0;for(const[t0,a,d]of hits){if(t>=t0&&t<t0+d*6)v=Math.max(v,a*Math.exp(-(t-t0)/d))}return v}}
+  if(tr.vox==='lead'){const syl=[];const phr=chorus?[[0,7],[8,15],[16,23],[24,31.5]]:[[0.5,6.5],[8.5,14],[16.5,22.5],[24.5,30]];
+    phr.forEach(([a,b])=>{let t=a;while(t<b-0.3){const d=[0.5,0.5,1,0.5,0.75,1.5][Math.floor(r()*6)];const end=Math.min(b,t+d);syl.push([t,end,(chorus?0.72:0.55)+0.3*r()]);t=end+0.06}syl[syl.length-1][1]=b});
+    return t=>{for(const[a,b,amp]of syl)if(t>=a&&t<b){const u=(t-a)/(b-a);return amp*Math.min(1,u*6)*Math.pow(Math.sin(Math.PI*Math.min(0.999,0.15+0.85*u)),0.5)*(b-a>1.2?1+0.06*Math.sin(t*18):1)}return 0.02}}
+  if(tr.vox==='bv')return t=>{const u=(t%8)/8;return 0.08+0.55*Math.pow(Math.sin(Math.PI*u),0.7)*(1+0.05*Math.sin(t*9))};return()=>0}
+function midiNotes(tr,bars,name){const chorus=/Chorus/.test(name),intro=/Intro/.test(name),out=[];
+  for(let b=0;b<bars;b++){const c=b%4;
+    if(tr.n==='Bass'){const r0=ROOT[c];(chorus?[0,0.5,1,1.5,2,2.5,3,3.5].map((t,k)=>[t,0.42,r0+(k===3||k===7?12:0)]):[[0,1.4,r0],[1.5,0.45,r0],[2,0.9,r0],[3,0.45,r0+12],[3.5,0.45,r0]]).forEach(([t,l,p])=>out.push([b*4+t,l,p]))}
+    else if(tr.n==='Keys'){const rh=intro?[[0,3.8]]:chorus?[[0,1.4],[1.5,0.9],[2.5,1.4]]:[[0,1.8],[2,1.8]];rh.forEach(([t,l])=>VOI[c].forEach(p=>out.push([b*4+t,l,p])))}
+    else if(tr.n==='Pads'){PAD[c].forEach(p=>out.push([b*4,3.9,p]))}}
+  return out}
+
+// ---------------- the notes at the left (the sheet's, not the window's) ----------------
+const LX=6,LW=420;s+=R(LX,74,LW,H-26-74-6,'#202020',{r:6,s:'#3a3a3a'});
+{let y=104;const tx=LX+44,tw=LW-58;
+ s+=T(LX+16,y,'A return inside a group',{z:18,w:700});y+=20;
+ const sub=wrap(LX+16,y,'DF-W33 · ADR-0245 d9, d10. The Browser and the Info box are closed here to make room for these notes. The boxes with an orange dashed edge are the sheet\'s, not the window\'s. Menus are drawn as a stand-in; their look is not yet agreed (README, What is not on a sheet yet).',LW-32,11,15,{f:C.dim});s+=sub.g;y+=sub.h+14;
+ const item=(n,title,body)=>{s+=note(LX+22,y-4,n);s+=T(tx,y,title,{z:12.5,w:700});y+=17;const b=wrap(tx,y,body,tw,11.5,14.5,{f:C.text});s+=b.g;y+=b.h+9};
+ item(1,'Where it sits','"Drum Room", a reverb, is a return in the Drums group: after the group\'s tracks, as wide as them, with the group\'s line at its left (Bitwig\'s place for a group\'s FX track). It plays into the group, so the group\'s devices take its tail with the dry drums. Its Audio To is "Drums", with the empty chooser under it, as a group\'s.');
+ item(2,'How it is made','Right-click the group\'s title: "Insert Return Track in Group" (the menu at real size, in the dashed box in the Mixer). A return dragged into the group goes in too. From the group\'s own menu, plain Insert Return Track puts the return at the foot, as in Live.');
+ item(3,'For the director: Insert Return Track','With a track inside the group selected (Kick here), does the Create menu\'s Insert Return Track (Ctrl+Alt+T) put the new return in Drums, or at the foot as in Live? (Dashed box.)');
+ item(4,'Its send knob: only inside the group','"DA" is on Kick, Snare and Hats alone: not on the Drums group (no send to its own return), not on Bass, Keys, Pads or the vocals. A and B stay on every track, Drum Room included (off, grey).');
+ item(5,'The Mixer','Live 12\'s Mixer in the lower panel, real size: the group\'s strip, its tracks, then its return, under one band in the group\'s colour.');
+ item(6,'A send\'s tap','Every send knob, A, B and DA alike, has a Tap menu (right-click): Pre FX (before the track\'s devices), Post FX (after them, before the fader: Live\'s Pre) or Post Mixer (after fader and pan: Live\'s Post). Open here on Kick\'s DA send, Post FX ticked.');
+ item(7,'Mixed','Drum Room\'s sends differ (Kick Post FX; Snare and Hats Post Mixer), so its Pre/Post switch shows a dash in an orange edge: Live\'s button, same size and place. Pre, Post and Mixed side by side in the dashed box.');
+ item(8,'Live\'s returns, unchanged','A Reverb and B Delay stay at the foot, play into Main, and have a knob on every track. Main is last.');
+ y+=4;s+=L(LX+16,y-6,LX+LW-16,y-6,'#3a3a3a');y+=14;
+ s+=T(LX+16,y,'Also open, for the director',{z:12.5,w:700,f:C.acc});y+=18;
+ const q=(t)=>{s+=CI(LX+24,y-4,2.5,C.acc);const b=wrap(LX+34,y,t,LW-50,11.5,14.5,{f:C.text});s+=b.g;y+=b.h+4};
+ q('Its letter: drawn DA (Drums\' first return) so A and B keep theirs everywhere.');
+ q('A group inside Drums: its tracks carry the DA knob too (Win\'s reading of d9).');
+ q('Drum Room\'s own sends to A and B exist and start off (grey), as Live\'s returns\' do (Win\'s reading).');
+ q('Should a send whose tap differs from its return\'s switch say so on the knob (a small word or mark)? Drawn without: only its menu tells.');
+ q('A click on a mixed switch sets every send to one tap: first click Post (Post Mixer), next click Pre (Post FX). Pre FX can be set only from a send\'s own menu. Or should the first click go to Pre?');
+}
+
+// ---------------- the Arrangement ----------------
+const BOT=700,SB=H-26;
+const ax=432,aw=W-ax-6,ay=74,HW=462,lw=aw-HW,hx=ax+lw;
+const bx=b=>ax+(b-1)*BW;
+s+=R(ax,ay,aw,BOT-ay-6,'#202020',{r:6});
+// overview
+s+=R(ax+4,ay+4,lw-8,16,C.well,{r:3});TR.forEach((tr,i)=>tr.clips.forEach(([b0,n])=>{const x0=ax+6+(b0-1)*(lw-12)/32,w=n*(lw-12)/32;s+=R(x0,ay+5.5+i*1.35,w-1,1.1,tr.c)}));s+=R(ax+4,ay+4,(lw-8)*0.885,16,'none',{r:3,s:'#d0d0d0',sw:1.2});
+// ruler: bar numbers, the song's locators, the loop brace over the chorus
+const ry=ay+24;s+=R(ax,ry,lw,26,'#262626');
+const LOC={5:'Verse',13:'Chorus',21:'Verse 2'};
+for(let b=0;b*PXB<lw;b++){const x0=ax+b*PXB,bar=b*2+1;s+=L(x0,ry+14,x0,ry+26,'#5a5a5a');if(x0+22<ax+lw)s+=T(x0+4,ry+12,String(bar),{z:10.5,f:C.dim});for(let q=1;q<4;q++)s+=L(x0+q*PXB/4,ry+21,x0+q*PXB/4,ry+26,'#444');
+  if(LOC[bar]){const tw=bar<10?10:17;s+=P(`M${x0+tw+2} ${ry+3}l7 4.5l-7 4.5z`,{f:C.dim});s+=T(x0+tw+12,ry+11.5,LOC[bar],{z:10,f:C.dim})}}
+s+=R(bx(13),ry+16,8*BW,7,C.acc,{r:3,op:0.9});
+// the buttons over the track names, as on the Arrangement sheet
+{const by2=ry+3;s+=R(hx,ry,HW,26,'#262626');let x=hx+6;
+ s+=btn(x,by2,26,20,'',{r:4});s+=iSwap(x+13,by2+10,C.text);x+=30;
+ s+=btn(x,by2,112,20,'',{r:4});s+=T(x+7,by2+14,'Show',{z:10.5,f:C.dim});s+=T(x+40,by2+14,'All groups',{z:10.5,w:600});s+=P(`M${x+98} ${by2+8}l3.5 3.5l3.5 -3.5`,{s:C.dim,sw:1.5});x+=118;
+ s+=grp(x,by2,122,20);[['I·O',1],['S',1],['R',1],['M',1],['D',0]].forEach(([t,on],k)=>{if(on)s+=R(x+2+k*24,by2+2,22,16,C.acc,{r:4});s+=T(x+13+k*24,by2+14,t,{z:9.5,a:'middle',w:700,f:on?C.ink:C.dim})});x+=128;
+ s+=grp(x,by2,50,20);s+=T(x+13,by2+14,'H',{z:10,a:'middle',w:700,f:C.dim});s+=sep(x+25,by2,20);s+=T(x+37,by2+14,'W',{z:10,a:'middle',w:700,f:C.dim});x+=56;
+ s+=btn(x,by2,26,20,'',{r:4,on:1});s+=iArm(x+13,by2+10,C.ink).replace(/stroke-width="2.2"/,'stroke-width="1.8"');x+=30;
+ s+=btn(x,by2,22,20,'',{r:4});s+=R(x+6,by2+9,10,7,'none',{r:1.5,s:C.dim,sw:1.4})+P(`M${x+8} ${by2+9}v-2a3 3 0 0 1 6 0v2`,{s:C.dim,sw:1.4});}
+// the tracks
+let ty0=ry+28;const lanesTop=ty0;const KA=hx+350,KB=hx+374,KD=hx+400;const rowY={};
+s+=`<clipPath id="lanes"><rect x="${ax}" y="${lanesTop}" width="${lw}" height="${BOT-lanesTop}"/></clipPath>`;
+TR.forEach((tr,i)=>{const h=tr.h,y=ty0;rowY[tr.n]=y;s+=R(ax,y,lw,h,tr.sel?'#3a3a3a':(i%2?C.lane2:C.lane));
+  for(let b=1;b*PXB<lw;b++)s+=L(ax+b*PXB,y,ax+b*PXB,y+h,'#000',1,{op:0.2});
+  let lane='';const r=rng(31+i);
+  tr.clips.forEach(([b0,bars,name])=>{const x0=bx(b0)+1,cw=bars*BW-2;lane+=R(x0,y+1,cw,h-2,tr.c,{r:3,op:0.30});lane+=R(x0,y+1,cw,13,tr.c,{r:3});lane+=T(x0+5,y+11.5,name,{z:10,f:C.ink,w:600});
+    const top=y+16,bh=h-18;
+    if(tr.k==='g'){ // a group's lane: its tracks' clips, each a thin row with its hits
+      ['kick','snare','hats'].forEach((kd,k)=>{const sy=top+k*(bh/3),sh=bh/3-2;lane+=R(x0+3,sy,cw-6,sh,C.ink,{r:1,op:0.35});
+        const f=env({drum:kd},b0,bars,name,rng(7+k));for(let px=0;px<cw-8;px+=1){const v=f(px/9);if(v>0.25)lane+=L(x0+4+px,sy+sh*(1-v),x0+4+px,sy+sh,'#141414',1,{op:0.8})}})}
+    else if(tr.k==='a'){const f=env(tr,b0,bars,name,r);let up='',dn='';const mid=top+bh/2,amp=bh/2-1;
+      for(let px=0;px<=cw-2;px+=1){const v=Math.min(1,f(px/9)*(0.82+0.18*r()));up+=(px?'L':'M')+(x0+1+px)+' '+(mid-amp*v).toFixed(1);dn=`L${x0+1+px} ${(mid+amp*v).toFixed(1)}`+dn}
+      lane+=P(up+dn+'Z',{f:'#141414',op:0.85})}
+    else if(tr.k==='m'){const ns=midiNotes(tr,bars,name);const lo=Math.min(...ns.map(n=>n[2])),hi=Math.max(...ns.map(n=>n[2])),rows=hi-lo+1,nh=(bh-2)/rows;
+      ns.forEach(([t,l,p])=>{const nx=x0+2+t*9;if(nx>x0+cw-3)return;lane+=R(nx,top+1+(hi-p)*nh,Math.min(l*9-1,x0+cw-2-nx),Math.max(2,nh-0.6),'#141414',{r:0.8,op:0.9})})}
+  });
+  s+=`<g clip-path="url(#lanes)">${lane}</g>`;
+  // the header: name, In/Out, mixer, sends, meter
+  const ln=tr.lines||[],ind=ln.length*5;s+=R(hx,y,HW,h,tr.sel?'#3a3a3a':C.panel);s+=R(hx+ind,y,128-ind,h,tr.c);ln.forEach((c,k)=>s+=R(hx+k*5,y-1,4,h+2,c));
+  s+=CI(hx+ind+12,y+12,6,'none',{s:C.ink,sw:1.6});s+=P(`M${hx+ind+9} ${y+11}l3 3l3 -3`,{s:C.ink,sw:1.6});s+=T(hx+ind+24,y+16,tr.n,{z:11.5,f:C.ink,w:700});
+  s+=chooser(hx+134,y+4,104,16,tr.k==='g'||tr.k==='r'?tr.out:tr.in,{z:9.5});
+  if(tr.k==='g'||tr.k==='r')s+=chooser(hx+134,y+22,104,16,'',{z:9.5});
+  const mx=hx+246;s+=btn(mx,y+4,34,16,tr.num,{on:1,r:4,z:10});s+=btn(mx+38,y+4,20,16,'S',{r:4,z:10,f:C.dim});
+  if(tr.k==='a'||tr.k==='m'){s+=btn(mx+62,y+4,20,16,'',{r:4});s+=CI(mx+72,y+12,3.6,C.dim)}
+  if(tr.k==='r')s+=prePost(mx+62,y+4,'mixed');
+  s+=box(mx,y+24,46,16,tr.vol,{fill:0.6,z:9.5});s+=knob(mx+68,y+32,7.5,0.5,C.val,'','',{bi:1,ring:2});
+  if(tr.sends){[[KA,'A'],[KB,'B'],[KD,'DA']].forEach(([kx,l],k)=>{const v=tr.sends[k];if(v==null)return;const dis=tr.dis&&tr.dis[k];s+=T(kx,y+14,l,{z:8.5,f:dis?C.faint:C.dim,a:'middle'});s+=knob(kx,y+30,7.5,dis?0:v,C.val,'','',{ring:2,dis})})}
+  s+=meterV(hx+HW-48,y+4,5,h-8,tr.m)+meterV(hx+HW-41,y+4,5,h-8,tr.m*0.94);
+  s+=L(ax,y+h,ax+aw,y+h,'#1a1a1a');ty0+=h+1});
+// the drop area, then the main returns and Main at the foot
+const footH=3*24,dropBot=BOT-6-20-footH;s+=T(ax+lw/2,(ty0+dropBot)/2+4,'Drop Files and Devices Here',{z:12,f:C.faint,a:'middle'});
+[['A Reverb','#b7b7c2','A',0.42],['B Delay','#b7b7c2','B',0.3],['Main','#e8e8ee','',0.82]].forEach(([n,c,l,m],i)=>{const y=dropBot+i*24;rowY[n]=y;s+=R(ax,y,lw,23,'#2a2a2a');s+=R(hx,y,HW,23,C.panel);s+=R(hx,y,128,23,c);s+=T(hx+24,y+15.5,n,{z:11.5,f:C.ink,w:700});s+=CI(hx+12,y+11.5,6,'none',{s:C.ink,sw:1.6});
+  s+=chooser(hx+134,y+3,104,16,i<2?'Main':'1/2',{z:9.5});const mx=hx+246;if(l){s+=btn(mx,y+3,34,16,l,{on:1,r:4,z:10});s+=btn(mx+38,y+3,20,16,'S',{r:4,z:10,f:C.dim});s+=btn(mx+62,y+3,34,16,'Post',{r:4,z:9,f:C.dim})}else{s+=box(mx,y+3,46,16,'0.0',{fill:0.7,z:9.5});s+=knob(mx+68,y+11.5,7,0.5,C.val,'','',{bi:1,ring:2})}
+  s+=meterV(hx+HW-48,y+3,5,17,m)+meterV(hx+HW-41,y+3,5,17,m*0.97)});
+// the playhead, and the time ruler at the foot
+s+=L(bx(18),ry,bx(18),dropBot,'#f0f0f0',1.3);
+const fy=BOT-6-20;s+=R(ax,fy,lw,20,'#262626');for(let k=0;k*PXB*2<lw;k++){const sec=k*8;s+=L(ax+k*PXB*2,fy,ax+k*PXB*2,fy+6,'#5a5a5a');if(k*PXB*2+34<lw)s+=T(ax+k*PXB*2+4,fy+14,Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'),{z:10,f:C.dim})}
+s+=R(hx,fy,HW,20,'#262626');s+=box(hx+6,fy+2,52,16,'1.00x',{z:9.5});s+=T(hx+HW-8,fy+14,'1/16',{z:10,f:C.dim,a:'end'});
+// numbers on the Arrangement
+s+=note(hx-18,rowY['Drum Room']+22,1);
+s+=note(hx+HW-16,rowY['Kick']+22,4);
+s+=note(hx+HW-16,rowY['Drum Room']+22,7);
+s+=note(hx-18,rowY['A Reverb']+12,8);
+
+// ---------------- the Mixer in the lower panel (Live 12's Arrangement Mixer), real size ----------------
+const ph=SB-BOT-6;s+=R(ax,BOT,aw,ph,'#202020',{r:6});
+const SW=76,ST=78,MX0=ax+8,Y0=BOT+8,Y1=Y0+20,SBOT=BOT+ph-8;
+const SY=[Y1+46,Y1+74,Y1+102];             // the send slots A, B, DA: Small knobs (r 11), as the pan
+function strip(x,tr,o={}){let g=R(x,Y1,SW,SBOT-Y1,tr.sel?'#3a3a3a':C.panel,{r:5});
+  g+=R(x,Y1,SW,18,tr.c,{r:5})+R(x,Y1+10,SW,8,tr.c);g+=T(x+6,Y1+13,tr.n,{z:10,f:C.ink,w:700});
+  if(o.sends)g+=T(x+6,Y1+30,'Sends',{z:8.5,f:C.faint});
+  ['A','B','DA'].forEach((l,k)=>{const v=o.sends?o.sends[k]:null,cy=SY[k];if(v==null)return;const dis=o.dis&&o.dis[k];
+    g+=T(x+11,cy+3.5,l,{z:9.5,f:dis?C.faint:C.dim,a:'middle',w:600});g+=knob(x+40,cy,11,dis?0:v,C.val,'','',{ring:2.4,dis})});
+  const pc=Y1+136;g+=knob(x+38,pc,11,o.pan==null?0.5:o.pan,C.val,'',o.panT||'C',{bi:1,ring:2.4});
+  const vy=Y1+172,fh=88,fv=o.fv==null?0.7:o.fv;g+=box(x+4,vy,42,15,tr.vol||'0.0',{fill:fv,z:9});
+  g+=R(x+23,vy+22,4,fh-22,C.well,{r:2});g+=btn(x+14,vy+22+(fh-30)*(1-fv),22,8,'',{r:3});
+  g+=meterV(x+55,vy,5,fh,tr.m)+meterV(x+62,vy,5,fh,tr.m*0.94);
+  const yb=vy+fh+8;
+  if(tr.num)g+=btn(x+4,yb,SW-8,16,tr.num,{on:1,r:4,z:10});
+  if(tr.k!=='main'){g+=btn(x+4,yb+20,30,16,'S',{r:4,z:10,f:C.dim});
+    if(tr.k==='a'||tr.k==='m'){g+=btn(x+38,yb+20,34,16,'',{r:4});g+=CI(x+55,yb+28,3.6,C.dim)}
+    if(tr.k==='ret')g+=prePost(x+38,yb+20,'post');
+    if(tr.k==='r')g+=prePost(x+38,yb+20,'mixed')}
+  return g}
+// the group's band over its strips
+s+=R(MX0,Y0,5*ST-2,15,GD,{r:4});s+=T(MX0+6,Y0+11.5,'Drums',{z:10,f:C.ink,w:700});
+const pans=[[0.5,'C'],[0.5,'C'],[0.56,'6R'],[0.38,'12L'],[0.5,'C'],[0.5,'C'],[0.42,'8L'],[0.5,'C'],[0.5,'C'],[0.62,'12R']];
+TR.forEach((tr,i)=>{const x=MX0+i*ST;const o={pan:pans[i][0],panT:pans[i][1],fv:[0.74,0.7,0.66,0.52,0.6,0.62,0.58,0.46,0.8,0.6][i]};
+  o.sends=tr.sends;o.dis=tr.dis;s+=strip(x,tr,o)});
+// the main returns and Main, at the right as in Live
+const MR=[{n:'A Reverb',c:'#b7b7c2',k:'ret',num:'A',vol:'-6.0',m:0.42},{n:'B Delay',c:'#b7b7c2',k:'ret',num:'B',vol:'-9.0',m:0.3},{n:'Main',c:'#e8e8ee',k:'main',vol:'0.0',m:0.82}];
+MR.forEach((tr,i)=>{const x=ax+aw-8-(3-i)*ST+2;s+=strip(x,tr,{sends:i===0?[null,0,null]:i===1?[0,null,null]:null,dis:[1,1,0],fv:0.72})});
+s+=L(ax+aw-8-3*ST-6,Y1,ax+aw-8-3*ST-6,SBOT,'#3a3a3a');
+// Kick's DA send: its context menu open, Post FX ticked
+{const kx=MX0+ST+40,ky=SY[2];const MW=140;const m=menu(kx+6,ky+14,MW,[{t:'Pre FX'},{t:'Post FX',tick:1,hl:1},{t:'Post Mixer'},{sep:1},{t:'Show Automation'}]);
+ s+=m.g;s+=P(`M${kx+2} ${ky+6}l0 14l3.6 -3.4l2.6 5.6l2.4 -1.1l-2.6 -5.4l5 -0.2z`,{f:'#f3f3f3',s:'#101010',sw:1});s+=note(kx+6+MW-16,ky+14+37,6)}
+// numbers on the Mixer
+s+=note(MX0+5*ST+8,Y0+8,5);
+s+=note(MX0+4*ST+38+17,SBOT+4,7);
+s+=note(ax+aw-8-3*ST-20,Y1+40,8);
+s+=note(MX0+ST+64,SY[2],4);
+
+// ---------------- the sheet's boxes in the Mixer's empty space (the sheet's, not the window's) ----------------
+const sheetBox=(x,y,w,h,cap)=>R(x+0.75,y+0.75,w-1.5,h-1.5,C.win,{r:6,s:C.acc,sw:1.5,d:'6 4'})+T(x+10,y+17,cap,{z:10.5,f:C.dim,w:600});
+{const bx0=MX0+10*ST+10,bw=258;
+ // the Drums group's context menu, real size
+ let y=Y0;const m=menu(bx0+12,y+26,214,[{t:'Rename',k:'Ctrl+R'},{t:'Ungroup Tracks',k:'Ctrl+Shift+G'},{sep:1},
+   {t:'Insert Audio Track',k:'Ctrl+T'},{t:'Insert MIDI Track',k:'Ctrl+Shift+T'},{t:'Insert Return Track',k:'Ctrl+Alt+T'},{t:'Insert Return Track in Group',hl:1}]);
+ s+=sheetBox(bx0,y,bw,m.h+38,'Right-click the Drums title (real size)');s+=m.g;s+=note(bx0+bw-16,y+26+m.h-15,2);y+=m.h+46;
+ // the Create menu with Kick selected
+ const m2=menu(bx0+12,y+26,214,[{t:'Insert Audio Track',k:'Ctrl+T'},{t:'Insert MIDI Track',k:'Ctrl+Shift+T'},{t:'Insert Return Track',k:'Ctrl+Alt+T',hl:1}]);
+ s+=sheetBox(bx0,y,bw,m2.h+38,'Create menu, with Kick selected');s+=m2.g;s+=note(bx0+bw-16,y+26+m2.h-15,3);
+ // Pre, Post and Mixed side by side, real size
+ const cx0=bx0+bw+10,cw=ax+aw-8-3*ST-40-cx0;let yy=Y0;s+=sheetBox(cx0,yy,cw,170,'The switch, real size');
+ [['pre','Pre','all sends Post FX'],['post','Post','all sends Post Mixer'],['mixed','Mixed','the sends differ']].forEach(([st,lab,sub],k)=>{const y2=yy+34+k*42;s+=prePost(cx0+12,y2,st);s+=T(cx0+54,y2+12,lab,{z:11.5,w:700});s+=T(cx0+12,y2+31,sub,{z:10,f:C.dim})});
+ s+=note(cx0+cw-16,yy+34+2*42+8,7);
+}
+
+// ---------------- the Status Bar ----------------
+s+=R(0,SB,W,26,'#0f0f10');s+=T(12,SB+17,'Kick  ·  Send DA (Drum Room)  ·  Tap: Post FX  ·  -18.0 dB',{z:11.5,f:C.dim});
+s+=grp(W-290,SB+3,284,20);s+=T(W-250,SB+17,'Kick',{z:11,a:'middle',w:600});s+=sep(W-210,SB+3,20);s+=T(W-182,SB+17,'Clip',{z:11,a:'middle',f:C.dim,w:600});s+=T(W-120,SB+17,'Devices',{z:11,a:'middle',f:C.dim,w:600});s+=R(W-82,SB+5,68,16,C.acc,{r:4});s+=T(W-48,SB+17,'Mixer',{z:11,a:'middle',f:C.ink,w:700});
+finish(W,H,s);
+</script></body></html>

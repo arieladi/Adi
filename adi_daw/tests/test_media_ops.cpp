@@ -109,6 +109,95 @@ void replay() {
 OpRequest request(const char* type,Payload payload) {
     OpRequest r;r.opType=type;r.payload=std::move(payload);return r;
 }
+void batchRelink() {
+    Fixture f;auto& s=*f.store;
+    s.db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(9,'master','Main',1)");
+    for(int i=0;i<2;++i) {
+        const auto name=std::string(i==0?"first.wav":"second.wav");
+        {audio::WavWriter wave(f.folder()/name,48000,1,audio::WavFormat::Float32);
+            std::array<float,320> samples{};samples.fill(i==0?0.25f:0.125f);wave.write(samples.data(),320);}
+        OpRequest imported;
+        const auto captured=media::prepareImport(s,name,10+i,123,imported);
+        if(!captured.ok)throw std::runtime_error(captured.error);
+        const std::vector<OpRequest> initial{imported,
+            request("clip.create",{{"id",5+i},{"track",1},{"kind","audio"},{"pos",0},{"length",5765760}}),
+            request("clip.attachAudio",{{"id",5+i},{"media",10+i},{"frames",320}})};
+        if(!OpJournal(s).commit(initial).ok)throw std::runtime_error("batch relink audio fixture");
+    }
+    s.db().exec("UPDATE media_files SET missing=1 WHERE id=11");
+    const std::array<Payload,2> beforeRows{media::mediaRow(s.db(),10),media::mediaRow(s.db(),11)};
+    const auto before=digestProject(s).text;
+    const auto opCount=s.db().execAndGet("SELECT count(*) FROM ops").getInt64();
+    fs::create_directory(f.folder()/"found");
+    fs::rename(f.folder()/"first.wav",f.folder()/"found/renamed.wav");
+    fs::rename(f.folder()/"second.wav",f.folder()/"found/second.wav");
+    fs::create_directory(f.folder()/"wrong");
+    fs::copy_file(f.folder()/"found/renamed.wav",f.folder()/"wrong/second.wav");
+    check(fs::file_size(f.folder()/"wrong/second.wav")==fs::file_size(f.folder()/"found/second.wav"),
+          "wrong-content candidate has the same basename and byte size as the missing source");
+    const std::array<media::RelinkTarget,2> targets{{{10,"found/renamed.wav"},{11,"found/second.wav"}}};
+    const auto unchanged=[&] {return digestProject(s).text==before &&
+        s.db().execAndGet("SELECT count(*) FROM ops").getInt64()==opCount;};
+    auto invalid=targets;invalid[1].path="wrong/second.wav";
+    check(!media::relinkMediaBatch(s,invalid).ok && unchanged(),
+          "a later wrong-content match refuses all earlier verified paths and writes no journal rows");
+    invalid=targets;invalid[1].path="absent.wav";
+    check(!media::relinkMediaBatch(s,invalid).ok && unchanged(),"one unreadable candidate refuses the entire relink batch");
+    invalid=targets;invalid[1].mediaId=999;
+    check(!media::relinkMediaBatch(s,invalid).ok && unchanged(),"one missing media id refuses the entire relink batch");
+    invalid=targets;invalid[1]=invalid[0];
+    check(!media::relinkMediaBatch(s,invalid).ok && unchanged(),"duplicate media ids refuse rather than relink one identity twice");
+    check(!media::relinkMediaBatch(s,{}).ok && unchanged(),"empty selection writes no undo step");
+    {StoreError error{};auto readOnly=Store::open(f.folder()/"song.adi",error,true);
+        check(readOnly && !media::relinkMediaBatch(*readOnly,targets).ok && unchanged(),"read-only project refuses batch relink");}
+    {audio::CallbackScope callback;
+        check(!media::relinkMediaBatch(s,targets).ok,"batch relink refuses the audio callback");
+        check(!media::relinkMedia(s,10,targets[0].path).ok,"single relink refuses before copying a path on the audio callback");}
+    check(unchanged(),"callback refusal preserves rows and journal");
+    s.db().exec("CREATE TEMP TRIGGER refuse_second_relink BEFORE UPDATE OF rel_path ON media_files "
+                "WHEN NEW.id=11 BEGIN SELECT RAISE(ABORT,'intentional second relink failure'); END");
+    const auto refused=media::relinkMediaBatch(s,targets);
+    check(!refused.ok && refused.error.find("intentional second relink failure")!=std::string::npos && unchanged(),
+          "second journal apply failure rolls back the first relink and its log");
+    s.db().exec("DROP TRIGGER refuse_second_relink");
+    const auto result=media::relinkMediaBatch(s,targets,Actor::Script);
+    check(result.ok && result.mediaId==0,"two exact content matches commit through the public batch API");
+    if(!result.ok){std::printf("batch relink error: %s\n",result.error.c_str());return;}
+    History history(s);
+    check(history.nextUndo() && history.nextUndo()->opCount==2,"all matched media paths form one Undo step");
+    check(s.db().execAndGet("SELECT count(DISTINCT txn_id) FROM ops WHERE op_type='media.relink'").getInt()==1 &&
+          s.db().execAndGet("SELECT count(*) FROM ops WHERE op_type='media.relink' AND actor='script'").getInt()==2,
+          "batch stores ordinary media.relink payloads under one transaction and the supplied actor");
+    for(std::size_t i=0;i<targets.size();++i) {
+        auto expected=beforeRows[i];expected["rel_path"]=media::pathUtf8(targets[i].path);
+        expected["abs_path_hint"]=nullptr;expected["missing"]=0;
+        check(media::mediaRow(s.db(),targets[i].mediaId)==expected,"relink preserves identity, audio metadata, peaks and import time");
+    }
+    check(s.db().execAndGet("SELECT count(*) FROM audio_clips WHERE (clip_id=5 AND media_id=10) OR (clip_id=6 AND media_id=11)").getInt()==2,
+          "the two clips retain their media identities and attachments");
+    const auto plays=[&](Store& store) {
+        engine::Session session;engine::SessionSpec spec;spec.sampleRate=48000;spec.maxFrames=64;
+        if(!session.load(store,{},spec))return false;
+        session.graph().setFadeFrames(0);session.transport().play();
+        if(!session.clips() || !session.clips()->problems().empty() || !session.clips()->prime())return false;
+        std::array<float,64> left{},right{};float* out[]{left.data(),right.data()};
+        engine::AudioIo io;io.out=out;io.numOut=2;io.frames=64;session.process(io);
+        return left==right && std::all_of(left.begin(),left.end(),[](float value){return value==0.375f;});
+    };
+    check(plays(s),"both relinked WAVs produce their exact summed PCM through Session");
+    const auto after=digestProject(s).text;
+    check(history.undo().ok && digestProject(s).text==before,"one Undo restores every previous media location despite absent old files");
+    fs::rename(f.folder()/"found",f.folder()/"temporarily-unavailable");
+    check(history.redo().ok && digestProject(s).text==after,"one Redo replays all captured paths without reading the files");
+    fs::rename(f.folder()/"temporarily-unavailable",f.folder()/"found");
+    f.store.reset();StoreError error{};f.store=Store::open(f.folder()/"song.adi",error);
+    check(f.store && digestProject(*f.store).text==after && plays(*f.store),"batch relink and exact PCM survive project close/reopen");
+    if(f.store) {
+        History reopened(*f.store);
+        check(reopened.undo().ok && digestProject(*f.store).text==before && reopened.redo().ok && digestProject(*f.store).text==after,
+              "the reopened project retains the same atomic relink Undo/Redo");
+    }
+}
 void importClip() {
     Fixture f;auto& s=*f.store;
     s.db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(9,'master','Main',1)");
@@ -231,7 +320,7 @@ void atomicAttachmentFailure() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { registry(); operations(); replay(); importClip(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
+    try { registry(); operations(); replay(); batchRelink(); importClip(); captureDecodeAndDedup(); atomicAttachmentFailure(); } catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

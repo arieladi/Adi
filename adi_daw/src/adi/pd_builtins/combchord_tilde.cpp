@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/combchord.hpp"
 #include "juce/pd_builtins.hpp"
+#include "adi/pd_builtins/float_signals.hpp"
 extern "C" {
 #include "m_pd.h"
 }
@@ -9,14 +10,14 @@ extern "C" {
 
 namespace {
 t_class* klass = nullptr;
-struct Object { t_object object; t_float signal; adi::dsp::CombChord* core; };
+struct Object { t_object object; t_float signal; adi::dsp::CombChord* core; adi::device::FloatSignals* signals; };
 void* create() {
-    auto* x = reinterpret_cast<Object*>(pd_new(klass));
+    auto* x = reinterpret_cast<Object*>(pd_new(klass)); x->signals = new adi::device::FloatSignals;
     x->core = new adi::dsp::CombChord;
     outlet_new(&x->object, &s_signal);
     return x;
 }
-void destroy(Object* x) { delete x->core; }
+void destroy(Object* x) { delete x->core; delete x->signals; }
 t_int* perform(t_int* w) {
     auto* x = reinterpret_cast<Object*>(w[1]);
     x->core->process(reinterpret_cast<const float*>(w[2]), reinterpret_cast<float*>(w[3]),
@@ -24,15 +25,16 @@ t_int* perform(t_int* w) {
     return w + 5;
 }
 void dsp(Object* x, t_signal** s) {
+    x->signals->begin(s, 1, 1);
     x->core->prepare(s[0]->s_sr);
     // dsp_add reads pointer-sized t_int varargs; an int frame count leaves
     // the upper stack word undefined on Win64. Use its typed vector API.
-    t_int args[] = {reinterpret_cast<t_int>(x), reinterpret_cast<t_int>(s[0]->s_vec),
-                    reinterpret_cast<t_int>(s[1]->s_vec), static_cast<t_int>(s[0]->s_n)};
-    dsp_addv(perform, 4, args);
+    t_int args[] = {reinterpret_cast<t_int>(x), x->signals->at(0),
+                    x->signals->at(1), static_cast<t_int>(s[0]->s_n)};
+    dsp_addv(perform, 4, args); x->signals->end();
 }
 void state(Object* x, t_floatarg f) {
-    if (std::isfinite(f)) x->core->setState(static_cast<std::size_t>(std::clamp(f, 0.f, 7.f)));
+    if (std::isfinite(f)) x->core->setState(static_cast<std::size_t>(std::clamp(f, t_floatarg{0}, t_floatarg{7})));
 }
 void mode(Object* x, t_floatarg f) { x->core->setMode(f >= 0.5f ? adi::dsp::CombChord::Mode::Square : adi::dsp::CombChord::Mode::Saw); }
 void decay(Object* x, t_floatarg f) { x->core->setDecay(f); }

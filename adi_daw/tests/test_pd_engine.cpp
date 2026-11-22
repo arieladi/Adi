@@ -41,6 +41,7 @@
 // something that would otherwise have happened.
 extern "C" {
 #include "z_libpd.h"
+#include "s_stuff.h"   // sys_get_dllextensions: the names Pd itself looks for
 }
 
 #include <cmath>
@@ -57,10 +58,20 @@ extern "C" {
 #include <windows.h>
 #include <dbghelp.h>
 #endif
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <memory>
+#include <thread>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -496,6 +507,42 @@ void testAClosedEngineStillPassesAudio() {
           "load must not silence the track");
 }
 
+// DF-E20 (e), confirmed as built: a patch DEVICE whose patch failed to open is
+// a wire (ADR-0011, ADR-0095). It passes every channel through sample for
+// sample, at once, and so reports no latency -- which is the truth: zero is
+// what the wire delays, and a nonzero figure would shift every other track
+// against a delay that is not there. It says why it failed (`openError`), and
+// a prepare at another rate changes none of it.
+void testAFailedPatchDeviceIsAWireWithNoDelay() {
+    section("DF-E20 (e) -- a patch device whose patch failed to open passes audio and reports no latency");
+    adi::device::DeviceIdentity id;
+    id.format = "pd"; id.uid = "no-such-patch"; id.name = "no-such-patch";
+    adi::device::PdDevice dev(std::make_unique<LibPdEngine>(patchDir(), "no-such-patch.pd", 2, 2), id);
+    check(!dev.loaded() && !dev.openError().empty(), "it is not loaded and says why: " + dev.openError());
+    eqi(dev.latencySamples(), 0, "it reports no latency before prepare");
+    const int total = 1000;
+    for (const double rate : {48000.0, 44100.0}) {
+        dev.prepare(rate, 512);
+        eqi(dev.latencySamples(), 0, "nor after prepare at " + std::to_string(static_cast<int>(rate)) + " Hz");
+        Buffers b(2, total);
+        for (int f = 0; f < total; ++f) {
+            b.in[0][static_cast<std::size_t>(f)] = static_cast<float>(f) / total - .5f;
+            b.in[1][static_cast<std::size_t>(f)] = .25f - static_cast<float>(f % 7) / 13.f;
+        }
+        const std::vector<int> awkward{100, 37, 411, 64, 7, 250};
+        int at = 0;
+        std::size_t s = 0;
+        while (at < total) {
+            const int n = std::min(awkward[s++ % awkward.size()], total - at);
+            auto io = b.io(2, total, at, n);
+            dev.process(io);
+            at += n;
+        }
+        check(b.out[0] == b.in[0] && b.out[1] == b.in[1],
+              "and passes both channels through sample for sample, with no delay, in awkward blocks");
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // ADR-0188 d8 -- no Pd external is ever loaded from disk
@@ -693,6 +740,361 @@ void testTransportReachesThePatch() {
     check(arr->read(cells.data(), arr->length()), "a second array is published");
     eqi(static_cast<long long>(cells[0]), 0, "and it follows: stopped");
     eqi(static_cast<long long>(cells[5]), 4, "and the beat moved");
+}
+
+// ---------------------------------------------------------------------------
+// The exact position [adi.transport] adds: each Pd tick's first input sample,
+// as whole quarter notes and the fraction (the clones seat's "editable Pd timing cases").
+// The seven fields cannot say it: QN 0 and QN 1 in 2/2 send the same seven,
+// and after a 4/4 bar then 3/4 a reconstruction from the meter is a quarter
+// off. Expected values come from a per-frame model built here: the segments'
+// deviceTransport is the model at each segment's first frame, and tick k's
+// value is the model at input frame 64k. Every tick that STARTS inside the
+// scenario is logged, the last one completed by the flush with the position
+// latched when it began: ceil(frames / 64) of them. 48 kHz, 120 BPM: 1 sample
+// is 1/24000 of a quarter note.
+// ---------------------------------------------------------------------------
+
+struct Moment {
+    double quarterNotes = 0;
+    bool playing = true;
+};
+struct PositionRun {
+    std::vector<double> positions;  ///< whole quarter notes + fraction, added in double
+    int count = 0;
+    bool ok = false;
+};
+// `blocks`: host blocks, each a list of segment lengths (the graph's cuts).
+PositionRun runPositions(const std::vector<std::vector<int>>& blocks,
+                         const std::function<Moment(int)>& model, int maxFrames = 512,
+                         const char* patch = "adi-position-log.pd") {
+    PositionRun run;
+    LibPdEngine eng(patchDir(), patch, 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) {
+        check(false, std::string(patch) + " opens: " + err);
+        return run;
+    }
+    check(eng.wantsPosition(), "a patch with [adi.transport] asks for the exact position");
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/" + patch, std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.prepare(48000.0, maxFrames);
+    eng.bindArrays(decls);
+    LibPdEngine::Transport tr;
+    tr.playing = true;
+    tr.bpm = 120;
+    eng.setTransport(tr);
+    int frame = 0;
+    int longest = 1;
+    for (const auto& block : blocks) {
+        int total = 0;
+        for (const int length : block) {
+            total += length;
+        }
+        longest = std::max(longest, total);
+    }
+    Buffers b(2, longest);
+    for (const auto& block : blocks) {
+        int total = 0;
+        for (const int length : block) {
+            total += length;
+        }
+        int offset = 0;
+        for (const int length : block) {
+            const auto now = model(frame);
+            engine::DeviceTransport position;
+            position.quarterNotes = now.quarterNotes;
+            position.playing = now.playing;
+            position.bpm = 120;
+            auto io = b.io(2, total, offset, length);
+            io.deviceTransport = &position;
+            eng.process(io);
+            offset += length;
+            frame += length;
+        }
+    }
+    // Flush: calls with no exact position send no eighth field, so they log
+    // nothing, and the arrays (published at 1 kHz) catch up.
+    for (int i = 0; i < 4; ++i) {
+        auto io = b.io(2, longest, 0, std::min(longest, maxFrames));
+        eng.process(io);
+    }
+    const auto* wholes = eng.publishedArray(1);
+    const auto* count = eng.publishedArray(2);
+    const auto* fractions = eng.publishedArray(3);
+    if (wholes == nullptr || count == nullptr || fractions == nullptr) {
+        check(false, "the log's arrays are bound");
+        return run;
+    }
+    std::vector<float> whole(static_cast<std::size_t>(wholes->length()), -1.f);
+    std::vector<float> fraction(whole.size(), -1.f);
+    std::vector<float> n(1, 0.f);
+    run.ok = wholes->read(whole.data(), wholes->length()) && fractions->read(fraction.data(), fractions->length()) &&
+             count->read(n.data(), 1);
+    run.count = static_cast<int>(n[0]);
+    run.positions.resize(whole.size());
+    for (std::size_t i = 0; i < whole.size(); ++i) {
+        run.positions[i] = static_cast<double>(whole[i]) + static_cast<double>(fraction[i]);
+    }
+    return run;
+}
+std::vector<std::vector<int>> cutInto(int total, const std::vector<int>& pattern,
+                                      const std::vector<int>& boundaries = {}) {
+    // Awkward segment lengths in a repeating pattern, each host block one
+    // segment, cut again at every boundary (a seek, a stop) as the graph cuts.
+    std::vector<std::vector<int>> blocks;
+    int at = 0;
+    std::size_t i = 0;
+    while (at < total) {
+        int length = std::min(pattern[i++ % pattern.size()], total - at);
+        for (const int edge : boundaries) {
+            if (edge > at && edge < at + length) {
+                length = edge - at;
+            }
+        }
+        blocks.push_back({length});
+        at += length;
+    }
+    return blocks;
+}
+bool matchesModel(const PositionRun& run, const std::function<Moment(int)>& model, int ticks,
+                  std::string& first) {
+    if (!run.ok || run.count != ticks) {
+        first = "ok " + std::to_string(run.ok) + ", " + std::to_string(run.count) + " ticks logged, " +
+                std::to_string(ticks) + " expected";
+        return false;
+    }
+    for (int k = 0; k < ticks; ++k) {
+        const double want = model(64 * k).quarterNotes;
+        if (std::fabs(run.positions[static_cast<std::size_t>(k)] - want) > 1e-6) {
+            first = "tick " + std::to_string(k) + ": " + std::to_string(run.positions[static_cast<std::size_t>(k)]) +
+                    ", want " + std::to_string(want);
+            return false;
+        }
+    }
+    return true;
+}
+
+void testTheEighthTransportFieldIsEachTicksExactPosition() {
+    section("[adi.transport]'s exact position: each Pd tick's own");
+    const auto playingFromZero = [](int f) { return Moment{f / 24000.0, true}; };
+    std::string why;
+
+    // Stopped at QN 0 and at QN 1: every tick says so.
+    for (const double at : {0.0, 1.0}) {
+        const auto stopped = [at](int) { return Moment{at, false}; };
+        const auto run = runPositions(cutInto(640, {128}), stopped);
+        const bool same = matchesModel(run, stopped, 10, why);
+        check(same, "stopped at QN " + std::to_string(static_cast<int>(at)) + ", every tick says so: " + why);
+    }
+    // Playing, awkward segments: tick 375 is exactly QN 1.
+    {
+        const auto run = runPositions(cutInto(24064, {100, 37, 411, 64, 7, 250}), playingFromZero);
+        const bool same = matchesModel(run, playingFromZero, 376, why);
+        check(same, "playing, awkward segments, tick k is 64k/24000: " + why);
+        check(run.ok && std::fabs(run.positions[375] - 1.0) < 1e-9 && std::fabs(run.positions[374] - 374.0 / 375.0) < 1e-6,
+              "tick 375 is QN 1.0, tick 374 is 0.9973333");
+    }
+    // A segment at a nonzero offset in its host block, and the partial tick
+    // that spans the cut: one 512 block cut into 100 and 412, twice.
+    {
+        const auto run = runPositions({{100, 412}, {100, 412}}, [](int f) { return Moment{2.0 + f / 24000.0, true}; });
+        const bool same = matchesModel(run, [](int f) { return Moment{2.0 + f / 24000.0, true}; }, 16, why);
+        check(same, "segments at a nonzero offset, a tick spanning the cut keeps its own start: " + why);
+    }
+    // A seek and a stop, each inside a tick. Play from QN 3; at frame 1000 seek
+    // to QN 10; at frame 1700 stop. Tick 15 (frame 960) began before the seek:
+    // 3.04. Tick 26 (frame 1664) began before the stop: 10.0276667.
+    {
+        const auto model = [](int f) {
+            if (f < 1000) {
+                return Moment{3.0 + f / 24000.0, true};
+            }
+            if (f < 1700) {
+                return Moment{10.0 + (f - 1000) / 24000.0, true};
+            }
+            return Moment{10.0 + 700 / 24000.0, false};
+        };
+        for (const auto& pattern : {std::vector<int>{100, 37, 411, 64, 7, 250}, std::vector<int>{37, 411, 7, 250, 100, 64}}) {
+            const auto run = runPositions(cutInto(2200, pattern, {1000, 1700}), model);
+            {
+            const bool same = matchesModel(run, model, 35, why);
+            check(same, "a seek and a stop inside ticks: " + why);
+        }
+            check(run.ok && std::fabs(run.positions[15] - 3.04) < 1e-6 && std::fabs(run.positions[16] - 10.001) < 1e-6 &&
+                      std::fabs(run.positions[26] - (10.0 + 664.0 / 24000.0)) < 1e-6 &&
+                      std::fabs(run.positions[27] - (10.0 + 700.0 / 24000.0)) < 1e-6,
+                  "tick 15 is 3.04 (before the seek), 16 is 10.001, 26 is 10.0276667 (before the stop), 27 on 10.0291667");
+        }
+    }
+    // A call longer than prepare's maximum, tiled by the engine (128 + 128 + 44).
+    {
+        const auto run = runPositions({{300}, {300}}, playingFromZero, 128);
+        {
+            const bool same = matchesModel(run, playingFromZero, 10, why);
+            check(same, "a call tiled by the engine keeps every tick's position: " + why);
+        }
+    }
+}
+
+// What [adi.transport] hands the patch with the exact position: nine fields,
+// read back from the proof patch's cells.
+std::vector<float> transportFields(const LibPdEngine::Transport& block, const engine::DeviceTransport& position) {
+    LibPdEngine eng(patchDir(), "adi-transport-proof.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) {
+        check(false, "adi-transport-proof.pd opens: " + err);
+        return {};
+    }
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-transport-proof.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.prepare(48000.0, 512);
+    eng.bindArrays(decls);
+    eng.setTransport(block);
+    Buffers b(2, 512);
+    for (int i = 0; i < 8; ++i) {
+        auto io = b.io(2, 512, 0, 512);
+        io.deviceTransport = &position;
+        eng.process(io);
+    }
+    const auto* arr = eng.publishedArray(1);
+    std::vector<float> cells(9, -1.f);
+    if (arr == nullptr || !arr->read(cells.data(), 9)) {
+        check(false, "the proof patch's nine cells are published");
+    }
+    return cells;
+}
+double sevenFieldQuarter(const std::vector<float>& c) {
+    // The reconstruction a patch could make from the seven fields alone.
+    return std::floor(((c[4] - 1.0) * c[2] + c[5] - 1.0) * 4.0 / c[3]);
+}
+void testTheTransportFieldsAPatchReceives() {
+    section("the nine [adi.transport] fields a patch receives with the exact position");
+    LibPdEngine::Transport twoTwo;
+    twoTwo.playing = false;
+    twoTwo.timeSigNumerator = 2;
+    twoTwo.timeSigDenominator = 2;
+    twoTwo.bar = 1;
+    twoTwo.beat = 1;
+    twoTwo.ticksInQuarter = 0;
+    engine::DeviceTransport at0;
+    at0.playing = false;
+    at0.quarterNotes = 0;
+    auto at1 = at0;
+    at1.quarterNotes = 1;
+    const auto zero = transportFields(twoTwo, at0);
+    const auto one = transportFields(twoTwo, at1);
+    if (zero.size() == 9 && one.size() == 9) {
+        check(std::equal(zero.begin(), zero.begin() + 7, one.begin()) && sevenFieldQuarter(zero) == sevenFieldQuarter(one),
+              "in 2/2, QN 0 and QN 1 bring the same seven fields: the seven cannot tell them apart");
+        check(zero[7] + zero[8] == 0.f && one[7] + one[8] == 1.f, "the position fields say QN 0 and QN 1");
+    }
+    // After a 4/4 bar then a 3/4 bar, bar 2 begins at QN 4; from the meter
+    // the block now has (3/4), the seven fields reconstruct 3.
+    LibPdEngine::Transport threeFour = twoTwo;
+    threeFour.timeSigNumerator = 3;
+    threeFour.timeSigDenominator = 4;
+    threeFour.bar = 2;
+    auto at4 = at0;
+    at4.quarterNotes = 4;
+    const auto bar2 = transportFields(threeFour, at4);
+    if (bar2.size() == 9) {
+        check(sevenFieldQuarter(bar2) == 3.0 && bar2[7] == 4.f && bar2[8] == 0.f,
+              "after 4/4 then 3/4, bar 2 is QN 4 by the position, where the seven fields give 3");
+    }
+    // A long song: QN 7200.37 (an hour at 120 BPM). One 32-bit float would
+    // carry it to about 0.0005 QN, 12 samples; split, it is exact.
+    auto late = at0;
+    late.quarterNotes = 7200.37;
+    const auto hour = transportFields(twoTwo, late);
+    if (hour.size() == 9) {
+        check(hour[7] == 7200.f && std::fabs(static_cast<double>(hour[7]) + static_cast<double>(hour[8]) - 7200.37) < 1e-6,
+              "an hour in, QN 7200.37 arrives whole as 7200 plus 0.37, within a millionth of a quarter");
+    }
+    // Playing and BPM are the tick's own when the position is known.
+    LibPdEngine::Transport block = twoTwo;
+    block.playing = true;
+    block.bpm = 120;
+    auto own = at0;
+    own.playing = false;
+    own.bpm = 90;
+    const auto state = transportFields(block, own);
+    if (state.size() == 9) {
+        check(state[0] == 0.f && state[1] == 90.f,
+              "with the position, playing and BPM are the tick's own (stopped at 90), not the block's (playing at 120)");
+    }
+    // A native core that keeps the graph's position (ADI-Shaper's canvas,
+    // matched to its native core) asks for it too.
+    auto shaper = std::make_unique<LibPdEngine>(std::string(devicePatchDir()) + "/devices", "ADI-Shaper.pd", 2, 2);
+    shaper->addSearchPath(devicePatchDir());
+    adi::device::DeviceIdentity id;
+    id.format = "pd";
+    adi::device::PdDevice native(std::move(shaper), id);
+    check(native.loaded() && native.wantsDeviceTransport(),
+          "a native core that uses the transport position asks the graph for it");
+}
+
+void testSevenFieldPatchesStillWork() {
+    section("a patch unpacking seven transport fields keeps working when eight come");
+    LibPdEngine eng(patchDir(), "adi-transport-seven.pd", 2, 2);
+    eng.addSearchPath(devicePatchDir());
+    PdLatencyReceiver latency;
+    std::string err;
+    check(eng.open(latency, err), "adi-transport-seven.pd opens: " + err);
+    device::PdDeclarations decls;
+    {
+        std::ifstream in(std::string(patchDir()) + "/adi-transport-seven.pd", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        decls = parsePdDeclarations(buf.str());
+    }
+    eng.prepare(48000.0, 512);
+    eng.bindArrays(decls);
+    LibPdEngine::Transport tr;
+    tr.playing = true;
+    eng.setTransport(tr);
+    Buffers b(2, 512);
+    engine::DeviceTransport position;
+    position.quarterNotes = 5;
+    position.playing = true;
+    for (int i = 0; i < 4; ++i) {
+        auto io = b.io(2, 512, 0, 512);
+        io.deviceTransport = &position;
+        eng.process(io);
+    }
+    std::string console;
+    for (const auto& line : eng.consoleLines()) {
+        console += line + "\n";
+    }
+    std::vector<float> cell(1, -1.f);
+    const auto* playing = eng.publishedArray(1);
+    check(playing != nullptr && playing->read(cell.data(), 1) && cell[0] == 1.f && console.find("unpack") == std::string::npos &&
+              console.find("error") == std::string::npos,
+          "[unpack] of seven takes the first seven, with no error\n          console: " + console);
+
+    // Only a patch that listens asks the graph for the position.
+    adi::device::DeviceIdentity id;
+    id.format = "pd";
+    auto logEngine = std::make_unique<LibPdEngine>(patchDir(), "adi-position-log.pd", 2, 2);
+    logEngine->addSearchPath(devicePatchDir());
+    adi::device::PdDevice listens(std::move(logEngine), id);
+    adi::device::PdDevice deaf(std::make_unique<LibPdEngine>(patchDir(), "adi-proof.pd", 2, 2), id);
+    check(listens.wantsDeviceTransport() && !deaf.wantsDeviceTransport(),
+          "a patch device asks for the exact position only when its patch has [adi.transport]");
 }
 
 void testACompiledInExternalIsRegisteredForEveryInstance() {
@@ -1203,6 +1605,11 @@ void testPdWouldReachAnExternalBesideThePatch() {
     for (const auto& ext : device::pdLoadableCodeExtensions())
         tmp.write(("adi_probe_external" + ext).c_str(),
                   "not a library, and it does not have to be\n");
+    // And every name Pd itself tries: a PD_FLOATSIZE=64 Pd looks for deken
+    // names such as .windows-amd64-64.dll and never for a bare .dll.
+    for (const char** ext = sys_get_dllextensions(); *ext != nullptr; ++ext)
+        tmp.write(("adi_probe_external" + std::string(*ext)).c_str(),
+                  "not a library, and it does not have to be\n");
 
     std::string err;
     check(device::PdRuntime::initialise(err), "libpd initialises: " + err);
@@ -1398,6 +1805,752 @@ void testRepeatedAbstractionLifetimes() {
     }
 }
 
+// DEV-09 (MF4, #173 re-applied, and #173's forty-cycle stress): what an engine
+// allocates, closing it frees. Three leaks were measured here: the latency
+// receive object libpd_bind returns (one per engine, pointing into the symbol
+// table of an instance already freed), Pd's own instance teardown (the
+// t_pdinstance, its built-in symbol names, its sound buffers, its search path)
+// and every [inlet~]/[outlet~]'s reblocker array; the last two are fixed in
+// pd_loader_fix.cmake. Forty cycles of two engines alive at once, the printing
+// one destroyed first (the print hook lives in the instance's own storage).
+// Under the MSVC debug heap the live block count must not grow with the
+// cycles; elsewhere the cycles themselves are the stress.
+void testManyEnginesOpenedAndClosedLeaveNothingBehind() {
+    section("forty open/close cycles of two engines leave nothing behind");
+    TempDir tmp("open-close-stress");
+    tmp.write("quiet.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 inlet~;\n"
+                          "#X obj 10 40 outlet~;\n#X connect 0 0 1 0;\n");
+    tmp.write("loud.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                         "#X obj 10 40 print stress;\n#X connect 0 0 1 0;\n");
+    auto cycle = [&](int i) {
+        auto quiet = std::make_unique<LibPdEngine>(tmp.str(), "quiet.pd", 2, 2);
+        auto loud = std::make_unique<LibPdEngine>(tmp.str(), "loud.pd", 2, 2);
+        PdLatencyReceiver ql, ll;
+        std::string error;
+        const bool opened = quiet->open(ql, error) && loud->open(ll, error);
+        if (!opened) check(false, "cycle " + std::to_string(i) + " opens: " + error);
+        quiet->prepare(48000, 256);
+        loud->prepare(48000, 256);
+        loud.reset();   // the printing engine first
+        quiet.reset();
+        return opened;
+    };
+    // Warm up: first opens fill process-wide caches (class lists, the console
+    // owners' capacity) that are not per-engine and not a leak.
+    for (int i = 0; i < 10; ++i)
+        if (!cycle(i)) return;
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtMemState before{}, after{}, difference{};
+    _CrtMemCheckpoint(&before);
+#endif
+    for (int i = 10; i < 50; ++i)
+        if (!cycle(i)) return;
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtMemCheckpoint(&after);
+    (void)_CrtMemDifference(&difference, &before, &after);
+    const auto blocks = difference.lCounts[_NORMAL_BLOCK];
+    // Fewer than one block per cycle: any per-engine or per-instance leak,
+    // however small, adds at least forty. Before DEV-09 this was 1,520 (a
+    // receive object per engine, 17 blocks per freed instance, a reblocker
+    // array per signal inlet and outlet).
+    check(blocks < 40, "forty cycles leave fewer live heap blocks than cycles: " +
+                           std::to_string(blocks));
+#else
+    check(true, "forty cycles of two engines, the printing one closed first");
+#endif
+}
+
+// DEV-09 AR7 helpers: open a patch through the engine and return its console.
+std::string consoleOf(const TempDir& dir, const char* file, bool* opened = nullptr) {
+    LibPdEngine engine(dir.str(), file, 2, 2);
+    PdLatencyReceiver latency;
+    std::string error;
+    const bool ok = engine.open(latency, error);
+    if (opened != nullptr) *opened = ok;
+    std::string joined;
+    for (const auto& line : engine.consoleLines()) joined += line + "\n";
+    return joined + error;
+}
+
+// The loader refused AT THE SOURCE (DEV-09 AR7). The engine's directory checks
+// see only the patch's own folder and its search paths; an object named by an
+// absolute path, by a ../ path, or created by a message at run time reaches
+// Pd's loader with none of them. Each planted file is not a library: before the
+// fence, Pd handed it to LoadLibrary/dlopen and printed the system's refusal
+// with the file's name; now it is refused by name before any load is tried.
+void testNativeCodeIsRefusedWhateverNamesIt() {
+    section("DEV-09 AR7 -- a planted library never loads, however the patch names it");
+    [[maybe_unused]] const ErrorModeGuard quietLoaderFailures;   // the plant's LoadLibrary
+    TempDir lib("planted-lib");
+    for (const auto& ext : device::pdLoadableCodeExtensions())
+        lib.write(("adi_probe_external" + ext).c_str(), "not a library\n");
+    for (const char** ext = sys_get_dllextensions(); *ext != nullptr; ++ext)
+        lib.write(("adi_probe_external" + std::string(*ext)).c_str(), "not a library\n");
+    std::string where = lib.str();
+    std::replace(where.begin(), where.end(), '\\', '/');
+    const std::string absolute = where + "/adi_probe_external";
+    const std::string relative = "../" + lib.path.filename().string() + "/adi_probe_external";
+
+    TempDir patches("planted-users");
+    patches.write("by-absolute.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 " + absolute + ";\n");
+    patches.write("by-relative.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 " + relative + ";\n");
+    patches.write("by-message.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                   "#X msg 10 40 \\; pd-by-message.pd obj 10 80 " + absolute +
+                                   ";\n#X connect 0 0 1 0;\n");
+    for (const char* file : {"by-absolute.pd", "by-relative.pd", "by-message.pd"}) {
+        bool opened = false;
+        const std::string console = consoleOf(patches, file, &opened);
+        check(opened, std::string(file) + " opens (the patch itself is harmless): " + console);
+        check(console.find("ADI refused native code") != std::string::npos &&
+                  console.find("adi_probe_external.") != std::string::npos,
+              std::string(file) + ": the loader reached the planted file and refused it by "
+                                  "name\n          console: " + console);
+        // Before the fence the system's own failure was printed: on Windows
+        // "<file>: <message> (<code>)", elsewhere "<file>:<dlerror>". Neither
+        // can appear when no load is attempted.
+        check(console.find("not a valid Win32") == std::string::npos &&
+                  console.find("(193)") == std::string::npos &&
+                  console.find("dlopen") == std::string::npos &&
+                  console.find("load_object:") == std::string::npos,
+              std::string(file) + ": no load was attempted\n          console: " + console);
+    }
+}
+
+// What a patch may not ask of [; pd ...] (DEV-09 AR7). `quit 7` called exit(7):
+// before the fence this test process ended here, with a code ctest reports.
+void testAPatchCannotQuitOrReconfigurePd() {
+    section("DEV-09 AR7 -- [; pd quit / exit / open / add-to-path ...] are refused by name");
+    TempDir tmp("global-fence");
+    tmp.write("victim.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 inlet~;\n");
+    const char* messages[] = {"quit 7", "exit 7", "verifyquit 7", "open victim.pd .",
+                              "menunew Untitled .", "add-to-path /tmp 0",
+                              "save-preferences", "fast-forward 1e+09", "audio-setapi 1",
+                              "compatibility 0.47"};
+    int n = 0;
+    for (const char* message : messages) {
+        const std::string file = "fence" + std::to_string(n++) + ".pd";
+        tmp.write(file.c_str(), std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                            "#X msg 10 40 \\; pd ") + message +
+                                    ";\n#X connect 0 0 1 0;\n");
+        bool opened = false;
+        const std::string console = consoleOf(tmp, file.c_str(), &opened);
+        std::string selector(message);
+        selector = selector.substr(0, selector.find(' '));
+        check(opened && console.find("ADI refused [; pd " + selector + "]") != std::string::npos,
+              "[; pd " + std::string(message) + "] refused by name\n          console: " + console);
+    }
+    check(true, "and the process is still here after `quit 7` and `exit 7`");
+    // `compatibility` sets one process-wide level that every Pd instance in the
+    // session reads: one patch must not change how all the others behave.
+    check(pd_compatibilitylevel == 100000, "Pd's process-wide compatibility level is unchanged: " +
+                                               std::to_string(pd_compatibilitylevel));
+}
+
+// DF-E36: four holes the review of 19 November found in the DEV-09 fence, and
+// the print queue's drops. Each smallest case is planted here as a patch.
+
+/// Blocks of 64 through an open engine; the left output's peak.
+double runBlocks(LibPdEngine& eng, int blocks) {
+    std::array<float, 64> inL{}, inR{}, outL{}, outR{};
+    const float* in[2] = {inL.data(), inR.data()};
+    float* out[2] = {outL.data(), outR.data()};
+    double peak = 0;
+    for (int b = 0; b < blocks; ++b) {
+        engine::NodeIo io;
+        io.in = in;
+        io.out = out;
+        io.channels = 2;
+        io.frames = 64;
+        eng.process(io);
+        for (float v : outL) peak = std::max(peak, static_cast<double>(std::abs(v)));
+    }
+    return peak;
+}
+
+std::string joined(const std::vector<std::string>& lines) {
+    std::string all;
+    for (const auto& l : lines) all += l + "\n";
+    return all;
+}
+
+const char* kTone = "#X obj 10 200 osc~ 440;\n#X obj 10 230 dac~;\n";
+
+void testAPatchCannotCloseItselfOrQuit() {
+    section("DF-E36 (a), (b) -- a patch cannot close the patch ADI opened, nor quit every instance");
+    TempDir tmp("menuclose");
+    struct Case { const char* file; std::string text; const char* what; };
+    const std::vector<Case> cases{
+        {"x.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 0;\n"
+                             "#X msg 10 70 \\; pd-x.pd menuclose 1;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 3 0 4 0;\n#X connect 3 0 4 1;\n",
+         "menuclose 1 to the top level, after a delay"},
+        {"y.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                             "#X msg 10 70 \\; pd-y.pd menuclose 1;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 2 0 3 0;\n#X connect 2 0 3 1;\n",
+         "menuclose 1 inside libpd_openfile (loadbang only)"},
+        {"z.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 0;\n"
+                             "#X msg 10 70 \\; pd-z.pd menuclose;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 3 0 4 0;\n#X connect 3 0 4 1;\n",
+         "menuclose with no argument on a clean patch"},
+        {"w.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 0;\n"
+                             "#X msg 10 70 \\; pd-sub menuclose 2;\n#N canvas 0 0 100 100 sub 0;\n"
+                             "#X restore 200 10 pd sub;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 4 0 5 0;\n#X connect 4 0 5 1;\n",
+         "menuclose 2 to a subpatch (it frees the root)"},
+        {"v.pd", std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 0;\n"
+                             "#X msg 10 70 \\; myname menuclose 1;\n#X obj 200 10 namecanvas myname;\n") + kTone +
+                     "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 4 0 5 0;\n#X connect 4 0 5 1;\n",
+         "menuclose 1 through a [namecanvas] alias"},
+    };
+    for (const auto& c : cases) {
+        tmp.write(c.file, c.text.c_str());
+        std::string error;
+        double peak = 0;
+        std::string console;
+        {
+            LibPdEngine eng(tmp.str(), c.file, 2, 2);
+            PdLatencyReceiver latency;
+            if (!eng.open(latency, error)) { check(false, std::string(c.what) + ": open: " + error); continue; }
+            eng.prepare(48000.0, 64);
+            peak = runBlocks(eng, 20);
+            console = joined(eng.consoleLines());
+        }   // close(): a freed canvas would be freed again here
+        check(console.find("ADI refused [menuclose") != std::string::npos && peak > 0.5,
+              std::string(c.what) + ": refused by name, the patch still plays\n          console: " + console);
+    }
+    // A subpatch close only hides it, headless: still allowed.
+    tmp.write("u.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                   "#X msg 10 70 \\; pd-sub menuclose 1;\n#N canvas 0 0 100 100 sub 0;\n"
+                                   "#X restore 200 10 pd sub;\n") + kTone +
+                       "#X connect 0 0 1 0;\n#X connect 3 0 4 0;\n#X connect 3 0 4 1;\n").c_str());
+    {
+        LibPdEngine eng(tmp.str(), "u.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        check(eng.open(latency, error), "u.pd opens: " + error);
+        eng.prepare(48000.0, 64);
+        (void)runBlocks(eng, 4);
+        check(joined(eng.consoleLines()).find("ADI refused") == std::string::npos,
+              "menuclose 1 to a subpatch (which only hides it) is not refused");
+    }
+
+    // (b) Force 3 set sys_quit for the whole process: every instance then
+    // skipped its DSP. A second engine must keep playing.
+    for (const char* target : {"pd-A.pd", "pd-sub"}) {
+        tmp.write("A.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X msg 10 40 \\; ") +
+                           target + " menuclose 3;\n#N canvas 0 0 100 100 sub 0;\n#X restore 200 10 pd sub;\n"
+                           "#X connect 0 0 1 0;\n").c_str());
+        tmp.write("B.pd", (std::string("#N canvas 0 0 200 100 12;\n") + "#X obj 10 10 osc~ 440;\n#X obj 10 40 dac~;\n"
+                           "#X connect 0 0 1 0;\n#X connect 0 0 1 1;\n").c_str());
+        LibPdEngine b(tmp.str(), "B.pd", 2, 2);
+        PdLatencyReceiver lb;
+        std::string error;
+        check(b.open(lb, error), "B opens: " + error);
+        b.prepare(48000.0, 64);
+        std::string consoleA;
+        {
+            LibPdEngine a(tmp.str(), "A.pd", 2, 2);
+            PdLatencyReceiver la;
+            check(a.open(la, error), "A opens: " + error);
+            a.prepare(48000.0, 64);
+            (void)runBlocks(a, 4);
+            consoleA = joined(a.consoleLines());
+        }
+        const double after = runBlocks(b, 50);
+        check(consoleA.find("ADI refused [menuclose 3]") != std::string::npos && after > 0.5,
+              std::string("menuclose 3 to ") + target + " is refused and another instance keeps playing\n          console: " + consoleA);
+    }
+}
+
+void testAPatchCannotOpenAHelpPatch() {
+    section("DF-E36 (c) -- a patch cannot open a help patch, which would then run");
+    TempDir tmp("helppatch");
+    tmp.write("intro-help.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 print leaked;\n#X connect 0 0 1 0;\n");
+    tmp.write("intro.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 print leaked;\n#X connect 0 0 1 0;\n");
+    tmp.write("fence.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                          "#X msg 10 40 \\; pd-fence.pd done-popup 2 -9999 -9999;\n#X connect 0 0 1 0;\n");
+    bool opened = false;
+    const std::string console = consoleOf(tmp, "fence.pd", &opened);
+    check(opened && console.find("leaked") == std::string::npos &&
+              console.find("ADI refused a help patch") != std::string::npos,
+          "done-popup 2 is refused by name, and the planted help patch never runs\n          console: " + console);
+}
+
+void testRefusalsSurviveAFullConsole() {
+    section("DF-E36 (d) -- a full console queue keeps its refusals and marks its gap");
+    TempDir tmp("flood");
+    tmp.write("flood.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 metro 1;\n"
+                          "#X obj 10 70 print tick;\n#X obj 100 10 loadbang;\n#X obj 100 40 delay 700;\n"
+                          "#X msg 100 70 \\; pd quit;\n#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n"
+                          "#X connect 3 0 4 0;\n#X connect 4 0 5 0;\n");
+    {
+        LibPdEngine eng(tmp.str(), "flood.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        check(eng.open(latency, error), "flood.pd opens: " + error);
+        eng.prepare(48000.0, 64);
+        (void)runBlocks(eng, 600);   // 800 ms, nobody reading the console
+        const auto counters = eng.counters();
+        const std::string console = joined(eng.consoleLines());
+        check(counters.consoleDropped > 0, "the flood overfills the queue (a precondition)");
+        check(console.find("ADI refused [; pd quit]") != std::string::npos,
+              "the refusal after the flood is still on the console");
+        check(console.find("pieces dropped]") != std::string::npos, "and the gap is marked where it is");
+    }
+    {
+        // Drained on the message thread on a schedule, nothing is dropped.
+        LibPdEngine eng(tmp.str(), "flood.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        check(eng.open(latency, error), "flood.pd opens again: " + error);
+        eng.prepare(48000.0, 64);
+        for (int i = 0; i < 60; ++i) {
+            (void)runBlocks(eng, 10);
+            eng.pumpConsole();
+        }
+        check(eng.counters().consoleDropped == 0, "pumped every 10 blocks, nothing is dropped");
+    }
+}
+
+void testAPatchCannotChangeItsOwnSearchPath() {
+    section("DF-E36 (e) -- a patch cannot change where Pd looks for code, in its file or at run time");
+    TempDir tmp("declarepath");
+    TempDir elsewhere("declarepath-elsewhere");
+    elsewhere.write("foo.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 inlet;\n");
+    tmp.write("file.pd", (std::string("#N canvas 0 0 200 100 12;\n#X declare -path ") + elsewhere.str() +
+                          ";\n#X obj 10 10 foo;\n").c_str());
+    bool opened = true;
+    const std::string fileConsole = consoleOf(tmp, "file.pd", &opened);
+    check(!opened && fileConsole.find("declare") != std::string::npos,
+          "a file line `#X declare -path` is refused before the patch opens\n          console: " + fileConsole);
+    tmp.write("live.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X msg 10 40 \\; pd-live.pd declare -path ") +
+                          elsewhere.str() + " \\; pd-live.pd obj 10 100 foo;\n#X connect 0 0 1 0;\n").c_str());
+    const std::string liveConsole = consoleOf(tmp, "live.pd", &opened);
+    check(opened && liveConsole.find("ADI refused [declare -path") != std::string::npos &&
+              liveConsole.find("couldn't create") != std::string::npos,
+          "[; pd-x.pd declare -path dir( is refused, and an object from dir is not made\n          console: " + liveConsole);
+}
+
+// DF-E36 (a), "consider menusave and menusaveas, which write files": the
+// canvas's save methods are a file write any patch can reach by message,
+// past the PD4 walk. `savetofile` writes the patch's text to any name in any
+// folder, `menusave` overwrites the patch's own file with what the patch has
+// made of itself at run time, `write` writes its data. menusaveas only asks
+// a GUI there is none of.
+void testAPatchCannotWriteFiles() {
+    section("DF-E36 (a) -- a patch cannot write files through its canvas's save methods");
+    TempDir tmp("savefence");
+    TempDir elsewhere("savefence-elsewhere");
+    const std::string elsewhereDir = elsewhere.path.generic_string();
+    tmp.write("saveto.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                        "#X msg 10 40 \\; pd-saveto.pd savetofile leaked.pd ") +
+                            elsewhereDir + ";\n#X connect 0 0 1 0;\n").c_str());
+    bool opened = false;
+    const std::string savetoConsole = consoleOf(tmp, "saveto.pd", &opened);
+    check(opened && !std::filesystem::exists(elsewhere.path / "leaked.pd") &&
+              savetoConsole.find("ADI refused [savetofile") != std::string::npos,
+          "savetofile to another folder is refused by name and writes nothing\n          console: " + savetoConsole);
+
+    const std::string original = "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                 "#X msg 10 40 \\; pd-menusave.pd obj 10 100 print added \\; pd-menusave.pd menusave;\n"
+                                 "#X connect 0 0 1 0;\n";
+    tmp.write("menusave.pd", original.c_str());
+    const std::string menusaveConsole = consoleOf(tmp, "menusave.pd", &opened);
+    std::ifstream saved(tmp.path / "menusave.pd", std::ios::binary);
+    const std::string after((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+    check(opened && after == original && menusaveConsole.find("ADI refused [menusave]") != std::string::npos,
+          "menusave is refused by name and the patch's own file is unchanged\n          console: " + menusaveConsole);
+
+    tmp.write("data.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                      "#X msg 10 40 \\; pd-data.pd write ") +
+                          elsewhereDir + "/written.txt;\n#X connect 0 0 1 0;\n").c_str());
+    const std::string writeConsole = consoleOf(tmp, "data.pd", &opened);
+    check(opened && !std::filesystem::exists(elsewhere.path / "written.txt") &&
+              writeConsole.find("ADI refused [write") != std::string::npos,
+          "the canvas's write is refused by name and writes nothing\n          console: " + writeConsole);
+}
+
+// DEV-09 AR8: the audio thread never waits for Pd. A message-thread holder of
+// the instance's lock (an editor, later: DEV-11) makes the audio thread skip
+// its ticks, silent and counted. libpd_process_float took sys_lock and waited
+// out the whole hold inside the callback.
+//
+// The editor holds the lock until the audio thread has finished its segments,
+// not for a fixed time, so the proof does not lean on a wall clock: a segment
+// that waited for the lock could only return after the editor let go, and the
+// editor lets go of its own accord only after a 30 s safety bound. Every
+// segment finishing while stage is still 1 is therefore "never waits", on any
+// runner load. (A 50 ms hold timed against a 10 ms bound failed on a loaded
+// macOS runner when the audio thread itself was descheduled for 12.9 ms.)
+void testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait() {
+    section("DEV-09 AR8 -- an editor holding the lock: the audio thread skips, never waits");
+    LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+    eng.prepare(48000.0, 64);
+    std::vector<float> sig(64, 0.5f);
+    (void)runSegmented(eng, sig, 0.f, {64});   // running before the hold
+    const auto before = eng.counters();
+
+    constexpr int kSegments = 200;
+    std::atomic<int> stage{0};
+    std::atomic<bool> audioDone{false};
+    std::atomic<bool> releasedOnItsOwn{false};
+    std::thread editor([&] {
+        LibPdEngine::InstanceLock hold(eng);
+        stage.store(1);
+        const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!audioDone.load()) {
+            if (std::chrono::steady_clock::now() >= limit) { releasedOnItsOwn.store(true); break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        stage.store(2);
+    });
+    while (stage.load() == 0) std::this_thread::yield();
+    int segments = 0, whileHeld = 0;
+    for (; segments < kSegments; ++segments) {
+        (void)runSegmented(eng, sig, 0.f, {64});
+        if (stage.load() == 1) ++whileHeld;
+    }
+    audioDone.store(true);
+    editor.join();
+    const auto during = eng.counters();
+    check(whileHeld == kSegments && !releasedOnItsOwn.load(),
+          "every segment returned while the lock was held (" + std::to_string(whileHeld) + " of " +
+              std::to_string(segments) + " segments)");
+    check(during.skippedTicks - before.skippedTicks > 0,
+          "and its ticks were skipped and counted (" +
+              std::to_string(during.skippedTicks - before.skippedTicks) + ")");
+    (void)runSegmented(eng, sig, 0.f, {64, 64, 64});
+    check(eng.counters().ticks > during.ticks, "once the lock is released, ticks resume");
+}
+
+#if defined(_MSC_VER) && defined(_DEBUG)
+std::atomic<long> g_audioAllocations{0};
+thread_local bool t_countAllocations = false;
+int countAudioAllocations(int type, void*, size_t, int, long, const unsigned char*, int) {
+    if (t_countAllocations && (type == _HOOK_ALLOC || type == _HOOK_REALLOC)) ++g_audioAllocations;
+    return TRUE;
+}
+#endif
+
+// DEV-09 AR8: a [print] on a 1 ms [metro] prints from inside the audio thread's
+// tick. The print hook took a mutex and appended to a std::string there.
+void testPrintingFromARunningPatchAllocatesNothingOnTheAudioThread() {
+    section("DEV-09 AR8 -- [print] on a 1 ms [metro]: no audio-thread allocation, the lines arrive");
+    TempDir tmp("print-metro");
+    tmp.write("chatty.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 loadbang;\n"
+                           "#X obj 10 40 metro 1;\n#X obj 10 70 print tick;\n"
+                           "#X obj 100 10 adc~ 1 2;\n#X obj 100 70 dac~ 1 2;\n"
+                           "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n"
+                           "#X connect 3 0 4 0;\n#X connect 3 1 4 1;\n");
+    LibPdEngine eng(tmp.str(), "chatty.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+    eng.prepare(48000.0, 256);
+    std::vector<float> sig(256, 0.f);
+    (void)runSegmented(eng, sig, 0.f, {256});   // first use of every buffer
+    (void)eng.consoleLines();
+#if defined(_MSC_VER) && defined(_DEBUG)
+    g_audioAllocations = 0;
+    const auto previous = _CrtSetAllocHook(countAudioAllocations);
+#endif
+    Buffers buffers(2, 256);
+    for (int block = 0; block < 100; ++block) {   // ~0.53 s, ~400 bangs
+        auto io = buffers.io(2, 256, 0, 256);
+#if defined(_MSC_VER) && defined(_DEBUG)
+        t_countAllocations = true;
+#endif
+        eng.process(io);
+#if defined(_MSC_VER) && defined(_DEBUG)
+        t_countAllocations = false;
+#endif
+        if (block % 25 == 24) (void)eng.consoleLines();   // the message thread drains
+    }
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtSetAllocHook(previous);
+#endif
+    int ticks = 0;
+    for (const auto& line : eng.consoleLines())
+        if (line.find("tick: bang") != std::string::npos) ++ticks;
+    check(ticks > 100, "the printed lines reach the console (" + std::to_string(ticks) + ")");
+#if defined(_MSC_VER) && defined(_DEBUG)
+    check(g_audioAllocations.load() == 0,
+          "the rendering allocated nothing (" + std::to_string(g_audioAllocations.load()) +
+              " allocations, counted at the CRT heap)");
+#endif
+}
+
+// DEV-09 AR8: a published table that shrinks. libpd_read_array returned -2
+// with the instance still locked, so the next tick (or any call) waited on a
+// lock nobody would release: a hang. A watchdog ends the test with a named
+// failure instead of hanging ctest.
+void testAShrunkPublishedTableDoesNotDeadlock() {
+    section("DEV-09 AR8 -- a published table shrinks while it is read: no deadlock");
+    TempDir tmp("shrink");
+    tmp.write("shrink.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 adi.array \\$0 1 8 30 -1 1 - T;\n"
+                           "#X obj 10 50 r \\$0-shrink;\n#X msg 10 80 resize 2;\n"
+                           "#X obj 10 110 s \\$0-adiarr-1;\n#X obj 200 10 adc~ 1 2;\n"
+                           "#X obj 200 60 dac~ 1 2;\n#X connect 1 0 2 0;\n#X connect 2 0 3 0;\n"
+                           "#X connect 4 0 5 0;\n#X connect 4 1 5 1;\n");
+    std::atomic<bool> done{false};
+    std::thread watchdog([&] {
+        for (int i = 0; i < 200 && !done.load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (!done.load()) {
+            std::printf("  FAIL  a shrunk published table deadlocked the instance (10 s)\n");
+            std::fflush(stdout);
+            std::_Exit(3);
+        }
+    });
+    {
+        LibPdEngine eng(tmp.str(), "shrink.pd", 2, 2);
+        eng.addSearchPath(devicePatchDir());
+        PdLatencyReceiver latency;
+        std::string err;
+        if (eng.open(latency, err)) {
+            eng.prepare(48000.0, 512);
+            eng.bindArrays(parsePdDeclarations(readFile(tmp.str() + "/shrink.pd")));
+            const auto* published = eng.publishedArray(1);
+            check(published != nullptr, "the table is bound at its declared length");
+            std::vector<float> sig(4096, 0.f);
+            (void)runSegmented(eng, sig, 0.f, {128});
+            const auto before = published != nullptr ? published->published() : 0;
+            check(eng.sendFloat("shrink", 1.f), "the patch is told to shrink its table");
+            (void)runSegmented(eng, sig, 0.f, {128});   // reads come due after the shrink
+            check(published != nullptr && published->published() == before,
+                  "nothing is published from a table shorter than declared");
+            std::vector<float> eight(8, 0.f);
+            check(!eng.readArray("adiarr-1", eight), "a message-thread read of 8 is refused");
+            check(eng.sendFloat("shrink", 1.f), "and the instance still answers afterwards");
+            (void)runSegmented(eng, sig, 0.f, {128});
+            check(eng.counters().skippedTicks == 0, "no tick was skipped: the lock was never left held");
+        } else {
+            check(false, "open: " + err);
+        }
+    }
+    done.store(true);
+    watchdog.join();
+}
+
+// DEV-09 AR8: an object Pd does not know, made while audio runs (dynamic
+// patching, here from a [delay]), took Pd's process-wide write lock inside the
+// tick (new_anything), so the audio thread waited on every other Pd device's
+// tick and editor; it also looked for an abstraction on disk there.
+void testAnUnknownObjectMadeInsideATickWaitsOnNoOtherDevice() {
+    section("DEV-09 AR8 -- an unknown object made inside a tick is refused, never waited for");
+    TempDir tmp("dynamic");
+    // Two objects are made inside a tick: a name Pd does not know, and
+    // [voice], an abstraction the patch already holds (so its name is
+    // registered, and its creation would read voice.pd from disk).
+    tmp.write("voice.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 inlet;\n");
+    tmp.write("dynamic.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 delay 5;\n"
+                            "#X msg 10 70 \\; pd-dynamic.pd obj 10 150 adi-no-such-class \\; "
+                            "pd-dynamic.pd obj 10 180 voice;\n"
+                            "#X obj 200 10 adc~ 1 2;\n#X obj 200 60 dac~ 1 2;\n#X obj 100 150 voice;\n"
+                            "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n#X connect 3 0 4 0;\n"
+                            "#X connect 3 1 4 1;\n");
+    LibPdEngine other(patchDir(), "adi-proof.pd", 2, 2);
+    LibPdEngine eng(tmp.str(), "dynamic.pd", 2, 2);
+    PdLatencyReceiver otherLatency, latency;
+    std::string err;
+    if (!other.open(otherLatency, err) || !eng.open(latency, err)) {
+        check(false, "open: " + err);
+        return;
+    }
+    other.prepare(48000.0, 64);
+    eng.prepare(48000.0, 64);
+    // Another Pd device's editor holds its instance, as an open patch window does.
+    std::atomic<int> stage{0};
+    std::atomic<bool> audioDone{false};
+    std::atomic<bool> releasedOnItsOwn{false};
+    std::thread editor([&] {
+        LibPdEngine::InstanceLock hold(other);
+        stage.store(1);
+        const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!audioDone.load()) {
+            if (std::chrono::steady_clock::now() >= limit) {
+                releasedOnItsOwn.store(true);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        stage.store(2);
+    });
+    while (stage.load() == 0) {
+        std::this_thread::yield();
+    }
+    const auto before = eng.counters();
+    std::vector<float> sig(64, 0.f);
+    constexpr int kSegments = 40;   // the [delay 5] fires in the fourth tick
+    int whileHeld = 0;
+    for (int i = 0; i < kSegments; ++i) {
+        (void)runSegmented(eng, sig, 0.f, {64});
+        if (stage.load() == 1) {
+            ++whileHeld;
+        }
+    }
+    audioDone.store(true);
+    editor.join();
+    check(whileHeld == kSegments && !releasedOnItsOwn.load(),
+          "every segment returned while the other device's editor held its instance (" +
+              std::to_string(whileHeld) + " of " + std::to_string(kSegments) + ")");
+    check(eng.counters().ticks - before.ticks == kSegments && eng.counters().skippedTicks == before.skippedTicks,
+          "and this device rendered every tick, none skipped");
+    const std::string console = joined(eng.consoleLines());
+    check(console.find("ADI refused creating 'adi-no-such-class' while audio runs") != std::string::npos,
+          "the object Pd does not know is refused by name\n          console: " + console);
+    check(console.find("ADI refused creating 'voice' while audio runs") != std::string::npos,
+          "and so is the abstraction whose name is registered: nothing is read from disk in a tick\n"
+          "          console: " + console);
+}
+
+// DEV-09 AR8, the cross-instance dropout, measured for win's ruling: opening
+// a patch holds Pd's process-wide write lock for the whole load
+// (libpd_openfile), so every other Pd device's ticks are skipped meanwhile.
+// Skipped, never waited for: this records how long.
+void testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits() {
+    section("DEV-09 AR8 -- another device opening a patch: this one's ticks skip, never wait (measured)");
+    TempDir tmp("large");
+    constexpr int kObjects = 1000, kOpens = 20;
+    std::string large = "#N canvas 0 0 600 400 12;\n";
+    for (int i = 0; i < kObjects; ++i) {
+        large += "#X obj 10 " + std::to_string(10 + i) + " + 1;\n";
+    }
+    tmp.write("large.pd", large);
+    LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) {
+        check(false, "open: " + err);
+        return;
+    }
+    eng.prepare(48000.0, 64);
+    std::vector<float> sig(64, 0.5f);
+    const auto skippedOver = [&](int segments) {
+        const auto before = eng.counters().skippedTicks;
+        for (int i = 0; i < segments; ++i) {
+            (void)runSegmented(eng, sig, 0.f, {64});
+        }
+        return eng.counters().skippedTicks - before;
+    };
+    check(skippedOver(50) == 0, "alone, no tick is skipped");
+
+    std::atomic<bool> openerDone{false};
+    std::atomic<bool> opening{false};
+    std::atomic<int> opened{0};
+    double openMs = 0.0;
+    std::thread opener([&] {
+        for (int i = 0; i < kOpens; ++i) {
+            LibPdEngine other(tmp.str(), "large.pd", 2, 2);
+            PdLatencyReceiver otherLatency;
+            std::string otherError;
+            const auto start = std::chrono::steady_clock::now();
+            opening.store(true);
+            const bool ok = other.open(otherLatency, otherError);
+            opening.store(false);
+            openMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            if (ok) {
+                opened.fetch_add(1);
+            }
+        }
+        openerDone.store(true);
+    });
+    // This thread renders as fast as it can, so ticks counted overstate audio
+    // time: the silence a real-time callback would hear is the wall-clock
+    // length of a run of skipped ticks.
+    // "Never waits", checked without a clock: a segment whose tick skipped
+    // began and returned while the other device was still opening.
+    int segments = 0, skippedWhileOpening = 0;
+    std::int64_t skipped = 0;
+    double longestMs = 0.0;
+    bool skipping = false;
+    auto runStart = std::chrono::steady_clock::now();
+    while (!openerDone.load()) {
+        const auto before = eng.counters().skippedTicks;
+        const auto start = std::chrono::steady_clock::now();
+        const bool openingBefore = opening.load();
+        (void)runSegmented(eng, sig, 0.f, {64});
+        const bool openingAfter = opening.load();
+        const auto now = eng.counters().skippedTicks - before;
+        if (now > 0 && openingBefore && openingAfter) {
+            ++skippedWhileOpening;
+        }
+        skipped += now;
+        if (now > 0 && !skipping) {
+            skipping = true;
+            runStart = start;
+        } else if (now == 0 && skipping) {
+            skipping = false;
+            longestMs = std::max(longestMs, std::chrono::duration<double, std::milli>(start - runStart).count());
+        }
+        ++segments;
+    }
+    if (skipping) {
+        longestMs = std::max(longestMs,
+                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - runStart).count());
+    }
+    opener.join();
+    check(opened.load() == kOpens, "the other device opened its " + std::to_string(kObjects) + "-object patch " +
+                                       std::to_string(opened.load()) + " times");
+    check(skippedWhileOpening > 0, "a tick of this device skipped and its segment returned while the other was "
+                                   "still opening (" + std::to_string(skippedWhileOpening) + " of " +
+                                       std::to_string(segments) + " segments): skipped, not waited for");
+    check(skippedOver(50) == 0, "and once the opens stop, no tick is skipped");
+    std::printf("    [measured] %d segments of 64 during %d opens of %d objects (%.2f ms each): %lld ticks "
+                "skipped; the longest unbroken run of skips lasted %.2f ms of wall time\n",
+                segments, kOpens, kObjects, openMs / kOpens, static_cast<long long>(skipped), longestMs);
+}
+
+// DEV-09 AR17: the Pd tier's precision is the build's. ADI_PD_FLOATSIZE_64
+// builds it with PD_FLOATSIZE=64 for the 64-bit Processing Precision mode
+// (ADR-0207 d2); every suite runs in both configurations.
+void testThePdTierHasTheBuildsPrecision() {
+    section("DEV-09 AR17 -- t_float and t_sample have the width PD_FLOATSIZE names");
+    eqi(static_cast<long long>(sizeof(t_float) * 8), PD_FLOATSIZE, "t_float");
+    eqi(static_cast<long long>(sizeof(t_sample) * 8), PD_FLOATSIZE, "t_sample");
+    std::printf("  Pd tier built with PD_FLOATSIZE=%d\n", PD_FLOATSIZE);
+}
+
+// DEV-09 AR18 (PD2: plugdata-pd bdb30eed, BSD-3 like Pd). An abstraction's
+// canvas binds itself to the symbol #A when it finishes loading
+// (canvas_popabstraction) and nothing ever unbinds it. A file load saves and
+// restores #A around itself, so a whole patch opening is safe; an abstraction
+// created at run time (dynamic patching here, an attached editor in DEV-11) is
+// not. Free it and #A points at freed memory, which the next free of an array
+// dereferences (garray_free's pd_findbyclass on #A): a use-after-free under
+// ASan. The MSVC debug heap does not trap that read, so the check is on the
+// binding itself: once its owner is freed, #A must be bound to nothing.
+void testAnAbstractionFreedLeavesNoDanglingHashA() {
+    section("DEV-09 AR18 -- an abstraction freed at run time leaves #A bound to nothing");
+    TempDir tmp("hash-a");
+    tmp.write("an_abs.pd", "#N canvas 0 0 100 100 12;\n#X obj 10 10 inlet;\n");
+    tmp.write("dyn.pd", "#N canvas 0 0 300 200 12;\n"
+                        "#N canvas 0 0 200 200 sub 0;\n#X restore 10 100 pd sub;\n"
+                        "#X obj 10 10 loadbang;\n"
+                        "#X msg 10 40 \\; pd-dyn.pd obj 150 10 table adi-hash-a 4 \\; "
+                        "pd-sub obj 10 10 an_abs \\; pd-sub clear;\n"
+                        "#X connect 1 0 2 0;\n");
+    LibPdEngine eng(tmp.str(), "dyn.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+    std::string joined;
+    for (const auto& line : eng.consoleLines()) joined += line + "\n";
+    check(joined.find("couldn't create") == std::string::npos,
+          "the table and the abstraction were made at run time\n          console: " + joined);
+    {
+        // pd_this is this thread's: the engine selected its instance in open.
+        LibPdEngine::InstanceLock hold(eng);
+        check(gensym("#A")->s_thing == nullptr,
+              "after the abstraction is freed, #A is bound to nothing (not to freed memory)");
+    }
+    // Closing frees the table, whose garray_free walks #A: under ASan this is
+    // where a dangling binding was read.
+}
+
 }  // namespace
 
 #ifdef _WIN32
@@ -1443,6 +2596,7 @@ int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_pd_engine_tests -- libpd, actually running\n\n");
     testRepeatedAbstractionLifetimes();
+    testManyEnginesOpenedAndClosedLeaveNothingBehind();
     testPdOpensARealPatch();
     testTheAdapterCostsOneBlockAndSaysSo();
     testAudioGoesThroughPdAndComesBack();
@@ -1451,7 +2605,22 @@ int main() {
     testAPublishedArrayReachesTheReader();
     testTheBufferIsAtomicPerArray();
     testAClosedEngineStillPassesAudio();
+    testAFailedPatchDeviceIsAWireWithNoDelay();
     testTheEngineRefusesADirectoryHoldingLoadableCode();
+    testNativeCodeIsRefusedWhateverNamesIt();
+    testAPatchCannotQuitOrReconfigurePd();
+    testAPatchCannotCloseItselfOrQuit();
+    testAPatchCannotOpenAHelpPatch();
+    testRefusalsSurviveAFullConsole();
+    testAPatchCannotChangeItsOwnSearchPath();
+    testAPatchCannotWriteFiles();
+    testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait();
+    testPrintingFromARunningPatchAllocatesNothingOnTheAudioThread();
+    testAShrunkPublishedTableDoesNotDeadlock();
+    testAnUnknownObjectMadeInsideATickWaitsOnNoOtherDevice();
+    testAnotherDeviceOpeningAPatchSkipsThisOnesTicksNeverWaits();
+    testAnAbstractionFreedLeavesNoDanglingHashA();
+    testThePdTierHasTheBuildsPrecision();
     testASearchPathHoldingLoadableCodeIsRefusedToo();
     testADeclareThatAsksForALibraryIsRefused();
     testAbstractionsStillResolveThroughTheSamePath();
@@ -1459,6 +2628,9 @@ int main() {
     testAParameterReachesThePatchFromTheAudioThread();
     testACompiledInExternalIsRegisteredForEveryInstance();
     testTransportReachesThePatch();
+    testTheEighthTransportFieldIsEachTicksExactPosition();
+    testSevenFieldPatchesStillWork();
+    testTheTransportFieldsAPatchReceives();
     testTransportArrivesOnNodeIo();
     testTheShippedDevicePatchesMakeSound();
     testThePatchWindowIsTheCppWindow();

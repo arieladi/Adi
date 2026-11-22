@@ -67,7 +67,14 @@ void measurements() {
     C c;
     c.set(C::Mix, 0);
     c.prepare(48000);
-    check(render(c, x) == x, "zero wet is bit-exact dry");
+    {
+        // The dry path waits the reported 5 samples (DEV-22), exactly.
+        const auto y = render(c, x);
+        bool exact = c.latency() == 5;
+        for (std::size_t i = 0; i < y.size(); ++i)
+            exact &= y[i] == (i < 5 ? 0.f : x[i - 5]);
+        check(exact, "zero wet is the bit-exact dry, 5 samples late (Live 12.4 reports 5)");
+    }
     c.set(C::Mix, 100);
     c.set(C::Dynamics, 0);
     c.set(C::Tone, 100);
@@ -133,8 +140,50 @@ void measurements() {
     check(std::all_of(stable.begin(), stable.end(), [](float v) { return std::isfinite(v); }),
           "clamped parameters and smoothing remain finite");
 }
+// DEV-22: the 4x resampling filter around the shaper (overdrive.cpp): unity DC
+// gain, minimum phase with 10.03 taps of low-frequency group delay a pass
+// (5.02 samples for both passes at the base rate), flat to 20 kHz, and at
+// least 60 dB down from 0.135 of the 4x rate. Then what it is for: the fifth
+// harmonic of a driven 7 kHz tone lies at 35 kHz and, shaped at the base rate,
+// folds to 13 kHz; shaped at 4x it is filtered out instead.
+void oversampling() {
+    const auto &h = C::resamplingFilter();
+    double sum = 0, moment = 0;
+    for (std::size_t i = 0; i < h.size(); ++i) {
+        sum += h[i];
+        moment += static_cast<double>(i) * h[i];
+    }
+    check(std::abs(sum - 1) < 1e-12, "resampling filter has unity DC gain");
+    check(std::abs(moment / sum - 10.03226217341701) < 1e-9 &&
+              std::abs(2 * moment / sum / 4 - 5) < .02,
+          "minimum phase, 5.02 samples of low-frequency delay for both passes");
+    auto magnitude = [&](double f) {
+        std::complex<double> z{};
+        for (std::size_t i = 0; i < h.size(); ++i)
+            z += h[i] * std::polar(1., -2 * pi * f * static_cast<double>(i));
+        return std::abs(z);
+    };
+    double pass = 1, stop = 0;
+    for (double f = 0; f <= 20000. / 192000; f += .002) pass = std::min(pass, magnitude(f));
+    for (double f = .135; f <= .5; f += .0005) stop = std::max(stop, magnitude(f));
+    check(20 * std::log10(pass) > -.01 && 20 * std::log10(stop) < -60,
+          "flat to 20 kHz and at least 60 dB down past 0.135 of the 4x rate");
+    C c;
+    c.set(C::Frequency, 7000);
+    c.set(C::Bandwidth, 6);
+    c.set(C::Drive, 30);
+    c.set(C::Tone, 100);
+    c.set(C::Dynamics, 0);
+    c.prepare(48000);
+    const auto y = render(c, tone(7000, .5));
+    const double wanted = bin(y, 7000), folded = bin(y, 13000);
+    std::printf("METRIC Overdrive 7 kHz driven: fundamental %.6f, folded 5th harmonic at 13 kHz %.9f\n",
+                wanted, folded);
+    check(folded < wanted * 1e-3, "the folded fifth harmonic stays 60 dB under the fundamental (base-rate shaping: 25 dB)");
+}
 } // namespace
 int main() {
+    oversampling();
     measurements();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
