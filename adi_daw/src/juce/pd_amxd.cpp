@@ -422,8 +422,7 @@ private:
         }
         if (cls == "cycle~" || cls == "phasor~" || cls == "sig~") {
             if (args.size() > 1 || !allNumbers) return refuse(b, cls, "only a numeric frequency is translated");
-            if (cls == "cycle~" && connected(b, false, 1))
-                return refuse(b, cls, "its phase inlet is an offset in Max and a reset in Pd");
+            if (cls == "cycle~" && connected(b, false, 1)) return cyclePhase(b, args);
             return obj(b, (cls == "cycle~" ? std::string("osc~") : cls) + (args.empty() ? "" : " " + args[0]));
         }
         if (cls == "plugin~" || cls == "plugout~") {
@@ -558,6 +557,21 @@ private:
 
     /// Boxes in a row, each feeding the next: inlets on the first, outlet 0
     /// on the last.
+    /// Max's [cycle~] takes a phase OFFSET in its right inlet (0 to 1, a float
+    /// or a signal), added to its running phase; Pd's [osc~] RESETS its phase
+    /// there. So a [cycle~] with that inlet in use is [phasor~] -> [+~] ->
+    /// [cos~]: cos(2 pi (phase + offset)), as Max computes it.
+    void cyclePhase(const Box& b, const std::vector<std::string>& args) {
+        Fragment f;
+        f.records = {"#X obj " + at(b.x, b.y) + " phasor~" + (args.empty() ? std::string() : " " + args[0]),
+                     "#X obj " + at(b.x, b.y + 20) + (fedSignal(b, 1) ? " +~" : " +~ 0"),
+                     "#X obj " + at(b.x, b.y + 40) + " cos~"};
+        f.internal = {{0, 0, 1, 0}, {1, 0, 2, 0}};
+        f.inlets = {{0, 0}, {1, 1}};
+        f.outlets = {{2, 0}};
+        frags_[b.id] = std::move(f);
+    }
+
     void chain(const Box& b, const std::vector<std::string>& texts) {
         Fragment f;
         for (std::size_t k = 0; k < texts.size(); ++k) {

@@ -201,9 +201,9 @@ void testWhatIsRefusedIsNamed() {
     check(!r.ok() && r.pdPatch.empty(), "nothing is produced when any box is refused");
     std::vector<std::string> ids;
     for (const auto& b : r.refused) ids.push_back(b.id + ":" + b.maxClass);
-    check(ids == std::vector<std::string>{"obj-1:%", "obj-2:cycle~", "obj-4:line~", "obj-5:zl.group"},
-          "refused: [% 1.] (float modulo), [cycle~] with its phase inlet in use, [line~]'s end bang, [zl.group]; "
-          "[+ 1.] and [sig~] pass");
+    check(ids == std::vector<std::string>{"obj-1:%", "obj-4:line~", "obj-5:zl.group"},
+          "refused: [% 1.] (float modulo), [line~]'s end bang, [zl.group]; [+ 1.], [sig~] and [cycle~] with its "
+          "phase inlet in use pass");
     if (!r.refused.empty())
         check(r.refused[0].reason.find("modulo") != std::string::npos, "with the reason: " + r.refused[0].reason);
     // Inside a subpatcher, a refusal names the path to it.
@@ -658,6 +658,41 @@ void testBpatchersPlay() {
     }
 }
 
+void testCyclePhaseIsAnOffset() {
+    section("DEV-16 step 6 -- [cycle~]'s phase inlet offsets the phase, as in Max");
+    // [cycle~ 375] (128 samples a period at 48 kHz, an exact phase step)
+    // with 0.25 in its phase inlet: cos(2 pi (375 n / 48000 + 0.25)) from the
+    // first sample. As a float, the offset then moves to 0.5 at 100 ms (sample
+    // 4,800, half way through a period): an offset gives cos(2 pi (f t + 0.5))
+    // from there, where a reset of the phase (Pd's [osc~]) would give
+    // cos(2 pi (f (t - 0.1) + 0.5)), half a period away.
+    for (const bool signal : {true, false}) {
+        const std::string json =
+            signal ? patcher({box("obj-1", "sig~ 0.25", 120, 20, kSig), box("obj-2", "cycle~ 375", 20, 80, kSig),
+                              box("obj-3", "plugout~", 20, 140, "")},
+                             {line("obj-1", 0, "obj-2", 1), line("obj-2", 0, "obj-3", 0), line("obj-2", 0, "obj-3", 1)})
+                   : patcher({box("obj-1", "loadbang", 120, 10, R"("bang")"), box("obj-4", "0.25", 120, 40, R"("")", "message"),
+                              box("obj-5", "delay 100", 220, 40, R"("bang")"), box("obj-6", "0.5", 220, 60, R"("")", "message"),
+                              box("obj-2", "cycle~ 375", 20, 80, kSig), box("obj-3", "plugout~", 20, 140, "")},
+                             {line("obj-1", 0, "obj-4", 0), line("obj-4", 0, "obj-2", 1), line("obj-1", 0, "obj-5", 0),
+                              line("obj-5", 0, "obj-6", 0), line("obj-6", 0, "obj-2", 1), line("obj-2", 0, "obj-3", 0),
+                              line("obj-2", 0, "obj-3", 1)});
+        const auto t = translateMaxPatcher(json, AmxdKind::AudioEffect);
+        int latency = 0;
+        std::string error;
+        const auto out = t.ok() ? renderOut(t.pdPatch, 6144, latency, error) : std::vector<float>{};
+        double worst = out.empty() ? 1 : 0;
+        for (std::size_t n = 0; n < 5312 && static_cast<std::size_t>(latency) + n < out.size(); ++n) {
+            const double offset = !signal && n >= 4800 ? 0.5 : 0.25;
+            worst = std::max(worst, std::fabs(out[static_cast<std::size_t>(latency) + n] -
+                                              std::cos(2 * 3.141592653589793 * (375.0 * static_cast<double>(n) / 48000.0 + offset))));
+        }
+        check(t.ok() && out.size() >= static_cast<std::size_t>(latency) + 5312 && worst < 1e-4,
+              std::string(signal ? "a signal offset of 0.25" : "a float offset of 0.25, then 0.5 at 100 ms") +
+                  ": cos(2 pi (f t + offset)) sample for sample (worst " + std::to_string(worst) + ")" + error);
+    }
+}
+
 void testTheOrderIsHeard() {
     section("DEV-16 -- and the right-to-left order is what Pd does");
     const auto t = translateMaxPatcher(
@@ -699,6 +734,7 @@ int main() {
     testStepFourControls();
     testStepFourSignals();
     testBpatchersPlay();
+    testCyclePhaseIsAnOffset();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;
