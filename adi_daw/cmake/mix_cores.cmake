@@ -74,3 +74,14 @@ adi_add_opto_gain_tests()
 add_executable(adi_mix_gate_tests tests/test_mix_gate.cpp)
 target_link_libraries(adi_mix_gate_tests PRIVATE adi_mix_gate adi_warnings)
 add_test(NAME adi_mix_gate_tests COMMAND adi_mix_gate_tests)
+
+# The cores compile with -ffp-contract=off, and so do these suites in each
+# core's own CMakeLists. Registered here they would otherwise take the
+# compiler's default: Apple clang contracts by default (fused multiply-adds
+# on arm64), which no other leg does under -std=c++20. Keep the tests on the
+# cores' arithmetic contract. The Opto suite sets this in its own function.
+if(NOT MSVC)
+    foreach(_adi_mix_core_suite compressor filters deesser key_eq clean_key gate)
+        target_compile_options(adi_mix_${_adi_mix_core_suite}_tests PRIVATE -ffp-contract=off)
+    endforeach()
+endif()
