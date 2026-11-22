@@ -150,7 +150,7 @@ void step2(Session &s, Report &report) {
     const auto snap = doc.view().current();
     auto arm = ui::armTracks(snap->tracks, doc.recordStates(), 4, {4}, true, false); // Exclusive Arm, as Live's
     const bool armed = arm.refusal.empty() && submitEdits(doc, std::move(arm.ops)) && doc.recordStates().at(4).armed;
-    const auto monitor = doc.recordStates().at(4).monitor;
+    const auto recordMonitor = doc.recordStates().at(4).monitor;
     driver.input = fedInput;
     const auto clipsBefore = scalar(doc, "SELECT count(*) FROM clips WHERE track_id=4");
     const auto startStream = driver.stream;
@@ -203,7 +203,7 @@ void step2(Session &s, Report &report) {
     report.check("2a", recorded,
                  format("armed %d (monitor %s); record %s; landed %s \"%s\"; clips +%lld; undo \"%s\" (%d ops); "
                         "pos %lld, length %lld ticks, %lld frames; take vs fed max|d| %.3g%s",
-                        armed ? 1 : 0, ui::monitorName(monitor), started ? "started" : startError.c_str(),
+                        armed ? 1 : 0, ui::monitorName(recordMonitor), started ? "started" : startError.c_str(),
                         landed ? (landed->ok ? "ok" : "refused") : "never", landed ? landed->message.c_str() : "",
                         static_cast<long long>(clips), undo ? undo->label.c_str() : "", undo ? undo->opCount : 0,
                         static_cast<long long>(pos), static_cast<long long>(len), static_cast<long long>(srcFrames),
@@ -214,7 +214,12 @@ void step2(Session &s, Report &report) {
                  "sample for sample (0)");
     if (s.take.size() == 0)
         return;
-    // Play it back from the start: the live input is still fed, and monitoring Off keeps it out.
+    // The recording uses the new track default. Explicitly choose Off for
+    // playback so the still-connected input cannot affect the comparison.
+    auto monitorOff=ui::setMonitor(doc.view().current()->tracks,doc.recordStates(),4,{4},ui::Monitor::Off);
+    if (!monitorOff.refusal.empty() || !submitEdits(doc,std::move(monitorOff.ops)))
+        throw std::runtime_error("cannot set monitoring Off for recorded-take playback");
+    const auto monitor=doc.recordStates().at(4).monitor;
     const auto underrunsBefore = driver.underruns();
     windowPlayFrom(doc, 0);
     Stereo heard;
