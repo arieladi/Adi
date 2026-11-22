@@ -32,6 +32,7 @@ class SharedAnalysis final {
     struct State;
     struct Domain;
     struct CumulativeHistory;
+    struct SpectrumBlockAverage;
     struct CaptureDomain;
     struct BarScopeDomain;
     struct FocusLagJob;
@@ -52,7 +53,16 @@ class SharedAnalysis final {
     enum class Mode { Worker, Manual };
     enum Output : std::uint32_t {
         Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32,
-        RealtimeMaximum = 64, CumulativeMaximum = 128, Strip = 256
+        RealtimeMaximum = 64, CumulativeMaximum = 128, Strip = 256, DeviceBlockAverage = 512
+    };
+    struct DeviceSpectrumRequest {
+        enum class Channel : std::uint8_t { Left, Right, Stereo };
+        static constexpr std::uint32_t kMaximumAverageBlocks = 64;
+        std::int64_t track = 0, device = 0;
+        std::int32_t fftSize = 1024;
+        Channel channel = Channel::Stereo;
+        std::uint32_t averageBlocks = 1;
+        bool maximum = false;
     };
     struct StereoMeterProfile {
         bool midSide = false;
@@ -117,6 +127,10 @@ class SharedAnalysis final {
         std::shared_ptr<const Result> window;
         std::vector<float> binsDbfs;
     };
+    struct BlockAverageResult {
+        std::shared_ptr<const Result> window;
+        std::vector<float> binsDbfs;
+    };
     struct StereoMeterResult {
         dsp::StereoEnvelopeMeter::Reading reading;
         double sampleRate = 0;
@@ -159,6 +173,9 @@ class SharedAnalysis final {
         // Only Average1s leases: same immutable sidecar/window for compatible
         // consumers. Missing/refused publication returns null; inspect status.
         std::shared_ptr<const AverageResult> readAverage() const noexcept;
+        // Groups of complete analysis windows, published in DC-to-Nyquist order.
+        // For a one-block request use read() directly.
+        std::shared_ptr<const BlockAverageResult> readBlockAverage() const noexcept;
         // Cumulative demand shares the FFT and owns its own hold interval.
         // A combined lease can select the maximum output explicitly.
         std::shared_ptr<const MaximumResult> readMaximum() const noexcept;
@@ -172,10 +189,12 @@ class SharedAnalysis final {
         // sample count, independent of analysis backlog or publication revisions.
         SourcePosition sourcePosition() const noexcept;
       private:
-        Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t, std::shared_ptr<CumulativeHistory>);
+        Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t, std::shared_ptr<CumulativeHistory>,
+              std::shared_ptr<SpectrumBlockAverage>);
         std::weak_ptr<State> state_;
         std::shared_ptr<Domain> domain_;
         std::shared_ptr<CumulativeHistory> cumulative_;
+        std::shared_ptr<SpectrumBlockAverage> spectrumBlockAverage_;
         std::uint32_t outputs_ = 0;
         friend class SharedAnalysis;
     };
@@ -299,6 +318,7 @@ class SharedAnalysis final {
     SharedAnalysis(const SharedAnalysis &) = delete;
     SharedAnalysis &operator=(const SharedAnalysis &) = delete;
     Lease acquire(const Request &);
+    Lease acquireDeviceSpectrum(const DeviceSpectrumRequest &);
     // Hold only while the strip is visible. Uses the track's existing post-fader tap.
     Lease acquireStrip(std::int64_t track);
     Lease acquireStereoMeter(std::int64_t track, StereoMeterProfile);
@@ -318,6 +338,7 @@ class SharedAnalysis final {
     std::size_t pump();
     Stats stats() const;
   private:
+    Lease acquire(const Request &, std::uint32_t averageBlocks);
     std::shared_ptr<State> state_;
     Mode mode_;
 };

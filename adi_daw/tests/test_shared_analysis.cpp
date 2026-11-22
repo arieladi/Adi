@@ -4,7 +4,11 @@
 #include "adi/ui/focus_lag.hpp"
 #include "adi/ui/focus_scope.hpp"
 #include "adi/dsp/spectrum_average.hpp"
+#include "adi/engine/session.hpp"
 #include "adi/engine/transport.hpp"
+#include "adi/store.hpp"
+#include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -20,6 +24,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -179,6 +184,140 @@ void stripWorkerBudget() {
     for (auto &strip : strips) strip.reset();
     check(released == count && broker.stats().taps == 0 && broker.stats().spectralPlans == 0,
           "closing all visible strips releases every physical tap and plan");
+}
+
+struct StripAudioSource final : adi::engine::Node {
+    explicit StripAudioSource(double value) : amplitude(value) {}
+    bool processesDouble() const noexcept override { return true; }
+    void process(const adi::engine::NodeIo &io) noexcept override {
+        for (int i = io.blockOffset; i < io.blockOffset + io.frames; ++i) {
+            const double sample = (io.transport->timelineSample + i) % 64 == 11 ? amplitude : 0.;
+            if (io.wide()) {
+                io.out64[0][i] = sample;
+                io.out64[1][i] = sample * -.5;
+            } else {
+                io.out[0][i] = static_cast<float>(sample);
+                io.out[1][i] = static_cast<float>(sample * -.5);
+            }
+        }
+    }
+    double amplitude;
+};
+
+template <class Sample> void stripLeasePreservesAudio(const adi::Store &store) {
+    using namespace adi::engine;
+    constexpr double rate = 48000., restartedRate = 96000.;
+    constexpr int frames = 512, delay = 37, window = 1024;
+    constexpr bool wide = std::is_same_v<Sample, double>;
+    auto setup = [&](Session &session, StripAudioSource &a, StripAudioSource &b) {
+        session.setSourcesFor([&a, &b](std::int64_t track) -> std::vector<Node *> {
+            if (track == 1) return {&a};
+            if (track == 2) return {&b};
+            return {};
+        });
+        session.graph().setFadeFrames(0);
+        if (!session.load(store, {}, {2, rate, frames, wide ? Precision::Float64 : Precision::Float32}))
+            throw std::runtime_error(session.error());
+        session.transport().play();
+    };
+    StripAudioSource plainA(.25), plainB(.125), watchedA(.25), watchedB(.125);
+    Session plain, watched;
+    setup(plain, plainA, plainB);
+    setup(watched, watchedA, watchedB);
+    ScopeLease demand;
+    SharedAnalysis broker(
+        [&](ScopeSource source, double seconds) -> std::shared_ptr<const ScopeTap> {
+            if (!demand) demand = watched.requestScope({source, seconds});
+            return demand.tap();
+        }, [&](ScopeSource) { demand.reset(); }, SharedAnalysis::Mode::Manual);
+
+    using Output = std::array<std::array<Sample, frames>, 2>;
+    using Bits = std::conditional_t<wide, std::uint64_t, std::uint32_t>;
+    const auto render = [](Session &session, int count, Output &samples) {
+        Sample *planes[]{samples[0].data(), samples[1].data()};
+        AudioIo io;
+        io.numOut = 2;
+        io.frames = count;
+        if constexpr (wide) io.out64 = planes;
+        else io.out = planes;
+        session.process(io);
+    };
+    const auto latency = [](Session &session) {
+        const auto *graph = session.graph().currentGraph();
+        return graph ? graph->latencySamples() : -1;
+    };
+    Output reference{}, observed{};
+    auto compare = [&](int callbacks, int expectedLatency) {
+        bool exact = true;
+        for (int block = 0; block < callbacks; ++block) {
+            const int count = block % 2 ? 257 : frames;
+            render(plain, count, reference);
+            render(watched, count, observed);
+            watched.collectScopeTaps();
+            broker.pump();
+            for (std::size_t ch = 0; ch < reference.size(); ++ch) {
+                exact = exact && std::equal(reference[ch].data(), reference[ch].data() + count, observed[ch].data(),
+                    [](Sample a, Sample b) { return std::bit_cast<Bits>(a) == std::bit_cast<Bits>(b); });
+            }
+            exact = exact && latency(plain) == expectedLatency && latency(watched) == expectedLatency;
+        }
+        return exact;
+    };
+    // The early strip's signed latency must move the other track's pulse from
+    // sample 11 to sample 48 in the compensated Main output.
+    check(compare(1, delay) && reference[0][11] == .25 && reference[0][11 + delay] == .125,
+          "the untouched graph has the expected physical PDC on two distinguishable pulses");
+
+    auto strip = broker.acquireStrip(1);
+    check(compare(8, delay), "attaching and reading a visible strip during playback preserves every audio and PDC bit");
+    const auto beforeSeek = strip.readStrip();
+    const auto tapBeforeRestart = demand.tap();
+    check(beforeSeek && tapBeforeRestart && watched.scopeStats().sources == 1 && tapBeforeRestart->latency() == delay &&
+              beforeSeek->firstStamp == watched.transport().position() - delay - window -
+                  (tapBeforeRestart->written() - beforeSeek->endSequence),
+          "the real post-fader strip tap uses the audible graph's existing compensated stamps");
+
+    plain.transport().locate(8192);
+    watched.transport().locate(8192);
+    check(compare(8, delay), "the active strip does not change audio or PDC after a playing seek");
+    const auto afterSeek = strip.readStrip();
+    check(beforeSeek && afterSeek && afterSeek->sourceEpoch > beforeSeek->sourceEpoch &&
+              afterSeek->transportRevision == watched.transport().revision() && afterSeek->firstStamp >= 8192 - delay,
+          "seek publishes only the new transport epoch on the existing strip lease");
+
+    for (auto *session : {&plain, &watched}) {
+        session->release();
+        session->prepare(restartedRate, frames);
+        session->transport().play();
+    }
+    broker.refreshSources();
+    check(!strip.readStrip() && demand.tap() && demand.tap() != tapBeforeRestart,
+          "driver restart at a new rate invalidates the previous strip generation");
+    check(compare(14, 2 * delay), "a retained strip preserves audio and the rescaled PDC after the driver restart");
+    const auto restarted = strip.readStrip();
+    const auto lastTap = demand.tap();
+    check(restarted && lastTap && restarted->sampleRate == restartedRate && restarted->generation == lastTap->generation() &&
+              lastTap->latency() == 2 * delay,
+          "the retained strip follows the restarted graph's physical tap and compensation");
+
+    strip.reset();
+    check(compare(2, 2 * delay), "closing the visible strip across callback boundaries preserves audio and PDC");
+    const auto retiredFrames = lastTap ? lastTap->written() : -1;
+    check(compare(4, 2 * delay) && lastTap && lastTap->written() == retiredFrames &&
+              watched.scopeStats().consumers == 0 && watched.scopeStats().sources == 0 && broker.stats().taps == 0,
+          "the detached strip stops copying frames while the running graph remains bit-identical");
+}
+
+void stripLeaseInSession() {
+    adi::test::TempDirectory directory{"shared_analysis", "strip_audio"};
+    adi::StoreError error{};
+    auto store = adi::Store::createEmpty(directory.path() / "strip-audio.adi", error);
+    if (!store) throw std::runtime_error("strip audio fixture store");
+    store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+                     "(1,'audio','Early',0),(2,'audio','Late',1),(9,'master','Main',2);"
+                     "INSERT INTO mixer_strip(track_id,delay_samples) VALUES(1,-37);");
+    stripLeasePreservesAudio<float>(*store);
+    stripLeasePreservesAudio<double>(*store);
 }
 
 void realtimeMaximumSpectrum() {
@@ -2761,6 +2900,126 @@ void averagePublicationFailure() {
               "a genuine metadata event retries optional publication without replaying FFT or numerical average hops");
     }
 }
+void deviceSpectrumLease() {
+    using Request = SharedAnalysis::DeviceSpectrumRequest;
+    using adi::engine::ScopeSource;
+    const ScopeSource endpoint{4, ScopePoint::DeviceOutput, 77};
+    auto tap = std::make_shared<ScopeTap>(48000, .25);
+    std::vector<ScopeSource> attached, detached;
+    SharedAnalysis broker([&](ScopeSource source, double) {
+        attached.push_back(source);
+        return source == endpoint ? tap : nullptr;
+    }, [&](ScopeSource source) { detached.push_back(source); }, SharedAnalysis::Mode::Manual);
+    const Request settings{4, 77, 1024, Request::Channel::Left, 3, true};
+    auto invalid = settings;
+    invalid.fftSize = 1536;
+    check(!broker.acquireDeviceSpectrum(invalid), "device spectrum refuses an unsupported block size");
+    invalid = settings; invalid.averageBlocks = 0;
+    check(!broker.acquireDeviceSpectrum(invalid), "device spectrum rejects zero averaging blocks");
+    invalid.averageBlocks = Request::kMaximumAverageBlocks + 1;
+    check(!broker.acquireDeviceSpectrum(invalid), "device spectrum bounds the number of averaged blocks");
+    invalid = settings; invalid.device = 0;
+    check(!broker.acquireDeviceSpectrum(invalid) && attached.empty(), "invalid spectrum requests do not establish taps");
+
+    auto device = broker.acquireDeviceSpectrum(settings);
+    auto sibling = broker.acquireDeviceSpectrum(settings);
+    SharedAnalysis::Request shared{4, ScopePoint::DeviceOutput, 1024, SharedAnalysis::Channel::Left};
+    shared.device = 77;
+    auto raw = broker.acquire(shared);
+    check(device.available() && sibling.available() && raw.available() && attached == std::vector{endpoint} &&
+              broker.stats().spectralPlans == 1 && broker.stats().domains == 1,
+          "two device views and a compatible spectrum request use one device tap and FFT plan");
+    check(!device.readBlockAverage() && !device.readMaximum(), "a new lease never reads an earlier average or peak");
+
+    tone(*tap, 1024, .5f, 0.f);
+    check(broker.pump() == 1 && raw.read() && device.read() == raw.read() && !device.readBlockAverage(),
+          "one completed block is shared but does not complete a three-block average");
+    if (!raw.read() || raw.read()->binsDbfs.size() != 513) {
+        check(false, "natural one-sided order includes DC and Nyquist");
+        return;
+    }
+    const auto first = raw.read();
+    const auto &bins = first->binsDbfs;
+    check(std::distance(bins.begin(), std::max_element(bins.begin(), bins.end())) == 16 &&
+              near(bins[16], -6.020599913) && near(16 * first->sampleRate / first->request.fftSize, 750.),
+          "natural DC-to-Nyquist bin order and full-scale sine calibration");
+    tone(*tap, 256, .25f, 0.f, 1024);
+    const auto nextTransforms = broker.pump();
+    const auto second = raw.read();
+    tone(*tap, 256, .125f, 0.f, 1280);
+    const auto finalTransforms = broker.pump();
+    const auto third = raw.read();
+    const auto average = device.readBlockAverage();
+    check(nextTransforms == 1 && finalTransforms == 1 && second && third && average &&
+              average == sibling.readBlockAverage() && average->window == third && average->binsDbfs.size() == 513,
+          "duplicate averaging demand emits one complete group with the exact window and no additional FFT");
+    if (!second || !third || !average) return;
+    const auto magnitude = [](double db) { return std::pow(10., db / 20.); };
+    const double expected = 20 * std::log10((magnitude(bins[16]) + magnitude(second->binsDbfs[16]) +
+                                           magnitude(third->binsDbfs[16])) / 3.);
+    check(near(average->binsDbfs[16], expected) && device.readMaximum() &&
+              near(device.readMaximum()->binsDbfs[16], bins[16]),
+          "average uses linear block magnitudes and maximum retains the largest raw block");
+    check(device.restartCumulativeMaximum() && !device.readMaximum() && sibling.readMaximum() &&
+              device.readBlockAverage() == average, "restart clears only this lease's peak hold");
+
+    std::array<float, 1024> left{}, right{};
+    right.fill(.25f);
+    tap->write(left.data(), right.data(), 1024, 2700, true, 9);
+    broker.pump();
+    check(!device.readBlockAverage() && average->window == third,
+          "an epoch change drops the partial group and preserves any frozen result");
+    auto rightSettings = settings;
+    rightSettings.channel = Request::Channel::Right;
+    rightSettings.averageBlocks = 1;
+    rightSettings.maximum = false;
+    auto rightLease = broker.acquireDeviceSpectrum(rightSettings);
+    tap->write(left.data(), right.data(), 1024, 3724, true, 9);
+    broker.pump();
+    check(rightLease.read() && near(rightLease.read()->binsDbfs[0], -12.041199826) &&
+              !rightLease.readBlockAverage() && attached == std::vector{endpoint} && broker.stats().spectralPlans == 2,
+          "right and left have independent transforms on the same tap and one block reads directly");
+    device.reset(); sibling.reset(); raw.reset(); rightLease.reset();
+    const auto closed = broker.stats();
+    tap->write(left.data(), right.data(), 1024, 4748, true, 9);
+    broker.pump();
+    const auto idle = broker.stats();
+    check(detached == std::vector{endpoint} && !closed.taps && !closed.domains && !closed.spectralPlans &&
+              closed.cursorReads == idle.cursorReads && closed.workerPasses == idle.workerPasses &&
+              closed.transforms == idle.transforms,
+          "closing the last panel releases the tap and schedules no analysis work for new audio");
+}
+void parkedDeviceSpectrum() {
+    using Request = SharedAnalysis::DeviceSpectrumRequest;
+    auto tap = std::make_shared<ScopeTap>(48000, .25);
+    SharedAnalysis broker([&](adi::engine::ScopeSource, double) { return tap; },
+                          [](adi::engine::ScopeSource) {}, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireDeviceSpectrum({1, 7, 1024, Request::Channel::Left, 3, true});
+    const float *silent = nullptr;
+    tap->write(silent, silent, 1536, 0, false, 1);
+    check(broker.pump() == 0 && lease.readBlockAverage() && lease.readMaximum() &&
+              lease.readBlockAverage()->binsDbfs[16] == adi::dsp::kDbFloor,
+          "a parked device spectrum completes a silent average without executing FFTs");
+    const auto parked = broker.stats();
+    const auto quiet = lease.readBlockAverage();
+    for (int block = 0; block < 64; ++block) {
+        tap->write(silent, silent, 256, 0, false, 1);
+        broker.pump();
+    }
+    const auto idle = broker.stats();
+    check(quiet && lease.readBlockAverage() == quiet && parked.cursorReads == idle.cursorReads &&
+              parked.workerPasses == idle.workerPasses && parked.transforms == idle.transforms,
+          "a visible settled device spectrum does no work over certified parked silence");
+    std::array<float, 1536> waveform{};
+    for (std::size_t i = 0; i < waveform.size(); ++i)
+        waveform[i] = .25f * static_cast<float>(std::sin(2. * std::numbers::pi * 16. * static_cast<double>(i) / 1024.));
+    tap->write(waveform.data(), waveform.data(), 1536, 0, true, 2);
+    broker.pump();
+    const auto running = lease.readBlockAverage();
+    check(running && running != quiet && running->window->transportRevision == 2 &&
+              near(running->binsDbfs[16], -12.041199826) && broker.stats().transforms == idle.transforms + 3,
+          "resuming starts a complete new group without analysing the skipped parked blocks");
+}
 void boundsAndDeviceSources() {
     auto tap = std::make_shared<ScopeTap>(48000, .1);
     std::vector<adi::engine::ScopeSource> acquired, released;
@@ -3441,9 +3700,9 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget();
+    try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
