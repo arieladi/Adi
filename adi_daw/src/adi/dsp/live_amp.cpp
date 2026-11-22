@@ -23,6 +23,9 @@ void LiveAmp::prepare(double sampleRate) noexcept {
     state_ = {};
     dcIn_ = dcOut_ = {};
     dcPole_ = std::exp(-2 * std::numbers::pi * 5 / rate_);
+    for (auto* g : {&pre_, &power_, &output_, &wet_}) {
+        g->prepare(rate_);
+    }
     update();
 }
 
@@ -62,6 +65,10 @@ void LiveAmp::update() noexcept {
     gains_.power = voice.drive * db((p_[Volume] - 5) * 3);
     gains_.output = db(p_[Output]);
     gains_.wet = p_[DryWet] / 100;
+    pre_.set(gains_.pre);
+    power_.set(gains_.power);
+    output_.set(gains_.output);
+    wet_.set(gains_.wet);
 }
 
 double LiveAmp::run(std::size_t f, std::size_t c, double x) noexcept {
@@ -77,13 +84,14 @@ double LiveAmp::run(std::size_t f, std::size_t c, double x) noexcept {
 
 void LiveAmp::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
     const bool dual = p_[Dual] >= 0.5;
-    const double g = gains_.pre, b = gains_.bias, d = gains_.power, offset = std::tanh(b);
+    const double b = gains_.bias, offset = std::tanh(b);
     float* out[2] = {outL, outR};
     for (std::size_t i = 0; i < frames; ++i) {
         // Both inputs are read before either output is written (a host may
         // hand an output plane that is an input plane).
         const double l = inL && std::isfinite(inL[i]) ? inL[i] : 0.0, r = inR && std::isfinite(inR[i]) ? inR[i] : 0.0;
         const double dry[2] = {l, r};
+        const double g = pre_.next(), d = power_.next(), level = output_.next(), mix = wet_.next();
         const double feed[2] = {dual ? l : 0.5 * (l + r), r};
         double wet[2] = {0, 0};
         for (std::size_t c = 0; c < (dual ? 2u : 1u); ++c) {
@@ -96,14 +104,14 @@ void LiveAmp::process(const float* inL, const float* inR, float* outL, float* ou
             y = run(5, c, run(4, c, run(3, c, blocked)));
             // The power stage, then presence.
             y = run(6, c, std::tanh(d * y) / d);
-            wet[c] = gains_.output * y;
+            wet[c] = level * y;
         }
         if (!dual) {
             wet[1] = wet[0];
         }
         for (std::size_t c = 0; c < 2; ++c) {
             if (out[c]) {
-                out[c][i] = static_cast<float>(dry[c] + (wet[c] - dry[c]) * gains_.wet);
+                out[c][i] = static_cast<float>(dry[c] + (wet[c] - dry[c]) * mix);
             }
         }
     }
