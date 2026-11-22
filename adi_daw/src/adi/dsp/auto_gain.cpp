@@ -27,6 +27,35 @@ void flush(double& v) noexcept {
 // are the analog prototypes they come from (the stage-1 high shelf and the
 // stage-2 "RLB" high-pass), through the bilinear transform, so every sample
 // rate gets the same curve; at 48 kHz they reproduce the table (the test).
+//
+// PROVENANCE (DEV-28). kShelf's and kHighPass's prototype constants (f0, G,
+// Q and the shelf's Vb exponent) and their bilinear-transform formulas are
+// adapted from libebur128's ebur128.c (ebur128_init_filter) at
+// v1.2.6, 67b33abe1558160ed76ada1322329b0e9e058b02,
+// https://github.com/jiixyj/libebur128, under its licence:
+//
+//   Copyright (c) 2011 Jan Kokemüller
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a
+//   copy of this software and associated documentation files (the
+//   "Software"), to deal in the Software without restriction, including
+//   without limitation the rights to use, copy, modify, merge, publish,
+//   distribute, sublicense, and/or sell copies of the Software, and to permit
+//   persons to whom the Software is furnished to do so, subject to the
+//   following conditions:
+//
+//   The above copyright notice and this permission notice shall be included
+//   in all copies or substantial portions of the Software.
+//
+//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+//   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+//   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+//   NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+//   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+//   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+//   USE OR OTHER DEALINGS IN THE SOFTWARE.
+//
+// Restated in C++ with ADI's Biquad; the rest of this file is ADI's own.
 Biquad AutoGain::kShelf(double fs) noexcept {
     const double f0 = 1681.974450955533;
     const double g = 3.999843853973347;
