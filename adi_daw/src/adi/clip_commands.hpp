@@ -46,6 +46,19 @@ struct ClipCut {ClipCopy copy;PreparedEdit edit;};
 [[nodiscard]] PreparedEdit prepareSplit(Store&,std::int64_t sourceId,
                                         std::int64_t middleId,std::int64_t rightId,
                                         TimePoint begin,TimePoint end,double referenceRate);
+struct ClipSplit {
+    std::int64_t clipId=0;
+    TimePoint first;
+    std::optional<TimePoint> second;
+};
+struct SplitRefusal {std::int64_t clipId=0;std::string error;};
+struct PreparedSplits {
+    PreparedEdit edit;
+    std::vector<SplitRefusal> refused;
+};
+/// Allocate all new clip and child identities against one snapshot. Each clip
+/// can supply one or two cuts. Commit edit once for one Undo of all valid cuts.
+[[nodiscard]] PreparedSplits prepareSplits(Store&,std::span<const ClipSplit>,double referenceRate);
 /// Shift the Set and its global envelopes, splitting material at the boundary.
 /// Musical length; linear objects move by the held tempo immediately before it.
 [[nodiscard]] PreparedEdit prepareInsertSilence(Store&,std::int64_t atTicks,

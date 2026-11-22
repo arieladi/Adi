@@ -56,6 +56,11 @@ DeviceCopy readDeviceCopy(Store& store,std::int64_t id) {
         OpContext context{store,store.db()};
         if(!descriptor || !descriptor->buildInverse ||
            !descriptor->buildInverse(context,{{"id",id}},result.insert,result.error))return result;
+        // A removal undo restores the same identity and causal dependants.
+        // A clipboard clone has a NEW identity and copies only the authored
+        // device controls/state/panel/expression route below, never old keys,
+        // automation or the identity-bound removal image.
+        result.insert.erase("contents");
         if(!result.insert.at("ref").is_null()) {
             SQLite::Statement reference(store.db(),"SELECT id,format,uid,vendor,name,version,subtype,path_hint,is_shell,shell_id FROM plugin_refs WHERE id=?");
             reference.bind(1,result.insert.at("ref").get<std::int64_t>());

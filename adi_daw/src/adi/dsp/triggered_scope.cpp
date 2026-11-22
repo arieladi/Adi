@@ -109,8 +109,9 @@ bool TriggeredScope::mapNormalized(const Normalized &n, Settings &out) noexcept 
     out = candidate;
     return true;
 }
+bool TriggeredScope::validSettings(const Settings &s) noexcept { return valid(s); }
 bool TriggeredScope::prepare(const Settings &s) noexcept {
-    if (!valid(s)) return false;
+    if (!validSettings(s)) return false;
     try {
         auto candidate = std::make_unique<Impl>(s);
         candidate->epoch = impl_ ? nextEpoch(impl_->epoch) : 1;

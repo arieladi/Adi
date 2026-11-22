@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include <optional>
-#include "adi/engine/param_edits.hpp"
+#include "adi/engine/param_ops.hpp"
+#include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/mix_functions.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "ui_arrangement.hpp"
@@ -19,6 +20,7 @@ class ClockedView : public juce::Component {
 };
 class AdiRootComponent;
 class DeviceChainStrip;
+class SharedAnalysis;
 // One parameter of the DAW-drawn panel (ADR-0150, ADR-0198): its name, a control
 // shaped as the plug-in declares it, and the plug-in's own text for the value.
 class ParameterControl final : public juce::Component, public juce::SettableTooltipClient {
@@ -35,6 +37,12 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     // Other keys go on to the device, so the left and right arrows still move between devices.
     bool keyPressed(const juce::KeyPress &) override;
     bool returnToDefault();
+    // Live's parameter context menu (manual 25.4; AU-04): Re-Enable Automation while the parameter's
+    // lane is overridden. A right-click on the knob or the control's labels opens it.
+    void mouseDown(const juce::MouseEvent &) override;
+    void showMenu();
+    // The device's plug-in format, which names its parameters' lanes (`engine::automationParamRef`).
+    std::string format;
     // Live's device column at 100 %: the name, a knob, the value under it.
     static constexpr int kWidth = 58, kHeight = 54;
     std::int64_t device;
@@ -50,6 +58,7 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     const panel::Record *record = nullptr;
     double defaultValue = 0;
     juce::Label name, value;
+    int presentedMenuId_ = 0;
     std::int32_t menuSteps_ = 0;
     std::vector<std::string> menuLabels_;
 };
@@ -102,15 +111,26 @@ class SampleTile final : public juce::Component,
 // the name and Configure; the controls in columns that fit the strip's height.
 class DevicePanelView final : public juce::Component {
   public:
-    DevicePanelView(DeviceChainStrip &, const DevicePanelData &);
+    DevicePanelView(DeviceChainStrip &, const DevicePanelData &, bool mixCard = false);
     ~DevicePanelView() override;
     void present(const DevicePanelData &);
+    bool frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &);
+    void releaseEqSpectrum();
+    void frameLimiterReduction(
+        const std::function<mix::limiter::ReductionMailbox::Lease(const DevicePanelData &)>* observer);
+    void releaseLimiterReduction();
     void resized() override;
     void paint(juce::Graphics &) override;
     bool keyPressed(const juce::KeyPress &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
+    bool pressEqGraph(juce::Point<float>);
+    bool dragEqHandle(juce::Point<float>);
+    void releaseEqHandle();
     void visibilityChanged() override;
     const mix::FunctionInfo *nativeFunction() const noexcept;
     std::uint64_t presentedInstance() const noexcept;
@@ -124,6 +144,7 @@ class DevicePanelView final : public juce::Component {
     int widthFor(int height) const noexcept;
     // Live's round fold switch in the title bar, beside the activator.
     juce::Rectangle<int> foldSwitch() const noexcept;
+    juce::Rectangle<float> eqPreviewBounds() const;
     void configure();
     // The title bar's menu, in Live's order: the editing commands, then the device's own.
     juce::PopupMenu commands();
@@ -165,6 +186,7 @@ class DevicePanelView final : public juce::Component {
     // Optional owner hooks for retained views (Mix View); the ordinary device strip uses its
     // existing authority. Hooks must never substitute a second parameter/undo implementation.
     std::function<bool(const std::string &, engine::ParamEventKind, double)> parameterGesture;
+    std::function<bool(const engine::ParameterPair &, engine::ParameterPairEvent)> parameterPairGesture;
     enum class Interaction { Text, Menu };
     std::function<bool(Interaction)> interactionBegin;
     std::function<void(Interaction)> interactionEnd;
@@ -179,12 +201,25 @@ class DevicePanelView final : public juce::Component {
     void endRename(bool commit);
     bool editFunctionParameter(const std::string &, engine::ParamEventKind, double);
     void endFunctionParameter();
+    void finishEqEdit(bool cancel);
     bool validTarget() const { return !targetValid || targetValid(); }
+    const bool mixCard_;
+    struct EqPreview;
+    std::unique_ptr<EqPreview> eqPreview_;
+    void updateEqPreview(const DevicePanelData &);
+    int eqBandAt(juce::Point<float>) const;
+    void drawEqNodes(juce::Graphics &, juce::Rectangle<float>) const;
+    struct LimiterPreview;
+    [[nodiscard]] juce::Rectangle<int> limiterPreviewBounds() const;
+    [[nodiscard]] bool previewVisible(juce::Rectangle<int>) const;
+    void paintLimiterReduction(juce::Graphics &, juce::Rectangle<int>) const;
+    void layoutCompactControls(int top);
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
     std::optional<DevicePanelData> dragTarget_;
+    std::uint64_t dragEpoch_ = 0;
     std::string editingParameter_;
     double editingValue_ = 0;
     bool editingBegan_ = false;
@@ -207,6 +242,8 @@ class DevicePanelView final : public juce::Component {
     const panel::Record *pageEnableRecord(const ParameterPageControl &) const;
     static int pageSelectorWidth(const ParameterPageControl &) noexcept;
     static constexpr int kPageHeight = 22;
+    static constexpr int kCompactCardHeight = 144;
+    std::unique_ptr<LimiterPreview> limiterPreview_;
     friend class DeviceChainStrip;
 };
 class DeviceChainStrip final : public juce::Component, public juce::DragAndDropTarget {
@@ -222,9 +259,15 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     bool folded(std::int64_t) const;
     bool edit(std::int64_t, const std::string &, engine::ParamEventKind, double);
     bool editExpected(const DevicePanelData &, const std::string &, engine::ParamEventKind, double);
+    bool editPairExpected(const DevicePanelData &, const engine::ParameterPair &, engine::ParameterPairEvent,
+                          std::shared_ptr<const gesture::OwnerToken> &);
     bool validExpected(const DevicePanelData &) const;
     bool action(const std::string &, Payload);
+    // Native functions remove with Undo; ordinary plug-ins retain bypass.
+    bool setEnabledExpected(const DevicePanelData &, bool);
     juce::PopupMenu functionMenu();
+    // Explicit target and lifetime for another visible surface, without selecting its channel.
+    juce::PopupMenu functionMenuFor(std::int64_t, std::function<bool()> ownerCurrent);
     bool hasFunction(mix::Function) const;
     bool dropFunction(DevicePanelView &, std::optional<std::int64_t> before);
     void cancelFunctionInteractions();
@@ -263,8 +306,13 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double,
                        const engine::DeviceRuntimeToken &, std::uint64_t)> guardedGesture;
+    std::function<bool(std::int64_t, const engine::ParameterPair &, engine::ParameterPairEvent,
+                       const engine::DeviceRuntimeToken &, std::uint64_t,
+                       std::shared_ptr<const gesture::OwnerToken> &)> guardedPairGesture;
     std::function<bool(std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t)> targetCurrent;
     std::function<bool(const std::string &, Payload)> submit;
+    std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;
+    std::function<bool(const DevicePanelData&,const DeviceKeyChoice&)> setKey;
     std::function<mix::Availability(mix::Function)> functionAvailability;
     std::function<bool(mix::Function, std::int64_t track)> addFunction;
     std::function<bool(const DevicePanelData &, std::int64_t track,

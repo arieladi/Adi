@@ -62,8 +62,20 @@ void ScopeTap::store(const T* l, const T* r, std::int32_t frames, std::int64_t s
     } else {
         spans_[static_cast<std::size_t>(lastSpan_ % spanCapacity_)].end.store(w + frames);
     }
+    if (!advancing && !l && !r) {
+        if (!contiguous || quietEnd_.load(std::memory_order_relaxed) != w) quietBegin_.store(w);
+        quietEnd_.store(w + frames);
+    }
     lastEnd_ = w + frames;
     written_.store(w + frames, std::memory_order_release);
+}
+
+ScopeTap::ParkedSilence ScopeTap::lastParkedSilence() const noexcept {
+    const auto begin = quietBegin_.load();
+    const auto end = quietEnd_.load();
+    // A new run's start always comes after the previous run's end. In case the
+    // source changes during the read, return an empty range and let the reader proceed.
+    return begin < end && begin == quietBegin_.load() ? ParkedSilence{begin, end} : ParkedSilence{};
 }
 
 bool ScopeTap::loadSpan(std::int64_t record, Stamp& result) const noexcept {

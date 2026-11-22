@@ -23,13 +23,14 @@ struct Statistics {std::uint64_t clipFrames=0,limiterFrames=0,keyHistoryFrames=0
 
 /// Independent pages, fixed audio order Clip -> Limiter. Standard C++ interface;
 /// optional implementation linkage keeps JUCE out of the core DAW library.
-/// Single audio publisher; prepare/destruction and continuation restore are owner-only
+/// Single audio publisher; prepare/reset/destruction and continuation restore are owner-only
 /// with the driver stopped. Disabled stages retain state and process zero frames.
 class Core final {
 public:
     Core();~Core();
     Core(const Core&)=delete;Core& operator=(const Core&)=delete;
     void prepare(const PrepareSpec&,const Settings&);
+    // Retain the applied plan and withdraw any offer the stopped graph didn't admit.
     void reset(const Settings&) noexcept;
     void setBackgroundActive(bool) noexcept;
     [[nodiscard]] bool supportsClip() const noexcept;
@@ -40,10 +41,12 @@ public:
     [[nodiscard]] LatencyChange claimPendingLatencyChange(const Settings&) noexcept;
     /// A claimed offer cannot be withdrawn: refuse manual structural edits until admission.
     [[nodiscard]] bool configurationBusy() const noexcept;
+    /// Audio side only. Continue an admitted child fade after the outer claim clears.
+    [[nodiscard]] bool needsBypassTransition(std::int32_t configuredTotal) const noexcept;
     [[nodiscard]] BlockContext beginBlock(std::uint64_t physicalBlock,
         std::int32_t graphConfiguredTotal,const Settings&) noexcept;
     bool process(float* const* main,const float* const* key,std::int32_t frames,
-                 const Settings&,const BlockContext&) noexcept;
+                 const Settings&,const BlockContext&,limiter::BlockReduction* reduction = nullptr) noexcept;
     [[nodiscard]] std::uint32_t clipContinuationWord() const noexcept;
     bool restoreClipContinuationWord(std::uint32_t) noexcept;
     /// Audio-side diagnostics, or owner after processing stops. No atomic RMW on hot path.

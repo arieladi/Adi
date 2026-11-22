@@ -16,6 +16,7 @@ const char* toString(PdObjectRefusal r) noexcept {
         case PdObjectRefusal::Recursive: return "pd.recursive_abstraction";
         case PdObjectRefusal::TooDeep: return "pd.too_deep";
         case PdObjectRefusal::Malformed: return "pd.malformed_canvas";
+        case PdObjectRefusal::PathNamed: return "pd.path_named_class";
     }
     return "pd.unknown_object";
 }
@@ -32,6 +33,9 @@ std::vector<std::string> PdObjectWalk::describe() const {
             case PdObjectRefusal::Recursive: line = "abstraction '" + r.className + "' contains itself"; break;
             case PdObjectRefusal::TooDeep: line = "'" + r.className + "' is nested too deep"; break;
             case PdObjectRefusal::Malformed: line = "a subpatch is not closed properly"; break;
+            case PdObjectRefusal::PathNamed:
+                line = "class '" + r.className + "' is named by a path outside the device";
+                break;
         }
         line += r.file.empty() ? " in the patch" : " in abstraction '" + r.file + "'";
         if (!r.subpatch.empty()) line += ", " + r.subpatch;
@@ -148,6 +152,33 @@ private:
     }
 
     /// The stored abstraction a class names, or end().
+    static bool pathNamed(const std::string& cls) {
+        if (cls.empty()) {
+            return false;
+        }
+        if (cls.front() == '/' || cls.front() == '\\') {
+            return true;
+        }
+        if (cls.size() >= 2 && cls[1] == ':' &&
+            ((cls[0] >= 'A' && cls[0] <= 'Z') || (cls[0] >= 'a' && cls[0] <= 'z'))) {
+            return true;
+        }
+        // A `..` segment anywhere, between separators of either kind.
+        std::size_t start = 0;
+        while (start <= cls.size()) {
+            const auto end = cls.find_first_of("/\\", start);
+            const auto segment = cls.substr(start, end == std::string::npos ? std::string::npos : end - start);
+            if (segment == "..") {
+                return true;
+            }
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+        return false;
+    }
+
     PdAbstractions::const_iterator findAbstraction(const std::string& cls) const {
         auto it = abstractions_.find(cls);
         if (it == abstractions_.end()) it = abstractions_.find(cls + ".pd");
@@ -174,6 +205,13 @@ private:
                     refuse(PdObjectRefusal::Unknown, target.empty() ? "clone" : target, file,
                            subpatch, box);
             }
+            return;
+        }
+        // Not a class this build makes ([/] is division): an absolute, drive-
+        // letter or parent path reaches outside the device's own files,
+        // whatever is stored by that name (DEV-09).
+        if (pathNamed(cls)) {
+            refuse(PdObjectRefusal::PathNamed, cls, file, subpatch, box);
             return;
         }
         if (!abstraction(cls, file, subpatch, box, depth))

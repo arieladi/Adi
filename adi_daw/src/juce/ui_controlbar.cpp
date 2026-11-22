@@ -115,7 +115,10 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
         else if (over)
             fill = fill.brighter(0.06f);
         g.setColour(fill);
-        g.fillRect(r);
+        if (workspaceSegment)
+            g.fillRoundedRectangle(r, look::radiusControl);
+        else
+            g.fillRect(r);
     }
     auto content = r;
     if (dropdown) {
@@ -202,7 +205,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&midi, "MIDI Map Mode", "Assigns MIDI controllers to controls."},
         {&cpu, "CPU Load Meter", "How much of the audio thread's time is used."},
         {&indicators, "MIDI Indicators", "Light when MIDI comes in or goes out."},
-        {&mix, "Mix View", "Every channel's ADI-Q and ADI-L in one view (F4)."}};
+        {&arrangementPage, "Arrangement", "Return to the Arrangement workspace (F4)."},
+        {&mix, "Mix View", "Open the channel chains and analysers (F4)."}};
     for (const auto &info : infos) {
         info.item->setTitle(info.title);
         info.item->setTooltip(juce::String(info.title) + ". " + info.tip);
@@ -213,7 +217,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     play.onClick = [this] { root_.command(AppCommands::PlayStop); };
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
     follow.onClick = [this] { root_.command(AppCommands::Follow); };
-    mix.onClick = [this] { root_.command(AppCommands::ToggleMixView); };
+    arrangementPage.workspaceSegment = mix.workspaceSegment = true;
+    arrangementPage.onClick = [this] { if (root_.state().mixView) root_.command(AppCommands::ToggleMixView); };
+    mix.onClick = [this] { if (!root_.state().mixView) root_.command(AppCommands::ToggleMixView); };
     tempo.onClick = [this] { beginTempoEdit(); };
     // On the press, so each tap is timed when it lands.
     tap.setTriggeredOnMouseDown(true);
@@ -265,13 +271,28 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         automationArm.setToggleState(armed, juce::dontSendNotification);
         root_.mark(DirtySet::Transport);
     };
+    // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.
+    record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };
+    // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording
+    // does to the notes already there, once MIDI records (SRF-05).
+    overdub.onClick = [this] {
+        const bool on = !root_.midiOverdub();
+        root_.setMidiOverdub(on);
+        overdub.setToggleState(on, juce::dontSendNotification);
+        root_.say(on ? "MIDI Arrangement Overdub on: a MIDI recording will add to the notes already there."
+                     : "MIDI Arrangement Overdub off: a MIDI recording will replace the notes it records over.");
+    };
     for (auto *item : items())
-        if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo &&
+        if (item != &play && item != &stop && item != &follow && item != &mix && item != &arrangementPage &&
+            item != &signature && item != &tempo &&
             item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
-            item != &loop && item != &loopStart && item != &loopLength)
+            item != &loop && item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
+            item != &indicators)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
+    // The MIDI Indicators show what comes in; a click on them does nothing, as Live's.
+    indicators.onClick = [this] { indicators.setToggleState(root_.midiIn(), juce::dontSendNotification); };
     automationArm.setToggleState(true, juce::dontSendNotification); // on in Live's new Set
 }
 std::vector<BarItem *> TransportBar::items() {
@@ -279,7 +300,7 @@ std::vector<BarItem *> TransportBar::items() {
             &metronome, &quantize,     &follow,   &position,      &play,      &stop,
             &record,   &overdub,       &automationArm, &reEnable, &capture,   &sessionRecord,
             &loopStart, &punchIn,      &loop,     &punchOut,      &loopLength, &draw,
-            &keyboard, &key,           &midi,     &cpu,           &indicators, &mix};
+            &keyboard, &key,           &midi,     &cpu,           &indicators, &arrangementPage, &mix};
 }
 void TransportBar::resized() {
     // Live's widths, in points; the left group from the left, the right group from the
@@ -315,8 +336,16 @@ void TransportBar::resized() {
     place(loop, 21, 1);
     place(punchOut, 20, 1);
     place(loopLength, 85);
-    x = getWidth() - 251;
-    place(mix, 28, 8);
+    // Preserve the positions of the right-hand global switches. The
+    // workspace labels shorten when the controls to their left need room.
+    const auto workspaceRight = getWidth() - 223;
+    const auto full = workspaceRight - x >= 2 * look::workspaceSegmentWidth + look::gap;
+    const int segmentWidth = full ? look::workspaceSegmentWidth : look::workspaceCompactSegmentWidth;
+    x = workspaceRight - 2 * segmentWidth;
+    arrangementPage.setText(full ? "Arrangement" : "Arr");
+    mix.setText(full ? "Mix View" : "Mix");
+    place(arrangementPage, segmentWidth, 0);
+    place(mix, segmentWidth, look::gap);
     place(draw, 17, 2);
     place(keyboard, 17, 2);
     place(key, 26, 12);
@@ -363,13 +392,21 @@ void TransportBar::refresh() {
     metronome.setToggleState(transport.metronome, juce::dontSendNotification);
     loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
+    record.setToggleState(root_.isRecording(), juce::dontSendNotification);
+    overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);
+    indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
     // Re-Enable Automation lights from the frame's snapshot (manual 25.4); Automation Arm from the
     // session, on without one as Live's new Set (manual 25.1).
     reEnable.setToggleState(root_.reader().automationOverridden(), juce::dontSendNotification);
     automationArm.setToggleState(!root_.automationArmed || root_.automationArmed(), juce::dontSendNotification);
 }
-void TransportBar::paint(juce::Graphics &g) { g.fillAll(look::frame); }
+void TransportBar::paint(juce::Graphics &g) {
+    g.fillAll(look::frame);
+    const auto group = arrangementPage.getBounds().getUnion(mix.getBounds()).toFloat();
+    g.setColour(look::field);
+    g.fillRoundedRectangle(group.expanded(look::hairline), look::radiusGroup);
+}
 void TransportBar::focus() { lastFocused_->grabKeyboardFocus(); }
 void TransportBar::beginFieldEdit(BarItem &item, const juce::String &text,
                                   std::function<bool(const std::string &)> commit) {

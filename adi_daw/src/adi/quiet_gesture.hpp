@@ -16,6 +16,8 @@ struct QuietPoll {
 /// monotonic milliseconds in one source clock; only accepted values renew it.
 /// At/after the interval, poll submits the ordinary End exactly once. A late
 /// value refuses Busy until that End, then the caller begins a fresh gesture.
+/// An in-progress commit refuses reentrant calls. Pending cancellation is
+/// closed to new values, and neither transition produces a polled End.
 /// No background timer, op merging, Undo/recommit or implicit automation write.
 class QuietSession final {
   public:

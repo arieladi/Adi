@@ -165,6 +165,8 @@ rows. They derive JSON with ADI's durable integer ids (ADR-0232 d6), positions a
 `bar|beat|tick`, and `nextIds`: the next free id for the rows a changeset creates by id (tracks,
 clips, lanes, routing, chains, devices, plugin refs, markers, automation lanes, key events,
 remarks, tunings, and notes).
+Track, clip and device suggestions also reserve the target IDs of existing
+remarks, including orphaned remarks. An exhausted ID space returns null.
 
 The ids matter. The canonical text projection forbids row ids (TEXT-PROJECTION R2), so an agent
 that saw only that text could not address anything. That is why `project_read` is its own derived

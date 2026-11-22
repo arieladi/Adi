@@ -2,12 +2,16 @@
 #include "adi/automation_lanes.hpp"
 #include "adi/blob.hpp"
 #include "adi/automation_range_rows.hpp"
+#include "adi/row_capture.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <cmath>
 #include <climits>
 #include <cstring>
+#include <map>
+#include <set>
 #include <stdexcept>
+#include <vector>
 
 namespace adi::automation {
 namespace {
@@ -52,7 +56,15 @@ void validateRow(OpContext& c, const Payload& row) {
     ownerExists(c,row);
 }
 Payload rowAt(OpContext& c, std::int64_t id) {
-    SQLite::Statement q(c.db,"SELECT * FROM automation_lanes WHERE id=?"); q.bind(1,id);
+    static const auto select = [] {
+        std::string sql = "SELECT ";
+        for (std::size_t i = 0; i < columns.size(); ++i) {
+            if (i != 0) sql += ',';
+            sql += columns[i];
+        }
+        return sql + " FROM automation_lanes WHERE id=?";
+    }();
+    SQLite::Statement q(c.db, select); q.bind(1,id);
     if (!q.executeStep()) return nullptr;
     Payload row=Payload::object(); int index=0;
     for (const auto* col:columns) {
@@ -63,18 +75,6 @@ Payload rowAt(OpContext& c, std::int64_t id) {
         else row[col]=value.getInt64();
     }
     return row;
-}
-void insertRow(OpContext& c,const Payload& row) {
-    SQLite::Statement q(c.db,"INSERT INTO automation_lanes VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-    int i=0;
-    for (const auto* col:columns) {
-        const auto& v=row.at(col); ++i;
-        if (v.is_null()) q.bind(i);
-        else if (v.is_string()) q.bind(i,v.get_ref<const std::string&>());
-        else if (v.is_number_float()) q.bind(i,v.get<double>());
-        else q.bind(i,number(v));
-    }
-    q.exec();
 }
 bool capture(OpContext& c,const Payload& p,Payload& inv,std::string& err) {
     try {
@@ -92,27 +92,72 @@ bool capture(OpContext& c,const Payload& p,Payload& inv,std::string& err) {
         return true;
     } catch (const std::exception& e) { err=e.what(); return false; }
 }
+void restoreStreams(OpContext& c, std::int64_t lane, const Payload& saved) {
+    if (!saved.is_array()) throw std::runtime_error("automation: expected captured streams");
+    std::map<std::int64_t, const Payload*> desired;
+    for (const auto& stream : saved) {
+        if (!desired.emplace(number(stream.at("id")), &stream).second)
+            throw std::runtime_error("automation: duplicate captured data ID");
+    }
+
+    std::set<std::int64_t> retained;
+    std::vector<std::int64_t> obsolete;
+    {
+        SQLite::Statement q(c.db, "SELECT id,clip_id FROM automation_data WHERE lane_id=? ORDER BY id");
+        q.bind(1, lane);
+        while (q.executeStep()) {
+            const auto id = q.getColumn(0).getInt64();
+            const auto clip = q.isColumnNull(1) ? Payload(nullptr) : Payload(q.getColumn(1).getInt64());
+            const auto found = desired.find(id);
+            if (found != desired.end() && found->second->at("clip") == clip)
+                retained.insert(id);
+            else
+                obsolete.push_back(id);
+        }
+    }
+    // Release obsolete addresses before inserting new streams into their slots.
+    SQLite::Statement erase(c.db, "DELETE FROM automation_data WHERE id=?");
+    for (const auto id : obsolete) {
+        erase.bind(1, id);
+        erase.exec();
+        erase.reset();
+    }
+
+    for (const auto& stream : saved) {
+        const auto id = number(stream.at("id"));
+        const auto& clip = stream.at("clip");
+        const auto& bytes = stream.at("bytes").get_binary();
+        if (bytes.size() > INT_MAX) throw std::runtime_error("automation: stream too large");
+        const bool update = retained.contains(id);
+        SQLite::Statement write(c.db, update
+            ? "UPDATE automation_data SET data=? WHERE id=?"
+            : "INSERT INTO automation_data(data,id,lane_id,clip_id) VALUES(?,?,?,?)");
+        write.bind(1, bytes.empty() ? static_cast<const void*>("") : bytes.data(),
+                   static_cast<int>(bytes.size()));
+        write.bind(2, id);
+        if (!update) {
+            write.bind(3, lane);
+            if (clip.is_null()) write.bind(4); else write.bind(4, number(clip));
+        }
+        write.exec();
+        range_rows::replace(c.db, id, clip, stream.value("ranges", Payload::array()));
+    }
+}
 bool restore(OpContext& c,const Payload& p,std::string& err) {
     try {
         const auto id=number(p.at("id")); const auto& state=p.at("state"); const auto& row=state.at("row");
         if (!row.is_null() && number(row.at("id"))!=id) throw std::runtime_error("automation: restore ID mismatch");
         // Restoration preserves every stored scalar, even legacy metadata whose
         // domain/range a new creation would reject. SQLite still enforces types.
-        SQLite::Statement remove(c.db,"DELETE FROM automation_lanes WHERE id=?"); remove.bind(1,id); remove.exec();
         if (row.is_null()) {
             if (!state.at("data").empty()) throw std::runtime_error("automation: absent lane with data");
+            SQLite::Statement remove(c.db,"DELETE FROM automation_lanes WHERE id=?"); remove.bind(1,id); remove.exec();
             return true;
         }
-        insertRow(c,row);
-        for (const auto& data:state.at("data")) {
-            SQLite::Statement q(c.db,"INSERT INTO automation_data(id,lane_id,clip_id,data) VALUES(?,?,?,?)");
-            q.bind(1,number(data.at("id"))); q.bind(2,id);
-            if (data.at("clip").is_null()) q.bind(3); else q.bind(3,number(data.at("clip")));
-            const auto& b=data.at("bytes").get_binary();
-            if (b.size()>INT_MAX) throw std::runtime_error("automation: stream too large");
-            q.bind(4,b.empty()?static_cast<const void*>(""):b.data(),static_cast<int>(b.size())); q.exec();
-            range_rows::replace(c.db,number(data.at("id")),data.at("clip"),data.value("ranges",Payload::array()));
-        }
+        Payload known = Payload::object();
+        for (const auto* column : columns) known[column] = row.at(column);
+        detail::restoreRow(c.db, "automation_lanes", known, rowAt(c,id).is_null() ? "" : "id");
+        restoreStreams(c, id, state.at("data"));
         return true;
     } catch (const std::exception& e) { err=e.what(); return false; }
 }
@@ -120,7 +165,7 @@ bool create(OpContext& c,const Payload& p,std::string& err) {
     try {
         const auto& row=p.at("row"); validateRow(c,row);
         if (number(row.at("id"))!=number(p.at("id"))) throw std::runtime_error("automation: creation ID mismatch");
-        insertRow(c,row); return true;
+        detail::restoreRow(c.db, "automation_lanes", row); return true;
     } catch (const std::exception& e) { err=e.what(); return false; }
 }
 bool removeLane(OpContext& c,const Payload& p,std::string& err) {

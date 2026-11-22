@@ -23,14 +23,15 @@ parallel route of a source. The output clip starts at the job's begin sample,
 converted to nanoseconds with a checked sample round trip, and plays Warp off.
 
 `prepareBounceInPlace(Store&, InPlaceBounceOptions, loader, control)` renders a
-whole regular track before its fader, replaces all its clips and parks its
-enabled inserts bypassed. Their state, params and blobs remain intact. Baked
+whole regular track before its fader, replaces its main-lane clips and parks its
+enabled inserts bypassed. Take-lane clips stay in the project. Device state,
+params and blobs remain intact. Baked
 input gain resets to zero, and an armed source disarms. The fader, pan, width,
 track delay and output routing remain live. Device bypass keeps latency under
 ADR-0203 d4; its graph delay line remains compensated and source device DSP is
 not called. One Undo restores the full original material, enabled state, input
 gain and arm flag. This is the whole-chain command: begin must be sample zero,
-and the explicit end must include every clip and the caller's chosen tail.
+and the explicit end must include the main-lane clips and the caller's chosen tail.
 It refuses a partial range, a group, locked/frozen/missing track, or live
 incoming main/send audio that would otherwise be added to its already baked
 mix. The lower-level `prepareBounce` range producer still supplies material

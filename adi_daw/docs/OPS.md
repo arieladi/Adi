@@ -566,9 +566,12 @@ updating in place without cascading children; clearing retains extensions.
 links. Legacy captured create payloads remain readable. No unknown child-table
 capture is claimed.
 
-The clip.setFades payload is {id,in?:{ticks?,curve?,tension?},out?:{...}}.
+The clip.setFades payload is {id,in?:{ticks?,startTicks?,curve?,tension?},out?:{...}}.
 It is audio-only; ticks are nonnegative and no longer than the clip's musical
 span, curve is 0..5, tension is finite [-1,1] or null for legacy arithmetic.
+The two distances are inward from each side's clip edge. `ticks` locates the
+peak, and `startTicks` locates the zero-gain handle. A positive `startTicks`
+must precede its peak, and a zero or omitted value puts it at the clip edge.
 Each selected side must set at least one known field. Both sides are one edit;
 its inverse captures native fields and the full typed details row or absence.
 
@@ -582,6 +585,10 @@ is not rewritten. clip.join restores the captured source and removes all new
 pieces, without allocating IDs or recapturing their source clocks. A prepared
 two-cut split and an appended clip.setMute for its middle piece can be committed
 as one expected-head transaction and one undo step (ADR-0153; N17).
+`prepareSplits` prepares one or two cuts per selected clip using one project
+snapshot and shared clip and child identity allocation (N55). It reports
+per-clip refusals and returns the accepted captures for one expected-head
+commit and one Undo.
 The clip.duplicate op creates only one captured clip and its children; its inverse
 is clip.delete.
 Delete captures full native rows, opaque children and external alias links.
@@ -632,8 +639,10 @@ supported commands and explicit refusals.
 accept attached Warp audio. They preserve AWRP/source windows and capture
 source musical fade domains in clip_warp_fade_domains (schema 1.13), so Split
 retains the original curve on both pieces with no new internal edge fade.
-clip.setFades clears the selected side's retained domain and captures its
-complete typed row in the inverse, alongside the existing nanosecond shape.
+clip.setFades uses that domain for an authored Warp handle pair and the existing
+nanosecond domain for an unwarped source. A selected side at the clip edge
+returns to its legacy edge-based envelope. The inverse captures both complete
+typed domain rows or their absence.
 
 **Captured Warp import (N17).** `clip_edit::prepareImportAudio` with
 `ImportOptions::warp` analyzes the source off the callback, then captures
@@ -1621,18 +1630,18 @@ UI/host producer wiring is introduced.
 | `device.setPanel` | e | N | sym | P0 |
 | `device.rename` | e | N | sym | P1 |
 | `device.setLatency` | e | G | sym | P0 |
-| `chain.create` | e | G | pair `chain.delete` | P2 |
-| `chain.delete` | e | G | cap | P2 |
-| `chain.reorder` | e | G | sym | P2 |
-| `chain.rename` | e | N | sym | P2 |
+| `chain.create` | e | G | pair `chain.delete` | P1 |
+| `chain.delete` | e | G | cap | P1 |
+| `chain.reorder` | e | G | sym | P1 |
+| `chain.rename` | e | N | sym | P1 |
 | `chain.setZones` | e | S | sym | P2 |
-| `chain.setMute` | e | S | sym | P2 |
-| `chain.setSolo` | e | S | sym | P2 |
-| `macro.setValue` | e | S | sym, coalescable | P2 |
-| `macro.rename` | e | N | sym | P2 |
-| `macro.map` | e | S | pair `macro.unmap` | P2 |
-| `macro.unmap` | e | S | cap | P2 |
-| `macro.setRange` | e | S | sym | P2 |
+| `chain.setMute` | e | S | sym | P1 |
+| `chain.setSolo` | e | S | sym | P1 |
+| `macro.setValue` | e | S | sym, coalescable | P1 |
+| `macro.rename` | e | N | sym | P1 |
+| `macro.map` | e | S | pair `macro.unmap` | P1 |
+| `macro.unmap` | e | S | cap | P1 |
+| `macro.setRange` | e | S | sym | P1 |
 
 N7's `ParamOps::uiEvent` emits the existing `device.setParam` requests with
 the same first-touch opener and normalization as a plug-in's own edit capture.
@@ -1723,9 +1732,11 @@ rate conversion, missing-file snapshot and immutable-content publication limit.
 | `return.setSendTap` | e | G | cap | P1 |
 | `routing.connect` | e | G | pair `routing.disconnect` | P0 |
 | `routing.disconnect` | e | G | cap | P0 |
+| `routing.setKeyTap` | e | G | state capture (absent = Post Mixer) | P1 |
 | `routing.setGain` | e | S | sym, coalescable | P0 |
 | `routing.setPan` | e | S | sym, coalescable | P1 |
 | `routing.setPreFader` | e | G | sym | P0 |
+| `routing.setSendTap` | e | G | cap, sym | P1 |
 | `routing.setEnabled` | e | S | sym | P0 |
 | `routing.reorder` | e | S | sym | P1 |
 | `mixer.setVolume` | e | S | sym, coalescable | P0 |
@@ -1756,13 +1767,30 @@ lanes `panLeft` and `panRight` use real -1..+1 units and the existing override /
 Re-Enable Automation path. The window does not implement the panning matrix.
 
 `return.setSendTap {id, pre}` is one return-owned Pre/Post choice (ADR-0203 d3).
-It persists with zero sends and changes every incoming send as one undo step.
+`return.setSendTap {id, click: true}` is the physical switch. A mixed return
+chooses Post first. A uniform return toggles its setting. The click clears
+individual tap overrides on every incoming send, including disabled sends,
+and captures their complete rows in the same Undo step.
+It persists with zero sends and changes the inherited tap in one undo step.
 Ordinary new routing.connect sends inherit an explicit choice on their return.
 A conflicting new per-edge routing.setPreFader edit refuses; the same value is
 allowed. Historical scalar payloads retain their old apply semantics. Absent
 preferences preserve legacy row taps and expose uniform or mixed state; no
 migration rewrites existing audio. A producer for a new send captures the
 uniform legacy choice as literal ops before creating it.
+
+`routing.setSendTap {id, tap}` chooses `pre_fx`, `post_fx`, or `post_mixer`
+for one send (ADR-0245 d10). Omit `tap` to inherit the return's setting again.
+The inverse restores the prior tap or inheritance. An explicit change to the
+return default with `pre` preserves individual choices. The snapshot marks unequal
+effective taps as mixed.
+
+A return inside a group accepts sends from descendants of that group. Its
+output joins those descendants before the group's devices. Moving a track or
+subgroup out removes any sends it loses access to, with the rows and their
+taps captured in the same undo step. Group-copy producers append
+`copyGroupSendRequests` after the cloned track ops in one transaction so
+internal sends target the copied returns.
 
 Its captured inverse uses internal optional restore {current, target}, each with
 nullable choice and ordered incoming {id, pre} values. It checks current flags,
@@ -1802,8 +1830,11 @@ application settings enters a payload.
 creates a locator or cycle marker. Time base defaults to musical (0, ticks),
 linear (1) uses nanoseconds. `pos` and `length` stay in that base's units.
 Kinds are position (default), cycle, chapter and sync. A supplied length defaults
-the kind to cycle; cycles require positive length. `marker.move {id,pos}` keeps
-its base, and `marker.resize {id,length}` resizes cycles. `marker.rename {id,name}`
+the kind to cycle. Cycles require positive length. `marker.move {id,pos}` keeps
+its base, and `marker.resize {id,length}` resizes cycles. New positions are
+nonnegative and a cycle end must be within the same range, up to 2^50 musical
+ticks or the maximum signed 64-bit nanosecond value. History can replay marker
+positions saved by older versions. `marker.rename {id,name}`
 and `marker.setColor {id,color?}` edit identity/colour (omit colour to clear;
 otherwise a Live palette index 0..69). Notes/prompts use `{id,text}`, including
 an empty string to clear. Prompts are literal stored data, never executed here.
@@ -2123,6 +2154,15 @@ else (ADR-0131 d2). Payloads, all keys permanent:
   is legal only when `kind` is `device`; `author` is `user` or `agent`.
 - `remark.edit {id, text}` · `remark.resolve {id, resolved}` · `remark.remove {id}`.
 
+A remark keeps its weak target ID when a track, clip or device is deleted.
+Owner-side producers allocate those row IDs with `RowIds::next`, which includes
+remark targets in the read snapshot. Use one allocator per edit and submit
+the literal IDs with the head from that same snapshot. Undo, Redo and stored
+baseline navigation restore material and anchors together. A note ID belongs
+to its clip's note stream. Use the guarded note edit path for changes prepared
+from a snapshot. An automation range's `record_index` locates a record in its
+own data stream.
+
 Two §7 points specific to remarks:
 
 - **`created` is in the payload.** The handler never reads a clock; the caller
@@ -2133,9 +2173,13 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**212 ops** — 71 P0, 85 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
-has a corresponding op, or is explicitly a runtime concern with no persisted
-state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
+**How many ops:** `tools/validate_ops.py` counts the tables above and prints the
+total and the count per priority (check 7). No number is written here: every
+pull request that added an op rewrote it to the same new value, so two such pull
+requests merged cleanly and left the count wrong. Every P0 and P1 feature in
+FEATURES.md has a corresponding op, or is explicitly a runtime concern with no
+persisted state. Counted and consistency-checked by `tools/validate_ops.py`, not
+asserted.
 
 ---
 
