@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Per-band Crush treble follows both curves
+
+`clones/shaper-crush-treble` at `edc8ee1f` — Calibrate Crush treble against bit and hold contours. **Lands after 3 December.** IDs 868–870 store each band's treble independently. Old states reopen at 100%. The 350 Hz filter keeps its history at full treble so the next edit can use the preceding audio. The knob, native and edited-Pd paths all passed under MSVC /W4 /WX at both precisions. Applying the shelf after the DC filter failed the moving marker by 0.00314. Discarding its history at full treble failed a later automation marker by over 0.55. Across three rates, 196,608 neutral stereo frames matched the previous binary and 1,769,472 whole, split and irregular stereo comparisons matched exactly.
+
+At 30% treble on registered kick and bass the median/p99 was 26.3/42.3 µs at 256 frames and 235.1/327.3 µs at 2,048. The reference took 44.6/137.8 and 251.4/1,442.7 µs. The largest channel RMS error was 0.000000063. At full treble the large-block median was 231.6 µs for ADI and 231.2 µs for the reference. ADI missed zero deadlines in 40,960 callbacks across both settings and sizes. All paths reported zero latency.
+
+Of nineteen programs with reduced treble, eighteen changed sample output. In the other, both coupled curves were at full height throughout. In the source-order weighted comparison ten errors decreased, five increased and four stayed within 0.000001 RMS. The one earlier regression improved from 0.423969 to 0.419908. The fixed-order result was eleven lower, four higher and four within tolerance. All fifteen overlaps with previously calibrated stages reproduced both prior paths. The measured pipelines remain at 42/873 in source order and 40/873 in fixed order. On the seven-stage main comparison nine improved, five worsened and five stayed within tolerance. Separate study found a neutral fractional-hold pre-roll difference around one moving resolution edge, independent of this treble port.
+
+PR requested
+
 ## 22 November 2026 — Faster moving Crush curves with the calibrated crossing intact
 
 `clones/shaper-crush-resolution` at `2afb86d5` — Reuse the preceding quantizer code for moving Crush curves. This updates the current-stage repair at `77f4ec0a`. It keeps the previous integer code per ear and takes a shorter path for normalized controls. It also preserves the original rules for infinities, NaNs, finite out-of-range controls, full resolution and resets.
