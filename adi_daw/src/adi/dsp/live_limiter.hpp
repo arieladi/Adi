@@ -5,11 +5,10 @@
 // peak detector it inherits).
 //
 //   Gain      dB before the limiter.
-//   Ceiling   the level nothing leaves above, dBFS. Lowered while running,
-//             the samples already in the delay (limited to the old ceiling)
-//             are clamped to the new one for one latency, or in True Peak
-//             mode scaled by new over old, so they stay under it between the
-//             samples too; every later sample meets it through the brickwall.
+//   Ceiling   the level nothing leaves above, dBFS. Lowered while running, it
+//             holds from the next sample: the brickwall re-plans the gains it
+//             had set for its delay (dsp/limiter.hpp, A CEILING LOWERED), so
+//             nothing is attenuated twice and no step follows.
 //   Release   ms, the limiter's recovery.
 //   Lookahead 1.5, 3 or 6 ms, in whole samples: the reported latency, plus
 //             the true-peak detector's delay in True Peak mode.
@@ -72,8 +71,8 @@ private:
     using Block = std::array<std::array<double, kBlock>, 2>;
     void update() noexcept;
     /// One link's path over n samples of gained input: encoded, limited,
-    /// clamped for the first `clamp` samples, decoded.
-    void runPath(int link, const Block& x, Block& y, std::size_t n, std::size_t clamp) noexcept;
+    /// decoded.
+    void runPath(int link, const Block& x, Block& y, std::size_t n) noexcept;
     /// Every path from silence, the link's alone: after prepare() and a
     /// latency change.
     void restart() noexcept;
@@ -85,8 +84,7 @@ private:
     int link_ = Stereo, kind_ = Standard;
     std::array<double, 3> weight_{1.0, 0.0, 0.0};  // each link's share of the output
     std::array<std::size_t, 3> filling_{};         // samples until a new path's delay is full
-    std::size_t clampLeft_ = 0;  // samples still held to a lowered ceiling
-    double clampScale_ = 1.0;    // True Peak: new over old ceiling for those samples
+
 };
 
 }  // namespace adi::dsp

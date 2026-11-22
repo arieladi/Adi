@@ -24,6 +24,10 @@ void LookaheadLimiter::prepare(double sampleRate, int channels, int maxLookahead
     dqValue_.assign(static_cast<std::size_t>(dqCap_), 1.0);
     dqIndex_.assign(static_cast<std::size_t>(dqCap_), 0);
     box_.assign(static_cast<std::size_t>(ring_), 1.0);
+    levelCap_ = 2 * maxLookahead_ + 4;
+    levels_.assign(static_cast<std::size_t>(levelCap_), 0.0);
+    scratchValue_.assign(static_cast<std::size_t>(levelCap_), 0.0);
+    scratchIndex_.assign(static_cast<std::size_t>(levelCap_), 0);
     setReleaseSeconds(releaseSeconds_);
     lookahead_ = std::min(lookahead_, maxLookahead_);
     reset();
@@ -37,6 +41,53 @@ void LookaheadLimiter::setLookahead(int samples) {
 void LookaheadLimiter::setTruePeak(bool on) noexcept {
     truePeak_ = on;
     reset();
+}
+
+void LookaheadLimiter::setCeiling(double linear) noexcept {
+    const double next = linear > 0.0 ? linear : 1.0e-6;
+    const bool lower = next < ceiling_;
+    ceiling_ = next;
+    if (lower) {
+        replan();
+    }
+}
+
+void LookaheadLimiter::replan() noexcept {
+    if (levels_.empty() || n_ == 0) {
+        return;  // not prepared, or nothing planned yet
+    }
+    const int L = lookahead_;
+    const int win = L + 1;
+    // The boxcar holds rel for steps n_-win .. n_-1, the oldest at boxIdx_.
+    // Entry k bounds the outputs of the samples entered at steps k-L .. k.
+    const std::int64_t first = n_ - win;
+    std::int64_t m = first - L;
+    int head = 0, size = 0;
+    double sum = 0.0, bound = 1.0;
+    for (int j = 0; j < win; ++j) {
+        const std::int64_t k = first + j;
+        for (; m <= k; ++m) {
+            const double v = m >= 0 ? levels_[static_cast<std::size_t>(m % levelCap_)] : 0.0;
+            while (size > 0 && scratchValue_[static_cast<std::size_t>(head + size - 1)] <= v) {
+                --size;
+            }
+            scratchValue_[static_cast<std::size_t>(head + size)] = v;
+            scratchIndex_[static_cast<std::size_t>(head + size)] = m;
+            ++size;
+        }
+        while (scratchIndex_[static_cast<std::size_t>(head)] < k - L) {
+            ++head;
+            --size;
+        }
+        const double loudest = scratchValue_[static_cast<std::size_t>(head)];
+        bound = loudest > ceiling_ ? ceiling_ / loudest : 1.0;
+        double& entry = box_[static_cast<std::size_t>((boxIdx_ + j) % win)];
+        entry = std::min(entry, bound);
+        sum += entry;
+    }
+    boxSum_ = sum;
+    // The last entry is rel now; the release goes on from the cut value.
+    rel_ = std::min(rel_, bound);
 }
 
 void LookaheadLimiter::setLookaheadMs(double ms) {
@@ -60,6 +111,7 @@ void LookaheadLimiter::reset() noexcept {
     // The boxcar starts FULL OF UNITY, so the first samples out are transparent
     // rather than faded in from a gain of zero.
     std::fill(box_.begin(), box_.end(), 1.0);
+    std::fill(levels_.begin(), levels_.end(), 0.0);
     boxIdx_ = 0;
     boxSum_ = static_cast<double>(lookahead_ + 1);
     rel_ = 1.0;
@@ -127,7 +179,7 @@ void LookaheadLimiter::runOffline(const Sample* const* in, Sample* const* out, s
     }
 }
 
-double LookaheadLimiter::truePeakTarget() noexcept {
+double LookaheadLimiter::truePeakLevel() noexcept {
     constexpr int kTaps = TruePeakMeter::kTapsPerPhase;
     // The segment from sample j = n - 8 to j + 1: |x[j]| and every phase the
     // interpolator puts between j and j + 1 (all of them land there; see
@@ -155,7 +207,7 @@ double LookaheadLimiter::truePeakTarget() noexcept {
     segmentHead_ = (segmentHead_ + 1) % (2 * kTruePeakSpread + 1);
     double around = 0.0;
     for (double s : segments_) around = std::max(around, s);
-    return around > ceiling_ ? ceiling_ / around : 1.0;
+    return around;
 }
 
 template <class Sample>
@@ -172,27 +224,29 @@ void LookaheadLimiter::run(const Sample* const* in, Sample* const* out, int fram
             frame_[static_cast<std::size_t>(c)] = std::isfinite(x) ? x : 0.0;
         }
         // --- detection: SAMPLE PEAK, or TRUE PEAK, across all channels -----
-        double t = 1.0;
+        double level = 0.0;
         if (tp) {
-            t = truePeakTarget();
+            level = truePeakLevel();
         } else {
-            double peak = 0.0;
             for (int c = 0; c < channels_; ++c) {
-                const double a = std::fabs(frame_[static_cast<std::size_t>(c)]);
-                if (a > peak) peak = a;
+                level = std::max(level, std::fabs(frame_[static_cast<std::size_t>(c)]));
             }
-            t = peak > ceiling_ ? ceiling_ / peak : 1.0;
         }
+        levels_[static_cast<std::size_t>(n_ % levelCap_)] = level;
 
-        // --- sliding minimum of t over the last L+1 samples ---------------
+        // --- sliding maximum of the level over the last L+1 samples; the
+        // hold is the ceiling over it (the minimum of the targets) ---------
         while (dqSize_ > 0) {
             const int back = (dqHead_ + dqSize_ - 1) % dqCap_;
-            if (dqValue_[static_cast<std::size_t>(back)] >= t) --dqSize_;
-            else break;
+            if (dqValue_[static_cast<std::size_t>(back)] <= level) {
+                --dqSize_;
+            } else {
+                break;
+            }
         }
         {
             const int slot = (dqHead_ + dqSize_) % dqCap_;
-            dqValue_[static_cast<std::size_t>(slot)] = t;
+            dqValue_[static_cast<std::size_t>(slot)] = level;
             dqIndex_[static_cast<std::size_t>(slot)] = n_;
             ++dqSize_;
         }
@@ -200,7 +254,8 @@ void LookaheadLimiter::run(const Sample* const* in, Sample* const* out, int fram
             dqHead_ = (dqHead_ + 1) % dqCap_;
             --dqSize_;
         }
-        const double hold = dqValue_[static_cast<std::size_t>(dqHead_)];
+        const double loudest = dqValue_[static_cast<std::size_t>(dqHead_)];
+        const double hold = loudest > ceiling_ ? ceiling_ / loudest : 1.0;
 
         // --- release: down at once, up exponentially, never above hold -----
         rel_ = hold < rel_ ? hold : hold + (rel_ - hold) * releaseCoef_;

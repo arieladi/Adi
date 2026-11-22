@@ -294,6 +294,124 @@ void changesWhileRunning() {
                                                 ": a ceiling lowered to -36 dB holds between the samples (" +
                                                 std::to_string(meter.peakDb()) + " dBTP)");
     }
+    // A lowered ceiling attenuates once (a found defect: a wrapper scale on
+    // top of the brickwall's own move gave a notch and a 36 dB step): on
+    // full-scale noise the window after the change sits at the new ceiling,
+    // not under it, and the level after the window matches it; a lone peak
+    // already in the delay is held; a quiet programme passes as itself.
+    for (int mode : {L::Standard, L::TruePeak}) {
+        auto lim = made(0, mode, L::Stereo, 2);
+        const auto full = noise(19200, 1.0);
+        Stereo y{std::vector<float>(full.l.size()), std::vector<float>(full.r.size())};
+        const std::size_t change = 97 * 49;
+        for (std::size_t at = 0; at < full.l.size(); at += 97) {
+            if (at == change) {
+                lim.set(L::Ceiling, -36);
+            }
+            const auto n = std::min<std::size_t>(97, full.l.size() - at);
+            lim.process(full.l.data() + at, full.r.data() + at, y.l.data() + at, y.r.data() + at, n);
+        }
+        const auto d = static_cast<std::size_t>(lim.latency());
+        const auto peakIn = [&](std::size_t from, std::size_t to) {
+            double p = 0;
+            for (std::size_t i = from; i < to; ++i) {
+                p = std::max({p, static_cast<double>(std::abs(y.l[i])), static_cast<double>(std::abs(y.r[i]))});
+            }
+            return p;
+        };
+        const double inside = peakIn(change + d / 2, change + d), after = peakIn(change + d, change + 2 * d);
+        check(inside > 0.5 * fromDb(-36) && after > 0.5 * fromDb(-36) && inside < 2 * after && after < 2 * inside,
+              "mode " + std::to_string(mode) + ": after a lowered ceiling, the delayed window peaks at " +
+                  std::to_string(20 * std::log10(inside)) + " dB and the next at " +
+                  std::to_string(20 * std::log10(after)) + " dB, both at the new ceiling (-36)");
+        // The gain from one sample to the next across the window's end.
+        double jump = 0;
+        for (std::size_t i = change + d - 4; i < change + d + 4; ++i) {
+            const double a = std::abs(static_cast<double>(full.l[i - d])), b = std::abs(static_cast<double>(full.l[i + 1 - d]));
+            if (a > 0.5 && b > 0.5) {
+                const double before = std::abs(static_cast<double>(y.l[i]) / static_cast<double>(full.l[i - d]));
+                const double next = std::abs(static_cast<double>(y.l[i + 1]) / static_cast<double>(full.l[i + 1 - d]));
+                jump = std::max(jump, std::abs(std::log(next / before)));
+            }
+        }
+        check(jump < 0.1, "mode " + std::to_string(mode) + ": no gain step where the delayed window ends (" +
+                              std::to_string(20 * jump / std::log(10.0)) + " dB)");
+    }
+    for (int mode : {L::Standard, L::TruePeak}) {
+        // A lone full-scale peak inside the delay, silence after it.
+        auto lim = made(0, mode, L::Stereo, 2);
+        Stereo pulse{std::vector<float>(4800), std::vector<float>(4800)};
+        pulse.l[2000] = 1.0f;
+        Stereo held{std::vector<float>(4800), std::vector<float>(4800)};
+        lim.process(pulse.l.data(), pulse.r.data(), held.l.data(), held.r.data(), 2100);
+        lim.set(L::Ceiling, -20);
+        lim.process(pulse.l.data() + 2100, pulse.r.data() + 2100, held.l.data() + 2100, held.r.data() + 2100, 2700);
+        check(peakOf(held.l) <= fromDb(-20) * (1 + 1e-6) && peakOf(held.l) > 0.99 * fromDb(-20),
+              "mode " + std::to_string(mode) + ": a peak already in the delay leaves at the lowered ceiling (" +
+                  std::to_string(20 * std::log10(peakOf(held.l))) + " dB)");
+        // A -40 dBFS sine through 0 to -20 dB: under both, it passes as itself.
+        auto q = made(0, mode);
+        Stereo s{std::vector<float>(9600), std::vector<float>(9600)};
+        for (std::size_t i = 0; i < s.l.size(); ++i) {
+            s.l[i] = s.r[i] = static_cast<float>(0.01 * std::sin(2 * kPi * 440 * static_cast<double>(i) / 48000));
+        }
+        Stereo o{std::vector<float>(9600), std::vector<float>(9600)};
+        q.process(s.l.data(), s.r.data(), o.l.data(), o.r.data(), 4800);
+        q.set(L::Ceiling, -20);
+        q.process(s.l.data() + 4800, s.r.data() + 4800, o.l.data() + 4800, o.r.data() + 4800, 4800);
+        const auto dq = static_cast<std::size_t>(q.latency());
+        bool same = true;
+        for (std::size_t i = dq; i < s.l.size() && same; ++i) {
+            same = std::abs(o.l[i] - s.l[i - dq]) <= 1e-7f;
+        }
+        check(same, "mode " + std::to_string(mode) + ": a quiet programme passes a lowered ceiling as itself");
+    }
+    // A Ceiling swept 0 to -12 dB a block at a time in True Peak mode: every
+    // sample under the ceiling in force, and settled at -12 dB, not deeper
+    // (a found defect: a compounded scale took a sweep to about -24 dB).
+    {
+        auto lim = made(0, L::TruePeak, L::Stereo, 1);
+        const auto full = noise(72000, 1.0);
+        Stereo y{std::vector<float>(full.l.size()), std::vector<float>(full.r.size())};
+        std::vector<double> inForce(full.l.size(), 1.0);
+        double ceilingDb = 0;
+        for (std::size_t at = 0; at < full.l.size(); at += 64) {
+            if (at >= 4800 && at < 4800 + 48000) {
+                ceilingDb = -12.0 * static_cast<double>(at - 4800) / 48000.0;
+                lim.set(L::Ceiling, ceilingDb);
+            } else if (at >= 4800 + 48000) {
+                ceilingDb = -12;
+                lim.set(L::Ceiling, ceilingDb);
+            }
+            const auto n = std::min<std::size_t>(64, full.l.size() - at);
+            std::fill(inForce.begin() + static_cast<std::ptrdiff_t>(at), inForce.begin() + static_cast<std::ptrdiff_t>(at + n),
+                      fromDb(ceilingDb));
+            lim.process(full.l.data() + at, full.r.data() + at, y.l.data() + at, y.r.data() + at, n);
+        }
+        bool under = true;
+        for (std::size_t i = 0; i < y.l.size(); ++i) {
+            under = under && std::abs(y.l[i]) <= inForce[i] * (1 + 1e-6) && std::abs(y.r[i]) <= inForce[i] * (1 + 1e-6);
+        }
+        // Settled: the tail's true peak (what True Peak mode holds; on white
+        // noise the sample peaks sit some 3.6 dB under it) at the ceiling.
+        adi::dsp::TruePeakMeter meter;
+        meter.prepare(48000, 2);
+        const std::size_t from = y.l.size() - 4800;
+        const float* tailAt[2] = {y.l.data() + from, y.r.data() + from};
+        meter.process(tailAt, 2, 4800);
+        check(under && meter.peakDb() > -13 && meter.peakDb() <= -12 + 0.05,
+              "a Ceiling swept to -12 dB: every sample under the ceiling in force, settled at " +
+                  std::to_string(meter.peakDb()) + " dBTP");
+        // And while it sweeps: over its last 100 ms the ceiling in force is
+        // -10.8 to -12 dB, and the true peak follows it, not its square.
+        adi::dsp::TruePeakMeter sweeping;
+        sweeping.prepare(48000, 2);
+        const std::size_t end = 4800 + 48000;
+        const float* lateAt[2] = {y.l.data() + end - 4800, y.r.data() + end - 4800};
+        sweeping.process(lateAt, 2, 4800);
+        check(sweeping.peakDb() > -13 && sweeping.peakDb() <= -10.8 + 0.05,
+              "and over the sweep's last 100 ms, " + std::to_string(sweeping.peakDb()) + " dBTP");
+    }
     // Above the ceiling, a hot left (DC 4.0) and a quiet right (DC 0.1), the
     // link changed every 97 to 291 samples: mid-hold, mid-fade, back to a
     // path fading out, a third path. On DC each link's right settles to a

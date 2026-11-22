@@ -34,12 +34,10 @@ void LiveLimiter::prepare(double sampleRate) {
 
 void LiveLimiter::restart() noexcept {
     // Every brickwall starts from silence: the link's path alone, nothing to
-    // fade or clamp.
+    // fade.
     weight_ = {0.0, 0.0, 0.0};
     weight_[static_cast<std::size_t>(link_)] = 1.0;
     filling_ = {0, 0, 0};
-    clampLeft_ = 0;
-    clampScale_ = 1.0;
 }
 
 void LiveLimiter::set(Param p, double v) noexcept {
@@ -74,7 +72,6 @@ void LiveLimiter::update() noexcept {
         l.setCeiling(ceiling);
         l.setReleaseSeconds(p_[Release] / 1000.0);
     }
-    const double before = ceiling_;
     ceiling_ = ceiling;
     const int was = link_;
     link_ = link;
@@ -82,14 +79,6 @@ void LiveLimiter::update() noexcept {
         // A latency change: every path restarts from silence together.
         restart();
         return;
-    }
-    if (ceiling < before) {
-        // The samples already in the delay were limited to the old ceiling.
-        // For one latency they are clamped to the new one, or, in True Peak
-        // mode, scaled by new over old, so they stay under it between the
-        // samples too (a clamp's corners would not).
-        clampLeft_ = static_cast<std::size_t>(latency());
-        clampScale_ *= ceiling / before;
     }
     const auto l = static_cast<std::size_t>(link);
     if (link != was && weight_[l] == 0.0) {
@@ -110,7 +99,7 @@ int LiveLimiter::latency() const noexcept {
     return limiter_[0].latencySamples();
 }
 
-void LiveLimiter::runPath(int link, const Block& x, Block& y, std::size_t n, std::size_t clamp) noexcept {
+void LiveLimiter::runPath(int link, const Block& x, Block& y, std::size_t n) noexcept {
     Block a;
     for (std::size_t i = 0; i < n; ++i) {
         double l = x[0][i], r = x[1][i];
@@ -133,15 +122,6 @@ void LiveLimiter::runPath(int link, const Block& x, Block& y, std::size_t n, std
     }
     for (std::size_t i = 0; i < n; ++i) {
         double l = y[0][i], r = y[1][i];
-        if (i < clamp) {
-            if (kind_ == TruePeak) {
-                l *= clampScale_;
-                r *= clampScale_;
-            } else {
-                l = std::clamp(l, -ceiling_, ceiling_);
-                r = std::clamp(r, -ceiling_, ceiling_);
-            }
-        }
         if (link == MidSide) {
             const double mid = l, side = r;
             l = mid + side;
@@ -170,12 +150,11 @@ void LiveLimiter::process(const float* inL, const float* inR, float* outL, float
             x[0][i] = std::isfinite(l) ? l * gain_ : 0.0;
             x[1][i] = std::isfinite(r) ? r * gain_ : 0.0;
         }
-        const std::size_t clamp = std::min(n, clampLeft_);
         std::array<bool, 3> sounding{};
         for (std::size_t p = 0; p < 3; ++p) {
             sounding[p] = p == current || weight_[p] > 0.0;
             if (sounding[p]) {
-                runPath(static_cast<int>(p), x, y[p], n, clamp);
+                runPath(static_cast<int>(p), x, y[p], n);
             }
         }
         for (std::size_t i = 0; i < n; ++i) {
@@ -213,10 +192,6 @@ void LiveLimiter::process(const float* inL, const float* inR, float* outL, float
             if (outR) {
                 outR[done + i] = static_cast<float>(r);
             }
-        }
-        clampLeft_ -= clamp;
-        if (clampLeft_ == 0) {
-            clampScale_ = 1.0;
         }
         done += n;
     }
