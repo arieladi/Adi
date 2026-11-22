@@ -80,6 +80,44 @@ void loudnessCeilingAndGates() {
     options.targetLufs=-14;options.truePeakCeilingDb=-1;const auto gated=tone(directory.path(),"gated",options,48000,true);
     check(gated.outputLufs && std::abs(*gated.outputLufs+14)<=0.1 && gated.encodingPasses>=2,"normalization corrects the gain when a boost changes absolute-gate membership");
 }
+void exportStatistics() {
+    ExportAnalysis shortMeter(48000, 2);
+    const std::array<double, 8> impulse{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    shortMeter.append(impulse, 4);
+    const auto shortResult = shortMeter.finish();
+    check(shortResult.samplePeakDbfs == 0.0 && shortResult.rmsDbfs &&
+          std::abs(*shortResult.rmsDbfs - 10.0 * std::log10(1.0 / 8)) < 1e-12,
+          "sample peak and whole-file RMS measure raw samples across both channels");
+    check(!shortResult.integratedLufs && !shortResult.maximumMomentaryLufs &&
+          !shortResult.maximumShortTermLufs && !shortResult.loudnessRangeLu,
+          "short audio does not invent readings for underfilled windows");
+
+    test::TempDirectory directory{"normalization", "statistics"};
+    Normalization options;
+    options.mode = NormalizeMode::Peak;
+    NormalizationCapture capture(directory.path() / "long.f64", 48000, 1, options);
+    constexpr std::uint32_t block = 1200;
+    std::vector<double> samples(block);
+    for (std::uint32_t first = 0; first < 384000; first += block) {
+        const double gain = first < 192000 ? 0.1 : 0.5;
+        for (std::uint32_t i = 0; i < block; ++i) {
+            samples[i] = gain * std::sin(2.0 * std::numbers::pi * i / 48.0);
+        }
+        capture.append(samples, block);
+    }
+    const auto report = capture.finish(directory.path() / "long.wav",
+                                       audio::WavFormat::Float32, audio::WavDither::None, 0);
+    check(report.captured.loudnessRangeLu && *report.captured.loudnessRangeLu > 10.0 &&
+          report.captured.maximumMomentaryLufs && report.captured.maximumShortTermLufs,
+          "one shared meter reports range and held maxima after the required windows");
+    check(report.captured.integratedLufs == report.sourceLufs &&
+          report.decoded.integratedLufs == report.outputLufs &&
+          report.decoded.truePeakDbtp == report.outputTruePeakDb &&
+          report.decoded.samplePeakDbfs == 0.0 && report.captured.samplePeakDbfs &&
+          *report.captured.samplePeakDbfs < -6.0,
+          "captured PCM and decoded normalized delivery are distinguished");
+}
+
 void refusalsAndCancellation() {
     test::TempDirectory directory{"normalization","refusals"};Normalization options;options.mode=NormalizeMode::Loudness;
     bool refused=false;try{NormalizationCapture capture(directory.path()/"short.f64",48000,1,options);const std::array<double,2> samples={0.1,-0.1};capture.append(samples,2);capture.finish(directory.path()/"short.wav",audio::WavFormat::Float32,audio::WavDither::None,0);}catch(const std::exception&){refused=true;}
@@ -96,4 +134,4 @@ void refusalsAndCancellation() {
     check(refused && !std::filesystem::exists(directory.path()/"cancel.wav"),"owner cancellation interrupts normalization before its output is encoded");
 }
 }
-int main(){try{peakAndWidePrecision();loudnessCeilingAndGates();refusalsAndCancellation();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{peakAndWidePrecision();loudnessCeilingAndGates();exportStatistics();refusalsAndCancellation();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

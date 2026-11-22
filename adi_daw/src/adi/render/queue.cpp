@@ -683,6 +683,15 @@ std::string serializeRunManifest(const RunReport& run) {
     const auto optionalNumber = [](const std::optional<double>& value) -> Json {
         return value ? Json(*value) : Json(nullptr);
     };
+    const auto exportStatistics = [&](const ExportStatistics& statistics) -> Json {
+        return {{"integrated_lufs", optionalNumber(statistics.integratedLufs)},
+                {"sample_peak_dbfs", optionalNumber(statistics.samplePeakDbfs)},
+                {"true_peak_dbtp", optionalNumber(statistics.truePeakDbtp)},
+                {"loudness_range_lu", optionalNumber(statistics.loudnessRangeLu)},
+                {"maximum_momentary_lufs", optionalNumber(statistics.maximumMomentaryLufs)},
+                {"maximum_short_term_lufs", optionalNumber(statistics.maximumShortTermLufs)},
+                {"rms_dbfs", optionalNumber(statistics.rmsDbfs)}};
+    };
     const auto identityValue = [&](const media::FileIdentity& identity) -> Json {
         return {{"volume",identity.volume},{"file",identity.file},
                 {"file_high",identity.fileHigh},{"scheme",identityScheme(identity.scheme)}};
@@ -791,6 +800,8 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"source_true_peak_db", optionalNumber(report.sourceTruePeakDb)},
                     {"output_lufs", optionalNumber(report.outputLufs)},
                     {"output_true_peak_db", optionalNumber(report.outputTruePeakDb)},
+                    {"captured_pcm", exportStatistics(report.captured)},
+                    {"decoded_delivery", exportStatistics(report.decoded)},
                     {"applied_gain_db", report.appliedGainDb}, {"ceiling_limited", report.ceilingLimited},
                     {"encoding_passes", report.encodingPasses}};
             }
