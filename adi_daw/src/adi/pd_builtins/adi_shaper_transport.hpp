@@ -17,7 +17,7 @@ inline void applyShaperTransport(dsp::AdiShaper& core, bool playing, double bpm,
         numerator <= 0 || denominator <= 0 || ticks < 0 || ticks >= textproj::kPPQ) return;
     core.tempo(bpm);
     const double beatStart = ((bar - 1.0) * numerator + beat - 1.0) * 4.0 / denominator;
-    core.sync(std::floor(beatStart) + ticks / textproj::kPPQ, playing);
+    core.sync(std::floor(beatStart) + ticks / textproj::kPPQ, playing, 64);
 }
 // The exact quarter-note position ([adi.transport]'s whole quarter notes plus
 // the fraction, added in double), which the seven fields cannot give in 2/2 or
