@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Filter preset coverage and a missing resonant response
+
+On the 873-program bank, 359 had Filter inactive and 437 kept the cutoff centered. Fifty-six requested stereo spread only on response types outside the five landed equivalents. Twenty-one used a mapped response with nonzero spread. With the same seven-stage projection and other controls in each comparison, enabling the measured offsets on `830d3a12` improved two, worsened eleven and left eight within 0.000001 RMS. All 21 chains also depended on another absent stage. None crossed 0.001. Six of the original 81 Trim regressions requested stereo spread on an unsupported Filter response.
+
+One unrepresented resonant low-pass appears on 35 audible bands across 29 of those 81 programs. Fourteen small-signal holdouts at 44.1 and 96 kHz, using the damping measured at 48 kHz, matched a single two-substep state-variable response within 0.000674 percent relative RMS. At musical input levels the response also depends on amplitude, polarity and retained state. At input amplitude 0.5, cutoff 0.81 and resonance 0.73, broadband shape departed from the low-level response by 11.15%, 26.18% and 76.46% at minimum, default and maximum input drive. A quiet probe one sample after a louder impulse deviated by 16.89 percent, decaying to 1.35 percent at 16 frames. The initial drive experiment and the recovered cutoff/resonance law are private fixtures for the remaining state-dependent calibration.
+
+PR requested
+
 ## 22 November 2026 — Seven registered stages on stereo kick and bass
 
 For DEV-31, each side processed the same stereo input at 48 kHz, the same selected settings and 98,304 warm-up frames. Each timing used five trials of 2,048 callbacks and each audio comparison used 192,000 stereo frames. The registered 415-control device used the seven stage sources, external and canvas on main at `87ea349c`. The comparison host’s prepare-only lock difference falls outside the timed callback. Table entries are median callback durations in microseconds.
