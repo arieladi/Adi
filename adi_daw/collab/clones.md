@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Isolate the endpoint and stochastic clock interactions
+
+All 163 historical programs with enabled Crush were replayed from a frozen weighted device. The endpoint change alone altered 42 stereo streams in fixed order and 43 in source order. Against the original, the fixed comparisons were eleven lower in RMS, nine higher and 143 within 0.000001. Source order gave nine lower, eleven higher and 143 within tolerance.
+
+Adding the calibrated clock to the endpoint build gave fourteen lower, ten higher and 139 within tolerance in fixed order. In source order the counts were sixteen lower, twelve higher and 135 within tolerance. Applying both to the original frozen build gave 22 lower, seventeen higher and 124 within tolerance in fixed order, and 21 lower, twenty higher and 122 within tolerance in source order. Separately rounding stochastic timing changed 34 of 39 fixed-order streams and 33 of 39 source-order streams. None of these comparisons crossed the 0.001 stereo RMS threshold. The private inventory also found 408 single-point lanes with a quantized point and an independently stored, more precise constant height. Their mapping is undergoing controlled replay.
+
 ## 22 November 2026 — Automatic release in the two input followers
 
 Toggling automatic release alone changed all seven original Hold programs that enable it. On kick and bass the isolated stereo RMS change was 0.001205–0.015062. Twelve new comparisons of signed stereo markers selected the current-frame signal from Width as the control for Hold at 44.1, 48 and 96 kHz. Shifting the control by either one frame raised each error to at least 0.227 RMS.
