@@ -211,36 +211,39 @@ void checkObject(std::span<const Field> fields, const Payload& p, Bounds bounds,
                  const std::string& prefix, std::string_view opName,
                  std::vector<ValidationIssue>& out);
 
-/// The remote bounds inside an open value: an Object with no declared
-/// members, or an element of an Array with no declared items. Nothing names
-/// what it holds, so the profile's defaults hold all the way down: text,
-/// member names included, at most kRemoteMaxTextLength characters, and
-/// arrays and objects at most kRemoteMaxArrayItems members. The depth is the
-/// wire's (WireLimits::maxDepth), and JSON has no non-finite number. Stops at
-/// the first issue, so a hostile value costs one issue, not one per member.
-bool checkOpen(const Payload& v, const std::string& key, std::vector<ValidationIssue>& out) {
-    if (v.is_string()) {
+/// Validate an open Object or Array element down to its leaves. Numbers must
+/// be finite. Remote submissions also keep the profile's text and item bounds.
+/// Stops at the first issue within this field.
+bool checkOpen(const Payload& v, const std::string& key, Bounds bounds,
+               std::vector<ValidationIssue>& out) {
+    if (v.is_number_float() && !std::isfinite(v.get<double>())) {
+        out.push_back({key, "value is not finite"});
+        return false;
+    }
+    const bool remote = bounds == Bounds::Remote;
+    if (remote && v.is_string()) {
         if (utf8CodePoints(v.get_ref<const std::string&>()) <= kRemoteMaxTextLength) return true;
         out.push_back({key, "longer than " + std::to_string(kRemoteMaxTextLength) + " characters"});
         return false;
     }
     if (!v.is_array() && !v.is_object()) return true;
-    if (v.size() > kRemoteMaxArrayItems) {
+    if (remote && v.size() > kRemoteMaxArrayItems) {
         out.push_back({key, "more than " + std::to_string(kRemoteMaxArrayItems) + " items"});
         return false;
     }
     if (v.is_array()) {
         std::size_t i = 0;
-        for (const auto& element : v)
-            if (!checkOpen(element, key + "[" + std::to_string(i++) + "]", out)) return false;
+        for (const auto& element : v) {
+            if (!checkOpen(element, key + "[" + std::to_string(i++) + "]", bounds, out)) return false;
+        }
         return true;
     }
     for (auto it = v.begin(); it != v.end(); ++it) {
-        if (utf8CodePoints(it.key()) > kRemoteMaxTextLength) {
+        if (remote && utf8CodePoints(it.key()) > kRemoteMaxTextLength) {
             out.push_back({key, "a member name longer than " + std::to_string(kRemoteMaxTextLength) + " characters"});
             return false;
         }
-        if (!checkOpen(it.value(), key + "." + it.key(), out)) return false;
+        if (!checkOpen(it.value(), key + "." + it.key(), bounds, out)) return false;
     }
     return true;
 }
@@ -313,10 +316,9 @@ void checkValue(const Field& f, const Payload& v, Bounds bounds, const std::stri
                 if (f.items.empty()) break;
             }
             if (f.items.empty()) {
-                if (bounds == Bounds::Remote) {
-                    std::size_t i = 0;
-                    for (const auto& element : v)
-                        if (!checkOpen(element, key + "[" + std::to_string(i++) + "]", out)) break;
+                std::size_t i = 0;
+                for (const auto& element : v) {
+                    if (!checkOpen(element, key + "[" + std::to_string(i++) + "]", bounds, out)) break;
                 }
                 break;
             }
@@ -333,7 +335,7 @@ void checkValue(const Field& f, const Payload& v, Bounds bounds, const std::stri
         }
         case FieldType::Object:
             if (!f.items.empty()) checkObject(f.items, v, bounds, key + ".", opName, out);
-            else if (bounds == Bounds::Remote) checkOpen(v, key, out);
+            else checkOpen(v, key, bounds, out);
             break;
         case FieldType::Bool:
             break;

@@ -16,11 +16,14 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -195,6 +198,78 @@ void testNonFiniteRejected() {
     Payload fine;
     fine["v"] = -6.5;
     check(validateSubmission(d, fine).empty(), "a finite real passes");
+}
+
+void testNonFiniteInOpenFields() {
+    section("non-finite numbers in local open payload fields");
+    constexpr Field fields[] = {{"payloadArray", FieldType::Array}, {"payloadObject", FieldType::Object}};
+    const OpDescriptor descriptor{"test.open", "", Scope::Edit, EngineImpact::None, fields,
+                                  false, false, nullptr, nullptr, ""};
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    const auto infinity = std::numeric_limits<double>::infinity();
+    const Payload broken{
+        {"payloadArray", Payload::array({{{"group", Payload::array({2.5, nan})}}})},
+        {"payloadObject", {{"entry", Payload::array({{{"db", -infinity}}})}}}
+    };
+    const auto issues = validateSubmission(descriptor, broken);
+    const auto has = [&](std::string_view key) {
+        return std::any_of(issues.begin(), issues.end(), [&](const ValidationIssue& issue) {
+            return issue.key == key && issue.problem == "value is not finite";
+        });
+    };
+    check(has("payloadArray[0].group[1]"), "names the non-finite float below an open array");
+    check(has("payloadObject.entry[0].db"), "names the non-finite float below an open object");
+    Payload good = broken;
+    good["payloadArray"][0]["group"][1] = 0.0;
+    good["payloadObject"]["entry"][0]["db"] = -6.0;
+    good["payloadObject"]["untyped"] = std::string(kRemoteMaxTextLength + 1, 'a');
+    good["payloadObject"]["bytes"] = Payload::binary({1, 2, 3});
+    good["payloadObject"]["large-local-array"] = std::vector<int>(kRemoteMaxArrayItems + 1, 0);
+    check(validateSubmission(descriptor, good).empty(), "local finite values keep binary and larger local inputs");
+    check(!validateSubmission(descriptor, good, Bounds::Remote).empty(), "remote bound on open values still applies");
+    const auto bytes = encodePayload(broken);
+    std::string err;
+    const auto decoded = decodeFromLog(bytes, err);
+    check(decoded && std::isnan(decoded->at("payloadArray")[0]["group"][1].get<double>()) &&
+          std::isinf(decoded->at("payloadObject")["entry"][0]["db"].get<double>()) &&
+          encodePayload(*decoded) == bytes,
+          "already recorded non-finite CBOR can still be carried");
+}
+
+void testNonFiniteRoutingSubmission() {
+    section("a non-finite captured route cannot enter the journal");
+    Scratch scratch("open-value");
+    auto store = freshProject(scratch / "route.adi");
+    check(store != nullptr, "routing project created");
+    if (!store) return;
+    store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) "
+                     "VALUES(1,'audio','Source',0),(2,'return','Return',1)");
+    OpJournal journal(*store);
+    const auto before = journal.count();
+    OpRequest request;
+    request.opType = "routing.connect";
+    request.payload = {{"id", 1}, {"srcKind", "track"}, {"src", 1}, {"dstKind", "track"},
+                       {"dst", 2}, {"kind", "send"},
+                       {"row", {{"id", 1}, {"src_kind", "track"}, {"src_id", 1},
+                                {"dst_kind", "track"}, {"dst_id", 2}, {"kind", "send"},
+                                {"gain_db", std::numeric_limits<double>::infinity()}}}};
+    const auto applied = journal.commit(request);
+    const auto rows = store->db().execAndGet("SELECT COUNT(*) FROM routing").getInt();
+    check(!applied.ok && applied.issues.size() == 1 && applied.issues.front().key == "row.gain_db",
+          "captured non-finite gain refuses at the submission boundary");
+    check(rows == 0 && journal.count() == before, "no routing or journal row survives a refused payload");
+    request.payload["row"]["gain_db"] = -6.0;
+    request.payload["id"] = 2;
+    request.payload["row"]["id"] = 2;
+    check(journal.commit(request).ok, "the same captured route with finite gain commits");
+
+    store->db().exec("UPDATE routing SET gain_db=1e999 WHERE id=2");
+    OpRequest remove;
+    remove.opType = "routing.disconnect";
+    remove.payload = {{"id",2}};
+    check(journal.commit(remove).ok && History(*store).undo().ok &&
+              std::isinf(store->db().execAndGet("SELECT gain_db FROM routing WHERE id=2").getDouble()),
+          "Undo still restores an already stored non-finite route");
 }
 
 // --- journal -----------------------------------------------------------------
@@ -784,6 +859,8 @@ int runAll() {
     testCodecDeterminism();
     testUnknownFieldDirections();
     testNonFiniteRejected();
+    testNonFiniteInOpenFields();
+    testNonFiniteRoutingSubmission();
     testApplyAndLog();
     testAtomicity();
     testCommitOptions();
