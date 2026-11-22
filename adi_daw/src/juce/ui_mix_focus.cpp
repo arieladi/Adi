@@ -82,10 +82,18 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     learnMatch.setTooltip("Capture the selected channel's spectrum difference toward the starred channel. Plays unchanged.");
     learnMatch.onClick = [this] { learnMatchPreview(); };
     clearMatch.onClick = [this] { clearMatchPreview(); updateMatchControls(); };
+    alignMeasure_.setTitle("Measure Focus alignment");
+    alignMeasure_.setTooltip("Measure the selected channel's timing against Main. Playback stays unchanged.");
+    alignMeasure_.onClick = [this] { measureAlign(); };
+    alignReadout_.setTitle("Focus alignment preview");
+    alignReadout_.setFont(look::font());
+    alignReadout_.setJustificationType(juce::Justification::centredRight);
+    alignReadout_.setColour(juce::Label::textColourId, look::textDim);
+    addChildComponent(alignReadout_);
     scroll_.setViewedComponent(&strip_, false);
     scroll_.setScrollBarsShown(false, true);
-    for (auto *c : std::array<juce::Component *, 12>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
-                                                     &edit, &scope, &learnMatch, &clearMatch, &scroll_})
+    for (auto *c : std::array<juce::Component *, 13>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
+                                                     &edit, &scope, &learnMatch, &clearMatch, &alignMeasure_, &scroll_})
         addAndMakeVisible(*c);
     refreshControls();
 }
@@ -251,6 +259,91 @@ void MixFocus::updateMatchControls() {
     learnMatch.setVisible(together);
     clearMatch.setVisible(together && match_.has_value());
     learnMatch.setEnabled(canLearnMatch(pair));
+    refreshAlign(pair);
+}
+bool MixFocus::canMeasureAlign(const std::array<const Member *, 2> &pair) const noexcept {
+    if (!scopePlaying_ || suspended_ || scope.getToggleState() || alignment_ != Alignment::Ready ||
+        !isShowing() || plot_.isEmpty() || !pair[0] || !pair[1] || !pair[0]->data || !pair[1]->data)
+        return false;
+    const auto floor = root_.settledLocateRevision();
+    const auto &main = *pair[0]->data;
+    const auto &recipient = *pair[1]->data;
+    return floor && main.transportRevision && main.transportRevision >= *floor &&
+           main.transportRevision == recipient.transportRevision && main.advancing && recipient.advancing;
+}
+void MixFocus::showAlign(const juce::String &message) {
+    alignReadout_.setText(message, juce::dontSendNotification);
+    alignReadout_.setTooltip(message);
+    alignReadout_.setVisible(message.isNotEmpty());
+    repaint(titleRow_);
+}
+void MixFocus::clearAlign() {
+    alignJob_.reset();
+    alignCapture_.reset();
+    alignPending_ = false;
+    if (alignReadout_.isVisible()) showAlign({});
+}
+void MixFocus::refreshAlign(const std::array<const Member *, 2> &pair) {
+    const auto eligible = canMeasureAlign(pair);
+    if (!eligible) {
+        clearAlign();
+    } else if (alignCapture_) {
+        const auto &request = *alignCapture_;
+        const auto matches = [&request](const Member &member, std::size_t side) {
+            const auto &data = *member.data;
+            return request.transportRevision == data.transportRevision &&
+                   request.sources[side] == FocusScopeBarSource{data.request.source(), data.generation};
+        };
+        if (!matches(*pair[0], 0) || !matches(*pair[1], 1) ||
+            (alignJob_ && !alignPending_ && alignJob_.status() != SharedAnalysis::FocusLagStatus::Ready))
+            clearAlign();
+    }
+    alignMeasure_.setVisible(!scope.getToggleState());
+    alignMeasure_.setEnabled(eligible && !alignPending_);
+}
+void MixFocus::measureAlign() {
+    const auto pair = matchMembers();
+    if (alignPending_ || !canMeasureAlign(pair) || !root_.playing() || !plotShowing()) return;
+    const auto broker = broker_.lock();
+    const SnapshotReader reader(root_.current());
+    const auto &transport = reader.transport();
+    if (!broker || !broker->active() || root_.sharedAnalysis != broker ||
+        (transport.loopEnabled && transport.hasLoop)) return;
+
+    clearAlign();
+    const auto revision = pair[0]->data->transportRevision;
+    const auto request = focusLagPreviewRequest({pair[0]->data.get(), pair[1]->data.get()},
+        {pair[0]->lease.sourcePosition(), pair[1]->lease.sourcePosition()}, revision,
+        root_.renderedSamplePosition());
+    if (!request || !(alignJob_ = broker->requestFocusLag(*request))) {
+        showAlign("No current timing measurement");
+        return;
+    }
+    alignCapture_ = request;
+    alignRate_ = pair[0]->data->sampleRate;
+    alignPending_ = true;
+    alignMeasure_.setEnabled(false);
+    showAlign("Measuring alignment...");
+}
+void MixFocus::pollAlign() {
+    if (!alignPending_ || alignJob_.status() == SharedAnalysis::FocusLagStatus::Pending) return;
+    const auto result = alignJob_.read();
+    alignPending_ = false;
+    if (result) {
+        const auto signedCorrelation = [](double score) {
+            return (score < 0. ? juce::String{} : juce::String("+")) + juce::String(score, 2);
+        };
+        const auto lag = std::abs(result->lagSamples);
+        const auto timing = lag == 0 ? juce::String("Aligned") :
+            juce::String(result->lagSamples > 0 ? "Recipient late " : "Recipient early ") +
+                juce::String(lag) + " samples (" + juce::String(1000. * lag / alignRate_, 3) + " ms)";
+        showAlign(timing + "   Mid corr. " + signedCorrelation(result->unalignedCorrelation) + " to " +
+                  signedCorrelation(result->correlation));
+    } else {
+        alignJob_.reset();
+        showAlign("No clear timing match");
+    }
+    refreshAlign(matchMembers());
 }
 void MixFocus::learnMatchPreview() {
     const auto pair = matchMembers();
@@ -326,6 +419,7 @@ void MixFocus::hear(bool group) {
 }
 void MixFocus::drop() {
     ++membershipPose_;
+    clearAlign();
     auto retiredBar = std::move(barScope_);
     std::vector<SharedAnalysis::Lease> released;
     released.reserve(members_.size());
@@ -559,6 +653,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
     if (redraw_ || matchLocateRevision_ != locateRevision)
         updateMatchControls();
     matchLocateRevision_ = locateRevision;
+    pollAlign();
     if (redraw_) {
         if (!scope.getToggleState()) rebuildPlot();
         rebuildScope();
@@ -905,15 +1000,19 @@ void MixFocus::resized() {
     }
     const int plotInset = look::border + hairline;
     auto titleRow = r.removeFromTop(buttonRow);
+    titleRow_ = titleRow;
+    alignReadout_.setBounds(titleRow.withTrimmedLeft(
+        std::max(0, titleRow.getWidth() - 3 * look::mixFocusSourceWidth)));
     sumLabel_ = titleRow.getWidth() >= 4 * look::mixFocusSourceWidth
                     ? titleRow.removeFromRight(2 * look::mixFocusSourceWidth) : juce::Rectangle<int>{};
     auto actions = r.removeFromBottom(buttonRow);
-    const auto w = std::min(chipWidth, actions.getWidth() / 9);
+    const auto w = std::min(chipWidth, actions.getWidth() / 10);
     for (auto *button : {&star, &mute, &solo, &hearOne, &hearAll, &edit})
         button->setBounds(actions.removeFromLeft(w).reduced(hairline));
     scope.setBounds(actions.removeFromLeft(w).reduced(hairline));
     learnMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
     clearMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
+    alignMeasure_.setBounds(actions.removeFromLeft(w).reduced(hairline));
     scopeDisplay_.setBounds(learnMatch.getBounds());
     scopeChannels_.setBounds(clearMatch.getBounds());
     plot_ = r.reduced(plotInset).toFloat();
@@ -947,10 +1046,11 @@ void MixFocus::paint(juce::Graphics &g) {
         if (sumShown && !sumOverRange && !sumOnly) title += "   Sum overlay";
     }
     if (!scopeShown && match_) title += matchCaption_;
-    const int titleWidth = sumLabel_.isEmpty() ? plot.getWidth() : std::max(0, sumLabel_.getX() - plot.getX());
+    const auto summaryBounds = alignReadout_.isVisible() ? alignReadout_.getBounds() : sumLabel_;
+    const int titleWidth = summaryBounds.isEmpty() ? plot.getWidth() : std::max(0, summaryBounds.getX() - plot.getX());
     g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
                std::max(0, plot.getY() - scroll_.getBottom()), juce::Justification::centredLeft);
-    if (!sumLabel_.isEmpty()) {
+    if (!alignReadout_.isVisible() && !sumLabel_.isEmpty()) {
         const auto stereoDb = [](const std::array<double, 2> &v) {
             const auto db = [](double sample) { return sample > 0. ? juce::String(20. * std::log10(sample), 1) : juce::String("-inf"); };
             return db(v[0]) + " / " + db(v[1]);
