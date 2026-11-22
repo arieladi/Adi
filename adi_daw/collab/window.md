@@ -101,6 +101,31 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-22, night, window lane — queue items 4, 5 and 7: DF-W19, DF-W29, DF-W32 (PR requested)
+
+Each branch is merged with main, reviewed (findings fixed), built, and run through the UI suites and the `ui.yml` Pd-off tree; the sweeps are clean on its lines. Each carries `window/browser-devices-test`'s commit, so main's Pd-on shell suite runs through. `test_all` was run once this session, on `window/grid-ticks`'s tree (main `ac07be74` plus window code only): PASS, 64092 checks across 270 suites.
+
+**Item 4, DF-W19. PR requested.** Branch `window/menu-parameters`, head `3b4a35cb`. Title: **adi_daw: window: every item of a menu-shaped parameter reaches the plug-in, by mouse and keyboard (DF-W19, the check)**. Body: [`collab/window/pr-bodies/window-menu-parameters.md`](window/pr-bodies/window-menu-parameters.md).
+- main already carries the fix (`2b89c1db`), so the branch is its test alone.
+- Shell 2927, 0 failures; Pd off green.
+
+**Item 5, DF-W29. PR requested.** Branch `window/undo-settles`, head `03941fea`. Title: **adi_daw: window: Undo, Redo and a History restore first commit the knob edits still held (DF-W29)**. Body: [`collab/window/pr-bodies/window-undo-settles.md`](window/pr-bodies/window-undo-settles.md).
+- Review: two confirmed findings fixed (the latest-step checks settle first; Undo acts on a held edit).
+- Document 313, shell 2927, 0 failures; Pd off green.
+
+**Item 7, DF-W32. PR requested, lands with the mixer's sheet** (win places it). Branch `window/held-peak`, head `8b527bbb`. Title: **adi_daw: window: the strip's meter shows the engine's held peak, taken by one owner and shared by every view (DF-W32, N48's window half)**. Body: [`collab/window/pr-bodies/window-held-peak.md`](window/pr-bodies/window-held-peak.md).
+- Review: hidden or pooled strips gave up no share; fixed.
+- Window state 109, shell 2927, 0 failures; Pd off green.
+- It shares `ui_mixer.*` with window-fn's MX-23 and MX-02.
+
+**Item 3, DF-W18** (`window/input-clock`): its Pd-on suites passed (shell 2930), but its Pd-off run reported a failing suite. That is being found before its request.
+
+**Items 8 and 10** (WIN-01, WIN-09): their gates were stopped by the session's background time limit before they ran; they run next.
+
+**Seen in this session's builds, not the window lane's:** a few test links (`adi_automation_tests`, `adi_gain_stage_tests`, `adi_panel_layout_tests`) failed during long parallel builds and linked on a retry. The window lane is recording the linker's message on the next occurrence.
+
+---
+
 ## 2026-11-22, evening, window lane — queue items 2 and 6: DF-W33 rebuilt as one commit (PR requested); DF-W30 (PR requested)
 
 **Item 2, DF-W33. PR requested.** Branch `window/return-in-group`, now one window-only commit, `b882c743`.
