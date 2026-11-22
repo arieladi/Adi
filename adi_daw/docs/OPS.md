@@ -807,6 +807,14 @@ Intentional stretch expression scaling is a separate producer requirement.
 The exact table, preview contract and limits are in
 [ENGINE-NOTE-OVERLAP.md](ENGINE-NOTE-OVERLAP.md).
 
+`notes::prepareBatch(snapshot, ops)` accepts the editor's ordered scalar note
+operations for one captured clip, including any resize or delete it already
+added to handle overlaps. It emits one `note.applyDiff` request and writes the
+canonical stream at most once. The batch preserves the scalar operation order
+for equal-time notes, changes between an absent and an empty stream, and the
+expression rows a deletion removes when an ID is reused. Its versioned
+sequence and inverse preserve those results on Undo and Redo.
+
 The five original P0 entries (`note.insert`, `note.delete`, `note.move`,
 `note.resize`, `note.setVelocity`) delegate to the same checked full-stride
 kernel. Scalar insertion into an existing wider future stream refuses because

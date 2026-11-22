@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <list>
 #include <iterator>
 #include <map>
 #include <set>
@@ -191,7 +192,9 @@ struct Plan {
     std::int64_t clip=0;
     RowPair stream;
     std::vector<RowPair> expressions;
+    std::optional<std::set<std::uint64_t>> batchIds;
 };
+Plan forwardSequence(OpContext&,const detail::SnapshotData&,const Payload&);
 Payload rowChanges(const Plan& plan) {
     Payload changes=Payload::array();
     auto add=[&](const char* table,const RowPair& pair) {
@@ -294,7 +297,7 @@ void overlapExpressionGuards(const Payload& guards,const Diff& effects,const Exp
     if(seen!=expected)throw std::runtime_error("missing overlap expression guard identity");
 }
 Plan forwardPlan(OpContext& context,const Payload& packet) {
-    closed(packet,{"clip","stream_id","from","added","removed","changed"},{"create","overlap"});
+    closed(packet,{"clip","stream_id","from","added","removed","changed"},{"create","overlap","_sequence"});
     const auto clip=integer(packet.at("clip")),streamId=integer(packet.at("stream_id"));
     if(!packet.at("from").is_string())throw std::runtime_error("note diff from must be a text hash or absent");
     auto captured=capture(context.db,clip);
@@ -315,6 +318,7 @@ Plan forwardPlan(OpContext& context,const Payload& packet) {
     }
     auto value=snapshot(std::move(captured));
     if(packet.at("from")!=value.from)throw std::runtime_error("notes stream bytes changed after capture");
+    if(packet.contains("_sequence")) return forwardSequence(context,value,packet);
     Diff diff;
     const auto expressionIndex=indexExpressions(value.captured.expressionRows);
     for(const char* field:{"added","removed","changed"})if(!packet.at(field).is_array())throw std::runtime_error("note diff sections must be arrays");
@@ -346,10 +350,13 @@ Plan forwardPlan(OpContext& context,const Payload& packet) {
 }
 Payload inverseCapture(const Plan& plan) {
     Payload stream=nullptr,expression=Payload::array();
-    if(plan.stream.before!=plan.stream.after)stream={{"before",plan.stream.after.value_or(Payload(nullptr))},{"after",plan.stream.before.value_or(Payload(nullptr))}};
+    if(plan.stream.before!=plan.stream.after || (plan.batchIds && (plan.stream.before || plan.stream.after)))stream={{"before",plan.stream.after.value_or(Payload(nullptr))},{"after",plan.stream.before.value_or(Payload(nullptr))}};
     for(const auto& pair:plan.expressions)if(pair.before!=pair.after)
         expression.push_back({{"before",pair.after.value_or(Payload(nullptr))},{"after",pair.before.value_or(Payload(nullptr))}});
-    return {{"clip",plan.clip},{"note_capture",{{"version",1},{"stream",stream},{"expressions",expression}}}};
+    Payload capture={{"version",plan.batchIds?2:1},{"stream",std::move(stream)},
+                     {"expressions",std::move(expression)}};
+    if(plan.batchIds) capture["note_ids"]=*plan.batchIds;
+    return {{"clip",plan.clip},{"note_capture",std::move(capture)}};
 }
 std::optional<Payload> optionalRow(const Payload& value) {
     if(value.is_null())return std::nullopt;
@@ -367,11 +374,27 @@ RowPair parsePair(const Payload& packet) {
 Plan restorePlan(OpContext& context,const Payload& packet) {
     closed(packet,{"clip","note_capture"});Plan result;result.clip=integer(packet.at("clip"));
     (void)clipRow(context.db,result.clip);
-    const auto& captureValue=packet.at("note_capture");closed(captureValue,{"version","stream","expressions"});
-    if(integer(captureValue.at("version"))!=1)throw std::runtime_error("unsupported note capture version");
+    const auto& captureValue=packet.at("note_capture");
+    const auto version=integer(captureValue.at("version"));
+    if (version==2) {
+        closed(captureValue,{"version","stream","expressions","note_ids"});
+        if(!context.replay || context.replay->opType!="note.applyDiff")
+            throw std::runtime_error("batch capture requires an ordered note replay");
+        const auto& ids=captureValue.at("note_ids");
+        if(!ids.is_array()) throw std::runtime_error("batch capture note identities must be an array");
+        result.batchIds.emplace();
+        for(const auto& id:ids)
+            if(!result.batchIds->insert(noteId(id)).second)
+                throw std::runtime_error("duplicate batch capture note identity");
+    } else {
+        closed(captureValue,{"version","stream","expressions"});
+        if(version!=1)throw std::runtime_error("unsupported note capture version");
+    }
     if(!captureValue.at("expressions").is_array())throw std::runtime_error("captured expression changes must be an array");
     if(captureValue.at("stream").is_null()) {
-        if(!captureValue.at("expressions").empty())throw std::runtime_error("expression changes require a captured stream identity transition");
+        if(!captureValue.at("expressions").empty() ||
+           (result.batchIds && !result.batchIds->empty()))
+            throw std::runtime_error("expression changes require a captured stream identity transition");
         return result;
     }
     result.stream=parsePair(captureValue.at("stream"));
@@ -385,6 +408,11 @@ Plan restorePlan(OpContext& context,const Payload& packet) {
     std::set_difference(beforeIds.begin(),beforeIds.end(),afterIds.begin(),afterIds.end(),std::inserter(removed,removed.end()));
     std::set_difference(afterIds.begin(),afterIds.end(),beforeIds.begin(),beforeIds.end(),std::inserter(added,added.end()));
     affected=removed;affected.insert(added.begin(),added.end());
+    if (result.batchIds) {
+        if (!std::includes(result.batchIds->begin(),result.batchIds->end(),affected.begin(),affected.end()))
+            throw std::runtime_error("batch capture omits a changed stream identity");
+        affected=*result.batchIds;
+    }
     std::map<std::int64_t,RowPair> ordered;
     std::map<std::uint64_t,std::vector<Payload>> expected;
     for(const auto& item:captureValue.at("expressions")) {
@@ -393,7 +421,10 @@ Plan restorePlan(OpContext& context,const Payload& packet) {
         const auto& row=pair.before?*pair.before:*pair.after;
         if(integer(row.at("clip_id"))!=result.clip)throw std::runtime_error("captured expression belongs to another clip");
         const auto id=detail::expressionNoteId(integer(row.at("note_id")));
-        if(pair.before?!removed.contains(id):!added.contains(id))throw std::runtime_error("captured expression identity is not added or removed by its stream");
+        const bool retained=result.batchIds && affected.contains(id) &&
+                            beforeIds.contains(id) && afterIds.contains(id);
+        if(!retained && (pair.before?!removed.contains(id):!added.contains(id)))
+            throw std::runtime_error("captured expression identity is not added or removed by its stream");
         if(!ordered.emplace(integer(row.at("id")),pair).second)throw std::runtime_error("duplicate captured expression row identity");
     }
     for(auto& [id,pair]:ordered) {
@@ -406,9 +437,11 @@ Plan restorePlan(OpContext& context,const Payload& packet) {
         throw std::runtime_error("captured expression set changed, including an expected empty set");
     validatePlan(context,result);return result;
 }
-enum class Legacy { Insert, Delete, Move, Resize, Velocity };
+enum class Legacy { Insert, Delete, Move, Resize, Velocity, Mute };
 bool samePlan(const Plan& left,const Plan& right) {
-    if(left.clip!=right.clip)return false;
+    if(left.clip!=right.clip || left.batchIds!=right.batchIds)return false;
+    if(left.batchIds && (!sameSqlRow(left.stream.before,right.stream.before) ||
+                        !sameSqlRow(left.stream.after,right.stream.after)))return false;
     using Key=std::pair<std::string,std::int64_t>;
     auto indexed=[](const Plan& plan) {
         std::map<Key,RowPair> result;
@@ -436,7 +469,7 @@ std::optional<Plan> capturedForwardPlan(OpContext& context,const Payload& packet
     }
     closed(*inverse,{"clip","note_capture"});
     if(integer(inverse->at("clip"))!=integer(packet.at("clip")))throw std::runtime_error("recorded note capture belongs to a different clip");
-    auto& captureValue=(*inverse)["note_capture"];closed(captureValue,{"version","stream","expressions"});
+    auto& captureValue=(*inverse)["note_capture"];closed(captureValue,{"version","stream","expressions"},{"note_ids"});
     if(!captureValue.at("stream").is_null()) {
         (void)parsePair(captureValue.at("stream"));
         std::swap(captureValue["stream"]["before"],captureValue["stream"]["after"]);
@@ -485,6 +518,255 @@ int smallInteger(const Payload& value) {
     if(parsed<std::numeric_limits<int>::min() || parsed>std::numeric_limits<int>::max())throw std::runtime_error("note field exceeds checked integer range");
     return static_cast<int>(parsed);
 }
+void checkLegacyFields(const Payload& packet,Legacy action) {
+    switch (action) {
+        case Legacy::Insert:
+            closed(packet,{"clip","note","start","dur","key"},{"vel","velOff","chan","prob","cents"});
+            break;
+        case Legacy::Delete:
+            closed(packet,{"clip","note"});
+            break;
+        case Legacy::Move:
+            closed(packet,{"clip","note","start","key"});
+            break;
+        case Legacy::Resize:
+            closed(packet,{"clip","note","dur"});
+            break;
+        case Legacy::Velocity:
+            closed(packet,{"clip","note","vel"});
+            break;
+        case Legacy::Mute:
+            closed(packet,{"clip","note","muted"});
+            if (!packet.at("muted").is_boolean()) throw std::runtime_error("note muted flag must be boolean");
+            break;
+    }
+}
+Record newLegacyRecord(const Payload& packet,std::uint64_t id) {
+    NoteValues fields;
+    fields.id=id;
+    fields.start=integer(packet.at("start"));
+    fields.duration=integer(packet.at("dur"));
+    fields.key=smallInteger(packet.at("key"));
+    fields.velocity=packet.contains("vel")?smallInteger(packet.at("vel")):100;
+    fields.releaseVelocity=packet.contains("velOff")?smallInteger(packet.at("velOff")):64;
+    fields.channel=packet.contains("chan")?smallInteger(packet.at("chan")):0;
+    fields.probability=packet.contains("prob")?smallInteger(packet.at("prob")):10000;
+    if (packet.contains("cents")) {
+        if (!packet.at("cents").is_number()) throw std::runtime_error("note cents must be numeric");
+        fields.cents=packet.at("cents").get<double>();
+    }
+    std::string error;
+    auto result=makeRecord(fields,{},error);
+    if (!result) throw std::runtime_error(error);
+    return std::move(*result);
+}
+Record editLegacyRecord(const Record& original,NoteValues fields,const Payload& packet,Legacy action) {
+    switch (action) {
+        case Legacy::Move:
+            fields.start=integer(packet.at("start"));
+            fields.key=smallInteger(packet.at("key"));
+            break;
+        case Legacy::Resize:
+            fields.duration=integer(packet.at("dur"));
+            break;
+        case Legacy::Velocity:
+            fields.velocity=smallInteger(packet.at("vel"));
+            break;
+        case Legacy::Mute:
+            if (packet.at("muted").get<bool>()) fields.flags|=NoteFlags::Muted;
+            else fields.flags&=~static_cast<std::uint32_t>(NoteFlags::Muted);
+            break;
+        case Legacy::Insert:
+        case Legacy::Delete:
+            throw std::runtime_error("membership edits cannot replace a note record");
+    }
+    std::string error;
+    auto result=withValues(original,fields,error);
+    if (!result) throw std::runtime_error(error);
+    return std::move(*result);
+}
+Legacy sequenceAction(std::string_view type) {
+    if (type=="note.insert") return Legacy::Insert;
+    if (type=="note.delete") return Legacy::Delete;
+    if (type=="note.move") return Legacy::Move;
+    if (type=="note.resize") return Legacy::Resize;
+    if (type=="note.setVelocity") return Legacy::Velocity;
+    if (type=="note.setMute") return Legacy::Mute;
+    throw std::runtime_error("unsupported note operation in batch: "+std::string(type));
+}
+
+class OrderedRecords {
+public:
+    explicit OrderedRecords(const detail::Stream& stream)
+        : sorted_((detail::streamFlags(stream)&StreamFlags::SortedByTime)!=0),
+          stride_(detail::recordStride(stream)),
+          maxCount_(std::min<std::size_t>(StreamReader<NoteRecord>::kMaxRecordsAtOnce,
+              (static_cast<std::size_t>(std::numeric_limits<int>::max())-stream.header.size()-
+               stream.trailer.size())/stride_)) {
+        for (const auto& record : stream.records) insert(record);
+    }
+    [[nodiscard]] const Record& at(std::uint64_t id) const {
+        const auto found=locations_.find(id);
+        if (found==locations_.end()) throw std::runtime_error("no such note");
+        return *found->second.record;
+    }
+    void insert(Record record) {
+        const auto value=recordValues(record);
+        if (record.bytes.size()!=stride_)
+            throw std::runtime_error("new note record does not match the target stream stride");
+        if (locations_.contains(value.id)) throw std::runtime_error("added note ID already exists");
+        if (locations_.size()>=maxCount_) throw std::runtime_error("note batch exceeds the supported note count");
+        const auto tick=sorted_?value.start:0;
+        auto& bucket=buckets_[tick];
+        bucket.push_back(std::move(record));
+        locations_.emplace(value.id,Location{tick,std::prev(bucket.end())});
+    }
+    void remove(std::uint64_t id) {
+        const auto location=locations_.find(id);
+        if (location==locations_.end()) throw std::runtime_error("no such note");
+        const auto bucket=buckets_.find(location->second.tick);
+        bucket->second.erase(location->second.record);
+        if (bucket->second.empty()) buckets_.erase(bucket);
+        locations_.erase(location);
+    }
+    void replace(std::uint64_t id,Record record) {
+        auto& location=locations_.at(id);
+        const auto tick=sorted_?recordValues(record).start:0;
+        *location.record=std::move(record);
+        if (tick==location.tick) return;
+        const auto old=buckets_.find(location.tick);
+        auto& destination=buckets_[tick];
+        // Scalar Move stably sorts the previous stream. A note from an
+        // earlier bucket precedes current ties at the new tick.
+        auto adjacent=tick>location.tick?destination.begin():destination.end();
+        destination.splice(adjacent,old->second,location.record);
+        if (old->second.empty()) buckets_.erase(old);
+        location.tick=tick;
+    }
+    [[nodiscard]] std::vector<Record> finish() {
+        std::vector<Record> result;
+        result.reserve(locations_.size());
+        for (auto& entry:buckets_)
+            for (auto& record:entry.second)
+                result.push_back(std::move(record));
+        return result;
+    }
+private:
+    using Bucket=std::list<Record>;
+    struct Location {std::int64_t tick;Bucket::iterator record;};
+    bool sorted_;
+    std::size_t stride_,maxCount_;
+    std::map<std::int64_t,Bucket> buckets_;
+    std::map<std::uint64_t,Location> locations_;
+};
+
+struct SequenceResult {
+    Plan rows;
+    Diff effects;
+};
+SequenceResult planSequence(const detail::SnapshotData& data,const Payload& steps) {
+    if (!steps.is_array()) throw std::runtime_error("note batch steps must be an array");
+    OrderedRecords records(data.baseline);
+    SequenceResult result;
+    auto& plan=result.rows;
+    plan.clip=data.clip;
+    plan.stream.before=data.captured.streamRow;
+    plan.stream.after=plan.stream.before;
+    plan.batchIds.emplace();
+    const auto existingExpressions=indexExpressions(data.captured.expressionRows);
+    std::set<std::uint64_t> erasedExpressions;
+    bool createdStream=false;
+    for (const auto& step:steps) {
+        closed(step,{"op","payload"});
+        const auto action=sequenceAction(step.at("op").get_ref<const std::string&>());
+        const auto& packet=step.at("payload");
+        checkLegacyFields(packet,action);
+        if (integer(packet.at("clip"))!=data.clip)
+            throw std::runtime_error("one note batch must address one captured MIDI clip");
+        const auto id=noteId(packet.at("note"));
+        if (action==Legacy::Insert) {
+            if (!expressionRows(existingExpressions,id).empty() && !erasedExpressions.contains(id))
+                throw std::runtime_error("new note identity already owns orphan expression rows");
+            if (!plan.stream.before && !data.captured.creationRow)
+                throw std::runtime_error("new notes stream needs an explicitly captured creation row");
+            records.insert(newLegacyRecord(packet,id));
+            plan.batchIds->insert(id);
+            createdStream=!plan.stream.before;
+        } else if (action==Legacy::Delete) {
+            records.remove(id);
+            plan.batchIds->insert(id);
+            erasedExpressions.insert(id);
+        } else {
+            const auto& original=records.at(id);
+            records.replace(id,editLegacyRecord(original,recordValues(original),packet,action));
+        }
+    }
+
+    auto after=records.finish();
+    if (createdStream || after!=data.baseline.records) {
+        std::map<std::uint64_t,const Record*> beforeIds;
+        for (const auto& record:data.baseline.records)
+            beforeIds.emplace(recordValues(record).id,&record);
+        for (const auto& record:after) {
+            const auto id=recordValues(record).id;
+            const auto prior=beforeIds.find(id);
+            if (prior==beforeIds.end()) {
+                result.effects.added.push_back(record);
+            } else {
+                if (*prior->second!=record) result.effects.changed.push_back({*prior->second,record});
+                beforeIds.erase(prior);
+            }
+        }
+        for (const auto& record:data.baseline.records)
+            if (beforeIds.contains(recordValues(record).id))
+                result.effects.removed.push_back(record);
+
+        detail::Stream stream{data.baseline.header,std::move(after),data.baseline.trailer};
+        std::string error;
+        auto bytes=detail::encodeNotes(stream,error);
+        if (!bytes) throw std::runtime_error(error);
+        if (createdStream) plan.stream.after=data.captured.creationRow;
+        (*plan.stream.after)["data"]=blob(*bytes);
+    }
+    for (const auto& row:data.captured.expressionRows) {
+        const auto id=detail::expressionNoteId(integer(row.at("note_id")));
+        if (erasedExpressions.contains(id)) plan.expressions.push_back({row,std::nullopt});
+    }
+    return result;
+}
+
+void checkSequenceExpressionGuards(const Payload& guards,const Plan& plan,
+                                   const std::vector<Payload>& currentExpressions) {
+    if (!guards.is_array()) throw std::runtime_error("note batch expression guards must be an array");
+    const auto indexed=indexExpressions(currentExpressions);
+    std::set<std::uint64_t> seen;
+    for (const auto& entry:guards) {
+        closed(entry,{"note_id","rows"});
+        const auto id=noteId(entry.at("note_id"));
+        if (!plan.batchIds->contains(id) || !seen.insert(id).second)
+            throw std::runtime_error("unexpected or duplicate note batch expression guard");
+        if (!sameSqlRows(orderedRows(entry.at("rows")),expressionRows(indexed,id)))
+            throw std::runtime_error("note batch expression set changed after capture");
+    }
+    if (seen!=*plan.batchIds) throw std::runtime_error("missing note batch expression guard");
+}
+
+Plan forwardSequence(OpContext& context,const detail::SnapshotData& data,const Payload& packet) {
+    const auto& sequence=packet.at("_sequence");
+    closed(sequence,{"version","steps","expression_guards"});
+    if (integer(sequence.at("version"))!=1)
+        throw std::runtime_error("unsupported note batch sequence version");
+    for (const char* field:{"added","removed","changed"})
+        if (!packet.at(field).is_array() || !packet.at(field).empty())
+            throw std::runtime_error("ordered note batches cannot mix diff sections");
+    if (packet.contains("overlap")) throw std::runtime_error("ordered note batches cannot mix overlap packets");
+    auto result=planSequence(data,sequence.at("steps"));
+    checkSequenceExpressionGuards(sequence.at("expression_guards"),result.rows,
+                                  data.captured.expressionRows);
+    validatePlan(context,result.rows);
+    return std::move(result.rows);
+}
+
 bool historicalScalarReplay(OpContext& context,const Payload& packet,Legacy action) {
     if(!context.replay)return false;
     const auto& replay=*context.replay;
@@ -526,13 +808,7 @@ bool historicalScalarReplay(OpContext& context,const Payload& packet,Legacy acti
 }
 struct LegacyPlan {Plan rows;std::optional<NoteValues> before;};
 LegacyPlan legacyPlan(OpContext& context,const Payload& packet,Legacy action) {
-    switch(action) {
-        case Legacy::Insert:closed(packet,{"clip","note","start","dur","key"},{"vel","velOff","chan","prob","cents"});break;
-        case Legacy::Delete:closed(packet,{"clip","note"});break;
-        case Legacy::Move:closed(packet,{"clip","note","start","key"});break;
-        case Legacy::Resize:closed(packet,{"clip","note","dur"});break;
-        case Legacy::Velocity:closed(packet,{"clip","note","vel"});break;
-    }
+    checkLegacyFields(packet,action);
     const auto clip=integer(packet.at("clip"));const auto id=noteId(packet.at("note"));
     const bool historicalScalar=historicalScalarReplay(context,packet,action);
     const auto expectedReplay=capturedReplayPlan(context,packet,action);
@@ -543,30 +819,15 @@ LegacyPlan legacyPlan(OpContext& context,const Payload& packet,Legacy action) {
         } else captured.creationRow=nativeCreation(context.db,clip,historicalScalar);
     }
     const auto value=snapshot(std::move(captured));Diff diff;LegacyPlan result;
-    if(action==Legacy::Insert) {
-        NoteValues fields;fields.id=id;fields.start=integer(packet.at("start"));fields.duration=integer(packet.at("dur"));fields.key=smallInteger(packet.at("key"));
-        fields.velocity=packet.contains("vel")?smallInteger(packet.at("vel")):100;
-        fields.releaseVelocity=packet.contains("velOff")?smallInteger(packet.at("velOff")):64;
-        fields.channel=packet.contains("chan")?smallInteger(packet.at("chan")):0;
-        fields.probability=packet.contains("prob")?smallInteger(packet.at("prob")):10000;
-        if(packet.contains("cents")) {
-            if(!packet.at("cents").is_number())throw std::runtime_error("note cents must be numeric");
-            fields.cents=packet.at("cents").get<double>();
-        }
-        std::string error;auto record=makeRecord(fields,{},error);if(!record)throw std::runtime_error(error);
-        diff.added.push_back(std::move(*record));
+    if (action==Legacy::Insert) {
+        diff.added.push_back(newLegacyRecord(packet,id));
     } else {
-        const auto found=std::find_if(value.baseline.records.begin(),value.baseline.records.end(),[&](const auto& record){return recordValues(record).id==id;});
+        const auto found=std::find_if(value.baseline.records.begin(),value.baseline.records.end(),
+            [id](const auto& record){return recordValues(record).id==id;});
         if(found==value.baseline.records.end())throw std::runtime_error("no such note");
-        auto fields=recordValues(*found);result.before=fields;
+        result.before=recordValues(*found);
         if(action==Legacy::Delete)diff.removed.push_back(*found);
-        else {
-            if(action==Legacy::Move){fields.start=integer(packet.at("start"));fields.key=smallInteger(packet.at("key"));}
-            else if(action==Legacy::Resize)fields.duration=integer(packet.at("dur"));
-            else fields.velocity=smallInteger(packet.at("vel"));
-            std::string error;auto changed=withValues(*found,fields,error);if(!changed)throw std::runtime_error(error);
-            diff.changed.push_back({*found,std::move(*changed)});
-        }
+        else diff.changed.push_back({*found,editLegacyRecord(*found,*result.before,packet,action)});
     }
     result.rows=fromDiff(context,value,diff,historicalScalar);
     if(expectedReplay && !samePlan(result.rows,*expectedReplay))throw std::runtime_error("stored note forward payload contradicts its captured inverse");
@@ -603,7 +864,7 @@ bool buildInverse(OpContext& context,const Payload& packet,Payload& inverse,std:
 }
 constexpr Field fields[]={{"clip",FieldType::Int},{"stream_id",FieldType::Int},{"from",FieldType::Text},
     {"added",FieldType::Array},{"removed",FieldType::Array},{"changed",FieldType::Array},{"create",FieldType::Object,false},
-    {"overlap",FieldType::Object,false}};
+    {"overlap",FieldType::Object,false},{"_sequence",FieldType::Object,false}};
 const OpDescriptor descriptors[]={{"note.applyDiff","Apply an explicit exact-record MIDI note diff",Scope::Edit,
     EngineImpact::Snapshot,fields,false,false,apply,buildInverse,""}};
 } // namespace
@@ -637,6 +898,52 @@ Snapshot captureNotesForNewClip(Store& store, std::int64_t clip, std::int64_t ne
         return result;
     }
 }
+PreparedDiff prepareBatch(const Snapshot& snapshot,std::span<const OpRequest> ops) {
+    PreparedDiff result;
+    try {
+        const auto* data=detail::SnapshotAccess::get(snapshot);
+        if(!snapshot.ok || !data)
+            throw std::runtime_error(snapshot.error.empty()?"invalid notes snapshot":snapshot.error);
+        result.sourceFile=data->captured.sourceFile;
+        result.options.expectHead.emplace(data->captured.head);
+        if (!ops.empty()) {
+            auto steps=Payload::array();
+            for (const auto& request:ops) {
+                if (request.runtimeProof || request.actor!=ops.front().actor ||
+                    request.actorDetail!=ops.front().actorDetail)
+                    throw std::runtime_error("one note batch requires one unsealed actor");
+                steps.push_back({{"op",request.opType},{"payload",request.payload}});
+            }
+            auto planned=planSequence(*data,steps);
+            if (planned.rows.stream.before!=planned.rows.stream.after || !planned.rows.expressions.empty()) {
+                const auto indexed=indexExpressions(data->captured.expressionRows);
+                auto guards=Payload::array();
+                for(const auto id:*planned.rows.batchIds)
+                    guards.push_back({{"note_id",id},{"rows",expressionRows(indexed,id)}});
+                OpRequest request;
+                request.opType="note.applyDiff";
+                request.label=ops.front().label.empty()?"Edit Notes":ops.front().label;
+                request.actor=ops.front().actor;
+                request.actorDetail=ops.front().actorDetail;
+                request.selBefore=ops.front().selBefore;
+                request.targetKind="clip";
+                request.targetId=data->clip;
+                request.payload={{"clip",data->clip},{"stream_id",data->streamId?*data->streamId:*data->creationId},
+                    {"from",data->from},{"added",Payload::array()},{"removed",Payload::array()},
+                    {"changed",Payload::array()},{"_sequence",{{"version",1},{"steps",std::move(steps)},
+                        {"expression_guards",std::move(guards)}}}};
+                if(!data->streamId) request.payload["create"]=*data->captured.creationRow;
+                result.requests.push_back(std::move(request));
+                result.effects=std::move(planned.effects);
+            }
+        }
+        result.ok=true;
+    } catch (const std::exception& exception) {
+        result.error=exception.what();
+    }
+    return result;
+}
+
 CommitResult commitDiff(Store& store,const PreparedDiff& prepared,Actor actor) {
     CommitResult result;
     if(!prepared.ok){result.error=prepared.error;return result;}
