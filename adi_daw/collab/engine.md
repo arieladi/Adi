@@ -36,6 +36,16 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — TM-SV-01 engine Global Quantization
+
+**PR requested.** `engine/tm-sv01-launch-quantization` at `a676ca80c1e14a0d2e0b4f26121815073fc5789b`, based on main `87ea349c`. Title **Add saved Global Quantization and sample-accurate locates**. Lands behind the rack, macro, modulation and rack-import rows in the standing queue.
+
+`transport.setLaunchQuantization {code}` saves the 14 choices in `session_state` outside undo, with a 1 Bar default. `nextGridTick` is inclusive in ADI_PPQ. Multi-bar groups restart at a signature change. Sub-bar values follow song zero, including the measured quarter-note launch at eleven quarters in 7/8 from RESEARCH-INTAKE §6.2. The render driver queues one destination tick, finds the reachable sample in the pinned timing generation, and splits the existing render token there. Release and MIDI chase use the ordinary seek path. Stop and a subsequent transport discontinuity cancel the pending destination. With a loop that contains no reachable grid, the destination stays pending until the grid becomes reachable or the driver cancels it.
+
+The Link consumer reads the same grid width in quarter notes. None locates locally without waiting and preserves the caller's positive Link phase cycle. A meter whose selected grid exceeds the adapter's existing 256-quarter bound also keeps that cycle. The fresh-install default, installed chooser and Link None behavior still have Live 12.4 readings open. Window-fn owns the live chooser, Ctrl+6 through 0, scrub and locator calls to `RenderBlock::locateQuantized`.
+
+GCC and Clang each passed nine strict suites. The focused cases cover both render precisions, a sample inside the callback, the next callback's first sample, a wrapped grid, cancellation, ephemeral journal admission and the document presentation image. The actual Link SDK playback suite passed 149 checks with two local participants. OPS validation and `git diff --check` passed. The new code was checked against Win's five 20 November patterns. It uses no platform-specific helpers or file path comparisons, and the fixtures run with independent `ADI_HOME` paths.
+
 ## 2026-11-22 — MI-08 note expression journal ops parked
 
 MI-08's write and clear journal operations still wait for Win to reserve `noteExpression.write` and `noteExpression.clear` on main.
