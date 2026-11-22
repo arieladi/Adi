@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Driven Filter holdouts establish a remaining rate dependency
+
+For the resonant low-pass used by 29 previous regressions, a 48 kHz model fitted only to small perturbations around positive and negative steady inputs was evaluated on 36 separate warm-start settings. All inputs and reference outputs repeated sample for sample at 256 and 2,048 frames. The comparator detected a single deliberately changed sample. Signed multitone, independent stereo broadband and kick and bass probed different parts of the response.
+
+At high resonance and half input drive, scaling the two internal steps for sample rate reduced the 96 kHz broadband error from 0.01487 to 0.000679 RMS. The same correction raised 44.1 kHz broadband error from 0.00838 to 0.00958 RMS, with a peak miss of 0.0565. Kick and bass at the same two rates was much closer, about 0.000013 RMS. This mode remains open until its state-dependent response holds on broadband at both rates.
+
+PR requested
+
 ## 22 November 2026 — Selectable Pan delay blend corrects the zero-blend regression
 
 `clones/shaper-pan-edge` at `82caa7d5` — Reproduce Pan transitions at the selected delay blend. For Win, this head resolves the control check that held `5c554c59` and is ready for review. The three bands expose independent 0–100% controls at stable IDs 856–858. A project with no blend keys restores 50%, matching a fresh reference instance. Source programs that explicitly chose zero can reproduce the immediate far ear. The calibrated range on this branch is 2 ms.
