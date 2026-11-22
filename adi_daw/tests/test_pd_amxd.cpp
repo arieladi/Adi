@@ -1038,6 +1038,49 @@ void testStepTen() {
           "[reset( into slide~ is refused");
 }
 
+/// The review of steps 9 and 10 (three skeptics each).
+void testStepTenReviewed() {
+    section("DEV-16 steps 9 and 10, reviewed: stored symbols, set through the limits, a bang that sets, next, setwidth, Pd's stability test");
+    {
+        // [symbol foo( into [$1(, then a bang: foo twice.
+        const auto got = sortedPrints(twoMessages("symbol foo", 0, "bang", "$1", "message"));
+        check(got == std::vector<std::string>{"X: foo", "X: foo"}, "a symbol into [$1(, then a bang: foo twice (" + shownAll(got) + ")");
+    }
+    // An int number box with maximum 127, set to 200 and to 3.7, then banged: 127 and 3.
+    for (const auto& [set, want] : std::vector<std::pair<std::string, std::string>>{{"set 200", "X: 127"}, {"set 3.7", "X: 3"}}) {
+        std::string json = twoMessages(set, 0, "bang", "");
+        const std::string from = R"("id":"obj-4","maxclass":"newobj","text":"")";
+        json.replace(json.find(from), from.size(), R"("id":"obj-4","maxclass":"number","maximum":127.0,"text":"")");
+        const auto got = sortedPrints(json);
+        check(got == std::vector<std::string>{want}, "a number box (maximum 127) given '" + set + "', then banged: " + shownAll(got));
+    }
+    // A bang into a message box's right inlet sets it to bang: a later bang sends bang.
+    {
+        const std::string json = patcher({box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-3", "hello", 10, 80, R"("")", "message"),
+                                          box("obj-4", "print X", 10, 140, "")},
+                                         {line("obj-1", 0, "obj-3", 1), line("obj-1", 0, "obj-3", 0), line("obj-3", 0, "obj-4", 0)});
+        const auto got = sortedPrints(json);
+        check(got == std::vector<std::string>{"X: bang"}, "a bang into a message box's right inlet, then into its left: bang (" + shownAll(got) + ")");
+    }
+    check(refusedFor(patcher({box("obj-1", "next", 10, 10, R"("")", "message"), box("obj-2", "gate 3 1", 10, 50, R"("","","")")},
+                             {line("obj-1", 0, "obj-2", 0)}),
+                     "next"),
+          "[next( into [gate] is refused");
+    // [live.thisdevice] -> [setwidth 300( -> back into it: one load bang, no loop.
+    {
+        const std::string json = patcher({box("obj-1", "live.thisdevice", 10, 10, R"("bang","int","int")"),
+                                          box("obj-2", "setwidth 300", 10, 60, R"("")", "message"), box("obj-3", "print X", 100, 60, "")},
+                                         {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-1", 0), line("obj-1", 0, "obj-3", 0)});
+        const auto got = sortedPrints(json);
+        check(got == std::vector<std::string>{"X: bang"}, "live.thisdevice -> [setwidth 300( -> itself: one bang, no loop (" + shownAll(got) + ")");
+    }
+    // Pd's own stability test: fb1 = 2.5, fb2 = -1.55 (real poles 1.36 and 1.14) is refused.
+    check(refusedFor(patcher({box("obj-1", "biquad~ 1. 0. 0. -2.5 1.55", 10, 10, kSig)}, {}), "unstable"),
+          "biquad~ 1 0 0 -2.5 1.55 (poles outside the unit circle, Pd's fb1 > 2) is refused");
+    check(translateMaxPatcher(patcher({box("obj-1", "biquad~ 1. 0. 0. -1.8 0.81", 10, 10, kSig)}, {}), AmxdKind::AudioEffect).ok(),
+          "a stable biquad~ (a double pole at 0.9) translates");
+}
+
 void testTheOrderIsHeard() {
     section("DEV-16 -- and the right-to-left order is what Pd does");
     const auto t = translateMaxPatcher(
@@ -1083,6 +1126,7 @@ int main() {
     testLineEnds();
     testStepNine();
     testStepTen();
+    testStepTenReviewed();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;

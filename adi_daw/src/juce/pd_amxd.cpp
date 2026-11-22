@@ -723,6 +723,7 @@ private:
             return refuse(b, "gate", "outlet count and initial choice, as ints");
         const int n = args.empty() ? 1 : std::atoi(args[0].c_str());
         if (n < 1 || n > 64) return refuse(b, "gate", "between 1 and 64 outlets");
+        if (messageInto(b, 0, "next")) return refuse(b, "gate", "its next message (the next outlet) is not translated yet");
         const int given = args.size() > 1 ? std::atoi(args[1].c_str()) : 0;
         const std::string init = std::to_string(given < 0 ? 1 : std::min(given, n));
         std::string routes = "route";
@@ -749,10 +750,13 @@ private:
     /// Max's [loadbang] (and live.thisdevice) also bangs when banged.
     void loadBang(const Box& b) {
         if (!connected(b, false, 0)) return obj(b, "loadbang");
+        // Only a bang (or "loadbang") fires it again; live.thisdevice's other
+        // messages (setwidth, getstate) do not touch its left outlet.
         Fragment f;
-        f.records = {"#X obj " + at(b.x, b.y) + " loadbang", "#X obj " + at(b.x, b.y + 20) + " t b"};
-        f.internal = {{0, 0, 1, 0}};
-        f.inlets = {{1, 0}};
+        f.records = {"#X obj " + at(b.x, b.y) + " loadbang", "#X obj " + at(b.x, b.y + 20) + " t b",
+                     "#X obj " + at(b.x + 60, b.y - 20) + " route bang loadbang"};
+        f.internal = {{0, 0, 1, 0}, {2, 0, 1, 0}, {2, 1, 1, 0}};
+        f.inlets = {{2, 0}};
         f.outlets = {{1, 0}};
         frags_[b.id] = std::move(f);
     }
@@ -791,10 +795,13 @@ private:
             f.inlets = {{0, 0}};
             f.outlets = {{0, 0}};
             if (connected(b, false, 1)) {
+                // A bang sets the contents to "bang" (Max's reference), not to nothing.
                 f.records.push_back("#X obj " + at(b.x + 60, b.y - 40) + " list prepend set");
                 f.records.push_back("#X obj " + at(b.x + 60, b.y - 20) + " list trim");
-                f.internal = {{1, 0, 2, 0}, {2, 0, 0, 0}};
-                f.inlets.emplace_back(1, 0);
+                f.records.push_back("#X obj " + at(b.x + 60, b.y - 60) + " route bang");
+                f.records.push_back("#X msg " + at(b.x + 140, b.y - 40) + " set bang");
+                f.internal = {{1, 0, 2, 0}, {2, 0, 0, 0}, {3, 0, 4, 0}, {4, 0, 0, 0}, {3, 1, 1, 0}};
+                f.inlets.emplace_back(3, 0);
             }
             if (dollars) keepArguments(b, f, 0);
             frags_[b.id] = std::move(f);
@@ -829,18 +836,18 @@ private:
     /// them again. A Pd message box keeps nothing. So a number or list on
     /// its way in is also stored in a [list], which a bang sends instead.
     void keepArguments(const Box& b, Fragment& f, int target) {
+        // Everything but a bang goes on as it came (a symbol-led list stays a
+        // list, so $1 is its symbol) and is stored, a symbol too.
         const int route = static_cast<int>(f.records.size());
-        f.records.push_back("#X obj " + at(b.x - 60, b.y - 80) + " route bang list float");
+        f.records.push_back("#X obj " + at(b.x - 60, b.y - 80) + " route bang");
         f.records.push_back("#X obj " + at(b.x - 60, b.y - 40) + " list");
         f.records.push_back("#X obj " + at(b.x, b.y - 60) + " t a a");
         const int store = route + 1, both = route + 2;
         f.internal.push_back({route, 0, store, 0});
         f.internal.push_back({store, 0, target, 0});
         f.internal.push_back({route, 1, both, 0});
-        f.internal.push_back({route, 2, both, 0});
         f.internal.push_back({both, 1, store, 1});
         f.internal.push_back({both, 0, target, 0});
-        f.internal.push_back({route, 3, target, 0});
         f.inlets[0] = {route, 0};
     }
 
@@ -863,13 +870,26 @@ private:
         const int atom = static_cast<int>(f.records.size());
         f.records.push_back("#X floatatom " + at(b.x, b.y) + " 5 0 0 0 - - - 0");
         for (int k = 0; k < atom; ++k) f.internal.push_back({k, 0, k + 1, 0});
-        // "set n" shows n without output, as in Max (the atom's own "set");
-        // a bang sends what it shows.
+        // "set n" shows n without output, as in Max (the atom's own "set"),
+        // truncated and limited as an output would be; a bang sends what it
+        // shows.
         const int route = static_cast<int>(f.records.size());
         f.records.push_back("#X obj " + at(b.x, b.y - 60) + " route set bang");
+        int last = route;
+        if (truncate) {
+            f.records.push_back("#X obj " + at(b.x + 60, b.y - 50) + " i");
+            f.internal.push_back({last, 0, last + 1, 0});
+            last = static_cast<int>(f.records.size()) - 1;
+        }
+        if (lo || hi) {
+            f.records.push_back("#X obj " + at(b.x + 60, b.y - 40) + " clip " + number(lo.value_or(-1e37)) + " " + number(hi.value_or(1e37)));
+            f.internal.push_back({last, 0, static_cast<int>(f.records.size()) - 1, 0});
+            last = static_cast<int>(f.records.size()) - 1;
+        }
         f.records.push_back("#X msg " + at(b.x + 60, b.y - 30) + " set \\$1");
-        f.internal.push_back({route, 0, route + 1, 0});
-        f.internal.push_back({route + 1, 0, atom, 0});
+        const int setter = static_cast<int>(f.records.size()) - 1;
+        f.internal.push_back({last, 0, setter, 0});
+        f.internal.push_back({setter, 0, atom, 0});
         f.internal.push_back({route, 1, atom, 0});
         f.internal.push_back({route, 2, 0, 0});
         f.inlets = {{route, 0}};
@@ -966,7 +986,9 @@ private:
             // Pd's biquad~ silences coefficients whose poles lie outside the
             // unit circle; Max's runs away with them. Refused, not silenced.
             const double fb1 = -std::strtod(args[3].c_str(), nullptr), fb2 = -std::strtod(args[4].c_str(), nullptr);
-            const bool stable = fb1 * fb1 + 4 * fb2 < 0 ? fb2 >= -1 : (fb2 <= 1 && fb1 <= 1 - fb2 && fb1 >= fb2 - 1);
+            // Pd's own test (d_filter.c, sigbiquad_list), condition for condition.
+            const bool stable = fb1 * fb1 + 4 * fb2 < 0 ? fb2 >= -1
+                                                        : (fb1 <= 2 && fb1 >= -2 && 1 - fb1 - fb2 >= 0 && 1 + fb1 - fb2 >= 0);
             if (!stable) return refuse(b, "biquad~", "unstable coefficients: Pd's biquad~ silences them, Max's runs away");
         }
         const auto neg = [](const std::string& v) { return number(-std::strtod(v.c_str(), nullptr)); };
