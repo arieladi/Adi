@@ -27,6 +27,7 @@ class StackAddPicker final : public juce::Component, private juce::ListBoxModel,
     }
     ~StackAddPicker() override { search_.removeKeyListener(this); list_.setModel(nullptr); }
     void focusSearch() { search_.grabKeyboardFocus(); }
+    using juce::Component::keyPressed;
     void resized() override {
         auto area = getLocalBounds().reduced(look::gap);
         search_.setBounds(area.removeFromTop(look::fieldHeight));
@@ -40,7 +41,9 @@ class StackAddPicker final : public juce::Component, private juce::ListBoxModel,
     std::vector<int> visible_;
     int getNumRows() override { return static_cast<int>(visible_.size()); }
     const juce::PopupMenu::Item* row(int i) const {
-        return juce::isPositiveAndBelow(i,static_cast<int>(visible_.size())) ? &items_[visible_[i]] : nullptr;
+        return juce::isPositiveAndBelow(i, static_cast<int>(visible_.size()))
+                   ? &items_[static_cast<std::size_t>(visible_[static_cast<std::size_t>(i)])]
+                   : nullptr;
     }
     juce::String getNameForRow(int i) override {
         const auto* item = row(i);
@@ -52,7 +55,7 @@ class StackAddPicker final : public juce::Component, private juce::ListBoxModel,
         auto query = search_.getText().trim();
         int section = -1;
         for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
-            const auto& item = items_[i];
+            const auto& item = items_[static_cast<std::size_t>(i)];
             if (item.isSectionHeader) { section = i; continue; }
             if (!item.text.containsIgnoreCase(query) && query.isNotEmpty()) continue;
             if (section != -1) { visible_.push_back(section); section = -1; }

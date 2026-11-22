@@ -28,8 +28,9 @@ template <class Mailbox>
 std::optional<std::uint64_t> settledLocateRevision(const Mailbox &mailbox) noexcept {
     if constexpr (requires { mailbox.settledLocateRevision(); })
         return mailbox.settledLocateRevision();
-    // The previous mailbox has no Locate witness and treats every read as settled.
-    return std::uint64_t{0};
+    else
+        // The previous mailbox has no Locate witness and treats every read as settled.
+        return std::uint64_t{0};
 }
 
 void locateFence() {

@@ -901,7 +901,7 @@ struct SharedAnalysis::BarScopeDomain {
 
     // On the owner this runs under State::mutex, which also protects tap rebinding.
     bool needsWork() const noexcept {
-        if (!active.load() || status.load() != BarScopeStatus::Pending || !rate.load()) return false;
+        if (!active.load() || status.load() != BarScopeStatus::Pending || rate.load() == 0.) return false;
         const auto stalled = waiting.load();
         return !stalled || lanes[stalled - 1].tap->written() != waitThrough.load();
     }

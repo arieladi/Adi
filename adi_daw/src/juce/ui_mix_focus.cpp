@@ -211,7 +211,7 @@ void MixFocus::refreshControls() {
     for (auto &m : members_)
         if (const auto *t = snapshot.findTrack(m.id)) {
             m.colour =
-                t->color ? look::paletteColour(*t->color) : look::trackColour(static_cast<int>(m.id % 70));
+                t->color ? look::paletteColour(*t->color) : look::trackColour(static_cast<std::size_t>(static_cast<int>(m.id % 70)));
             m.chip->setButtonText((main_ == m.id ? juce::String::fromUTF8("\xe2\x98\x85 ") : juce::String()) +
                                   juce::String::fromUTF8(t->name.c_str()));
             m.chip->setColour(juce::TextButton::textColourOffId, m.colour.brighter());
@@ -799,9 +799,9 @@ void MixFocus::rebuildPlot() {
         maskers_.resize(static_cast<size_t>(bands_->count()));
         normalizedBinX_.clear();
         const double binHz = rate_ / (2. * static_cast<double>(bins_ - 1));
-        for (size_t i = 0; i < bins_ && i * binHz <= 20000.; ++i)
-            normalizedBinX_.push_back(
-                static_cast<float>(std::max(0., std::log(std::max(20., i * binHz) / 20.) / std::log(1000.))));
+        for (size_t i = 0; i < bins_ && static_cast<double>(i) * binHz <= 20000.; ++i)
+            normalizedBinX_.push_back(static_cast<float>(
+                std::max(0., std::log(std::max(20., static_cast<double>(i) * binHz) / 20.) / std::log(1000.))));
     }
     const Member *primary = nullptr;
     for (auto &m : members_) {
@@ -1226,7 +1226,7 @@ void MixFocus::paint(juce::Graphics &g) {
         return;
     }
     for (int i = 1; i < 6; ++i)
-        g.drawHorizontalLine(juce::roundToInt(plot_.getY() + plot_.getHeight() * i / 6.f), plot_.getX(),
+        g.drawHorizontalLine(juce::roundToInt(plot_.getY() + plot_.getHeight() * static_cast<float>(i) / 6.f), plot_.getX(),
                              plot_.getRight());
     g.setColour(look::selection);
     if (!masked_.empty()) {
