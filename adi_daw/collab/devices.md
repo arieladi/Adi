@@ -121,6 +121,86 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — standing queue items 1 and 2: the Sampler is timed and made cheap; the Debug run fits its timeout (#706's review)
+
+Win's standing queue (`collab/prompts/2026-11-22-devices-queue.md`) replaces this lane's earlier
+lists, and it is worked top to bottom. Items 1 and 2 are the two fixes #706's review asked of
+`devices/perf-pass`. Both are before 3 December.
+
+They are cut from #706's integration branch (`land/devices-1122`), because the suite (perf-pass)
+and the Sampler (sampler-loadable) first meet there. Once #706 lands, each branch's diff is its own
+commits.
+
+### Item 1, perf-sampler: the realtime suite times the Sampler
+
+**PR requested:** head `devices/perf-sampler` (f153556c, two commits on `land/devices-1122`), base
+`main`, after #706.
+- **The gap.** The suite measured only catalogue entries with a Pd canvas, so the Sampler (native
+  only) was skipped. Now every available built-in is measured:
+  - the count measured is checked against the count available;
+  - the Sampler is named;
+  - a plant that drops the Sampler fails both checks.
+- **The Sampler, timed.** With its 32 slots filled it took 38.5 % of the deadline at p99 (64
+  frames). Each filled slot is a OneShot engine over every key, so every note plays 32 layers.
+- **What made it cheap.** Every fix is bit-identical: an FNV checksum over every output sample of
+  OneShot and the Sampler, at 64 and 128 frames, matches before and after.
+  - **An idle engine plays silence without its sample loop.** OneShot takes this path when no
+    voice sounds and no note-on arrives; the events still apply, in order. Each voice's filter is
+    its own, so there is no tail. The Sampler skips mixing such a layer. An idle Sampler now costs
+    27 µs per 64-frame block, down from 179.
+  - **What reads only the parameters is computed per event, not per sample or voice:**
+    - the sustain level, Vel > Vol and the output level;
+    - the LFO's phase step;
+    - the filter's coefficients, when the LFO does not move the cutoff.
+  - **Work skipped when its result cannot change:**
+    - the LFO's value, when every LFO amount is 0 (each use is a product with 0; only its phase
+      and random state advance);
+    - a voice's `exp2`, except when its pitch changes;
+    - the filter's 1/q and denominator, now shared by both stages and both channels.
+  - **The voice loop runs voice by voice** over each stretch between events, so a voice's state
+    stays in registers. Each output sample still sums the voices in the same order.
+- **Measured** (RelWithDebInfo; this machine runs about 30 % slower this afternoon than this
+  morning):
+  - Sampler p99 12.9 % of the deadline at 64 frames, 12.4 % at 128;
+  - OneShot 0.3 % (it was 1.3 %);
+  - no allocations.
+- **Tests:**
+  - OneShot 359, OneShot Pd 38, Sampler 119, built-in devices 244 and native parity 287 all pass
+    unchanged;
+  - CTest 268/268 at PD_FLOATSIZE 32 and 64 (MSVC Debug, /W4 /WX);
+  - lint clean.
+
+### Item 2, perf-debug-timeout: the Debug run fits its CTest timeout
+
+**PR requested:** head `devices/perf-debug-timeout` (bb7f5c08, one commit on item 1), base `main`.
+- **The problem.** A Debug run took about 37 min against the 900 s TIMEOUT.
+- **The fix.** A debug build's times are not the product's, so Debug now counts allocations only,
+  for a tenth as long:
+  - every callback is still counted from the first, the warm-up second included;
+  - the timing-only parts run in an optimised build alone: three of the four contention variants,
+    and the breakdown from an empty project;
+  - the variant with the timer and gestures together still runs in Debug.
+- **Measured:** `ctest -L performance` in Debug finishes in 3 min 56 s, with 64 checks passing (44
+  of them allocation checks). RelWithDebInfo still runs all 168.
+- CTest 268/268 at 32 and 64; lint clean.
+
+### Parked, with one line each (taken when they clear)
+
+- **Item 4, DF-E39** (the MIDI effect kernels): waits on the engine's DEV-17 and DEV-18 reaching
+  main.
+- **Item 5, shaper-scope-feed:** `adi_shaper_scope.hpp` exists only on the clones panel stack held
+  in #708, and the `builtin_host.cpp` loan must be widened by win.
+- **Item 6, time-locate-revision:** waits on the clones seat's `AdiShaper::syncAtSample(quarterNotes,
+  playing, sample, revision)`, which exists only on `clones/shaper-time` and is in no landing
+  window. This lane's hunk is ready to write: in `native_devices.cpp`'s `syncShaper`,
+  `core.syncAtSample(position->quarterNotes, position->playing, position->sample,
+  io.transport ? io.transport->transportRevision : 0)` in place of `core.sync(...)`. Its test would
+  be the clones seat's same-position regression, which is not pushed either. Needs table: clones,
+  land `syncAtSample` or hand it over, and push the regression.
+- **Item 13, beat-repeat-core:** waits on reading 18 and the contract branch landing.
+- **Item 14, two-head-reader-shifter:** waits on the clones seat's extraction (step 1), which exists
+  nowhere yet.
+
 ## 2026-11-22 — the post-3-December queue: Compressor, Glue Compressor, Gate, Limiter, and Beat Repeat's contract (all land after 3 December)
 
 These five branches are win's item 3 for this week, in ADR-0249 d7's order. **Each lands after
