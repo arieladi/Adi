@@ -60,6 +60,7 @@ public:
     [[nodiscard]] const std::string& sourceProject()const noexcept{return sourceProject_;}
     [[nodiscard]] const std::optional<AudioRecordingLoop>& loopSpec()const noexcept{return loop_;}
     [[nodiscard]] std::span<const RecordedPass> passes()const noexcept{return passes_;}
+    [[nodiscard]] bool hasAttachableAudio()const noexcept;
     // Owner thread, after recording has finished. A cleanup error retains the
     // directory reference so the owner can report and retry it.
     std::error_code discard();
@@ -75,6 +76,7 @@ private:
     std::string sourceProject_;
     std::optional<AudioRecordingLoop> loop_;
     std::vector<RecordedPass> passes_;
+    bool finalizedPrefix_=false;
     friend class AudioInputRecorder;
 };
 /// Optional off-callback writer adapter. The default is an actual WavWriter.

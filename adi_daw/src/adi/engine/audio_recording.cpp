@@ -15,6 +15,18 @@
 namespace adi::engine {
 namespace fs=std::filesystem;
 struct AudioRecordingResult::Files {fs::path directory;};
+bool AudioRecordingResult::hasAttachableAudio()const noexcept {
+    if(frames==0)return false;
+    switch(failure) {
+    case RecordingFailure::None:return true;
+    case RecordingFailure::Overflow:
+    case RecordingFailure::MissingInput:
+    case RecordingFailure::BlockSize:
+    case RecordingFailure::Discontinuity:
+    case RecordingFailure::PassLimit:return finalizedPrefix_;
+    default:return false;
+    }
+}
 const fs::path& AudioRecordingResult::directory()const noexcept {static const fs::path empty;return files_?files_->directory:empty;}
 std::error_code AudioRecordingResult::discard() {
     if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
@@ -251,6 +263,8 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     if(job->worker.joinable())job->worker.join();
     AudioRecordingResult result;result.failure=job->failure.load(std::memory_order_acquire);result.sampleRate=job->spec.sampleRate;
     result.frames=job->written.load(std::memory_order_acquire);result.startSample=job->firstSample.load(std::memory_order_acquire);result.tracks=job->tracks;
+    // Stop and the worker's completion cover both the drain and every sink's close.
+    result.finalizedPrefix_=!job->writerError;
     result.sourceProject_=job->spec.sourceProject;
     result.loop_=job->spec.loop;
     result.passes_.assign(job->passes.begin(),job->passes.begin()+static_cast<std::ptrdiff_t>(job->passCount));
