@@ -3,10 +3,12 @@
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <numbers>
 #include <type_traits>
 #include <utility>
@@ -180,6 +182,77 @@ void documentAuthority() {
     check(!doc->addMixFunction(mix::Function::Eq, 2), "second native EQ is refused in same channel");
     check(!doc->addMixFunction(mix::Function::Deesser, 2), "unlinked functions remain honestly unavailable");
 }
+void pairedBandGesture() {
+    test::TempDirectory temp("mix_eq_pipeline", "paired-band");
+    std::string error;
+    auto doc = ui::ProjectDocument::open(temp.path() / "song.adi", true, device::withBuiltinDevices(), error);
+    check(doc && doc->addMixFunction(mix::Function::Eq, 2), "paired gesture opens a native EQ document");
+    if (!doc) return;
+    doc->tick(0);
+    const auto publication = doc->parameterFeed().current();
+    const auto found = std::find_if(publication->begin(), publication->end(), [](const auto& d) {
+        return d.uid == "org.adidaw.mix.eq" && d.available;
+    });
+    if (found == publication->end()) { check(false, "paired gesture has a runtime identity"); return; }
+    const auto shown = *found;
+    const auto value = [&](const char* id) { return doc->session().instanceFor(shown.id)->getParam(id).normalized; };
+    const auto operations = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto transactions = [&] { return doc->store().db().execAndGet("SELECT count(DISTINCT txn_id) FROM ops").getInt(); };
+    using E = engine::ParameterPairEvent;
+    using K = engine::ParamEventKind;
+    const engine::ParameterPair origin{{{"13", value("13")}, {"14", value("14")}}};
+    const engine::ParameterPair final{{{"13", .62}, {"14", .67}}};
+    std::shared_ptr<const gesture::OwnerToken> owner;
+    auto edit = [&](E kind, const engine::ParameterPair& positions) {
+        return doc->parameterPairGestureExpected(shown.id, positions, kind, shown.runtime, shown.instance, owner);
+    };
+    auto matches = [&](const engine::ParameterPair& positions) {
+        return std::abs(value("13") - positions[0].second) < 1e-6 &&
+               std::abs(value("14") - positions[1].second) < 1e-6;
+    };
+    const auto before = operations(), initialTransactions = transactions();
+    check(edit(E::Begin, origin) && owner && edit(E::Value, final) && matches(final) && operations() == before,
+          "paired live edit previews both values without journaling");
+    check(!doc->parameterGestureExpected(shown.id, "14", K::Begin, .67, shown.runtime, shown.instance),
+          "a scalar edit cannot grab the gain of a held paired edit");
+    check(edit(E::End, final) && !owner && matches(final) &&
+          operations() == before + 4 && transactions() == initialTransactions + 1 && doc->pendingParameterGestures().empty(),
+          "paired End writes both first-touch openers and final values in one transaction");
+    const auto undone = doc->ops().undo();
+    doc->tick(1);
+    check(undone.ok && matches(origin), "one Undo restores both original coordinates");
+    const auto redone = doc->ops().redo();
+    doc->tick(2);
+    check(redone.ok && matches(final), "one Redo restores both edited coordinates");
+    const auto settled = operations();
+    check(edit(E::Begin, final) && edit(E::Value, origin) && matches(origin) &&
+          edit(E::Cancel, origin) && !owner && matches(final) && operations() == settled,
+          "cancel restores the pair and leaves no history row");
+    check(edit(E::Begin, final) && edit(E::Value, origin) && matches(origin),
+          "paired capture can be abandoned with both preview coordinates audible");
+    owner.reset();
+    doc->tick(3);
+    check(matches(final) && operations() == settled && doc->pendingParameterGestures().empty(),
+          "the owner pump restores a pair if its surface disappears before Cancel");
+    const engine::ParameterPair readback{{{"13", value("13")}, {"14", value("14")}}};
+    check(edit(E::Begin, readback) && edit(E::End, readback) && !owner && operations() == settled,
+          "a click at the EQ's float readback adds no undo entry");
+    auto invalid = origin;
+    invalid[1].second = std::numeric_limits<double>::quiet_NaN();
+    check(edit(E::Begin, final) && !edit(E::Value, invalid) && !owner && matches(final) &&
+          operations() == settled && doc->pendingParameterGestures().empty(),
+          "a rejected second coordinate writes neither value and cancels the pair");
+    // The preview applies rows inside a rollback scope. Refuse the second
+    // durable journal insertion so this checks rollback after the first one.
+    doc->store().db().exec("CREATE TRIGGER refuse_pair_gain BEFORE INSERT ON ops "
+                           "WHEN NEW.op_type='device.setParam' AND (SELECT count(*) FROM ops) > " +
+                           std::to_string(settled) + " BEGIN SELECT RAISE(ABORT,'refuse gain'); END");
+    check(edit(E::Begin, final) && edit(E::Value, origin) && matches(origin) &&
+          !edit(E::End, origin) && !owner && matches(final) && operations() == settled &&
+          doc->pendingParameterGestures().empty(),
+          "a journal refusal on gain rolls back frequency and restores both audible values");
+    doc->store().db().exec("DROP TRIGGER refuse_pair_gain");
+}
 } // namespace
 int main() {
     for (double rate : {44100., 48000., 96000.})
@@ -187,6 +260,7 @@ int main() {
     externalDynamics<float>();
     externalDynamics<double>();
     documentAuthority();
+    pairedBandGesture();
     std::printf("mix EQ pipeline: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
