@@ -1471,9 +1471,17 @@ void pinnedSpectrumWaitsForHeardPrimary() {
     write(*pin, 2 * frames, 64, .5f);
     check(heard(frames) && samePixels(paired, softwarePicture(view)),
           "a later pin frame preserves the previous visible pin while it waits");
+    write(*pin, 3 * frames, 80, .6f);
+    check(heard(frames) && samePixels(paired, softwarePicture(view)),
+          "another future publication leaves the previous visible pin intact");
     write(*primary, 2 * frames, 16, .125f);
-    check(heard(2 * frames) && !samePixels(paired, softwarePicture(view)),
-          "the later pin frame is admitted on the next matching primary interval");
+    const auto caughtUp = softwarePicture(view);
+    check(heard(2 * frames) && !samePixels(paired, caughtUp),
+          "the first waiting frame becomes visible even after a newer future publication");
+    write(*pin, 4 * frames, 96, .7f);
+    write(*primary, 3 * frames, 16, .125f);
+    check(heard(3 * frames) && !samePixels(caughtUp, softwarePicture(view)),
+          "a continuously leading pin still advances one admissible frame at a time");
     root.removeFromDesktop();
 }
 

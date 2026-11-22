@@ -62,10 +62,12 @@ float heightFor(float value, juce::Rectangle<float> area) {
 juce::String meterNumber(float value) {
     return std::isfinite(value) ? juce::String(value, 1) : juce::String("--");
 }
+bool sameSpectrumTimeline(const SharedAnalysis::Result &a, const SharedAnalysis::Result &b) noexcept {
+    return a.sampleRate == b.sampleRate && a.request.fftSize == b.request.fftSize &&
+           a.transportRevision == b.transportRevision && a.advancing == b.advancing;
+}
 bool spectrumFitsPrimary(const SharedAnalysis::Result *primary, const SharedAnalysis::Result &pin) noexcept {
-    return primary && pin.sampleRate == primary->sampleRate && pin.request.fftSize == primary->request.fftSize &&
-           pin.transportRevision == primary->transportRevision && pin.advancing == primary->advancing &&
-           (!pin.advancing || pin.firstStamp <= primary->firstStamp);
+    return primary && sameSpectrumTimeline(*primary, pin) && (!pin.advancing || pin.firstStamp <= primary->firstStamp);
 }
 std::size_t currentThemeIndex() noexcept {
     const auto theme = std::ranges::find(kThemes, look::themeId());
@@ -180,10 +182,10 @@ struct SharedSpectrumView::SpectrumOverlay {
     SpectrumOverlayTrack source;
     SharedAnalysis::Lease lease;
     SharedAnalysis::Lease::SourcePosition admission;
-    std::shared_ptr<const SharedAnalysis::Result> picture;
+    std::shared_ptr<const SharedAnalysis::Result> picture, waiting;
     std::unique_ptr<ScaledSpectrum> plot;
 
-    void clearPicture() noexcept { picture.reset(); plot.reset(); }
+    void clearPicture() noexcept { picture.reset(); waiting.reset(); plot.reset(); }
 };
 
 struct SharedSpectrumView::Raster {
@@ -414,6 +416,7 @@ void SharedSpectrumView::releaseSpectrumOverlays(bool keepPictures) noexcept {
     for (auto &overlay : spectrumOverlays_) {
         overlay.lease.reset();
         overlay.admission = {};
+        overlay.waiting.reset();
         if (!keepPictures) overlay.clearPicture();
     }
 }
@@ -457,12 +460,24 @@ void SharedSpectrumView::updateSpectrumOverlays(bool primaryChanged) noexcept {
         if (size <= 0 || next->firstSequence < 0 ||
             next->firstSequence > std::numeric_limits<std::int64_t>::max() - size ||
             next->firstSequence + size <= overlay.admission.written) continue;
-        // Leave a lead in the broker until the primary reaches it. The old
-        // trace can stay visible in the meantime if it still fits the primary.
+        // Keep one waiting picture even when the worker replaces its latest
+        // publication. A persistently leading pin still advances as heard.
+        auto &waiting = overlay.waiting;
+        if (waiting && (waiting->sourceEpoch != next->sourceEpoch || !sameSpectrumTimeline(*waiting, *next)))
+            waiting.reset();
+        if (spectrumFitsPrimary(shown_.get(), *next)) {
+            waiting.reset();
+        } else if (waiting && spectrumFitsPrimary(shown_.get(), *waiting)) {
+            next.swap(waiting);
+        } else {
+            if (!waiting && next->advancing) waiting = std::move(next);
+            next.reset();
+        }
+
         // The primary and first seven additional curves follow the normal clock.
         // Extra paths adopt new data at 15 Hz while the worker retains its hop rate.
         const auto &prior = overlay.picture;
-        bool due = next != prior && spectrumFitsPrimary(shown_.get(), *next);
+        bool due = next && next != prior;
         if (due && i >= 7 && prior && prior->generation == next->generation &&
             prior->sourceEpoch == next->sourceEpoch && prior->transportRevision == next->transportRevision &&
             prior->advancing == next->advancing && prior->sampleRate == next->sampleRate) {
