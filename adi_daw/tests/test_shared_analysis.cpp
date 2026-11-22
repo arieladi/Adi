@@ -4,7 +4,11 @@
 #include "adi/ui/focus_lag.hpp"
 #include "adi/ui/focus_scope.hpp"
 #include "adi/dsp/spectrum_average.hpp"
+#include "adi/engine/session.hpp"
 #include "adi/engine/transport.hpp"
+#include "adi/store.hpp"
+#include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -20,6 +24,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -179,6 +184,140 @@ void stripWorkerBudget() {
     for (auto &strip : strips) strip.reset();
     check(released == count && broker.stats().taps == 0 && broker.stats().spectralPlans == 0,
           "closing all visible strips releases every physical tap and plan");
+}
+
+struct StripAudioSource final : adi::engine::Node {
+    explicit StripAudioSource(double value) : amplitude(value) {}
+    bool processesDouble() const noexcept override { return true; }
+    void process(const adi::engine::NodeIo &io) noexcept override {
+        for (int i = io.blockOffset; i < io.blockOffset + io.frames; ++i) {
+            const double sample = (io.transport->timelineSample + i) % 64 == 11 ? amplitude : 0.;
+            if (io.wide()) {
+                io.out64[0][i] = sample;
+                io.out64[1][i] = sample * -.5;
+            } else {
+                io.out[0][i] = static_cast<float>(sample);
+                io.out[1][i] = static_cast<float>(sample * -.5);
+            }
+        }
+    }
+    double amplitude;
+};
+
+template <class Sample> void stripLeasePreservesAudio(const adi::Store &store) {
+    using namespace adi::engine;
+    constexpr double rate = 48000., restartedRate = 96000.;
+    constexpr int frames = 512, delay = 37, window = 1024;
+    constexpr bool wide = std::is_same_v<Sample, double>;
+    auto setup = [&](Session &session, StripAudioSource &a, StripAudioSource &b) {
+        session.setSourcesFor([&a, &b](std::int64_t track) -> std::vector<Node *> {
+            if (track == 1) return {&a};
+            if (track == 2) return {&b};
+            return {};
+        });
+        session.graph().setFadeFrames(0);
+        if (!session.load(store, {}, {2, rate, frames, wide ? Precision::Float64 : Precision::Float32}))
+            throw std::runtime_error(session.error());
+        session.transport().play();
+    };
+    StripAudioSource plainA(.25), plainB(.125), watchedA(.25), watchedB(.125);
+    Session plain, watched;
+    setup(plain, plainA, plainB);
+    setup(watched, watchedA, watchedB);
+    ScopeLease demand;
+    SharedAnalysis broker(
+        [&](ScopeSource source, double seconds) -> std::shared_ptr<const ScopeTap> {
+            if (!demand) demand = watched.requestScope({source, seconds});
+            return demand.tap();
+        }, [&](ScopeSource) { demand.reset(); }, SharedAnalysis::Mode::Manual);
+
+    using Output = std::array<std::array<Sample, frames>, 2>;
+    using Bits = std::conditional_t<wide, std::uint64_t, std::uint32_t>;
+    const auto render = [](Session &session, int count, Output &samples) {
+        Sample *planes[]{samples[0].data(), samples[1].data()};
+        AudioIo io;
+        io.numOut = 2;
+        io.frames = count;
+        if constexpr (wide) io.out64 = planes;
+        else io.out = planes;
+        session.process(io);
+    };
+    const auto latency = [](Session &session) {
+        const auto *graph = session.graph().currentGraph();
+        return graph ? graph->latencySamples() : -1;
+    };
+    Output reference{}, observed{};
+    auto compare = [&](int callbacks, int expectedLatency) {
+        bool exact = true;
+        for (int block = 0; block < callbacks; ++block) {
+            const int count = block % 2 ? 257 : frames;
+            render(plain, count, reference);
+            render(watched, count, observed);
+            watched.collectScopeTaps();
+            broker.pump();
+            for (std::size_t ch = 0; ch < reference.size(); ++ch) {
+                exact = exact && std::equal(reference[ch].data(), reference[ch].data() + count, observed[ch].data(),
+                    [](Sample a, Sample b) { return std::bit_cast<Bits>(a) == std::bit_cast<Bits>(b); });
+            }
+            exact = exact && latency(plain) == expectedLatency && latency(watched) == expectedLatency;
+        }
+        return exact;
+    };
+    // The early strip's signed latency must move the other track's pulse from
+    // sample 11 to sample 48 in the compensated Main output.
+    check(compare(1, delay) && reference[0][11] == .25 && reference[0][11 + delay] == .125,
+          "the untouched graph has the expected physical PDC on two distinguishable pulses");
+
+    auto strip = broker.acquireStrip(1);
+    check(compare(8, delay), "attaching and reading a visible strip during playback preserves every audio and PDC bit");
+    const auto beforeSeek = strip.readStrip();
+    const auto tapBeforeRestart = demand.tap();
+    check(beforeSeek && tapBeforeRestart && watched.scopeStats().sources == 1 && tapBeforeRestart->latency() == delay &&
+              beforeSeek->firstStamp == watched.transport().position() - delay - window -
+                  (tapBeforeRestart->written() - beforeSeek->endSequence),
+          "the real post-fader strip tap uses the audible graph's existing compensated stamps");
+
+    plain.transport().locate(8192);
+    watched.transport().locate(8192);
+    check(compare(8, delay), "the active strip does not change audio or PDC after a playing seek");
+    const auto afterSeek = strip.readStrip();
+    check(beforeSeek && afterSeek && afterSeek->sourceEpoch > beforeSeek->sourceEpoch &&
+              afterSeek->transportRevision == watched.transport().revision() && afterSeek->firstStamp >= 8192 - delay,
+          "seek publishes only the new transport epoch on the existing strip lease");
+
+    for (auto *session : {&plain, &watched}) {
+        session->release();
+        session->prepare(restartedRate, frames);
+        session->transport().play();
+    }
+    broker.refreshSources();
+    check(!strip.readStrip() && demand.tap() && demand.tap() != tapBeforeRestart,
+          "driver restart at a new rate invalidates the previous strip generation");
+    check(compare(14, 2 * delay), "a retained strip preserves audio and the rescaled PDC after the driver restart");
+    const auto restarted = strip.readStrip();
+    const auto lastTap = demand.tap();
+    check(restarted && lastTap && restarted->sampleRate == restartedRate && restarted->generation == lastTap->generation() &&
+              lastTap->latency() == 2 * delay,
+          "the retained strip follows the restarted graph's physical tap and compensation");
+
+    strip.reset();
+    check(compare(2, 2 * delay), "closing the visible strip across callback boundaries preserves audio and PDC");
+    const auto retiredFrames = lastTap ? lastTap->written() : -1;
+    check(compare(4, 2 * delay) && lastTap && lastTap->written() == retiredFrames &&
+              watched.scopeStats().consumers == 0 && watched.scopeStats().sources == 0 && broker.stats().taps == 0,
+          "the detached strip stops copying frames while the running graph remains bit-identical");
+}
+
+void stripLeaseInSession() {
+    adi::test::TempDirectory directory{"shared_analysis", "strip_audio"};
+    adi::StoreError error{};
+    auto store = adi::Store::createEmpty(directory.path() / "strip-audio.adi", error);
+    if (!store) throw std::runtime_error("strip audio fixture store");
+    store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+                     "(1,'audio','Early',0),(2,'audio','Late',1),(9,'master','Main',2);"
+                     "INSERT INTO mixer_strip(track_id,delay_samples) VALUES(1,-37);");
+    stripLeasePreservesAudio<float>(*store);
+    stripLeasePreservesAudio<double>(*store);
 }
 
 void realtimeMaximumSpectrum() {
@@ -3430,7 +3569,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget();
+    try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
