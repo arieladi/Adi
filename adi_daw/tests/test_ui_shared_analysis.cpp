@@ -2226,10 +2226,59 @@ void compareAndAveragePages() {
     check(broker->stats().consumers == 0 && broker->stats().spectralPlans == 0,
           "the final maximum view leaves no analysis demand");
 
+    const auto cumulativeId = static_cast<int>(Mode::SpectrumCumulativeMaximum) + 1;
+    pages.setVisible(true);
+    pages.spectrumTraceBox.setSelectedId(cumulativeId, juce::sendNotificationSync);
+    pages.frame(broker, original, main, guitar);
+    check(pages.page() == Page::Spectrum && pages.spectrumTraceBox.getText() == "Cumulative Maximum" &&
+              pages.spectrumTraceBox.isShowing() && pages.detail.view.getTitle() == "Cumulative Maximum" &&
+              pages.detail.scaleBox.isShowing(),
+          "Cumulative Maximum uses the Spectrum trace selector and the existing scale controls");
+    if (pages.spectrumTraceBox.getText() == "Cumulative Maximum") {
+        auto secondRequest = maximumRequest;
+        secondRequest.outputs = SharedAnalysis::CumulativeMaximum;
+        auto siblingMaximum = broker->acquire(secondRequest);
+        const auto start = first->written();
+        write(*first, .8f, start, 4);
+        broker->pump();
+        pages.frame(broker, original, main, guitar);
+        const auto high = pages.detail.view.spectrumBins();
+        const float highBin = high.size() > 16 ? high[16] : adi::dsp::kDbFloor;
+        write(*first, .1f, start + 1024, 4);
+        broker->pump();
+        pages.frame(broker, original, main, guitar);
+        const auto held = pages.detail.view.spectrumBins();
+        check(highBin > -20.f && held.size() > 16 && held[16] == highBin,
+              "the visible cumulative trace uses held bins even as the playing signal falls");
+        pages.detail.resetButton.onClick();
+        pages.frame(broker, original, main, guitar);
+        const auto siblingBefore = siblingMaximum.readMaximum();
+        check(pages.detail.view.spectrumBins().empty() && siblingBefore && siblingBefore->binsDbfs[16] == highBin,
+              "Clear immediately empties only the current cumulative picture");
+        write(*first, .1f, start + 2048, 4);
+        broker->pump();
+        pages.frame(broker, original, main, guitar);
+        const auto cleared = pages.detail.view.spectrumBins();
+        const auto siblingAfter = siblingMaximum.readMaximum();
+        check(cleared.size() > 16 && cleared[16] < highBin - 12.f &&
+                  siblingAfter && siblingAfter->binsDbfs[16] == highBin &&
+                  broker->stats().consumers == 2 && broker->stats().spectralPlans == 1,
+              "the first post-Clear cumulative window drops earlier peaks only in the cleared view");
+        pages.setVisible(false);
+        check(broker->stats().consumers == 1 && broker->stats().spectralPlans == 1,
+              "hiding the cumulative page releases only its own demand");
+        siblingMaximum.reset();
+        check(broker->stats().consumers == 0 && broker->stats().spectralPlans == 0,
+              "hiding the final cumulative view releases its FFT demand");
+    }
+
     AnalysisPane detached;
     detached.modeBox.setSelectedId(static_cast<int>(Mode::SpectrumMaximum) + 1, juce::sendNotificationSync);
     check(detached.modeBox.getText() == "Realtime Maximum" && detached.view.mode() == Mode::SpectrumMaximum,
           "the detached analyser also exposes Realtime Maximum");
+    detached.modeBox.setSelectedId(cumulativeId, juce::sendNotificationSync);
+    check(detached.modeBox.getText() == "Cumulative Maximum" && detached.view.getTitle() == "Cumulative Maximum",
+          "the detached analyser also exposes the cumulative spectrum trace");
     root.removeFromDesktop();
 }
 
