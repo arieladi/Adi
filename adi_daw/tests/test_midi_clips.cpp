@@ -914,6 +914,94 @@ void sessionControllers() {
     }
     check(zero && off, "Session refresh retains pedal ownership after cascade-deleting the stream");
 }
+
+const ClipNode& projected(const Snapshot& frame, std::int64_t track, std::int64_t clip) {
+    const auto* node = frame.findTrack(track);
+    if (node) {
+        for (const auto& candidate : node->clips) {
+            if (candidate->id == clip) return *candidate;
+        }
+    }
+    throw std::runtime_error("missing projected split clip");
+}
+void storedSplitClock() {
+    {
+        Fixture f(48000,64);
+        f.clip(1,1622,1000);
+        f.store->db().exec("DELETE FROM tempo_map;"
+            "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(1201,60);"
+            "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(0,4,4),(1201,7,8);"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=2000000;");
+        const auto cut=clip_edit::prepareSplit(*f.store,1,2,{0,1201},48000);
+        if (!cut.ok) throw std::runtime_error(cut.error);
+        const auto committed=clip_edit::commitPrepared(*f.store,cut);
+        if (!committed.ok) throw std::runtime_error(committed.error);
+        const auto snapshot=SnapshotBuilder::fromStore(*f.store);
+        const auto& right=projected(*snapshot,1,2);
+        check(right.posNs==104149 && right.posTicks==1201, "native MIDI split rounds its nanosecond origin down");
+        const auto details=readClipDetails(*f.store,2);
+        check(details.clip && details.clip->startMarkerTicks==right.posTicks &&
+              details.clip->signature.numerator==7 && details.clip->signature.denominator==8,
+              "Clip Details uses the split origin for inherited meter");
+        f.load();
+        f.render();
+        auto firstAttack=std::find_if(f.instrument->heard.begin(),f.instrument->heard.begin()+f.instrument->count,
+                                     [](const auto& event){return event.e.type==EventType::NoteOn;});
+        if (firstAttack==f.instrument->heard.begin()+f.instrument->count)
+            throw std::runtime_error("missing origin fixture note");
+        check(firstAttack->clock==9 && f.instrument->balance()==0,
+              "audible split MIDI attack follows the recovered tick across the tempo step");
+    }
+    {
+        Fixture f(48000,64);
+        f.clip(1,1321,20);
+        f.store->db().exec("DELETE FROM tempo_map;"
+            "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120);"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=114642;");
+        const auto cut=clip_edit::prepareSplit(*f.store,1,2,{0,1321},48000);
+        if (!cut.ok) throw std::runtime_error(cut.error);
+        const auto committed=clip_edit::commitPrepared(*f.store,cut);
+        if (!committed.ok) throw std::runtime_error(committed.error);
+        const auto snapshot=SnapshotBuilder::fromStore(*f.store);
+        const auto& right=projected(*snapshot,1,2);
+        check(right.posNs==114556 && right.lengthNs==86 && right.lengthTicks==1,
+              "native MIDI split has exactly one projected tick left");
+        f.load();
+        f.render();
+        bool attack=false,release=false;
+        for(std::size_t i=0;i<f.instrument->count;++i) {
+            const auto& event=f.instrument->heard[i];
+            if(event.e.type==EventType::NoteOn)attack=event.clock==5;
+            else if(event.e.type==EventType::NoteOff)release=event.clock==6;
+        }
+        check(attack && release && f.instrument->balance()==0,
+              "one-tick linear MIDI tail is heard across its absolute sample boundary");
+    }
+    {
+        Fixture f;
+        f.store->db().exec("DELETE FROM tempo_map;"
+            "INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(1201,60);"
+            "INSERT INTO tracks(id,kind,name) VALUES(2,'audio','Faded');"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'test','audio.wav','wav');"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns,fade_in_ticks) VALUES(10,2,'audio',1,0,2000000,500);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(10,1,0,2000);");
+        const auto cut=clip_edit::prepareSplit(*f.store,10,11,{0,1201},48000);
+        if (!cut.ok) throw std::runtime_error(cut.error);
+        const auto committed=clip_edit::commitPrepared(*f.store,cut);
+        if (!committed.ok) throw std::runtime_error(committed.error);
+        const auto snapshot=SnapshotBuilder::fromStore(*f.store);
+        const auto& left=projected(*snapshot,2,10);
+        check(left.lengthNs==104149 && left.lengthTicks==1201 && left.fadeInTicks==500,
+              "native faded audio split keeps the original authored fade on a recovered span");
+        const auto details=readClipDetails(*f.store,10);
+        check(details.clip && details.clip->endMarkerTicks==left.lengthTicks,
+              "Clip Details End matches the faded split audio span");
+        OpRequest fade;
+        fade.opType="clip.setFades";
+        fade.payload={{"id",10},{"in",{{"ticks",left.lengthTicks}}}};
+        check(OpJournal(*f.store).commit(fade).ok, "the full projected faded split span is accepted");
+    }
+}
 } // namespace
 
 int main(int argc,char** argv){
@@ -927,6 +1015,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
+    try { if (only=="all" || only=="stored") storedSplitClock(); }
+    catch(const std::exception& e) { check(false,e.what()); }
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

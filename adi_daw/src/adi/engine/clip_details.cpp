@@ -23,17 +23,17 @@ std::optional<std::int64_t> add(std::int64_t a, std::int64_t b) {
         (b < 0 && a < std::numeric_limits<std::int64_t>::min() - b)) return {};
     return a + b;
 }
-std::optional<std::int64_t> ticksAt(const TempoMap& tempo, double seconds) {
+std::optional<std::int64_t> ticksAt(const TempoMap& tempo, std::int64_t nanos) {
     double maxBpm = 0;
     for (const auto& event : tempo.events) {
         if (!std::isfinite(event.bpm) || event.bpm <= 0 || event.posTicks < 0) return {};
         maxBpm = std::max(maxBpm, event.bpm);
     }
-    const long double bound = static_cast<long double>(seconds) * maxBpm * 5765760.0L / 60.0L;
+    const long double bound = static_cast<long double>(nanos) * 1e-9L * maxBpm * 5765760.0L / 60.0L;
     // Leave rounding room before TempoMap's float-to-int conversion. This only
     // affects derived musical context; raw positions are always exposed.
-    if (!std::isfinite(seconds) || seconds < 0 || !std::isfinite(bound) || bound >= 0x1p62L) return {};
-    return tempo.secondsToTicks(seconds);
+    if (nanos < 0 || !std::isfinite(bound) || bound >= 0x1p62L) return {};
+    return tempo.storedNanosecondsToTicks(nanos);
 }
 void readNotes(ClipDetails& clip, SQLite::Database& db) {
     SQLite::Statement query(db, "SELECT data FROM event_streams WHERE clip_id=? AND stream_kind='notes' "
@@ -122,8 +122,8 @@ ClipDetailsRead readClipDetails(const Store& store, std::int64_t clipId,bool inc
         if (clip.timeBase == 1) {
             const auto start = clip.posNs.value_or(0);
             const auto endNs = add(start, clip.lengthNs.value_or(0));
-            origin = ticksAt(tempo, static_cast<double>(start) * 1e-9);
-            const auto end = endNs ? ticksAt(tempo, static_cast<double>(*endNs) * 1e-9) : std::nullopt;
+            origin = ticksAt(tempo, start);
+            const auto end = endNs ? ticksAt(tempo, *endNs) : std::nullopt;
             duration = origin && end ? std::optional<std::int64_t>{*end - *origin} : std::nullopt;
         }
         if (duration) clip.endMarkerTicks = add(clip.startMarkerTicks, *duration);

@@ -581,15 +581,20 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
         const auto before=source.notes.size();
         try {
             if(clip.aliasOf)throw std::runtime_error("MIDI alias unsupported; silent");
-            const double startSeconds=clip.timeBase==0?tempo.ticksToSeconds(clip.posTicks.value_or(0)):static_cast<double>(clip.posNs.value_or(0))*1e-9;
-            const auto origin=clip.timeBase==0?clip.posTicks.value_or(0):tempo.secondsToTicks(startSeconds);
-            double endSeconds=startSeconds;
-            if(clip.timeBase==1) {
-                const auto begin=clip.posNs.value_or(-1),extent=clip.lengthNs.value_or(0);
-                if(begin<0 || extent<=0 || begin>INT64_MAX-extent)throw std::runtime_error("invalid linear MIDI clip time; silent");
-                endSeconds=static_cast<double>(begin+extent)*1e-9;
+            auto origin = clip.posTicks.value_or(0);
+            auto length = clip.lengthTicks.value_or(0);
+            double startSeconds = tempo.ticksToSeconds(origin), endSeconds = startSeconds;
+            if (clip.timeBase == 1) {
+                const auto begin = clip.posNs.value_or(-1);
+                const auto extent = clip.lengthNs.value_or(0);
+                if (begin < 0 || extent <= 0 || begin > INT64_MAX - extent)
+                    throw std::runtime_error("invalid linear MIDI clip time; silent");
+                const auto end = begin + extent;
+                startSeconds = static_cast<double>(begin) * 1e-9;
+                endSeconds = static_cast<double>(end) * 1e-9;
+                origin = tempo.storedNanosecondsToTicks(begin);
+                length = tempo.storedNanosecondsToTicks(end) - origin;
             }
-            const auto length=clip.timeBase==0?clip.lengthTicks.value_or(0):tempo.secondsToTicks(endSeconds)-origin;
             constexpr auto tickLimit=std::int64_t{1}<<50;
             if(origin<0||origin>tickLimit||length<=0||length>tickLimit||clip.contentOffsetTicks < -tickLimit||clip.contentOffsetTicks>tickLimit)throw std::runtime_error("invalid MIDI clip time; silent");
             const auto loop=clip.loopLenTicks.value_or(0);
