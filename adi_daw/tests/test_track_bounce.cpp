@@ -50,6 +50,34 @@ struct Multiply : device::DeviceInstance {
 engine::DeviceLoader loader() {
     return [](const engine::DeviceRequest &, std::string &) { return std::make_unique<Multiply>(); };
 }
+struct DelayedMultiply final : Multiply {
+    static constexpr std::int32_t delay = 17;
+    std::array<std::array<double, delay>, 2> history{};
+    std::size_t cursor = 0;
+    std::int32_t latencySamples() const noexcept override { return delay; }
+    void process(const engine::NodeIo &io) noexcept override {
+        ++processed;
+        for (int f = 0; f < io.frames; ++f) {
+            const auto frame = io.blockOffset + f;
+            for (int c = 0; c < io.channels; ++c) {
+                auto& held = history[static_cast<std::size_t>(c)][cursor];
+                if (io.wide()) {
+                    const auto input = io.in64[c][frame];
+                    io.out64[c][frame] = held * 0.25;
+                    held = input;
+                } else {
+                    const auto input = io.in[c][frame];
+                    io.out[c][frame] = static_cast<float>(held * 0.25);
+                    held = input;
+                }
+            }
+            cursor = (cursor + 1) % history.front().size();
+        }
+    }
+};
+engine::DeviceLoader latencyLoader() {
+    return [](const engine::DeviceRequest &, std::string &) { return std::make_unique<DelayedMultiply>(); };
+}
 struct Project {
     test::TempDirectory directory{"track_bounce", "project"};
     fs::path projectDirectory;
@@ -115,14 +143,15 @@ struct Project {
         return result;
     }
 };
-std::vector<float> hear(Project &p, const std::string &name, engine::Precision precision) {
+std::vector<float> hear(Project &p, const std::string &name, engine::Precision precision,
+                        engine::DeviceLoader load = loader()) {
     auto job = p.options().job;
     job.project = p.store->path();
     job.directory = p.directory.path();
     job.nameTemplate = name;
     job.source = {};
     job.session.precision = precision;
-    const auto result = render::renderWav(job, loader());
+    const auto result = render::renderWav(job, std::move(load));
     check(result.state == render::JobState::Completed,
           result.error.empty() ? "native master render completes" : result.error.c_str());
     if (result.state != render::JobState::Completed)
@@ -193,8 +222,12 @@ void inPlace() {
          std::array<engine::Precision, 2>{engine::Precision::Float32, engine::Precision::Float64}) {
         Project p;
         p.store->db().exec("UPDATE mixer_strip SET input_gain_db=6 WHERE track_id=21;UPDATE tracks SET "
-                           "record_armed=1 WHERE id=21;");
-        const auto before = hear(p, "inplace-before", precision);
+                           "record_armed=1 WHERE id=21;"
+                           "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,enabled,latency_samples) "
+                           "VALUES(2,1,1,1,'Disabled Insert',0,31);"
+                           "INSERT INTO plugin_params(device_id,param_id,name,normalized_value) "
+                           "VALUES(2,'shape','Shape',0.375);");
+        const auto before = hear(p, "inplace-before", precision, latencyLoader());
         const auto state = digestProject(*p.store).text;
         clip_edit::InPlaceBounceOptions options;
         options.sourceTrack = 21;
@@ -205,16 +238,16 @@ void inPlace() {
         options.job.beginSample = 0;
         options.job.endSample = 1024;
         options.job.session.precision = precision;
-        auto prepared = clip_edit::prepareBounceInPlace(*p.store, options, loader());
+        auto prepared = clip_edit::prepareBounceInPlace(*p.store, options, latencyLoader());
         check(prepared.ready(),
               prepared.error().empty() ? "whole-chain Bounce in Place prepared" : prepared.error().c_str());
         if (!prepared.ready())
             continue;
         check(digestProject(*p.store).text == state,
-              "in-place preparation parks no live state before commit");
+              "in-place preparation removes no live state before commit");
         const auto committed = clip_edit::commitTrackBounce(*p.store, prepared, 7);
         check(committed.ok, committed.error.empty()
-                                ? "in-place replacement and parked chain share one undo step"
+                                ? "in-place replacement and removed chain share one undo step"
                                 : committed.error.c_str());
         if (!committed.ok)
             continue;
@@ -223,25 +256,25 @@ void inPlace() {
                   db.execAndGet("SELECT id FROM clips WHERE track_id=21").getInt() == 31 &&
                   db.execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=31").getInt() == 0,
               "in-place render replaces the entire original material, Warp off");
-        check(db.execAndGet("SELECT enabled FROM devices WHERE id=1").getInt() == 0 &&
+        check(db.execAndGet("SELECT count(*) FROM devices WHERE id IN (1,2)").getInt() == 0 &&
                   db.execAndGet("SELECT input_gain_db FROM mixer_strip WHERE track_id=21").getDouble() == 0 &&
                   db.execAndGet("SELECT record_armed FROM tracks WHERE id=21").getInt() == 0 &&
                   db.execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id=21").getDouble() == -6 &&
                   db.execAndGet("SELECT pan FROM mixer_strip WHERE track_id=21").getDouble() == 0.25,
-              "baked input gain resets and inserts park while fader/pan remain live");
+              "enabled and disabled inserts are removed and baked gain resets while fader/pan stay live");
         processed = 0;
-        const auto after = hear(p, "inplace-after", precision);
-        check(processed == 0, "parked device DSP is never processed when playing the bounced file");
+        const auto after = hear(p, "inplace-after", precision, latencyLoader());
+        check(processed == 0, "the post-bounce graph contains none of the removed device DSP");
         bool matches = before.size() == after.size() && !before.empty();
         for (std::size_t i = 0; i < after.size() && matches; ++i)
             matches = std::abs(after[i] - before[i]) < 1e-7f;
         check(
             matches,
-            "whole-chain in-place playback matches actual source without processing it twice in both widths");
+            "the bounced PCM keeps its alignment after removing the real 17-sample insert delay");
         check(History(*p.store).undo().ok && digestProject(*p.store).text == state,
               "one in-place undo restores exact original clips, input gain and device state");
         check(History(*p.store).redo().ok &&
-                  db.execAndGet("SELECT enabled FROM devices WHERE id=1").getInt() == 0,
+                  db.execAndGet("SELECT count(*) FROM devices WHERE id IN (1,2)").getInt() == 0,
               "in-place redo restores immutable render without rerunning source DSP");
     }
     Project restricted;
@@ -261,6 +294,34 @@ void inPlace() {
     auto incoming = clip_edit::prepareBounceInPlace(*restricted.store, options, loader());
     check(!incoming.ready() && incoming.error().find("incoming") != std::string::npos,
           "live incoming main audio refuses a double-summed in-place replacement");
+}
+void inPlaceRemovalRollback() {
+    Project p;
+    auto& db = p.store->db();
+    db.exec("CREATE TABLE late_device_fault(id INTEGER PRIMARY KEY,track_id INTEGER REFERENCES tracks(id) "
+            "DEFERRABLE INITIALLY DEFERRED) STRICT;"
+            "CREATE TRIGGER refuse_device_removal AFTER DELETE ON devices WHEN OLD.id=1 BEGIN "
+            "INSERT INTO late_device_fault VALUES(1,9999); END;");
+    const auto before = digestProject(*p.store).text;
+    const auto assets = p.assets();
+    clip_edit::InPlaceBounceOptions options;
+    options.sourceTrack = 21;
+    options.clipId = 31;
+    options.mediaId = 32;
+    options.job = p.options().job;
+    options.job.beginSample = 0;
+    options.job.endSample = 1024;
+    auto prepared = clip_edit::prepareBounceInPlace(*p.store, options, latencyLoader());
+    check(prepared.ready(), "in-place capture is ready before the deferred device removal check");
+    if (!prepared.ready()) return;
+    const auto refused = clip_edit::commitTrackBounce(*p.store, prepared, 0);
+    check(!refused.ok && prepared.ready() && digestProject(*p.store).text == before && p.assets() == assets,
+          "late removal failure restores the original project and capture files remain retryable");
+    db.exec("DROP TRIGGER refuse_device_removal; DROP TABLE late_device_fault;");
+    processed = 0;
+    check(clip_edit::commitTrackBounce(*p.store, prepared, 0).ok && processed == 0 &&
+              db.execAndGet("SELECT count(*) FROM devices WHERE id=1").getInt() == 0,
+          "retry commits the captured PCM and removes the device without another render");
 }
 void failureRecovery() {
     Project p;
@@ -307,6 +368,7 @@ int main() {
     try {
         command();
         inPlace();
+        inPlaceRemovalRollback();
         failureRecovery();
     } catch (const std::exception &error) {
         check(false, error.what());
