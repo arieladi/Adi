@@ -37,6 +37,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     friend struct MixFocusTestAccess;
     look::DensityId density_ = look::densityId();
     enum class ScopeDisplay { Overlay = 1, Layers, Stack, Sum };
+    enum class ScopeChannels { Stereo = 1, Mid };
     struct Member {
         std::int64_t id{};
         juce::Colour colour;
@@ -66,6 +67,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void updateBarScope(const SnapshotReader &, const std::shared_ptr<SharedAnalysis> &);
     void clearScopeSum();
     void rebuildScope();
+    bool requestsScopeMid() const noexcept;
     void refreshControls();
     std::array<const Member *, 2> matchMembers() const noexcept;
     bool canLearnMatch(const std::array<const Member *, 2> &) const noexcept;
@@ -77,7 +79,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     AdiRootComponent &root_;
     juce::Viewport scroll_;
     juce::Component strip_;
-    juce::ComboBox scopeDisplay_;
+    juce::ComboBox scopeDisplay_, scopeChannels_;
     juce::Rectangle<float> plot_;
     juce::Rectangle<int> sumLabel_;
     std::vector<const SharedAnalysis::Result *> scopeSources_;
