@@ -1870,6 +1870,123 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
               "the separate Average page releases the pins and uses its original analysis size");
         pages.setPage(Page::Spectrum);
         select(pages.spectrumTraceBox, "Realtime");
+
+        choose(false);
+        const bool cumulative = select(pages.spectrumTraceBox, "Cumulative Average");
+        root.frame();
+        auto &view = pages.detail.view;
+        const auto selectedTap = tapFor(main);
+        check(cumulative && selectedTap && pages.page() == Page::Spectrum &&
+                  control->isShowing() && control->isEnabled() && !attached(first) && !attached(wide) &&
+                  pages.detail.resetButton.isShowing(),
+              "Cumulative Average is a single-source Spectrum trace with its own Reset");
+        if (cumulative && selectedTap) {
+            constexpr auto hop = normalFft / 4;
+            constexpr std::int64_t start = 200000;
+            constexpr std::size_t toneBin = 8;
+            const auto writeTone = [&](Tap &tap, int count, float magnitude, std::int64_t stamp) {
+                std::vector<float> samples(static_cast<std::size_t>(count));
+                for (std::size_t i = 0; i < samples.size(); ++i)
+                    samples[i] = magnitude * static_cast<float>(std::sin(
+                        2. * std::numbers::pi * static_cast<double>(toneBin) * static_cast<double>(i) / normalFft));
+                tap.write(samples.data(), samples.data(), count, stamp, true, 4);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+            };
+            writeTone(*selectedTap, normalFft, .5f, start);
+            const auto firstView = view.snapshot();
+            const auto firstBins = view.spectrumBins();
+            const auto initialDb = firstBins.size() > toneBin ? firstBins[toneBin] : 0.f;
+            check(firstView && firstView->request.track == main &&
+                      firstView->request.fftSize == normalFft && firstView->hopSize == hop &&
+                      (firstView->outputs & SharedAnalysis::CumulativeAverage) &&
+                      std::abs(initialDb - 20. * std::log10(.5)) < .02,
+                  "the ordinary cumulative trace projects a real calibrated tone from its 1024-point source");
+
+            writeTone(*selectedTap, hop, 0.f, start + normalFft);
+            const auto diluted = view.spectrumBins();
+            check(diluted.size() > toneBin && diluted[toneBin] < initialDb - .05f &&
+                      diluted[toneBin] > initialDb - 3.f,
+                  "a fresh quieter window reduces the displayed cumulative magnitude");
+            const auto beforeReset = broker->stats();
+            if (pages.detail.resetButton.onClick) pages.detail.resetButton.onClick();
+            root.frame();
+            broker->pump();
+            root.frame();
+            check(!view.snapshot() && view.spectrumBins().empty() && tapFor(main) == selectedTap &&
+                      broker->stats().transforms == beforeReset.transforms,
+                  "Reset clears only the current display interval without opening another tap or running an FFT");
+
+            constexpr auto resetStamp = start + normalFft + hop;
+            writeTone(*selectedTap, hop, .125f, resetStamp);
+            check(!view.snapshot(), "Cumulative Average waits for a whole post-Reset window");
+            writeTone(*selectedTap, normalFft - hop, .125f, resetStamp + hop);
+            const auto restarted = view.snapshot();
+            const auto restartedBins = view.spectrumBins();
+            check(restarted && restarted->firstStamp == resetStamp && restartedBins.size() > toneBin &&
+                      std::abs(restartedBins[toneBin] - 20. * std::log10(.125)) < .02,
+                  "the first complete post-Reset window sets the new cumulative level without older audio");
+
+            pages.setPage(Page::Average);
+            root.frame();
+            const auto separateTap = tapFor(main);
+            if (separateTap) writeTone(*separateTap, normalFft, .125f, resetStamp + 3 * normalFft);
+            const auto exponential = view.snapshot();
+            const auto expBins = view.spectrumBins();
+            const auto step = 1. - std::pow(.1, hop / 48000.);
+            check(separateTap && exponential && view.mode() == SharedSpectrumView::Mode::SpectrumAverage &&
+                      (exponential->outputs & SharedAnalysis::Average1s) &&
+                      !(exponential->outputs & SharedAnalysis::CumulativeAverage) &&
+                      expBins.size() > toneBin && std::abs(expBins[toneBin] - 20. * std::log10(.125 * step)) < .02,
+                  "the separate one-second page keeps its exponential average after the cumulative trace");
+
+            pages.setPage(Page::Spectrum);
+            // Isolate the source from the visible Main meter and the mirrored Info pane.
+            constexpr std::int64_t isolatedTrack = 12;
+            const bool isolatedSource = select(pages.sourceBox, "Pinned 12");
+            const bool infoWasVisible = commands.infoView();
+            const bool infoClosed = !infoWasVisible || commands.setInfoView(false, error);
+            root.frame();
+            broker->pump();
+            const auto hiddenTap = tapFor(isolatedTrack);
+            pages.setVisible(false);
+            const bool released = !view.subscribed() && !view.snapshot() && !attached(isolatedTrack);
+            const auto hidden = broker->stats();
+            if (hiddenTap) writeTone(*hiddenTap, normalFft, .5f, resetStamp + 5 * normalFft);
+            const auto still = broker->stats();
+            check(isolatedSource && infoClosed && hiddenTap && released && !view.subscribed() && !view.snapshot(),
+                  "hiding Cumulative Average drops its subscription and discards its picture");
+            check(still.spectralPlans == hidden.spectralPlans && still.transforms == hidden.transforms &&
+                      still.workerPasses == hidden.workerPasses && still.publications == hidden.publications,
+                  "fresh input does not drive work for a hidden Cumulative Average");
+            if (infoWasVisible) commands.setInfoView(true, error);
+            pages.setVisible(true);
+            pages.followSelection(false);
+            choose(true);
+            const auto pinnedPrimaryTap = tapFor(main), pinnedFirstTap = tapFor(first), pinnedWideTap = tapFor(wide);
+            SharedAnalysis::Request pinRequest{first, pages.detail.point(), overviewFft, view.channel()};
+            pinRequest.hopSize = overviewFft / 4;
+            auto pinA = broker->acquire(pinRequest);
+            pinRequest.track = wide;
+            auto pinB = broker->acquire(pinRequest);
+            constexpr std::int64_t pinStamp = resetStamp + 7 * normalFft;
+            if (pinnedPrimaryTap && pinnedFirstTap && pinnedWideTap) {
+                sendTone(*pinnedPrimaryTap, overviewFft, 8, pinStamp);
+                sendTone(*pinnedFirstTap, overviewFft, 4, pinStamp);
+                sendTone(*pinnedWideTap, overviewFft, 16, pinStamp);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+            }
+            const auto pinnedMain = view.snapshot(), pinnedA = pinA.read(), pinnedB = pinB.read();
+            check(pinnedMain && pinnedA && pinnedB && pinnedMain->request.fftSize == overviewFft &&
+                      (pinnedMain->outputs & SharedAnalysis::CumulativeAverage) &&
+                      (pinnedA->outputs & SharedAnalysis::CumulativeAverage) &&
+                      (pinnedB->outputs & SharedAnalysis::CumulativeAverage),
+                  "Cumulative Average subscribes the primary and both pins on their shared Overview plans");
+            choose(false);
+            select(pages.spectrumTraceBox, "Realtime");
+            root.frame();
+        }
     }
     if (rate == 96000) {
         pages.setPage(Page::Spectrum);

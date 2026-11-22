@@ -32,6 +32,7 @@ class SharedAnalysis final {
     struct State;
     struct Domain;
     struct CumulativeHistory;
+    struct CumulativeAverageHistory;
     struct SpectrumBlockAverage;
     struct CaptureDomain;
     struct BarScopeDomain;
@@ -55,7 +56,8 @@ class SharedAnalysis final {
     enum class Mode { Worker, Manual };
     enum Output : std::uint32_t {
         Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32,
-        RealtimeMaximum = 64, CumulativeMaximum = 128, Strip = 256, DeviceBlockAverage = 512, PhaseBands = 1024
+        RealtimeMaximum = 64, CumulativeMaximum = 128, Strip = 256, DeviceBlockAverage = 512, PhaseBands = 1024,
+        CumulativeAverage = 2048
     };
     struct DeviceSpectrumRequest {
         enum class Channel : std::uint8_t { Left, Right, Stereo };
@@ -132,6 +134,11 @@ class SharedAnalysis final {
         std::shared_ptr<const Result> window;
         std::vector<float> binsDbfs;
     };
+    struct CumulativeAverageResult {
+        std::shared_ptr<const Result> window;
+        std::vector<float> binsDbfs;
+        std::uint64_t processedWindows = 0;
+    };
     struct BlockAverageResult {
         std::shared_ptr<const Result> window;
         std::vector<float> binsDbfs;
@@ -186,6 +193,9 @@ class SharedAnalysis final {
         std::shared_ptr<const MaximumResult> readMaximum() const noexcept;
         std::shared_ptr<const MaximumResult> readMaximum(Output) const noexcept;
         bool restartCumulativeMaximum() noexcept;
+        // Arithmetic mean of calibrated linear bin magnitudes over this lease's interval.
+        std::shared_ptr<const CumulativeAverageResult> readCumulativeAverage() const noexcept;
+        bool restartCumulativeAverage() noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
         std::shared_ptr<const StripResult> readStrip() const noexcept;
         bool restartStereoMeter() noexcept;
@@ -197,11 +207,12 @@ class SharedAnalysis final {
         double preparedSampleRate() const noexcept;
       private:
         Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t, std::shared_ptr<CumulativeHistory>,
-              std::shared_ptr<SpectrumBlockAverage>);
+              std::shared_ptr<SpectrumBlockAverage>, std::shared_ptr<CumulativeAverageHistory>);
         std::weak_ptr<State> state_;
         std::shared_ptr<Domain> domain_;
         std::shared_ptr<CumulativeHistory> cumulative_;
         std::shared_ptr<SpectrumBlockAverage> spectrumBlockAverage_;
+        std::shared_ptr<CumulativeAverageHistory> cumulativeAverage_;
         std::uint32_t outputs_ = 0;
         friend class SharedAnalysis;
     };

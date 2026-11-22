@@ -719,6 +719,146 @@ void cumulativeMaximumSpectrum() {
           "hiding the final cumulative view frees analysis work");
 }
 
+void cumulativeAverageSpectrum() {
+    constexpr int window = 480;
+    constexpr std::uint64_t revision = 19;
+    constexpr auto output = SharedAnalysis::CumulativeAverage;
+    const auto dcIs = [](const auto &picture, std::uint64_t windows, double magnitude) {
+        const auto expected = magnitude == 0. ? adi::dsp::kDbFloor : 20. * std::log10(magnitude);
+        return picture && picture->window && !picture->binsDbfs.empty() &&
+               picture->processedWindows == windows && near(picture->binsDbfs.front(), expected, .001);
+    };
+    const auto write = [](Fixture &f, float level, std::int64_t stamp, bool advancing, std::uint64_t epoch) {
+        std::array<float, window> audio;
+        audio.fill(level);
+        const auto *source = level == 0.f ? nullptr : audio.data();
+        f.tap->write(source, source, window, stamp, advancing, epoch);
+        return f.broker.pump();
+    };
+
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.window = adi::dsp::Window::Rectangular;
+    request.hopSize = window;
+    auto raw = f.broker.acquire(request);
+    write(f, .875f, 0, true, revision);
+    request.outputs = output;
+    auto a = f.broker.acquire(request);
+    f.broker.pump();
+    const auto admitted = f.broker.stats();
+    check(a.available() && !a.readCumulativeAverage() && raw.read() &&
+              !raw.readCumulativeAverage() && !raw.restartCumulativeAverage() &&
+              admitted.taps == 1 && admitted.domains == 1 && admitted.spectralPlans == 1 && f.acquireCalls == 1,
+          "cumulative average joins the Raw plan and ignores completed pre-admission audio");
+
+    write(f, .125f, window, true, revision);
+    const auto initial = a.readCumulativeAverage();
+    check(dcIs(initial, 1, .125) && initial->window == raw.read(),
+          "the initial cumulative average uses the first fresh calibrated immutable window");
+    auto b = f.broker.acquire(request);
+    f.broker.pump();
+    check(b.available() && !b.readCumulativeAverage() && a.readCumulativeAverage() == initial,
+          "a second cumulative average starts a new interval without changing the first");
+
+    const auto loudWork = write(f, .5f, 2 * window, true, revision);
+    const auto mixed = a.readCumulativeAverage(), firstB = b.readCumulativeAverage();
+    check(dcIs(mixed, 2, (.125 + .5) / 2.) && dcIs(firstB, 1, .5) &&
+              mixed->window == raw.read() && firstB->window == mixed->window && loudWork == 1 &&
+              f.broker.stats().transforms == 3 && f.broker.stats().spectralPlans == 1,
+          "one shared FFT gives independently admitted arithmetic means of linear magnitudes");
+    const auto quietWork = write(f, 0.f, 3 * window, true, revision);
+    const auto diluted = a.readCumulativeAverage(), dilutedB = b.readCumulativeAverage();
+    check(dcIs(diluted, 3, (.125 + .5) / 3.) && dcIs(dilutedB, 2, .5 / 2.) &&
+              diluted->window == raw.read() && quietWork == 0 && dcIs(initial, 1, .125) && dcIs(mixed, 2, .3125),
+          "each silent physical hop counts without another FFT and old publications stay immutable");
+    const auto unchanged = f.broker.stats();
+    for (int idle = 0; idle < 3; ++idle) f.broker.pump();
+    check(a.readCumulativeAverage() == diluted && b.readCumulativeAverage() == dilutedB &&
+              f.broker.stats().analysisWindows == unchanged.analysisWindows &&
+              f.broker.stats().publications == unchanged.publications &&
+              f.broker.stats().workerPasses == unchanged.workerPasses,
+          "repeated pumps cannot count a hop or publish a new average without more audio");
+
+    const bool reset = a.restartCumulativeAverage();
+    f.broker.pump();
+    check(reset && !a.readCumulativeAverage() && b.readCumulativeAverage() == dilutedB &&
+              f.broker.stats().transforms == unchanged.transforms,
+          "Reset clears only its cumulative interval and leaves the sibling and FFT alone");
+    write(f, .375f, 4 * window, true, revision);
+    check(dcIs(a.readCumulativeAverage(), 1, .375) &&
+              dcIs(b.readCumulativeAverage(), 3, (.5 + .375) / 3.),
+          "the reset interval starts at its next complete window while the sibling continues");
+    const auto beforeSeek = a.readCumulativeAverage();
+    write(f, 0.f, 20000, true, revision + 1);
+    const auto afterSeek = a.readCumulativeAverage(), afterSeekB = b.readCumulativeAverage();
+    check(dcIs(afterSeek, 1, 0.) && dcIs(afterSeekB, 1, 0.) && beforeSeek &&
+              afterSeek->window->transportRevision == revision + 1 &&
+              afterSeek->window->sourceEpoch > beforeSeek->window->sourceEpoch,
+          "a seek starts a silent new source epoch in both intervals");
+
+    a.reset();
+    raw.reset();
+    check(b.readCumulativeAverage() == afterSeekB && f.broker.stats().consumers == 1 &&
+              f.broker.stats().spectralPlans == 1 && f.releaseCalls == 0,
+          "closing Raw and one average leaves the remaining cumulative observer live");
+    write(f, .5f, 20000 + window, true, revision + 1);
+    const auto alone = b.readCumulativeAverage();
+    check(dcIs(alone, 2, .25) && alone->window->binsDbfs.empty(),
+          "an average-only lease has no raw-bin publication and still counts the silent start");
+    b.reset();
+    const auto hidden = f.broker.stats();
+    write(f, .5f, 20000 + 2 * window, true, revision + 1);
+    const auto hiddenAfterWrite = f.broker.stats();
+    check(hidden.consumers == 0 && hidden.taps == 0 && hidden.spectralPlans == 0 && f.releaseCalls == 1 &&
+              hiddenAfterWrite.transforms == hidden.transforms && hiddenAfterWrite.cursorReads == hidden.cursorReads &&
+              hiddenAfterWrite.workerPasses == hidden.workerPasses && hiddenAfterWrite.publications == hidden.publications,
+          "closing the final cumulative view leaves no tap, outstanding plan or new worker work");
+
+    Fixture overlapping;
+    request.hopSize = window / 2;
+    request.outputs = SharedAnalysis::Spectrum;
+    auto rollingRaw = overlapping.broker.acquire(request);
+    write(overlapping, .875f, 0, true, revision);
+    request.outputs = output;
+    auto fresh = overlapping.broker.acquire(request);
+    const float *zero = nullptr;
+    overlapping.tap->write(zero, zero, window / 2, window, true, revision);
+    overlapping.broker.pump();
+    const auto partial = rollingRaw.read();
+    check(partial && partial->firstSequence == window / 2 && !fresh.readCumulativeAverage(),
+          "an overlapping window cannot carry pre-admission samples into a new cumulative observer");
+    overlapping.tap->write(zero, zero, window / 2, window + window / 2, true, revision);
+    overlapping.broker.pump();
+    const auto firstFresh = fresh.readCumulativeAverage();
+    check(dcIs(firstFresh, 1, 0.) && firstFresh->window->firstSequence == window,
+          "the first eligible whole silent window starts the new interval");
+
+    Fixture parked;
+    request.hopSize = window;
+    auto only = parked.broker.acquire(request);
+    constexpr std::int64_t parkedStamp = 800;
+    write(parked, .5f, parkedStamp, false, revision);
+    const auto parkedFirst = only.readCumulativeAverage();
+    const auto parkedQuiet = write(parked, 0.f, parkedStamp, false, revision);
+    const auto parkedSecond = only.readCumulativeAverage();
+    write(parked, 0.f, parkedStamp, false, revision);
+    const auto parkedThird = only.readCumulativeAverage();
+    check(dcIs(parkedFirst, 1, .5) && dcIs(parkedSecond, 2, .25) && dcIs(parkedThird, 3, .5 / 3.) &&
+              parkedQuiet == 0 && parked.broker.stats().transforms == 1,
+          "certified parked zeros lower a nonzero cumulative mean without waking an FFT");
+
+    Fixture initiallyQuiet;
+    auto quietOnly = initiallyQuiet.broker.acquire(request);
+    write(initiallyQuiet, 0.f, parkedStamp, false, revision);
+    write(initiallyQuiet, 0.f, parkedStamp, false, revision);
+    const auto quietStart = quietOnly.readCumulativeAverage();
+    check(dcIs(quietStart, 2, 0.) && initiallyQuiet.broker.stats().transforms == 0,
+          "an entirely silent interval has a floor result and counts without an FFT");
+    write(initiallyQuiet, .75f, parkedStamp, false, revision);
+    check(dcIs(quietOnly.readCumulativeAverage(), 3, .25) && initiallyQuiet.broker.stats().transforms == 1,
+          "the first nonzero parked hop retains earlier zeros from its same source epoch");
+}
+
 void cumulativeMaximumParkedRollover() {
     constexpr int window = 1024;
     constexpr auto revision = std::uint64_t{19};
@@ -4033,7 +4173,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

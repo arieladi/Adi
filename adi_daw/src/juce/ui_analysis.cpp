@@ -354,6 +354,9 @@ namespace {
 bool isMaximumSpectrum(SharedSpectrumView::Mode mode) noexcept {
     return mode == SharedSpectrumView::Mode::SpectrumMaximum || mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum;
 }
+bool isAveragedSpectrum(SharedSpectrumView::Mode mode) noexcept {
+    return mode == SharedSpectrumView::Mode::SpectrumAverage || mode == SharedSpectrumView::Mode::SpectrumCumulativeAverage;
+}
 void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mode) {
     if (mode == SharedSpectrumView::Mode::Phase) {
         view.setTitle("Phase");
@@ -373,6 +376,11 @@ void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mod
     if (mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum) {
         view.setTitle("Cumulative Maximum");
         view.setTooltip("Each spectrum bin holds its highest level in this view since the analysis interval began or was cleared.");
+        return;
+    }
+    if (mode == SharedSpectrumView::Mode::SpectrumCumulativeAverage) {
+        view.setTitle("Cumulative Average");
+        view.setTooltip("Shows the average magnitude of each frequency since the interval began or was cleared.");
         return;
     }
     view.setTitle("Channel spectrum");
@@ -396,8 +404,8 @@ void SharedSpectrumView::setMode(Mode mode) {
         takeSpectrumLeases(retired.emplace());
     else if (supportsSpectrumOverlays(mode_))
         releaseSpectrumOverlays();
-    if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage ||
-        isMaximumSpectrum(mode) || isMaximumSpectrum(mode_)) frozen_ = false;
+    if (isAveragedSpectrum(mode) || isAveragedSpectrum(mode_) || isMaximumSpectrum(mode) || isMaximumSpectrum(mode_))
+        frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = retired.has_value();
     if (mode == Mode::ClassicScope && !classicPanel_) {
@@ -411,7 +419,8 @@ void SharedSpectrumView::setMode(Mode mode) {
         addChildComponent(*classicPanel_);
     }
     if (mode_ == Mode::Phase || mode == Mode::Phase || mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
-        isMaximumSpectrum(mode_) || isMaximumSpectrum(mode))
+        isMaximumSpectrum(mode_) || isMaximumSpectrum(mode) ||
+        mode_ == Mode::SpectrumCumulativeAverage || mode == Mode::SpectrumCumulativeAverage)
         describeAnalysisView(*this, mode);
     mode_ = mode;
     if (!supportsSpectrumOverlays(mode_)) activeSpectrumFftSize_ = 1024;
@@ -482,6 +491,7 @@ SharedAnalysis::Request SharedSpectrumView::spectrumRequest(std::int64_t track) 
     SharedAnalysis::Request request{track, point_, size, channel_, dsp::Window::Hann};
     request.device = device_;
     if (mode_ == Mode::SpectrumAverage) request.outputs = SharedAnalysis::Average1s;
+    else if (mode_ == Mode::SpectrumCumulativeAverage) request.outputs = SharedAnalysis::CumulativeAverage;
     return request;
 }
 void SharedSpectrumView::acquireSpectrumOverlays() noexcept {
@@ -552,6 +562,10 @@ void SharedSpectrumView::updateSpectrumOverlays(bool primaryChanged) noexcept {
             const auto average = overlay.lease.readAverage();
             if (average && average->status == SharedAnalysis::AverageStatus::Ready && average->binsDbfs)
                 next = {average->window, average->binsDbfs};
+        } else if (mode_ == Mode::SpectrumCumulativeAverage) {
+            const auto average = overlay.lease.readCumulativeAverage();
+            if (average)
+                next = {average->window, std::shared_ptr<const std::vector<float>>(average, &average->binsDbfs)};
         } else {
             next.window = overlay.lease.read();
         }
@@ -701,7 +715,7 @@ void SharedSpectrumView::updateSpectrumProjection() {
     spectrumProjection_.prepare(spectrumSlope_, shown_->sampleRate, shown_->request.fftSize, spectrumBins().size());
 }
 std::span<const float> SharedSpectrumView::spectrumBins() const noexcept {
-    if (mode_ == Mode::SpectrumAverage)
+    if (isAveragedSpectrum(mode_))
         return averageBins_ ? std::span<const float>(*averageBins_) : std::span<const float>{};
     if (isMaximumSpectrum(mode_))
         return maximumShown_ ? std::span<const float>(maximumShown_->binsDbfs) : std::span<const float>{};
@@ -789,11 +803,14 @@ void SharedSpectrumView::clear() {
     }
     if (mode_ == Mode::SpectrumCumulativeMaximum) {
         lease_.restartCumulativeMaximum();
+    } else if (mode_ == Mode::SpectrumCumulativeAverage) {
+        lease_.restartCumulativeAverage();
     } else {
         armFreshBoundary();
     }
     if (mode_ == Mode::Spectrogram) historyClearPosition_ = sourcePosition_;
     for (auto &overlay : spectrumOverlays_) {
+        if (mode_ == Mode::SpectrumCumulativeAverage) overlay.lease.restartCumulativeAverage();
         overlay.admission = overlay.lease.sourcePosition();
         overlay.clearPicture();
     }
@@ -880,7 +897,8 @@ void SharedSpectrumView::updateDemand() noexcept {
             auto request = spectrumRequest(track_);
             switch (mode_) {
             case Mode::Spectrum:
-            case Mode::SpectrumAverage: break;
+            case Mode::SpectrumAverage:
+            case Mode::SpectrumCumulativeAverage: break;
             case Mode::Scope: request.outputs = SharedAnalysis::Scope; break;
             case Mode::Meters:
             case Mode::ChannelReadout: request.outputs = SharedAnalysis::Meters; break;
@@ -1025,12 +1043,15 @@ void SharedSpectrumView::frame() noexcept {
     const bool averaging = mode_ == Mode::SpectrumAverage;
     const bool maximumMode = isMaximumSpectrum(mode_);
     const auto average = averaging ? lease_.readAverage() : nullptr;
+    const auto cumulative = mode_ == Mode::SpectrumCumulativeAverage ? lease_.readCumulativeAverage() : nullptr;
     const auto maximum = maximumMode ? lease_.readMaximum() : nullptr;
     const auto averageStatus = average ? average->status : SharedAnalysis::AverageStatus::Waiting;
     std::shared_ptr<const SharedAnalysis::Result> next;
     if (averaging) {
         if (averageStatus == SharedAnalysis::AverageStatus::Ready && average->binsDbfs)
             next = average->window;
+    } else if (mode_ == Mode::SpectrumCumulativeAverage) {
+        if (cumulative) next = cumulative->window;
     } else if (maximumMode) {
         if (maximum) next = maximum->window;
     } else {
@@ -1045,7 +1066,7 @@ void SharedSpectrumView::frame() noexcept {
     }
     // The cumulative lease owns its admission fence. A held picture can
     // remain unchanged across later hops after the fence has been satisfied.
-    if (next && mode_ == Mode::SpectrumCumulativeMaximum)
+    if (next && (mode_ == Mode::SpectrumCumulativeMaximum || mode_ == Mode::SpectrumCumulativeAverage))
         freshRequired_ = false;
     if (next && freshRequired_) {
         const auto size = static_cast<std::int64_t>(next->request.fftSize);
@@ -1059,7 +1080,9 @@ void SharedSpectrumView::frame() noexcept {
     // cannot leave a raster that later aliases the new domain's first result.
     if (!next) raster_.reset();
     // An explicit source/transport epoch may invalidate a result without dropping the lease.
-    const auto nextBins = next && average ? average->binsDbfs : nullptr;
+    auto nextBins = next && average ? average->binsDbfs : nullptr;
+    if (next && cumulative)
+        nextBins = std::shared_ptr<const std::vector<float>>(cumulative, &cumulative->binsDbfs);
     const auto nextMaximum = next ? maximum : nullptr;
     const bool pictureChanged = next != shown_ || nextBins != averageBins_ || nextMaximum != maximumShown_ ||
                                 averageStatus != averageStatus_;
@@ -1547,6 +1570,7 @@ AnalysisPane::AnalysisPane() {
     modeBox.addItem("Spectrum 1 s average", static_cast<int>(SharedSpectrumView::Mode::SpectrumAverage) + 1);
     modeBox.addItem("Realtime Maximum", static_cast<int>(SharedSpectrumView::Mode::SpectrumMaximum) + 1);
     modeBox.addItem("Cumulative Maximum", static_cast<int>(SharedSpectrumView::Mode::SpectrumCumulativeMaximum) + 1);
+    modeBox.addItem("Cumulative Average", static_cast<int>(SharedSpectrumView::Mode::SpectrumCumulativeAverage) + 1);
     modeBox.addItem("Classic Scope", static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1);
     sourceBox.addItemList({"Main", "Selected"}, 1);
     pointBox.addItemList({"Post Mixer", "Post FX", "Pre FX"}, 1);
@@ -1615,10 +1639,11 @@ bool AnalysisPane::anyControlsFocused() noexcept {
 void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     view.setMode(mode); modeBox.setSelectedId(static_cast<int>(mode) + 1, juce::dontSendNotification);
     freezeButton.setToggleState(view.frozen(), juce::dontSendNotification);
-    const bool spectral = mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::SpectrumAverage ||
-                          isMaximumSpectrum(mode);
+    const bool spectral = SharedSpectrumView::supportsSpectrumOverlays(mode) || isMaximumSpectrum(mode);
     resetButton.setTooltip(mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum
         ? "Clear this view and restart its held maximum."
+        : mode == SharedSpectrumView::Mode::SpectrumCumulativeAverage
+        ? "Clear this view and restart its cumulative average."
         : "Clear this view's display interval; other analyzer views and audio are unchanged.");
     channelBox.setEnabled(spectral || mode == SharedSpectrumView::Mode::Spectrogram);
     const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
