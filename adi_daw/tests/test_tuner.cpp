@@ -308,7 +308,7 @@ void bounded() {
     // read 0 of 137 hops at 96 kHz.)
     for (const double rate : {48000.0, 96000.0}) {
         for (const double base : {82.4, 110.0, 220.0}) {
-            for (int motion = 0; motion < 3; ++motion) {
+            for (int motion = 0; motion < 4; ++motion) {
                 PitchDetector m;
                 m.prepare(rate);
                 const auto n = static_cast<std::size_t>(rate * 3);
@@ -319,8 +319,11 @@ void bounded() {
                     const double t = static_cast<double>(i) / rate;
                     f[i] = motion == 1 ? base * std::exp2(std::clamp((t - 1.0) / 1.0, 0.0, 1.0) * 2 / 12)
                                        : base * std::exp2(0.5 / 12 * std::sin(2 * std::numbers::pi * 5.5 * t));
-                    // motion 2: the vibrato with a singer's tremolo, +-40 % amplitude at its rate
-                    const double a = motion == 2 ? 1 + 0.4 * std::sin(2 * std::numbers::pi * 5.5 * t) : 1.0;
+                    // motion 2: the vibrato with a singer's tremolo, +-40 % amplitude at its rate;
+                    // motion 3: with +-80 % (the onset rule drops a third to a half, by design: measured 72 to 89 of 137)
+                    const double a = motion == 2 ? 1 + 0.4 * std::sin(2 * std::numbers::pi * 5.5 * t)
+                                     : motion == 3 ? 1 + 0.8 * std::sin(2 * std::numbers::pi * 6 * t)
+                                                   : 1.0;
                     y[i] = static_cast<float>(a * (0.2 * std::sin(phase) + 0.1 * std::sin(2 * phase) + 0.05 * std::sin(3 * phase)));
                     phase += 2 * std::numbers::pi * f[i] / rate;
                 }
@@ -333,7 +336,7 @@ void bounded() {
                         ++read;
                     }
                 }
-                check(read >= hops * 9 / 10, std::to_string(base) + " Hz " + (motion == 0 ? "with vibrato" : motion == 1 ? "gliding" : "with vibrato and tremolo") + " at " + std::to_string(rate) +
+                check(read >= (motion == 3 ? hops / 2 : hops * 9 / 10), std::to_string(base) + " Hz " + (motion == 0 ? "with vibrato" : motion == 1 ? "gliding" : motion == 2 ? "with vibrato and tremolo" : "with vibrato and deep tremolo") + " at " + std::to_string(rate) +
                                                  ": " + std::to_string(read) + " of " + std::to_string(hops) + " hops read");
             }
         }
@@ -402,14 +405,20 @@ void bounded() {
                 z[i] = static_cast<float>(std::exp(-t / tau) * (0.4 * std::sin(ph) + 0.2 * std::sin(2 * ph) + 0.1 * std::sin(3 * ph)));
             }
             double off = 0;
+            int clear = 0;
             for (std::size_t at = 0; at + o.window() <= n; at += o.hop()) {
                 double got = 0, c = 0;
                 if (o.analyse(z.data() + at, got, c) && c >= Tuner::kClarity) {
                     off = std::max(off, std::abs(cents(got, 41.2)));
+                    ++clear;
                 }
             }
-            check(off < 25, "a 41.2 Hz pluck dying in " + std::to_string(tau) + " s at " + std::to_string(rate) + ": the worst clear reading " +
-                                std::to_string(off) + " cents off");
+            // The slow pluck must also keep its readings: a rule that drops
+            // them all would pass the bound on the worst (the sixth review).
+            // The 40 ms pluck is under two of a window's periods of E1 before
+            // it dies: few readings or none (0 at 44.1 kHz, 4 at 48 and 96).
+            check(off < 25 && clear >= (tau < 0.1 ? 0 : 10), "a 41.2 Hz pluck dying in " + std::to_string(tau) + " s at " + std::to_string(rate) + ": " +
+                                                              std::to_string(clear) + " clear readings, the worst " + std::to_string(off) + " cents off");
         }
     }
     for (const double rate : {1e20, 1e300}) {
