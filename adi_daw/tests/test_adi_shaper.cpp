@@ -88,6 +88,86 @@ void endpoints() {
     check(shaper.latency() == 0, "gain, width and balance add no delay");
 }
 
+void bandTrims() {
+    constexpr std::array sets{std::array{.375f,.25f}, std::array{-.25f,.5f}};
+    constexpr double octaveDb = 6.0;
+    for (auto stage : {Stage::Volume, Stage::Width}) {
+        Shaper rack;
+        flat(rack, stage, Band::Mid, stage == Stage::Volume ? 25.f : 0.f);
+        for (double u : {0.,.25,.5,.75,1.}) {
+            const double gain = std::exp2((u-.5) * (stage == Stage::Volume ? 8. : 4.));
+            rack.set(Shaper::trimParam(stage,Band::Mid), static_cast<float>((2*u-1)*Shaper::trimLimitDb(stage)));
+            for (float mix : {0.f,50.f,100.f}) for (float master : {0.f,50.f,100.f}) {
+                rack.set(Shaper::MasterMix,master);
+                rack.set(Shaper::bandParam(stage,Band::Mid,Shaper::Mix),mix);
+                for (const auto& input : sets) {
+                    const auto out = one(rack,input[0],input[1]);
+                    for (std::size_t ch=0;ch<2;++ch) {
+                        const double wet = stage == Stage::Volume ? input[ch]*.25 : (input[0]+input[1])*.5;
+                        const double expected = input[ch] + master*mix*.0001*(gain*wet-input[ch]);
+                        check(near(out[ch],expected), "band trim applies to wet signal before both mixes");
+                    }
+                }
+            }
+        }
+        // A neutral contour with a non-unity trim remains audible. With
+        // unity trim, the flat full-band stage keeps samples bit-exact.
+        flat(rack,stage,Band::Mid,100);
+        for (float db : {0.f,static_cast<float>(octaveDb)}) {
+            rack.set(Shaper::trimParam(stage,Band::Mid),db);
+            const auto out=one(rack,-.375f,.3125f);
+            const float g=db==0.f ? 1.f : 2.f;
+            check(out[0]==-.375f*g && out[1]==.3125f*g,"flat contour still applies active trim");
+        }
+    }
+    using Bank = adi::dsp::AdiShaperWaveBank;
+    for (auto stage : {Stage::Volume, Stage::Width}) {
+        Shaper rack;
+        const auto key = Bank::key(static_cast<int>(stage),1,0);
+        const Bank::Point start{0.f,1.f,0.f,Bank::Shape::Hold};
+        const Bank::Point half{.5f,0.f,0.f,Bank::Shape::Hold};
+        const auto put = [&](int slot, Bank::Point p) {
+            const int index = Bank::firstId - 1 + 2*slot;
+            rack.set(static_cast<Shaper::Param>(index),static_cast<float>(Bank::address(key,p)));
+            rack.set(static_cast<Shaper::Param>(index+1),static_cast<float>(Bank::value(p)));
+        };
+        put(0,start);
+        rack.set(Shaper::trimParam(stage,Band::Mid),static_cast<float>(octaveDb));
+        rack.set(Shaper::bandParam(stage,Band::Mid,Shaper::Mix),50);
+        for (const bool twoPoints : {false,true}) {
+            if (twoPoints) put(1,half);
+            for (const double phase : {.25,.75}) {
+                rack.sync(phase*4);
+                const bool high = !twoPoints || phase < .5;
+                const auto out=one(rack);
+                const double wetL = stage==Stage::Volume ? (high ? .375 : 0) : .3125 + (high ? .125 : 0);
+                const double wetR = stage==Stage::Volume ? (high ? .25 : 0) : .3125 - (high ? .125 : 0);
+                check(near(out[0],.1875+wetL) && near(out[1],.125+wetR),
+                      "constant and changing drawn curves use the same trim and dry signal");
+            }
+        }
+    }
+    // Compare neutral trimmed bands to the existing per-band volume law for
+    // every layout. Each channel contains independent highs and transients.
+    for (auto stage : {Stage::Volume,Stage::Width}) for (int layout=0;layout<=3;++layout) {
+        Shaper rack, expected;
+        rack.set(stage==Stage::Volume ? Shaper::VolumeBands : Shaper::WidthBands,static_cast<float>(layout));
+        expected.set(Shaper::VolumeBands,static_cast<float>(layout));
+        for (auto band : {Band::Low,Band::Mid,Band::High}) {
+            constexpr std::array gains{.25f,.75f,.5f};
+            const float g=gains[static_cast<std::size_t>(band)];
+            rack.set(Shaper::trimParam(stage,band),static_cast<float>(octaveDb*std::log2(g)));
+            flat(expected,Stage::Volume,band,100.f*g);
+        }
+        for (int i=0;i<512;++i) {
+            const float l=static_cast<float>(std::sin(i*.09))+(i==11 ? .5f : 0.f);
+            const float r=static_cast<float>(std::cos(i*.57))-(i==19 ? .3f : 0.f);
+            const auto wet=one(rack,l,r), ref=one(expected,l,r);
+            check(near(wet[0],ref[0]) && near(wet[1],ref[1]),"trims select only participating bands");
+        }
+    }
+}
+
 void balanceSweep() {
     // Alternating positions of a 65-point DC sweep held out of the curve fit.
     constexpr std::array gains{
@@ -871,6 +951,7 @@ void timeBandHistory() {
 
 int main() {
     endpoints();
+    bandTrims();
     balanceSweep();
     beatGate();
     clocksAndLinearCurve();
