@@ -23,7 +23,7 @@ std::string checkedDevice(Store& store,std::int64_t device,std::int32_t slot) {
     if(!selected.executeStep() || selected.getColumn(0).getString()!="internal")throw std::runtime_error("sample assignment needs a supported built-in device");
     const auto uid=selected.getColumn(1).getString();const auto* info=findBuiltin(uid);
     if(!info||!info->available)throw std::runtime_error("sample device backend is unavailable");
-    const auto declarations=device::parsePdDeclarations(builtinCanvas(uid));
+    const auto declarations=device::parsePdDeclarations(builtinDeclarations(uid));
     if(std::none_of(declarations.samples.begin(),declarations.samples.end(),[&](const auto& value){return value.id==slot;}))
         throw std::runtime_error("device did not declare this sample slot");
     (void)device::inspectBuiltinSample(device::emptyBuiltinSample(uid,slot));return uid;

@@ -3,6 +3,7 @@
 #include "Filters.hpp"
 #include "Mailbox.hpp"
 #include "Transform.hpp"
+#include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -20,6 +21,7 @@ namespace {
 using Complex = std::complex<double>;
 std::atomic<std::uint64_t> nextPreparationEpoch{1};
 bool within(double x,double lo,double hi) noexcept { return std::isfinite(x)&&x>=lo&&x<=hi; }
+double finiteSample(double sample) noexcept { return std::isfinite(sample) ? sample : 0.; }
 bool phaseActive(const Settings &s) noexcept {
     return (s.phaseMode==PhaseMode::Match && s.matchAmount>0.) ||
         (s.phaseMode==PhaseMode::Rotation && s.rotationDegrees!=0. && std::abs(s.rotationDegrees)!=180.);
@@ -144,6 +146,7 @@ bool valid(const Settings &s) noexcept {
 struct Core::Impl {
     PrepareSpec spec;
     bool prepared=false;
+    bool firStorageReady=false, phaseStorageReady=false;
     Settings lastRequested;
     detail::ConfigurationMailbox mailbox;
     // Capture, executing input, preceding spectrum, admitted plan and offer
@@ -165,11 +168,20 @@ struct Core::Impl {
     std::array<std::vector<double>,2> phaseInput,phaseKey,phaseOutput;
     std::array<std::array<std::vector<double>,4>,2> firInput;
     std::array<std::array<std::vector<Complex>,4>,2> firSpectrum;
-    struct FirTag { int slot=-1; std::uint16_t mask=0; std::uint64_t version=0; };
+    struct FirTag {
+        int slot = -1;
+        std::uint16_t mask = 0;
+        bool keyIsProgramme = false;
+        std::uint64_t version = 0;
+    };
     FirTag captureTag,jobTag,previousTag;
     enum class FirStage { Idle, ForwardStart, Forward, Node, CurrentProduct, PreviousProduct, Sum,
-                          InverseStart, Inverse, Overlap, Finish };
+                          InverseStart, Inverse, Overlap, OverlapKey, Finish };
     FirStage firStage=FirStage::Idle;
+    static constexpr std::uint64_t firEdgeWork = 16;
+    std::uint64_t firForwardStreamWork = 0, firBandStreamWork = 0;
+    bool jobSharesKeyResult = false;
+    std::uint64_t jobWorkPerSample = 0, jobRemainder = 0, jobRemainderCarry = 0;
     std::size_t captureBank=0,jobTimeBank=0,previousSpectrumBank=0,jobSpectrumBank=1;
     std::size_t jobStream=0,jobNode=0,jobIndex=0;
     std::uint64_t jobOutput=0;
@@ -203,10 +215,40 @@ struct Core::Impl {
                 destination.first[b]=previous->first[b];destination.second[b]=previous->second[b];
                 continue;
             }
+            destination.first[b].resize(p+1); destination.second[b].resize(p+1);
             kernel(builderSmall,builderLarge,buildTime,buildSpectrum,buildWindow,
                 s.nodes[b].frequencyHz,s.nodes[b].q,spec.sampleRate,destination.first[b],destination.second[b]);
         }
         destination.kernelsValid=true;
+    }
+    // Owner only. Each processing path allocates its working storage before
+    // publishing the first configuration that can touch it on audio.
+    void prepareFirStorage() {
+        builderSmall.prepare(h); builderLarge.prepare(h); firTransform.prepare(h);
+        buildTime.assign(h,0.); buildSpectrum.resize(p+1); buildWindow.clear();
+        transformTime.assign(h,0.); transformSpectrum.resize(p+1);
+        for(auto &bank:firInput) for(auto &stream:bank) stream.assign(p,0.);
+        for(auto &bank:firSpectrum) for(auto &stream:bank) stream.assign(p+1,Complex{});
+        for(std::size_t c=0;c<2;++c) for(std::size_t b=0;b<kNodes;++b) {
+            bandMain[c][b].assign(4*h,0.); bandKey[c][b].assign(4*h,0.);
+            firEnvelope[c][b]={};
+        }
+        firDry.prepare(h*3/2);
+        firStorageReady=true;
+    }
+    void preparePhaseStorage() {
+        phaseTransform.prepare(phaseN);
+        phaseTime.assign(phaseN,0.); phaseSpectrum.resize(phaseN/2+1); phaseKeySpectrum.resize(phaseN/2+1);
+        phaseWindow.resize(phaseN);
+        for(std::size_t i=0;i<phaseN;++i) {
+            const float angle=(static_cast<float>(i)*static_cast<float>(2.*std::numbers::pi))/static_cast<float>(phaseN-1);
+            phaseWindow[i]=static_cast<double>(1.f-std::cos(angle))*.5;
+        }
+        for(std::size_t c=0;c<2;++c) {
+            phaseInput[c].assign(phaseN,0.); phaseKey[c].assign(phaseN,0.); phaseOutput[c].assign(4*phaseN,0.);
+        }
+        phaseDry.prepare(phaseN); phaseKeyDelay.prepare(phaseN); phaseValidityDelay.prepare(phaseN,1.);
+        phaseStorageReady=true;
     }
     void prepare(PrepareSpec next,const Settings &s) {
         if(!valid(s)||!std::isfinite(next.sampleRate)||next.sampleRate<44100.||next.sampleRate>192000.||
@@ -214,30 +256,12 @@ struct Core::Impl {
             throw std::invalid_argument("Focus prepare requires stereo main, 44.1-192 kHz and a positive block capacity");
         prepared=false;spec=next;h=hopFor(spec.sampleRate);p=h/2;
         phaseN=phaseSizeFor(spec.sampleRate);phaseH=phaseN/4;
-        builderSmall.prepare(h);builderLarge.prepare(h);firTransform.prepare(h);phaseTransform.prepare(phaseN);
-        buildTime.assign(h,0.);buildSpectrum.resize(p+1);buildWindow.clear();
-        transformTime.assign(h,0.);transformSpectrum.resize(p+1);
-        for(auto &bank:firInput)for(auto &stream:bank)stream.assign(p,0.);
-        for(auto &bank:firSpectrum)for(auto &stream:bank)stream.assign(p+1,Complex{});
-        phaseTime.assign(phaseN,0.);phaseSpectrum.resize(phaseN/2+1);phaseKeySpectrum.resize(phaseN/2+1);
-        phaseWindow.resize(phaseN);
-        for(std::size_t i=0;i<phaseN;++i) {
-            const float angle=(static_cast<float>(i)*static_cast<float>(2.*std::numbers::pi))/static_cast<float>(phaseN-1);
-            phaseWindow[i]=static_cast<double>(1.f-std::cos(angle))*.5;
-        }
-        for(std::size_t c=0;c<2;++c) {
-            phaseInput[c].assign(phaseN,0.);phaseKey[c].assign(phaseN,0.);phaseOutput[c].assign(4*phaseN,0.);
-            for(std::size_t b=0;b<kNodes;++b) {
-                bandMain[c][b].assign(4*h,0.);bandKey[c][b].assign(4*h,0.);
-                iir[c][b]=Node{};firEnvelope[c][b]=detail::Envelope{};
-            }
-            keyGuard[c]={0,std::max(1,static_cast<int>(spec.sampleRate*.01))};
-        }
-        for(auto &slot:slots) {
-            slot.readers.store(0,std::memory_order_relaxed);
-            for(auto &v:slot.coefficients.first)v.resize(p+1);
-            for(auto &v:slot.coefficients.second)v.resize(p+1);
-        }
+        firStorageReady=false;phaseStorageReady=false;
+        if(s.engine==Engine::Fir) prepareFirStorage();
+        if(phaseActive(s)) preparePhaseStorage();
+        clearIirSignal();
+        for(auto &guard:keyGuard)guard={0,std::max(1,static_cast<int>(spec.sampleRate*.01))};
+        for(auto &slot:slots)slot.readers.store(0,std::memory_order_relaxed);
         lastRequested=s;mailbox.reset();
         const auto version=mailbox.publish(s);
         build(slots[0].coefficients,s,version,nullptr);
@@ -245,12 +269,22 @@ struct Core::Impl {
         ready.store(version,std::memory_order_release);applied.store(version,std::memory_order_release);
         pendingToken.store(0,std::memory_order_release);pendingSamples.store(latencyFor(s,spec.sampleRate),std::memory_order_release);
         activeLatency.store(latencyFor(s,spec.sampleRate),std::memory_order_release);
-        firDry.prepare(h*3/2);phaseDry.prepare(phaseN);phaseKeyDelay.prepare(phaseN);phaseValidityDelay.prepare(phaseN,1.);
         firFill=0;firCursor=phaseCursor=0;physical=serial=0;++generation;
         captureTag={};jobTag={};previousTag={};firStage=FirStage::Idle;
         captureBank=jobTimeBank=previousSpectrumBank=0;jobSpectrumBank=1;
         epoch=nextPreparationEpoch.fetch_add(1,std::memory_order_relaxed);stats={};phaseBlend={1.,1.};
-        stats.firWorkQuota=static_cast<std::uint64_t>(373+22*(std::bit_width(p)-1));
+        const auto stages = static_cast<std::uint64_t>(std::bit_width(p) - 1);
+        // Transform counts one scan per element in each pack/permute/post stage
+        // (inverse has four scans), p/2 butterflies per stage, and every transition.
+        const auto fftCursorWork = stages * (p / 2) + stages + 5;
+        const auto forwardWork = 3 * p + fftCursorWork;
+        const auto inverseWork = 4 * p + fftCursorWork;
+        // Each job pays per forwarding stream and per rendered stream.
+        // A rendered band adds the products, inverse and h overlap charges.
+        firForwardStreamWork = forwardWork + 2;
+        firBandStreamWork = inverseWork + 3 * (p + 1) + 2 + h;
+        const auto maximumWork = firWork(4, 4, kNodes, 0);
+        stats.firWorkQuota = (maximumWork + p - 1) / p;
         phaseBlendStep=1./std::max(1.,spec.sampleRate*.01);prepared=true;
     }
     // Owner-only, while the relevant bank/stage is dormant. Re-entering after
@@ -288,13 +322,19 @@ struct Core::Impl {
         if(mailbox.publish(s)==0) return false;
         lastRequested=s;return true;
     }
+    void withdraw(std::uint64_t token) noexcept {
+        if(!token||pendingToken.load(std::memory_order_acquire)!=token) return;
+        lastRequested=slots[static_cast<std::size_t>(activeSlot)].coefficients.settings;
+        published.store(activeSlot,std::memory_order_release);
+        pendingToken.store(0,std::memory_order_release);
+    }
     bool service() {
         if(!prepared || pendingToken.load(std::memory_order_acquire)!=0) return false;
         Settings s;std::uint64_t version=0;
         if(!mailbox.read(s,version)||version==ready.load(std::memory_order_acquire)) return false;
-        // This owner's previous nonzero token can become zero only through
-        // acquire-observed audio admission. Thus published is the immutable
-        // admitted plan, and any other bank/off-phase storage is dormant.
+        // Audio clears a nonzero token only after admission or after restoring
+        // published to the active slot at a physical-block reversion. In both
+        // cases the owner sees the admitted plan here.
         const int current=published.load(std::memory_order_acquire);
         for(int index=0;index<static_cast<int>(slots.size());++index) {
             if(index==current) continue;
@@ -302,11 +342,18 @@ struct Core::Impl {
             if(!slots[static_cast<std::size_t>(index)].readers.compare_exchange_strong(zero,-1,std::memory_order_acq_rel)) continue;
             auto &slot=slots[static_cast<std::size_t>(index)];
             const auto &previous=slots[static_cast<std::size_t>(current)].coefficients;
-            if(previous.settings.engine!=s.engine) {
-                if(s.engine==Engine::Fir)clearFirSignal();else clearIirSignal();
+            try {
+                if(previous.settings.engine!=s.engine) {
+                    if(s.engine!=Engine::Fir) clearIirSignal();
+                    else if(firStorageReady) clearFirSignal();
+                    else prepareFirStorage();
+                }
+                if(!phaseActive(previous.settings)&&phaseActive(s)) {
+                    if(phaseStorageReady) clearPhaseSignal();
+                    else preparePhaseStorage();
+                }
+                build(slot.coefficients,s,version,&previous);
             }
-            if(!phaseActive(previous.settings)&&phaseActive(s))clearPhaseSignal();
-            try { build(slot.coefficients,s,version,&previous); }
             catch(...) { slot.readers.store(0,std::memory_order_release);throw; }
             slot.readers.store(0,std::memory_order_release);
             published.store(index,std::memory_order_release);ready.store(version,std::memory_order_release);
@@ -319,7 +366,7 @@ struct Core::Impl {
         if(!prepared||!valid(s)) return {};
         // A delayed control publication cannot invalidate a usable audio plan.
         // lastRequested advances only on success, so a later call retries it.
-        static_cast<void>(request(s));
+        const bool requested=request(s);
         if(block!=0&&block==physical)
             return configured==activeLatency.load(std::memory_order_acquire)?BlockContext{generation,serial,epoch}:BlockContext{};
         physical=block;++serial;
@@ -332,14 +379,24 @@ struct Core::Impl {
             }
             if(held) {
                 const auto &plan=slot.coefficients;
-                if(plan.version>applied.load(std::memory_order_relaxed)&&
-                   pendingToken.load(std::memory_order_acquire)==plan.version&&
-                   latencyFor(plan.settings,spec.sampleRate)==configured) {
+                const bool outstanding=plan.version>applied.load(std::memory_order_relaxed)&&
+                    pendingToken.load(std::memory_order_acquire)==plan.version;
+                const auto offeredLatency=latencyFor(plan.settings,spec.sampleRate);
+                if(outstanding&&offeredLatency==configured) {
                     slots[static_cast<std::size_t>(activeSlot)].readers.fetch_sub(1,std::memory_order_release);
                     activeSlot=next;applied.store(plan.version,std::memory_order_release);++generation;
                     activeLatency.store(configured,std::memory_order_release);
                     if(pendingToken.load(std::memory_order_acquire)==plan.version) pendingToken.store(0,std::memory_order_release);
-                } else slot.readers.fetch_sub(1,std::memory_order_release);
+                } else {
+                    // No aggregate hold and no new PDC: the user returned to
+                    // the active configuration while this latency was still unused.
+                    const auto version=plan.version;
+                    const bool revert=outstanding&&requested&&
+                        configured==activeLatency.load(std::memory_order_acquire)&&
+                        sameConfiguration(s,slots[static_cast<std::size_t>(activeSlot)].coefficients.settings);
+                    slot.readers.fetch_sub(1,std::memory_order_release);
+                    if(revert)withdraw(version);
+                }
             }
         }
         if(configured!=activeLatency.load(std::memory_order_acquire))return {};
@@ -407,21 +464,23 @@ struct Core::Impl {
             firStage=FirStage::Forward;break;
         case FirStage::Forward:
             if(firTransform.busy())used=firTransform.advance(static_cast<std::size_t>(budget));
-            else if(++jobStream<4)firStage=FirStage::ForwardStart;
+            else if(++jobStream < (jobTag.keyIsProgramme ? 2U : 4U))firStage=FirStage::ForwardStart;
             else {jobStream=0;jobNode=0;firStage=FirStage::Node;}
             break;
         case FirStage::Node:
             if(jobNode==kNodes) {
                 jobNode=0;
-                if(++jobStream==4)firStage=FirStage::Finish;
+                if(++jobStream == (jobSharesKeyResult ? 2U : 4U))firStage=FirStage::Finish;
             } else if(((jobTag.mask|previousTag.mask)&(1U<<jobNode))==0)++jobNode;
             else {
                 jobFirstKernel=(jobTag.mask&(1U<<jobNode))!=0?
                     slots[static_cast<std::size_t>(jobTag.slot)].coefficients.first[jobNode].data():nullptr;
                 jobSecondKernel=(previousTag.mask&(1U<<jobNode))!=0?
                     slots[static_cast<std::size_t>(previousTag.slot)].coefficients.second[jobNode].data():nullptr;
-                jobCurrentInput=firSpectrum[jobSpectrumBank][jobStream].data();
-                jobPreviousInput=firSpectrum[previousSpectrumBank][jobStream].data();
+                const auto currentStream = jobTag.keyIsProgramme ? jobStream % 2 : jobStream;
+                const auto precedingStream = previousTag.keyIsProgramme ? jobStream % 2 : jobStream;
+                jobCurrentInput=firSpectrum[jobSpectrumBank][currentStream].data();
+                jobPreviousInput=firSpectrum[previousSpectrumBank][precedingStream].data();
                 jobIndex=0;firStage=FirStage::CurrentProduct;
             }
             break;
@@ -461,52 +520,93 @@ struct Core::Impl {
             else {jobIndex=0;firStage=FirStage::Overlap;}
             break;
         case FirStage::Overlap:
-            if(jobIndex==h-1) {++jobNode;firStage=FirStage::Node;}
-            else {
-                auto &output=jobStream<2?bandMain[jobStream][jobNode]:bandKey[jobStream-2][jobNode];
-                const auto position=static_cast<std::size_t>(jobOutput+jobIndex)&(4*h-1);
-                const auto count=std::min({static_cast<std::size_t>(budget),h-1-jobIndex,4*h-position});
-                for(std::size_t i=0;i<count;++i)output[position+i]+=transformTime[jobIndex+i];
-                jobIndex+=count;used=count;
+        case FirStage::OverlapKey: {
+            const bool programme = firStage == FirStage::Overlap && jobStream < 2;
+            if (jobIndex == h - 1) {
+                if (programme && jobSharesKeyResult) {
+                    // Retain the inverse result for a second bounded pass.
+                    // The key ring can still hold a different preceding tail.
+                    jobIndex = 0;
+                    firStage = FirStage::OverlapKey;
+                } else {
+                    ++jobNode;
+                    firStage = FirStage::Node;
+                }
+            } else {
+                auto &output = programme ? bandMain[jobStream][jobNode] : bandKey[jobStream % 2][jobNode];
+                const auto position = static_cast<std::size_t>(jobOutput + jobIndex) & (4 * h - 1);
+                const auto count = std::min({static_cast<std::size_t>(budget), h - 1 - jobIndex, 4 * h - position});
+                for (std::size_t i = 0; i < count; ++i)
+                    output[position + i] += transformTime[jobIndex + i];
+                jobIndex += count;
+                used = count;
             }
             break;
+        }
         case FirStage::Finish:
             releaseFirTag(previousTag);previousTag=jobTag;jobTag={};
             previousSpectrumBank=jobSpectrumBank;firStage=FirStage::Idle;++stats.firJobsCompleted;break;
         }
         return used;
     }
-    std::uint64_t advanceFir(const Settings &s) noexcept {
+    std::uint64_t advanceFir(const Settings &s, bool keyIsProgramme) noexcept {
         // First/last-sample metadata is reserved from this sample's quota,
         // not credited by configured capacity or earlier idle callbacks.
-        const std::uint64_t metadata=(firFill==0?16U:0U)+(firFill+1==p?16U:0U);
+        const std::uint64_t metadata = firFill == 0 || firFill + 1 == p ? firEdgeWork : 0;
         if(firFill==0) {
             captureTag.slot=activeSlot;captureTag.version=slots[static_cast<std::size_t>(activeSlot)].coefficients.version;
             captureTag.mask=0;
+            captureTag.keyIsProgramme = keyIsProgramme;
             for(std::size_t b=0;b<kNodes;++b)if(s.nodes[b].enabled)captureTag.mask|=static_cast<std::uint16_t>(1U<<b);
             slots[static_cast<std::size_t>(activeSlot)].readers.fetch_add(1,std::memory_order_relaxed);
         }
         std::uint64_t used=metadata;
-        while(firStage!=FirStage::Idle&&used<stats.firWorkQuota) {
-            const auto transformBefore=firTransform.workUnits();const auto chunk=firStep(stats.firWorkQuota-used);
-            const auto primitives=firTransform.workUnits()-transformBefore;
-            // A synchronous transform mutation is still charged in full and
-            // therefore fails the sample-work/deadline regression.
-            const auto charge=std::max(chunk,primitives);
-            used+=charge;
+        if (firStage != FirStage::Idle) {
+            // Masks cannot change within a job. This remainder follows the
+            // remaining per-hop work without a divide on the sample path.
+            jobRemainderCarry += jobRemainder;
+            const auto budget = jobWorkPerSample + static_cast<std::uint64_t>(jobRemainderCarry >= p);
+            jobRemainderCarry &= p - 1;
+            while (firStage != FirStage::Idle && used < budget) {
+                const auto transformBefore = firTransform.workUnits();
+                const auto chunk = firStep(budget - used);
+                // An unexpected synchronous transform must still be charged in full.
+                used += std::max(chunk, firTransform.workUnits() - transformBefore);
+            }
         }
         stats.firWorkUnits+=used;stats.firMaxSampleWork=std::max(stats.firMaxSampleWork,used);
         return used;
     }
-    bool launchFir() noexcept {
-        if(firStage!=FirStage::Idle) {++stats.firDeadlineMisses;return false;}
+    std::uint64_t firWork(std::uint64_t forwards, std::uint64_t renders,
+                          std::uint64_t bands, std::uint64_t additionalOverlap) const noexcept {
+        return forwards * firForwardStreamWork + renders * (kNodes + 1) + 1 + 2 * firEdgeWork
+            + bands * (renders * firBandStreamWork + additionalOverlap);
+    }
+    void launchFir() noexcept {
+        if(firStage!=FirStage::Idle) {
+            ++stats.firDeadlineMisses;
+            // Keep the source clock and dry delay intact. Abandon unfinished
+            // work at this capture boundary, before it can write late output.
+            // The preceding spectrum no longer belongs to the adjacent capture.
+            firTransform.cancel();
+            releaseFirTag(jobTag);
+            releaseFirTag(previousTag);
+        }
         jobTag=captureTag;captureTag={};jobTimeBank=captureBank;captureBank=1-captureBank;
+        const auto activeNodes = std::popcount(static_cast<unsigned>(jobTag.mask | previousTag.mask));
+        const auto forwardStreams = jobTag.keyIsProgramme ? 2U : 4U;
+        jobSharesKeyResult = jobTag.keyIsProgramme && (previousTag.mask == 0 || previousTag.keyIsProgramme);
+        const auto renderStreams = jobSharesKeyResult ? 2U : 4U;
+        const auto work = firWork(forwardStreams, renderStreams, static_cast<std::uint64_t>(activeNodes),
+                                  jobSharesKeyResult ? 2 * h : 0);
+        jobWorkPerSample = work / p;
+        jobRemainder = work % p;
+        jobRemainderCarry = 0;
         jobSpectrumBank=1-previousSpectrumBank;jobOutput=firCursor+1+p;
         jobStream=jobNode=jobIndex=0;firStage=FirStage::ForwardStart;firFill=0;
         ++stats.firJobsStarted;
         // Retain the diagnostic's original h-sample source-hop unit.
         if((firCursor+1)%h==0)++stats.filterHops;
-        return true;
     }
     template<class Sample> bool process(Sample *const *main,const Sample *const *key,std::int32_t keyChannels,
         std::int32_t frames,const Settings &s,BlockContext context) noexcept {
@@ -518,6 +618,12 @@ struct Core::Impl {
         const auto &fixed=plan.settings;
         const auto phaseSettings=pinConfiguration(s,fixed);
         const bool runPhase=phaseActive(fixed),fir=fixed.engine==Engine::Fir;
+        const bool invertProgramme = fixed.phaseMode == PhaseMode::Rotation && std::abs(fixed.rotationDegrees) == 180.;
+        const bool keyIsProgramme = !s.externalKey && !runPhase && !invertProgramme;
+        // A capture may include multiple control segments. Keep both input
+        // histories and reuse spectra only if the whole capture stays internal.
+        if (fir && frames > 0 && firFill != 0 && !keyIsProgramme)
+            captureTag.keyIsProgramme = false;
         // Tag diagnostics are audio-published mirrors. Owner dormant clearing
         // may reset the actual tags concurrently while this bank is IIR.
         if(!fir) {
@@ -533,11 +639,12 @@ struct Core::Impl {
         for(const auto &node:s.nodes) anyEnabled=anyEnabled||node.enabled;
         if(!runPhase&&!fir&&!anyEnabled) {
             const double gain=inGain*outGain;
-            const double sign=fixed.phaseMode==PhaseMode::Rotation&&std::abs(fixed.rotationDegrees)==180.?-1.:1.;
+            const double sign=invertProgramme ? -1. : 1.;
             if(gain!=1.||sign!=1.) for(std::int32_t frame=0;frame<frames;++frame)
                 for(std::size_t c=0;c<2;++c) main[c][frame]=static_cast<Sample>(static_cast<double>(main[c][frame])*gain*sign);
             stats.processedFrames+=static_cast<std::uint64_t>(frames);return true;
         }
+        [[maybe_unused]] filters::FlushDenormals flush;
         std::array<double,kNodes> thresholds{},attacks{},releases{},midWeight{},sideWeight{};
         bool anySolo=false;
         for(std::size_t b=0;b<kNodes;++b) {
@@ -554,14 +661,18 @@ struct Core::Impl {
                 iir[c][b].configure(plan.iir[b],plan.settings.nodes[b].frequencyHz,plan.settings.nodes[b].q);
         }
         for(std::int32_t frame=0;frame<frames;++frame) {
-            const double left=static_cast<double>(main[0][frame])*inGain,right=static_cast<double>(main[1][frame])*inGain;
+            const double left=finiteSample(main[0][frame])*inGain;
+            const double right=finiteSample(main[1][frame])*inGain;
             std::array<double,2> x{left+right,left-right},k{};
             const bool present=!s.externalKey||keyChannels>0;
             if(!s.externalKey) k=x;
-            else if(keyChannels==1) k={static_cast<double>(key[0][frame])*keyGain,static_cast<double>(key[0][frame])*keyGain};
-            else if(keyChannels==2) {
-                const double kl=static_cast<double>(key[0][frame])*keyGain,kr=static_cast<double>(key[1][frame])*keyGain;
-                k={kl+kr,kl-kr};
+            else if(keyChannels>0) {
+                const double kl=finiteSample(key[0][frame])*keyGain;
+                if(keyChannels==1) k={kl,kl};
+                else {
+                    const double kr=finiteSample(key[1][frame])*keyGain;
+                    k={kl+kr,kl-kr};
+                }
             }
             std::array<bool,2> keyValid{keyGuard[0].observe(k[0],present),keyGuard[1].observe(k[1],present)};
             if(runPhase) {
@@ -569,10 +680,10 @@ struct Core::Impl {
                 keyValid={heardValid[0]!=0.,heardValid[1]!=0.};
                 x=phaseTick(x,k,phaseSettings,keyValid);k=phaseKeyDelay.tick(k);
             }
-            else if(fixed.phaseMode==PhaseMode::Rotation&&std::abs(fixed.rotationDegrees)==180.) {x[0]=-x[0];x[1]=-x[1];}
+            else if(invertProgramme) {x[0]=-x[0];x[1]=-x[1];}
             std::array<double,2> y=x;
             if(fir) {
-                static_cast<void>(advanceFir(s));
+                static_cast<void>(advanceFir(s, keyIsProgramme));
                 const auto dry=firDry.tick(x);y=anySolo?std::array<double,2>{0.,0.}:dry;
                 stats.firMaintenanceUnits+=4; // two dry reads and two dry stores
                 const auto index=static_cast<std::size_t>(firCursor%(4*h));
@@ -592,7 +703,7 @@ struct Core::Impl {
                             y[c]-=(1.-std::pow(10.,appliedGain*.05))*band*s.wet;
                     }
                 }
-                if(++firFill==p&&!launchFir())return false;
+                if(++firFill==p)launchFir();
                 ++firCursor;
                 stats.firCaptureVersion=captureTag.version;stats.firCaptureMask=captureTag.mask;
                 stats.firJobVersion=jobTag.version;stats.firJobMask=jobTag.mask;
@@ -626,6 +737,7 @@ Core::~Core()=default;
 void Core::prepare(PrepareSpec spec,const Settings &s){impl_->prepare(spec,s);}
 void Core::reset(const Settings &s){impl_->prepare(impl_->spec,s);}
 bool Core::requestConfiguration(const Settings &s) noexcept{return impl_->request(s);}
+void Core::withdrawUnpromisedOffer(std::uint64_t token) noexcept{impl_->withdraw(token);}
 bool Core::serviceConfiguration(){return impl_->service();}
 ConfigurationStatus Core::configurationStatus() const noexcept {
     return {impl_->mailbox.sequence.load(std::memory_order_acquire),impl_->ready.load(std::memory_order_acquire),impl_->applied.load(std::memory_order_acquire)};

@@ -137,6 +137,55 @@ void compensation() {
     check(session.transport().position()==0,"valid sub-sample loop rounds to one frame rather than switching off");
 }
 
+void receivingLoopClock() {
+    for (const std::int64_t located : {96000, 100000}) {
+        Transport clock;
+        clock.loop(0, 96000);
+        clock.locate(located);
+        clock.play();
+        const auto phase = located - 96000;
+        check(clock.position() == located && clock.inputSample(0, 1024) == phase - 1024,
+              "starting at or beyond loop End keeps the located position and a linear input preroll");
+        clock.advance(512);
+        check(clock.inputSample(0, 1024) == phase - 512 && clock.delayedSample(0, 1024) == -1,
+              "folding the first position does not create a false lap in the receiving preroll");
+        clock.advance(512);
+        check(clock.inputSample(0, 1024) == phase && clock.delayedSample(0, 1024) == phase,
+              "both clocks reach the folded start after one latency interval");
+    }
+
+    Transport retimed;
+    retimed.loop(0, 1000);
+    retimed.play();
+    retimed.advance(1100);
+    const auto revision = retimed.revision();
+    check(retimed.inputSample(0, 200) == 900, "receiving clock hears the preceding lap before retime");
+    retimed.retimeLoop(0, 990);
+    check(retimed.revision() == revision && retimed.inputSample(0, 200) == 890 &&
+              retimed.delayedSample(0, 200) == 890,
+          "retiming within the arrival delay keeps the preceding lap in both clocks");
+    retimed.retimeLoop(200, 1400);
+    check(retimed.position() == 100 && retimed.inputSample(0, 20) == 80 && retimed.delayedSample(0, 20) == 80,
+          "retiming the loop start ahead of the driver keeps its lead-in linear");
+    retimed.advance(110);
+    check(retimed.position() == 210 && retimed.inputSample(0, 20) == 190 && retimed.delayedSample(0, 20) == 190,
+          "crossing the new Begin still hears the final linear lead-in samples");
+    retimed.advance(1190);
+    check(retimed.position() == 200 && retimed.inputSample(0, 20) == 1380 && retimed.delayedSample(0, 20) == 1380,
+          "the first real wrap in the reprojected loop reaches its own prior tail");
+
+    Transport shortLoop;
+    shortLoop.loop(0, 64);
+    shortLoop.play();
+    shortLoop.advance(400);
+    shortLoop.retimeLoop(0, 60);
+    check(shortLoop.position() == 16 && shortLoop.inputSample(0, 200) == 56 &&
+              shortLoop.delayedSample(0, 200) == 56,
+          "several receiving laps stay available after retiming a loop shorter than the delay");
+    check(shortLoop.inputSample(0, 500) == -104 && shortLoop.delayedSample(0, 500) == -1,
+          "the receiving preroll is signed while the click waits for the output pipeline");
+}
+
 void signatureAndWidth() {
     Fixture f;f.op("transport.setMetronome",{{"on",true}});
     f.store->db().exec("INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,3,8)");
@@ -533,6 +582,7 @@ int main() {
         storage();
         playback();
         compensation();
+        receivingLoopClock();
         signatureAndWidth();
         startSettings();
         startPolicy();

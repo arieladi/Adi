@@ -271,7 +271,7 @@ struct OpRequest {
 
     /// ADR-0021 §7.5. What was selected when this transaction began, so undo can
     /// restore it. Advisory: never an input to a handler, purely a UI hint, and
-    /// droppable by compaction. Recorded on the FIRST op of a transaction only.
+    /// droppable by compaction. Recorded on the first op of an Undo group.
     std::optional<Payload> selBefore;
 
     /// Transient owner-issued runtime acknowledgement capability. Never encoded
@@ -293,6 +293,8 @@ struct CommitResult {
     std::optional<std::int64_t> headFound;   ///< the head it found, when stale
     /// HI-02: compaction deferred/failed; the successful edit is still committed.
     std::string retentionWarning{};
+    /// Durable Undo group IDs for an explicit grouped commit, in request order.
+    std::vector<std::int64_t> groupTxnIds{};
 };
 
 /// ADR-0153: what a caller may ask of one commit, INSIDE its transaction.
@@ -305,7 +307,7 @@ struct CommitOptions {
     /// the head between the check and the commit. Unset: no check.
     std::optional<std::optional<std::int64_t>> expectHead;
     /// Runs after every op and its log row are written and the head moved,
-    /// before COMMIT, with the txn id. False, with `error`, rolls back
+    /// before COMMIT, with the first txn id. False, with `error`, rolls back
     /// everything: the rows it may have written and every op.
     std::function<bool(SQLite::Database&, std::int64_t txnId, std::string& error)> beforeCommit;
 };
@@ -313,15 +315,21 @@ struct CommitOptions {
 /// Applies a batch of ops as ONE transaction and appends their rows in it.
 ///
 /// All-or-nothing (SPEC §3.5). However many ops an agent request produces, they
-/// share a txn_id and revert as one (OPS.md §6.4), and a failure anywhere rolls
-/// back everything — including the log rows, so a partially-applied batch
-/// cannot be left describing itself as complete.
+/// ordinarily share a txn_id and revert as one (OPS.md §6.4). A grouped
+/// commit writes several Undo groups in the same durable transaction.
+/// A failure rolls back the complete batch and its log.
 class OpJournal {
 public:
     explicit OpJournal(Store&);
 
     CommitResult commit(std::span<const OpRequest>);
     CommitResult commit(std::span<const OpRequest>, const CommitOptions& options);
+    /// Group [previous end, end) under one Undo ID. Ends must increase, end
+    /// at requests.size(), and partition requests into undoable groups.
+    /// Applies and publishes the entire batch once, using its first ID for
+    /// txnId and beforeCommit. Sealed gesture submissions use commit().
+    CommitResult commitGrouped(std::span<const OpRequest> requests,
+                               std::span<const std::size_t> groupEnds, const CommitOptions& = {});
     CommitResult commitCaptured(std::span<const OpRequest>, const AppliedSource&,
                                const CommitOptions&, const OpTransactionInputs&);
     CommitResult commit(const OpRequest& one) { return commit({&one, 1}); }
@@ -355,7 +363,8 @@ public:
 
 private:
     CommitResult commitImpl(std::span<const OpRequest>, const CommitOptions&,
-                            const AppliedSource*, const OpTransactionInputs*);
+                            const AppliedSource*, const OpTransactionInputs*,
+                            std::span<const std::size_t> groupEnds = {});
     bool writeHeadSeq(std::optional<std::int64_t>);
     friend class History;
     Store& store_;

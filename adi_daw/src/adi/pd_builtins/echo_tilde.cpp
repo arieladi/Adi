@@ -44,7 +44,7 @@ void parameter(Object *x, t_symbol *, int n, t_atom *a) {
     const auto id = atom_getfloat(a);
     if (!std::isfinite(id) || id < 0 || id >= static_cast<float>(adi::dsp::Echo::Count))
         return;
-    x->core->set(static_cast<adi::dsp::Echo::Param>(static_cast<int>(id)), atom_getfloat(a + 1));
+    x->core->set(static_cast<adi::dsp::Echo::Param>(static_cast<int>(id)), static_cast<float>(atom_getfloat(a + 1)));
 }
 } // namespace
 void tempo(Object *x, t_floatarg v) { x->core->tempo(v); }

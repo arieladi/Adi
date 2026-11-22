@@ -31,9 +31,14 @@ class Core {
     // spectral resolutions. Used by a serial owner to size key transport off
     // the callback; this is not the currently admitted/reported latency.
     std::int32_t maximumLatencySamples() const noexcept;
+    // Passive child inspection for the serial owner.
     LatencyChange pendingLatencyChange() const noexcept;
-    // Single audio publisher, metadata only. Keep passing the latest settings
-    // when an older offered plan is awaiting admission; that offer is immutable.
+    // Standalone owner must reserve an offer before relaying it to the graph.
+    // Audio either withdraws it first or admits it at the matching physical block.
+    LatencyChange promiseLatencyChange() noexcept;
+    // Call on the same serialized publisher as beginBlock/process. A return
+    // to the active plan can withdraw an unused latency offer. A serial owner
+    // holding an offer pins the child settings until the graph admits it.
     bool requestConfiguration(const Settings &) noexcept;
     // One audio publisher. physicalBlock=0 starts an independent callback.
     BlockContext beginBlock(std::uint64_t physicalBlock, std::int32_t configuredLatency,

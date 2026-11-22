@@ -86,7 +86,7 @@ void catalogAndValues() {
               linear->lengthNs == 750000000 && !linear->lengthTicks && !linear->color &&
               linear->kind == "cycle" && linear->note.empty() && linear->prompt.empty(), "linear cycle values");
     check(!snapshot->findMarker(999), "missing marker lookup");
-    roundTrip(*f.store, "marker.move", {{"id", 30}, {"pos", -13}});
+    roundTrip(*f.store, "marker.move", {{"id", 30}, {"pos", 13}});
     roundTrip(*f.store, "marker.move", {{"id", 10}, {"pos", 1234567890123LL}});
     roundTrip(*f.store, "marker.rename", {{"id", 30}, {"name", "\xe6\xa9\x8b"}});
     roundTrip(*f.store, "marker.setColor", {{"id", 30}});
@@ -178,6 +178,40 @@ void failuresAreAtomic() {
               OpJournal(*f.store).count() == count, "failed second op rolls back new details and journal");
 }
 
+void positionAndCycleBounds() {
+    constexpr std::int64_t lastTick = std::int64_t{1} << 50;
+    constexpr auto lastNs = std::numeric_limits<std::int64_t>::max();
+    Fixture f("bounds");
+    roundTrip(*f.store, "marker.create", {{"id", 1}, {"pos", lastTick - 20}, {"length", 10}});
+    roundTrip(*f.store, "marker.create",
+              {{"id", 2}, {"time_base", 1}, {"pos", lastNs - 20}, {"length", 10}});
+    const auto before = state(*f.store);
+    OpJournal journal(*f.store);
+    const auto count = journal.count();
+    const std::array invalid = {
+        request("marker.create", {{"id", 3}, {"pos", -1}}),
+        request("marker.create", {{"id", 3}, {"time_base", 1}, {"pos", -1}}),
+        request("marker.create", {{"id", 3}, {"pos", lastTick + 1}}),
+        request("marker.create", {{"id", 3}, {"pos", lastTick}, {"length", 1}}),
+        request("marker.create", {{"id", 3}, {"time_base", 1}, {"pos", lastNs}, {"length", 1}}),
+        request("marker.move", {{"id", 1}, {"pos", -1}}),
+        request("marker.move", {{"id", 2}, {"pos", -1}}),
+        request("marker.move", {{"id", 1}, {"pos", lastTick - 9}}),
+        request("marker.move", {{"id", 2}, {"pos", lastNs - 9}}),
+        request("marker.resize", {{"id", 1}, {"length", 21}}),
+        request("marker.resize", {{"id", 2}, {"length", 21}})
+    };
+    for (const auto& op : invalid)
+        check(!journal.commit(op).ok && state(*f.store) == before && journal.count() == count,
+              op.opType + " out-of-range marker leaves data and history unchanged");
+    roundTrip(*f.store, "marker.resize", {{"id", 1}, {"length", 20}});
+    roundTrip(*f.store, "marker.move", {{"id", 2}, {"pos", lastNs - 10}});
+    roundTrip(*f.store, "marker.create", {{"id", 3}, {"pos", lastTick}});
+
+    f.db().exec("UPDATE markers SET pos_ticks=-42 WHERE id=3");
+    roundTrip(*f.store, "marker.move", {{"id", 3}, {"pos", 0}});
+}
+
 void captureStorageAndChildren() {
     Fixture f("capture");
     // Synthetic extension columns test captured history, not a native migration.
@@ -252,7 +286,8 @@ void migrationAndReadOnly() {
 
 int main() {
     try {
-        catalogAndValues(); sharing(); failuresAreAtomic(); captureStorageAndChildren(); migrationAndReadOnly();
+        catalogAndValues(); sharing(); failuresAreAtomic(); positionAndCycleBounds();
+        captureStorageAndChildren(); migrationAndReadOnly();
     } catch (const std::exception& error) { check(false, std::string("exception: ") + error.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

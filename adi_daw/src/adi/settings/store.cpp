@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/settings/store.hpp"
+#include "adi/media/publish_file.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <exception>
 #include <fstream>
-#include <iterator>
+#include <memory>
+#include <stdexcept>
 #include <system_error>
+#if defined(_WIN32)
+#include <share.h>
+#endif
 
 namespace adi::settings {
 namespace {
@@ -18,12 +27,103 @@ constexpr const char* kLogChangesKey = "settings.logChanges";
 
 /// The table of interface zooms, per window and per display (N4).
 constexpr const char* kWindowZoomKey = "window.zoom";
+constexpr const char* kNewerSchemaReadOnly = "settings from a newer build are read-only";
+
+bool newerSchema(const Value& doc) {
+    const auto version = doc.find("schema");
+    if (version == doc.end() || !version->is_number_integer()) return false;
+    if (version->is_number_unsigned())
+        return version->get<std::uint64_t>() > static_cast<std::uint64_t>(kSettingsSchema);
+    return version->get<std::int64_t>() > kSettingsSchema;
+}
 
 bool readText(const std::filesystem::path& p, std::string& out) {
-    std::ifstream in(p, std::ios::binary);
+#if defined(_WIN32)
+    auto* file = _wfsopen(p.c_str(), L"rb", _SH_DENYNO);
+#else
+    auto* file = std::fopen(p.c_str(), "rb");
+#endif
+    // A deleter type, not decltype(&std::fclose): glibc declares fclose with attributes that GCC
+    // drops from a template argument (-Wignored-attributes).
+    struct CloseFile { void operator()(std::FILE* f) const noexcept { std::fclose(f); } };
+    const std::unique_ptr<std::FILE, CloseFile> in(file);
     if (!in) return false;
-    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    return true;
+    out.clear();
+    std::array<char, 4096> block{};
+    for (;;) {
+        const auto count = std::fread(block.data(), 1, block.size(), in.get());
+        out.append(block.data(), count);
+        if (count != block.size()) break;
+    }
+    // A locked later range can look like EOF through the MSVC filebuf. The
+    // stream error flag keeps a readable prefix from becoming a save baseline.
+    return std::feof(in.get()) && !std::ferror(in.get());
+}
+
+// Each save owns its staging name even when two instances write side by side.
+class SettingsStage {
+public:
+    explicit SettingsStage(const std::filesystem::path& parent) {
+        static std::atomic<std::uint64_t> sequence{0};
+        const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+        for (unsigned attempt = 0; attempt < 128; ++attempt) {
+            auto folder = parent / (".adi-settings-" + std::to_string(tick) + "-" +
+                                     std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+            auto file = folder / "settings.json";
+            if (std::filesystem::create_directory(folder)) {
+                folder_ = std::move(folder);
+                file_ = std::move(file);
+                return;
+            }
+        }
+        throw std::runtime_error("cannot reserve a private settings stage");
+    }
+    ~SettingsStage() {
+        std::error_code ignored;
+        std::filesystem::remove(file_, ignored);
+        std::filesystem::remove(folder_, ignored);
+    }
+    SettingsStage(const SettingsStage&) = delete;
+    SettingsStage& operator=(const SettingsStage&) = delete;
+    const std::filesystem::path& file() const { return file_; }
+private:
+    std::filesystem::path folder_, file_;
+};
+
+std::optional<std::string> readSettingsSnapshot(const std::filesystem::path& file) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(file, error);
+    if (error == std::errc::no_such_file_or_directory)
+        return std::nullopt;
+    if (error) throw std::runtime_error("cannot inspect the settings destination: " + error.message());
+    if (status.type() == std::filesystem::file_type::not_found) return std::nullopt;
+    if (!std::filesystem::is_regular_file(status))
+        throw std::runtime_error("cannot inspect the settings destination");
+    std::string text;
+    if (!readText(file, text)) throw std::runtime_error("cannot read the settings destination");
+    return text;
+}
+
+Value readSettingsDocument(const std::optional<std::string>& snapshot, appdata::App app) {
+    if (!snapshot) return {{"values", Value::object()}};
+    if (snapshot->find('\0') != std::string::npos)
+        throw std::runtime_error("the settings destination contains a null byte");
+    auto doc = Value::parse(*snapshot, nullptr, false);
+    if (doc.is_object() && newerSchema(doc)) throw std::runtime_error(kNewerSchemaReadOnly);
+    if (!doc.is_object() || !doc.contains("values") || !doc.at("values").is_object() ||
+        (doc.contains("schema") && !doc.at("schema").is_number_integer()))
+        throw std::runtime_error("the settings destination is incomplete or invalid");
+    if (doc.contains("app") && doc.at("app") != appdata::displayName(app))
+        throw std::runtime_error("the settings destination belongs to another application");
+    return doc;
+}
+
+void writeSettingsStage(const SettingsStage& stage, std::string_view bytes) {
+    std::ofstream out(stage.file(), std::ios::binary | std::ios::trunc);
+    if (!out) throw std::runtime_error("cannot write the settings stage");
+    out << bytes;
+    out.close();
+    if (!out) throw std::runtime_error("cannot finish the settings stage");
 }
 
 /// settings.json.corrupt-1, -2, ...: the first name not already taken.
@@ -62,8 +162,20 @@ AppSettings::AppSettings(appdata::App app, std::filesystem::path file)
     std::string text;
     Value doc = Value::parse(readText(file_, text) ? text : std::string{}, nullptr,
                              /*allow_exceptions=*/false);
-    const bool shaped = !doc.is_discarded() && doc.is_object() && doc.contains("values") &&
-                        doc.at("values").is_object() &&
+    const bool object = !doc.is_discarded() && doc.is_object();
+    if (object && doc.contains("app") && doc.at("app") != appdata::displayName(app_)) {
+        status_ = LoadStatus::ForeignApp;
+        return;
+    }
+    const bool hasValues = object && doc.contains("values") && doc.at("values").is_object();
+    if (object && newerSchema(doc)) {
+        // Read familiar values when available. The rest of a newer document
+        // may have a different shape and belongs to the writing version.
+        if (hasValues) values_ = doc.at("values");
+        status_ = LoadStatus::NewerSchema;
+        return;
+    }
+    const bool shaped = hasValues &&
                         (!doc.contains("schema") || doc.at("schema").is_number_integer());
     if (!shaped) {
         // Never overwrite what we could not read: it may be a newer build's
@@ -74,15 +186,8 @@ AppSettings::AppSettings(appdata::App app, std::filesystem::path file)
         status_ = LoadStatus::CorruptKept;
         return;
     }
-    if (doc.contains("app") && doc.at("app") != appdata::displayName(app_)) {
-        // ADR-0145 d10: another application's settings are not ours to read,
-        // and not ours to overwrite either.
-        status_ = LoadStatus::ForeignApp;
-        return;
-    }
     values_ = doc.at("values");
-    schema_ = doc.value("schema", kSettingsSchema);
-    status_ = schema_ > kSettingsSchema ? LoadStatus::NewerSchema : LoadStatus::Loaded;
+    status_ = LoadStatus::Loaded;
 }
 
 Value AppSettings::get(const std::string& key) const {
@@ -97,7 +202,8 @@ Value AppSettings::get(const std::string& key) const {
 }
 
 bool AppSettings::write(const std::string& key, const Value& value, const ChangeContext& who,
-                        std::string& why) {
+                        std::string& why, bool removeOverride) {
+    if (status_ == LoadStatus::NewerSchema) { why = kNewerSchemaReadOnly; return false; }
     const Setting* s = find(key);
     if (!s) { why = "no setting named '" + key + "'"; return false; }
     if (s->scope == Scope::Project) {
@@ -110,7 +216,9 @@ bool AppSettings::write(const std::string& key, const Value& value, const Change
     // Read before the write, so the change that turns the log off is the log's
     // last line and explains its own silence (A6-20, ADR-0203).
     const bool logged = who.actor != Actor::User || get(kLogChangesKey) != false;
-    values_[key] = value;
+    pendingKeys_.insert(key);
+    if (removeOverride) values_.erase(key);
+    else values_[key] = value;
     if (logged && before != value) log(key, before, value, who);
     return true;
 }
@@ -123,45 +231,85 @@ bool AppSettings::set(const std::string& key, const Value& value, const ChangeCo
 bool AppSettings::reset(const std::string& key, const ChangeContext& who, std::string& why) {
     const Setting* s = find(key);
     if (!s) { why = "no setting named '" + key + "'"; return false; }
-    return write(key, s->defaultValue, who, why);
+    return write(key, s->defaultValue, who, why, true);
 }
 
 void AppSettings::resetPage(const std::string& page, const ChangeContext& who) {
     for (const auto& s : registry()) {
         if (s.page != page || s.scope != Scope::App) continue;
         std::string ignored;
-        write(s.key, s.defaultValue, who, ignored);
+        write(s.key, s.defaultValue, who, ignored, true);
     }
 }
 
-bool AppSettings::save(std::string& why) const {
+bool AppSettings::save(std::string& why, SaveRename rename) {
     if (file_.empty()) { why = "this machine gives no settings folder"; return false; }
+    if (status_ == LoadStatus::NewerSchema) { why = kNewerSchemaReadOnly; return false; }
     if (status_ == LoadStatus::ForeignApp) {
         why = file_.string() + " belongs to another application and is not overwritten";
         return false;
     }
-    Value doc = Value::object();
-    doc["schema"] = std::max(schema_, kSettingsSchema);   // never downgrade a newer file
-    doc["app"] = appdata::displayName(app_);
-    doc["values"] = values_;                              // unknown keys ride along
-
-    std::error_code ec;
-    std::filesystem::create_directories(file_.parent_path(), ec);
-    auto tmp = file_;
-    tmp += ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) { why = "cannot write " + tmp.string(); return false; }
-        out << doc.dump(2) << '\n';
-        if (!out) { why = "writing " + tmp.string() + " failed"; return false; }
-    }
-    std::filesystem::rename(tmp, file_, ec);
-    if (ec) {
-        why = "cannot replace " + file_.string() + ": " + ec.message();
-        std::filesystem::remove(tmp, ec);
+    try {
+        const auto destination = std::filesystem::absolute(file_);
+        std::filesystem::create_directories(destination.parent_path());
+        const auto previous = readSettingsSnapshot(destination);
+        auto doc = readSettingsDocument(previous, app_);
+        doc["schema"] = kSettingsSchema;
+        doc["app"] = appdata::displayName(app_);
+        auto& merged = doc.at("values");
+        if (!previous) merged = values_;
+        for (const auto& key : pendingKeys_) {
+            const auto value = values_.find(key);
+            if (value == values_.end()) merged.erase(key);
+            else merged[key] = *value;
+        }
+        SettingsStage stage(destination.parent_path());
+        writeSettingsStage(stage, doc.dump(2) + '\n');
+        std::string backupWarning;
+        media::ReplaceHooks hooks;
+        hooks.rename = rename;
+        const auto confirmPrevious = [&](const std::filesystem::path& target) -> std::error_code {
+            if (readSettingsSnapshot(target) != previous)
+                throw std::runtime_error("settings changed during save; retry");
+            return {};
+        };
+        hooks.validateFallback = confirmPrevious;
+        hooks.validateTarget = [&](const std::filesystem::path& target) -> std::error_code {
+            (void)confirmPrevious(target);
+            if (!previous) return {};
+            auto backup = target;
+            backup += ".bak";
+            SettingsStage backupStage(target.parent_path());
+            writeSettingsStage(backupStage, *previous);
+            media::ReplaceHooks backupHooks;
+            backupHooks.rename = rename;
+            auto saved = media::replaceFile(backupStage.file(), backup, std::move(backupHooks),
+                                            media::ReplacePolicy::PortableSettings);
+            if (saved.status != media::PublishStatus::published)
+                throw std::runtime_error("cannot save the previous settings: " + saved.error);
+            backupWarning = std::move(saved.warning);
+            if (readSettingsSnapshot(target) != previous)
+                throw std::runtime_error("settings changed during backup; retry");
+            return {};
+        };
+        auto published = media::replaceFile(stage.file(), destination, std::move(hooks),
+                                            media::ReplacePolicy::PortableSettings);
+        if (published.status != media::PublishStatus::published) {
+            why = std::move(published.error);
+            return false;
+        }
+        values_ = std::move(merged);
+        pendingKeys_.clear();
+        why = std::move(published.warning);
+        if (!backupWarning.empty()) {
+            if (!why.empty()) why += '\n';
+            why += "settings backup: " + backupWarning;
+        }
+        return true;
+    } catch (const std::exception& error) {
+        why = error.what();
         return false;
     }
-    return true;
 }
 
 std::filesystem::path AppSettings::changeLogFile() const {
