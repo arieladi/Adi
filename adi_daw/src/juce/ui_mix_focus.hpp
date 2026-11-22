@@ -38,7 +38,6 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     friend struct MixFocusTestAccess;
     look::DensityId density_ = look::densityId();
     enum class ScopeDisplay { Overlay = 1, Layers, Stack, Sum, Difference };
-    enum class ScopeChannels { Stereo = 1, Mid };
     struct Member {
         std::int64_t id{};
         juce::Colour colour;
@@ -68,7 +67,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void updateBarScope(const SnapshotReader &, const std::shared_ptr<SharedAnalysis> &);
     void clearScopeSum();
     void rebuildScope();
-    bool requestsScopeMid() const noexcept;
+    FocusScopeChannels scopeChannelView() const noexcept;
     bool showsScopeDifference() const noexcept;
     void updateScopeDifference();
     void refreshControls();

@@ -16,6 +16,7 @@
 namespace adi::ui {
 struct FocusScopeRange;
 class FocusScopeBarProjection;
+enum class FocusScopeChannels : std::uint8_t { Stereo = 1, Mid, Left, Right, Side };
 struct FocusLagRequest;
 struct FocusLagPreview;
 // Owner-thread demand, immutable worker publications. No audio processor, callback lock,
@@ -198,7 +199,7 @@ class SharedAnalysis final {
     };
     struct ScopeDifference {
         engine::ScopeSource a, b;
-        bool mid = false;
+        FocusScopeChannels fold = FocusScopeChannels::Stereo;
         std::uint64_t selection = 0;
         bool operator==(const ScopeDifference &) const = default;
     };
@@ -221,7 +222,7 @@ class SharedAnalysis final {
         explicit operator bool() const noexcept;
         bool request(const FocusScopeRange &, std::uint64_t expectedRevision = 0) noexcept;
         // Use the same sources. Mid starts with a full unread window and can be dropped mid-capture.
-        void setMidRequested(bool) noexcept;
+        void setMonoRequested(FocusScopeChannels) noexcept;
         void setDifferenceRequested(std::optional<ScopeDifference>) noexcept;
         double sampleRate() const noexcept;
         BarScopeStatus status() const noexcept;
