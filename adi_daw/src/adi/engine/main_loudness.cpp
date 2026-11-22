@@ -15,6 +15,7 @@ float dbPeak(double peak) noexcept { return peak>0 ? static_cast<float>(20*std::
 struct Filter {
     dsp::Biquad c;
     double x1=0,x2=0,y1=0,y2=0;
+    bool empty() const noexcept { return x1 == 0 && x2 == 0 && y1 == 0 && y2 == 0; }
     double run(double x) noexcept {
         const double y=c.b0*x+c.b1*x1+c.b2*x2-c.a1*y1-c.a2*y2;
         x2=x1;x1=x;y2=y1;y1=std::abs(y)<1e-30 ? 0 : y;return y1;
@@ -45,6 +46,7 @@ struct Dsp {
     int factor=4,head=0,hopFrames=4800,hopAt=0;
     std::size_t nextHop=0,complete=0;
     double hopEnergy=0,peak=0;
+    bool filtersEmpty=true;
     explicit Dsp(double rate,const std::vector<double>& weights):channels(weights.size()) {
         factor=rate<88199 ? 4 : rate<176399 ? 2 : 1;
         hopFrames=static_cast<int>(std::lround(rate*0.1));
@@ -63,6 +65,7 @@ struct Dsp {
     }
     void reset() noexcept {
         histogram.fill({});hops.fill(0);head=hopAt=0;nextHop=complete=0;hopEnergy=peak=0;
+        filtersEmpty=true;
         for(auto& c:channels){c.shelf.x1=c.shelf.x2=c.shelf.y1=c.shelf.y2=0;c.hp.x1=c.hp.x2=c.hp.y1=c.hp.y2=0;c.history.fill(0);}
     }
     void publishWindow(MainLoudnessReadout& readout) noexcept {
@@ -77,10 +80,10 @@ struct Dsp {
         readout.shortTermLufs.store(complete==30 ? static_cast<float>(loudness(shortTerm/30)) : silence,std::memory_order_relaxed);
         if(complete<4)return;
         const double energy=momentary/4,level=loudness(energy);
-        if(level>=-70) {
-            const auto index=static_cast<std::size_t>(std::clamp(std::floor((level+70)*10),0.0,static_cast<double>(binCount-1)));
-            histogram[index].energy+=energy;++histogram[index].count;
-        }
+        // The integrated answer can only change if this hop adds a bin.
+        if (!(level >= -70)) return;
+        const auto index=static_cast<std::size_t>(std::clamp(std::floor((level+70)*10),0.0,static_cast<double>(binCount-1)));
+        histogram[index].energy+=energy;++histogram[index].count;
         double total=0,count=0;
         for(const auto& bin:histogram){total+=bin.energy;count+=static_cast<double>(bin.count);}
         if(count==0){readout.integratedLufs.store(silence,std::memory_order_relaxed);return;}
@@ -89,7 +92,34 @@ struct Dsp {
         for(const auto& bin:histogram)if(bin.count && bin.energy/static_cast<double>(bin.count)>=relative){total+=bin.energy;count+=static_cast<double>(bin.count);}
         readout.integratedLufs.store(count>0 ? static_cast<float>(loudness(total/count)) : silence,std::memory_order_relaxed);
     }
+    template<class T> bool silentInput(const T* const* output,int count,int frames) const noexcept {
+        if (!output) return true;
+        const int available=std::min(count,static_cast<int>(channels.size()));
+        for (int c=0;c<available;++c) {
+            if (!output[c]) continue;
+            for (int i=0;i<frames;++i) {
+                const auto sample=output[c][i];
+                if (sample != 0 && std::isfinite(sample)) return false;
+            }
+        }
+        return true;
+    }
+    void advanceSilence(int frames,MainLoudnessReadout& readout) noexcept {
+        // Zero FIR history still advances in phase. A partial hop may contain
+        // energy accumulated before the filters settled.
+        head=(head+frames%16)%16;
+        while (frames>0) {
+            const int step=std::min(frames,hopFrames-hopAt);
+            frames-=step;
+            hopAt+=step;
+            if (hopAt==hopFrames) publishWindow(readout);
+        }
+    }
     template<class T> void process(const T* const* output,int count,int frames,MainLoudnessReadout& readout) noexcept {
+        if (filtersEmpty && silentInput(output,count,frames)) {
+            advanceSilence(frames,readout);
+            return;
+        }
         for(int i=0;i<frames;++i) {
             double energy=0;
             for(std::size_t c=0;c<channels.size();++c) {
@@ -109,6 +139,10 @@ struct Dsp {
             head=(head+1)%16;hopEnergy+=energy;
             if(++hopAt==hopFrames)publishWindow(readout);
         }
+        filtersEmpty=std::all_of(channels.begin(),channels.end(),[](const Channel& channel) {
+            return channel.shelf.empty() && channel.hp.empty() &&
+                std::all_of(channel.history.begin(),channel.history.end(),[](double sample){ return sample == 0; });
+        });
         readout.truePeakDb.store(dbPeak(peak),std::memory_order_relaxed);
     }
 };

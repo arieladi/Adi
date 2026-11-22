@@ -35,6 +35,7 @@
 
 #include "temp_directory.hpp"
 #include "acceptance/wts01_harness.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/ui/arm_edits.hpp"
@@ -47,6 +48,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -529,6 +531,81 @@ void callbacks(ui::ProjectDocument& doc, std::int32_t frames, int blocks, std::i
     }
 }
 
+// Measure actual factory New separately from the live-MIDI chain fixture.
+void factoryNewCost(std::int32_t frames, bool playing) {
+    const std::string label = playing ? "factory New playing" : "factory New stopped";
+    auto project = buildProject(frames, false, {});
+    if (!project->built) {
+        check(false, label + ": " + project->chain);
+        return;
+    }
+    auto& doc = *project->doc;
+    auto& session = doc.session();
+    const auto& model = session.model();
+    const bool factory = model.tracks.size() == 7 && model.clips.empty() &&
+        model.devices.size() == 2 && session.stats().loaded == 2;
+    const auto* graph = session.graph().currentGraph();
+    if (!factory || !graph) {
+        check(false, label + " needs a prepared New project and both factory return effects");
+        return;
+    }
+    if (playing) {
+        session.transport().play();
+    }
+
+    std::array<float, 128> inputLeft{}, inputRight{}, left{}, right{};
+    const float* input[]{inputLeft.data(), inputRight.data()};
+    float* output[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = input;
+    io.numIn = 2;
+    io.out = output;
+    io.numOut = 2;
+    io.frames = frames;
+    const auto process = [&] {
+        const audio::CallbackScope callback;
+        const auto us = timed([&] { doc.process(io); });
+        io.streamTimeSamples += frames;
+        return us;
+    };
+    std::vector<double> times(static_cast<std::size_t>(5.0 * kRate / frames));
+    const auto allocationsBefore = allocations.load(std::memory_order_relaxed);
+    while (io.streamTimeSamples < static_cast<std::int64_t>(5.0 * kRate)) {
+        (void)process();
+    }
+    if (session.graph().currentGraph() != graph) {
+        check(false, label + " changed its prepared graph during warmup");
+        return;
+    }
+    const auto before = graph->stats();
+    const auto zero = [](float value) { return std::bit_cast<std::uint32_t>(value) == 0; };
+    bool silent = true;
+    for (auto& us : times) {
+        std::fill_n(left.data(), frames, .25f);
+        std::fill_n(right.data(), frames, -.25f);
+        us = process();
+        silent = std::all_of(left.data(), left.data() + frames, zero) &&
+                 std::all_of(right.data(), right.data() + frames, zero) && silent;
+    }
+    const auto allocated = allocations.load(std::memory_order_relaxed) - allocationsBefore;
+    if (session.graph().currentGraph() != graph) {
+        check(false, label + " changed its prepared graph during measurement");
+        return;
+    }
+    const auto after = graph->stats();
+    const auto measured = static_cast<double>(times.size());
+    const auto deadline = static_cast<double>(frames) * 1e6 / kRate;
+    const auto s = statsOf(times, {}, deadline);
+    std::printf("    [breakdown] %4d frames, %-20s p50 %7.2f us, p99 %7.2f us (%.2f %%), max %7.2f us; "
+                "Graph: %zu nodes, %.2f processed and %.2f suspended per callback; %ld allocations\n",
+                frames, label.c_str(), s.p50, s.p99, 100.0 * s.p99 / deadline, s.max, graph->nodeCount(),
+                static_cast<double>(after.nodeCalls - before.nodeCalls) / measured,
+                static_cast<double>(after.nodesSuspended - before.nodesSuspended) / measured, allocated);
+    check(silent && session.transport().playing() == playing && after.blocks > before.blocks,
+          label + " renders exact silence with the requested transport");
+    check(allocated == 0, label + " allocates nothing from its first callback");
+}
+
 /// WTS-01's project, played from the start, twice (see Stats::stall): checked
 /// when `judged`, else one [breakdown] line.
 void theSessionsProject(std::int32_t frames, double seconds, bool oneShot, const std::vector<const char*>& effects,
@@ -684,7 +761,8 @@ int main() {
             contended(frames, 10.0, chain, false, false, false);
             // Where the time goes: an empty project (the engine's own share),
             // then the chain grown one device at a time.
-            theSessionsProject(frames, 5.0, false, {}, false);
+            factoryNewCost(frames, false);
+            factoryNewCost(frames, true);
             for (std::size_t n = 0; n <= chain.size(); ++n) {
                 theSessionsProject(frames, 5.0, true,
                                    std::vector<const char*>(chain.begin(), chain.begin() + static_cast<std::ptrdiff_t>(n)),
