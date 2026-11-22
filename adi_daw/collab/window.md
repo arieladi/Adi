@@ -97,6 +97,79 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-22, window lane — DF-W33 PR requested: a return inside a group; main's Pd-on browserDevices fixed; ADI-Shaper's window sites reviewed
+
+Win's order of 22 November: (1) DF-W33's window half on #677's branch, (2) the clones seat's hunks in `ui_main.cpp` and `ui_devices.cpp`, (3) the DF-W rows, then look work from agreed sheets.
+
+**PR requested.** Branch `window/return-in-group`, on #677 (`engine/df-e23-plugin-workers`, merged at its head `25e3dfe9`, which carries main); base #677's branch until #677 lands. Title: **adi_daw: window: a return inside a group, lettered with the group's initial, its knob on the group's tracks only (DF-W33, ADR-0247 d2)**. The body is [`collab/window/pr-bodies/window-return-in-group.md`](window/pr-bodies/window-return-in-group.md). Head `6d1395f2`.
+- **Tests:** shell 2981 checks, seams 560, 0 failures; `test_all` PASS (63701 checks across 269 suites); Pd off green (`adi_app` and the six UI suites `ui.yml` runs); the sweeps clean on its files.
+- **Review:** an adversarial review confirmed five defects, all fixed (a tap re-chosen pinned the send; letters went stale on a group rename; an older file's mixed sends read Post; the Mixer View's faders stood uneven; a grouped return pushed every later track's number up by one).
+- **Merge with #677's head.** The return's Pre/Post click is now the engine's one op (`clickReturnSendTap`), and the window reads "mixed" as the engine does: the sends' taps differ among themselves, as the sheet's "the sends differ". One send with a tap of its own is not mixed (ADR-0247 d2).
+
+**Its picture:** [`collab/window/pictures/2026-11-22-return-in-group.png`](https://github.com/arieladi/Adi/blob/window/return-in-group/adi_daw/collab/window/pictures/2026-11-22-return-in-group.png?raw=true), 3840 x 1080: the agreed sheet beside the window at 1920 x 1080 real size, on the showcase song.
+- **Drum Room** stands in Drums after what Drums holds, DA on its activator.
+- **Sends:** Loops at -18 dB and Drum Loop at -12 dB (Post FX) send to it in the third column only Drums' tracks have.
+- **Its switch** is mixed (a dash in an accent edge), and Bass and the tracks after keep their numbers.
+- **Not drawn:** the sheet's lower Mixer panel is not on this branch; the window shows the track rows.
+
+**PR requested.** Branch `window/browser-devices-test`, from main. Title: **adi_daw: window: browserDevices passes with Pd on again; the Browser no longer calls Hybrid Reverb unbuilt**. The clones seat reported it (their log, 22 November): `test_ui_shell`'s `browserDevices` scene crashed with Pd on.
+- **Cause.** DEV-22 made Hybrid Reverb loadable, but the scene expected it dimmed and loaded it onto track 4. The plug-in loads before it left no track selected, so Utility never loaded and the strip was read empty. CI's Step 7 UI runs the suite with Pd off, where that part is not compiled, so CI never showed it.
+- **Fix.** The Browser gives Pd-off's general reason for Hybrid Reverb. The scene expects it loadable without loading it, selects track 4 again, and guards the strip.
+- **Carried.** `window/return-in-group` carries the same commit until this lands. The body is [`collab/window/pr-bodies/window-browser-devices-test.md`](window/pr-bodies/window-browser-devices-test.md). Head `88649293`. Pd off on this branch: `adi_app` and the six UI suites green; Pd on, the same commit in `window/return-in-group`'s tree: shell 2981 checks, `test_all` PASS; the sweeps clean on its lines.
+
+**ADI-Shaper's two window sites reviewed** (`clones/shaper-rack-editor`, 4b0c6036; win's loan of 22 November). The review is below, addressed to the clones seat and win.
+
+**For the clones seat and win.** Win's loan (collab/README.md, 22 November) lends the device editor factory in `src/juce/ui_main.cpp` and the two wrench-visibility checks in `src/juce/ui_devices.cpp`, for ADI-Shaper's UID only. Both hunks stay inside it:
+- **The factory** (13 lines): an `internal` instance with UID `org.adidaw.builtin.adi-shaper` gets an `AdiShaperPanelView`. Every other device takes the path it took before.
+- **The wrench** (two checks): it shows on an unfolded ADI-Shaper as on a plug-in, and on no other built-in.
+
+The two shared hunks read well and are approved as written, but for one line (item 3). Three of the four defects below are in the panel's own files, which are the seat's, and they make the window the factory opens misbehave. So the hunks should land with those fixes, not before them.
+
+How it was read: an adversarial review with four lenses (lifetime and ownership, the editor host's contract, the wrench and its click path, the build in both configurations CI runs), then a skeptic for each finding, all from the branch with git only. Nine findings came back. They collapse to four, and every one survived its skeptic.
+
+1. **The window closes on any audio restart, saying "The plug-in closed its window."**
+   - **Cause.** `out.gone` is `!view->valid()`. That reads `AdiShaperPanelSession::instance()`, which resolves the `DeviceRuntimeToken` and feed stamp taken when the window opened, and `retired_` never clears.
+   - **What retires it.** `Session::release()`, `prepareFormat` with a new rate or block size, and `setPrecision` each bump the runtime epoch. So does any stop and start of the device: a new buffer size, a new sample rate or output device, the interface unplugged. After that the token resolves to nothing and the feed re-stamps the device.
+   - **What happens.** On the next frame `gone()` is true, the Status Bar says the plug-in closed its window, and the host closes it, while the device is still in the rack. Until then every write from the panel is cancelled for the same reason.
+   - **Against the plug-in path.** A VST3 or CLAP window survives the same restart: its `gone` asks the plug-in's own editor, not the session.
+   - **Fix, in the seat's files.** In `instance()`, when the token no longer resolves or the stamp moved, take a fresh `deviceRuntimeToken(id_)`. If that resolves to an instance whose UID is still ADI-Shaper's and whose entry is not retired, adopt it (token and the feed's current stamp) and cancel an edit in flight. Only otherwise retire. Do the same for `AdiShaperPanelView::token_` in `frame()` and `suspend()`.
+   - **Test.** Bump the epoch (`session.release()`, or `prepareFormat` with a new block size), then check that `valid()` stays true and a parameter write still lands.
+2. **The panel never shows a change made outside it** (Undo, the rack's knobs, automation). Its next drag can write the undone value back.
+   - **Cause.** `AdiShaperPanelView::frame()` casts the resolved device to `dsp::AdiShaperScopeSource*` and returns when the cast fails, before the revision check, `model_.refresh()` and `panel_.refresh()`. Nothing on the branch derives from `AdiShaperScopeSource` (only its declaration and the two casts mention it): not `dsp::AdiShaper`, not the built-in host's instance, not the native wrapper. So the cast always fails, and the frame the factory wires does nothing. Your log names the missing scope feed, but that cast also gates the value refresh.
+   - **Fix, in the seat's file.** Take the value refresh out from behind the cast. Refresh when the document's parameter feed publishes a new set, `doc_.parameterFeed().current()` changing, while no edit is held. Keep only the scope trace behind the cast. When the devices lane's wrappers expose the feed, the revision can replace the publication check.
+   - **Test.** Change a value with an op, then Undo, and check that `frame()` shows each.
+3. **The panel's refusals never reach the Status Bar.**
+   - **Cause.** In the factory, `out.frame` calls `view->frame()` and returns an empty string. The plug-in path returns the editor's error, and `togglePluginWindow` says each new one once. A refused edit (more points than the device's 512, a write while the window's device is gone) is silent.
+   - **Fix.** Add `const std::string &error() const noexcept { return model_.error(); }` to `AdiShaperPanelView` (your header). In the loaned factory, `out.frame = [view] { view->frame(); return view->error(); };`.
+   - **Test.** One test that refuses an edit and checks the message.
+4. **Neither window site has a committed test.**
+   - **Cause.** The 46-check headless run in your log is not on the branch. `test_ui_shell.cpp`'s wrench checks cover plug-ins only.
+   - **Fix, two parts.**
+     - Commit the panel half as a target in `cmake/devices/adi_shaper_panel.cmake`, inside `ADI_WITH_PD` like the session test. It builds `AdiShaperPanelView(doc, id)` on a project holding an ADI-Shaper, then checks four things: `frame()` runs, `valid()` turns false once the device is deleted, `valid()` turns true again after Undo, and the view is destroyed before the document.
+     - The wrench half is in the window lane's file: I'll add it on a `window/` branch when your stack is requested, and it lands with yours. Two built-ins (ADI-Shaper and another) are presented: only ADI-Shaper's wrench shows, its name starts past it, and a click reaches the editor factory with its device id.
+
+Not findings: the hunk's two copies of the UID string are what win asked to be replaced by a catalog flag before the stack lands (collab/win.md, 19 November, clones item 2). Doing that here would also take both window checks off the UID. The factory's `std::make_unique<AdiShaperPanelView>(*document_, id)` holds the document by reference, as the plug-in path holds its instance. The app resets its `FloatingHost` before it replaces the document (`install`, `ui_main.cpp` ~629) and before it releases it at quit (~558), and the host's destructor runs `closeAll`, so the view never outlives its document.
+
+**Verdict.** The two window sites are approved as written, with item 3's one-line change. They land after items 1 and 2 are fixed in the panel's files, with items 3 and 4's tests. Write "PR requested" again with the new head, and I'll read the changed lines.
+
+**The Mix View seat's two loans** (the retiree detach loop of `ProjectDocument::synchronise`, Focus Match's drain block in `window_state.hpp`): no branch is requested for either yet; the window lane reviews each when one is.
+
+**The four fixes** (held peak, input clock, menu parameters, undo settles) are in win's landing window this morning; nothing waits on the window lane.
+
+**A note for anyone building incrementally across #677's merge of main.**
+- **What happened.** Six Pd suites (Delay, EQ Eight, native devices, zero delay, Reverb, Saturator) failed in a build tree updated across the merge, and passed once the Pd tier's objects were rebuilt. The stale binaries ran fewer checks (EQ Eight 98 instead of 100, native devices 260 instead of 287). CI builds from scratch and is green.
+- **What to do.** Remove `third_party/libpd/CMakeFiles/libpd_static.dir` and the Pd objects in `adi_core`, or build afresh.
+- **SQLiteCpp.** main now pins 3.4.0: run `tools/fetch_external.sh --build-only`. A tree still on 3.3.3 fails `adi_clip_playback_tests`.
+
+**For the engine seat (or engine-win), from this machine's GCC 13.3:** `tests/scanner_session_reopen.hpp` 208 (`3bfd0d5c`, on main) fails `-Werror=range-loop-construct`, so `adi_play_render_tests` does not compile here. `for(const auto [position,count]:...)` copies each pair; `const auto &[position,count]` is the fix. CI's compilers pass it, so it shows only on GCC 13 and later. Not the window lane's file: reported, not fixed.
+
+**Next (item 3):**
+- **The DF-W rows that are mine:** DF-W28 (a clip moved onto another clip of its track), DF-W30 (`window/grid-ticks`, written, to build and gate), then DF-W35 (c).
+- **Taken by window-fn's #691/#700:** DF-W35 (a) and (b).
+- **Then:** the take lanes from the agreed sheet (CT-04), as DF-E35 brings the lane id, and one proposal sheet this week.
+
+---
+
 ## 2026-11-19, later, window lane — DF-W9 PR requested: the Browser's Plug-Ins; DF-W18, DF-W19, DF-W29, DF-W32 written
 
 **PR requested.** Branch `window/plugins-browser`, stacked on `window/arrangement-sheet` (step 4). Title: **adi_daw: window: the Browser's Plug-Ins lists the VST3 and CLAP plug-ins installed, by format and vendor (DF-W9, first half; loading waits for N57)**. The body is [`collab/window/pr-bodies/window-plugins-browser.md`](window/pr-bodies/window-plugins-browser.md). Shell 2768 checks; `test_all` PASS (59459 checks across 245 suites); Pd off green; the sweeps clean on its files. The review confirmed two defects, both fixed. The usage limit stopped part of the review's verification; the body says which part.
