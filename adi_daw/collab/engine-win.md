@@ -4,6 +4,15 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-04 one graph run for multiple deliveries
+
+- EX-04 checked delivery group — PR requested, `engine-win/export-multiple-deliveries` at `032d74de`, including shaped quantizer and the AIFF, FLAC, LAME and Vorbis branches, after 3 December. One selected compensated graph stream feeds per-file encoders at the shared output clock. Jointly built with the native dependencies. A WAV/AIFF/FLAC/MP3/Vorbis job loaded its device once and processed 4224 device frames, the same as the single-WAV control (one load, 4224 frames). The authored output was 4201 frames. WAV PCM24, AIFF and FLAC matched bit for bit, and lossy writers checked the decoded length. An occupied WAV increments the whole group. Late collision kept the earlier commit and the competitor's bytes, with per-file states. MSVC: render 484, WAV 171, NI Stems 85 (native AAC unavailable). The codec join disables FLAC's Ogg linkage before declaring the Ogg target. Window controls, common gain, project-rate/mono/loop joining and full cross-platform packaging remain.
+- PD-09 parked — the registry's legacy integer v3 mapping and newer-major read-only contract need Win's schema ruling and scanner ownership review.
+- EX-04 Float64 WAV parked — the verified double reader and wider decode callers need the engine audio-path loan. EX-12 live capture and the graph telemetry taps also need the engine/window contract.
+- **FOR THE DIRECTOR — PD-07:** PLAN marks automatic Backup-folder copies as a new choice, while R-26 still says no backups. Recommend opt-in on committed snapshot only, with recycle-bin rotation, after HI-02 and a measured Live backup-folder read.
+- **FOR THE DIRECTOR — EX-12:** the per-scene File 2 schema is absent from `EXPORT-VISUAL-STORY.md`. Recommend approving that exact schema before any serialized telemetry format, so FilmCraft and ADI share one timebase and field vocabulary.
+- **FOR THE DIRECTOR — EX-05:** specify whether a conditional normalization job that skips gain still enforces its true-peak ceiling. Recommend keeping the explicit ceiling active and reporting independently when it alone changed the audio.
+
 ## 2026-11-22 — EX-05 export metering and Analyze Only
 
 - EX-05 statistics — PR requested, `engine-win/export-meter-statistics` at `a1daa886` on `87ea349c`. Normalization uses ADI's existing DEV-28 meter for I, true peak, maximum M and S, and LRA. The report and manifest distinguish captured PCM from decoded delivery. RMS is the unweighted arithmetic mean-square across all scalar samples; silence and incomplete windows yield unavailable values. The prior peak gain, ceiling, dither and tiny-signal regressions passed.
