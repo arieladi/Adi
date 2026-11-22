@@ -15,6 +15,11 @@
 //   Treble     -100 to +100 %: a 3.5 kHz high shelf, +-15 dB.
 //   Output     -36 to +12 dB. Dry/Wet 0 to 100 %.
 //
+// Gain, Output and Dry/Wet glide over about 10 ms once audio runs, so moving
+// them does not click (set before any audio, they are simply set); a change of Type crossfades the old voice into the new over 200 ms,
+// so the drive's DC moves slowly enough that the 5 Hz blocker leaves no
+// thump.
+//
 // The drive is f(g x + b) - f(b) with its DC blocked at 5 Hz: louder with
 // Gain up to the curve's limit, as a pedal is. A quiet signal passes it at
 // its slope, g f'(b), so the quiet response is that slope, the filters and
@@ -69,7 +74,10 @@ private:
     std::array<Biquad, 4> design_{};   ///< the input high pass, bass, mid, treble
     std::array<std::array<State, 4>, 2> state_{};
     std::array<double, 2> dcIn_{}, dcOut_{};
-    double rate_ = 48000, gain_ = 1, bias_ = 0, offset_ = 0, dcPole_ = 0, output_ = 1, wet_ = 1;
+    double rate_ = 48000, dcPole_ = 0, smooth_ = 0, fadeStep_ = 0, fade_ = 1;
+    double gain_ = 1, gainTarget_ = 1, output_ = 1, outputTarget_ = 1, wet_ = 1, wetTarget_ = 1;
+    int type_ = 0, previous_ = 0;
+    bool fresh_ = true;   ///< nothing processed since prepare(): a control moved now is simply set
 };
 
 }  // namespace adi::dsp

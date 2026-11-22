@@ -207,7 +207,59 @@ void routing() {
 
 }  // namespace
 
+/// The review of 998ee01f: Gain, Output and Dry/Wet stepped at once (a
+/// 0.81 jump from Gain, 1.57 from Output, 0.97 from Dry/Wet), and a change of
+/// Type stepped the drive's DC into a thump.
+void reviewed() {
+    struct Move {
+        P::Param param;
+        double from, to, amplitude;
+        const char* what;
+    };
+    for (const Move m : {Move{P::Gain, 0, 100, 0.05, "Gain 0 -> 100"}, Move{P::Output, -36, 12, 0.05, "Output -36 -> +12 dB"},
+                         Move{P::DryWet, 0, 100, 0.3, "Dry/Wet 0 -> 100"}}) {
+        P p;
+        p.set(m.param, m.from);
+        p.prepare(kRate);
+        const auto x = sine(110, 96000, m.amplitude);
+        std::vector<float> l(x.size()), r(x.size());
+        p.process(x.data(), x.data(), l.data(), r.data(), 48000);
+        p.set(m.param, m.to);
+        p.process(x.data() + 48000, x.data() + 48000, l.data() + 48000, r.data() + 48000, 48000);
+        // The largest step while it moves, against the largest once it has
+        // arrived (the louder signal's own).
+        double moving = 0, settled = 0;
+        for (std::size_t i = 48000; i < 48000 + 4800; ++i) {
+            moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 72000; i < 96000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        check(moving <= 1.5 * settled, std::string(m.what) + " glides: no step past the signal's own (" + std::to_string(moving) + " against " +
+                                           std::to_string(settled) + ")");
+    }
+    // Overdrive to Fuzz under a tone: the next 200 ms peak no higher than
+    // Fuzz's own settled peak, within 5 % (a thump of +2 dB on the old core).
+    P p;
+    p.set(P::Gain, 50);
+    p.prepare(kRate);
+    const auto x = sine(110, 144000, 0.05);
+    std::vector<float> l(x.size()), r(x.size());
+    p.process(x.data(), x.data(), l.data(), r.data(), 48000);
+    p.set(P::Type, P::Fuzz);
+    p.process(x.data() + 48000, x.data() + 48000, l.data() + 48000, r.data() + 48000, 96000);
+    double switching = 0, settled = 0;
+    for (std::size_t i = 48000; i < 48000 + 9600; ++i) {
+        switching = std::max(switching, static_cast<double>(std::abs(l[i])));
+    }
+    for (std::size_t i = 120000; i < 144000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(l[i])));
+    }
+    check(switching <= 1.05 * settled, "Overdrive to Fuzz: no thump past Fuzz's own peak (" + std::to_string(switching) + " against " + std::to_string(settled) + ")");
+}
+
 int main() {
+    reviewed();
     quiet();
     driven();
     routing();
