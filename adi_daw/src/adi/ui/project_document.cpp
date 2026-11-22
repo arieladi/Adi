@@ -959,7 +959,7 @@ bool ProjectDocument::endMixerDrag() {
         return false;
     }
     // The committed rows reach the view and the session as any commit does.
-    view_.refresh(*store_);
+    view_.refresh(*store_, session_.overriddenLanes());
     synchronise();
     error_.clear();
     return true;

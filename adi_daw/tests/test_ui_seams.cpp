@@ -22,6 +22,7 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/ui/fade_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -1953,6 +1954,29 @@ void meterGrid() {
     geo.meters = &long180;
     check(geo.nextGridLine(0, true) == 180 * q && geo.nextGridLine(180 * q, true) == 360 * q,
           "a bar of 180 quarters on 1 Bar steps a whole bar");
+    // DF-W30 (c): a fade already that long is no op, unless an edit pinned its clock, so it plays at
+    // another length (its handles say so): then Create Fade puts it back on its ticks.
+    {
+        auto clip = std::make_shared<engine::ClipNode>();
+        clip->id = 9;
+        clip->posTicks = 0;
+        clip->lengthTicks = 1000;
+        clip->audio.emplace();
+        clip->fadeInTicks = 200;
+        clip->fadeInHandles = {0, 200};
+        auto track = std::make_shared<engine::TrackNode>();
+        track->id = 1;
+        track->kind = "audio";
+        track->clips = {clip};
+        const ui::SnapshotTracks tracks{track};
+        const auto plain = ui::createFades(tracks, {1}, -10, 200);
+        check(plain.ops.empty() && plain.refusal == "The fades are already that long.",
+              "a plain fade already that long: no op, and says so");
+        clip->fadeInHandles = {0, 300}; // the clock a split pinned, at a new tempo
+        const auto pinned = ui::createFades(tracks, {1}, -10, 200);
+        check(pinned.ops.size() == 1 && pinned.refusal.empty(),
+              "a fade of that length playing at another (its clock pinned) still takes the op");
+    }
 }
 
 void positionsTyped() {
