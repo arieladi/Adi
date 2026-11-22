@@ -335,6 +335,32 @@ device::DeviceInstance* Session::instanceFor(std::int64_t deviceId) noexcept {
     return e == nullptr ? nullptr : &devices_.deviceAt(e->hostIndex);
 }
 
+std::optional<std::array<RackParameter, kRackMacroCount + 1>> Session::rackParameters(std::int64_t deviceId) const {
+    const auto* row = deviceLayout_ ? deviceLayout_->device(deviceId) : nullptr;
+    if (!row || !row->isRack) return std::nullopt;
+    std::array<RackParameter, kRackMacroCount + 1> result;
+    for (std::size_t slot = 0; slot < kRackMacroCount; ++slot) {
+        result[slot].ref = rackMacroParamRef(slot);
+        result[slot].name = "Macro " + std::to_string(slot + 1);
+    }
+    result.back().ref = "chainSelect";
+    result.back().name = "Chain Select";
+    for (const auto& macro : model_.rackMacros) {
+        if (macro.deviceId != deviceId) continue;
+        const auto slot = rackMacroSlot(macro.ord);
+        if (!slot) continue;
+        auto& parameter = result[*slot];
+        if (!macro.name.empty()) parameter.name = macro.name;
+        if (std::isfinite(macro.value)) parameter.value = std::clamp(macro.value, 0.0, 1.0);
+        parameter.storedId = macro.id;
+    }
+    return result;
+}
+
+bool Session::macroControls(std::int64_t deviceId, std::uint32_t paramId) const noexcept {
+    return deviceAutomation_ && deviceAutomation_->macroTargets.contains({deviceId, paramId});
+}
+
 std::vector<device::DeviceNode*> Session::chainFor(std::int64_t trackId) {
     std::vector<device::DeviceNode*> out;
     if (trackId == 0) return out;
@@ -1167,7 +1193,7 @@ bool Session::rebuild() {
     auto suspended = overridden_;
     suspended.insert(writingAutomation_.begin(), writingAutomation_.end());
     stripAutomation_ = bindStripAutomation(program, suspended);
-    deviceAutomation_ = bindDeviceAutomation(program, suspended, transport_, spec_.sampleRate);
+    deviceAutomation_ = bindPlaybackDevices(program, suspended, playbackModel_);
     for (auto it = overridden_.begin(); it != overridden_.end();) {
         bool known = false;
         for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
@@ -1994,6 +2020,15 @@ void Session::attachTaps() {
         request.state->current = it != scopeRuntime_->bySource.end() ? it->second : nullptr;
     }
     scopeRuntime_->dirty = false;
+}
+
+std::shared_ptr<DeviceAutomationBinding> Session::bindPlaybackDevices(std::shared_ptr<const AutomationProgram> program,
+    const std::set<std::int64_t>& overridden, const rows::Model& model) {
+    return bindDeviceAutomation(std::move(program), overridden, transport_, spec_.sampleRate, &model,
+        [this](std::int64_t device) -> const device::DeviceInstance* {
+            const auto* entry = entryFor(device);
+            return entry && !entry->retired && !entry->placeholder ? instanceFor(device) : nullptr;
+        });
 }
 
 void Session::bindDeviceSources() {

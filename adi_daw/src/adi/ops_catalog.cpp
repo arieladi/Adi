@@ -42,6 +42,7 @@
 #include "adi/clip_property_ops.hpp"
 #include "adi/summing_flavors.hpp"
 #include "adi/track_image.hpp"
+#include "adi/engine/macro_math.hpp"
 #include "adi/tuning_ops.hpp"
 #include "adi/history_roots.hpp"
 #include "adi/take_lane_ops.hpp"
@@ -50,6 +51,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <set>
 #include <optional>
@@ -119,6 +121,8 @@ constexpr ScalarSpec kScalars[] = {
      FieldType::Bool, EngineImpact::Snapshot, false},
     {"chain.setSolo", "Solo or unsolo a rack chain", "device_chains", "id", "soloed", "soloed",
      FieldType::Bool, EngineImpact::Snapshot, false},
+    {"macro.rename", "Rename a rack macro", "macros", "id", "name", "name",
+     FieldType::Text, EngineImpact::None, false},
     // --- clips ----------------------------------------------------------
     // --- devices (OPS.md 9.7) -------------------------------------------
     // The three that ARE a single column. The other six are hand-written
@@ -1133,6 +1137,19 @@ constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"ord", FieldType::Int, false},
                                    {"name", FieldType::Text, false},
                                    {"contents", FieldType::Object, false, "captured chain subtree for Undo"}};
+constexpr Field kFMacroValue[] = {{"id", FieldType::Int, true}, {"rack", FieldType::Int, false},
+    {"slot", FieldType::Int, false, "Numbered macro slot", {}, 1.0, 16.0},
+    {"value", FieldType::Real, true, "Normalized macro position", {}, 0.0, 1.0},
+    {"_drop", FieldType::Bool, false}};
+constexpr Field kFMacroMap[] = {{"id", FieldType::Int, true}, {"macro", FieldType::Int, true},
+    {"dev", FieldType::Int, true}, {"param", FieldType::Text, true},
+    {"lo", FieldType::Real, false}, {"hi", FieldType::Real, false},
+    {"curve", FieldType::Int, false, "Stored segment shape", {}, 0.0, static_cast<double>(engine::kMaxCurve)},
+    {"inverted", FieldType::Bool, false}};
+constexpr Field kFMacroRange[] = {{"id", FieldType::Int, true},
+    {"lo", FieldType::Real, true}, {"hi", FieldType::Real, true},
+    {"curve", FieldType::Int, false, "Stored segment shape", {}, 0.0, static_cast<double>(engine::kMaxCurve)},
+    {"inverted", FieldType::Bool, false}};
 constexpr Field kFDeviceInsert[] = {{"id", FieldType::Int, true},
                                     {"chain", FieldType::Int, true},
                                     {"ord", FieldType::Int, false},
@@ -1944,6 +1961,134 @@ void requireDeviceMoveDestination(SQLite::Database& db, std::int64_t device, std
         throw std::runtime_error("destination chain has an ownership cycle or no valid track owner");
 }
 
+bool macroValueApply(OpContext& c, const Payload& p, std::string& error) {
+    try {
+        const auto id = deviceInteger(p, "id");
+        if (p.value("_drop", false)) {
+            if (!c.replay || !c.replay->asInverse || c.replay->opType != "macro.setValue")
+                throw std::runtime_error("removing an implicit macro slot requires its recorded inverse");
+            SQLite::Statement remove(c.db, "DELETE FROM macros WHERE id=? AND NOT EXISTS(SELECT 1 FROM macro_mappings WHERE macro_id=?)");
+            remove.bind(1, id);
+            remove.bind(2, id);
+            if (remove.exec() != 1) throw std::runtime_error("macro slot has changed since its creation");
+            return true;
+        }
+        const auto value = p.at("value").get<double>();
+        const bool restoring = c.replay && c.replay->asInverse;
+        if (!std::isfinite(value) || (!restoring && (value < 0.0 || value > 1.0)))
+            throw std::runtime_error("macro position must be finite and between zero and one");
+        std::optional<std::int64_t> slot;
+        if (p.contains("slot")) {
+            slot = deviceInteger(p, "slot");
+            if (*slot < 1 || *slot > static_cast<std::int64_t>(engine::kRackMacroCount))
+                throw std::runtime_error("macro slot must be numbered 1 to 16");
+        }
+        const auto row = detail::captureRow(c.db, "macros", "id", id);
+        if (row) {
+            if ((p.contains("rack") && deviceInteger(p, "rack") != deviceInteger(*row, "device_id")) ||
+                (slot && *slot - 1 != deviceInteger(*row, "ord")))
+                throw std::runtime_error("the macro ID belongs to a different rack slot");
+            SQLite::Statement update(c.db, "UPDATE macros SET value=? WHERE id=?");
+            update.bind(1, value);
+            update.bind(2, id);
+            update.exec();
+        } else {
+            if (!p.contains("rack") || !slot) throw std::runtime_error("a new macro needs its rack and numbered slot");
+            SQLite::Statement insert(c.db, "INSERT INTO macros(id,device_id,ord,value) SELECT ?,id,?,? FROM devices WHERE id=? AND is_rack=1");
+            insert.bind(1, id);
+            insert.bind(2, *slot - 1);
+            insert.bind(3, value);
+            insert.bind(4, deviceInteger(p, "rack"));
+            if (insert.exec() != 1) throw std::runtime_error("macro rack is missing");
+        }
+        return true;
+    } catch (const std::exception& failure) { error = failure.what(); return false; }
+}
+
+bool macroValueInverse(OpContext& c, const Payload& p, Payload& inverse, std::string& error) {
+    try {
+        const auto id = deviceInteger(p, "id");
+        const auto row = detail::captureRow(c.db, "macros", "id", id);
+        if (row) inverse = {{"id", id}, {"value", row->at("value")}};
+        else inverse = {{"id", id}, {"value", 0.0}, {"_drop", true}};
+        return true;
+    } catch (const std::exception& failure) { error = failure.what(); return false; }
+}
+
+void bindMacroRange(SQLite::Statement& statement, const Payload& p, const Payload& previous) {
+    const auto minimum = p.value("lo", previous.value("range_min", 0.0));
+    const auto maximum = p.value("hi", previous.value("range_max", 1.0));
+    const auto curve = p.contains("curve") ? deviceInteger(p, "curve") : previous.value("curve", std::int64_t{1});
+    const auto inverted = p.value("inverted", previous.value("inverted", std::int64_t{0}) != 0);
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || curve < 0 || curve > engine::kMaxCurve)
+        throw std::runtime_error("macro endpoints must be finite and the curve must be known");
+    statement.bind(1, minimum);
+    statement.bind(2, maximum);
+    statement.bind(3, curve);
+    statement.bind(4, inverted ? 1 : 0);
+}
+
+bool macroMapApply(OpContext& c, const Payload& p, std::string& error) {
+    try {
+        const auto parameter = p.at("param").get<std::string>();
+        if (parameter.empty()) throw std::runtime_error("macro mapping needs a stable target parameter reference");
+        SQLite::Statement insert(c.db, "INSERT INTO macro_mappings(range_min,range_max,curve,inverted,id,macro_id,target_device_id,target_param_ref) VALUES(?,?,?,?,?,?,?,?)");
+        bindMacroRange(insert, p, Payload::object());
+        insert.bind(5, deviceInteger(p, "id"));
+        insert.bind(6, deviceInteger(p, "macro"));
+        insert.bind(7, deviceInteger(p, "dev"));
+        insert.bind(8, parameter);
+        insert.exec();
+        return true;
+    } catch (const std::exception& failure) { error = failure.what(); return false; }
+}
+
+bool macroUnmapApply(OpContext& c, const Payload& p, std::string& error) {
+    try {
+        SQLite::Statement remove(c.db, "DELETE FROM macro_mappings WHERE id=?");
+        remove.bind(1, deviceInteger(p, "id"));
+        if (remove.exec() != 1) throw std::runtime_error("macro mapping is missing");
+        return true;
+    } catch (const std::exception& failure) { error = failure.what(); return false; }
+}
+
+bool macroRangeApply(OpContext& c, const Payload& p, std::string& error) {
+    try {
+        const auto id = deviceInteger(p, "id");
+        const auto previous = detail::captureRow(c.db, "macro_mappings", "id", id);
+        if (!previous) throw std::runtime_error("macro mapping is missing");
+        SQLite::Statement update(c.db, "UPDATE macro_mappings SET range_min=?,range_max=?,curve=?,inverted=? WHERE id=?");
+        bindMacroRange(update, p, *previous);
+        update.bind(5, id);
+        update.exec();
+        return true;
+    } catch (const std::exception& failure) { error = failure.what(); return false; }
+}
+
+bool macroMappingInverse(OpContext& c, const Payload& p, Payload& inverse, std::string& error, bool entire) {
+    try {
+        const auto id = deviceInteger(p, "id");
+        const auto row = detail::captureRow(c.db, "macro_mappings", "id", id);
+        if (!row) throw std::runtime_error("macro mapping is missing");
+        inverse = {{"id", id}, {"lo", row->at("range_min")}, {"hi", row->at("range_max")},
+                   {"curve", row->at("curve")}, {"inverted", row->at("inverted") != 0}};
+        if (entire) {
+            inverse["macro"] = row->at("macro_id");
+            inverse["dev"] = row->at("target_device_id");
+            inverse["param"] = row->at("target_param_ref");
+        }
+        return true;
+    } catch (const std::exception& failure) { error = failure.what(); return false; }
+}
+
+bool macroUnmapInverse(OpContext& c, const Payload& p, Payload& inverse, std::string& error) {
+    return macroMappingInverse(c, p, inverse, error, true);
+}
+
+bool macroRangeInverse(OpContext& c, const Payload& p, Payload& inverse, std::string& error) {
+    return macroMappingInverse(c, p, inverse, error, false);
+}
+
 bool deviceMoveApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         const auto id = p.at("id").get<std::int64_t>();
@@ -2298,6 +2443,14 @@ const OpDescriptor kHandWritten[] = {
      false, chainCreateApply, chainCreateInverse, "chain.delete"},
     {"chain.delete", "Delete a device chain", Scope::Edit, EngineImpact::GraphRebuild, kFId, false, false,
      chainDeleteApply, chainDeleteInverse, "chain.create"},
+    {"macro.setValue", "Set a rack macro position", Scope::Edit, EngineImpact::Snapshot, kFMacroValue, true,
+     false, macroValueApply, macroValueInverse, ""},
+    {"macro.map", "Map a macro to a parameter", Scope::Edit, EngineImpact::Snapshot, kFMacroMap, false,
+     false, macroMapApply, deviceInsertInverse, "macro.unmap"},
+    {"macro.unmap", "Remove a macro mapping", Scope::Edit, EngineImpact::Snapshot, kFId, false,
+     false, macroUnmapApply, macroUnmapInverse, "macro.map"},
+    {"macro.setRange", "Set the range of a macro mapping", Scope::Edit, EngineImpact::Snapshot, kFMacroRange, false,
+     false, macroRangeApply, macroRangeInverse, ""},
 
     {"device.insert", "Add a device to a chain", Scope::Edit, EngineImpact::GraphRebuild, kFDeviceInsert,
      false, false, deviceInsertApply, deviceInsertInverse, "device.remove"},

@@ -1649,6 +1649,14 @@ UI/host producer wiring is introduced.
 | `macro.unmap` | e | S | cap | P1 |
 | `macro.setRange` | e | S | sym | P1 |
 
+`macro.setValue` writes normalized `value` to a stored macro `id`. Creating a
+previously implicit slot also supplies its `rack` and one-based `slot` from 1
+to 16. `macro.map` supplies `id`, `macro`, target device `dev` and stable
+parameter `param`. `macro.map` and `macro.setRange` take `lo` and `hi` as the
+authored endpoints, plus optional `curve` and `inverted`. A CLAP or native
+target uses its physical unit when it declares one. A VST3 target uses
+normalized positions. The derived parameter events never enter the journal.
+
 N7's `ParamOps::uiEvent` emits the existing `device.setParam` requests with
 the same first-touch opener and normalization as a plug-in's own edit capture.
 Commit each completed gesture's batch as one transaction; unbracketed UI edits

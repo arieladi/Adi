@@ -33,7 +33,7 @@ const std::set<std::string> materialTables{
     "lanes","clips","clip_properties","clip_playback_details","clip_warp_fade_domains","audio_clips","warp_markers",
     "event_streams","note_expression","automation_lanes","automation_data","automation_segment_ranges",
     "media_files","routing","plugin_refs","device_chains","devices","plugin_params","plugin_state",
-    "device_panels","device_panel_params","device_expression_routes","markers","marker_details","remarks",
+    "device_panels","device_panel_params","device_expression_routes","macros","macro_mappings","markers","marker_details","remarks",
     "frozen_renders","frozen_groups","return_send_taps","routing_send_taps","routing_key_taps","session_state","state_blobs"};
 Tables readTables(const Store& store) {
     Tables result;
@@ -129,7 +129,7 @@ Tables topology(Tables value) {
         {"mixer_pan_settings",{"track_id","mode"}},
         {"group_summing",{"track_id","enabled","flavor"}},
         {"routing",{"id","src_kind","src_id","dst_kind","dst_id","kind","ord","pre_fader","enabled","origin"}}};
-    const std::set<std::string> whole{"plugin_refs","device_chains","devices","plugin_params","plugin_state",
+    const std::set<std::string> whole{"plugin_refs","device_chains","devices","plugin_params","plugin_state","macros","macro_mappings",
         "device_expression_routes","track_recording_options","frozen_renders","frozen_groups","return_send_taps","routing_send_taps","routing_key_taps"};
     for(auto it=value.begin();it!=value.end();) {
         const auto fields=retained.find(it->first);
@@ -500,7 +500,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         auto excluded=committedOverrides?*committedOverrides:owner->overridden_;excluded.insert(owner->writingAutomation_.begin(),owner->writingAutomation_.end());
         out->strips=bindStripAutomation(program,excluded);
-        out->devices=bindDeviceAutomation(program,excluded,owner->transport_,owner->spec_.sampleRate);
+        out->devices=owner->bindPlaybackDevices(program,excluded,playback);
         out->controls=controls(image->model,excluded);
         auto timing=std::make_shared<Session::TimingView>();timing->session=owner;
         timing->generationControls=out->controls;timing->gestureAudio=owner->gestureAudio_;

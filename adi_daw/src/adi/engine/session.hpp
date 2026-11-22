@@ -89,6 +89,13 @@ struct AudioRecordingSpec;
 class MidiInputCapture;
 struct RecordingTarget;
 
+struct RackParameter {
+    std::string_view ref;
+    std::string name;
+    double value = 0.0;
+    std::optional<std::int64_t> storedId;
+};
+
 /// The format the session is asked to run at. `load` takes the expected one;
 /// `prepare` replaces it with what the driver actually granted.
 struct SessionSpec {
@@ -469,6 +476,9 @@ public:
     /// session did not resolve (a rack) or never saw.
     [[nodiscard]] device::DeviceNode* nodeFor(std::int64_t deviceId) noexcept;
     [[nodiscard]] device::DeviceInstance* instanceFor(std::int64_t deviceId) noexcept;
+    /// Owner thread. Sixteen normalized knobs and the rack's selector reference.
+    [[nodiscard]] std::optional<std::array<RackParameter, kRackMacroCount + 1>> rackParameters(std::int64_t deviceId) const;
+    [[nodiscard]] bool macroControls(std::int64_t deviceId, std::uint32_t wireParamId) const noexcept;
 
     /// A track's chain as the rows order it: every chain on the track by
     /// `ord`, every device in it by `ord`, skipping what was not resolved.
@@ -504,6 +514,8 @@ private:
     [[nodiscard]] std::vector<const rows::Device*> trackDevices(std::int64_t, const DeviceLayout&) const;
     [[nodiscard]] std::pair<std::vector<Node*>, bool> trackEventPath(std::int64_t, const DeviceLayout&);
     [[nodiscard]] std::vector<std::pair<StripNode*, StripControlImage>> rackControls(const rows::Model&);
+    [[nodiscard]] std::shared_ptr<DeviceAutomationBinding> bindPlaybackDevices(std::shared_ptr<const AutomationProgram>,
+        const std::set<std::int64_t>& overridden, const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row);
