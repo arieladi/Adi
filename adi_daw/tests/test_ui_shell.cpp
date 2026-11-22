@@ -10496,16 +10496,19 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         }
         (void)document->takeLanded();
     }
-    // With the loop on, Record says it waits for take lanes.
+    // With the loop on, Record records each pass as a take (CT-02; the passes are the document suite's).
     {
         OpRequest loop;
         loop.opType = "transport.setLoop";
         loop.payload = {{"on", true}, {"start", 0}, {"end", 3840}};
         check(document->ops().submit(loop).ok && document->synchronise(), "the loop on");
         frame();
-        check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
-                  root.error().find("loop") != std::string::npos,
-              "Record with the loop on is refused, saying why");
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(),
+              "Record with the loop on records");
+        document->stopRecording();
+        document->settleRecording();
+        (void)document->takeLanded();
+        check(!document->recording() && !document->landingTake(), "and stops");
     }
     // Without the application's hooks Record says where it runs.
     root.startRecording = nullptr;

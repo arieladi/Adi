@@ -754,6 +754,72 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
           "a take whose device stopped is settled into the project, not lost");
 }
+// CT-02: Record with the loop on: a take per pass on its own take lane and the last pass's audio on the main lane.
+void loopRecord(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "loop.adi", true, {}, error);
+    check(doc != nullptr, "a project to loop-record into");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    const auto beat = doc->view().current()->tempo->secondsToTicks(.5); // a quarter at 120 BPM: 24000 frames
+    std::vector<OpRequest> setup(2);
+    setup[0].opType = "track.setArm";
+    setup[0].payload = {{"id", 4}, {"armed", true}};
+    setup[1].opType = "transport.setLoop";
+    setup[1].payload = {{"on", true}, {"start", 0}, {"end", beat}};
+    check(doc->ops().submit(std::move(setup)).ok && doc->synchronise(), "3 Audio armed, a one-beat loop on");
+    std::array<float, 64> in{}, l{}, r{};
+    const float *inputs[]{in.data()};
+    float *outputs[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        for (int i = 0; i < 64; ++i)
+            in[static_cast<std::size_t>(i)] = static_cast<float>((stream + i) % 29) / 64.f - .2f;
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    };
+    const auto count = [&](const char *sql) { return doc->store().db().execAndGet(sql).getInt(); };
+    const auto lanesBefore = count("SELECT count(*) FROM lanes WHERE track_id = 4 AND kind = 'take'");
+    const auto clipsBefore = count("SELECT count(*) FROM clips WHERE track_id = 4");
+    check(doc->startRecording(0, 1, false) && doc->recording(), "Record with the loop on is no longer refused");
+    for (int b = 0; b < 760; ++b) // two whole passes (750 blocks) and the start of a third
+        block();
+    doc->stopRecording();
+    for (int b = 0; b < 8; ++b)
+        block();
+    doc->release();
+    doc->settleRecording();
+    const auto landed = doc->takeLanded();
+    if (landed && !landed->ok)
+        std::printf("loop take: %s\n", landed->message.c_str());
+    const auto takeLanes = count("SELECT count(*) FROM lanes WHERE track_id = 4 AND kind = 'take'") - lanesBefore;
+    const auto onLanes = count("SELECT count(*) FROM clips WHERE track_id = 4 AND lane_id IS NOT NULL");
+    const auto onMain = count("SELECT count(*) FROM clips WHERE track_id = 4 AND lane_id IS NULL");
+    std::printf("loop record: %s; take lanes +%d, takes %d, main-lane clips %d\n",
+                landed ? landed->message.c_str() : "(none)", takeLanes, onLanes, onMain);
+    check(landed && landed->ok && takeLanes >= 2 && onLanes >= 2 && onMain >= 1 &&
+              count("SELECT count(*) FROM clips WHERE track_id = 4") > clipsBefore,
+          "each pass a take on a take lane of 3 Audio, the last pass's audio on the main lane");
+    int undone = 0;
+    while (doc->ops().canUndo() && doc->ops().nextUndo() && doc->ops().nextUndo()->label != "Arm Recording" &&
+           count("SELECT count(*) FROM clips WHERE track_id = 4") > clipsBefore && undone < 8) {
+        check(doc->ops().undo().ok, "undo a pass");
+        ++undone;
+    }
+    doc->synchronise();
+    check(count("SELECT count(*) FROM clips WHERE track_id = 4") == clipsBefore &&
+              count("SELECT count(*) FROM lanes WHERE track_id = 4 AND kind = 'take'") == lanesBefore && undone >= 1,
+          "Undo takes the loop's takes back (the engine makes a step per pass)");
+    std::printf("loop record: %d undo steps\n", undone);
+}
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
 void mixerDragHeard(const std::filesystem::path &dir) {
@@ -885,6 +951,8 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());
+        test::TempDirectory loopDir("ui_document", "loop");
+        loopRecord(loopDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
         mixerDragHeard(dragDir.path());
     }
