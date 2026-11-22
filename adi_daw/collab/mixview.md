@@ -11,6 +11,17 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 pinned Spectrum stereo readouts
+
+The wide pinned Realtime Spectrum shows current-window RMS balance and signed left/right correlation from the existing primary publication. Freeze holds those values with the curve. Compact layout gives the height back to the plot. One-sided input names the active side and leaves correlation unavailable. Silence leaves both unavailable. Repeated unchanged frames add no formatting, analysis, plans or tap subscriptions.
+
+Seven software-peer assertions failed first. All 413 Mix Functions checks now pass, including Freeze and resume, compact and expanded layouts, one-sided and quiet frames, hidden demand, and unchanged worker counters. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed both changed translation units and Clang passed the implementation.
+
+Release ZIP SHA-256 `da06dc409d1ec8f66b44b4300c3b78ce2dd135ae18779fefda9d2d757095e431`; EXE SHA-256 `5cb0cb8efb9149598a63b14534fdb0fa96b3750bbb60910022c0a41e6c9e81af`. The brief includes four matched stereo WAVs. The measured two-second balance, filtered correlation, crest hold, true peak and clip statistics remain open.
+
+PR requested — `mixview/mx21-spectrum-statistics-lands-after-2026-12-03` at `ef540f239e54325d8a18886c4cc42a38dbfb9f5b`, also the joined scheduled preview. Lands after 3 December.
+
+
 ### 22 November — MX-21 pinned Spectrum FFT profile
 
 Pinned Realtime Spectrum sizes its shared Hann window from the prepared main tap. It requests the nearest admitted FFT to the 85.3 ms base and uses a quarter-window hop. That is 4,096/1,024 at 48 kHz and 8,192/2,048 at 96 kHz. The ordinary 1,024-point reader and the pinned Overview can share the source tap while keeping their own plans. Toggling off takes the primary back to the ordinary plan. The dated scheduled branch includes main’s #714 documentation correction.
