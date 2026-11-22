@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Resolve constant-curve precision and the remaining measured order fallbacks
+
+Of 3,716 historical curves, 408 in 275 programs had a single free point plus eight identical scalar heights that represent the original value more accurately. Recalling the scalars reduced the median point error from 0.00000419 to zero. Exactly 301 heights then matched. The largest remaining height error was 0.000000119. All 598 ineligible saved files remained byte-identical. At the same decoded height, the point and scalar forms produced byte-identical full streams in all 550 controls across both clocks.
+
+Among the 275 programs, 273 source-order streams and 272 fixed-order streams changed at each clock. In source order 28 errors fell, seventeen rose and 230 stayed within 0.000001. No error crossed 0.001 at either clock or in either order because of this curve representation. Fifty-three programs contained eligible Hold contours. In their isolated mapping comparison twelve source-order errors fell, twelve rose and 29 stayed within tolerance.
+
+The fixed-order result remains 40/873. Replaying three previously unmeasured source-order cases replaced fixed-route fallbacks and changed the corresponding source-order baseline from 43/873 to 44/873 at both clocks. Two newly measured routes came under the threshold and one rose above it. The 44/873 count holds both before and after the curve change. All 175 previously recorded source-order baselines tested in this group reproduced. These measurements use private reference states.
+
 ## 22 November 2026 — Manual per-band Crush Hold follower
 
 `clones/shaper-hold-input` at `9bec0183` — Control each Crush hold rate from its stereo band. **Lands after 3 December.** IDs 877–903 store the nine manual controls per band. The common detector is shared with Width. The rack, Crush and registered native/Pd tests passed under MSVC /W4 /WX at both Pd precisions. Muting only the modulation supplied to the clock failed both active regressions and preserved the disabled oracle. Older active Crush projects restore all followers off. Bypass and three follower-off curves reproduced both channels exactly.
