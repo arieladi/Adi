@@ -45,7 +45,14 @@ void GlueCompressor::update() noexcept {
     slope_ = 1.0 - 1.0 / kRatios[choice(p_[Ratio], 3)];
     attack_ = coefficient(kAttackMs[choice(p_[Attack], 7)] / 1000.0, rate_);
     const auto release = choice(p_[Release], 7);
+    const bool wasAuto = autoRelease_;
     autoRelease_ = release == 6;
+    if (autoRelease_ && !wasAuto) {
+        // The slow follower ran on under a fixed release and may sit deeper
+        // than the reduction; Auto starts from the reduction as it is, so its
+        // release stays monotone (a found defect: a 3 dB step down).
+        slowDb_ = std::max(slowDb_, reductionDb_);
+    }
     release_ = coefficient(autoRelease_ ? kReleaseS[0] : kReleaseS[release], rate_);
     fast_ = coefficient(kReleaseS[0], rate_);
     slow_ = coefficient(kReleaseS[5], rate_);
@@ -86,6 +93,14 @@ void GlueCompressor::process(const float* inL, const float* inR, float* outL, fl
             slowDb_ = reductionDb_ + (slowDb_ - reductionDb_) * slow_;
         } else {
             slowDb_ = target + (slowDb_ - target) * slow_;
+        }
+        // Both states settle exactly on 0 under the threshold instead of
+        // decaying into denormals, whatever the host's floating-point mode.
+        if (std::abs(reductionDb_) < 1e-9) {
+            reductionDb_ = 0.0;
+        }
+        if (std::abs(slowDb_) < 1e-9) {
+            slowDb_ = 0.0;
         }
         const double gain = fromDb(reductionDb_) * makeup_;
         for (int c = 0; c < 2; ++c) {

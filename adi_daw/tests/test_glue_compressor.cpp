@@ -115,6 +115,29 @@ void ballistics() {
               " of it is left, after 10 s held " + std::to_string(held2.gainReductionDb() / b0));
 }
 
+void changesWhileRunning() {
+    // Release switched to Auto mid-release: the reduction never deepens while
+    // the level is under the threshold (a found defect: the slow follower,
+    // left deeper by a fixed release, stepped it down about 3 dB at once).
+    auto g = made();
+    (void)run(g, constant(48000, fromDb(-10)));   // 1 s at -10 dBFS, 4:1
+    (void)run(g, constant(14400, fromDb(-40)));   // 0.3 s of release at 0.1 s
+    double before = g.gainReductionDb(), deepened = 0;
+    g.set(G::Release, 6);
+    for (int i = 0; i < 4800; ++i) {
+        (void)run(g, constant(1, fromDb(-40)));
+        deepened = std::max(deepened, before - g.gainReductionDb());
+        before = g.gainReductionDb();
+    }
+    check(deepened <= 0, "Release switched to Auto mid-release: the reduction only recovers (deepest step " +
+                             std::to_string(deepened) + " dB)");
+    // Under the threshold the reduction settles on exactly 0, not a denormal.
+    auto q = made();
+    (void)run(q, constant(4800, fromDb(-10)));
+    (void)run(q, constant(48000 * 90, 0.0));   // 90 s of silence
+    check(q.gainReductionDb() == 0.0, "90 s under the threshold: the reduction is exactly 0 dB");
+}
+
 void makeupClipAndMix() {
     auto g = made();
     g.set(G::Makeup, 6);
@@ -178,6 +201,7 @@ void robustness() {
 int main() {
     staticCurve();
     ballistics();
+    changesWhileRunning();
     makeupClipAndMix();
     robustness();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
