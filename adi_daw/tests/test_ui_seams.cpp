@@ -2357,6 +2357,14 @@ void reenableFindsThePlayedLane() {
     check(device != nullptr && device->id == 14, "a CLAP's parameter by its decimal id, in normalized units");
     check(ui::laneOf(snap, "track", 4, "pan") == nullptr && ui::deviceLaneOf(snap, 8, "clap", "zz") == nullptr,
           "no lane: none; an id a CLAP cannot spell: none");
+    // DF-W38: a device lane stored with a non-canonical ref ("001", a hand-made or older file) is the
+    // parameter it parses to, as the engine binds it.
+    lane(20, "device", 9, "001", "normalized", true);
+    check(ui::laneOf(snap, "device", 9, "1") != nullptr && ui::laneOf(snap, "device", 9, "1")->id == 20 &&
+              ui::deviceLaneOf(snap, 9, "test", "1") != nullptr && ui::laneOf(snap, "device", 9, "2") == nullptr,
+          "\"001\" is parameter 1; parameter 2 has no lane");
+    lane(21, "track", 4, "Pan", "real", true);
+    check(ui::laneOf(snap, "track", 4, "pan") == nullptr, "a track's ref is compared as written");
 }
 
 int main() {

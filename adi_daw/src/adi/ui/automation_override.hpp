@@ -10,8 +10,34 @@
 #include "adi/engine/snapshot.hpp"
 #include <string>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 namespace adi::ui {
+namespace automation_override_detail {
+// A device lane's `param_ref` as the engine binds it: a parameter id in decimal, up to 32 bits ("001" is
+// parameter 1, DF-E53). None for any other text.
+inline std::optional<std::uint32_t> deviceParamId(std::string_view ref) noexcept {
+    if (ref.empty() || ref.size() > 10)
+        return std::nullopt;
+    std::uint64_t v = 0;
+    for (const char c : ref) {
+        if (c < '0' || c > '9')
+            return std::nullopt;
+        v = v * 10 + static_cast<std::uint64_t>(c - '0');
+    }
+    if (v > 0xffffffffu)
+        return std::nullopt;
+    return static_cast<std::uint32_t>(v);
+}
+// Whether a lane's ref names the parameter `paramRef` does: a device's by the id it parses to (DF-W38: a
+// file written "001" for parameter 1), a track's or a send's as written.
+inline bool sameParam(std::string_view ownerKind, std::string_view laneRef, std::string_view paramRef) noexcept {
+    if (ownerKind != "device")
+        return laneRef == paramRef;
+    const auto a = deviceParamId(laneRef), b = deviceParamId(paramRef);
+    return a && b ? *a == *b : laneRef == paramRef;
+}
+} // namespace automation_override_detail
 // The lane of `ownerKind` #`ownerId`'s `paramRef` that the engine plays, or null: a track's "volume",
 // "pan", "panLeft" or "panRight" and a send's "gain_db" (owned by its routing row) in real units, a
 // device's parameter in normalized units. As the engine's binders (`bindStripAutomation`,
@@ -22,7 +48,7 @@ inline const engine::AutomationLaneNode *laneOf(const engine::Snapshot &snapshot
     const std::string_view domain = ownerKind == "device" ? "normalized" : "real";
     for (const auto &lane : snapshot.automationLanes)
         if (lane && lane->enabled && lane->valueDomain == domain && lane->ownerKind == ownerKind &&
-            lane->ownerId == ownerId && lane->paramRef == paramRef)
+            lane->ownerId == ownerId && automation_override_detail::sameParam(ownerKind, lane->paramRef, paramRef))
             return lane.get();
     return nullptr;
 }
