@@ -71,6 +71,11 @@ public:
 
     /// Clears every reading and all history: a new programme.
     void reset() noexcept;
+    /// The end of a programme: the true-peak interpolator reads its last
+    /// samples, run over its tail with silence; the loudness readings are
+    /// left exactly as they are (no padding reaches I). Allocation-free.
+    /// reset() before measuring another programme.
+    void finish() noexcept;
     /// Run (true) or pause (false) the integrated, range and maximum readings.
     /// A window that holds any paused audio stays out of them after resuming.
     void setRunning(bool running) noexcept;
@@ -131,6 +136,8 @@ private:
     std::int64_t runningSince_ = 0;      ///< first sub-block wholly measured while running
 
     TruePeakMeter truePeak_;
+    std::vector<double> tailZeros_;             ///< prepare(): finish()'s silence
+    std::vector<const double*> tailChannels_;   ///< one pointer to it per channel
     bool truePeakOn_ = false;
 };
 

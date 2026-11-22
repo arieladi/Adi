@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <limits>
 #include <new>
 #include <numbers>
 #include <string>
@@ -420,6 +421,77 @@ void invariants() {
     check(w.readings().momentary == -kInf && w.readings().shortTerm == -kInf, "M and S read -inf until their windows fill");
 }
 
+// Robustness before the meter replaces Main's (N13 guards these too): a
+// non-finite sample reads as silence, a huge one cannot overflow the energy,
+// and the end of a programme reads the true peak of its last samples without
+// padding reaching I.
+void robustness() {
+    const double rate = 48000;
+    const auto tone = tones(rate, {{3, -20}});
+    auto feedWith = [&](Meter& meter, float middle) {
+        // 1 s of tone, a 4,800-sample block of `middle`, 2 s of tone.
+        const int n = static_cast<int>(tone[0].size());
+        std::vector<float> l(static_cast<std::size_t>(n) + 4800), r(l.size());
+        for (int i = 0; i < n; ++i) {
+            const auto at = static_cast<std::size_t>(i < 48000 ? i : i + 4800);
+            l[at] = static_cast<float>(tone[0][static_cast<std::size_t>(i)]);
+            r[at] = static_cast<float>(tone[1][static_cast<std::size_t>(i)]);
+        }
+        for (std::size_t i = 48000; i < 52800; ++i) {
+            l[i] = r[i] = middle;
+        }
+        const float* p[2] = {l.data(), r.data()};
+        meter.process(p, static_cast<int>(l.size()));
+        return meter.readings();
+    };
+    Meter withNaN, withZero, withHuge;
+    withNaN.prepare(rate, kStereo);
+    withZero.prepare(rate, kStereo);
+    withHuge.prepare(rate, kStereo);
+    const auto a = feedWith(withNaN, std::numeric_limits<float>::quiet_NaN());
+    const auto b = feedWith(withZero, 0.f);
+    check(std::isfinite(a.momentary) && std::isfinite(a.shortTerm) && std::isfinite(a.integrated) &&
+              a.momentary == b.momentary && a.shortTerm == b.shortTerm && a.integrated == b.integrated &&
+              a.range == b.range,
+          "a block of NaN reads exactly as a block of silence: M, S, I and LRA recover and stay finite");
+    const auto h = feedWith(withHuge, 3.0e38f);
+    check(std::isfinite(h.momentary) && std::isfinite(h.shortTerm) && std::isfinite(h.integrated),
+          "a block of huge samples cannot overflow the readings");
+
+    // The end of a programme: 2 s of tone at -20 dBFS, then a last pair of
+    // opposite full-scale steps, whose inter-sample overshoot only the true
+    // peak interpolator's tail can see.
+    std::vector<float> l(96000), r(96000);
+    for (std::size_t i = 0; i < l.size(); ++i) {
+        l[i] = r[i] = static_cast<float>(0.1 * std::sin(2 * std::numbers::pi * 997 * static_cast<double>(i) / rate));
+    }
+    const std::size_t e = l.size();
+    l[e - 4] = r[e - 4] = -1.f;
+    l[e - 3] = r[e - 3] = -1.f;
+    l[e - 2] = r[e - 2] = 1.f;
+    l[e - 1] = r[e - 1] = 1.f;
+    const float* p[2] = {l.data(), r.data()};
+    Meter finished, open, padded;
+    for (Meter* m : {&finished, &open, &padded}) {
+        m->prepare(rate, kStereo);
+        m->process(p, static_cast<int>(l.size()));
+    }
+    allocations = 0;
+    counting = true;
+    finished.finish();
+    counting = false;
+    check(allocations == 0, "finish() allocates nothing");
+    std::vector<float> zeros(64, 0.f);
+    const float* z[2] = {zeros.data(), zeros.data()};
+    padded.process(z, 64);
+    const auto f = finished.readings(), o = open.readings(), pz = padded.readings();
+    check(f.truePeak > o.truePeak + 0.1 && f.truePeak == pz.truePeak,
+          "finish() reads the true peak of the last samples (" + std::to_string(f.truePeak) + " dBTP, " +
+              std::to_string(o.truePeak) + " without), as padding them with silence would");
+    check(f.integrated == o.integrated && f.momentary == o.momentary && f.shortTerm == o.shortTerm,
+          "and leaves I, M and S exactly as they were: no padding reaches them");
+}
+
 }  // namespace
 
 int main() {
@@ -428,6 +500,7 @@ int main() {
     truePeakCases();
     for (double rate : {44100.0, 48000.0, 96000.0}) rangeCases(rate, rate == 48000.0);
     invariants();
+    robustness();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }
