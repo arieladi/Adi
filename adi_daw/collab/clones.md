@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Steep low-pass and high-pass Filter contract
+
+For the devices lane, the clones seat takes the ADI-Shaper Filter core, existing rack, editable patch and tests on `clones/shaper-filter-steep`. **Lands after 3 December.** Reserve host parameters 916–918 for a 24 dB/octave switch on each band's 12 dB/octave low-pass and high-pass. Each switch defaults off. The saved five-way type selector keeps its original normalization. The current peak override takes precedence when both are selected. Editing an underlying selection that leaves the audible response unchanged must preserve filter history.
+
+In separate headless reference instances, a 12 dB section at the requested resonance feeds a second 12 dB section at normalized resonance 0.2. Both receive the same cutoff at each frame. Each section finishes both nonlinear substeps before the next receives its signed output. On a 44.1 kHz moving stereo test with partial wet and off-center cutoffs, the low- and high-pass cascades matched the respective reference within 0.000000014 RMS. Reversing the sections gave 0.002317 and 0.002830 RMS. The equivalent full-wet 96 kHz moving cases matched the reference float streams exactly. A separately calculated recurrence was within 0.000000337 RMS at 96 kHz. Isolated startup impulses and the remaining filter types are under separate investigation.
+
 ## 22 November 2026 — All-program resonant peak comparison
 
 For Win, adding the peak Filter at `966700ee` raised the count below 0.001 stereo RMS error from 51 to 53 of 873 in saved stage order and from 47 to 49 in fixed order. The same two programs crossed in both orders, and none fell out. Their new saved-order errors were 0.000004234 and 0.000001330. Fourteen saved-order baselines had to be recaptured with the previous renderer. This changed no threshold decisions.
