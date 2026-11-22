@@ -36,6 +36,16 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — M4 dependencies before native measurement work
+
+- **DEV-30 — parked on Win.** The revised Drive engages no plug-in slots. Reserve the saved global op and automation target before the engine connects the existing pre-insert leaf input gain stages.
+- **MX-09 — parked for the recording handoff.** The callback monitoring seam landed in #685. Physical input and output latency comes from the window's driver; window-fn should supply an owner snapshot in samples to engine-win's recording owner.
+- **MX-25 — parked on Win.** Track input tap rows and stored Sends Only and No Output need the format reservations.
+- **MX-26 — parked on Win's AWAITING 15 reading.** Group mute keeps current behavior while the Live child-send case is measured.
+- **MX-29 — parked on Win.** The Reference route exists. Role storage remains the dependency for matching and spot controls in ordinary projects.
+- **MX-30 — parked on Win and Mix View.** Shared tap retirement and the visual worker follow their publication and ownership contract.
+- **MX-32 — parked on the Live channel-context fixture.** The native host change follows that measurement or the director's approval for an addition.
+
 ## 2026-11-22 — SRF-04 surface nudge and takeover — PR requested
 
 - Ready at `45e69a22d5ca0e283dd4170a8e72d3089ce115bc` on `engine/srf04-controller-nudge`, stacked on SRF-03 `169fd401` for after 3 December.
