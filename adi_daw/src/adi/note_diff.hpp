@@ -89,6 +89,12 @@ private:
 [[nodiscard]] Snapshot captureNotes(Store&, std::int64_t clip,
     std::optional<std::int64_t> newStreamId = std::nullopt);
 
+/// Capture an absent MIDI clip and its canonical stream on the owner connection.
+/// Prepare with prepareDiff, then append its requests after the clip creation
+/// in the same journal batch. Use the prepared source and expected head, and
+/// reserve distinct stream IDs for every new clip in that batch.
+[[nodiscard]] Snapshot captureNotesForNewClip(Store&, std::int64_t clip, std::int64_t newStreamId);
+
 struct PreparedDiff {
     bool ok = false;
     std::string error;
