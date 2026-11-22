@@ -11,6 +11,21 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 pinned Spectrum follows the primary stamp
+
+An advancing pin must be at or before the primary’s first sample for equal-size windows at the same sample rate and transport revision. If the latest pin is ahead, the view keeps the previous compatible outline. Once the primary reaches it, the existing broker publication can be shown. No new tap, FFT or frame timer.
+
+Two software-peer pixel assertions failed first on a lead of 1,024 samples. The exact Release passed both, the catch-up checks, all 481 analyser component assertions, all 24 named CTests and the 906 / 329 / 7 shell checks. Both updated units passed MSVC /W4 /WX. Clang passed the implementation. Release ZIP SHA-256 `f691b997e00d5bf0ab9b96878a66814a889cf0d551c6786259b97b7cb4be10a6`, EXE `52f480665ada9840afb0a2cff1e273edc58f3d95676da105aa8ff0f5d5e14fec`. The Claude brief covers seek, freeze and source changes.
+
+PR requested — `mixview/mx21-heard-pinned-spectrum-lands-after-2026-12-03` at `d1c965d1984864871fb1b8c9fae750067e8d67e5`, also on the joined scheduled preview. Lands after 3 December.
+
+### 22 November — DF-M3 native EQ spectral motion follow-up
+
+The sealed 48 kHz/256 Low spectral gated-key run looks at a 1 kHz Bell, Q 1, −12 dB range and 50% density. The source declares 3,072 samples and native `88bab8b9` declares 1,024. After aligning by those exact delays, the source at its two 50% controls rises in 38–41 ms and recovers in 423 ms. Native 5 / 50 ms rises in 12 ms and recovers in 110 ms. Native 100 / 500 ms rises in 219 ms and has not reached 90% recovery at 650 ms. Left and right agree and the coherent 1 kHz measurements remain readable. The reference’s percent-to-time mapping is still unknown. The aligned audio differs in both diagnostic settings.
+
+Private motion report SHA-256 `59a1bf50f8ec39b0285eb9bbfc4217e23a5bc7e0f01ffff7525d2d1ba866bf71`. No processing changes or CPU timings. The delay and motion contracts remain open.
+
+
 ### 22 November — DF-M3 native Modern and Guitar Amp sound evidence
 
 The verified Windows Release native bank at `d870661d4cb32ce5b069ba1b985186ad474908ad` replayed two additional sealed reference cases, both within the established whole-render peak/RMS gates.
