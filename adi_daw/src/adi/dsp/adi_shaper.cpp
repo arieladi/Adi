@@ -66,6 +66,7 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     for (auto& drive : drives_) drive.prepare(sampleRate);
     for (auto& crusher : crush_) (void)crusher.prepare(sampleRate);
     for (auto& follower : holdFollowers_) follower.prepare(sampleRate);
+    for (auto& detectorFilter : holdInputFilters_) detectorFilter.prepare(sampleRate);
     driveDry_ = {};
     driveSource_ = {};
     for (auto& stage : stages_) {
@@ -284,6 +285,7 @@ void AdiShaper::resetKernels(Stage kind) noexcept {
     if (kind == Stage::Crush) {
         for (auto& crusher : crush_) crusher.reset();
         for (auto& follower : holdFollowers_) follower.reset();
+        for (auto& detectorFilter : holdInputFilters_) detectorFilter.reset();
     }
     if (kind == Stage::Drive) {
         for (auto& drive : drives_) drive.reset();
@@ -370,14 +372,24 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= HoldHighPassLow) {
+        if (id >= HoldLowPassLow)
+            holdInputFilters_[static_cast<std::size_t>(id - HoldLowPassLow)].setLowPass(value);
+        else
+            holdInputFilters_[static_cast<std::size_t>(id - HoldHighPassLow)].setHighPass(value);
+        return;
+    }
     if (id >= HoldFollowerSourceLow) {
         holdUsesFullInput_[static_cast<std::size_t>(id - HoldFollowerSourceLow)] = value >= .5f;
         return;
     }
     if (id >= HoldFollowerLow) {
         const auto local = id - HoldFollowerLow;
-        auto& follower = holdFollowers_[static_cast<std::size_t>(local / HoldFollowerCount)];
+        const auto index = static_cast<std::size_t>(local / HoldFollowerCount);
+        auto& follower = holdFollowers_[index];
+        const bool wasEnabled = follower.enabled();
         follower.set(static_cast<AdiShaperFollower::Control>(local % HoldFollowerCount), value);
+        if (wasEnabled != follower.enabled()) holdInputFilters_[index].reset();
         return;
     }
     if (id >= LegacyCount) return;
@@ -484,8 +496,13 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 float holdHeight = band.secondary.at(p);
                 auto& follower = holdFollowers_[index];
                 if (follower.enabled()) {
-                    if (holdUsesFullInput_[index]) holdHeight = follower.apply(inL[i], inR[i], holdHeight);
-                    else holdHeight = follower.apply(l, r, holdHeight);
+                    if (holdUsesFullInput_[index]) {
+                        float detectorL = inL[i], detectorR = inR[i];
+                        holdInputFilters_[index].process(detectorL, detectorR);
+                        holdHeight = follower.apply(detectorL, detectorR, holdHeight);
+                    } else {
+                        holdHeight = follower.apply(l, r, holdHeight);
+                    }
                 }
                 crush_[index].processStereo(l, r, primary, holdHeight);
             }

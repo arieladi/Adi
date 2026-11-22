@@ -26,7 +26,8 @@ static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1
 static_assert(Shaper::holdFollowerParam(Band::Low, Control::On) == 876);
 static_assert(Shaper::holdFollowerParam(Band::High, Control::Release) + 1 == Shaper::HoldFollowerSourceLow);
 static_assert(Shaper::holdFollowerSourceParam(Band::Low) == 903 && Shaper::holdFollowerSourceParam(Band::High) + 1 == 906);
-static_assert(Shaper::Count == 906);
+static_assert(Shaper::holdHighPassParam(Band::Low) == 906 && Shaper::holdLowPassParam(Band::Low) == 909);
+static_assert(Shaper::holdLowPassParam(Band::High) + 1 == Shaper::Count && Shaper::Count == 912);
 int failures = 0;
 
 void check(bool condition, const char* description) {

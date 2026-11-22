@@ -101,7 +101,7 @@ void cachedPdTransport(const std::string& directory, bool native) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false, bool holdOn = false, unsigned holdSources = 0) {
+                  bool crushOn = false, bool holdOn = false, unsigned holdSources = 0, bool filtered = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
@@ -166,6 +166,10 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
                         send(Shaper::modParam(Stage::Crush, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + j)),
                              25.f + 12.5f * index);
                 }
+                if (filtered) {
+                    send(Shaper::holdHighPassParam(band), 10.f + 29.f * index);
+                    send(Shaper::holdLowPassParam(band), 30.f + 18.f * index);
+                }
                 const std::array controls{1.f, b == 1 ? 1.f : 0.f, 25.f + 22.f * index, index,
                                           60.f - 12.f * index, 1.f + 3.f * index, 3.f + index,
                                           7.f + index, 15.f + index};
@@ -220,6 +224,21 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         f += n;
     }
     if (holdOn) {
+        if (filtered) {
+            Shaper openEdges = oracleRack;
+            for (auto band : {Shaper::Band::Low, mid, Shaper::Band::High}) {
+                openEdges.set(Shaper::holdHighPassParam(band), 0);
+                openEdges.set(Shaper::holdLowPassParam(band), 100);
+            }
+            std::array<std::array<float, frames>, 2> unfiltered{};
+            openEdges.process(input[0].data(), input[1].data(), unfiltered[0].data(), unfiltered[1].data(), frames);
+            double difference = 0;
+            for (std::size_t ch = 0; ch < 2; ++ch)
+                for (std::size_t f = 0; f < frames; ++f)
+                    difference = std::max(difference, static_cast<double>(std::abs(unfiltered[ch][f] - direct[ch][f])));
+            if (holdSources == 0) check(difference < 1e-6, "stored detector cutoffs are dormant on linked bands");
+            else check(difference > .001, "active detector filtering reaches the registered audio");
+        }
         Shaper disabled = oracleRack;
         Shaper linked = oracleRack;
         for (auto band : {Shaper::Band::Low, mid, Shaper::Band::High})
@@ -378,7 +397,7 @@ void automationKeepsTheClock() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 445, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 451, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
@@ -488,6 +507,31 @@ int main() try {
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
     holdFollowerRecall();
+    {
+        auto recalled = open();
+        set(*recalled, 905, 1);  // Earlier session with a full-stage middle-band detector.
+        auto earlier = adi::Payload::from_cbor(recalled->saveState("state"));
+        std::array<double, 6> physical{};
+        for (int n = 0; n < 6; ++n) {
+            const auto id = std::to_string(907 + n);
+            const auto* descriptor = recalled->paramAt(445 + n);
+            check(descriptor && descriptor->id == id && recalled->getParam(id).real == (n < 3 ? 0 : 100),
+                  "each new detector edge defaults to open");
+            for (const auto* group : {"params", "real"}) earlier.at(group).erase(id);
+            set(*recalled, 907 + n, .12 + .123 * n);
+            physical[static_cast<std::size_t>(n)] = recalled->getParam(id).real;
+        }
+        auto restored = open();
+        check(restored->loadState("state", recalled->saveState("state")), "restore six detector cutoffs");
+        for (int n = 0; n < 6; ++n)
+            check(std::abs(restored->getParam(std::to_string(907 + n)).real - physical[static_cast<std::size_t>(n)]) < 1e-5,
+                  "the physical cutoff survives recall");
+        check(restored->loadState("state", adi::Payload::to_cbor(earlier)) && restored->getParam("905").real == 1,
+              "the earlier full-stage detector still reads the same source");
+        for (int n = 0; n < 6; ++n)
+            check(restored->getParam(std::to_string(907 + n)).real == (n < 3 ? 0 : 100),
+                  "reopening an older full-input session removes both filter edges");
+    }
     automationKeepsTheClock();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");
@@ -503,6 +547,8 @@ int main() try {
     modulationPd(editedDir, false, false, true, true);
     modulationPd(editedDir, false, false, false, true, true);
     for (const unsigned mask : {1U, 2U, 4U}) modulationPd(editedDir, false, false, false, true, true, mask);
+    modulationPd(editedDir, false, false, false, true, true, 0, true);
+    modulationPd(editedDir, false, false, false, true, true, 7, true);
     std::puts("ADI-Shaper built-in state, transport and editable modulation parity passed.");
     return 0;
 } catch (const std::exception& error) {

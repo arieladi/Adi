@@ -4,6 +4,7 @@
 #include "adi/dsp/adi_shaper_drive.hpp"
 #include "adi/dsp/adi_shaper_filter.hpp"
 #include "adi/dsp/adi_shaper_follower.hpp"
+#include "adi/dsp/adi_shaper_follower_filter.hpp"
 #include "adi/dsp/adi_shaper_sweep.hpp"
 #include <array>
 #include <cstddef>
@@ -32,7 +33,8 @@ class AdiShaper {
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  LegacyCount = CrushOn + modStageParameterCount,
                  HoldFollowerLow = 876, HoldFollowerSourceLow = HoldFollowerLow + 3 * HoldFollowerCount,
-                 Count = HoldFollowerSourceLow + 3 };
+                 HoldHighPassLow = HoldFollowerSourceLow + 3, HoldLowPassLow = HoldHighPassLow + 3,
+                 Count = HoldLowPassLow + 3 };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
     static constexpr Param holdFollowerParam(Band band, AdiShaperFollower::Control control) noexcept {
@@ -41,6 +43,12 @@ class AdiShaper {
     }
     static constexpr Param holdFollowerSourceParam(Band band) noexcept {
         return static_cast<Param>(HoldFollowerSourceLow + static_cast<int>(band));
+    }
+    static constexpr Param holdHighPassParam(Band band) noexcept {
+        return static_cast<Param>(HoldHighPassLow + static_cast<int>(band));
+    }
+    static constexpr Param holdLowPassParam(Band band) noexcept {
+        return static_cast<Param>(HoldLowPassLow + static_cast<int>(band));
     }
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
@@ -143,6 +151,7 @@ class AdiShaper {
     std::array<AdiShaperCrush, 3> crush_;
     std::array<AdiShaperFollower, 3> holdFollowers_;
     std::array<bool, 3> holdUsesFullInput_{};
+    std::array<AdiShaperFollowerFilter, 3> holdInputFilters_;
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;
