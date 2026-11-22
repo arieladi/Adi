@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-04/EX-12 verified export and conversion workflow
+
+- EX-04/EX-12 combined delivery-workflow landing candidate — PR requested, `engine-win/export-delivery-workflow` at `2daf620d`, on the clock, codec and layout head `07014a6d` plus the selected After Export and batch-converter topics. File conversion now optionally downscales through SoXR, folds through the same channel policy, validates the final layout, decodes the staged file and can attach the same opt-in publication fingerprint. Real fixture: 4096 source frames became 3763 mono frames at 44.1 kHz, and the digest matched the published file. The grouped project jobs and one-Undo After Export still passed. MSVC: render 547, WAV 176, PCM stream 50, material 29, NI Stems metadata 85 (native AAC unavailable). Source rate/layout remain the converter defaults. Upsampling via the file converter and packet formats with no known source length are refused. Window owns controls and Win owns the landing.
+
 ## 2026-11-22 — EX-04 combined codec, rate, layout and readback candidate
 
 - EX-04 combined landing candidate — PR requested, `engine-win/export-clock-codec-layouts` at `07014a6d`. Includes the tested six-format group, SoXR project-rate rendering, mono fold, explicit WAVE layout and lossless readback. The post-SRC mono WAV validates the speaker mask against its one output channel. WAV and Opus also passed a shared 96-to-48 kHz 2301-frame delivery with effects at 96 kHz. MSVC /W4 /WX: render 515, WAV 176, PCM stream 50, NI Stems 85 (native AAC unavailable). Win can review this stack as one combined export-format head. The standalone topic branches preserve their independent gates and remain available. Loop/tail selection and the export UI are still separate.
