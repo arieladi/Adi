@@ -55,7 +55,7 @@ public:
     [[nodiscard]] static Range range(Param p) noexcept;
 
     FilterDelay();
-    void prepare(double sampleRate);
+    void prepare(double sampleRate) noexcept;
     void set(Param, double) noexcept;
     [[nodiscard]] double value(Param p) const noexcept { return p_[static_cast<std::size_t>(p)]; }
     void tempo(double bpm) noexcept;
