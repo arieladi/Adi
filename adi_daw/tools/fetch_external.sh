@@ -257,6 +257,43 @@ fetch_pinned() {
     printf '%s %s  %-9s [%s]\n' "${got:0:9}" "$(git -C "$path" log -1 --format='%cs')" "$tag" "$lic"
 }
 
+# LAME publishes this release as a source archive. A mirror is usable only
+# when its complete bytes agree with the reviewed archive SHA-256.
+fetch_lame_archive() (
+    local path=third_party/lame-3.100
+    local digest=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+    if [ -f "$path/include/lame.h" ] && [ -f "$path/.archive-sha256" ] &&
+       [ "$(cat "$path/.archive-sha256")" = "$digest" ]; then
+        printf '  %-18s 3.100 [LGPL-2.0-or-later, SHA-256 pinned]\n' lame
+        exit 0
+    fi
+    if [ -e "$path" ]; then
+        echo "FATAL: $path exists without the reviewed LAME archive hash" >&2
+        exit 1
+    fi
+    local stage actual
+    stage=$(mktemp -d third_party/.lame-3.100.XXXXXX)
+    trap 'rm -rf -- "$stage"' EXIT
+    if ! curl --fail --silent --show-error --location --max-time 90 \
+        'https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz' -o "$stage/release.tar.gz"; then
+        curl --fail --silent --show-error --location --max-time 90 \
+            'https://download.videolan.org/pub/contrib/lame/lame-3.100.tar.gz' -o "$stage/release.tar.gz"
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$stage/release.tar.gz")
+    else
+        actual=$(shasum -a 256 "$stage/release.tar.gz")
+    fi
+    if [ "${actual%% *}" != "$digest" ]; then
+        echo "FATAL: unexpected LAME archive SHA-256" >&2
+        exit 1
+    fi
+    tar -xzf "$stage/release.tar.gz" -C "$stage"
+    printf '%s\n' "$digest" > "$stage/lame-3.100/.archive-sha256"
+    mv "$stage/lame-3.100" "$path"
+    printf '  %-18s 3.100 [LGPL-2.0-or-later, SHA-256 pinned]\n' lame
+)
+
 # --- unpinned: reference/ ---------------------------------------------------
 fetch_floating() {
     local repo dir lic path
@@ -277,6 +314,7 @@ fetch_floating() {
 
 echo "third_party/ -- linked and shipped, PINNED (ADR-0024):"
 for e in "${THIRD_PARTY[@]}"; do fetch_pinned "$e"; done
+fetch_lame_archive
 
 if [ "$WANT_REFERENCE" = 1 ]; then
     echo

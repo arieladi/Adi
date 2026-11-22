@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/render/queue.hpp"
+#include "adi/render/mp3_writer.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -125,6 +126,15 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export WAV encoding");
     if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
         throw std::invalid_argument("unsupported export dither");
+    if (j.encoding.container != ExportContainer::Wav && j.encoding.container != ExportContainer::Mp3)
+        throw std::invalid_argument("unknown export container");
+    if (j.encoding.container == ExportContainer::Mp3) {
+        const auto rate = j.session.sampleRate;
+        if ((rate != 32000 && rate != 44100 && rate != 48000) || j.session.channels > 2 ||
+            j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
+            throw std::invalid_argument("MP3 needs one or two channels, 32/44.1/48 kHz, a template name and Normalize Off");
+        if (!mp3ExportAvailable()) throw std::runtime_error("MP3 export requires the pinned LAME build");
+    }
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
     if (j.exactWavFilename) {
@@ -500,10 +510,12 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 job.session.sampleRate, job.regionId, names};
             snapshot.commit();
         }
+        const bool mp3 = job.encoding.container == ExportContainer::Mp3;
+        const char* extension = mp3 ? ".mp3" : ".wav";
         const auto filename = job.exactWavFilename ? *job.exactWavFilename :
-            resolveName(job.nameTemplate, names) + ".wav";
+            resolveName(job.nameTemplate, names) + extension;
         result.output = job.directory / media::pathFromUtf8(filename);
-        detail::prepareOutput(result,job.collision,".wav","export destination already exists");
+        detail::prepareOutput(result,job.collision,extension,"export destination already exists");
         if(prepared)prepared(result);
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
@@ -530,17 +542,23 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             if (!wide.empty()) dp[c] = wide.data() + c * block;
         }
         Stage stage(job.directory, result);
-        const auto staged = stage.path / "render.wav";
+        const auto staged = stage.path / (mp3 ? "render.mp3" : "render.wav");
+        std::unique_ptr<Mp3Writer> mp3Writer;
         std::unique_ptr<audio::WavWriter> writer;
         std::unique_ptr<NormalizationCapture> normalized;
-        if(job.normalization.mode==NormalizeMode::Off)
+        if (mp3)
+            mp3Writer = std::make_unique<Mp3Writer>(staged, static_cast<unsigned>(job.session.sampleRate),
+                                                    static_cast<unsigned>(channels), total);
+        else if(job.normalization.mode==NormalizeMode::Off)
             writer=std::make_unique<audio::WavWriter>(staged,static_cast<std::uint32_t>(job.session.sampleRate),
                 static_cast<std::uint16_t>(channels),job.encoding.format,nullptr,std::uint64_t{1}<<32,
                 job.encoding.dither,job.encoding.ditherSeed^counter);
         else normalized=std::make_unique<NormalizationCapture>(stage.path/"capture.f64",static_cast<std::uint32_t>(job.session.sampleRate),job.session.channels,job.normalization);
         auto write=[&](std::uint32_t frames) {
-            if(normalized)normalized->append(std::span<const double>(interleaved.data(),static_cast<std::size_t>(frames)*channels),frames);
-            else writer->write(interleaved.data(),frames);
+            const std::span<const double> samples(interleaved.data(), static_cast<std::size_t>(frames) * channels);
+            if (mp3Writer) mp3Writer->write(samples, frames);
+            else if (normalized) normalized->append(samples, frames);
+            else writer->write(samples.data(), frames);
             result.framesWritten+=frames;
         };
         auto progress = [&] {
@@ -594,7 +612,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             for (std::int32_t f = 0; f < frames; ++f) for (std::size_t c = 0; c < channels; ++c) {
                 const auto i = static_cast<std::size_t>(f);
                 const double value = dp.empty() ? static_cast<double>(fp[c][i]) : dp[c][i];
-                if (!std::isfinite(value) || (!normalized && job.encoding.format == audio::WavFormat::Float32 &&
+                if (!std::isfinite(value) || (!mp3 && !normalized && job.encoding.format == audio::WavFormat::Float32 &&
                     std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
                     throw std::runtime_error("nonfinite or out-of-range audio during export");
                 if (at + f >= first)
@@ -609,9 +627,14 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         }
         if (result.framesWritten != total) throw std::runtime_error("export produced an incomplete range");
         service(); // include reports raised by the final process call
-        if(normalized)result.normalization=normalized->finish(staged,job.encoding.format,job.encoding.dither,job.encoding.ditherSeed^counter,[&] {
-            cancellation(control);if(control.serviceHost)control.serviceHost();cancellation(control);
-        });
+        const auto serviceEncoding = [&] {
+            cancellation(control);
+            if (control.serviceHost) control.serviceHost();
+            cancellation(control);
+        };
+        if (mp3Writer) mp3Writer->finish(serviceEncoding);
+        else if (normalized) result.normalization = normalized->finish(staged, job.encoding.format, job.encoding.dither,
+                                                                       job.encoding.ditherSeed ^ counter, serviceEncoding);
         else writer->close();
         cancellation(control);
         detail::publishVerifiedOutput(staged, result, control, "export destination already exists");
@@ -715,7 +738,8 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"processing_precision", job.session.precision == engine::Precision::Float64 ? "float64" : "float32"},
                 {"delay_compensation", job.session.delayCompensation},
                 {"external_tempo_bpm", optionalNumber(job.session.externalTempoBpm)},
-                {"container", job.niStems ? "ni_stems_mp4" : "wav"},
+                {"container", job.niStems ? "ni_stems_mp4" :
+                    (job.encoding.container == ExportContainer::Mp3 ? "mp3" : "wav")},
                 {"wav_encoding", job.encoding.format == audio::WavFormat::Float32 ? "float32" :
                     (job.encoding.format == audio::WavFormat::Pcm16 ? "pcm16" : "pcm24")},
                 {"dither", job.encoding.dither == audio::WavDither::None ? "none" :
@@ -726,6 +750,11 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"target_lufs", job.normalization.targetLufs},
                     {"true_peak_ceiling_db", job.normalization.truePeakCeilingDb},
                     {"channel_weights", job.normalization.channelWeights}}}};
+            if (job.encoding.container == ExportContainer::Mp3) {
+                profile["wav_encoding"] = nullptr;
+                profile["effective_dither"] = "none";
+                profile["mp3_bit_rate_kbps"] = 320;
+            }
             if (job.niStems) {
                 profile["ni_stems"] = {{"bit_rate_per_stream", job.niStems->bitRate}, {"stems", Json::array()}};
                 for (const auto& stem : job.niStems->stems)
