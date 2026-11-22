@@ -101,13 +101,13 @@ void cachedPdTransport(const std::string& directory, bool native) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false) {
+                  bool crushOn = false, bool reverbOn = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
     constexpr auto mid = Shaper::Band::Mid;
     constexpr int frames = 4096;
-    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn;
+    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn && !reverbOn;
     std::array<adi::device::PdLatencyReceiver, 2> latency;
     Engine native(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2);
     Engine pd(editedDir, "ADI-Shaper.pd", 2, 2);
@@ -153,6 +153,30 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         for (int j = 0; j < 8; ++j)
             send(Shaper::driveParam(mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + j)),
                  80.f - 7.f * static_cast<float>(j));
+        if (reverbOn) {
+            send(Shaper::ReverbOn, 1);
+            send(static_cast<Shaper::Param>(Shaper::ReverbOn + 1), 3);
+            for (auto band : {Shaper::Band::Low, mid, Shaper::Band::High}) {
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::ModMix), 80);
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::ModClock), 1);
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::ModRate), 29);
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::PrimaryCurve), 1);
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::SecondaryCurve), 1);
+                for (int j = 0; j < 8; ++j) {
+                    const auto point = static_cast<float>(j);
+                    send(Shaper::modParam(Stage::Reverb, band, static_cast<Shaper::ModControl>(Shaper::Primary1 + j)),
+                         42.f + 6.f * point);
+                    send(Shaper::modParam(Stage::Reverb, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + j)),
+                         82.f - 6.f * point);
+                }
+                send(Shaper::reverbParam(band, Shaper::RoomSize), 38);
+                send(Shaper::reverbParam(band, Shaper::RoomDecay), 83);
+                send(Shaper::reverbParam(band, Shaper::RoomGate), 1);
+                send(Shaper::reverbParam(band, Shaper::RoomWidth), 73);
+                send(Shaper::reverbParam(band, Shaper::RoomPredelay), 4);
+                send(Shaper::reverbParam(band, Shaper::RoomClearTails), 1);
+            }
+        }
     }
     check(native.isNative() && !pd.isNative() && native.adapterLatencySamples() == 0
           && pd.adapterLatencySamples() == 64, "automatic dispatch selects native and buffered edited paths");
@@ -266,9 +290,15 @@ void automationKeepsTheClock() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 505, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    for (int id = 626; id <= 715; ++id) {
+        const auto* descriptor = device->paramAt(415 + id - 626);
+        check(descriptor && descriptor->id == std::to_string(id), "room descriptor keeps its saved ID");
+    }
+    for (int id : {416, 535, 625, 716, 2049})
+        check(!device->setParam(std::to_string(id), ParamValue::fromNormalized(1)), "undeclared ID rejected");
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
@@ -375,6 +405,41 @@ int main() try {
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
+    device = open();
+    set(*device, 67, .75);  // Middle band's Width point at the current beat.
+    auto earlier = adi::Payload::from_cbor(device->saveState("state"));
+    for (int id = 626; id <= 715; ++id) {
+        earlier.at("params").erase(std::to_string(id));
+        earlier.at("real").erase(std::to_string(id));
+    }
+    set(*device, 626, 1);
+    set(*device, 660, 1);
+    set(*device, 715, 1);
+    device->process(io);
+    check(outL[31] != l[31], "active full-wet room changes the signal before recall");
+    const auto roomState = device->saveState("state");
+    check(device->loadState("state", adi::Payload::to_cbor(earlier)), "recall pre-room state on a running room");
+    device->process(io);
+    check(device->getParam("626").real == 0 && device->getParam("660").real == 25
+          && device->getParam("715").real == 0, "earlier state restores room defaults");
+    constexpr float sentinel = -5;
+    outL.fill(sentinel);
+    outR.fill(sentinel);
+    io.blockOffset = 0;
+    io.frames = 64;
+    device->process(io);
+    const auto restoredLeft = outL, restoredRight = outR;
+    auto untouched = open();
+    set(*untouched, 67, .75);
+    outL.fill(sentinel);
+    outR.fill(sentinel);
+    untouched->process(io);
+    check(outL == restoredLeft && outR == restoredRight && outL.front() != sentinel && outL.front() != l.front(),
+          "loading the earlier state over a running room restores its stereo audio");
+    device = open();
+    check(device->loadState("state", roomState) && device->getParam("626").real == 1
+          && device->getParam("660").real == 100 && device->getParam("715").real == 1,
+          "room control endpoints recall");
     automationKeepsTheClock();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");
@@ -382,6 +447,7 @@ int main() try {
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);
+    modulationPd(editedDir, false, false, false, false, true);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
     modulationPd(editedDir, true, true);

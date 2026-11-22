@@ -18,9 +18,10 @@ using Stage = Shaper::Stage;
 static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == Shaper::VolumeLowSlope);
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
 static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shaper::DriveOn == 286);
-static_assert(Shaper::CrushOn == 340 && Shaper::Count == 415);
+static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
-static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::Count);
+static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
+static_assert(Shaper::ReverbOn == 625 && Shaper::reverbParam(Band::High, Shaper::RoomClearTails) + 1 == 715);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -766,6 +767,56 @@ void driveAndCrush() {
     check(rack.latency() == 0 && std::bit_cast<std::uint32_t>(result[0]) == std::bit_cast<std::uint32_t>(negativeZero)
           && result[1] == .1875f, "Crush at zero mix is undelayed and bit exact");
 }
+void reverbReturnMix() {
+    Shaper legacy;
+    for (int id = Shaper::BaseCount; id < Shaper::ReverbOn; ++id) {
+        check(!Shaper::hasParameter(id), "gap between saved stage ranges has no control");
+        legacy.set(static_cast<Shaper::Param>(id), 1);
+    }
+    check(one(legacy) == std::array{.375f, .25f} && legacy.latency() == 0,
+          "unmapped IDs leave the legacy stereo path unchanged");
+    constexpr std::size_t frames = 4096;
+    std::vector<float> left(frames), right(frames), wetL(frames), wetR(frames), actualL(frames), actualR(frames);
+    adi::dsp::AdiShaperReverb room;
+    check(room.prepare(48000), "room fixture preparation");
+    auto renderWet = [&] {
+        room.reset();
+        wetL = left;
+        wetR = right;
+        for (std::size_t i = 0; i < frames; ++i) room.processStereo(wetL[i], wetR[i], 1, 1);
+    };
+    left[0] = 1.f;
+    right[0] = -.5f;
+    renderWet();
+    const auto peak = static_cast<std::size_t>(std::max_element(wetL.begin(), wetL.end(),
+        [](float a, float b) { return std::abs(a) < std::abs(b); }) - wetL.begin());
+    check(peak > 0 && std::abs(wetL[peak]) > .001f, "room impulse has an audible delayed reflection");
+    left[peak] = std::copysign(1.f, wetL[peak]);
+    renderWet();
+
+    Shaper rack;
+    rack.prepare(48000);
+    for (int layout = 0; layout < 4; ++layout) {
+        rack.set(static_cast<Shaper::Param>(Shaper::ReverbOn + 1), static_cast<float>(layout));
+        for (const float mix : {0.f, .25f, .5f, .75f, 1.f}) {
+            rack.set(Shaper::ReverbOn, 0);
+            const float master = mix == .25f ? .5f : 1.f;
+            rack.set(Shaper::MasterMix, master * 100.f);
+            for (auto band : {Band::Low, Band::Mid, Band::High})
+                rack.set(Shaper::modParam(Stage::Reverb, band, Shaper::ModMix), mix * 100.f / master);
+            rack.set(Shaper::ReverbOn, 1);
+            rack.process(left.data(), right.data(), actualL.data(), actualR.data(), frames);
+            const float dry = std::min(1.f, 2.f - 2.f * mix), wet = std::min(1.f, 2.f * mix);
+            bool matches = true;
+            for (std::size_t i = 0; i < frames; ++i)
+                matches &= near(actualL[i], dry * left[i] + wet * wetL[i], 3e-6)
+                        && near(actualR[i], dry * right[i] + wet * wetR[i], 3e-6);
+            check(matches && rack.latency() == 0, "every layout follows the independently summed Reverb dry/return law");
+            if (mix == .5f) check(std::abs(actualL[peak]) > 1.f, "parallel unity dry and wet can add past full scale");
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -785,6 +836,7 @@ int main() {
     modulationBands();
     driveDryAndLatency();
     driveAndCrush();
+    reverbReturnMix();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }
