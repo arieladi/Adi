@@ -193,6 +193,8 @@ class SharedAnalysis final {
         // generation identifies the currently usable tap; written is its completed
         // sample count, independent of analysis backlog or publication revisions.
         SourcePosition sourcePosition() const noexcept;
+        // Owner-only physical format, even when this analysis window no longer fits the tap.
+        double preparedSampleRate() const noexcept;
       private:
         Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t, std::shared_ptr<CumulativeHistory>,
               std::shared_ptr<SpectrumBlockAverage>);

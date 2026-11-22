@@ -2139,6 +2139,12 @@ SharedAnalysis::Lease::SourcePosition SharedAnalysis::Lease::sourcePosition() co
         !usable(domain_->tap, domain_->request.fftSize)) return {};
     return {domain_->tap->generation(), domain_->tap->written()};
 }
+double SharedAnalysis::Lease::preparedSampleRate() const noexcept {
+    const auto state = state_.lock();
+    if (!state || !domain_) return 0.;
+    state->ownerOnly();
+    return domain_->active.load(std::memory_order_acquire) && domain_->tap ? domain_->tap->sampleRate() : 0.;
+}
 SharedAnalysis::CaptureLease::CaptureLease(std::weak_ptr<State> state, std::shared_ptr<CaptureDomain> domain)
     : state_(std::move(state)), domain_(std::move(domain)) {}
 SharedAnalysis::CaptureLease::~CaptureLease() { reset(); }

@@ -1481,14 +1481,17 @@ void foldedChannelBrowserSearch(AppCommands &commands, const std::filesystem::pa
     peer.removeFromDesktop();
 }
 
-void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &directory) {
+void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &directory,
+                           int rate, std::int32_t overviewFft) {
     constexpr std::int64_t main = 1, first = 11, wide = 5000000001, missing = 9000000001;
-    const auto path = directory / "pinned-spectrum.adi";
+    constexpr std::int32_t normalFft = 1024;
+    const auto path = directory / ("pinned-spectrum-" + std::to_string(rate) + ".adi");
     StoreError status{};
     auto store = Store::create(path, status);
     check(store != nullptr, "pinned Spectrum fixture creates a project");
     if (!store) return;
     store->db().exec(
+        "UPDATE project SET sample_rate=44100;"
         "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'master','Main',0),(5000000001,'audio','Wide ID',40);"
         "WITH RECURSIVE pin_numbers(n) AS (SELECT 11 UNION ALL SELECT n+1 FROM pin_numbers WHERE n<30)"
         " INSERT INTO tracks(id,kind,name,index_in_parent) "
@@ -1507,11 +1510,12 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     using Tap = engine::ScopeTap;
     std::map<Source, std::shared_ptr<Tap>> taps;
     std::size_t attachments = 0;
+    auto tapRate = static_cast<double>(rate);
     auto broker = std::make_shared<SharedAnalysis>(
         [&](Source source, double) -> std::shared_ptr<const Tap> {
             auto &tap = taps[source];
-            if (!tap) {
-                tap = std::make_shared<Tap>(48000., 1.);
+            if (!tap || tap->sampleRate() != tapRate) {
+                tap = std::make_shared<Tap>(tapRate, 1.);
                 ++attachments;
             }
             return tap;
@@ -1541,6 +1545,13 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     root.frame();
     auto &pages = root.mixViewPanel.analysis;
     using Page = MixAnalysers::Page;
+    const auto sendTone = [](Tap &tap, std::int32_t frames, int bin, std::int64_t stamp) {
+        std::vector<float> samples(static_cast<std::size_t>(frames));
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(.5 * std::sin(2. * std::numbers::pi * static_cast<double>(bin) *
+                static_cast<double>(i) / static_cast<double>(frames)));
+        tap.write(samples.data(), samples.data(), frames, stamp, true, 4);
+    };
     pages.setPage(Page::Spectrum);
     pages.followSelection(false);
     root.frame();
@@ -1557,7 +1568,16 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     check(control && control->isShowing() && !control->getToggleState() &&
               attached(main) && !attached(first) && !attached(wide) && !attached(missing),
           "Spectrum offers Pinned tracks default off with no extra demand");
-    if (!control) { detachPeer(); return; }
+    auto primaryTap = tapFor(main);
+    if (!control || !primaryTap) { detachPeer(); return; }
+    sendTone(*primaryTap, normalFft, 16, 0);
+    broker->pump();
+    root.frame();
+    const auto normal = pages.detail.view.snapshot();
+    check(normal && normal->sampleRate == static_cast<double>(rate) &&
+              normal->request.fftSize == normalFft && normal->hopSize == normalFft / 4,
+          "ordinary Spectrum starts at its original 1024-point profile on the matched format");
+    const auto attachmentsBeforeToggle = attachments;
     const auto choose = [&](bool enabled) {
         control->setToggleState(enabled, juce::dontSendNotification);
         if (control->onClick) control->onClick();
@@ -1575,6 +1595,8 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
               single.taps == baseline.taps + 2 && single.spectralPlans == baseline.spectralPlans + 2 &&
               History(doc->store()).head() == head,
           "only live non-primary pins lease two realtime spectra without authoring an edit");
+    check(tapFor(main) == primaryTap && attachments == attachmentsBeforeToggle + 2,
+          "enabling pinned Spectrum retains the original primary tap and attaches only the pins");
     broker->pump();
     const auto settled = broker->stats();
     const auto attachedBefore = attachments;
@@ -1587,29 +1609,39 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
               idle.transforms == settled.transforms && idle.publications == settled.publications,
           "unchanged Spectrum frames neither reacquire pinned taps nor add worker work");
     if (firstTap && wideTap) {
-        adi::ui::SharedAnalysis::Request request{first, pages.detail.point(), 1024,
+        adi::ui::SharedAnalysis::Request request{main, pages.detail.point(), overviewFft,
                                                 pages.detail.view.channel()};
+        request.hopSize = overviewFft / 4;
+        auto primary = broker->acquire(request);
+        request.track = first;
         auto low = broker->acquire(request);
         request.track = wide;
         auto high = broker->acquire(request);
         const auto shared = broker->stats();
-        std::array<float, 1024> samples{};
-        const auto sendTone = [&](engine::ScopeTap &tap, int bin) {
-            for (std::size_t i = 0; i < samples.size(); ++i)
-                samples[i] = static_cast<float>(.5 * std::sin(2. * std::numbers::pi * static_cast<double>(bin) *
-                    static_cast<double>(i) / static_cast<double>(samples.size())));
-            tap.write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), 0, true, 4);
-        };
-        sendTone(*firstTap, 4);
-        sendTone(*wideTap, 32);
-        broker->pump();
+        check(primary && low && high && shared.taps == idle.taps &&
+                  shared.spectralPlans == idle.spectralPlans && shared.domains == idle.domains,
+              "Overview primary and pins reuse explicit 75 percent-overlap observers without extra plans");
+
+        // Supply an extra primary hop so earlier demand cannot shift the comparison boundary.
+        const auto start = primaryTap->written();
+        sendTone(*primaryTap, overviewFft + overviewFft / 4, 20, start);
+        sendTone(*firstTap, overviewFft, 4, start);
+        sendTone(*wideTap, overviewFft, 32, start);
+        for (int pass = 0; pass < 12; ++pass) broker->pump();
         root.frame();
+
+        const auto picture = pages.detail.view.snapshot();
+        check(picture && picture == primary.read() && picture->sampleRate == static_cast<double>(rate) &&
+                  picture->request.fftSize == overviewFft && picture->hopSize == overviewFft / 4 &&
+                  pages.detail.view.spectrumBins().size() == static_cast<std::size_t>(overviewFft / 2 + 1),
+              "visible Overview adopts its rate-sized realtime profile and shared immutable primary");
         const auto a = low.read(), b = high.read();
         const auto peakBin = [](const auto &bins) { return std::ranges::max_element(bins) - bins.begin(); };
-        check(shared.taps == idle.taps && shared.spectralPlans == idle.spectralPlans && a && b &&
-                  a->request.track == first && b->request.track == wide &&
+        check(a && b && a->request.track == first && b->request.track == wide &&
+                  a->request.fftSize == overviewFft && b->request.fftSize == overviewFft &&
+                  a->hopSize == overviewFft / 4 && b->hopSize == overviewFft / 4 &&
                   peakBin(a->binsDbfs) == 4 && peakBin(b->binsDbfs) == 32,
-              "pinned tracks publish their distinct tone bins through shared realtime plans");
+              "matching pinned observers keep their real source identities and distinct tone bins");
     }
     const bool renamed = doc->deviceAction("track.rename", {{"id", wide}, {"name", "Renamed wide ID"}});
     root.frame();
@@ -1627,15 +1659,31 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
               !attached(missing), "project pins are bounded to sixteen total curves including the visible primary");
     check(doc->views().saveStackPins(many, pins, error), "restore the small pin set for page transitions");
     root.frame();
+    const auto attachmentsBeforeRestore = attachments;
     choose(false);
-    check(noExtraPins(), "turning Pinned tracks off releases both overlay leases");
+    check(noExtraPins() && tapFor(main) == primaryTap && attachments == attachmentsBeforeRestore,
+          "turning Pinned tracks off drops pin leases and retains the primary tap");
+    {
+        adi::ui::SharedAnalysis::Request request{main, pages.detail.point(), normalFft,
+                                                pages.detail.view.channel()};
+        const auto before = broker->stats();
+        auto ordinary = broker->acquire(request);
+        sendTone(*primaryTap, normalFft, 16, primaryTap->written());
+        broker->pump();
+        root.frame();
+        const auto restored = pages.detail.view.snapshot();
+        check(ordinary && restored && restored == ordinary.read() && restored->request.fftSize == normalFft &&
+                  restored->hopSize == normalFft / 4 && broker->stats().spectralPlans == before.spectralPlans,
+              "turning Pinned tracks off restores and shares the ordinary 1024-point plan");
+    }
     choose(true);
     pages.setPage(Page::All);
     {
         // All may keep a physical tap for a visible table row's meters.
         // Neither pinned spectrum plan should survive the page switch.
         const auto before = broker->stats().spectralPlans;
-        SharedAnalysis::Request request{first, pages.detail.point(), 1024, pages.detail.view.channel()};
+        SharedAnalysis::Request request{first, pages.detail.point(), overviewFft, pages.detail.view.channel()};
+        request.hopSize = overviewFft / 4;
         auto probeFirst = broker->acquire(request);
         request.track = wide;
         auto probeWide = broker->acquire(request);
@@ -1686,6 +1734,62 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         const auto held = pages.comparisonView();
         check(held.referenceHeld && !held.b.binsDbfs.empty() && held.b.binsDbfs.front() == heldValue && !attached(wide),
               "returning to Compare keeps the original held bins and no live B tap");
+    }
+    if (rate == 96000) {
+        pages.setPage(Page::Spectrum);
+        root.frame();
+        const auto oldPrimary = tapFor(main), oldFirst = tapFor(first), oldWide = tapFor(wide);
+        check(oldPrimary && oldFirst && oldWide && oldPrimary->sampleRate() == 96000.,
+              "the same Spectrum panel has its normal primary and pins attached before a format rebind");
+        if (oldPrimary && oldFirst && oldWide) {
+            sendTone(*oldPrimary, overviewFft, 16, 0);
+            sendTone(*oldFirst, overviewFft, 4, 0);
+            sendTone(*oldWide, overviewFft, 32, 0);
+            for (int pass = 0; pass < 12; ++pass) broker->pump();
+            root.frame();
+        }
+        const auto oldPicture = pages.detail.view.snapshot();
+        check(oldPicture && oldPicture->sampleRate == 96000.,
+              "the Spectrum panel has a published 96 kHz picture before the format rebind");
+
+        // The device prepares another rate while the stored project stays at 44.1 kHz.
+        constexpr double reboundRate = 48000.;
+        constexpr std::int32_t reboundFft = 4096;
+        tapRate = reboundRate;
+        broker->refreshSources(true);
+        root.frame();
+        const auto newPrimary = tapFor(main), newFirst = tapFor(first), newWide = tapFor(wide);
+        check(newPrimary && newFirst && newWide && newPrimary != oldPrimary && newFirst != oldFirst &&
+                  newWide != oldWide && newPrimary->sampleRate() == reboundRate,
+              "the prepared rate replaces the primary and both pinned physical taps");
+        const auto pending = pages.detail.view.snapshot();
+        check(!pending || (pending->sampleRate == reboundRate && pending->request.fftSize == reboundFft),
+              "changing the prepared rate clears the previous Spectrum picture before new samples");
+        if (newPrimary && newFirst && newWide) {
+            SharedAnalysis::Request request{main, pages.detail.point(), reboundFft, pages.detail.view.channel()};
+            request.hopSize = reboundFft / 4;
+            const auto before = broker->stats();
+            auto primary = broker->acquire(request);
+            request.track = first;
+            auto left = broker->acquire(request);
+            request.track = wide;
+            auto right = broker->acquire(request);
+            const auto sharing = broker->stats();
+            check(primary && left && right && sharing.taps == before.taps &&
+                      sharing.domains == before.domains && sharing.spectralPlans == before.spectralPlans,
+                  "a prepared rate change reuses exactly one new profile per visible Spectrum source");
+            sendTone(*newPrimary, reboundFft, 16, 0);
+            sendTone(*newFirst, reboundFft, 4, 0);
+            sendTone(*newWide, reboundFft, 32, 0);
+            for (int pass = 0; pass < 12; ++pass) broker->pump();
+            root.frame();
+            const auto picture = pages.detail.view.snapshot(), pinA = left.read(), pinB = right.read();
+            check(picture && pinA && pinB && picture == primary.read() && picture->sampleRate == reboundRate &&
+                      pinA->sampleRate == reboundRate && pinB->sampleRate == reboundRate &&
+                      picture->request.fftSize == reboundFft && picture->hopSize == reboundFft / 4 &&
+                      pinA->request.track == first && pinB->request.track == wide,
+                  "the existing panel publishes the new 48 kHz primary and pin profiles after a 96 kHz rebind");
+        }
     }
     detachPeer();
 }
@@ -2720,7 +2824,8 @@ int main() {
     stackEqSpectrum(commands, temporary.path());
     stackLimiterReduction(commands, temporary.path());
     foldedChannelBrowserSearch(commands, temporary.path());
-    pinnedSpectrumOverlay(commands, temporary.path());
+    pinnedSpectrumOverlay(commands, temporary.path(), 48000, 4096);
+    pinnedSpectrumOverlay(commands, temporary.path(), 96000, 8192);
     focusWorkspace(commands, temporary.path());
     focusOneBarScope(commands, temporary.path());
     cleanCompressor(commands, temporary.path());

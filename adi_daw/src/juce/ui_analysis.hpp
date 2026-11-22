@@ -68,7 +68,9 @@ class SharedSpectrumView final : public juce::Component,
         bool operator==(const SpectrumOverlayTrack &) const = default;
     };
     static constexpr std::size_t kSpectrumOverlayTracks = 15;
-    void setSpectrumOverlayTracks(std::span<const SpectrumOverlayTrack>);
+    enum class SpectrumOverlayProfile { Standard, Overview };
+    void setSpectrumOverlayTracks(std::span<const SpectrumOverlayTrack>,
+                                  SpectrumOverlayProfile = SpectrumOverlayProfile::Standard);
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
     enum class SpectrumScale { Wide, Detail, Extended, Device };
@@ -133,6 +135,7 @@ class SharedSpectrumView final : public juce::Component,
     void releaseSpectrumOverlays(bool keepPictures = false) noexcept;
     void updateSpectrumOverlays(bool primaryChanged) noexcept;
     bool spectrumOverlayMatchesPrimary(const SpectrumOverlay &) const noexcept;
+    bool usesOverviewSpectrum() const noexcept;
     void updateSpectrumOverlayPlot(SpectrumOverlay &) noexcept;
     void paintSpectrumOverlays(juce::Graphics &, juce::Rectangle<float>) const;
     bool spectrumMode() const noexcept {
@@ -169,6 +172,9 @@ class SharedSpectrumView final : public juce::Component,
     bool suspended_ = false;
     bool frozen_ = false;
     bool phaseBandsEnabled_ = false;
+    SpectrumOverlayProfile overlayProfile_ = SpectrumOverlayProfile::Standard;
+    double overviewRate_ = 0.;
+    std::int32_t overviewFftSize_ = 1024, activeSpectrumFftSize_ = 1024;
     Mode mode_ = Mode::Spectrum;
     engine::ScopePoint point_ = engine::ScopePoint::PostFader;
     std::int64_t device_ = 0;

@@ -534,7 +534,8 @@ void MixAnalysers::updatePinnedSpectrum(const SnapshotReader &reader, std::uint6
             selected[count++] = {track.id, channelName(track.id, track.name), colour};
         }
     }
-    detail.view.setSpectrumOverlayTracks(std::span{selected}.first(count));
+    detail.view.setSpectrumOverlayTracks(std::span{selected}.first(count),
+                                         SharedSpectrumView::SpectrumOverlayProfile::Overview);
     pinnedSpectrumStamp_ = current;
 }
 void MixAnalysers::clearPinnedSpectrum() {

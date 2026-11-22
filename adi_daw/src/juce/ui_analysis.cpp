@@ -69,6 +69,17 @@ bool sameSpectrumTimeline(const SharedAnalysis::Result &a, const SharedAnalysis:
 bool spectrumFitsPrimary(const SharedAnalysis::Result *primary, const SharedAnalysis::Result &pin) noexcept {
     return primary && sameSpectrumTimeline(*primary, pin) && (!pin.advancing || pin.firstStamp <= primary->firstStamp);
 }
+std::int32_t overviewFftForRate(double rate) noexcept {
+    // Stay near the 4,096 sample / 48 kHz window. Real FFT sizes are multiples
+    // of 32 whose remaining factors are drawn from 2, 3 and 5.
+    const auto target = 4096. * rate / 48000.;
+    std::int32_t nearest = 32;
+    for (std::int32_t twos = 32; twos <= SharedAnalysis::kMaxFftSize; twos *= 2)
+        for (auto threes = twos; threes <= SharedAnalysis::kMaxFftSize; threes *= 3)
+            for (auto size = threes; size <= SharedAnalysis::kMaxFftSize; size *= 5)
+                if (std::abs(size - target) < std::abs(nearest - target)) nearest = size;
+    return nearest;
+}
 std::size_t currentThemeIndex() noexcept {
     const auto theme = std::ranges::find(kThemes, look::themeId());
     return theme == kThemes.end() ? 0 : static_cast<std::size_t>(theme - kThemes.begin());
@@ -335,6 +346,7 @@ void SharedSpectrumView::setMode(Mode mode) {
         isMaximumSpectrum(mode_) || isMaximumSpectrum(mode))
         describeAnalysisView(*this, mode);
     mode_ = mode;
+    if (mode_ != Mode::Spectrum) activeSpectrumFftSize_ = 1024;
     if (classicPanel_) {
         resetClassic(false);
         classicPanel_->setVisible(mode_ == Mode::ClassicScope);
@@ -370,7 +382,9 @@ void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     updateDemand(); repaint();
 }
-void SharedSpectrumView::setSpectrumOverlayTracks(std::span<const SpectrumOverlayTrack> tracks) {
+void SharedSpectrumView::setSpectrumOverlayTracks(std::span<const SpectrumOverlayTrack> tracks,
+                                                   SpectrumOverlayProfile profile) {
+    overlayProfile_ = profile;
     if (std::ranges::equal(spectrumOverlays_, tracks, std::ranges::equal_to{}, &SpectrumOverlay::source)) return;
 
     std::vector<SpectrumOverlay> next;
@@ -390,8 +404,13 @@ void SharedSpectrumView::setSpectrumOverlayTracks(std::span<const SpectrumOverla
     spectrumOverlays_.swap(next);
     if (mode_ == Mode::Spectrum && eligible()) repaint();
 }
+bool SharedSpectrumView::usesOverviewSpectrum() const noexcept {
+    return mode_ == Mode::Spectrum && device_ == 0 && !spectrumOverlays_.empty() &&
+           overlayProfile_ == SpectrumOverlayProfile::Overview;
+}
 SharedAnalysis::Request SharedSpectrumView::spectrumRequest(std::int64_t track) const noexcept {
-    SharedAnalysis::Request request{track, point_, 1024, channel_, dsp::Window::Hann};
+    const auto size = mode_ == Mode::Spectrum ? activeSpectrumFftSize_ : 1024;
+    SharedAnalysis::Request request{track, point_, size, channel_, dsp::Window::Hann};
     request.device = device_;
     return request;
 }
@@ -754,6 +773,26 @@ void SharedSpectrumView::updateDemand() noexcept {
         lease_.reset();
         if (mainMeterSource_.expired()) mainMeter_.reset();
     } else {
+        const auto rate = usesOverviewSpectrum() ? lease_.preparedSampleRate() : 0.;
+        if (rate > 0. && overviewRate_ != rate) {
+            overviewFftSize_ = overviewFftForRate(rate);
+            overviewRate_ = rate;
+        }
+        const auto size = rate > 0. ? overviewFftSize_ : 1024;
+        std::optional<std::array<SharedAnalysis::Lease, kSpectrumOverlayTracks + 1>> retired;
+        if (activeSpectrumFftSize_ != size) {
+            auto &leases = retired.emplace();
+            leases.front() = std::move(lease_);
+            for (std::size_t i = 0; i < spectrumOverlays_.size(); ++i) {
+                auto &overlay = spectrumOverlays_[i];
+                leases[i + 1] = std::move(overlay.lease);
+                overlay.admission = {};
+                overlay.clearPicture();
+            }
+            activeSpectrumFftSize_ = size;
+            resetPicture();
+            freshRequired_ = true;
+        }
         if (!lease_) {
             auto request = spectrumRequest(track_);
             switch (mode_) {
@@ -784,6 +823,9 @@ void SharedSpectrumView::updateDemand() noexcept {
             }
             catch (...) { lease_.reset(); }
         }
+        // The replacement requests attach before the former requests release
+        // their sources. Keep existing physical taps when their capacity fits.
+        if (retired && lease_) acquireSpectrumOverlays();
         if (!lease_ || !lease_.available()) {
             if (shown_ || sourcePosition_.generation) freshRequired_ = true;
             sourcePosition_ = {};
