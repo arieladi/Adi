@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Fractional hold-clock calibration over sustained playback
+
+The existing exponential approximation accumulates measurable timing drift on an unchanged hold height. Three-second stereo marker trains at 44.1, 48 and 96 kHz distinguish rounding the normalized phase after each sample addition and before subtracting one on a wrap. The physical curve is a shifted exponential through 8.82 Hz and 44,100 Hz with a 225.96 Hz offset. Form the signed logarithmic span and each intermediate height operation in binary32, round the exponential and subtract the offset, then round the sample-normalized advance. The measured stored heights and the physical normalized values entering the DSP are distinct at the final bit in some cases.
+
+On sixty calibration cells and thirty previously unused height/rate combinations, the largest crossing RMS over three seconds was below 0.000006 sample. Across twelve separate moving stereo fixtures, including signed warm playback over a full-rate segment, the model's largest audio RMS was 0.00000173. Carrying fractional phase with the old frequency law still missed by as much as 0.01293 RMS. This calibrates clock precision separately from the moving endpoint's stored capture.
+
+The clones seat takes the owned Crush stage and its direct tests on `clones/shaper-crush-clock-precision` for the current-stage repair. Preserve stationary full-height audio, zero latency, the reset contract and native/Pd parity. Benchmark moving controls as well as fixed controls at both callback sizes.
+
 ## 22 November 2026 — What remains after the Crush endpoint and prefilter repairs
 
 The full-rate latch fix and callback-grid fix pass the strict rack suite together. The musical linear-curve residual has a separate cause. The returning source node is at cell 8,191 of 8,192. The eight-point native ramp returns at the following cycle's first sample. Moving only the last anchor in the measured model reduced RMS from 0.004482 to 0.000554, preserving all 752 full-height frames per cycle. On the stepped curve the signed source table's cubic read reduced RMS from 0.005834 to 0.0000258. Both block sizes gave the same source capture. Keep the audible latch fix and use these acceptance cases when the full point editor can land.
