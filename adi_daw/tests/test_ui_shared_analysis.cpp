@@ -25,6 +25,12 @@ struct SharedSpectrumViewTestAccess {
     static std::size_t offsetCount(const SharedSpectrumView &view) { return view.spectrumProjection_.offsets().size(); }
     static bool hasScaledPlot(const SharedSpectrumView &view) { return static_cast<bool>(view.scaledSpectrum_); }
     static bool hasRaster(const SharedSpectrumView &view) { return static_cast<bool>(view.raster_); }
+    static juce::String cursorText(const SharedSpectrumView &view) {
+        if (view.spectrumCursorPosition_) {
+            if (const auto reading = view.spectrumCursorReading(*view.spectrumCursorPosition_)) return reading->text();
+        }
+        return {};
+    }
 };
 }
 namespace {
@@ -1455,6 +1461,39 @@ void spectrumDeviceScale() {
             device.getPixelAt(x(37.), y(level) + 2) == look::display;
     check(grid, "Device uses 12 dB divisions and preserves the calibrated range");
 
+    const juce::Point<float> at{left + (width - 1.f) * static_cast<float>(std::log(44.) / std::log(2400.)),
+                                top + (height - 1.f) * .3f};
+    const auto move = [&](juce::Point<float> position) {
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), position,
+            juce::ModifierKeys(), 1.f, 0.f, 0.f, 0.f, 0.f, &pane.view, &pane.view, now, position, now, 0, false};
+        pane.view.mouseMove(event);
+        return event;
+    };
+    const auto event = move(at);
+    const auto withCursor = softwarePicture(pane.view);
+    const auto column = juce::roundToInt(at.x);
+    const auto probe = y(-60.f) + 3;
+    check(pane.view.getComponentAt(at.roundToInt()) == &pane.view &&
+              withCursor.getPixelAt(column, probe) != device.getPixelAt(column, probe),
+          "the full Device spectrum accepts a hover and paints its guide inside the graph");
+    check(pane.view.getTooltip().isEmpty(), "the stock tooltip does not cover the live pointer readout");
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view) == "440.0 Hz   A3   -36.0 dBFS",
+          "the cursor inverts the log frequency and level scales with ADI note spelling");
+    const auto hoverRepaints = root.fake->repaints;
+    move(at);
+    check(root.fake->repaints == hoverRepaints, "a repeated pointer position does not repaint");
+    pane.view.mouseExit(event);
+    check(softwarePicture(pane.view).getPixelAt(column, probe) == device.getPixelAt(column, probe) &&
+              SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(), "the guide clears on pointer exit");
+    move(at);
+    move({at.x, top - 2.f});
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(), "moving into the ruler clears the cursor");
+    const auto hovered = f.broker->stats();
+    check(pane.view.snapshot() == source && hovered.taps == after.taps && hovered.consumers == after.consumers &&
+              hovered.transforms == after.transforms && hovered.publications == after.publications &&
+              hovered.frameRequests == after.frameRequests, "cursor movement does not do analysis work");
+
     pane.setMode(SharedSpectrumView::Mode::SpectrumAverage);
     writeFrames(f, 1024); f.broker->pump(); pane.frame(f.broker, 1, 1);
     const auto measured = pane.view.snapshot();
@@ -1463,6 +1502,35 @@ void spectrumDeviceScale() {
     check(pane.scaleBox.getSelectedId() == 4 && measured && bins && measured == pane.view.snapshot() &&
               bins == pane.view.spectrumBins().data() && SharedSpectrumViewTestAccess::hasScaledPlot(pane.view),
           "Device projection also leaves the existing averaged publication intact");
+    Fixture lowRate;
+    lowRate.tap = std::make_shared<ScopeTap>(32000, SharedAnalysis::kTapSeconds);
+    pane.setMode(SharedSpectrumView::Mode::Spectrum);
+    pane.frame(lowRate.broker, 1, 1);
+    move(at);
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(), "the cursor waits for the new source's picture");
+    lowRate.write(); lowRate.broker->pump(); pane.frame(lowRate.broker, 1, 1);
+    check(pane.view.snapshot() && pane.view.snapshot()->sampleRate == 32000.,
+          "the cursor boundary test uses the actual source's 32 kHz rate");
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view) == "440.0 Hz   A3   -36.0 dBFS",
+          "a stationary pointer becomes active as soon as fresh audio appears");
+    move({static_cast<float>(x(12000.)), at.y});
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isNotEmpty(), "the cursor reads below the measured Nyquist");
+    move({static_cast<float>(x(20000.)), at.y});
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(),
+          "the wide device graph does not suggest bins above the source's measured Nyquist");
+    move(at);
+    pane.setVisible(false);
+    check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty() && !pane.view.subscribed(),
+          "hiding the analyser clears its cursor and releases its lease");
+
+    SharedSpectrumView compact;
+    compact.setBounds(0, 0, 320, 220);
+    compact.setSpectrumScale(Scale::Device);
+    root.addAndMakeVisible(compact);
+    compact.present(lowRate.broker, 1);
+    lowRate.write(1024); lowRate.broker->pump(); compact.frame();
+    check(compact.snapshot() && compact.getComponentAt(juce::Point<int>{100, 80}) == nullptr,
+          "a compact Device projection stays passive so the parent handles preview clicks");
 }
 
 void spectrogramHistoryMotion() {

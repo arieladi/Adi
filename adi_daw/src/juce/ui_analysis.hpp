@@ -65,6 +65,7 @@ class SharedSpectrumView final : public juce::Component,
     enum class SpectrumScale { Wide, Detail, Extended, Device };
     void setSpectrumScale(SpectrumScale);
     SpectrumScale spectrumScale() const noexcept { return spectrumScale_; }
+    void enableSpectrumCursor();
     enum class HistoryMotion { Scroll, Sweep };
     void setHistoryMotion(HistoryMotion);
     HistoryMotion historyMotion() const noexcept { return historyMotion_; }
@@ -84,6 +85,9 @@ class SharedSpectrumView final : public juce::Component,
     // window calls this in its minimisation callback, then clears it on restore.
     void suspend(bool) noexcept;
     void paint(juce::Graphics &) override;
+    void mouseEnter(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
     void visibilityChanged() override;
     void parentHierarchyChanged() override;
     void resized() override;
@@ -120,6 +124,13 @@ class SharedSpectrumView final : public juce::Component,
     }
     Status pictureStatus() const noexcept;
     void resetPicture() noexcept;
+    void updateSpectrumCursorInput();
+    struct SpectrumCursorReading {
+        double frequency;
+        float level;
+        juce::String text() const;
+    };
+    std::optional<SpectrumCursorReading> spectrumCursorReading(juce::Point<float>) const noexcept;
     void paintChannelReadout(juce::Graphics &) const;
     std::shared_ptr<SharedAnalysis> broker_;
     std::int64_t track_ = 0;
@@ -159,6 +170,8 @@ class SharedSpectrumView final : public juce::Component,
     struct ScaledSpectrum;
     std::unique_ptr<ScaledSpectrum> scaledSpectrum_;
     SpectrumScale spectrumScale_ = SpectrumScale::Wide;
+    bool spectrumCursorEnabled_ = false;
+    std::optional<juce::Point<float>> spectrumCursorPosition_;
 };
 
 // Fixed display coordinates used by the spectrum and the A/B overlay. The

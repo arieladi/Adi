@@ -2,6 +2,7 @@
 #include "ui_analysis.hpp"
 #include "ui_look.hpp"
 #include "adi/engine/main_loudness.hpp"
+#include "adi/ui/note_geometry.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -311,8 +312,8 @@ void SharedSpectrumView::setMode(Mode mode) {
     if (classicPanel_) {
         resetClassic(false);
         classicPanel_->setVisible(mode_ == Mode::ClassicScope);
-        setInterceptsMouseClicks(false, mode_ == Mode::ClassicScope);
     }
+    updateSpectrumCursorInput();
     updateDemand();
     repaint();
 }
@@ -356,6 +357,7 @@ void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
 void SharedSpectrumView::setSpectrumScale(SpectrumScale scale) {
     if (spectrumScale_ == scale) return;
     spectrumScale_ = scale;
+    updateSpectrumCursorInput();
     if (!spectrumMode() || !eligible()) return;
     updateScaledSpectrum();
     repaint();
@@ -397,6 +399,7 @@ void SharedSpectrumView::resetPicture() noexcept {
     maximumShown_.reset();
     scaledSpectrum_.reset();
     averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
+    spectrumCursorPosition_.reset();
 }
 SharedSpectrumView::Status SharedSpectrumView::pictureStatus() const noexcept {
     if (averageStatus_ == SharedAnalysis::AverageStatus::InvalidInput ||
@@ -832,6 +835,7 @@ void SharedSpectrumView::suspend(bool value) noexcept {
 void SharedSpectrumView::visibilityChanged() { updateDemand(); }
 void SharedSpectrumView::parentHierarchyChanged() { watchAncestors(); updateDemand(); }
 void SharedSpectrumView::resized() {
+    spectrumCursorPosition_.reset();
     if (classicPanel_) classicPanel_->setBounds(getLocalBounds());
     updateDemand();
 }
@@ -885,15 +889,29 @@ void SharedSpectrumView::paintChannelReadout(juce::Graphics &g) const {
         g.drawText(values[i], row.withX(x).withWidth(end - x).reduced(look::border, 0), juce::Justification::centredLeft, true);
     }
 }
-juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &g, juce::Rectangle<float> area, SpectrumScale scale) {
+namespace {
+juce::Rectangle<float> analysisArea(juce::Rectangle<int> bounds) noexcept {
+    return bounds.toFloat().reduced(5.f);
+}
+juce::Rectangle<float> analysisPlot(juce::Rectangle<float> area, float meterHeight = 0.f) noexcept {
+    return area.withTrimmedTop(16.f).withTrimmedBottom(29.f + meterHeight).withTrimmedRight(18.f);
+}
+juce::Rectangle<float> spectrumGridPlot(juce::Rectangle<float> area, SpectrumScale scale) {
     const auto &axis = spectrumAxis(scale);
     const auto scaleWidth = look::fontCaption * 3.f;
     const auto stepHeight = area.getHeight() / static_cast<float>((axis.topDb - axis.bottomDb) / axis.divisionDb);
-    const bool labels = area.getWidth() >= scaleWidth * 4.f && stepHeight > look::fontCaption;
+    if (area.getWidth() < scaleWidth * 4.f || stepHeight <= look::fontCaption) return area;
+    if (scale == SpectrumScale::Device) return area.withTrimmedLeft(scaleWidth).withTrimmedTop(look::fontCaption);
+    return area.withTrimmedRight(scaleWidth).withTrimmedBottom(look::fontCaption);
+}
+} // namespace
+
+juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &g, juce::Rectangle<float> area, SpectrumScale scale) {
+    const auto &axis = spectrumAxis(scale);
+    const auto plot = spectrumGridPlot(area, scale);
+    const auto scaleWidth = look::fontCaption * 3.f;
+    const bool labels = plot != area;
     const bool topRuler = scale == SpectrumScale::Device;
-    const auto plot = labels ? (topRuler ? area.withTrimmedLeft(scaleWidth).withTrimmedTop(look::fontCaption)
-                                         : area.withTrimmedRight(scaleWidth).withTrimmedBottom(look::fontCaption))
-                             : area;
     if (plot.getWidth() <= 1.f || plot.getHeight() <= 1.f) return {};
     const auto xAt = [&](double hz) { return plot.getX() + (plot.getWidth() - 1.f) * axis.x(hz); };
     g.setFont(look::font(look::fontCaption));
@@ -929,11 +947,59 @@ juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &g, juce::Rectangle<floa
     return plot;
 }
 
+void SharedSpectrumView::enableSpectrumCursor() {
+    spectrumCursorEnabled_ = true;
+    updateSpectrumCursorInput();
+}
+void SharedSpectrumView::updateSpectrumCursorInput() {
+    const bool active = spectrumCursorEnabled_ && spectrumMode() && spectrumScale_ == SpectrumScale::Device;
+    if (!active) spectrumCursorPosition_.reset();
+    setInterceptsMouseClicks(active, mode_ == Mode::ClassicScope);
+    if (active) setTooltip({});
+    else if (getTooltip().isEmpty()) describeAnalysisView(*this, mode_);
+}
+juce::String SharedSpectrumView::SpectrumCursorReading::text() const {
+    // Follow the DAW's middle-C spelling while also naming pitches above the MIDI keyboard.
+    const auto note = juce::roundToInt(69. + 12. * std::log2(frequency / 440.));
+    return juce::String(frequency, 1) + " Hz   " + pitchClassName(note) + juce::String(note / 12 - 2) +
+        "   " + juce::String(level, 1) + " dBFS";
+}
+std::optional<SharedSpectrumView::SpectrumCursorReading>
+SharedSpectrumView::spectrumCursorReading(juce::Point<float> point) const noexcept {
+    if (!spectrumCursorEnabled_ || !spectrumMode() || spectrumScale_ != SpectrumScale::Device ||
+        !shown_ || !scaledSpectrum_ || !std::isfinite(shown_->sampleRate)) return std::nullopt;
+    const auto plot = spectrumGridPlot(analysisPlot(analysisArea(getLocalBounds())), spectrumScale_);
+    if (plot.getWidth() <= 1.f || plot.getHeight() <= 1.f || !plot.contains(point)) return std::nullopt;
+    const auto &axis = spectrumAxis(spectrumScale_);
+    // Invert the same first and last pixel coordinates that paintSpectrumGrid uses.
+    const auto x = std::min(1.f, (point.x - plot.getX()) / (plot.getWidth() - 1.f));
+    const auto y = std::min(1.f, (point.y - plot.getY()) / (plot.getHeight() - 1.f));
+    const auto frequency = std::min(axis.highHz, axis.lowHz * std::exp(static_cast<double>(x) * axis.logWidth));
+    if (frequency > shown_->sampleRate * .5) return std::nullopt;
+    const auto db = static_cast<float>(axis.topDb) - y * static_cast<float>(axis.topDb - axis.bottomDb);
+    return SpectrumCursorReading{frequency, db};
+}
+void SharedSpectrumView::mouseEnter(const juce::MouseEvent &event) { mouseMove(event); }
+void SharedSpectrumView::mouseMove(const juce::MouseEvent &event) {
+    if (spectrumCursorPosition_ && *spectrumCursorPosition_ == event.position) return;
+    const bool inside = spectrumCursorEnabled_ && spectrumMode() && spectrumScale_ == SpectrumScale::Device &&
+        spectrumGridPlot(analysisPlot(analysisArea(getLocalBounds())), spectrumScale_).contains(event.position);
+    const auto next = inside ? std::optional{event.position} : std::nullopt;
+    if (spectrumCursorPosition_ == next) return;
+    spectrumCursorPosition_ = next;
+    if (shown_) repaint();
+}
+void SharedSpectrumView::mouseExit(const juce::MouseEvent &) {
+    if (!spectrumCursorPosition_) return;
+    spectrumCursorPosition_.reset();
+    repaint();
+}
+
 void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
     g.fillAll(look::display);
     if (mode_ == Mode::ClassicScope) return;
-    const auto area = getLocalBounds().toFloat().reduced(5.f);
+    const auto area = analysisArea(getLocalBounds());
     if (area.isEmpty()) return;
     g.setColour(look::textOnBand);
     g.setFont(look::font(10.f, true));
@@ -944,7 +1010,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
                    (frozen_ ? " / Frozen" : ""), area.withHeight(14.f), juce::Justification::centredLeft, true);
     const bool mainMeter = mode_ == Mode::Meters && mainMeter_.has_value();
     const auto meterHeight = mainMeter ? 38.f : 0.f;
-    auto plot = area.withTrimmedTop(16.f).withTrimmedBottom(29.f + meterHeight).withTrimmedRight(18.f);
+    const auto plot = analysisPlot(area, meterHeight);
     if (plot.getHeight() <= 4 || plot.getWidth() <= 4) return;
     g.setFont(look::font(9.f));
     const bool scaled = spectrumMode() && spectrumScale_ != SpectrumScale::Wide;
@@ -1044,6 +1110,19 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     } else {
         g.setColour(look::value);
         g.strokePath(curve, juce::PathStrokeType(1.4f));
+    }
+    if (spectrumCursorPosition_) {
+        const auto pointer = *spectrumCursorPosition_;
+        if (const auto reading = spectrumCursorReading(pointer)) {
+            g.setColour(look::gridLine);
+            g.drawVerticalLine(juce::roundToInt(pointer.x), scaledPlot.getY(), scaledPlot.getBottom());
+            g.drawHorizontalLine(juce::roundToInt(pointer.y), scaledPlot.getX(), scaledPlot.getRight());
+            g.setColour(look::textOnBand);
+            g.setFont(look::font(look::fontCaption));
+            const auto textRow = scaledPlot.withTrimmedTop(scaledPlot.getHeight() - look::fontCaption)
+                                           .reduced(static_cast<float>(look::border), 0.f);
+            g.drawText(reading->text(), textRow, juce::Justification::centredRight, true);
+        }
     }
     if (spectrumMode() && tilted) {
         g.setFont(look::font(9.f));
@@ -1148,6 +1227,7 @@ AnalysisPane::AnalysisPane() {
     resetButton.onClick = [this] { view.clear(); };
     expandButton.onClick = [this] { if (onExpand) onExpand(view.track()); };
     addAndMakeVisible(freezeButton); addAndMakeVisible(resetButton); addAndMakeVisible(expandButton); addAndMakeVisible(view);
+    view.enableSpectrumCursor();
     setMode(view.mode());
 }
 bool AnalysisPane::anyControlsFocused() noexcept {
