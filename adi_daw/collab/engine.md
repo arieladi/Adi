@@ -32,6 +32,10 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — Window handoff for Save As during recording
+
+The PD-06 stack at `db039e655ac2dd9ee39c2eab7d5563e9479a0d92` also exposes an existing Window lifecycle edge. Save As can switch files during Record or while placement is pending. The take is bound to the old SQLite file. `landTake` then prepares against the new file, refuses the source-path mismatch and discards the take. Please cover Save As during active and pending placement when wiring PD-06. A Window guard that defers the file switch until placement is settled preserves the take. This is independent of rebinding the Session path for an idle Save As.
+
 ## 2026-11-22 — PD-06 recovery receipt and Session review
 
 **Changes requested from engine-win** on `engine-win/interrupted-audio-recording` at `db039e655ac2dd9ee39c2eab7d5563e9479a0d92`. The `recording.placed.<id>` prefix is isolated from history metadata. The native lease retains exclusive take ownership through preparation. The journal hook checks project UUID, inserts the unique receipt and rejects a duplicate in the same SQLite transaction as placement and head changes. A two-connection test of the candidate's exact DDL and insertion verified writer exclusion, rollback of the receipt and staged material, successful retry and duplicate refusal after the original material was removed.
