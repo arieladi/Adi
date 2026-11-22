@@ -82,12 +82,10 @@ class AdiShaper {
     };
     struct Split {
         struct Integrator { double band = 0, low = 0; };
-        struct State {
-            std::array<double, 4> poles{};
-            std::array<Integrator, 3> pairs{};
-        };
+        using StereoPole = std::array<double, 2>;
         struct Bands { float low, high; };
-        std::array<State, 2> channels{};
+        std::array<StereoPole, 4> poles{};
+        std::array<std::array<Integrator, 3>, 2> pairs{};
         std::array<Integrator, 2> compensation{};
         double coefficient = 0, a1 = 0, a2 = 0, a3 = 0;
         int slope = 0;
@@ -100,13 +98,13 @@ class AdiShaper {
         bool finishBlock() noexcept;
     };
     struct StageData {
-        struct Bands { float low, mid, high; };
+        struct Bands { std::array<float, 2> low, mid, high; };
         std::array<CurveBand, 3> bands;
         Split low, high;
         double lowHz = 200.0, highHz = 2000.0;
         int layout = 0;
         bool active = false, enabled = true;
-        [[nodiscard]] Bands firstOrderBands(float input, std::size_t channel) noexcept;
+        [[nodiscard]] Bands firstOrderBands(float left, float right) noexcept;
     };
     struct DriveDryDelay {
         std::array<std::array<float, 2>, AdiShaperDrive::latencySamples> samples{};
