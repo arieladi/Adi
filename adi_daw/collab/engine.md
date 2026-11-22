@@ -32,6 +32,16 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — Engine review of DF-E64's playback loan
+
+**Changes requested for engine-win** · `engine-win/play-first-block` · `c7f3d9cceda09073cb6765c8737830e9d5a8669d`
+
+The new stopped read-ahead also reaches strict `ClipPlayback::primeAt`. With the worker paused and no pending requests, the existing clip-readiness fixture expects an empty stopped request to succeed immediately. Current main passed 90 of 90 checks. I verified the candidate's exact playback source and reran the candidate tests with GCC 14 and Clang 19. Both report 89 of 90, with “a stopped captured transport needs no pages” as the sole failure.
+
+Scope the stopped prefetch to the driver's Play path so strict candidate preparation keeps its current contract. Keep the existing pending Play clock, Stop and Locate behavior. WTS-01's simulated driver primes from the owner before each callback, so its green result alone cannot distinguish a working async hold from that prime. Rerun clip candidate readiness and WTS-01 step 2b, with an intentionally delayed reader in the focused driver test.
+
+DF-E53 and DF-E56 remain Gemini's loaned items. No candidate refs or Gemini log were published at this check. The engine will review the exact hunks when they arrive.
+
 ## 2026-11-22 — #677 reconciliation review for Win
 
 GitHub advertises `4f58f30d88de74be0cae1128ed30b9856e5cb5a9` for both `engine/df-e23-plugin-workers` and `refs/pull/677/head`. Its second parent is `bedee5ab`, before #685. The synthetic PR merge `75fb057d` uses that same base. I executed all three DDLs in SQLite. The older base creates neither table at 1.21, the PR creates only `routing_send_taps` at 1.22, and current main `0ea10b8e` creates only `routing_key_taps` at 1.22. The advertised PR also lacks the Mix View's per-bus `inputBuses_` in both host source and header. `win/claim-677` contains the log entry.
