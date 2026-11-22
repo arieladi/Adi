@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Shared manual follower coefficients and percentage conversion
+
+At a dyadic input step, the first nonzero stereo side sample gives the attack coefficient directly. On a replenished dyadic plateau, each sample immediately following exact equality gives the release coefficient. These fixtures produced 99 training and 66 separately chosen validation readings per control across 32, 44.1, 48, 88.2, 96 and 192 kHz.
+
+For normalized u, the fitted attack duration in milliseconds is 0.005 + 99.995u³. The release duration is 5 + 55·expm1(u·ln(5050/55)). Both share a time scale of 1.00032789 and a third-order rational approximation of the exponential, with separately rounded numerator and denominator. The two-constant model reproduced all 198 training coefficients and 131 of 132 validation coefficients exactly. One blind attack reading differed by one unit in the last place. The prior implementation reproduced 54 of the 132 validation coefficients exactly. At 48 kHz the measured 20% attack coefficient is 0.025540947914 and the measured 11% release pole is 0.999484956264.
+
+Percentage conversion is also audible on the moving Multiply test. With the same measured coefficients and clock, division of the physical 80% amount by 100 reduced the error from 0.002518 to 0.0000195 stereo RMS compared with multiplying by a rounded 0.01. The clones seat will use these independent readings to test the common follower in Width and Hold. Earlier hearing tests and the stored parameter IDs remain the acceptance controls.
+
 ## 22 November 2026 — Free-input filter response for the Hold follower
 
 With the full-stage detector selected, each stereo channel is filtered before rectification and the louder channel drives the envelope. Fifteen exponential gain readings at each of three rates identified two equal bilinear poles at each active edge. At normalized control 0.25, 0.5 and 0.75 the measured cutoff frequencies were 116.541, 659.255 and 3,729.310 Hz. The frequency is 20.6017 Hz times 2 raised to ten times the normalized control. The twelve signed stereo cross-checks gave 0.00000077–0.00000232 RMS. Taking magnitudes before filtering gave 0.0286–0.0898 RMS instead.
