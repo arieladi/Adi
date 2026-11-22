@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 Spectrum statistics Reset
+
+The existing Reset control restarts the expanded view's integrated RMS, max crest, sample peak and clip counts from the tap's current write position. It leaves the previously published raw picture and other readers on the same source. Offsets and work skipped during certified silence are reconciled before a fresh interval starts. The expanded viewer is the sole statistics owner in the current UI. A shared broker interval cannot be cleared by either of two statistics owners.
+
+Five broker and one software component assertions failed first. All 829 broker and 459 Mix Functions checks now pass. Reset allocates nothing, does not request a read or transform and preserves any unread audio for the raw views. The new statistics exclude pre-Reset samples even inside an overlapping window. The stopped-ring test also holds the original wake hop. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed four units and Clang passed the two implementations.
+
+Release ZIP SHA-256 `d3db9dda4187290d423bdf56ed8c25b4b5f6db612b43087db568340dca7fa8d9`. EXE SHA-256 `06bf2178c15f64761d64c5b215418a644be39f5738cfa27828c44f907d70965f`. The brief covers Reset against another visible Spectrum viewer and the stopped monitor case. Reference comparison and timed CPU remain pending.
+
+PR requested — `mixview/mx21-spectrum-statistics-reset-lands-after-2026-12-03` at `c33c2a1b43d51c46fa6f65544300030a5cef0dbe`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 held sample peak and clip counts
 
 Expanded pinned Spectrum shows a held sample peak and strict clip count for each channel. Each finite sample contributes once from the active interval's writer position. Magnitudes above full scale count, and exactly full scale does not add a clip. The existing current-window Meters reading retains its own threshold. Both expanded level rows use the existing primary lease and appear together when there is room. The smaller layout keeps Balance and Correlation.
