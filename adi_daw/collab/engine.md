@@ -32,6 +32,23 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-01 rack playback, lands after 3 December
+
+Branch `engine/dev01-rack-playback` at `cb8b4fb645ba262bf57525642af0b8e5e19c6920`, from main `ac07be74`. Suggested PR title **Play nested device racks in the compensated track graph**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev01-rack-playback)
+
+The Session plays stored rack chains in its one graph. Stable branch and join identities preserve delayed audio and events across a reorder. Branch instruments hear the input notes; the compensated dry event path forwards one copy beyond each rack. Rack latency is a coherent read from the applied physical-block plan. The numeric fallback and the report's validity travel together, so a missing or invalid leaf can use zero compensation while the encompassing rack's report remains unknown. Pre FX follows both explicitly typed and legacy kindless instrument racks. Branch mute and sibling solo travel in the same controls publication and ramp in 5 ms. The receipt checks the rest of the material before reusing the graph and therefore admits a later Collect-style material refresh.
+
+GCC 14 and Clang 19 built with warnings as errors. Both passed the same 12 suites, including Session 291, MIDI clock 131, PDC physical pin 94, parameter automation 136, CLAP 589, gesture playback 569, Return Send Tap 122, Device Keys 192, Graph 200, Plan 77, Freeze Capture 31 and Freeze Group 65. The exact VST3 fixture passed 225 probe, 97 device-key and 16 editor checks under each compiler with an isolated scanned home. OPS schema 270, Catalog 111 and the OPS validator passed. WTS-01 kept the same 13 headless verdicts, with DF-E64 2b the sole known failure.
+
+| Seat | Needs |
+|---|---|
+| win | Amend ADR-0060 d1 before landing and keep the post–3 December window. Stored branch volume and pan need their side-table reservation. Current playback uses unity and centre, including an empty stored chain. The no-child rack currently passes dry, pending the Live reading already named in PLAN. |
+| win | Order the shared `session.cpp` hunk with DF-E64 and PD-06, and the native latency-report declarations with MI-08 and the DF-E56 follow-up. |
+
+The empty-project stock timing control also finished. With five representative devices at both block sizes, stock `ac07be74` missed exactly the same ten p99 thresholds as the candidate in a matched cloud run. Both allocated zero objects. The full candidate real-time suite ran 162 checks and missed 21 elapsed-time deadlines under shared load. The factory-New byte and allocation checks all passed, and the independently paired Release p99 measurements and headless WTS verdicts in the preceding entry stand.
+
+PR requested
+
 ## 2026-11-22 — Empty factory New callback cost
 
 Branch `engine/empty-project-cost` at `899a3a269af0074d895b2dab27628c09c51f441d`, from main `ac07be74`. Suggested PR title **Skip silent Main loudness work and benchmark factory New**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/empty-project-cost)
