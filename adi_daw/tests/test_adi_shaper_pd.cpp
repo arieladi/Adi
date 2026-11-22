@@ -261,6 +261,38 @@ void automationKeepsTheClock() {
     check(plain == automated, "lane events split the block without rewinding a synced curve");
 }
 
+void savedSplitFrequency() {
+    using Shaper = adi::dsp::AdiShaper;
+    auto device = open();
+    set(*device, 2, 1); // three bands
+    const auto hz = [](double value) { return std::log(value / 20.0) / std::log(1000.0); };
+    set(*device, 4, hz(400.0));
+    set(*device, 3, hz(573.9149));
+    set(*device, Shaper::VolumeLowSlope + 1, .5);
+    set(*device, Shaper::VolumeHighSlope + 1, 1);
+    for (const auto band : {Shaper::Band::Low, Shaper::Band::Mid})
+        for (int j = 0; j < 8; ++j)
+            set(*device, Shaper::bandParam(Shaper::Stage::Volume, band,
+                static_cast<Shaper::BandControl>(Shaper::Point1 + j)) + 1, 0);
+    const auto state = device->saveState("state");
+    device = open();
+    check(device->loadState("state", state), "recall the requested split frequencies");
+    check(std::abs(device->getParam("3").real - 573.9149) < .001 &&
+          std::abs(device->getParam("4").real - 400.0) < .001, "derived cutoff spacing preserves both saved knobs");
+    std::array<float, 64> impulse{}, left{}, right{};
+    impulse[0] = 1;
+    const float* inputs[]{impulse.data(), impulse.data()};
+    float* outputs[]{left.data(), right.data()};
+    adi::engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.in = inputs;
+    io.out = outputs;
+    device->process(io);
+    check(left == right && std::abs(left[0] - .74138374f) < 1e-6f &&
+          std::abs(left[16] - .03517162f) < 1e-6f, "recalled upper band uses the measured effective spacing");
+}
+
 } // namespace
 
 int main() try {
@@ -376,6 +408,7 @@ int main() try {
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
     automationKeepsTheClock();
+    savedSplitFrequency();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");
     const auto editedDir = edited.path().string();

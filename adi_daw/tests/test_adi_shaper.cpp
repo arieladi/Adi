@@ -302,6 +302,45 @@ void steepCrossovers() {
     }
 }
 
+void crossoverSpacing() {
+    constexpr auto lowHz = static_cast<Shaper::Param>(Shaper::VolumeBands + 1);
+    constexpr auto highHz = static_cast<Shaper::Param>(Shaper::VolumeBands + 2);
+    const auto impulse = [&](int layout, float lower, float upper, Band selected, double rate) {
+        Shaper shaper;
+        shaper.prepare(rate);
+        shaper.set(Shaper::VolumeBands, static_cast<float>(layout));
+        shaper.set(highHz, upper);
+        shaper.set(lowHz, lower);
+        if (layout == 3) {
+            shaper.set(Shaper::VolumeLowSlope, 1);
+            shaper.set(Shaper::VolumeHighSlope, 2);
+        }
+        for (const auto band : {Band::Low, Band::Mid, Band::High})
+            flat(shaper, Stage::Volume, band, band == selected ? 100.f : 0.f);
+        std::array<float, 32> in{}, left{}, right{};
+        in[0] = 1;
+        shaper.process(in.data(), in.data(), left.data(), right.data(), in.size());
+        return left;
+    };
+    // Isolate the high band with 12/24 dB slopes. Equal 48% positions give
+    // 573.915 / 811.638 Hz, and lowering the requested upper has the same result.
+    constexpr std::array rates{44100.0, 48000.0, 96000.0};
+    constexpr std::array first{.7220980644, .7413837433, .8607804298};
+    constexpr std::array later{.0241557270, .0351716161, .0252627730};
+    for (std::size_t i = 0; i < rates.size(); ++i) {
+        const auto equal = impulse(3, 573.9149f, 573.9149f, Band::High, rates[i]);
+        const auto crossed = impulse(3, 573.9149f, 400, Band::High, rates[i]);
+        check(near(equal[0], first[i], 1e-6) && near(equal[16], later[i], 1e-6) && equal == crossed,
+              "three-band cutoffs keep half an octave of spacing with the lower edge taking priority");
+    }
+    const auto bass = impulse(1, 20000, 20000, Band::Low, 48000);
+    const auto middle = impulse(2, 20, 20, Band::Mid, 48000);
+    check(near(bass[0], .59664369, 2e-7) && near(bass[1], .4813200, 2e-7),
+          "highest lower split leaves the measured middle-band remainder");
+    check(near(middle[0], .00190327, 2e-7) && near(middle[1], .00379929, 2e-7),
+          "lowest upper split retains the measured narrow middle band");
+}
+
 void bypassAndInvalid() {
     Shaper shaper;
     const float minusZero = -0.0f;
@@ -776,6 +815,7 @@ int main() {
     splitBands();
     independentBandClocks();
     steepCrossovers();
+    crossoverSpacing();
     bypassAndInvalid();
     nonfiniteAudio();
     finiteDriveOverflow();
