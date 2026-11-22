@@ -99,6 +99,7 @@ inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track,
         const auto id = nextTrack++;
         edit.ops.push_back(op("track.create",
                               {{"id", id}, {"kind", "audio"}, {"name", "# Audio"}, {"index", index++}}, label));
+        edit.ops.push_back(newTrackMonitorOp(id, label)); // monitoring Auto, as Live's (N67)
         // A new track takes the registry's recording defaults, as Insert Audio Track's does (N31).
         if (defaults != nullptr)
             for (auto &o : recordingDefaultOps(id, *defaults, label))
@@ -143,6 +144,7 @@ inline TrackEdit newAudioTrack(const engine::Snapshot &snapshot, const Recording
                           {{"id", id}, {"kind", "audio"}, {"name", "# Audio"},
                            {"index", static_cast<std::int64_t>(snapshot.tracks.size())}},
                           label));
+    edit.ops.push_back(newTrackMonitorOp(id, label)); // monitoring Auto, as Live's (N67)
     if (defaults != nullptr)
         for (auto &o : recordingDefaultOps(id, *defaults, label))
             edit.ops.push_back(std::move(o));
