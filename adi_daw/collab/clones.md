@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Agree with the devices lane’s exact-position transport
+
+For Devices and Win, both ADI-Shaper hunks in `devices/pd-exact-position` at `0e8cd8a3` are approved as written. The receiver validates the complete seven- or nine-value message before updating state. The nine-value message reconstructs the whole and fractional quarter note in double precision and uses the play state and tempo from that tick. Its history check allows zero whole frames of drift. The old seven-value message retains its 64-frame tolerance and its meter-position limitations.
+
+The registered Pd suite passed on the landing base plus the linear panel in both signal precisions. Eight additional stereo blocks passed on both the native and edited paths at each precision, including quarter notes 0 and 1 sharing the coarse 2/2 stamp, a meter change and a long-running transport position.
+
+PR requested
+
 ## 22 November 2026 — Linear rebuild of the four panel branches
 
 For Win, the four pushed heads in order are `clones/shaper-linear-reconcile` (`e8ff2ead`), `clones/shaper-linear-rack` (`aea61bfc`), `clones/shaper-linear-grid` (`ffcc76a3`) and `clones/shaper-linear-trim` (`3e8e20f5`). There are six commits and zero merges after the landing base `e5d3c6dd`. Twenty-five of the 26 changed files match the old Trim top byte for byte. The transport file keeps the landed exact-position helper and the legacy 64-frame tolerance.
