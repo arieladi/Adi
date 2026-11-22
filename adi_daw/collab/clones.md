@@ -17,6 +17,42 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Mix View contract for the layer scope 1.5.03
+
+For the Mix View seat, item 9, second reference in ADR-0247 d5. At 48 kHz, 120 BPM, 4/4, 256-frame blocks, a 1,200-pixel plot at its initial 1.00 scale covered one beat (24,000 frames). An 8 Hz tone filled four cycles. Pulses 2,400 frames apart started at x = 238 and 358 at y = 90. Use 20 frames per pixel in that view. At amplitudes 0.25 and 0.50, the trace spanned y = 78–132 and 52–158. Left-only and right-only 0.50 sines both drew at 0.25 in M. Equal channels drew at 0.50 and opposite channels cancelled. Project each source as (L + R)/2 before adding M traces.
+
+Layers places both projected signals on one baseline. Stack uses one baseline per source. Sum adds signed samples at the same time. One 0.25 source read −12.04 dBFS and two in phase read −6.02. After reversing B, the trace occupied two center rows immediately. The peak read −84.52 dB after 2.13 s and reached −∞ by 4.27 s on one run. Those readings establish independent visual and numerical settling. They do not fit a decay constant. The audio path passed all 204,800 frames per channel exactly at zero reported latency.
+
+For ADI, freeze the same audible interval on A and B, sum both stereo channels before calculating pixel extrema, and keep the same gain for the overlay and sum. Advance only the B preview by the displayed sample count, using the common interval, and recalculate its sum. Keep polarity separate. A broadband duplicate 137 frames late, normal and inverted, identified the same 2.854 ms advance at 48 kHz. Three weak and three ambiguous kick/bass regions, silence and a steady repeating tone must leave manual preview available without suggesting a lag.
+
+The manual describes period = 1/f in Hz mode, additive per-source and global visual offsets in samples or ms, coarse/fine wheel steps of 10/1 samples, and a switch from inter-source mono correlation in Layers/Stack to L/R in Sum or a solo source. Both offset fields were observed at zero. Offset limits, sign and steps, the operand switch, per-bar window, averaging, thresholds, refresh and the analyzer passband await interactive readings. Private replay index `b4df4a7e1ee9` identifies the generators, captures and audio pass-through runs. Item 10–12 procedures follow in the idle-time handoff.
+
+PR requested
+
+## 22 November 2026 — Mix View contract for the alignment scope 2.0.5
+
+For the Mix View seat, item 9, first reference in ADR-0247 d5. At 48 kHz, 120 BPM, 4/4 and 256 frames, the fresh 1/1 plot covered one 2 s bar. An 8 Hz sine filled sixteen cycles across approximately 755 pixels, or 127 samples per pixel. A 0.25 sine occupied 69 vertical pixels between its extreme rows and a 0.50 sine occupied 141. Both used a 1,000 × 375 surface with a baseline near y = 206. L mode followed left-only input and suppressed right-only input. The stored setup used independent 1/16 display and alignment grids, zero correction, freeze on stop on and automatic vertical scaling off. Default processing passed 204,800 stereo frames exactly with zero reported latency.
+
+For alignment, generate a 1,200-frame rectangular pulse 4,800 frames after each quarter note. Change only the source correction, read leading edges at y = 173, then reset. The first four x coordinates were 254/442/631/820 at zero, 235/423/613/801 at +50 ms, 273/462/650/839 at −50 ms and 253/443/631/820 after reset. Positive correction moves the drawing earlier. The documented ±3,000 ms range and first-transient alignment to the preceding grid line remain to verify at the extremes and after transport restart.
+
+The stored spectrum used a 1 kHz pivot, 90/45/20 ms analysis windows and five-pixel bands. The manual places mid vertically and side horizontally on the goniometer, bounds correlation at −1 to +1 and defines collision before tilt. Both sources must reach −60 dBFS in the candidate bin and be within 24 dB of their own peak. With two sources the lower qualifying level sets the shading. The documented momentary and short-term histories are 400 ms and 3 s. A phase-reversed equal pair is an acceptance case for separating spectral overlap from waveform cancellation.
+
+Private replay index `b4df4a7e1ee9` identifies the captures and generator. Two loaded instances exposed one named source in the measured view. The edition and multi-instance Sum, correlation integration, goniometer scale, passband, collision boundary, loudness histories and refresh remain open. The director question above covers the edition.
+
+PR requested
+
+## 22 November 2026 — Queue dependencies and owner reviews
+
+| Queue item | Owner and next action |
+|---|---|
+| CURVE-EDIT-P99 | Win’s #708 landed the two audio fixes and explicitly retained the panel hold. Repeat the edited performance run on the linear panel top when Win lifts that hold. |
+| PSY-OFFSET | Win at director idle time. The isolated wheel and drag left the displayed offset at zero. Measure both sources and the global field separately, with markers 2,400 frames apart at 48 kHz. Enter −2,400, +480 and +2,400 frames, switch to milliseconds (−50, +10, +50), record signed pixel shift relative to the fixed marker and test combined offsets, wheel/fine steps and both clamped extrema. |
+| OSC-ANALYSERS | Win at director idle time. The isolated surfaces do not expose the required analyzer selections. Record the response to correlation steps, mid/side anchors at two known amplitudes, a level-matched tone sweep, and collision just below/at/above each of the −60 dBFS and own-peak-minus-24 dB boundaries. Use timed noise on/off for each loudness history and a timestamped capture across changing input for refresh. Record host rate, FFT setup, displayed values and capture cadence separately. |
+| PSY-PHASE | Win at director idle time. The isolated Show menu opened but did not activate the analyzer. Use fixed one-beat Layers, Sum and one enabled source. Compare 8 Hz sines at 0°, 90° and 180°, record every bar over one beat, then swap one source’s L/R phase while holding the other mono. Use unequal source gains to keep the anti-phase sum measurable. Record the displayed pair, segment windows, averaging, thresholds and refresh. |
+| DF-E43 | The director chooses the devices and ADI names after the scope work. Recommendation under FOR THE DIRECTOR. |
+| Window owner review | Window reviewed the two loaned sites at `4b0c6036` and requested token reacquisition after deletion/Undo, control refresh without a scope provider, delivery of refused edits to the status bar and a committed panel-view test. The linear rebuild preserves the original stack. The fixes need their own follow-up on that top and window’s reread before landing. Window has pushed the independent browser-fixture fix. |
+| Devices and Mix View | The scope feed and same-position native Time transport remain with devices. Devices will decide sharing of the repeat history once its capture-direction reading is known. Mix View owns removal of the three old log entries. |
+
 ## 22 November 2026 — Public log and parameter-scan correction
 
 Source identities, documentation links and private identifiers have been removed from the public log. Earlier measurements retain their fixture settings and results. Every built-in skips the parameter scan when its revision counter is unchanged. ADI-Shaper’s opt-in for sparse recall is separate. The two questions above affect further measurements and DF-E43.
