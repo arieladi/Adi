@@ -824,6 +824,39 @@ void opusDelivery() {
           "the stereo bitrate ceiling does not apply to a mono job");
 }
 
+void losslessReadbackGate() {
+    Fixture f;
+    auto job = f.job("corrupt-pcm-stage");
+    const auto length = static_cast<std::uint64_t>(job.endSample - job.beginSample);
+    bool corrupted = false;
+    Control control;
+    control.serviceHost = [&] {
+        if (corrupted) return;
+        for (const auto& entry : fs::directory_iterator(job.directory)) {
+            if (!media::pathUtf8(entry.path().filename()).starts_with(".adi-render-")) continue;
+            const auto stage = entry.path() / "render.wav";
+            bool finalized = false;
+            // The WAV length field is patched at close. Wait for a complete
+            // header and then truncate exactly one byte before verification.
+            try {
+                audio::WavReader candidate(stage);
+                finalized = candidate.frames() == length;
+            } catch (const std::exception&) {
+                continue;
+            }
+            if (finalized) {
+                fs::resize_file(stage, fs::file_size(stage) - 1);
+                corrupted = true;
+                return;
+            }
+        }
+    };
+    const auto result = renderWav(job, {}, control);
+    check(corrupted && result.state == JobState::Failed && !result.publication &&
+          !fs::exists(job.directory / "corrupt-pcm-stage.wav") && f.noStage(),
+          "a truncated finalized WAV is refused before publication and its stage is removed");
+}
+
 void regionStems() {
     Fixture f;
     f.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,480480,60);"
@@ -1939,7 +1972,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); losslessReadbackGate(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
