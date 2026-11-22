@@ -15,6 +15,7 @@
 #include "adi/dsp/multiband_dynamics.hpp"
 #include "adi/dsp/overdrive.hpp"
 #include "adi/dsp/phaser_flanger.hpp"
+#include "adi/dsp/live_compressor.hpp"
 #include "adi/dsp/redux.hpp"
 #include "adi/dsp/resonators.hpp"
 #include "adi/dsp/saturator.hpp"
@@ -536,6 +537,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::chordComb)) return create<ChordCombStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::chorusEnsemble)) return create<dsp::ChorusEnsemble>(patchText, 2);
         if (sameCanvas(patchText, canonical::colorCab)) return create<ColorCabStereo>(patchText, 2);
+        if (sameCanvas(patchText, canonical::compressor)) return create<dsp::LiveCompressor>(patchText, 2);
         if (sameCanvas(patchText, canonical::hybridReverb)) return create<HybridReverbStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::delay)) return create<dsp::LiveDelay>(patchText, 2);
         if (sameCanvas(patchText, canonical::eqEight)) return create<dsp::EqEight>(patchText, 2);
