@@ -741,7 +741,8 @@ void firSampleBudget() {
         auto settings=firSettings(1.3);for(auto &node:settings.nodes)node.enabled=true;
         f::Core core;core.prepare({rate,1<<20,2},settings);
         const auto initial=core.statistics();const auto p=static_cast<std::size_t>(core.latencySamples()/3);
-        const auto expectedQuota=std::uint64_t{289}+22*static_cast<std::uint64_t>(std::bit_width(p)-1);
+        // Four forward streams skip half a partition of padding work each.
+        const auto expectedQuota=std::uint64_t{287}+22*static_cast<std::uint64_t>(std::bit_width(p)-1);
         check(initial.firWorkQuota==expectedQuota,"prepared quota follows actual transform size");
         bool bounded=true,okay=true;std::array<double,2> main{},key{.1,-.13};
         std::array<double*,2>m{&main[0],&main[1]};std::array<const double*,2>k{&key[0],&key[1]};
@@ -797,6 +798,53 @@ void causalFirGenerations() {
     check(core.pendingLatencyChange().token==offer.token,"five-slot pressure cannot overwrite the retained offer");
     check(consume(p-1)&&core.statistics().firDeadlineMisses==0,"retained source generations drain without missing a deadline");
 }
+void firHalfPaddedTransform() {
+    using Transform = f::detail::Transform;
+    using Complex = Transform::Complex;
+    const auto samePart = [](double a, double b) {
+        // Do not prescribe a cross-platform NaN payload. All other bits must agree.
+        if (std::isnan(a)) return std::isnan(b);
+        return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+    };
+    for (const auto size : {std::size_t{4}, std::size_t{1024}, std::size_t{32768}}) {
+        Transform generic, halfPadded;
+        generic.prepare(size); halfPadded.prepare(size);
+        std::vector<double> time(size / 2);
+        std::vector<Complex> expected(size / 2 + 1), actual(expected.size());
+        constexpr std::array<std::size_t, 6> budgets{1, 2, 11, 257, 3, 1024};
+        bool matches = true, bounded = true, cheaper = true;
+        for (int signal = 0; signal < 4; ++signal) {
+            time.resize(size / 2 - (signal == 3 ? 1U : 0U));
+            for (std::size_t i = 0; i < time.size(); ++i)
+                time[i] = signal == 1 ? std::copysign(0., i % 2 ? -1. : 1.)
+                                     : std::sin(static_cast<double>(i) * .73);
+            if (signal == 0) time[0] = std::numeric_limits<double>::denorm_min();
+            if (signal == 2) {
+                time[0] = std::numeric_limits<double>::infinity();
+                time[1] = std::numeric_limits<double>::quiet_NaN();
+            }
+            const auto referenceStart = generic.workUnits();
+            const auto start = halfPadded.workUnits();
+            {
+                AudioScope scope;
+                generic.forward(time, expected);
+                halfPadded.startHalfPaddedForward(time, actual);
+                for (std::size_t step = 0; halfPadded.busy(); ++step) {
+                    const auto budget = budgets[step % budgets.size()];
+                    const auto used = halfPadded.advance(budget);
+                    if (!used || used > budget) { bounded = false; break; }
+                }
+            }
+            const auto saved = signal == 3 ? 0 : size / 4 + 1;
+            cheaper = cheaper && halfPadded.workUnits() - start + saved == generic.workUnits() - referenceStart;
+            for (std::size_t i = 0; i < expected.size(); ++i)
+                matches = matches && samePart(expected[i].real(), actual[i].real()) &&
+                                     samePart(expected[i].imag(), actual[i].imag());
+        }
+        check(matches, "half-padded FIR forward reproduces the generic transform at every bin");
+        check(bounded && cheaper, "half-padded packing respects single-unit budgets and charges the skipped work exactly");
+    }
+}
 void firCallbackWorkDistribution() {
     constexpr std::size_t block = 512;
     for (const auto nodes : {std::size_t{1}, f::kNodes}) {
@@ -841,7 +889,7 @@ void firCallbackWorkDistribution() {
         if (nodes == f::kNodes) {
             std::printf("  Focus FIR external stereo key, 192 kHz/512, ten nodes: %llu-%llu work units per callback\n",
                         static_cast<unsigned long long>(least), static_cast<unsigned long long>(most));
-            check(most <= 306000, "ten external-key nodes remove repeated FFT scans at 192 kHz/512");
+            check(most <= 304161, "ten external-key nodes skip writing FFT padding at 192 kHz/512");
         }
     }
 }
@@ -1273,6 +1321,7 @@ int main(){
         firSampleBudget();
         causalFirGenerations();
         firCallbackPartitions();
+        firHalfPaddedTransform();
         firCallbackWorkDistribution();
         for (const auto nodes : {std::size_t{1}, f::kNodes}) {
             firInternalKeyReuse<float>(192000., nodes, false);
