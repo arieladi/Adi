@@ -990,6 +990,8 @@ void testStepTen() {
         {"[+ 1] set to 5, then banged, gives 6", twoMessages("set 5", 0, "bang", "+ 1"), {"X: 6"}},
         {"[prepend 1] set to 2, then fed 64, gives 2 64", twoMessages("set 2", 0, "64", "prepend 1"), {"X: 2 64"}},
         {"[prepend foo] banged gives foo bang", probe("bang", "prepend foo", R"("")"), {"X: foo bang"}},
+        {"[+ 1.] set to 2.5, then banged, gives 3.5", twoMessages("set 2.5", 0, "bang", "+ 1."), {"X: 3.5"}},
+        {"[* 2.] fed the list 1.5 3 gives 4.5", probe("1.5 3", "* 2.", R"("float")"), {"X: 4.5"}},
         {"[$1 100( fed 5, then banged, sends 5 100 twice", twoMessages("5", 0, "bang", "$1 100", "message"), {"X: 5 100", "X: 5 100"}},
     };
     for (const auto& c : cases) {
@@ -1096,6 +1098,7 @@ void testStepTenReviewed() {
         check(got == std::vector<std::string>{"X: 5 6"}, "[set 5 6( into [$1 $2(, then a bang: 5 6 once (" + shownAll(got) + ")");
     }
     // The fifth review: "set" into a message that sends to a ---name is refused.
+    check(refusedFor(twoMessages("set 5", 0, "bang", "pack 0 0"), "set into [pack]"), "[set 5( into [pack] is refused");
     check(refusedFor(twoMessages("set 5 6", 0, "bang", "$1 $2; ---foo $1", "message"), "set into a message"),
           "[set 5 6( into [$1 $2; ---foo $1( is refused");
     // The sixth review: a set that arrives indirectly (here through a gate) at

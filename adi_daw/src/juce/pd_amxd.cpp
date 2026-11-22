@@ -369,9 +369,11 @@ private:
     /// output (into the [i]'s cold inlet, which a later bang sends on).
     /// With `divides`, a divisor of 0 divides by 1, as Max's int division
     /// does.
-    void integer(const Box& b, const std::string& pdText, int inlets, bool truncateOut, bool divides = false) {
+    /// The float form (an argument written as a float) takes the same front
+    /// with [f] cells in place of [i]: a list and "set" as Max's take them.
+    void integer(const Box& b, const std::string& pdText, int inlets, bool truncateOut, bool divides = false, const std::string& cell = "i") {
         Fragment f;
-        for (int k = 0; k < inlets; ++k) f.records.push_back("#X obj " + at(b.x + 40.0 * k, b.y - 20) + " i");
+        for (int k = 0; k < inlets; ++k) f.records.push_back("#X obj " + at(b.x + 40.0 * k, b.y - 20) + " " + cell);
         const int op = inlets;
         f.records.push_back("#X obj " + at(b.x, b.y) + " " + pdText);
         for (int k = 0; k < inlets; ++k) {
@@ -544,7 +546,7 @@ private:
             // float is "converted to int"), so a float argument does not make
             // it the float form as it does the other operators.
             const bool isFloat = !args.empty() && isFloatLiteral(args[0]) && cls != "%";
-            if (isFloat) return obj(b, b.text);
+            if (isFloat) return integer(b, b.text, cls == "abs" ? 1 : 2, false, false, "f");
             // Max's integer form: inputs truncated; '/' truncates its result too.
             std::string pdText = cls + (args.empty() || cls == "abs" ? "" : " " + args[0]);
             if (cls == "/" && (args.empty() || std::atoi(args[0].c_str()) == 0)) pdText = "/ 1";   // Max: "/ 0" divides by 1
@@ -1076,6 +1078,10 @@ private:
     /// its argument is written as one ("0.") or is "f", a symbol for "s".
     void packing(const Box& b, const std::string& cls, std::vector<std::string> args) {
         if (args.empty()) args = {"0", "0"};
+        // Max's [pack] takes "set" (a slot stored without output); Pd's
+        // cannot store its first slot without output: refused, not dropped.
+        for (int k = 0; k < static_cast<int>(args.size()); ++k)
+            if (cls == "pack" && messageInto(b, k, "set")) return refuse(b, cls, "a set into [pack] is not translated yet");
         Fragment f;
         std::string text = cls;
         std::vector<int> ints;
