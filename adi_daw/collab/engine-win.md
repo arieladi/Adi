@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-12 shared batch audio converter
+
+- EX-12 file conversion through the six native format writers — PR requested, `engine-win/export-shared-file-delivery` at `5daa4e3a`, joining `dae10235` with `f1ebf38b`. Inputs stream through the ordinary delivery encoders at their source rate and layout, without opening a project. The ordered batch returns one result per request, protects all captured input identities and prior successful destinations from Replace, and leaves unstarted rows Pending on cancellation. MSVC: render 505, WAV 171, PCM stream 50. Verified exact WAV/AIFF PCM, playable 4096-frame Opus delivery, normalized WAV, same-size source replacement refusal, protection of a second input and of earlier output, and cancellation with the correct row ID. Lossy encoding requires an exact declared source length in this candidate. Window owns batch UI and file selection. Converter SRC and cross-stack publication fingerprinting are separate integration work.
+
 ## 2026-11-22 — EX-04 decode of the staged lossless files
 
 - EX-04 lossless delivery verification — PR requested, `engine-win/export-lossless-readback` at `5f53b58b` on the six-format `f1ebf38b` stack. Reads the staged WAV/AIFF/FLAC through ADI's existing owner-worker decoder and checks that the container, rate, channels and end-to-end decoded frame count agree with the requested delivery. A finalized WAV deliberately shortened by one byte was refused without publishing a destination. MSVC: render 491, WAV 171, PCM stream 50. This adds one decoded read per lossless delivery and checks its shape and readability. Exact quantized PCM equivalence is independently tested by the combined delivery fixtures. The >4 GiB opt-in case was skipped.
