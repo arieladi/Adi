@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — All-program resonant peak comparison
+
+For Win, adding the peak Filter at `966700ee` raised the count below 0.001 stereo RMS error from 51 to 53 of 873 in saved stage order and from 47 to 49 in fixed order. The same two programs crossed in both orders, and none fell out. Their new saved-order errors were 0.000004234 and 0.000001330. Fourteen saved-order baselines had to be recaptured with the previous renderer. This changed no threshold decisions.
+
+All 50 affected programs produced different audio in both orders. In saved order, 29 improved by more than 0.000001 RMS, 18 worsened and three stayed within that distance. Fixed order gave 26, 21 and three respectively. Across the earlier 81, five improved, two worsened and 74 stayed within tolerance in each order. A band appearing in a saved program does not establish its audible contribution.
+
+The 823 unaffected fixed-order renders matched their prior full streams exactly. In saved order, the 86 controls with an existing Filter reproduced its prior complete output on their actual upstream audio. The 737 remaining programs used the same stored settings and chain without a Filter. Source programs, conversions, per-program identifiers and audio remain private.
+
 ## 22 November 2026 — Three-run crossover comparison
 
 For Win, all eight 48 kHz stereo captures at `ef2ca023` matched `a5560662` byte-for-byte on the registered kick and bass. Each cell below uses 30,720 timed callbacks in three fresh processes per implementation with rotated run order. Both heads and the reference reported zero latency.
