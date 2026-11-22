@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-22 — DF-M3 native Low Shelf comparison, evidence only
+
+All ten sealed 12 dB/oct Low Shelf inputs now ran through the real registered native EQ at its verified `88bab8b9` replay pin, across 44.1, 48, 96 and 192 kHz. All ten have the expected zero latency and retain the exact mapped physical settings. No cell passes the full audio null. The largest early peak error is 0.202. The isolated 2–3 s window also fails all ten, with RMS residuals from 0.000945 to 0.00472, so the start ramp alone cannot explain the difference. The validated reciprocal offline section passed the same inputs. The raw arrays, exact settings and measurements stay private. This evidence does not change the DAW's EQ. The native section fit and current Release retest remain open.
+
+
+
 ### 2026-11-22 — DF-M13 half-padded Focus FFT, before 3 December
 
 Focus now finishes the first butterfly while packing half-padded input. It skips the padding writes and keeps the same arithmetic, including when a callback yields between the two halves of a pair. At 192 kHz / 512, with ten enabled bands and an independent stereo key, the fail-first gate measured 305,184–305,185 work units per callback. The new ceiling is 304,161. There were zero callback allocations and zero missed deadlines.
