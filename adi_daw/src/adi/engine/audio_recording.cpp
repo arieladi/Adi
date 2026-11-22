@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -15,7 +16,14 @@ namespace adi::engine {
 namespace fs=std::filesystem;
 struct AudioRecordingResult::Files {fs::path directory;};
 const fs::path& AudioRecordingResult::directory()const noexcept {static const fs::path empty;return files_?files_->directory:empty;}
-void AudioRecordingResult::discard(){if(audio::onAudioThread)throw std::runtime_error("discard recording off callback");if(files_){fs::remove_all(files_->directory);files_.reset();}}
+std::error_code AudioRecordingResult::discard() {
+    if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
+    if(!files_)return {};
+    std::error_code removalError;
+    fs::remove_all(files_->directory,removalError);
+    if(!removalError)files_.reset();
+    return removalError;
+}
 namespace {
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free && std::atomic<std::int64_t>::is_always_lock_free);
 static_assert(std::atomic<RecordingFailure>::is_always_lock_free);
@@ -49,7 +57,7 @@ struct Job {
     std::atomic<RecordingFailure> failure{RecordingFailure::None};
     std::atomic<bool> stopWriter{false},done{false},transportEnded{false};
     std::thread worker;
-    std::string error;
+    std::exception_ptr writerError;
     bool discardRequested=false; // owner only; cancellation also discards failed takes
     // Callback-owned continuity state; observed only after its quiescence.
     bool begun=false;
@@ -58,7 +66,26 @@ struct Job {
     std::vector<RecordedPass> passes; // sized before publication, never grown here
     std::size_t passCount=0;
     void fail(RecordingFailure value)noexcept{auto expected=RecordingFailure::None;failure.compare_exchange_strong(expected,value,std::memory_order_relaxed);}
-    ~Job(){stopWriter.store(true,std::memory_order_release);if(worker.joinable())worker.join();}
+    ~Job() {
+        stopWriter.store(true,std::memory_order_release);
+        if(worker.joinable())worker.join();
+        closeWriters(); // also closes sinks opened before a failed start
+    }
+    void noteWriterError()noexcept {
+        if(!writerError)writerError=std::current_exception();
+        fail(RecordingFailure::Io);
+    }
+    void closeWriters()noexcept {
+        for(auto& writer:writers) {
+            try {
+                writer->close();
+            } catch(...) {
+                noteWriterError();
+            }
+        }
+        // A sink whose close throws may still own a file handle.
+        writers.clear();
+    }
     void run()noexcept {
         try {
             while(true) {
@@ -85,9 +112,10 @@ struct Job {
                     writers[target]->write(std::span<const float>(values.data(),static_cast<std::size_t>(frames)*mapping.size()),frames);
                 }
             }
-            for(auto& writer:writers)writer->close();
-        } catch(const std::exception& exception){error=exception.what();fail(RecordingFailure::Io);}
-        catch(...){error="recording writer failed";fail(RecordingFailure::Io);}
+        } catch(...) {
+            noteWriterError();
+        }
+        closeWriters();
         done.store(true,std::memory_order_release);
     }
     void capture(const AudioIo& io,const Transport& transport)noexcept {
@@ -221,12 +249,22 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     job->stopWriter.store(true,std::memory_order_release);
     if(!job->done.load(std::memory_order_acquire))return {};
     if(job->worker.joinable())job->worker.join();
-    AudioRecordingResult result;result.failure=job->failure.load(std::memory_order_acquire);result.error=job->error;result.sampleRate=job->spec.sampleRate;
+    AudioRecordingResult result;result.failure=job->failure.load(std::memory_order_acquire);result.sampleRate=job->spec.sampleRate;
     result.frames=job->written.load(std::memory_order_acquire);result.startSample=job->firstSample.load(std::memory_order_acquire);result.tracks=job->tracks;
     result.sourceProject_=job->spec.sourceProject;
     result.loop_=job->spec.loop;
     result.passes_.assign(job->passes.begin(),job->passes.begin()+static_cast<std::ptrdiff_t>(job->passCount));
-    if(job->discardRequested){result.failure=RecordingFailure::Cancelled;result.error.clear();}
+    if(job->discardRequested) {
+        result.failure=RecordingFailure::Cancelled;
+    } else if(job->writerError) {
+        try {
+            std::rethrow_exception(job->writerError);
+        } catch(const std::exception& exception) {
+            result.error=exception.what();
+        } catch(...) {
+            result.error="Recording writer failed";
+        }
+    }
     if(result.failure==RecordingFailure::None && result.frames==0)result.failure=RecordingFailure::NoFrames;
     if(result.error.empty())switch(result.failure) {
         case RecordingFailure::None:break;
@@ -241,11 +279,15 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
         case RecordingFailure::PassLimit:result.error="Recording loop pass capacity exhausted";break;
     }
     result.files_=std::make_shared<AudioRecordingResult::Files>();result.files_->directory=job->directory;
-    if(result.failure==RecordingFailure::Cancelled)result.discard();
     job.reset();
     if(deviceStopped)impl_->published=std::make_unique<SnapshotPublisher<State>>();
     else impl_->published->collect();
-    impl_->stoppedSeq=0;return result;
+    impl_->stoppedSeq=0;
+    if(result.failure==RecordingFailure::Cancelled) {
+        if(const auto error=result.discard();error)
+            result.error+=". Could not remove recording files: "+error.message();
+    }
+    return result;
 }
 void AudioInputRecorder::capture(const AudioIo& io,const Transport& transport)noexcept {
     SnapshotPublisher<State>::AudioRead state(*impl_->published);

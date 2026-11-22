@@ -16,6 +16,12 @@
 #include <limits>
 #include <new>
 #include <thread>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 namespace {std::atomic<unsigned> callbackAllocations{0};}
 void* operator new(std::size_t size){if(adi::audio::onAudioThread)++callbackAllocations;if(void* p=std::malloc(size?size:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t size){return operator new(size);}
@@ -156,6 +162,126 @@ void discontinuityAndWriterFailures() {
     while(std::chrono::steady_clock::now()<deadline && !failed){failed=recorder.poll();input(recorder,transport,idle);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
     check(failed && failed->failure==RecordingFailure::Io && failed->error=="injected disk write failure","worker I/O failures reach the owner with their reason after callback quiescence");if(failed)failed->discard();
 }
+struct DiskFailure {
+    std::atomic<unsigned> firstWrites{0};
+    std::atomic<unsigned> closeAttempts{0};
+    std::atomic<bool> failing{false};
+};
+class PartialWaveSink final:public AudioRecordingSink {
+    audio::WavWriter writer_;
+    DiskFailure& state_;
+    const bool fails_;
+    bool wrote_=false;
+public:
+    PartialWaveSink(const std::filesystem::path& file,std::uint32_t rate,std::uint16_t channels,
+                    audio::WavFormat format,DiskFailure& state,bool fails)
+        : writer_(file,rate,channels,format),state_(state),fails_(fails) {}
+    void write(std::span<const float> values,std::uint32_t frames)override {
+        if(wrote_ && fails_) {
+            state_.failing.store(true,std::memory_order_release);
+            throw std::runtime_error("injected disk failure after the first write");
+        }
+        writer_.write(values.data(),frames);
+        if(!wrote_)state_.firstWrites.fetch_add(1,std::memory_order_release);
+        wrote_=true;
+    }
+    void close()override {
+        state_.closeAttempts.fetch_add(1,std::memory_order_relaxed);
+        if(fails_)throw std::runtime_error("injected failure flushing a damaged writer");
+        writer_.close();
+    }
+};
+void cancelAfterPartialDiskFailure() {
+    for(const bool deviceStopped:{false,true}) {
+        test::TempDirectory directory{"audio_recording","disk_error_cancel"};
+        DiskFailure disk;
+        AudioInputRecorder recorder;
+        auto request=spec(directory.path());
+        request.targets={{21,{0}},{22,{0}}};
+        std::string error;
+        std::filesystem::path capture;
+        if(!recorder.start(request,error,[&](const auto& file,auto rate,auto channels,auto format) {
+            capture=file.parent_path();
+            return std::make_unique<PartialWaveSink>(file,rate,channels,format,disk,file.filename()=="take-0.wav");
+        }))throw std::runtime_error(error);
+        Transport transport;
+        transport.play();
+        const std::array<float,8> samples{0.25f,-0.5f,0.0f,0.5f,-0.125f,0.0f,0.0f,0.125f};
+        const float* channels[]={samples.data()};
+        AudioIo io;
+        io.in=channels;
+        io.numIn=1;
+        io.frames=static_cast<int>(samples.size());
+        const auto waitFor=[](const auto& ready) {
+            const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+            while(!ready() && std::chrono::steady_clock::now()<deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if(!ready())throw std::runtime_error("partial WAV writer did not signal");
+        };
+        input(recorder,transport,io);
+        waitFor([&]{return disk.firstWrites.load(std::memory_order_acquire)==2;});
+        io.streamTimeSamples=io.frames;
+        input(recorder,transport,io);
+        waitFor([&]{return disk.failing.load(std::memory_order_acquire);});
+        recorder.stop(true);
+        if(!deviceStopped) {
+            AudioIo idle;
+            input(recorder,transport,idle);
+        }
+        std::optional<AudioRecordingResult> result;
+        try {
+            result=finish(recorder,deviceStopped);
+        } catch(const std::filesystem::filesystem_error&) {
+            check(false,"cancelling a failed disk write must not throw");
+        }
+        check(disk.closeAttempts.load()==2,"both WAV sinks are closed even if writing and closing one fails");
+        check(result && result->failure==RecordingFailure::Cancelled && result->directory().empty(),
+              "cancel returns once and removes both partial WAVs");
+        check(!recorder.pending() && !std::filesystem::exists(capture),
+              "a cancelled disk error clears the pending job and its private directory");
+        const auto restarted=recorder.start(request,error);
+        check(restarted,"a second recording can start without restarting ADI");
+        if(restarted) {
+            recorder.stop(true);
+            const auto retry=finish(recorder,true);
+            check(retry.failure==RecordingFailure::Cancelled && !recorder.pending(),
+                  "the restarted recorder completes independently");
+        }
+    }
+}
+#if defined(_WIN32)
+void cancelReportsCleanupDenial() {
+    test::TempDirectory directory{"audio_recording","cleanup_denied"};
+    AudioInputRecorder recorder;
+    const auto request=spec(directory.path());
+    std::string error;
+    const auto drained=std::make_shared<std::atomic<std::uint64_t>>(0);
+    std::filesystem::path capture;
+    if(!recorder.start(request,error,[&](const auto& file,auto rate,auto channels,auto format) {
+        capture=file.parent_path();
+        return std::make_unique<ObservedWaveSink>(file,rate,channels,format,drained);
+    }))throw std::runtime_error(error);
+    const auto file=capture/"deletion-blocked";
+    const auto lock=CreateFileW(file.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,CREATE_NEW,
+                                FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(lock==INVALID_HANDLE_VALUE)throw std::runtime_error("cannot create a file that denies deletion");
+    recorder.stop(true);
+    std::optional<AudioRecordingResult> retained;
+    try {
+        retained=finish(recorder,true);
+        check(retained->failure==RecordingFailure::Cancelled && !retained->directory().empty() &&
+              retained->error.find("Could not remove recording files")!=std::string::npos,
+              "cancellation reports the cleanup denial and retains the directory for retry");
+        check(static_cast<bool>(retained->discard()),"an explicit discard reports a removal error too");
+    } catch(...) {
+        CloseHandle(lock);
+        throw;
+    }
+    CloseHandle(lock);
+    check(!recorder.pending() && !retained->discard() && retained->directory().empty(),
+          "a cleanup denial leaves the recorder ready and cleanup can be retried");
+}
+#endif
 class CountingSink final:public AudioRecordingSink {
     std::shared_ptr<std::atomic<unsigned>> destroyed_;
 public:
@@ -319,4 +445,20 @@ void loopDiscontinuities() {
     }
 }
 }
-int main(){try{actualFilesAndAcknowledgment();stopDrainsLastShortBlock();formatAndInputFailures();boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();sessionLoopPasses();loopBoundsAndCapacity();loopDiscontinuities();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual recording callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main() {
+    try {
+        actualFilesAndAcknowledgment();stopDrainsLastShortBlock();formatAndInputFailures();
+        boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();cancelAfterPartialDiskFailure();
+#if defined(_WIN32)
+        cancelReportsCleanupDenial();
+#endif
+        stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();sessionLoopPasses();
+        loopBoundsAndCapacity();loopDiscontinuities();
+    } catch(const std::exception& error) {
+        check(false,error.what());
+    }
+    check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,
+          "actual recording callback allocates nothing and performs no file I/O");
+    std::printf("%d checks, %d failures\n",checks,failures);
+    return failures?1:0;
+}
