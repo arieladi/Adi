@@ -57,6 +57,7 @@ void AutoShift::prepare(double sampleRate) noexcept {
         size_ = 0;
     }
     mix_.prepare(rate_);
+    follow_ = 0;
     mix_.set(p_[DryWet] / 100);
     target_ = current_ = sum_ = 0;
     period_ = rate_ / 200;
@@ -292,6 +293,10 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
             farthest_ = std::max(farthest_, now - old_);
         }
         const double mix = mix_.next();
+        // While the tap glides back at a ratio of 1, the dry signal reads the
+        // tap too, so wet and dry stay one signal (no comb).
+        const bool gliding = ratio_ == 1 && fade_ == 0 && static_cast<double>(clock_) - tap_ != centre;
+        follow_ = std::clamp(follow_ + (gliding ? 1.0 : -1.0) / (0.02 * rate_), 0.0, 1.0);
         const double fadeIn = fade_ == 0 ? 1.0
                                          : 0.5 - 0.5 * std::cos(std::numbers::pi * static_cast<double>(fadeLength_ - fade_ + 1) /
                                                                  static_cast<double>(fadeLength_ + 1));
@@ -300,7 +305,10 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
             if (fade_ > 0) {
                 wet = fadeIn * wet + (1 - fadeIn) * read(oldBand_ < 0 ? in_[c] : low_[static_cast<std::size_t>(oldBand_)][c], old_);
             }
-            const double dry = in_[c][(clock_ + size_ - latency_) & (size_ - 1)];
+            double dry = in_[c][(clock_ + size_ - latency_) & (size_ - 1)];
+            if (follow_ > 0) {
+                dry += follow_ * (read(in_[c], tap_) - dry);
+            }
             float* out = c == 0 ? outL : outR;
             if (out) {
                 out[i] = static_cast<float>(dry + (wet - dry) * mix);
