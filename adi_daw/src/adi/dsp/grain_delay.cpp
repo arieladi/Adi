@@ -8,8 +8,9 @@
 namespace adi::dsp {
 namespace {
 // The longest the line must hold: the delay, the spray, and a grain's
-// excursion (two periods at 1 Hz, times |ratio - 1| at most 1 for +12 st).
-constexpr double kLineSeconds = 1.0 + 0.5 + 2.0 + 0.1;
+// excursion: two periods at 1 Hz times |ratio - 1|, at most 3 (Pitch +12 with
+// Random Pitch's +12 reads at four times the speed).
+constexpr double kLineSeconds = 1.0 + 0.5 + 6.0 + 0.1;
 }  // namespace
 
 GrainDelay::GrainDelay() {
@@ -42,8 +43,9 @@ void GrainDelay::prepare(double sampleRate) noexcept {
         lane.last = 0;
     }
     written_ = 0;
-    since_ = 0;
+    countdown_ = 0;
     next_ = 0;
+    lowest_ = 1e300;
     update();
 }
 
@@ -84,18 +86,24 @@ double GrainDelay::random(Lane& lane) noexcept {
     return static_cast<double>(lane.seed) / 4294967296.0;   // [0, 1)
 }
 
-void GrainDelay::start(Lane& lane, Grain& g) noexcept {
+void GrainDelay::start(Lane& lane, Grain& g, std::size_t rise) noexcept {
     // Both draws are made whether or not they are used, so moving Spray or
     // Random Pitch does not shift the random sequence.
     const double spray = random(lane), pitch = random(lane);
     g.ratio = ratio_ * std::exp2(p_[RandomPitch] / 100 * 12 * (2 * pitch - 1) / 12);
-    const double length = static_cast<double>(length_);
+    g.rise = std::max<std::size_t>(1, rise);
+    g.fall = std::max<std::size_t>(1, length_ / 2);
+    const double length = static_cast<double>(g.rise + g.fall), excursion = std::abs(g.ratio - 1) * length;
     // The delay at the grain's start: the set delay and its spray, and for a
-    // grain faster than the line the distance it will gain over its life.
-    double d = delay_ + std::round(spray * spray_) + std::max(0.0, g.ratio - 1) * length;
-    d = std::min(d, static_cast<double>(size_) - length * std::abs(g.ratio - 1) - 4);
+    // grain faster than the line the distance it will gain over its life. It
+    // is kept where the whole grain stays inside the line and behind the
+    // write head (the line is sized so that this never binds in range).
+    const double gain = g.ratio > 1 ? excursion : 0.0, slack = g.ratio < 1 ? excursion : 0.0;
+    double d = delay_ + std::round(spray * spray_) + gain;
+    d = std::clamp(d, 1 + gain, std::max(static_cast<double>(size_) - 4 - slack, 1 + gain));
     g.read = static_cast<double>(written_) - d;
     g.age = 0;
+    g.live = true;
 }
 
 double GrainDelay::read(const Lane& lane, double position) const noexcept {
@@ -122,14 +130,19 @@ void GrainDelay::process(const float* inL, const float* inR, float* outL, float*
             }
             continue;
         }
-        // A grain starts every half length, alternating between the two.
-        if (since_ == 0) {
+        // A grain starts as its predecessor reaches its peak, alternating
+        // between the two slots; it rises over the time the predecessor
+        // falls, so the two windows sum to exactly 1.
+        if (countdown_ == 0) {
+            const auto& previous = lanes_[0].grains[next_ ^ 1u];
+            const std::size_t rise = previous.live ? previous.fall : length_ / 2;
             for (auto& lane : lanes_) {
-                start(lane, lane.grains[next_]);
+                start(lane, lane.grains[next_], rise);
             }
+            countdown_ = lanes_[0].grains[next_].rise;
             next_ ^= 1u;
         }
-        since_ = (since_ + 1) % (length_ / 2);
+        --countdown_;
         for (std::size_t c = 0; c < 2; ++c) {
             auto& lane = lanes_[c];
             // The grains read first (every read is at least a sample old),
@@ -137,14 +150,18 @@ void GrainDelay::process(const float* inL, const float* inR, float* outL, float*
             // output: an echo returns after exactly the delay.
             double y = 0;
             for (auto& g : lane.grains) {
-                if (g.age >= length_) {
+                if (!g.live) {
                     continue;
                 }
-                const double u = static_cast<double>(g.age) / static_cast<double>(length_);
-                const double w = 0.5 - 0.5 * std::cos(2 * std::numbers::pi * u);
+                const double u = g.age < g.rise ? static_cast<double>(g.age) / static_cast<double>(g.rise)
+                                                : static_cast<double>(g.age - g.rise) / static_cast<double>(g.fall);
+                const double w = g.age < g.rise ? 0.5 - 0.5 * std::cos(std::numbers::pi * u) : 0.5 + 0.5 * std::cos(std::numbers::pi * u);
+                lowest_ = std::min(lowest_, static_cast<double>(written_) - g.read);
                 y += w * read(lane, g.read);
                 g.read += g.ratio;
-                ++g.age;
+                if (++g.age >= g.rise + g.fall) {
+                    g.live = false;
+                }
             }
             lane.last = std::abs(y) < 1e-30 ? 0 : y;
             lane.ring[written_ % size_] = static_cast<float>(dry[c] + feedback_ * lane.last);
