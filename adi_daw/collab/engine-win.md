@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, after 3 December, EX-05 export brickwall
+
+- `engine-win/export-brickwall` at `10c88f50` is stacked on EX-06 `7a9fe563` and the limiter landed in #706. Brickwall is off by default and acts only in Loudness mode. The existing offline limiter trims its own latency before PCM quantization. Refine uses the encoded loudness and true-peak readings, at most four trials, with Brickwall adjustment steps clamped to ±3 dB.
+- MSVC /WX: render queue 439/439, DSP 433/433 and WAV/quantizer 171/171. The 48 kHz fixture matched complete seeded PCM24 files byte for byte below the ceiling, verified the over-ceiling case at 4x and kept frame count unchanged. Peak mode produced identical files with both setting values.
+- When the stage engages it uses one planar double buffer for the programme to meet the limiter's whole-programme API. The director's finer true-peak detection question remains recorded above.
+
+PR requested.
+
 ## 2026-11-22, after 3 December, DEV-25 Clean discovery
 
 - `engine-win/scanner-clean-mode` at `9a1928bb` adds Clean to the asynchronous catalogue job. It skips cache hits and permits a fresh probe of an unchanged typed automatic quarantine. Ticket admission keeps manual and pending blocks. Ordinary Incremental, Refresh and CacheOnly retain their policies.
