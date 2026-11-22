@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The `.amxd` translator, steps 1 to 6 -- DEV-16 (ADR-0203 d8: an addition at P2).
+// The `.amxd` translator, steps 1 to 7 -- DEV-16 (ADR-0203 d8: an addition at P2).
 //
 // A Max for Live device file is a small chunked container -- `ampf` with the
 // device kind, `meta`, then `ptch` holding the Max patcher as JSON -- and the
@@ -24,7 +24,10 @@
 //   * [line~] (step 3). Max chains a list of (target, ms) pairs; Pd's
 //     [vline~] takes one segment and reads a third number as a delay. So a
 //     [pd max-line~] walks the pairs and schedules each with the delay
-//     accumulated so far.
+//     accumulated so far. Step 7: a time in the right inlet carries the next
+//     lone number and then reverts to 0; the right outlet bangs when the
+//     whole list has played (a [delay] that each new input reschedules); an
+//     argument is the initial value.
 //   * Step 4, where Pd has no box of the same name or the same contract:
 //     [prepend]/[append] (a list then [list trim], so the first word is the
 //     selector as in Max), [!- n] as (-x) + n, [gate n] as a prefix and a
@@ -42,7 +45,7 @@
 //     take the same arguments; a bpatcher inside it takes its own. A # with
 //     no argument is refused rather than guessed, as is a bpatcher naming a
 //     patcher file outside the device.
-// Refused, for later steps: [line~]'s ramp-time inlet and end bang, float modulo, signal-rate
+// Refused, for later steps: float modulo, signal-rate
 // biquad~ coefficients and slide~ times, live.text's button mode, bpatchers
 // of a file outside the device, MIDI devices and instruments; and
 // not read at all: frozen devices (`mx@c`) and Live's own encrypted devices

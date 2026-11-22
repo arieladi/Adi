@@ -201,9 +201,9 @@ void testWhatIsRefusedIsNamed() {
     check(!r.ok() && r.pdPatch.empty(), "nothing is produced when any box is refused");
     std::vector<std::string> ids;
     for (const auto& b : r.refused) ids.push_back(b.id + ":" + b.maxClass);
-    check(ids == std::vector<std::string>{"obj-1:%", "obj-4:line~", "obj-5:zl.group"},
-          "refused: [% 1.] (float modulo), [line~]'s end bang, [zl.group]; [+ 1.], [sig~] and [cycle~] with its "
-          "phase inlet in use pass");
+    check(ids == std::vector<std::string>{"obj-1:%", "obj-5:zl.group"},
+          "refused: [% 1.] (float modulo), [zl.group]; [+ 1.], [sig~], [cycle~] with its phase inlet in use and "
+          "[line~] with its end bang pass");
     if (!r.refused.empty())
         check(r.refused[0].reason.find("modulo") != std::string::npos, "with the reason: " + r.refused[0].reason);
     // Inside a subpatcher, a refusal names the path to it.
@@ -520,6 +520,123 @@ void testLineSegmentsAreChained() {
                   std::to_string(v) + ")" + error);
 }
 
+/// A device's left output, sampled at the given times (ms) after the latency.
+std::vector<double> sampledAt(const std::string& json, const std::vector<double>& ms, std::string& error) {
+    const auto t = translateMaxPatcher(json, AmxdKind::AudioEffect);
+    if (!t.ok()) {
+        error = " (refused: " + (t.refused.empty() ? t.error : t.refused[0].reason) + ")";
+        return std::vector<double>(ms.size(), -99.0);
+    }
+    int latency = 0;
+    const auto out = renderOut(t.pdPatch, 48000 / 2, latency, error);
+    std::vector<double> v;
+    for (const double m : ms) {
+        const auto i = static_cast<std::size_t>(latency) + static_cast<std::size_t>(std::lround(m * 48.0));
+        v.push_back(i < out.size() ? static_cast<double>(out[i]) : -99.0);
+    }
+    return v;
+}
+
+void checkSamples(const std::string& what, const std::vector<double>& got, const std::vector<double>& ms,
+                  const std::vector<double>& expect, const std::string& error) {
+    double worst = 0;
+    std::string shown;
+    for (std::size_t k = 0; k < got.size(); ++k) {
+        worst = std::max(worst, std::fabs(got[k] - expect[k]));
+        shown += (k ? ", " : "") + std::to_string(static_cast<int>(ms[k])) + " ms " + std::to_string(got[k]);
+    }
+    check(error.empty() && worst < 1e-3, what + ": " + shown + error);
+}
+
+void testLineEnds() {
+    section("DEV-16 step 7 -- [line~]'s ramp time, its end bang and its initial value, as Max's reference says");
+    // 100 into the right inlet, then 1 into the left (Max's right-to-left
+    // order from one loadbang): a ramp over 100 ms. At 200 ms a lone 0 with no
+    // new time jumps: the time went back to 0 after it was used.
+    {
+        const std::string json = patcher(
+            {box("obj-1", "loadbang", 100, 10, R"("bang")"), box("obj-2", "1", 10, 40, R"("")", "message"),
+             box("obj-3", "100", 200, 40, R"("")", "message"), box("obj-5", "delay 200", 300, 40, R"("bang")"),
+             box("obj-6", "0", 300, 60, R"("")", "message"), box("obj-4", "line~", 10, 80, R"("signal","bang")"),
+             box("obj-7", "plugout~", 10, 140, "")},
+            {line("obj-1", 0, "obj-2", 0), line("obj-1", 0, "obj-3", 0), line("obj-1", 0, "obj-5", 0),
+             line("obj-2", 0, "obj-4", 0), line("obj-3", 0, "obj-4", 1), line("obj-5", 0, "obj-6", 0),
+             line("obj-6", 0, "obj-4", 0), line("obj-4", 0, "obj-7", 0)});
+        const std::vector<double> ms{0, 50, 100, 150, 199, 201, 250};
+        std::string error;
+        checkSamples("a time of 100 in the right inlet, then 1: a ramp; a lone 0 later jumps",
+                     sampledAt(json, ms, error), ms, {0, 0.5, 1, 1, 1, 0, 0}, error);
+    }
+    // The end bang: line A plays "0 0 1 100"; its right outlet jumps line B
+    // to -2, and the output is A + B. Bang after the whole list (100 ms), not
+    // after its first segment (0 ms).
+    const auto endBang = [](const std::string& later) {
+        std::vector<std::string> boxes{
+            box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "0 0 1 100", 10, 40, R"("")", "message"),
+            box("obj-3", "line~", 10, 80, R"("signal","bang")"), box("obj-4", "-2", 200, 110, R"("")", "message"),
+            box("obj-5", "line~", 200, 140, R"("signal","bang")"), box("obj-6", "+~", 10, 180, kSig),
+            box("obj-7", "plugout~", 10, 220, "")};
+        std::vector<std::string> lines{line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0),
+                                       line("obj-3", 1, "obj-4", 0), line("obj-4", 0, "obj-5", 0),
+                                       line("obj-3", 0, "obj-6", 0), line("obj-5", 0, "obj-6", 1),
+                                       line("obj-6", 0, "obj-7", 0)};
+        if (!later.empty()) {   // at 50 ms, a new list cuts the first short
+            boxes.push_back(box("obj-8", "delay 50", 120, 10, R"("bang")"));
+            boxes.push_back(box("obj-9", later, 120, 40, R"("")", "message"));
+            lines.push_back(line("obj-1", 0, "obj-8", 0));
+            lines.push_back(line("obj-8", 0, "obj-9", 0));
+            lines.push_back(line("obj-9", 0, "obj-3", 0));
+        }
+        return patcher(boxes, lines);
+    };
+    {
+        const std::vector<double> ms{1, 50, 99, 101, 200};
+        std::string error;
+        checkSamples("\"0 0 1 100\": the right outlet bangs at 100 ms, when the whole list has played",
+                     sampledAt(endBang(""), ms, error), ms, {0.01, 0.5, 0.99, -1, -1}, error);
+    }
+    {
+        // Cut short at 50 ms by "0 100": no bang at 100 ms; one at 150.
+        const std::vector<double> ms{60, 120, 149, 151};
+        std::string error;
+        checkSamples("cut short at 50 ms by \"0 100\": no bang for the cut list, one when the new one ends",
+                     sampledAt(endBang("0 100"), ms, error), ms, {0.45, 0.15, 0.005, -2}, error);
+    }
+    {
+        // A lone jump does not bang (an assumption until reading 14 says).
+        const std::string json = patcher(
+            {box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "1", 10, 40, R"("")", "message"),
+             box("obj-3", "line~", 10, 80, R"("signal","bang")"), box("obj-4", "-2", 200, 110, R"("")", "message"),
+             box("obj-5", "line~", 200, 140, R"("signal","bang")"), box("obj-6", "+~", 10, 180, kSig),
+             box("obj-7", "plugout~", 10, 220, "")},
+            {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0), line("obj-3", 1, "obj-4", 0),
+             line("obj-4", 0, "obj-5", 0), line("obj-3", 0, "obj-6", 0), line("obj-5", 0, "obj-6", 1),
+             line("obj-6", 0, "obj-7", 0)});
+        const std::vector<double> ms{0, 10, 100};
+        std::string error;
+        checkSamples("a lone jump to 1 does not bang (assumed; reading 14)", sampledAt(json, ms, error), ms, {1, 1, 1},
+                     error);
+    }
+    // [line~ 0.5]: 0.5 from the first sample; a ramp to 1 over 100 ms from a
+    // loadbang starts there.
+    {
+        const std::string still =
+            patcher({box("obj-3", "line~ 0.5", 10, 80, R"("signal","bang")"), box("obj-7", "plugout~", 10, 140, "")},
+                    {line("obj-3", 0, "obj-7", 0)});
+        const std::vector<double> ms{0, 100};
+        std::string error;
+        checkSamples("[line~ 0.5] starts at 0.5", sampledAt(still, ms, error), ms, {0.5, 0.5}, error);
+        const std::string ramp = patcher(
+            {box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "1 100", 10, 40, R"("")", "message"),
+             box("obj-3", "line~ 0.5", 10, 80, R"("signal","bang")"), box("obj-7", "plugout~", 10, 140, "")},
+            {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0), line("obj-3", 0, "obj-7", 0)});
+        const std::vector<double> ms2{0, 50, 100};
+        std::string error2;
+        checkSamples("and \"1 100\" from a loadbang ramps from 0.5", sampledAt(ramp, ms2, error2), ms2, {0.5, 0.75, 1},
+                     error2);
+    }
+}
+
 void testStepFourControls() {
     section("DEV-16 step 4 -- prepend, append, f, i, !-, gate, played in libpd");
     struct Case { const char* what; std::string json; std::vector<std::string> expect; };
@@ -735,6 +852,7 @@ int main() {
     testStepFourSignals();
     testBpatchersPlay();
     testCyclePhaseIsAnOffset();
+    testLineEnds();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;
