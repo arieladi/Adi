@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — DEV-25 sustained scanner-reader pause proof
+
+- DEV-25 500 ms reader-pause case — PR requested, `engine-win/scanner-paused-reader-proof` at `b944e252` from `87ea349c`. Native Windows test-only option `adi_scan_process_tests --paused-reader-stress`. The owner suspends its disposable runner thread while an owned child reaches a real blocked stdout write, holds 500 ms, resumes, and verifies the exact bounded 2 MiB payload and success status. MSVC /W4 /WX: 28 ordinary scanner process checks and 200/200 exact paused trials, zero failures. No scanner production changes or live plug-in load. The regular suite keeps its previous runtime. Source: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-suspendthread
+
 ## 2026-11-22 — DEV-29(d) additional normalization targets
 
 - DEV-29(d) / EX-05 — PR requested, `engine-win/export-normalization-targets` at `e8c029d4`, on the shared export meter `a1daa886`. Adds explicit RMS-I in dBFS and maximum momentary/short-term LUFS choices to the existing uniform gain and decoded true-peak verification. Integrated remains the existing choice. The target statistic and units appear in the run manifest. MSVC render 430 and normalization 34, including an independently recomputed RMS from the decoded PCM, max M/S kept distinct from integrated loudness, correct ceiling, and refusal when the short-term window cannot fill. This uses the current target interval of -36 to 0 and an RMS default of -14 dBFS when explicitly selected. Window-fn owns the controls; the brickwall, multi-format normalization and together groups have separate integration gates.
