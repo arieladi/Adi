@@ -408,8 +408,8 @@ void moving() {
         check(d > 0 && off == 0, "Dry/Wet 0: the input, one reported latency late (" + std::to_string(off) + ")");
     }
     S l;
-    check(l.latency() == 4432 && static_cast<std::size_t>(l.latency()) == S::latencyFor(kRate, 4096),
-          "the latency: half a window and a hop, a chunk, 4.5 half-periods of 60 Hz and 8 (" + std::to_string(l.latency()) + ")");
+    check(l.latency() == 5371 && static_cast<std::size_t>(l.latency()) == S::latencyFor(kRate, 4096),
+          "the latency: half a window and half a hop, a chunk, 1.625 of the longest period read and 8 (" + std::to_string(l.latency()) + ")");
 }
 
 /// An amplitude from magnitude(): a Hann-weighted second of 48,000 samples.
@@ -419,6 +419,118 @@ static double amplitudeAt(const std::vector<float>& y, double hz) { return magni
 /// (-6 dB at +7, silence at +12) and returned it unshifted an octave or more
 /// down; its wet signal sat up to half a period off the dry one; and each
 /// reading was applied 25 to 50 ms before the audio it was read from.
+/// The review of b50591ad (three skeptics each): every period the detector
+/// reads must splice whole (40 Hz came out at 70 Hz, a noisy 220 Hz read at
+/// its seventh subharmonic lost its shift); a return to Shift 0 left the tap
+/// off the centre (Dry/Wet at -131 dB); shifting up aliased; the taps strayed
+/// past the stated budget; and the detector's cost grew with the rate.
+void reviewedAgain() {
+    for (const double hz : {32.0, 40.0, 50.0}) {
+        for (const double semitones : {7.0, -7.0}) {
+            S s;
+            s.set(S::Correction, 0);
+            s.set(S::Shift, semitones);
+            s.prepare(kRate);
+            const auto y = render(s, sine(hz, 192000, 0.4));
+            const double want = hz * std::exp2(semitones / 12), level = 20 * std::log10(amplitudeAt(y, want) / 0.4);
+            check(std::abs(level) < 0.5, std::to_string(hz) + " Hz at Shift " + std::to_string(static_cast<int>(semitones)) + ": " +
+                                             std::to_string(want) + " Hz at " + std::to_string(level) + " dB");
+        }
+    }
+    {
+        std::vector<float> x = sine(220, 144000, 0.4);
+        std::uint32_t seed = 7;
+        for (auto& v : x) {
+            double g = 0;
+            for (int k = 0; k < 12; ++k) {   // near-Gaussian, sd 0.15
+                seed = seed * 1664525u + 1013904223u;
+                g += static_cast<double>(seed >> 8) / 16777216.0;
+            }
+            v += static_cast<float>((g - 6) * 0.15);
+        }
+        S s;
+        s.set(S::Correction, 0);
+        s.set(S::Shift, 12);
+        s.prepare(kRate);
+        const double level = 20 * std::log10(amplitudeAt(render(s, x), 440) / 0.4);
+        check(std::abs(level) < 1, "220 Hz in noise at Shift +12: 440 Hz at " + std::to_string(level) + " dB");
+    }
+    // Shift +7 for a second, then 0: the tap is back at the centre, so at
+    // Dry/Wet 100 % the wet signal is the input one latency late, exactly.
+    for (const double hz : {220.0, 300.0, 440.0}) {
+        S s;
+        s.set(S::Correction, 0);
+        s.set(S::Shift, 7);
+        s.prepare(kRate);
+        const auto x = sine(hz, 48000 * 5, 0.4);
+        std::vector<float> l(x.size()), r(x.size());
+        s.process(x.data(), x.data(), l.data(), r.data(), 48000);
+        s.set(S::Shift, 0);
+        s.process(x.data() + 48000, x.data() + 48000, l.data() + 48000, r.data() + 48000, x.size() - 48000);
+        const auto d = static_cast<std::size_t>(s.latency());
+        double off = 0;
+        for (std::size_t i = x.size() - 24000; i < x.size(); ++i) {
+            off = std::max(off, static_cast<double>(std::abs(l[i] - x[i - d])));
+        }
+        check(off == 0, std::to_string(hz) + " Hz, Shift +7 then 0: four seconds on, the wet signal is the input one latency late (" + std::to_string(off) + ")");
+    }
+    // A band-limited sawtooth to 20 kHz at Shift +24: what folds back into the
+    // audible band stays 40 dB under the fundamental (19,840 Hz from the 32nd
+    // harmonic, 4 kHz from the 50th).
+    {
+        std::vector<float> saw(144000);
+        for (std::size_t i = 0; i < saw.size(); ++i) {
+            double v = 0;
+            for (int k = 1; 220 * k < 20000; ++k) {
+                v += 0.25 / k * std::sin(2 * std::numbers::pi * 220 * k * static_cast<double>(i) / kRate);
+            }
+            saw[i] = static_cast<float>(v);
+        }
+        S s;
+        s.set(S::Correction, 0);
+        s.set(S::Shift, 24);
+        s.prepare(kRate);
+        const auto y = render(s, saw);
+        const double fundamental = amplitudeAt(y, 880), a1 = amplitudeAt(y, 19840), a2 = amplitudeAt(y, 4000);
+        check(std::abs(20 * std::log10(fundamental / 0.25)) < 0.5 && a1 < fundamental / 100 && a2 < fundamental / 100,
+              "a sawtooth at Shift +24: 880 Hz at " + std::to_string(20 * std::log10(fundamental / 0.25)) + " dB, aliases at " +
+                  std::to_string(20 * std::log10(a1 / fundamental + 1e-12)) + " and " + std::to_string(20 * std::log10(a2 / fundamental + 1e-12)) + " dB");
+    }
+    // The taps stay within the stated stray, whatever the Shift does: 31 Hz
+    // and a flat A#1 corrected, the Shift jumping across its range every 700
+    // to 2,900 samples for 20 s.
+    for (const double hz : {31.0, 58.27 * std::exp2(-0.49 / 12)}) {
+        S s;
+        s.set(S::Correction, hz > 40 ? 1 : 0);
+        s.prepare(kRate);
+        const auto x = sine(hz, 48000 * 20, 0.4);
+        std::vector<float> l(64), r(64);
+        std::uint32_t seed = 3;
+        std::size_t next = 0;
+        for (std::size_t at = 0; at < x.size(); at += 64) {
+            if (at >= next) {
+                seed = seed * 1664525u + 1013904223u;
+                const double pick = static_cast<double>(seed >> 8) / 16777216.0;
+                s.set(S::Shift, pick < 0.3 ? -24 : pick < 0.6 ? 24 : std::round(pick * 48 - 24));
+                s.set(S::Detune, pick < 0.5 ? 50 : -50);
+                next = at + 700 + static_cast<std::size_t>(pick * 2200);
+            }
+            s.process(x.data() + at, x.data() + at, l.data(), r.data(), 64);
+        }
+        const double stray = std::ceil(1.625 * std::ceil(kRate / 28.5)) + 8, centre = s.latency();
+        check(s.shortestDelay() >= centre - stray && s.longestDelay() <= centre + stray && s.shortestDelay() >= static_cast<double>(s.window()) * 5 / 8,
+              std::to_string(hz) + " Hz, the Shift jumping: the taps read from " + std::to_string(s.shortestDelay()) + " to " +
+                  std::to_string(s.longestDelay()) + " samples back (allowed " + std::to_string(centre - stray) + " to " + std::to_string(centre + stray) + ")");
+    }
+    // Above 48 kHz the detector reads the input averaged down: at 192 kHz it
+    // runs at 48 kHz, its window 16,384 input samples.
+    {
+        S s;
+        s.prepare(192000);
+        check(s.detectorRate() == 48000 && s.window() == 16384, "at 192 kHz the detector runs at " + std::to_string(s.detectorRate()) + " Hz");
+    }
+}
+
 void shifted() {
     // A 220 Hz sine at every Shift comes out at 220 x the ratio, at its own
     // level within 0.5 dB, and nothing is left at 220 Hz.
@@ -524,7 +636,7 @@ void shifted() {
               "446 then 330 Hz, corrected: 440 Hz until the step arrives, 329.63 after (" + std::to_string(before) + ", " + std::to_string(after) + ")");
     }
     // A rate past any host's: prepare() returns, and the device is inert.
-    for (const double rate : {1e20, 1e300}) {
+    for (const double rate : {1e7, 1e20, 1e300}) {
         S s;
         s.prepare(rate);
         const auto x = sine(300, 512, 0.4);
@@ -535,6 +647,7 @@ void shifted() {
 }
 
 int main() {
+    reviewedAgain();
     shifted();
     moving();
     glides();
