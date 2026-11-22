@@ -97,7 +97,7 @@ scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPlu
         const auto bytes = files[index].toStdString();
         if(result.state!=scan::State::Ready) {
             report.failures.push_back({result.path.empty()?bytes:result.path,result.error,result.state});
-            if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
+            if(scan::stopsDiscovery(result.state)) {
                 report.cancelled=result.state==scan::State::Cancelled;
                 return false;
             }
@@ -111,9 +111,10 @@ scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPlu
         return true;
     };
     std::string error;
-    report.complete = scan::detail::visitProbes(files.size(), config, probe, accept, error);
+    auto openFailure=scan::State::Unavailable;
+    report.complete = scan::detail::visitProbes(files.size(), config, probe, accept, error, &openFailure);
     if (!report.complete) {
-        if (!error.empty()) report.failures.push_back({"", std::move(error), scan::State::Unavailable});
+        if (!error.empty()) report.failures.push_back({"", std::move(error), openFailure});
         return report;
     }
     into.clear();for(const auto& description:found)into.addType(description);return report;
@@ -569,7 +570,7 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // now hands this device the other width is a reactivation too.
     const bool wantDouble = handed64_ && canDouble_;
     if (prepared_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
-        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_ && preparedKey_==keyRequested_ && preparedShape_==preparationShapeEpoch() &&
+        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_ && preparedShape_==preparationShapeEpoch() &&
         inst_->isNonRealtime() == requestedOffline_) {
         return;
     }
@@ -621,7 +622,7 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
         throw std::runtime_error("VST3 refused its first auxiliary input layout");
     };
     if(auto* key=keyInputBus_>=0?inst_->getBus(true,keyInputBus_):nullptr) {
-        const bool wanted=defaultKeyEnabled_ || keyRequested_;
+        const bool wanted=wantsKeyBusEnabled();
         if(key->isEnabled()!=wanted && !key->enable(wanted))refuseKey();
     } else if(keyRequested_)refuseKey();
     readInputBusRoles();
@@ -682,7 +683,7 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     injectedUsed_ = 0;
     readInputBusRoles();
     prepareAudioBuses();
-    preparedKey_=keyRequested_;preparedShape_=preparationShapeEpoch();
+    preparedShape_=preparationShapeEpoch();
     midi_.ensureSize(4096);
 
     // HERE, and it was not. Since ADR-0073 this line sat after the `return`

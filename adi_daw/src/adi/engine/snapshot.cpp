@@ -7,6 +7,8 @@
 #include "adi/store.hpp"
 #include "adi/media/media_ops.hpp"
 #include "juce/builtin_samples.hpp"
+#include "juce/pd_declarations.hpp"
+#include "adi/builtin_catalog.hpp"
 #include <filesystem>
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -14,8 +16,12 @@
 #include <stdexcept>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <set>
+#include <tuple>
+#include <unordered_set>
 #include <sqlite3.h>
 
 namespace adi::engine {
@@ -34,13 +40,51 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 /// the first time someone forgets to set it.
 bool same(const ClipNode& a, const ClipNode& b) {
     return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
+           a.timeBase==b.timeBase && a.posNs==b.posNs && a.lengthNs==b.lengthNs &&
            a.muted == b.muted && a.gainDb == b.gainDb && a.fadeInTicks==b.fadeInTicks &&
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
            a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
            a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks &&
-           a.audio == b.audio &&
+           a.audio == b.audio && a.fadeInHandles == b.fadeInHandles && a.fadeOutHandles == b.fadeOutHandles &&
            a.controllers == b.controllers;
+}
+
+void projectFadeHandles(ClipNode& clip,const TempoMap& tempo,std::int64_t offsetTicks) {
+    clip.fadeInHandles={0,clip.fadeInTicks};
+    clip.fadeOutHandles={0,clip.fadeOutTicks};
+    if(!clip.audio)return;
+    const auto& domain=clip.audio->warpEnabled?clip.fadeClockTicks:clip.fadeClockNs;
+    if(!domain[0] && !domain[2])return;
+    constexpr auto limit=std::numeric_limits<std::int64_t>::max();
+    const auto begin=clip.posTicks;
+    if(begin<0 || clip.lengthTicks<0 || clip.lengthTicks>limit-begin)return;
+    const auto end=begin+clip.lengthTicks;
+    double beginSeconds=tempo.ticksToSeconds(begin),endSeconds=tempo.ticksToSeconds(end);
+    if(clip.timeBase==1 && clip.posNs && clip.lengthNs) {
+        if(*clip.posNs<0 || *clip.lengthNs<0 || *clip.lengthNs>limit-*clip.posNs)return;
+        beginSeconds=static_cast<double>(*clip.posNs)*1e-9;
+        endSeconds=static_cast<double>(*clip.posNs+*clip.lengthNs)*1e-9;
+    }
+    if(end<begin || offsetTicks<0 || offsetTicks>limit-begin ||
+       !std::isfinite(beginSeconds) || !std::isfinite(endSeconds) || endSeconds<beginSeconds)return;
+    const auto span=end-begin;
+    const double offsetSeconds=clip.contentOffsetNs?static_cast<double>(*clip.contentOffsetNs)*1e-9:
+        tempo.ticksToSeconds(begin+offsetTicks)-tempo.ticksToSeconds(begin);
+    const auto fromLeft=[&](std::int64_t bound) {
+        if(clip.audio->warpEnabled)return std::clamp(bound-offsetTicks,std::int64_t{0},span);
+        const double seconds=beginSeconds+(static_cast<double>(bound)*1e-9-offsetSeconds);
+        if(seconds<=beginSeconds)return std::int64_t{0};
+        if(seconds>=endSeconds)return span;
+        auto tick=std::clamp(tempo.secondsToTicks(seconds),begin,end);
+        // The stored nanosecond can round just below its originating tick.
+        if(tick<end && std::abs(tempo.ticksToSeconds(tick+1)-seconds)<
+                        std::abs(tempo.ticksToSeconds(tick)-seconds))++tick;
+        return tick-begin;
+    };
+    if(!clip.audio->warpEnabled && !std::isfinite(offsetSeconds))return;
+    if(domain[0] && domain[1])clip.fadeInHandles={fromLeft(*domain[0]),fromLeft(*domain[1])};
+    if(domain[2] && domain[3])clip.fadeOutHandles={span-fromLeft(*domain[3]),span-fromLeft(*domain[2])};
 }
 
 bool same(const TrackNode& a, const TrackNode& b) {
@@ -95,26 +139,46 @@ double TempoMap::ticksToSeconds(std::int64_t ticks) const noexcept {
 }
 
 std::int64_t TempoMap::secondsToTicks(double seconds) const noexcept {
-    if (seconds <= 0.0 || events.empty()) return 0;
+    if (!(seconds > 0.0) || !std::isfinite(seconds) || events.empty()) return 0;
 
     double elapsed = 0.0;
     std::int64_t at = 0;
     double bpm = events.front().bpm;
+    const auto tickAt = [&] {
+        const double offset = (seconds - elapsed) * bpm / 60.0 * kTicksPerQuarter;
+        if (!(offset > 0.0)) return at;
+        const auto maximum = std::numeric_limits<std::int64_t>::max();
+        if (offset >= static_cast<double>(maximum - at)) return maximum;
+        const auto whole = static_cast<std::int64_t>(offset);
+        // Subtraction after a tempo step inherits the precision of the
+        // absolute clock. Allow a few ulps of that clock in the current
+        // segment, while keeping a genuinely fractional tick on the floor.
+        const double noise = std::min(0.125,
+            (4.0 * std::numeric_limits<double>::epsilon()) * seconds * bpm / 60.0 * kTicksPerQuarter);
+        const auto next = whole + 1;
+        return at + (static_cast<double>(next) - offset <= noise ? next : whole);
+    };
 
     for (const auto& e : events) {
         if (e.posTicks <= at) { bpm = e.bpm; continue; }
         const double quarters = static_cast<double>(e.posTicks - at) / kTicksPerQuarter;
         const double segment = quarters * 60.0 / bpm;
-        if (elapsed + segment >= seconds) {
-            const double into = (seconds - elapsed) * bpm / 60.0;
-            return at + static_cast<std::int64_t>(into * kTicksPerQuarter);
-        }
+        if (elapsed + segment >= seconds) return std::min(e.posTicks, tickAt());
         elapsed += segment;
         at = e.posTicks;
         bpm = e.bpm;
     }
-    const double into = (seconds - elapsed) * bpm / 60.0;
-    return at + static_cast<std::int64_t>(into * kTicksPerQuarter);
+    return tickAt();
+}
+
+std::int64_t TempoMap::storedNanosecondsToTicks(std::int64_t nanos) const noexcept {
+    if(nanos<0 || events.empty())return 0;
+    const auto floor=secondsToTicks(static_cast<double>(nanos)*1e-9);
+    if(floor==std::numeric_limits<std::int64_t>::max())return floor;
+    // An integer nanosecond can round just below its originating tick.
+    const auto following=static_cast<long double>(ticksToSeconds(floor+1))*1e9L;
+    const auto requested=static_cast<long double>(nanos);
+    return following>=requested-0.5L && following<requested+0.5L?floor+1:floor;
 }
 
 // --- snapshot -------------------------------------------------------------------
@@ -305,7 +369,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
-            "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve "
+            "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
+            "content_offset_ticks,time_base,pos_ns,length_ns "
             "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
@@ -324,6 +389,22 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 c.loopEndNs=it->second.loopLength;c.sourceEndNs=it->second.end;c.fadeClockNs=it->second.clock;c.fadeClockTicks=it->second.warpClock;
             }
             if(const auto source=audioSources.find(c.id);source!=audioSources.end())c.audio=source->second;
+            const auto linear=[&](int column)->std::optional<std::int64_t> {
+                return st.getColumn(column).isNull()?std::nullopt:std::optional{st.getColumn(column).getInt64()};
+            };
+            c.timeBase=st.getColumn(12).getInt64();
+            c.posNs=linear(13);
+            c.lengthNs=linear(14);
+            if(c.timeBase==1) {
+                c.posTicks=c.posNs?snap->tempo->storedNanosecondsToTicks(*c.posNs):0;
+                c.lengthTicks=0;
+                if(c.posNs && c.lengthNs && *c.posNs>=0 && *c.lengthNs>=0 &&
+                   *c.lengthNs<=std::numeric_limits<std::int64_t>::max()-*c.posNs) {
+                    const auto end=snap->tempo->storedNanosecondsToTicks(*c.posNs+*c.lengthNs);
+                    c.lengthTicks=std::max(std::int64_t{0},end-c.posTicks);
+                }
+            }
+            projectFadeHandles(c,*snap->tempo,st.getColumn(11).getInt64());
             if (const auto lanes = controllersByClip.find(c.id); lanes != controllersByClip.end())
                 c.controllers = lanes->second;
 
@@ -335,6 +416,12 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     } catch (const std::exception&) {
     }
+    const auto clipOrder=[](const auto& a,const auto& b) {
+        return std::tie(a->posTicks,a->id)<std::tie(b->posTicks,b->id);
+    };
+    for(auto& [track,clips]:clipsByTrack)
+        if(!std::is_sorted(clips.begin(),clips.end(),clipOrder))
+            std::sort(clips.begin(),clips.end(),clipOrder);
 
     struct PanSettings {std::string mode;double left=-1.0,right=1.0;};
     std::map<std::int64_t,PanSettings> panSettings;
@@ -449,6 +536,9 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     // Resolve weak remark anchors from the same read snapshot. Build small
     // ownership maps once; no per-device filesystem/host/state queries.
     std::map<std::int64_t,std::int64_t> clipTrack,deviceChain;
+    std::unordered_set<std::int64_t> trackIds;
+    trackIds.reserve(snap->tracks.size());
+    for(const auto& track:snap->tracks)trackIds.insert(track->id);
     struct ChainOwner {std::optional<std::int64_t> track,parentDevice;};
     std::map<std::int64_t,ChainOwner> chainOwner;
     try {
@@ -489,7 +579,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             else if(remark.targetKind=="clip") {
                 const auto owner=clipTrack.find(remark.targetId);if(owner!=clipTrack.end())remark.trackId=owner->second;
             }else if(remark.targetKind=="device")remark.trackId=deviceTrack(remark.targetId);
-            if(remark.trackId && !snap->findTrack(*remark.trackId))remark.trackId.reset();
+            if(remark.trackId && !trackIds.contains(*remark.trackId))remark.trackId.reset();
             remark.anchorMissing=!remark.trackId;
             const auto old=previousRemarks.find(remark.id);
             if(old!=previousRemarks.end() && *old->second==remark)snap->remarks.push_back(old->second);
@@ -505,13 +595,38 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     for(const auto& slot:previous.sampleSlots)previousSlots[{slot->deviceId,slot->slot}]=slot;
     SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid FROM plugin_state s "
         "JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
-        "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' ORDER BY s.device_id,s.stream_role");
+        "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' "
+        "ORDER BY s.device_id,CAST(substr(s.stream_role,8) AS INTEGER),s.stream_role");
+    // DEV-21: a slot is any one the device declares (the Sampler declares 32),
+    // named as it is declared. Parsed once per device kind per rebuild.
+    std::map<std::string,device::PdDeclarations> declared;
     while(slots.executeStep()) {
         SampleSlotNode node;node.deviceId=slots.getColumn(0).getInt64();node.stateHash=slots.getColumn(2).getString();
         try {
             const auto role=slots.getColumn(1).getString();
-            if(role!="sample:1")throw std::runtime_error("unknown built-in sample role");
-            node.slot=1;node.name="Impulse";const auto old=previousSlots.find({node.deviceId,node.slot});
+            const auto uid=slots.getColumn(3).getString();
+            auto found=declared.find(uid);
+            if(found==declared.end()) {
+                found=declared.emplace(uid,device::parsePdDeclarations(builtinDeclarations(uid))).first;
+            }
+            std::int32_t slot=0;
+            const auto digits=role.substr(7);
+            if(digits.empty() || digits.size()>9 || digits.front()=='0' ||
+               !std::all_of(digits.begin(),digits.end(),[](char c){return c>='0' && c<='9';})) {
+                throw std::runtime_error("unknown built-in sample role");
+            }
+            slot=static_cast<std::int32_t>(std::stol(digits));
+            const auto& samples=found->second.samples;
+            const auto declaration=std::find_if(samples.begin(),samples.end(),[&](const auto& d){return d.id==slot;});
+            if(declaration!=samples.end()) {
+                node.slot=slot;node.name=declaration->name;
+            } else if(samples.empty() && slot==1) {
+                // A build that cannot read the declarations keeps the one slot it always had.
+                node.slot=1;node.name="Impulse";
+            } else {
+                throw std::runtime_error("unknown built-in sample role");
+            }
+            const auto old=previousSlots.find({node.deviceId,node.slot});
             if(old!=previousSlots.end() && old->second->stateHash==node.stateHash && old->second->problem.empty())node=*old->second;
             else {
                 SQLite::Statement size(db,"SELECT length(data) FROM state_blobs WHERE hash_blake3=?");size.bind(1,node.stateHash);

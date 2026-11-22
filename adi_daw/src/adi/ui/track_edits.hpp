@@ -159,28 +159,33 @@ inline TrackEdit colourTracks(const SnapshotTracks &tracks, const std::vector<st
             edit.ops.push_back(track_edits_detail::op("track.setColor", {{"id", id}, {"color", index}}, label));
     return edit;
 }
+namespace track_edits_detail {
+// Whether group `id` holds `t` at any depth. A parent that loops back, which the project should never
+// hold, ends the walk after as many steps as there are tracks, as `TrackTree::within` does (DF-W35 (c)),
+// rather than hanging the window.
+inline bool insideGroup(const SnapshotTracks &tracks, const engine::TrackNode &t, std::int64_t id) noexcept {
+    std::size_t steps = 0;
+    for (const auto *up = find(tracks, t.parent); up != nullptr && steps <= tracks.size();
+         up = find(tracks, up->parent), ++steps)
+        if (up->id == id)
+            return true;
+    return false;
+}
+} // namespace track_edits_detail
 // The tracks group `id` holds, at every depth, in the snapshot's order.
 inline std::vector<std::int64_t> heldBy(const SnapshotTracks &tracks, std::int64_t id) {
     std::vector<std::int64_t> out;
     for (const auto &t : tracks)
-        if (t)
-            for (const auto *up = track_edits_detail::find(tracks, t->parent); up != nullptr;
-                 up = track_edits_detail::find(tracks, up->parent))
-                if (up->id == id) {
-                    out.push_back(t->id);
-                    break;
-                }
+        if (t && track_edits_detail::insideGroup(tracks, *t, id))
+            out.push_back(t->id);
     return out;
 }
 // Whether a soloed track stands anywhere inside group `id`, nested groups too: Live then shows the
 // group's Solo half coloured (manual 18.3).
 inline bool holdsSoloed(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     for (const auto &t : tracks)
-        if (t && t->soloed && t->id != id)
-            for (const auto *up = track_edits_detail::find(tracks, t->parent); up != nullptr;
-                 up = track_edits_detail::find(tracks, up->parent))
-                if (up->id == id)
-                    return true;
+        if (t && t->soloed && t->id != id && track_edits_detail::insideGroup(tracks, *t, id))
+            return true;
     return false;
 }
 inline bool canUngroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {

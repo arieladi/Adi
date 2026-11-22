@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/sample_slots.hpp"
+#include "adi/sampler_declarations.hpp"
+#include "adi/dsp/sampler.hpp"
+#include "adi/pd_builtins/oneshot_midi.hpp"
+#include "adi/engine/snapshot.hpp"
+#include "adi/pd_builtins/native_devices.hpp"
+#include "juce/builtin_samples.hpp"
 #include "adi/blob.hpp"
 #include <cstring>
 #include "temp_directory.hpp"
@@ -10,14 +16,17 @@
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 namespace {
 std::atomic<int> allocations{0};thread_local bool counting=false;
@@ -52,14 +61,14 @@ struct Project {
     }
 };
 void catalogueAndHost() {
-    check(builtinCatalog().size()==20 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
+    check(builtinCatalog().size()==24 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
     std::set<std::string_view> identities;int available=0;
     for(const auto& info:builtinCatalog()) {
         check(identities.insert(info.uid).second && !info.name.empty() && !info.category.empty() && !info.group.empty(),"catalogue identities are unique and labels/category/folder are present");
         std::string error;auto ref=reference(std::string(info.uid));DeviceRequest request;request.ref=&ref;
         auto instance=makeBuiltinDevice(request,error);
         if(!info.available){check(!instance && !error.empty(),"unavailable backend refuses by name");continue;}
-        ++available;check(instance && instance->loaded() && instance->identity().uid==info.uid && !builtinCanvas(info.uid).empty(),"canonical factory creates supported device without a binary scan or file path");
+        ++available;check(instance && instance->loaded() && instance->identity().uid==info.uid && !builtinDeclarations(info.uid).empty(),"canonical factory creates supported device without a binary scan or file path");
         if(!instance)continue;
         check(instance->wantsDeviceTransport()==info.usesTransportPosition,
               "host transport demand follows the catalog capability");
@@ -74,7 +83,7 @@ void catalogueAndHost() {
         check(allocations.load(std::memory_order_relaxed)==0,"canonical built-in processing allocates nothing");
     }
 #if ADI_WITH_PD
-    check(available==19,"all registered native canonical factories are available");
+    check(available==24,"all registered native canonical factories are available");
 #else
     check(available==0,"PD-disabled build advertises no unavailable backend as loadable");
 #endif
@@ -85,6 +94,31 @@ void catalogueAndHost() {
     fake.format="clap";(void)composed(request,error);
     check(delegated==1 && error=="external","composition retains external-format loader");
 }
+#if ADI_WITH_PD
+// DEV-22: the Gate reports its Lookahead as latency, and the bypass wrapper
+// keeps it (ADR-0203 d4): 10 ms is 480 samples at 48 kHz.
+void gateLatency() {
+    auto gate=load("org.adidaw.builtin.gate");
+    gate->prepare(48000,64);
+    std::string lookahead;
+    for(std::int32_t i=0;i<gate->paramCount();++i){
+        if(gate->paramAt(i)->name=="Lookahead"){
+            lookahead=gate->paramAt(i)->id;
+        }
+    }
+    check(!lookahead.empty() && gate->setParam(lookahead,ParamValue::fromNormalized(1.0)),"the Gate's Lookahead is a control");
+    std::array<std::array<float,64>,2> input{},output{};float* in[]={input[0].data(),input[1].data()};float* out[]={output[0].data(),output[1].data()};
+    NodeIo io;io.in=in;io.out=out;io.channels=2;io.frames=64;
+    for(int block=0;block<8;++block){
+        gate->process(io);
+        gate->pumpMainThread();
+    }
+    DeviceNode node(*gate);
+    const auto active=node.latencySamples();
+    node.setBypassed(true);
+    check(active==480 && node.latencySamples()==480,"the Gate reports its 10 ms lookahead (480 samples) and keeps it while bypassed");
+}
+#endif
 void paramsAndState() {
 #if ADI_WITH_PD
     auto instance=load("org.adidaw.builtin.utility");
@@ -160,8 +194,7 @@ void insertionAndHistory() {
     const auto refused=commitBuiltinInsert(store,stale);
     check(!refused.ok && refused.stale && db.execAndGet("SELECT count(*) FROM devices").getInt()==2,"stale browser result refuses all new rows");
     check(!prepareBuiltinInsert(store,"unknown",1).ok && !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",999).ok &&
-          !prepareBuiltinInsert(store,"org.adidaw.builtin.hybrid-reverb",1).ok &&
-          !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",9,prepared.deviceId).ok,"unknown/unavailable devices, missing track and selection on another track refuse");
+          !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",9,prepared.deviceId).ok,"unknown devices, a missing track and a selection on another track refuse (every catalogue entry is available with Pd; the PD-disabled build refuses them all)");
 #endif
 }
 void thirdPartyPlacement() {
@@ -345,6 +378,174 @@ void playingSession() {
 // DEV-21: OneShot is a loadable instrument, so a MIDI clip sounds. Through
 // the product's own calls: the browser insert (registered as an instrument),
 // the sample slot assignment (#414), an ordinary Session with a MIDI clip.
+// DEV-22: Hybrid Reverb is loadable. Through the product's calls: the browser
+// insert, an impulse response assigned to its slot (#414), an ordinary Session
+// at 48 kHz, the Convolution route alone, fully wet, so a constant 0.25 comes
+// out at 0.25 times the IR's DC gain once the 256-sample partition has passed.
+// Two IRs, each one impulse of 0.5: at the session's rate on its first sample
+// (nothing resampled: exact), and at 44.1 kHz 64 samples in (resampled with its
+// DC gain kept). An impulse on the very first sample of an IR at another rate
+// loses the half of its resampled pulse that falls before time zero.
+void hybridSession() {
+#if ADI_WITH_PD
+    const auto* info=findBuiltin("org.adidaw.builtin.hybrid-reverb");
+    check(info && info->available,"Hybrid Reverb is available in the catalogue");
+    if(!info || !info->available)return;
+    struct Case{std::uint32_t rate;std::size_t at;float tolerance;const char* what;};
+    for(const Case& c:{Case{48000,0,1e-6f,"an IR at the session's rate convolves exactly"},
+                       Case{44100,64,1e-3f,"an IR at 44.1 kHz is resampled to 48 kHz with its DC gain kept"}}) {
+        Project project;auto& store=*project.store;auto& db=store.db();
+        const auto inserted=prepareBuiltinInsert(store,"org.adidaw.builtin.hybrid-reverb",1);
+        check(inserted.ok && commitBuiltinInsert(store,inserted).ok,"the browser inserts Hybrid Reverb on an audio track");
+        const auto ir=project.temporary.path()/"impulse.wav";
+        {
+            std::vector<float> impulse(512,0.f);impulse[c.at]=.5f;
+            audio::WavWriter writer(ir,c.rate,1,audio::WavFormat::Float32);writer.write(impulse.data(),512);writer.close();
+        }
+        const auto assigned=prepareSampleAssignment(store,inserted.deviceId,1,ir,48000,7);
+        if(!assigned.ok)std::printf("assign: %s\n",assigned.error.c_str());
+        check(assigned.ok && commitSampleAssignment(store,assigned).ok,"an impulse response is assigned to Hybrid Reverb's slot as one undo step");
+        for(const auto& [param,norm]:{std::pair<const char*,double>{"1",1.0},{"14",1.0}}) {  // Route: Convolution; Dry/Wet 100 %
+            OpRequest set;set.opType="device.setParam";set.payload={{"dev",inserted.deviceId},{"param",param},{"norm",norm}};
+            check(OpJournal(store).commit(set).ok,"Hybrid Reverb parameter set");
+        }
+        std::vector<float> samples(96000,0.25f);
+        audio::WavWriter writer(project.temporary.path()/"audio.wav",48000,2,audio::WavFormat::Float32);writer.write(samples.data(),48000);writer.close();
+        db.exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(2,'test','audio.wav','wav')");
+        db.exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,1000000000)");
+        db.exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,2,0,48000)");
+        Session session;session.graph().setFadeFrames(0);
+        const bool loaded=session.load(store,withBuiltinDevices(),{2,48000,256});
+        if(!session.error().empty())std::printf("session: %s\n",session.error().c_str());
+        check(loaded && session.stats().loaded==1,"the project with Hybrid Reverb loads in an ordinary Session");
+        session.transport().play();
+        std::vector<float> left(256),right(256);float* out[]={left.data(),right.data()};
+        for(int block=0;block<40;++block){(void)session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=256;session.process(io);}
+        std::printf("METRIC Hybrid Reverb, a 0.5 impulse at %u Hz (sample %zu) convolving 0.25 at 48 kHz: %.6f\n",c.rate,c.at,left.back());
+        check(std::abs(left.back()-0.125f)<c.tolerance && std::abs(right.back()-0.125f)<c.tolerance,c.what);
+    }
+#endif
+}
+// DEV-21 (win, 20 November: option 1): the Sampler is a loadable instrument.
+// Its catalogue entry declares 32 sample slots in a declaration text that is
+// not a canvas; the slot ops fill them; a filled slot is a zone over every key
+// and velocity, so a sample dropped into any slot plays at once, and two
+// dropped samples layer, as in Live's Sampler.
+#if ADI_WITH_PD
+double samplerPeak(const std::vector<std::int32_t>& slots,bool reload,double volumeDb=-12) {
+    Project project;auto& store=*project.store;auto& db=store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(2,'midi','Keys')");
+    const auto inserted=prepareBuiltinInsert(store,std::string(device::samplerUid),2);
+    check(inserted.ok && commitBuiltinInsert(store,inserted).ok,"the browser inserts the Sampler on a MIDI track");
+    check(db.execAndGet("SELECT subtype FROM plugin_refs WHERE uid='org.adidaw.builtin.sampler'").getString()=="instrument",
+          "the Sampler is registered with subtype instrument");
+    const auto file=project.temporary.path()/"tone.wav";
+    {
+        std::vector<float> tone(96000);
+        for(std::size_t i=0;i<48000;++i) {
+            tone[2*i]=tone[2*i+1]=static_cast<float>(.5*std::sin(2*3.141592653589793*1000*static_cast<double>(i)/48000));
+        }
+        audio::WavWriter writer(file,48000,2,audio::WavFormat::Float32);writer.write(tone.data(),48000);writer.close();
+    }
+    for(const auto slot:slots) {
+        const auto assigned=prepareSampleAssignment(store,inserted.deviceId,slot,file,48000,7);
+        if(!assigned.ok) {
+            std::printf("assign: %s\n",assigned.error.c_str());
+        }
+        check(assigned.ok && commitSampleAssignment(store,assigned).ok,"a sample is assigned to a Sampler slot as one undo step");
+    }
+    if(volumeDb!=-12) {
+        // The hosted parameter path: an ordinary parameter op on Volume ("1",
+        // -36..36 dB) reaches the core through SamplerNative's sendParameter.
+        OpRequest volume;volume.opType="device.setParam";
+        volume.payload={{"dev",inserted.deviceId},{"param","1"},{"norm",(volumeDb+36)/72}};
+        check(OpJournal(store).commit(volume).ok,"the Sampler's Volume is set by an ordinary parameter op");
+    }
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(5,2,'midi',0,23063040)");
+    {
+        StreamHeader header{static_cast<std::uint32_t>(FourCC::Notes),1,40,1,0};
+        NoteRecord note{};note.start_ticks=0;note.dur_ticks=5765760;note.note_id=1;note.key=60;note.vel_on=127;
+        note.vel_off=64;note.probability=10000;
+        std::vector<std::uint8_t> bytes(sizeof header+sizeof note);
+        std::memcpy(bytes.data(),&header,sizeof header);std::memcpy(bytes.data()+sizeof header,&note,sizeof note);
+        SQLite::Statement statement(db,"INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(50,5,'notes',?)");
+        statement.bind(1,bytes.data(),static_cast<int>(bytes.size()));statement.exec();
+    }
+    // The project snapshot names each filled slot from the declarations.
+    {
+        const auto snapshot=SnapshotBuilder::fromStore(store);
+        auto order=slots;std::sort(order.begin(),order.end());
+        bool named=snapshot->sampleSlots.size()==order.size();
+        for(std::size_t i=0;named && i<slots.size();++i) {
+            const auto& node=*snapshot->sampleSlots[i];
+            named=node.problem.empty() && node.slot==order[i] && node.name=="Sample "+std::to_string(order[i]) && !node.empty;
+        }
+        check(named,"the snapshot shows each filled Sampler slot by its number and name, in slot order");
+    }
+    double peak=0;
+    for(int pass=0;pass<(reload?2:1);++pass) {
+        // The second pass is a fresh Session on the same store: every slot is
+        // restored from the project, as on reopening it.
+        Session session;session.graph().setFadeFrames(0);
+        const bool loaded=session.load(store,withBuiltinDevices(),{2,48000,64});
+        if(!session.error().empty()) {
+            std::printf("session: %s\n",session.error().c_str());
+        }
+        check(loaded,"the project with the Sampler loads in an ordinary Session");
+        session.transport().play();
+        std::array<std::array<float,64>,2> output{};float* out[]={output[0].data(),output[1].data()};
+        peak=0;int firstSound=-1;
+        for(int block=0;block<200;++block) {
+            (void)session.clips()->prime();AudioIo io;io.out=out;io.numOut=2;io.frames=64;session.process(io);
+            for(int i=0;i<64;++i) {
+                const double v=std::abs(static_cast<double>(output[0][static_cast<std::size_t>(i)]));
+                if(v>1e-4 && firstSound<0) {
+                    firstSound=block*64+i;
+                }
+                peak=std::max(peak,v);
+            }
+        }
+        check(slots.empty() || (firstSound>=0 && firstSound<256),"the MIDI clip's note sounds at once");
+    }
+    return peak;
+}
+#endif
+void samplerSession() {
+#if ADI_WITH_PD
+    const auto* info=findBuiltin(device::samplerUid);
+    check(info && info->instrument && info->midi && info->inputs==0 && info->available && builtinCanvas(device::samplerUid).empty(),
+          "the Sampler is in the catalogue as an instrument, with declarations that are not a canvas");
+    check(!device::makeNativePdDevice(builtinDeclarations(device::samplerUid),0,2) &&
+          !device::makeNativePdDevice(builtinDeclarations(device::samplerUid),2,2),"no Pd canvas path can become the Sampler");
+    auto instance=load("org.adidaw.builtin.sampler");
+    check(instance->eventFlow()==EventFlow::Consume && instance->paramCount()==24,"it consumes notes and has its 24 parameters");
+    const auto roles=instance->stateRoles();
+    check(roles.size()==33 && roles.front()=="state" && roles[1]=="sample:1" && roles.back()=="sample:32","32 sample roles beside its state");
+    check(instance->saveState("state").size()<4096,"its parameter state holds no audio");
+    const double one=.5*std::pow(10.,-12./20);   // the 0.5 sine at the default -12 dB
+    const double slot5=samplerPeak({5},true);
+    std::printf("METRIC Sampler, slot 5: peak %.4f (expected %.4f)\n",slot5,one);
+    check(std::abs(slot5-one)<2e-3,"a sample dropped into slot 5 plays at once over every key, and again after reopening");
+    const double loud=samplerPeak({5},false,0);
+    std::printf("METRIC Sampler, slot 5 at Volume 0 dB: peak %.4f (expected 0.5000)\n",loud);
+    check(std::abs(loud-.5)<5e-3,"Volume set to 0 dB reaches the core: the 0.5 sine plays at 0.5");
+    check(device::Sampler::kEventCapacity>=OneShotPdMidi::capacity,"the Sampler's event list holds every event its MIDI wiring can bring");
+    const double layered=samplerPeak({10,2},false);
+    std::printf("METRIC Sampler, slots 2 and 10: peak %.4f (expected %.4f)\n",layered,2*one);
+    check(std::abs(layered-2*one)<4e-3,"two dropped samples layer (slots 10 and 2: the snapshot lists them 2, 10)");
+    check(samplerPeak({},false)==0,"an empty Sampler is silent");
+    Project project;auto& store=*project.store;
+    const auto inserted=prepareBuiltinInsert(store,std::string(device::samplerUid),1);
+    check(inserted.ok && commitBuiltinInsert(store,inserted).ok,"a Sampler for the slot checks");
+    check(prepareSampleClear(store,inserted.deviceId,1).ok && prepareSampleClear(store,inserted.deviceId,32).ok &&
+          !prepareSampleClear(store,inserted.deviceId,0).ok && !prepareSampleClear(store,inserted.deviceId,33).ok,
+          "slots 1 to 32 are declared, 0 and 33 refused");
+    // A source fits a built-in's state when its float backup does: 8M values.
+    check(device::builtinSampleStateFits(8u*1024u*1024u,1) && device::builtinSampleStateFits(4u*1024u*1024u,2) &&
+          !device::builtinSampleStateFits(4u*1024u*1024u+1u,2) && !device::builtinSampleStateFits(0,2),
+          "a stereo sample holds at most 4M frames, a mono one 8M");
+#endif
+}
 void instrumentSession() {
 #if ADI_WITH_PD
     const auto* info=findBuiltin("org.adidaw.builtin.oneshot");
@@ -397,5 +598,11 @@ void instrumentSession() {
     // At full velocity, OneShot's default Volume (Live's -12 dB) on the 0.5 sine.
     check(firstSound>=0 && firstSound<256 && std::abs(peak-.5*std::pow(10.,-12./20))<2e-3,"the MIDI clip's note plays the sample through OneShot, at its default -12 dB");
 #endif
+    hybridSession();  // DEV-22
+    samplerSession();  // DEV-21
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{catalogueAndHost();
+#if ADI_WITH_PD
+gateLatency();
+#endif
+paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

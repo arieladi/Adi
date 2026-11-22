@@ -3,8 +3,10 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/sampler_declarations.hpp"
 #if ADI_WITH_PD
 #include "adi/pd_builtins/colorcab_sample.hpp"
+#include "adi/pd_builtins/hybrid_reverb_sample.hpp"
 #include "adi/pd_builtins/oneshot_sample.hpp"
 #endif
 #include <samplerate.h>
@@ -17,6 +19,7 @@ namespace adi::device {
 namespace {
 constexpr std::string_view colorCabUid="org.adidaw.builtin.color-cab";
 constexpr std::string_view oneShotUid="org.adidaw.builtin.oneshot";
+constexpr std::string_view hybridReverbUid="org.adidaw.builtin.hybrid-reverb";
 void offThread(){if(audio::onAudioThread)throw std::runtime_error("sample preparation belongs off the audio thread");}
 void validRate(double rate){if(!std::isfinite(rate)||rate<=0||rate>768000)throw std::runtime_error("invalid sample processing rate");}
 bool hashValid(const std::string& hash){return hash.size()==64 && std::all_of(hash.begin(),hash.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});}
@@ -72,7 +75,12 @@ BuiltinSampleInfo inspectBuiltinSample(const Payload& value) {
     if(!kind.is_string() || kind.get_ref<const std::string&>()!="adi.builtin.sample" || value.at("version")!=1)throw std::runtime_error("unsupported built-in sample state");
     BuiltinSampleInfo info;info.uid=value.at("uid").get<std::string>();
     const auto slot=value.at("slot").get<std::int64_t>();
-    if(!value.at("slot").is_number_integer()||slot!=1||(info.uid!=colorCabUid && info.uid!=oneShotUid))throw std::runtime_error("unsupported built-in sample slot");
+    // Color Cab, OneShot and Hybrid Reverb declare slot 1; the Sampler 1..32 (DEV-21).
+    const bool single=info.uid==colorCabUid || info.uid==oneShotUid || info.uid==hybridReverbUid;
+    const bool sampler=info.uid==samplerUid;
+    if(!value.at("slot").is_number_integer() || !((single && slot==1) || (sampler && slot>=1 && slot<=32))) {
+        throw std::runtime_error("unsupported built-in sample slot");
+    }
     info.slot=static_cast<std::int32_t>(slot);info.empty=value.at("empty").get<bool>();
     if(!info.empty){info.mediaHash=value.at("mediaHash").get<std::string>();if(!hashValid(info.mediaHash))throw std::runtime_error("invalid sample media hash");}
     return info;
@@ -84,10 +92,13 @@ Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,const std::f
     audio::WavReader reader(playable);
     if(reader.frames()==0||reader.frames()>builtinSampleMaxFrames||reader.channels()==0||reader.channels()>64)
         throw std::runtime_error("sample is empty or exceeds the 8M-frame preparation limit");
-    if(info.uid==oneShotUid) {
-        // DEV-21: OneShot plays the source itself, in stereo when it has two
+    if(info.uid==oneShotUid || info.uid==hybridReverbUid || info.uid==samplerUid) {
+        // DEV-21: OneShot plays the source itself, and Hybrid Reverb convolves with it, in stereo when it has two
         // channels or more (the first two), at the source's own rate.
         const std::uint16_t channels=reader.channels()>=2?2:1;
+        if(!builtinSampleStateFits(reader.frames(),channels)) {
+            throw std::runtime_error("sample is too long for a built-in's state (a stereo sample holds at most 4M frames)");
+        }
         std::vector<float> interleaved(static_cast<std::size_t>(reader.frames())*channels);
         std::vector<float> block(4096u*reader.channels());std::size_t done=0;
         while(done<static_cast<std::size_t>(reader.frames())) {
@@ -140,7 +151,8 @@ Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,const std::f
 std::unique_ptr<PdSampleBuffer> restoreBuiltinSample(const Payload& value,double rate) {
     offThread();const auto info=inspectBuiltinSample(value);validRate(rate);
 #if ADI_WITH_PD
-    if(info.uid==oneShotUid) {
+    if(info.uid==oneShotUid || info.uid==samplerUid) {
+        // DEV-21: a Sampler slot is a OneShot sample, as OneShot's own slot is.
         if(info.empty)return clearOneShotSample(info.slot);
         const auto channels=value.at("channels").get<int>();const double sourceRate=value.at("sourceRate").get<double>();validRate(sourceRate);
         if(channels<1||channels>2)throw std::runtime_error("invalid OneShot sample channels");
@@ -151,6 +163,37 @@ std::unique_ptr<PdSampleBuffer> restoreBuiltinSample(const Payload& value,double
         raw->interleaved=std::move(interleaved);raw->blake3=info.mediaHash;
         auto prepared=prepareOneShotSample(std::move(raw));
         if(!prepared)throw std::runtime_error("OneShot sample preparation refused");
+        return prepared;
+    }
+    if(info.uid==hybridReverbUid) {
+        // DEV-22: the impulse response at the device's rate. Resampling keeps a
+        // signal's amplitude, which would scale an IR's DC gain by the rate
+        // ratio; scaled back, a reverb is as loud at every session rate.
+        if(info.empty){auto result=std::make_unique<PdHybridReverbSample>();result->id=info.slot;result->impulse.sampleRate=0;return result;}  // no rate: the core convolves with nothing
+        const auto channels=value.at("channels").get<int>();const double sourceRate=value.at("sourceRate").get<double>();validRate(sourceRate);
+        if(channels<1||channels>2)throw std::runtime_error("invalid Hybrid Reverb impulse channels");
+        const auto interleaved=sourceMono(value);
+        if(interleaved.size()%static_cast<std::size_t>(channels)!=0)throw std::runtime_error("invalid Hybrid Reverb impulse length");
+        const auto frames=interleaved.size()/static_cast<std::size_t>(channels);
+        std::vector<std::vector<float>> planes(static_cast<std::size_t>(channels));
+        for(std::size_t c=0;c<planes.size();++c) {
+            std::vector<float> plane(frames);
+            for(std::size_t i=0;i<frames;++i)plane[i]=interleaved[i*planes.size()+c];
+            // An IR whose sound starts on its very first sample loses the
+            // leading half of that band-limited pulse, which falls before time
+            // zero: about 0.5 dB of that first click from 44.1 to 48 kHz. Kept
+            // so, since keeping it would delay every IR; at the session's own
+            // rate nothing is resampled.
+            planes[c]=atRate(plane,sourceRate,rate);
+            const auto gain=static_cast<float>(sourceRate/rate);
+            for(auto& sample:planes[c])sample*=gain;
+        }
+        const auto length=planes[0].size();
+        auto raw=std::make_unique<PdSampleBuffer>();raw->id=info.slot;raw->channels=channels;raw->sampleRate=rate;
+        raw->frames=static_cast<std::int64_t>(length);raw->blake3=info.mediaHash;raw->interleaved.resize(length*planes.size());
+        for(std::size_t i=0;i<length;++i)for(std::size_t c=0;c<planes.size();++c)raw->interleaved[i*planes.size()+c]=planes[c][i];
+        auto prepared=prepareHybridReverbSample(std::move(raw));
+        if(!prepared)throw std::runtime_error("Hybrid Reverb impulse preparation refused");
         return prepared;
     }
     if(info.empty) {

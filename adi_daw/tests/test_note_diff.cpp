@@ -805,7 +805,7 @@ void sqlStorageClassGuards() {
 }
 
 struct Random {
-    std::uint64_t state = 0x901f7e3ab25d48c6ULL;
+    std::uint64_t state;
     std::uint64_t next() { state ^= state << 13; state ^= state >> 7; state ^= state << 17; return state; }
 };
 struct Model {
@@ -816,7 +816,8 @@ struct Model {
     std::vector<std::byte> trailer;
     std::vector<std::byte> bytes() const { return envelope(records, stride, sorted, version, trailer); }
 };
-void seededActualCommits() {
+void seededActualCommits(std::uint64_t seed) {
+    const auto label = "seed " + std::to_string(seed);
     Fixture f("seeded");
     std::array<Model, 3> models;
     models[1].stride = 48; models[1].version = 9; models[1].trailer = {std::byte{0x7f}, std::byte{0x00}};
@@ -835,7 +836,7 @@ void seededActualCommits() {
     f.store->db().exec("UPDATE note_expression SET future=X'00FF33'");
     const auto before = digestProject(*f.store).text;
     std::vector<std::string> afterStates;
-    Random random;
+    Random random{seed};
     std::uint64_t nextId = 1000;
     int successful = 0;
     for (int step = 0; step < 72; ++step) {
@@ -872,33 +873,37 @@ void seededActualCommits() {
         const auto snapshot = notes::captureNotes(*f.store, clip);
         const auto plan = notes::prepareDiff(snapshot, diff);
         require(plan.ok && plan.requests.size() == 1,
-                "seeded actual nonempty prepare step " + std::to_string(step) + ": " + plan.error);
+                label + " actual nonempty prepare step " + std::to_string(step) + ": " + plan.error);
         const auto result = notes::commitDiff(*f.store, plan);
-        check(result.ok, "seeded actual commit step " + std::to_string(step) + ": " + result.error);
+        check(result.ok, label + " actual commit step " + std::to_string(step) + ": " + result.error);
         if (!result.ok) return;
         ++successful;
         bool same = true;
         for (std::size_t i = 0; i < models.size(); ++i)
             same = same && f.blob(static_cast<std::int64_t>(i + 1)) == models[i].bytes();
-        check(same, "independent three-clip byte model after actual step " + std::to_string(step));
+        check(same, label + " independent three-clip byte model after actual step " + std::to_string(step));
         if (!diff.removed.empty())
             check(f.expressionCount(clip, readRecord(old).note_id) == 0,
-                  "seeded removed note has no surviving expression rows");
+                  label + " removed note has no surviving expression rows at step " + std::to_string(step));
         afterStates.push_back(digestProject(*f.store).text);
     }
     check(successful == 72 && OpJournal(*f.store).count() == 72,
-          "seeded gate contains 72 successful nonempty commits, not refused/no-op trials");
+          label + " records 72 successful nonempty commits");
     for (int step = 0; step < successful; ++step)
-        require(History(*f.store).undo().ok, "seeded undo step " + std::to_string(step));
+        require(History(*f.store).undo().ok, label + " undo step " + std::to_string(step));
     check(digestProject(*f.store).text == before && !History(*f.store).canUndo(),
-          "seeded undo-all restores exact bytes, row identities, expression rows and unknown columns");
+          label + " undo-all restores exact bytes, row identities, expression rows and unknown columns");
     f.reopen();
     for (std::size_t step = 0; step < afterStates.size(); ++step) {
         const auto result = History(*f.store).redo();
         check(result.ok && digestProject(*f.store).text == afterStates[step],
-              "seeded reopen/redo matches saved independent state step " + std::to_string(step));
+              label + " reopen/redo matches saved independent state step " + std::to_string(step));
         if (!result.ok) return;
     }
+}
+void runNoteDiffSeeds() {
+    for (const auto seed : {0x901f7e3ab25d48c6ULL, 0x1ULL, 0x7504e8922654cc81ULL, 0xffffffffffffffffULL})
+        seededActualCommits(static_cast<std::uint64_t>(seed));
 }
 
 void lateFailures() {
@@ -948,7 +953,7 @@ int main() {
         {"future and expressions", futureAndExpressions}, {"creation", creationAndSignedRows},
         {"numeric and malformed", numericAndMalformed}, {"stale guards", staleGuards},
         {"coherent capture", coherentOwnerCapture}, {"SQL storage classes", sqlStorageClassGuards},
-        {"seeded commits", seededActualCommits},
+        {"seeded commits", runNoteDiffSeeds},
         {"late failures", lateFailures}}};
     for (const auto& [name, run] : cases) {
         try { run(); }

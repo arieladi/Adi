@@ -39,8 +39,8 @@ Next free: **ADR-0252**.
 |---|---|---|---|---|
 | DF-C | Control | the control seat, through win | DF-C5 | DF-C6 |
 | DF-M | Mix View | the Mix View seat, through win | DF-M61 | DF-M62 |
-| DF-W | Window | the window lane and win | DF-W36 | DF-W37 |
-| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E62 | DF-E63 |
+| DF-W | Window | the window lane and win | DF-W37 | DF-W38 |
+| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E64 | DF-E65 |
 | DF-R | Repository | win | DF-R1 | DF-R2 |
 
 Three seats share DF-E, so each DF-E id is reserved here first.
@@ -61,5 +61,15 @@ Claimed by open pull requests. #674 carries #651's op and #665 carries #677's: o
 |---|---|---|
 | N57 | the insert of a third-party plug-in (`preparePluginInsert`, `insertPlugin`), from the Mix View's 668e05c9 core with Live's placement rules | engine |
 | N58 | one catalogue API off the message thread: a startup scan service, Rescan, a default worker count, each VST3's kind with the instrument flag | engine-win |
+| N59 | a distinct scan state for "the scanner helper could not start" (`HelperCouldNotStart`) | engine-win; **met on main** (#694) |
+| N60 | live MIDI input to the armed track's instrument, taking the window's per-port rings (`MidiPortEvent`) on the audio thread | engine's seam on main (#685, `Session::enqueueMidiInput`); the drain from the window's rings into it is the window's (window-fn) |
+| N61 | a `midi.port.name` settings row, so a port's record heals by name when its identifier changes | engine-win; **met on main** (`settings/registry.cpp`); the healing by name is the window's |
+| N62 | the render worker's contract for plug-ins (instances made and given state on the message thread, processing on the worker, `serviceHost` marshalled), so Export renders a project with plug-ins | engine-win (EX-11's engine half) |
+| N63 | `notes::prepareBatch(snapshot, ops)`: one prepared `note.applyDiff` whose effects are the legacy note ops applied in turn, one undo step | engine (`note_diff*`, MI-01) |
+| N64 | the snapshot's recording fields `TrackNode::recordArmed`, `monitorMode`, `inputRef` | engine (`engine/snapshot.*`) |
+| N65 | the input-monitor node of MX-09, heard per `monitor_mode` | engine; **met on main** (#685, `Session::setAudioMonitorInputs`); wiring it is the window's |
+| N66 | a failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today) | engine-win (recording, ADR-0248 d7) |
+| N67 | Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | **ruled by win (ADR-0203 d1): Auto, as Live**; the engine's `track.create` default and New's tracks |
+| N68 | after a discovery job, a project open still probes a plug-in's saved path when the catalogue lacks it, as before any job (`managedDiscovery_`, `juce_device_loader.cpp` 450) | engine-win (N58) |
 
-Next free: **N59**. The project key and scale take it if they need an engine field.
+Next free: **N69**. The project key and scale take it if they need an engine field.

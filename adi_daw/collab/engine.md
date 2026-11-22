@@ -18,6 +18,290 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+### DF-E6 count-in across more than one beat of render latency
+
+When a one-bar count-in feeds a path with more than one beat of latency, should the transport start later or should the cue keep clicking until bar one is heard? My recommendation is to preserve the scheduled transport start, continue the cue at the count-in cadence during the latency interval, and align the bar-one accent with the first heard program audio. Main's count-in click uses immediate elapsed frames. Its rolling metronome uses the delayed graph clock.
+
+Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
+
+### N53 hidden material at an Arrangement crossfade
+
+When the selection straddles two adjacent audio clips and one has less hidden audio than the selection needs, where does Live 12.4 put the overlap? The lower and peak handles, the kept seam, and the case where neither clip has any hidden audio need a reading under ED-10's A6C-079. I recommend retaining the visible seam and intersecting the selection with the two clips' available audio, shortening the overlap to what can play. With no playable overlap, report the missing handles. Please put a full-handles case, a one-sided case and a no-handles case on the Devices seat's one Live list. This blocks N53's playback interval and capture rules.
+
+### N54 clipboard track hints and hybrid material
+
+The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
+
+## 2026-11-19 — DF-E52(a,b) explicit plug-in parameter gestures and last touch
+
+**PR requested** · `engine/df-e52-param-gesture-promotion` · `b2c79ba724337211ed7ad018a3b50588464e4aee`
+**Title** — Promote implicit parameter gestures when Begin arrives.
+
+An explicit Begin promotes an open unbracketed gesture on the same parameter, preserving its starting value and holding it through the quiet timeout until End. During preset absorption, a promoted gesture keeps its earlier observations from that drain. A later ungestured broadcast cannot displace the latest explicit touch.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Param edits 404, ParamOps 178, UI param capture 61, automation write policy 31 and gesture 778 pass in both. The new tests yielded seven failures with the previous capture implementation, including quiet-time promotion, ownership of the promoted prefix during absorption and last touch after a later broadcast. `git diff --check` passes.
+
+**Dependency** — Current main. Use before the temporary parameter entry or Focus Dial reads lastTouched.
+
+## 2026-11-19 — DF-E49 gesture capture fault fence
+
+**PR requested** · `engine/df-e49-gesture-fault-fence` · `b57638c833cd42b7b54c0eff998d80b1ed48ae7b`
+**Title** — Keep refaults latched through gesture fence recovery.
+
+Producer faults now publish the latch and recovery interruption in the same atomic word. Recovery keeps the latch set while it checks ownership and clears it with compare-and-swap only if the scan was uninterrupted. A producer still acknowledges its own fault. The drain comment now explains why open gestures can reapply from the current Store revision when individual commit notices are discarded.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Gesture 780, gesture graph 125, gesture playback 569, History Move 49, param edits 377 and UI param capture 61 all pass in both. The gesture suite races independent producers for 200,000 rounds and checks that the fault survives until its own producer acknowledges it. A separate ordered probe paused a fault across the scan and the atomic clear. The same interleaving admitted navigation on previous main and kept it closed on the candidate. `git diff --check` passes.
+
+**Dependency** — Current main. Land before DEV-23 hosted plug-ins run on graph workers.
+
+## 2026-11-19 — DF-E48(a,b) media and forwarded MIDI used by Freeze
+
+**PR requested** · `engine/df-e48-freeze-media-scope` · `c5f4ae0c164eeeea0ad78af70f2c83c1b21969d9`
+**Title** — Scope Freeze capture media to playable clips.
+
+Freeze pins the requested tracks' unmuted main-lane audio and keeps existing verified caches and parked sources intact. Unrelated active audio is muted in the private render copy. A muted clip needs no reader, and a missing selected asset still refuses capture when made playable. The single-track forwarded-MIDI test now uses the same audible-lane rule as group capture.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Freeze capture 31, Freeze commands 81, group 65, Track Bounce 69 and audio clip playback 489 pass in both. Each new regression failed on the previous code. The exact dry merge with the Windows DF-E35(b) extent candidate passed GCC Freeze commands 144, group 65, Track Bounce 69 and Freeze capture 31, including cached fallback and parked-originals cases. `git diff --check` passes.
+
+**Dependency** — Current main, before Window wires Freeze. The Windows DF-E35(b) hunk at `759014e9` merges cleanly and can land independently.
+
+## 2026-11-19 — DF-E47(a,b) linear clip and remark snapshots
+
+**PR requested** · `engine/df-e47-linear-clip-snapshot` · `f26b6396a9057b460686ba1350a6f026ac24c330`
+**Title** — Project linear clip snapshots through the tempo map.
+
+Snapshots project each native absolute start and end through the tempo map and sort mixed-clock clips by projected start, then ID. Native nanoseconds participate in sharing even when both displayed ticks stay the same. Existing independent fade handles use that projection and preserve their physical anchors. Remark ownership now checks a per-rebuild track ID set when remarks exist.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Both pass engine 147, snapshot remarks 29, clip edit 408, clip playback 503, MIDI Capture 51, clip details 32, edit plan 610 and Warp playback 125. Three compiled faults removed projection, native-time comparison or mixed sorting and failed their named assertions. Updated the N52 fixture to select authored clips by ID since timeline order now changes. All four validators, SPEC binary layout and `git diff --check` pass.
+
+**Dependencies** — E1 `55fd8bbd` through DF-E45 `5a416811`, and N52 `65c0dd4c` retained in this stack. Land with DF-E17(a), before Bounce gets a Window caller. Combining the older DF-E17 branch `0c30d4ce` with this stack requires reconciling `snapshot.cpp`, `ops_catalog.cpp` and the clip edit fixture. DF-E35(a) remains the later take-lane snapshot change.
+
+## 2026-11-19 — DF-E51(c) initial MPE member expression
+
+**PR requested** · `engine/df-e51-mpe-initial-expression` · `418a16b0f3ff9e2443205f7bff1b831ce9fd1641`
+**Title** — Latch an MPE member note's initial bend and timbre.
+
+Idle member bend and timbre stay on their channel until the next attack. The accepted Note On comes first in the native stream and its initial values carry that note ID at its frame. CC74 works on its own and CC106 can complete the full 14-bit value. An initial value refused by the sink can retry on its original accepted note, and a refused note start consumes its own latch. Plain and master routing preserve their original addresses.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Both pass MPE parser 88, capture 41, MIDI memory 32, parser-to-router 25 and MPE output 91. The real note-expression route receives exact initial timbre and the MPE MIDI route emits the exact initial bend before its attack. Callback audit passed. Three compiled faults lost the bend latch, narrowed timbre and discarded a refused value respectively, producing the intended failures. `git diff --check` passed. Hardware Continuum and hosted instruments are pending their own readings.
+
+**Dependency** — Stack after DF-E51(a,b,d) `ba87710e`. Ready before MPE input wiring.
+
+## 2026-11-19 — DF-E54(b) project structure and timing checks
+
+**PR requested** · `engine/df-e54-project-structure` · `3887a4cbe798cde066c9a76630d75cda92961779`
+**Title** — Check project structure, native clip lengths and tempo query.
+
+`checkProject` now reports track-parent cycles and effective main-output cycles, including a main edge returning into an implicit group output. The graph check is iterative. Disabled edges and sends sit outside the main-output graph. Each clip checks its native length column, with zero legal, and a failed tempo query reports an Error on `tempo_map`. Window parent-walk hardening remains tracked under DF-W35.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors in both. Check 62, Collect and Export 149, history 95, project files 53, engine 137, all pass. The previous checker at `56510cf7` failed exactly the nine planted assertions, covering both cycle families, missing and negative lengths in each clock and the failed tempo query. `git diff --check` passed.
+
+**Dependency** — Stack after DF-E54(a) `56510cf7`.
+
+## 2026-11-19 — DF-E54(a) project check after Cut and Undo
+
+**PR requested** — branch `engine/df-e54-journal-targets`, head `56510cf7bbceaf2f7c4f9a20b748663f5c119045`, main base `8416ed0f`. Title **DF-E54(a): Validate journal targets as historical metadata**. Land before Collect and Export reaches its Window command.
+
+The checker treats operation targets as historical metadata. It still checks the journal itself and live references. A real Cut and an undone clip creation now both pass project checking and publish their ZIP through the existing Collect and Export entry point.
+
+**Gate** — The identical fixture first produced four named failures with main's checker. GCC 14 and Clang 19 warnings as errors then passed project check (50), Collect and Export (149), history (95) and project files (53). Existing malformed live references still fail. CI, ops, Pd, schema and binary layout passed. DF-E54(b)'s validation additions follow independently.
+
+## 2026-11-19 — DF-E45 capture origin and tempo inverse
+
+**PR requested** — branch `engine/df-e45-midi-capture-clock`, head `5a416811205d7ae74a05c567c3d471704b15d4fe`, current main `8416ed0f` and DF-E1's `55fd8bbd`. Title **DF-E45: Preserve MIDI Capture samples across musical origins**. Includes the existing E1 tempo inverse, so land the stack once. CT-03 can use the result before wiring `prepareMidi`.
+
+Capture keeps the authored origin tick. Later offsets start at the rounded origin sample, choose the nearest tick, and verify the exact sample round trip. The integer-nanosecond inverse restores an adjacent tick only when that tick rounds to the same stored nanosecond. Truly fractional values retain the earlier-tick result. DF-E1 already guards the raw inverse against nonfinite and huge input.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Both passed the eight capture, tempo, clip, edit-plan, MIDI, defaults and automation suites. The 51-check capture suite prepares and commits the 110 BPM beat-two case and the 128 BPM bar-two half-sample case at 44.1 kHz. Both play every expected sample through Session. It checks 1,536 integer-nanosecond round trips and their true-floor counterparts at 90, 110 and 140 BPM. Two compiled faults caught the old fractional origin clock and the lost nanosecond round trip. The validators and binary layout passed.
+
+## 2026-11-19 — DF-E51 (a), (b) and (d) MIDI input note ownership
+
+**PR requested** — branch `engine/df-e51-midi-note-ownership`, head `ba87710e5ecf53ae451a1557a45aabffca32f25e`, main base `8416ed0f`. Title **DF-E51: Keep MIDI note ownership through retriggers and zone changes**. Land before the Window's SRF-05 Track route feeds this parser.
+
+Retriggers release the oldest matching start first on plain and MPE member channels. Zone changes carry all held IDs. Member expression follows the latest accepted note still held. The parser retains a rejected release for retry and skips the matching release of a rejected start. The per-channel fixed queue holds 256 starts. Overflow releases drain in input order before that key admits more starts. Complete poly pressure and program changes have a diagnostic count. DF-E51 (c) follows separately.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Each passed input parser (80), MIDI capture (41), retrospective memory (32), the parser/real router/capture gate (22, including zero callback allocations and file I/O), and MPE output (91). The old capture-input assertion explicitly pinned the previously documented newest-ID behavior. The updated assertion requires both correct releases at the real router. Three compiled faults caught newest-first matching, lost refused releases, and admitting starts before overflow clears. Validators and binary layout passed.
+
+## 2026-11-19 — MI-08 persisted expression playback
+
+**PR requested** — branch `engine/mi08-expression-playback`, head `cd8d8e6947ffdf15f9b4e8f87a2a8502a79ce166`. Title **MI-08: Schedule saved per-note curves through clip playback**. Stack parents `e5b350cd` (AEXP read) and `0c3d63ea` (host units), both on code from main `88e2d94e`. Latest main `8416ed0f` adds review rows and documentation only.
+
+The committed and preview Sessions capture the saved curves into their clip generations. Stable note IDs receive the authored values after Note On, with existing note tuning added once. The owner prepares changing values on the 500 Hz grid and also keeps explicit curve knots. Locate and clip repeats chase the held value. A full callback event buffer keeps the note-release reservation and retries the latest pending expression in the next block. A malformed curve or exhausted schedule budget leaves ordinary note playback available and reports the problem. The five standard dimensions are routed through the existing hosted event path.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors, MIDI clips (472), session (214), MIDI controllers (90), gesture playback (569), and clip playback (489). Four compiled faults failed named cases for off-grid knots, saturated expression delivery, duplicate tuning, and clipped loop phase. The real Session sent exact values into a recording instrument at both processing widths and two device block sizes, with no callback allocations or file I/O. CI, ops, Pd, schema and layout passed. The Live 12.4 and installed-synth readings, and the reserved journal writes, remain open.
+
+The review rows in #684 move DF-E51 ahead of further new feature work. DF-E45 takes the existing DF-E1 tempo inverse forward, and DF-E47 must retain N52's newly projected handle pairs.
+
+## 2026-11-19 — MI-08 hosted note gain and pan units
+
+**PR requested** — branch `engine/mi08-expression-host-units`, head `0c3d63eaca5c29c8a44382e39c0345b3a790ddeb`, main base `88e2d94e`. Title **MI-08: Convert authored note gain and pan for hosted instruments**. Independent of the AEXP reader. Both feed the playback step.
+
+Authored note events mark their native units. VST3 receives 0 dB at its normalized quarter position and centered pan at 0.5. CLAP receives linear gain, including the legal range above unity, and the same normalized pan. Unmarked expression retains the previous normalization. No journal name or schema is added here.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Each passed routing (93), the CLAP host (526), and MIDI clips (450). Two compiled faults detected direct normalization of authored dB/pan and incorrect CLAP gain capped at unity. The four validators and layout passed. The VST3 result was checked at its shared SDK-event conversion, with the next playback gate covering the instrument path.
+
+## 2026-11-19 — MI-01 seeded note-diff gate
+
+**PR requested** — branch `engine/mi01-note-diff-seeds`, head `96422bfab53c0d6609793ff06c3168ea2d6dad25`, main base `88e2d94e`. Title **MI-01: Gate persisted note diffs across four deterministic seeds**.
+
+The three-clip byte reference now runs four explicit seeds through 288 actual commits, 288 Undo steps and 288 Redo steps after reopen. Every failure includes its seed. Standard, future-stride and unsorted streams retain independent reference bytes. Undo also compares the original expression rows and schema extension bytes.
+
+**Gate** — GCC 14 and Clang 19 with warnings as errors each passed note diff (1,052), note compatibility (271) and MIDI clip playback (450). The four validators and format-layout check passed. This is the local MI-01 seeded gate. The existing history-fuzz branch and the remaining hosted legs have their own landing order.
+
+## 2026-11-19 — MI-08 native expression read step
+
+**PR requested** — branch `engine/mi08-note-expression-read`, head `e5b350cd34d569825ea7bb41fd47c0c85519a75e`, main base `88e2d94e`. Title **MI-08: Read stored per-note expression for the Clip View**.
+
+**For Window.** The expression tab can request `readClipDetails(store,id,true,true)`. The owner read pairs curves with one exact stored note ID and returns pitch, pressure, slide, decibel gain and signed pan with their AEXP curve and tension. It reports malformed rows and missing or ambiguous note identities alongside the healthy curves. Existing overview and ordinary note reads keep their previous workload. The project expression reader also exposes the known prefixes of wider records and plug-in dimensions. All original bytes stay on disk. The playback and journal steps follow. Win has the two operation reservation requests.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors on changed units and scalar callers. Both passed Clip Details (39), scale context (39), Scala import (60), note diff (362), and the MIDI clip suite (450). Three compiled faults detected lost NaN tension normalization, binding to an ambiguous identity and eager expression decoding. The gate covers full-width IDs, negative note-relative ticks, a future stride and tail, invalid row scope and native units. CI, ops, Pd, schema and binary layout checks passed.
+
+## 2026-11-19 — MI-08 operation reservations for Win
+
+**Reserve** the two existing PLAN/OPS names `noteExpression.write` and `noteExpression.clear` for the engine. They will use the existing AEXP table and note-diff capture for exact Undo. DF-W12 uses the table's existing gain and pan dimensions. I am taking the owner-side AEXP read step first. The journal names wait for their reservation.
+
+MI-09 follows MI-08. Its probability-group policy still needs the A6M-030 reading and its separate schema reservation.
+
+## 2026-11-19 — N55 grouped clip splits
+
+**PR requested** — branch `engine/n55-split-clips-group`, head `9428d1d7bc04e56a02569235613211e0bd21cd10`, main base `88e2d94e`. Title **N55: Split several selected clips in one Undo step**.
+
+**For Window.** Pass the chosen clip IDs and one or two points per clip to `prepareSplits`, then submit the returned `edit` once through the existing project entry point. `refused` holds each failed clip ID and reason so the UI can still report skipped clips. Valid splits share root and child allocations and one expected head. Undo and Redo apply the entire group once. Existing single-clip overloads keep their input and remain available.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Each passed clip edit (407), clip playback (489), edit plan (610), history (95), automation range Undo (87) and Warp playback (125). The new fixture covers physical audio, musical MIDI, one and two cuts, exact copied child IDs and bytes, a refused alias, a duplicate selection, group Undo/Redo, a stale head, and the last available signed identity after a refusal. Independent allocators and leaking a refused allocation each caused the expected ordinary failure in compiled faults. CI, ops, Pd, schema and binary layout checks passed.
+
+The two admission-fixture commits, now `50ae0d85`, also completed 200 full Linux suite runs at concurrency 12 with zero failures.
+
+## 2026-11-19 — Clip-admission unavailable-page fixture handshake
+
+**PR requested** — updated `engine/clip-admission-fixture-order`, head `50ae0d857d05e9513688f554ce8b4123449bdb3e`, fast-forward from `fc14ccbb` on main `88e2d94e`. Title **Wait for the clip worker before testing unavailable pages**. Both commits go in the same fixture PR.
+
+The owner-timeout and callback cold-page fixtures now hold the worker on an observed empty request before they publish missing pages. The previous stall flag let an in-flight worker iteration see the new request. This left the worker free to fill the very page the fixture meant to keep unavailable. The live readiness API, deadlines and PCM checks stay in place.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors, 90 checks each. A forced schedule let a worker iteration pass the old stall flag before the owner posted the request, giving the old fixture one named failure in seven checks. The revised fixture passed all seven against that scratch build. Four validators and binary layout passed.
+
+## 2026-11-19 — N52 independent fade start and end handles
+
+**PR requested** — branch `engine/n52-fade-start-handles`, head `65c0dd4c88e1a9063eaf3f27491f575ba46311b7`, main base `88e2d94e`. Title **N52: Add independent zero-gain handles for clip fades**.
+
+**For Window.** Each side of `clip.setFades` accepts `startTicks` as the zero-gain handle's distance inward from that clip edge. The existing `ticks` still locates the peak. A lower-handle edit can send `startTicks` alone. Include the current `startTicks` when moving the peak or bending an offset fade. Zero and the old payload return to the edge. The snapshot exposes both distances in `ClipNode::fadeInHandles` and `fadeOutHandles`. The existing Warp tick and unwarped nanosecond domains carry the authored bounds through Undo and reopen. A domain narrower than one device sample becomes a step at that sample.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Both passed clip edit (408), native playback (503 at both widths), clip candidate readiness (90), Warp playback, sample defaults and edit plan. The clips cover physical offsets across a tempo step, independent handle moves, one Undo for two sides, row absence, reopen and exact sample bounds. Three compiled faults detected missing source pins, missing snapshot projection and silence on sub-sample handles. CI, ops, Pd, schema and binary layout checks passed. Window owns the lower-handle drawing and gesture producer.
+
+## 2026-11-19 — Supplemental clip-admission stress
+
+The revised claim fixture at `fc14ccbb` passed the PCM and claim assertions in all 600 Linux runs at concurrency 12. GCC ThreadSanitizer instrumented the revised fixture and playback translation unit and passed 24 of 24 runs without a race report. Run 223 separately failed “unavailable candidate pages time out instead of claiming readiness.” Its fixture sets the stall flag without observing the worker settle, so an iteration that already passed the flag can still service the next request. That setup gets a separate handshake and forced gate. The timeout and the production admission contract remain as before.
+
+## 2026-11-19 — Clip-admission worker test handshake
+
+**PR requested** — branch `engine/clip-admission-fixture-order`, head `fc14ccbb9e167bbbd76f6eb60d283cdbd8b38506`, main base `88e2d94e`. Title **Arm the clip admission race fixture before replacing its request**.
+
+The 192-request PCM assertion passed all 600 current-main Linux runs at concurrency 12. One run failed two later assertions in the separate transient-claim fixture. The worker could snapshot a null probe, see the fixture's new page request afterwards and replace the target without the intended pause. The fixture now installs the probe before initial priming and observes the worker use it on the initial request before it posts the competing request. The actual worker claims, exact PCM, zero-underrun and callback safety checks, and all deadlines remain in place. This follows the 11 November production fix for lost admission (#515) and its #535 review follow-up.
+
+**Gate** — GCC 14 and Clang 19 with warnings as errors each passed all 90 cases. A scratch barrier held the actual worker between loading the probe and reading the replacement request. The old fixture reproduced both ordinary failures, the revised fixture passed all three assertions under the same schedule. Four validators passed. The unmodified main source also passed 24 runs with the playback translation unit and candidate fixture instrumented by GCC ThreadSanitizer. Additional final-tree stress and sanitizer runs are in flight.
+
+## 2026-11-19 — The 11 November late scanner publication sighting
+
+**For engine-win.** The named registry check passed 600 times against current main's Linux scanner at concurrency 12. Forced child scheduling on the historical process code reproduced the precise assertion: the child writes its valid packet and exits after the empty drain but before the exit observation, so the registry validator never runs. Applying the same timing to #509 let the check pass. The prior 200 full post-#509 suites remain in the 11 November entry. Today's additional full-suite stress exceeded the scratch harness's 20-second per-process budget during concurrent builds, so only the targeted current-main stress is counted here.
+
+No scanner code or PR. The original macOS libc++ occurrence had no state or packet trace, so its exact cause remains unverified. If it returns, please retain the helper status and the registry ticket/validator outcome.
+
+## 2026-11-19 — DF-M60 (b) default-active VST3 shape handoff
+
+**PR requested** — branch `engine/vst3-effective-key-shape`, head `b1a9cee854cc87cc4c7265c7a9b05d7966c15cb8`, #651 parent `5500f46598e2544c35fea0bcd797ffc8452291dc`. Title **Preserve VST3 preparation when an active auxiliary bus is retapped**. Gate after #651 lands. Keep its per-bus adapter when the engine send/worker stack catches up.
+
+**For Mix View.** Connect and disconnect update route intent. The native adapter derives its preparation stamp and activation from the same effective auxiliary state. A default-active key keeps its physical width and its prepared SDK state while an unwired key reads silence. A dormant key still changes the shape and activates the changed layout once in either direction.
+
+**Gate** — GCC 14 and Clang 19 compiled the changed VST3 adapter, owned SDK module and native key fixture with warnings as errors. Each passed 97 checks under Xvfb, covering both graph widths, mono and stereo keys, exact programme arrays, silence, in-place processing, stamps and activation counts. With the exact #651 adapter restored, the same fixture produced eight expected stamp and activation failures at the default-active transitions. The four validators passed. This is the adapter follow-up from the Mix View log, independent of the Session and Document loans and Win's Windows shell gate.
+
+## 2026-11-19 — DF-E12 replay fixture creation diagnostic
+
+**PR requested** — branch `engine/df-e12-store-create-diagnostic`, head `678f2e32c747f4387c1d631a4a9c504dc5c1fa31`, main base `88e2d94e`. Title **DF-E12: Report the StoreError from replay fixture creation**.
+
+The fixture reports which replay file failed and includes the Store error. The existing creation fault seam produces `cached replay fixture (Cached.adi): could not create the database` in a targeted build.
+
+**Gate** — GCC 14 and Clang 19 each passed the 53-check project-files suite with warnings as errors. The Linux x86-64 build ran it 320 times at concurrency 12 with no failures. Four validators and the layout check passed. This captures the next occurrence of #587's error without assuming the original ARM64 cause.
+
+## 2026-11-19 — DF-E10 Link stopped-transport intermittent
+
+The #548 assertion is in the local SDK test, with networking disabled. The peer fixture requires an explicit argument. Main's CTest configuration already holds the same Link resource lock for both Link suites.
+
+Linux x86-64 ran the unchanged local suite 700 times at concurrency 12. A timing probe ran another 1,200 times with a stop-to-capture scheduling gap, then 128 times with a 520 ms pre-stop pause and 40 ms post-stop pause to exercise SDK publication. All 2,028 runs passed. The ordinary CTest Link session, Link playback and external-tempo suites also passed together. This leaves the original ARM64 occurrence unexplained. For Win's next native ARM64 run, retain the original timeout and capture the stop intention, beat and tempo if this assertion recurs.
+
+## 2026-11-19 — DF-E4 library discovery and hash admission
+
+**PR requested** — branch `engine/df-e4-library-scan`, head `47243494b7ed54c18cfe104242b9e230e961adf1`, main base `88e2d94e`. Title **DF-E4: Keep library discovery and hash admission atomic**. Follows the scanner cancellation work already on main.
+
+Separate directory cursors keep the parent scan alive when a child disappears. The child is checked again before opening it. Hash queue changes stage under the index mutex before SQLite commits. A failed enqueue, cancellation or COMMIT removes the new queue entries and releases their deduplication keys. The worker sees the changes after publication succeeds.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors passed 74 library and 65 sample-defaults checks. Main failed the vanished child case first. A deferred foreign-key COMMIT failure preserves an earlier queued job and allows retry. An injected allocation exception passes with the staged order and reproduces the misleading rollback report with COMMIT moved first. The vanished-child fault also failed its intended check. Four validators and the layout check passed.
+
+## 2026-11-19 — DF-E3 retire unapplied progressive decode jobs
+
+**PR requested** — branch `engine/df-e3-progressive-queue`, head `83cca8a5e1a59c2ffc7590d3db327007278c4373`, main base `88e2d94e`. Title **DF-E3: Release queued decode admission on the last lease**.
+
+Dropping the last public lease cancels the job and removes it from the pending queue under the same lock used for dequeue. Pending cancellation returns both the job slot and its byte reservation. A worker that claimed the job owns release through completion. Leases can outlive the decoder and the shutdown stop callbacks run outside the queue lock.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors passed 97 progressive decode, 56 decode-cache and 90 clip candidate readiness checks. With both workers held, old code refused the next open after dropping the final queued lease. Both compiled admission faults reproduced that failure. The final gate also destroys a decoder whose active stop callback releases a queued lease. Four validators and the layout check passed.
+
+## 2026-11-19 — DF-E7 End resize and split boundaries
+
+**PR requested** — branch `engine/df-e7-clip-boundaries`, head `f6215fb1b790db53ca7d6af9726f27389458e4cf`, main base `88e2d94e`. Title **DF-E7: Reject collapsed End resizes and empty split windows**.
+
+The common placement planner refuses a resize that puts End on or before Start. A retained right-hand split window must begin before the unlooped source End. Unwarped audio with a physical End checks source samples, even with stale display ticks. An active loop keeps its own playback interval.
+
+**Gate** — Both GCC 14 and Clang 19 Debug with Pd and warnings as errors passed five focused suites against the frozen core, including 616 edit-plan checks. Before the fix, the prepared resize and both MIDI and physical-audio boundary splits were admitted. Two compiled faults detected the collapsed resize and the empty right window. Four validators and the format layout check passed.
+
+## 2026-11-19 — DF-E35(b) engine review of Freeze and Bounce extents
+
+**Reviewed for Win** — `engine-win/take-lane-render-extent` at `759014e9e7d79fce4d2cbe609042bbd3b4e4e6de`. The two lent hunks meet the current main-lane playback contract. Freeze applies the timeline accessor before testing group and track extents. Bounce filters the source extent to the same main-lane clips its replacement edits target. The existing placement and overflow validation follows those filters.
+
+GCC 14 reproduced all eight readiness failures against main. GCC 14 and Clang 19 each passed the four focused suites at the submitted head, 303 checks per compiler. A local extension also committed a Bounce whose range overlapped a nonzero take, verified that the take remained and the new main clip was inserted, and verified Undo. All 144 checks in that extended suite passed. The reviewed branch is ready for Win's landing checks.
+
+## 2026-11-19 — DF-E1 sample-domain End for linear clips
+
+**PR requested** — branch `engine/df-e1-audio-end-samples`, head `9cc16085eaa3f931a073a521363214a6510f838f`, main base `88e2d94e`. Title **DF-E1: Render linear End markers from absolute samples**. Stacks on DF-E27(b) `25ba8fce`. The tempo and displayed-marker changes in `55fd8bbd` are independent.
+
+Native nanosecond endpoints round to samples with integer arithmetic. A legacy tick End on a linear clip takes the difference between its absolute marker sample and the absolute placement sample. An exact match to the displayed default End uses the stored linear endpoint, including any fractional tick. An existing physical source End pin stays in the source clock when the clip is placed off the sample grid.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors relinked the affected units against the frozen headless core. Five focused suites passed, including 494 clip playback checks. Both final-sample losses reproduced against DF-E27(b) before the change. Three compiled faults detected duration rounding, discarding the mirrored native endpoint, and applying arrangement phase to a source pin. Four validators and the layout check passed.
+
+## 2026-11-19 — DF-E1 exact tick and linear marker conversion
+
+**PR requested** — branch `engine/df-e1-clock-rounding`, head `55fd8bbdcb665e1248bd2380783ddbec071b8ba6`, main base `bedee5ab`. Title **DF-E1: Preserve exact ticks and linear marker endpoints**. This is the tempo and displayed marker step of DF-E1. The sample-domain End fence follows with the DF-E27(b) source-clock path.
+
+The tempo inverse admits rounding error of a few ulps of the absolute time and caps the tolerance below a fraction of a tick. Linear Clip View and native Start derive End from the stored integer absolute endpoint. The tests cross two tempo changes and a long prior segment, and check the floor between real tick boundaries. A native marker fixture verifies the same exact End in the Clip View and in the journal.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked against the frozen DEV-23 Debug core. Both passed 139 engine, 32 Clip Details, 610 edit-plan, 489 clip-playback, 131 transport-info and 206 splice-store checks. The 3,072 exact boundary round trips and the two linear marker checks exposed three failures on current main. The two compiled faults detected truncation of exact boundaries and rounding of genuinely fractional positions. Four validators and the layout check passed.
+
+## 2026-11-19 — DF-E11 callback denormal handling
+
+**PR requested** — branch `engine/df-e11-callback-denormals`, head `830ad57c862860269556d8aad49cea0004339b21`, main base `bedee5ab`. Title **DF-E11: Scope denormal flushing to the device callback**. Implements ADR-0042 d6 in the shared device callback.
+
+The device saves the caller's control, enables x86 FTZ and DAZ or the ARM denormal flush mode, and restores the saved control after processing. Each render job inherits the device callback's floating-point environment and denormal mode through the shared control helper. The live tests exercise float and double arithmetic on subnormal inputs and subnormal results, caller rounding, callback exit restoration, a short second callback and actual worker dispatch.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked them against the frozen DEV-23 Debug core. Both passed device (52), graph workers (92), device host (60), Session (214) and transport info (131). Current main failed three new checks. The three compiled faults detected missing callback flushing, missing worker propagation and leaked caller controls. Clang cross-compiled the scope for Linux and Darwin ARM64 and emitted FPCR save, set and restore. Runtime arithmetic checks ran on Linux x86-64. Four validators and the format layout check passed.
+
+## 2026-11-19 — DF-E9 automation Undo preserves additive storage
+
+**PR requested** — branch `engine/df-e9-automation-undo`, head `ab5feee142c134fdb9a85df3f7a8c8f3865511ba`, main base `bedee5ab`. Title **DF-E9: Restore automation lanes and streams in place**. Builds on main's existing captured range support.
+
+Lane restoration updates the known fields of a surviving lane and writes the captured AAUT bytes into surviving stream rows by ID and clip address. It removes obsolete addresses and inserts missing rows with named columns. Point edits and their inverse use UPDATE for an existing stream. Future lane and data fields and their CASCADE children therefore survive Undo and Redo of lane features and point edits. New lanes use SQLite defaults for future columns.
+
+The existing `automation-splice-store` path uses guarded native row images and preserves opaque data and range cells for the captured envelope splice. DF-E9 covers ordinary lane and point operations and the `automation.restoreLane` and `automation.restoreData` paths.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked against the frozen DEV-23 Debug core. Six focused suites passed, including 93 range Undo, 39 lane, 46 point-edit, 86 snapshot, 206 splice-store and 91 changeset checks. Current main failed six assertions first. Three compiled faults detected lane replacement, stream replacement and point-edit UPSERT. Four validators and the format layout check passed.
+
+**Queue** — DF-E24(a) remains parked on #651's per-bus input implementation. The current main still lacks #651. Parts (b) and (c) remain with the DF-E20 stack as recorded in the register.
+
+## 2026-11-19 — #530 anchored left trim on current main
+
+**PR requested** — retest the existing #530 from branch `engine/clip-trim`, head `1a2777f9be8ab1b68174d4d35f70130f02ae1140`, main base `bedee5ab`. Title **Keep unwarped Start and End synchronized with their source pins**. The original PR head `da1de8db` was advanced by a normal push. The branch merges current main and DF-E27(b) `25ba8fce`. The merge retains Win's integer linear endpoint conversion, main's take-lane MIDI regression and #530's trim playback regression.
+
+The native unwarped marker ops record ticks and nanoseconds in the same journal transaction. Moving Start retains physical End and updates its displayed tick. Moving End retains physical Start and writes the new source End pin. Legacy unpinned markers get physical pins through the edited clip's current tempo. Undo and Redo retain the marker pairs and the clip continues to use them after a later tempo change. The #535 readiness fixture now describes the same 40,000-frame End on both clocks. The linear left-extension probe starts off-grid with one source sample available and reaches the correct source-zero sample while retaining the exact end in nanoseconds.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked them with the frozen DEV-23 Debug core. Both passed nine focused suites, including 522 clip-playback checks and 664 edit-plan checks. The old marker handlers failed the three new marker assertions first. The compiled Start, End and left-extension faults each failed their intended check. The four validators and format layout check passed. Windows and ARM64 PR legs are for Win's retest.
+
 ## 2026-11-19 — DEV-23 native Linux gate follow-up
 
 The GCC 14 JUCE app and shell linked at the unchanged DEV-23 head `3dd8c605`. The native ADI window and Audio Settings page each opened, painted and wrote their expected PNG under Xvfb. Both used ADI's no-audio smoke entry point. The driver preparation checks remain the headless tests recorded on the PR request.

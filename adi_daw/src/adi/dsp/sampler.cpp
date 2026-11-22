@@ -5,6 +5,20 @@
 #include <nlohmann/json.hpp>
 namespace adi::device {
 Sampler::Sampler() {
+    initialise();
+    prepare(48000, 4096);
+}
+Sampler::Sampler(SlotBacked) {
+    initialise();
+    slotMode_ = true;
+    for (auto &engine : slotEngines_) {
+        engine = std::make_unique<OneShot>();
+        applyZone(*engine, Zone{});
+    }
+    slotZones_.publish(std::make_unique<SlotZones>());
+    prepare(48000, 4096);
+}
+void Sampler::initialise() {
     OneShot source;
     for (int i : {OneShot::Volume,    OneShot::Transpose,  OneShot::Attack,   OneShot::Decay,
                   OneShot::Sustain,   OneShot::Release,    OneShot::Voices,   OneShot::Retrigger,
@@ -27,7 +41,16 @@ Sampler::Sampler() {
     destinations_.push_back(OneShot::Count);
     for (std::size_t i = 0; i < params_.size(); ++i)
         values_[i].store(params_[i].defaultValue.normalized);
-    prepare(48000, 4096);
+}
+bool Sampler::setParamAt(std::size_t index, double normalized) noexcept {
+    if (index >= params_.size() || !std::isfinite(normalized)) {
+        return false;
+    }
+    const auto &p = params_[index];
+    const double r = real(p, normalized);
+    const double n = p.maxReal > p.minReal ? (r - p.minReal) / (p.maxReal - p.minReal) : 0;
+    values_[index].store(std::clamp(n, 0., 1.), std::memory_order_relaxed);
+    return true;
 }
 const ParamDescriptor *Sampler::paramAt(std::int32_t i) const noexcept {
     return i >= 0 && static_cast<std::size_t>(i) < params_.size()
@@ -83,6 +106,40 @@ double Sampler::weight(const Range &r, double x, bool power) noexcept {
         w = std::min(w, (r.high - x) / r.fadeHigh);
     return power ? std::sin(w * 1.5707963267948966) : w;
 }
+void Sampler::applyZone(OneShot &engine, const Zone &z) noexcept {
+    engine.setRootKey(z.root);
+    engine.setRealAt(OneShot::Mode, 0);
+    engine.setRealAt(OneShot::Snap, 0);
+    engine.setRealAt(OneShot::Start, z.start * 100);
+    engine.setRealAt(OneShot::End, z.end * 100);
+    engine.setRealAt(OneShot::Length, 100);
+    engine.setRealAt(OneShot::LoopOn, z.loop ? 1 : 0);
+    engine.setRealAt(OneShot::LoopLength, 100 * (z.end - z.loopStart) / (z.end - z.start));
+    engine.setRealAt(OneShot::Fade, z.crossfade * 100);
+    engine.setRealAt(OneShot::Detune, z.detune);
+    engine.setRealAt(OneShot::Gain, 0);
+}
+bool Sampler::publishSlotZones(std::span<const Zone, kSlots> zones) {
+    if (!slotMode_) {
+        return false;
+    }
+    auto table = std::make_unique<SlotZones>();
+    for (std::size_t i = 0; i < kSlots; ++i) {
+        if (!valid(zones[i]) || !zones[i].samples.empty()) {
+            return false;
+        }
+        table->zones[i] = zones[i];
+    }
+    slotZones_.publish(std::move(table));
+    return true;
+}
+void Sampler::resetVoices() noexcept {
+    for (auto &engine : slotEngines_) {
+        if (engine) {
+            engine->resetVoices();
+        }
+    }
+}
 void Sampler::configure(Layer &l) {
     auto set = [&](int i, double real) {
         const auto *p = l.engine->paramAt(i);
@@ -109,7 +166,7 @@ void Sampler::publish(std::unique_ptr<Bank> bank) {
     publisher_.collect();
 }
 bool Sampler::publishZones(std::span<const Zone> zones) {
-    if (zones.size() > 32)
+    if (slotMode_ || zones.size() > 32)
         return false;
     auto bank = std::make_unique<Bank>();
     std::size_t total = 0;
@@ -142,9 +199,12 @@ void Sampler::prepare(double rate, std::int32_t frames) {
     rate_ = rate;
     maxFrames_ = frames;
     scratch_.resize(static_cast<std::size_t>(maxFrames_) * 2);
-    events_.resize(
-        static_cast<std::size_t>(engine::Graph::deriveEventCapacity(rate_, maxFrames_, 32)) +
-        params_.size());
+    // The graph's capacity for a block, or the hosted MIDI's, whichever is
+    // larger, plus one ParamMod per parameter pushed ahead of them.
+    events_.resize(std::max(static_cast<std::size_t>(engine::Graph::deriveEventCapacity(
+                                rate_, maxFrames_, 32)),
+                            kEventCapacity) +
+                   params_.size());
     modulation_.fill(0);
     if (messageBank_)
         for (auto &l : messageBank_->layers) {
@@ -153,9 +213,93 @@ void Sampler::prepare(double rate, std::int32_t frames) {
             l.engine->release();
             l.engine->prepare(rate_, maxFrames_);
         }
+    for (auto &engine : slotEngines_) {
+        if (engine) {
+            engine->release();
+            engine->prepare(rate_, maxFrames_);
+        }
+    }
+}
+void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z,
+                        const std::array<double, OneShot::Count> &initial,
+                        const OneShot::PreparedSample *sample, std::uint64_t generation,
+                        bool slot) noexcept {
+    // This block's values, by index: no string lookup per layer (DEV-21).
+    for (std::size_t i = 0; i + 1 < params_.size(); ++i) {
+        engine.setParamAt(static_cast<int>(destinations_[i]), initial[i]);
+    }
+    engine::EventList events(events_.data(), static_cast<int>(events_.size()));
+    for (std::size_t i = 0; i + 1 < params_.size(); ++i) {
+        engine::Event e;
+        e.type = engine::EventType::ParamMod;
+        e.frame = io.blockOffset;
+        e.paramId = destinations_[i];
+        e.value = modulation_[i];
+        events.push(e);
+    }
+    double select = initial[params_.size() - 1], selectMod = modulation_[params_.size() - 1];
+    for (const auto &input : io.events) {
+        auto e = input;
+        if (e.type == engine::EventType::ParamValue || e.type == engine::EventType::ParamMod) {
+            if (e.paramId >= params_.size() || !std::isfinite(e.value)) {
+                continue;
+            }
+            if (e.paramId == params_.size() - 1) {
+                if (e.type == engine::EventType::ParamValue) {
+                    select = std::clamp(e.value, 0., 1.);
+                } else {
+                    selectMod = e.value;
+                }
+                continue;
+            }
+            e.paramId = destinations_[e.paramId];
+        } else if (e.type == engine::EventType::NoteOn && e.value > 0) {
+            const double w = weight(z.key, e.dim, z.constantPower) *
+                             weight(z.velocity, e.value * 127, z.constantPower) *
+                             weight(z.select, std::clamp(select + selectMod, 0., 1.) * 127,
+                                    z.constantPower);
+            if (w <= 0) {
+                continue;
+            }
+            // DF-E37 (e): the zone's weight is the voice's own gain, latched
+            // at note-on -- not a scaled velocity, which Vel > Vol would
+            // squeeze (0.825 for a 0.5 fade at 35 %). Queued only for a
+            // note-on the layer will see, so later notes keep their own.
+            if (events.push(e)) {
+                engine.queueNoteGain(w);
+            }
+            continue;
+        }
+        // Sized in prepare() for the block's events. Should one still not
+        // fit, a lost note-off must not leave a voice sounding: stop them.
+        if (!events.push(e) && e.type == engine::EventType::NoteOff) {
+            engine.resetVoices();
+        }
+    }
+    float *channels[]{scratch_.data(), scratch_.data() + maxFrames_};
+    auto child = io;
+    child.out = channels;
+    child.channels = 2;
+    child.events = {events.begin(), events.size()};
+    if (slot) {
+        engine.processPrepared(child, sample, generation);
+    } else {
+        engine.process(child);
+    }
+    const double gain = std::pow(10., z.gainDb / 20.);
+    if (io.out) {
+        for (int c = 0; c < std::min(2, io.channels); ++c) {
+            if (io.out[c]) {
+                const auto g = gain * std::sqrt(1 + (c == 0 ? -z.pan : z.pan));
+                for (int i = io.blockOffset; i < io.blockOffset + io.frames; ++i) {
+                    io.out[c][i] += static_cast<float>(channels[c][i] * g);
+                }
+            }
+        }
+    }
 }
 void Sampler::process(const engine::NodeIo &io) noexcept {
-    if (io.frames <= 0 || io.blockOffset < 0 || io.blockOffset + io.frames > maxFrames_)
+    if (slotMode_ || io.frames <= 0 || io.blockOffset < 0 || io.blockOffset + io.frames > maxFrames_)
         return;
     if (io.out)
         for (int c = 0; c < io.channels; ++c)
@@ -166,65 +310,8 @@ void Sampler::process(const engine::NodeIo &io) noexcept {
     for (std::size_t i = 0; i < params_.size(); ++i)
         initial[i] = values_[i].load(std::memory_order_relaxed);
     if (bank.valid())
-        for (const auto &layer : bank->layers) {
-            for (std::size_t i = 0; i + 1 < params_.size(); ++i)
-                layer.engine->setParam(params_[i].id, ParamValue::fromNormalized(initial[i]));
-            engine::EventList events(events_.data(), static_cast<int>(events_.size()));
-            for (std::size_t i = 0; i + 1 < params_.size(); ++i) {
-                engine::Event e;
-                e.type = engine::EventType::ParamMod;
-                e.frame = io.blockOffset;
-                e.paramId = destinations_[i];
-                e.value = modulation_[i];
-                events.push(e);
-            }
-            double select = initial[params_.size() - 1],
-                   selectMod = modulation_[params_.size() - 1];
-            for (const auto &input : io.events) {
-                auto e = input;
-                if (e.type == engine::EventType::ParamValue ||
-                    e.type == engine::EventType::ParamMod) {
-                    if (e.paramId >= params_.size() || !std::isfinite(e.value))
-                        continue;
-                    if (e.paramId == params_.size() - 1) {
-                        if (e.type == engine::EventType::ParamValue)
-                            select = std::clamp(e.value, 0., 1.);
-                        else
-                            selectMod = e.value;
-                        continue;
-                    }
-                    e.paramId = destinations_[e.paramId];
-                } else if (e.type == engine::EventType::NoteOn && e.value > 0) {
-                    const auto &z = layer.zone;
-                    double w = weight(z.key, e.dim, z.constantPower) *
-                               weight(z.velocity, e.value * 127, z.constantPower) *
-                               weight(z.select, std::clamp(select + selectMod, 0., 1.) * 127,
-                                      z.constantPower);
-                    if (w <= 0)
-                        continue;
-                    // DF-E37 (e): the zone's weight is the voice's own gain,
-                    // latched at note-on -- not a scaled velocity, which Vel >
-                    // Vol would squeeze (0.825 for a 0.5 fade at 35 %).
-                    layer.engine->queueNoteGain(w);
-                }
-                (void)events.push(e); // sized in prepare() for the block's events
-            }
-            float *channels[]{scratch_.data(), scratch_.data() + maxFrames_};
-            auto child = io;
-            child.out = channels;
-            child.channels = 2;
-            child.events = {events.begin(), events.size()};
-            layer.engine->process(child);
-            const double gain = std::pow(10., layer.zone.gainDb / 20.);
-            if (io.out)
-                for (int c = 0; c < std::min(2, io.channels); ++c)
-                    if (io.out[c]) {
-                        const auto g =
-                            gain * std::sqrt(1 + (c == 0 ? -layer.zone.pan : layer.zone.pan));
-                        for (int i = io.blockOffset; i < io.blockOffset + io.frames; ++i)
-                            io.out[c][i] += static_cast<float>(channels[c][i] * g);
-                    }
-        }
+        for (const auto &layer : bank->layers)
+            playLayer(io, *layer.engine, layer.zone, initial, nullptr, 0, false);
     for (const auto &e : io.events)
         if (e.paramId < params_.size() && std::isfinite(e.value)) {
             if (e.type == engine::EventType::ParamValue)
@@ -232,6 +319,60 @@ void Sampler::process(const engine::NodeIo &io) noexcept {
             else if (e.type == engine::EventType::ParamMod)
                 modulation_[e.paramId] = e.value;
         }
+}
+void Sampler::processSlots(const engine::NodeIo &io,
+                           std::span<const SlotSample, kSlots> slots) noexcept {
+    if (!slotMode_ || io.frames <= 0 || io.blockOffset < 0 ||
+        io.blockOffset + io.frames > maxFrames_) {
+        return;
+    }
+    if (io.out) {
+        for (int c = 0; c < io.channels; ++c) {
+            if (io.out[c]) {
+                std::fill_n(io.out[c] + io.blockOffset, io.frames, 0.f);
+            }
+        }
+    }
+    engine::SnapshotPublisher<SlotZones>::AudioRead table(slotZones_);
+    if (!table.valid()) {
+        return;
+    }
+    // A new zone table reshapes the layers here, on the audio thread, where
+    // the layers' own state is read (setRootKey is a plain field).
+    if (table->seq != slotZonesSeen_) {
+        for (std::size_t i = 0; i < kSlots; ++i) {
+            applyZone(*slotEngines_[i], table->zones[i]);
+        }
+        slotZonesSeen_ = table->seq;
+    }
+    std::array<double, OneShot::Count> initial{};
+    for (std::size_t i = 0; i < params_.size(); ++i) {
+        initial[i] = values_[i].load(std::memory_order_relaxed);
+    }
+    for (std::size_t i = 0; i < kSlots; ++i) {
+        auto &engine = *slotEngines_[i];
+        const auto &slot = slots[i];
+        if (slot.sample == nullptr || slot.generation == 0) {
+            // An empty slot takes no notes and queues no gains; one emptied
+            // since the last call stops its voices.
+            if (slotSeen_[i] != 0) {
+                engine.resetVoices();
+                slotSeen_[i] = 0;
+            }
+            continue;
+        }
+        slotSeen_[i] = slot.generation;
+        playLayer(io, engine, table->zones[i], initial, slot.sample, slot.generation, true);
+    }
+    for (const auto &e : io.events) {
+        if (e.paramId < params_.size() && std::isfinite(e.value)) {
+            if (e.type == engine::EventType::ParamValue) {
+                values_[e.paramId].store(std::clamp(e.value, 0., 1.), std::memory_order_relaxed);
+            } else if (e.type == engine::EventType::ParamMod) {
+                modulation_[e.paramId] = e.value;
+            }
+        }
+    }
 }
 std::vector<std::uint8_t> Sampler::saveState(const std::string &role) const {
     if (role != "component")

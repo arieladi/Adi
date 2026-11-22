@@ -76,7 +76,7 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 for (const auto &ref : model.pluginRefs)
                     if (ref.id == *row.pluginRefId) {
                         data.instrument = ref.subtype == "instrument";
-                        data.uid = ref.uid; data.plugin = ref.format != "internal";
+                        data.uid = ref.uid; data.format = ref.format; data.plugin = ref.format != "internal";
                         break;
                     }
             auto *instance = session.instanceFor(row.id);

@@ -65,19 +65,28 @@ Data read(OpContext& c, const Payload& p) {
     result.ranges=range_rows::capture(c.db,id);
     return result;
 }
-void store(OpContext& c, const Payload& p, const Bytes* bytes) {
+void store(OpContext& c, const Payload& p, const Bytes* bytes, bool exists) {
+    const auto id = integer(p.at("id"));
     if (!bytes) {
         SQLite::Statement q(c.db, "DELETE FROM automation_data WHERE id=?");
-        q.bind(1, integer(p.at("id"))); q.exec(); return;
+        q.bind(1, id); q.exec(); return;
     }
     if (bytes->size() > static_cast<std::size_t>(INT_MAX))
         throw std::runtime_error("automation: stream exceeds SQLite binding limit");
-    SQLite::Statement q(c.db, "INSERT INTO automation_data(id,lane_id,clip_id,data) VALUES(?,?,?,?) "
-        "ON CONFLICT(id) DO UPDATE SET data=excluded.data");
-    q.bind(1, integer(p.at("id"))); q.bind(2, integer(p.at("lane")));
-    if (p.at("clip").is_null()) q.bind(3); else q.bind(3, integer(p.at("clip")));
     // SQLite distinguishes an empty BLOB from SQL NULL.
-    q.bind(4, bytes->empty() ? static_cast<const void*>("") : bytes->data(), static_cast<int>(bytes->size()));
+    const void* value = bytes->empty() ? static_cast<const void*>("") : bytes->data();
+    const auto size = static_cast<int>(bytes->size());
+    if (exists) {
+        SQLite::Statement q(c.db, "UPDATE automation_data SET data=? WHERE id=?");
+        q.bind(1, value, size);
+        q.bind(2, id);
+        q.exec();
+        return;
+    }
+    SQLite::Statement q(c.db, "INSERT INTO automation_data(id,lane_id,clip_id,data) VALUES(?,?,?,?)");
+    q.bind(1, id); q.bind(2, integer(p.at("lane")));
+    if (p.at("clip").is_null()) q.bind(3); else q.bind(3, integer(p.at("clip")));
+    q.bind(4, value, size);
     q.exec();
 }
 bool capture(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
@@ -91,14 +100,14 @@ bool capture(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
 }
 bool restore(OpContext& c, const Payload& p, std::string& err) {
     try {
-        (void)read(c, p);
+        const bool exists = read(c, p).present;
         const auto& bin = p.at("state").at("bytes").get_binary();
         Bytes bytes(bin.size());
         if (!bytes.empty()) std::memcpy(bytes.data(), bin.data(), bytes.size());
         const bool present=p.at("state").at("present").get<bool>();
         const auto ranges=p.at("state").value("ranges",Payload::array());
         if(!present && !ranges.empty())throw std::runtime_error("automation: absent data with curve ranges");
-        store(c,p,present?&bytes:nullptr);
+        store(c,p,present?&bytes:nullptr,exists);
         range_rows::replace(c.db,integer(p.at("id")),p.at("clip"),ranges);return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -198,7 +207,7 @@ template<Edit edit> bool apply(OpContext& c, const Payload& p, std::string& err)
             }
             auto range=old->second;range["record_index"]=static_cast<std::int64_t>(index);retained.push_back(std::move(range));
         }
-        store(c,p,&out);
+        store(c,p,&out,d.present);
         range_rows::replace(c.db,integer(p.at("id")),p.at("clip"),retained);return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
