@@ -7,6 +7,70 @@
 namespace adi::dsp {
 namespace {
 
+// Crossover coefficient c = tan(pi*f)/(1+tan(pi*f)), with f in cycles per sample.
+// The shared table interpolates c on log2(Nyquist/Hz). A cell spans 1/16 octave.
+constexpr int cellsPerOctave = 16;
+constexpr int tableOctaves = 16;
+constexpr int cellCount = cellsPerOctave * tableOctaves;
+constexpr int polynomialDegree = 8;
+using Coefficients = std::array<double, polynomialDegree + 1>;
+using CrossoverTable = std::array<Coefficients, cellCount>;
+// Roots of the ninth Chebyshev polynomial, ordered left to right.
+constexpr Coefficients nodes{-.984807753012208, -.8660254037844386, -.6427876096865394,
+                              -.3420201433256687, 0, .3420201433256687, .6427876096865394,
+                              .8660254037844386, .984807753012208};
+
+CrossoverTable makeCutoffTable() noexcept {
+    CrossoverTable result{};
+    for (int cell = 0; cell < cellCount; ++cell) {
+        Coefficients divided{};
+        for (int i = 0; i <= polynomialDegree; ++i) {
+            const double octaves = (cell + .5 * (nodes[i] + 1)) / cellsPerOctave;
+            const double ratio = .5 * std::exp2(-octaves);
+            const double g = std::tan(std::numbers::pi * ratio);
+            divided[i] = g / (1.0 + g);
+        }
+        // Newton divided differences through nine Chebyshev nodes.
+        for (int order = 1; order <= polynomialDegree; ++order) {
+            for (int i = polynomialDegree; i >= order; --i)
+                divided[i] = (divided[i] - divided[i - 1]) / (nodes[i] - nodes[i - order]);
+        }
+        // Convert once to monomial coefficients for Horner evaluation.
+        auto& poly = result[cell];
+        poly[0] = divided.back();
+        for (int i = polynomialDegree - 1; i >= 0; --i) {
+            for (int j = polynomialDegree - i; j > 0; --j)
+                poly[j] = poly[j - 1] - nodes[i] * poly[j];
+            poly[0] = divided[i] - nodes[i] * poly[0];
+        }
+    }
+    return result;
+}
+
+const CrossoverTable cutoffTable = makeCutoffTable();
+// The existing 0.49 clamp is a separate constant segment in the transfer.
+// Keep its exact coefficient and avoid interpolation across the corner.
+const double clampOctaves = -std::log2(.98);
+const double clampCoefficient = [] {
+    const double g = std::tan(std::numbers::pi * .49);
+    return g / (1.0 + g);
+}();
+
+double movingCutoff(double octavesBelowNyquist) noexcept {
+    if (octavesBelowNyquist <= clampOctaves) return clampCoefficient;
+    if (octavesBelowNyquist >= tableOctaves) {
+        const double g = std::tan(std::numbers::pi * .5 * std::exp2(-octavesBelowNyquist));
+        return g / (1.0 + g);
+    }
+    const double position = cellsPerOctave * octavesBelowNyquist;
+    const int cell = static_cast<int>(position);
+    const double x = 2 * (position - cell) - 1;
+    const auto& poly = cutoffTable[cell];
+    double value = poly.back();
+    for (int i = polynomialDegree - 1; i >= 0; --i) value = poly[i] + x * value;
+    return value;
+}
+
 std::uint64_t cyclePhase(double cycles) noexcept {
     const double part = cycles - std::floor(cycles);
     return part < 1.0 ? static_cast<std::uint64_t>(part * 0x1p64) : 0;
@@ -110,13 +174,23 @@ bool AdiShaper::Split::startChunk(double sampleRate) noexcept {
     return false;
 }
 
-void AdiShaper::Split::advanceFrequency(double step, double sampleRate) noexcept {
+void AdiShaper::Split::advanceFrequency(double step, double logNyquist) noexcept {
     double input = logTarget;
     for (double& memory : logFrequency) {
         memory += step * (input - memory);
         input = memory;
     }
-    prepare(std::exp2(input), sampleRate);
+    coefficient = movingCutoff(logNyquist - input);
+    if (slope == 2) {
+        const double complement = 1.0 - coefficient;
+        const double denominator = complement * complement
+                                 + std::numbers::sqrt2 * coefficient * complement
+                                 + coefficient * coefficient;
+        const double reciprocal = 1.0 / denominator;
+        a1 = complement * complement * reciprocal;
+        a2 = coefficient * complement * reciprocal;
+        a3 = coefficient * coefficient * reciprocal;
+    }
 }
 
 void AdiShaper::Split::reset() noexcept {
@@ -472,7 +546,7 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
     index = (index + 1) % samples.size();
 }
 
-template <AdiShaper::Stage kind>
+template <AdiShaper::Stage kind, bool moving>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames) noexcept {
     auto applyGain = [](Gain g, float& l, float& r) {
@@ -539,7 +613,22 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     const bool hasLow = (stage.layout & 1) != 0;
     const bool hasHigh = (stage.layout & 2) != 0;
     const bool flatPhase = (!hasLow || stage.low.slope == 0) && (!hasHigh || stage.high.slope == 0);
-    auto renderSplitSample = [&](std::size_t i) {
+    if (hasLow) stage.low.rendered = true;
+    if (hasHigh) stage.high.rendered = true;
+    bool moveLow = false, moveHigh = false;
+    std::size_t nextCheck = 0;
+    double logNyquist = 0;
+    if constexpr (moving) logNyquist = std::log2(sampleRate_) - 1.0;
+    for (std::size_t i = 0; i < frames; ++i) {
+        if constexpr (moving) {
+            if (i == nextCheck) {
+                moveLow = hasLow && stage.low.startChunk(sampleRate_);
+                moveHigh = hasHigh && stage.high.startChunk(sampleRate_);
+                nextCheck = moveLow || moveHigh ? i + std::min<std::size_t>(512, frames - i) : frames;
+            }
+            if (moveLow) stage.low.advanceFrequency(splitStep_, logNyquist);
+            if (moveHigh) stage.high.advanceFrequency(splitStep_, logNyquist);
+        }
         float dryL = inL[i], dryR = inR[i];
         float midL = dryL, midR = dryR;
         // First-order splits reconstruct the source exactly. Its aligned dry
@@ -580,21 +669,6 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         accumulate(1, midL, midR);
         outL[i] = !flatPhase ? sumL : (sumL == 0.0f ? dryL : dryL + sumL);
         outR[i] = !flatPhase ? sumR : (sumR == 0.0f ? dryR : dryR + sumR);
-    };
-    for (std::size_t first = 0; first < frames;) {
-        const bool moveLow = hasLow && stage.low.startChunk(sampleRate_);
-        const bool moveHigh = hasHigh && stage.high.startChunk(sampleRate_);
-        if (!moveLow && !moveHigh) {
-            for (auto i = first; i < frames; ++i) renderSplitSample(i);
-            return;
-        }
-        const auto end = first + std::min<std::size_t>(512, frames - first);
-        for (auto i = first; i < end; ++i) {
-            if (moveLow) stage.low.advanceFrequency(splitStep_, sampleRate_);
-            if (moveHigh) stage.high.advanceFrequency(splitStep_, sampleRate_);
-            renderSplitSample(i);
-        }
-        first = end;
     }
 }
 
@@ -610,7 +684,9 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
             if (!stage.enabled) return;
         }
         if (!stage.active && stage.layout == 0) return;
-        render<kind>(stage, outL, outR, outL, outR, frames);
+        const bool moving = ((stage.layout & 1) && stage.low.changing) || ((stage.layout & 2) && stage.high.changing);
+        if (moving) render<kind, true>(stage, outL, outR, outL, outR, frames);
+        else render<kind, false>(stage, outL, outR, outL, outR, frames);
         bool repaired = false;
         if (stage.layout != 0) {
             repaired |= stage.low.finishBlock();

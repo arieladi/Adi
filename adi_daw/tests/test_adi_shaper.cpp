@@ -245,6 +245,7 @@ void movingSplitFrequency() {
         int rate, block, layout, first, reverse, resume;
         float startHz, targetHz, reverseHz;
         std::array<Marker, 8> markers;
+        int slope = 0;
     };
     // Stereo readings across a settled start, a cutoff edit, sleep and two reversals.
     const Case cases[] = {
@@ -257,7 +258,19 @@ void movingSplitFrequency() {
             {127, .034125403f, .019640185f}, {219, .049681336f, -.022049962f},
             {539, -.046229124f, -.026577929f}, {2427, .034114186f, .024341084f},
             {17895, .041243073f, .005447381f}, {24781, .039315760f, .010030907f},
-            {27022, .061800599f, .004443620f}, {47999, -.013915322f, .002687446f}}}}
+            {27022, .061800599f, .004443620f}, {47999, -.013915322f, .002687446f}}}},
+        // Direct tan-warped 24 dB/octave reference. Both trajectories reach
+        // the 0.49 * sampleRate cap in flight, settle, fall and reverse.
+        {32000, 733, 1, 1466, 14660, 16126, 2500, 20000, 525, {{
+            {1465, .020280499f, -.065475859f}, {1981, -.131555244f, -.076157183f},
+            {3187, .453865737f, .056438427f}, {5784, .406584591f, .210345656f},
+            {14443, -.358543307f, .378829747f}, {15359, -.641245246f, .062886573f},
+            {16288, -.087865956f, -.015951911f}, {17991, -.024243759f, .273866385f}}}, 2},
+        {22050, 257, 2, 514, 10280, 11308, 5111, 17000, 700, {{
+            {513, .205683127f, -.089611515f}, {750, .183875188f, -.176482931f},
+            {1272, .420627862f, -.474328011f}, {2171, .272354573f, -.030352293f},
+            {10037, .302889407f, .390377641f}, {10577, .371492952f, -.085442163f},
+            {11443, .097090960f, -.004496431f}, {13201, .210667744f, .235303849f}}}, 2}
     };
     for (const auto& c : cases) {
         Shaper rack, chunked;
@@ -265,6 +278,7 @@ void movingSplitFrequency() {
         for (auto* model : {&rack, &chunked}) {
             model->prepare(c.rate);
             model->set(Shaper::VolumeBands, static_cast<float>(c.layout));
+            model->set(c.layout == 1 ? Shaper::VolumeLowSlope : Shaper::VolumeHighSlope, static_cast<float>(c.slope));
             if (model == &chunked) model->set(cutoff, c.reverseHz);
             model->set(cutoff, c.startHz);
             flat(*model, Stage::Volume, c.layout == 1 ? Band::Mid : Band::High, 0);

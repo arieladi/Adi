@@ -97,7 +97,7 @@ class AdiShaper {
         void prepare(double hz, double sampleRate) noexcept;
         void setFrequency(double hz, double sampleRate, bool cold) noexcept;
         bool startChunk(double sampleRate) noexcept;
-        void advanceFrequency(double step, double sampleRate) noexcept;
+        void advanceFrequency(double step, double logNyquist) noexcept;
         void reset() noexcept;
         [[nodiscard]] double pole(double x, double& z) const noexcept;
         void butterworth(double x, Integrator&, double& low, double& high, double& all) const noexcept;
@@ -129,7 +129,7 @@ class AdiShaper {
     void setMod(Param id, float value) noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
-    template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
+    template <Stage kind, bool moving> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
     std::array<StageData, 7> stages_;
     std::array<AdiShaperFilter, 3> filters_;
