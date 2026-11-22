@@ -21,7 +21,9 @@
 //
 // The preamp is tanh(g x + b) - tanh(b), its DC blocked at 5 Hz: the bias b
 // makes it asymmetric, so it adds even harmonics. The power stage is
-// tanh(d y) / d. Small signals pass both linearly (slopes g sech^2 b and 1),
+// tanh(d y) / d. Gain, Volume, Output and Dry/Wet glide over about 10 ms
+// once audio runs (dsp/glide.hpp), so moving them does not click. Small
+// signals pass both linearly (slopes g sech^2 b and 1),
 // so the quiet response is the filters' and the gains' alone, which the test
 // checks. Every filter is a direct-form-I biquad in double.
 //
@@ -34,6 +36,7 @@
 #pragma once
 
 #include "adi/dsp/biquad.hpp"
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cstddef>
@@ -85,7 +88,8 @@ private:
     std::array<Biquad, 7> design_{};
     std::array<std::array<State, 7>, 2> state_{};
     std::array<double, 2> dcIn_{}, dcOut_{};
-    Gains gains_{};
+    Gains gains_{};   ///< the targets; the glides below carry them to the signal
+    Glide pre_, power_, output_, wet_;
     double rate_ = 48000, dcPole_ = 0;
 };
 
