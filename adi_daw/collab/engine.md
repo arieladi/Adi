@@ -214,6 +214,12 @@ Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU bu
 - Strict Linux GCC 14 and Clang 19 each passed 110 focused checks. The simulation stays locked through 120→121 BPM under ±1 ms timestamp jitter and settles within 0.02 BPM on each side. It also covers a missed pulse, duplicate and older timestamps, reconnect and stale estimates. Checked the Nov 20 patterns.
 - The effect on the Session tempo overlay waits on the window's timestamped Sync port and the Live comparison in AWAITING 13. The engine transport edge rules proceed independently.
 
+### 22 November — TM-LS-03 exact MIDI input transport edges
+
+- PR requested for `engine/tm-ls03-midi-transport-edges` at `eb545c1e05941003d608a60630415723ccf97a97`, stacked on the clock follower `5f83cc24`. Stopped SPP locates to the literal ADI tick, Start and Continue act on the next clock, each rolling pulse advances exactly 240,240 ticks, and Stop rewinds to the last complete MIDI beat. Canceling a pending Start retains the prior stopped position. Running Start and SPP are ignored, matching the input reference.
+- Strict Linux GCC 14 and Clang 19 each passed 118 checks across sync and time-base suites. Checked the Nov 20 patterns. [Ardour MIDI clock input reference](https://github.com/Ardour/ardour/blob/0f45032f6dbe636b8cfa21fd274d4ebf4ce2c48d/libs/ardour/midi_clock_slave.cc)
+- Parked the remaining MIDI-sync app bindings, clock-out restart policy, audio-block timestamp scheduling and Live confirmation on the window port seam and AWAITING 13.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
