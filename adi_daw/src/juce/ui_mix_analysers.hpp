@@ -2,12 +2,14 @@
 #pragma once
 #include "ui_analysis.hpp"
 #include "adi/ui/analysis_comparison.hpp"
+#include "adi/ui/theme.hpp"
 #include <array>
 
 namespace adi::engine { struct Snapshot; }
 
 namespace adi::ui {
 class SnapshotReader;
+class ViewStateStore;
 
 class MixAnalysers final : public juce::Component {
   public:
@@ -20,7 +22,7 @@ class MixAnalysers final : public juce::Component {
     void followSelection(bool);
     std::int64_t target(const SnapshotReader &, std::int64_t main, std::int64_t selected) const noexcept;
     void frame(const std::shared_ptr<SharedAnalysis> &, const SnapshotReader &, std::int64_t main, std::int64_t selected,
-               std::uint64_t viewGeneration = 0);
+               std::uint64_t viewGeneration = 0, const ViewStateStore *viewState = nullptr);
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
     AnalysisComparison::View comparisonView() const noexcept;
     void suspend(bool);
@@ -43,6 +45,19 @@ class MixAnalysers final : public juce::Component {
     void refreshChannels(const SnapshotReader &, std::int64_t main, std::uint64_t viewGeneration);
     void refreshSourceControl();
     void updateComparison(const std::shared_ptr<SharedAnalysis> &);
+    void updatePinnedSpectrum(const SnapshotReader &, std::uint64_t generation, std::int64_t primary,
+                              const ViewStateStore *);
+    void clearPinnedSpectrum();
+    struct PinProjectionStamp {
+        const ViewStateStore *store;
+        const engine::Snapshot *snapshot; // identity only
+        std::uint64_t generation, pinRevision;
+        std::int64_t primary;
+        ThemeId theme;
+        bool operator==(const PinProjectionStamp &) const = default;
+    };
+    std::optional<PinProjectionStamp> pinnedSpectrumStamp_;
+    juce::ToggleButton pinnedTracks_{"Pinned tracks"};
     std::unique_ptr<Table> table_;
     std::unique_ptr<Compare> compare_;
     std::array<SharedSpectrumView, 5> tiles_;

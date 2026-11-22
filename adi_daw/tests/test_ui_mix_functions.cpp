@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <new>
 #include <numbers>
@@ -1480,6 +1481,215 @@ void foldedChannelBrowserSearch(AppCommands &commands, const std::filesystem::pa
     peer.removeFromDesktop();
 }
 
+void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &directory) {
+    constexpr std::int64_t main = 1, first = 11, wide = 5000000001, missing = 9000000001;
+    const auto path = directory / "pinned-spectrum.adi";
+    StoreError status{};
+    auto store = Store::create(path, status);
+    check(store != nullptr, "pinned Spectrum fixture creates a project");
+    if (!store) return;
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'master','Main',0),(5000000001,'audio','Wide ID',40);"
+        "WITH RECURSIVE pin_numbers(n) AS (SELECT 11 UNION ALL SELECT n+1 FROM pin_numbers WHERE n<30)"
+        " INSERT INTO tracks(id,kind,name,index_in_parent) "
+        "SELECT n,'audio',printf('Pinned %d',n),n FROM pin_numbers;");
+    store.reset();
+
+    std::string error;
+    auto doc = ProjectDocument::open(path, false, {}, error);
+    check(doc != nullptr, "pinned Spectrum opens its headless project");
+    if (!doc) return;
+    const std::vector<std::int64_t> pins{main, first, first, wide, missing};
+    check(doc->views().saveStackPins({}, pins, error), "establish persisted project pins with duplicate and missing IDs");
+    const auto head = History(doc->store()).head();
+
+    using Source = engine::ScopeSource;
+    using Tap = engine::ScopeTap;
+    std::map<Source, std::shared_ptr<Tap>> taps;
+    std::size_t attachments = 0;
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](Source source, double) -> std::shared_ptr<const Tap> {
+            auto &tap = taps[source];
+            if (!tap) {
+                tap = std::make_shared<Tap>(48000., 1.);
+                ++attachments;
+            }
+            return tap;
+        },
+        [&](Source source) { taps.erase(source); }, SharedAnalysis::Mode::Manual);
+    const auto key = [](std::int64_t track) { return Source{track, engine::ScopePoint::PostFader, 0}; };
+    const auto attached = [&](std::int64_t track) { return taps.contains(key(track)); };
+    const auto tapFor = [&](std::int64_t track) -> std::shared_ptr<Tap> {
+        const auto found = taps.find(key(track));
+        return found == taps.end() ? nullptr : found->second;
+    };
+
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands,
+                          doc->views(), doc->sessionState(), "pinned-spectrum");
+    root.sharedAnalysis = broker;
+    UiPeerRoot peer;
+    peer.setBounds(0, 0, 1400, 900);
+    root.setBounds(peer.getLocalBounds());
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    const bool softwarePeer = peer.getPeer() && !peer.getPeer()->getNativeHandle();
+    const auto detachPeer = [&] { peer.removeChildComponent(&root); peer.removeFromDesktop(); };
+    check(softwarePeer && root.setMixView(true, false) &&
+              root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis)),
+          "the test opens the real Mix View Analysers on a software peer");
+    root.frame();
+    auto &pages = root.mixViewPanel.analysis;
+    using Page = MixAnalysers::Page;
+    pages.setPage(Page::Spectrum);
+    pages.followSelection(false);
+    root.frame();
+    broker->pump();
+    const auto baseline = broker->stats();
+    const auto findToggle = [](const auto &walk, juce::Component &parent) -> juce::ToggleButton * {
+        if (auto *toggle = dynamic_cast<juce::ToggleButton *>(&parent); toggle && toggle->getTitle() == "Pinned tracks")
+            return toggle;
+        for (auto *child : parent.getChildren())
+            if (auto *found = walk(walk, *child)) return found;
+        return nullptr;
+    };
+    auto *control = findToggle(findToggle, pages);
+    check(control && control->isShowing() && !control->getToggleState() &&
+              attached(main) && !attached(first) && !attached(wide) && !attached(missing),
+          "Spectrum offers Pinned tracks default off with no extra demand");
+    if (!control) { detachPeer(); return; }
+    const auto choose = [&](bool enabled) {
+        control->setToggleState(enabled, juce::dontSendNotification);
+        if (control->onClick) control->onClick();
+        root.frame();
+    };
+    const auto noExtraPins = [&] {
+        return !attached(first) && !attached(wide) && !attached(missing) &&
+               broker->stats().consumers == baseline.consumers;
+    };
+
+    choose(true);
+    const auto single = broker->stats();
+    auto firstTap = tapFor(first), wideTap = tapFor(wide);
+    check(firstTap && wideTap && !attached(missing) && single.consumers == baseline.consumers + 2 &&
+              single.taps == baseline.taps + 2 && single.spectralPlans == baseline.spectralPlans + 2 &&
+              History(doc->store()).head() == head,
+          "only live non-primary pins lease two realtime spectra without authoring an edit");
+    broker->pump();
+    const auto settled = broker->stats();
+    const auto attachedBefore = attachments;
+    for (int frame = 0; frame < 4; ++frame) {
+        root.frame();
+        broker->pump();
+    }
+    const auto idle = broker->stats();
+    check(attachments == attachedBefore && idle.workerPasses == settled.workerPasses &&
+              idle.transforms == settled.transforms && idle.publications == settled.publications,
+          "unchanged Spectrum frames neither reacquire pinned taps nor add worker work");
+    if (firstTap && wideTap) {
+        adi::ui::SharedAnalysis::Request request{first, pages.detail.point(), 1024,
+                                                pages.detail.view.channel()};
+        auto low = broker->acquire(request);
+        request.track = wide;
+        auto high = broker->acquire(request);
+        const auto shared = broker->stats();
+        std::array<float, 1024> samples{};
+        const auto sendTone = [&](engine::ScopeTap &tap, int bin) {
+            for (std::size_t i = 0; i < samples.size(); ++i)
+                samples[i] = static_cast<float>(.5 * std::sin(2. * std::numbers::pi * static_cast<double>(bin) *
+                    static_cast<double>(i) / static_cast<double>(samples.size())));
+            tap.write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), 0, true, 4);
+        };
+        sendTone(*firstTap, 4);
+        sendTone(*wideTap, 32);
+        broker->pump();
+        root.frame();
+        const auto a = low.read(), b = high.read();
+        const auto peakBin = [](const auto &bins) { return std::ranges::max_element(bins) - bins.begin(); };
+        check(shared.taps == idle.taps && shared.spectralPlans == idle.spectralPlans && a && b &&
+                  a->request.track == first && b->request.track == wide &&
+                  peakBin(a->binsDbfs) == 4 && peakBin(b->binsDbfs) == 32,
+              "pinned tracks publish their distinct tone bins through shared realtime plans");
+    }
+    const bool renamed = doc->deviceAction("track.rename", {{"id", wide}, {"name", "Renamed wide ID"}});
+    root.frame();
+    check(renamed && firstTap && wideTap && tapFor(first) == firstTap && tapFor(wide) == wideTap,
+          "renaming a pinned 64-bit channel preserves both live tap identities");
+
+    std::vector<std::int64_t> many{main};
+    for (std::int64_t track = first; track <= 30; ++track) many.push_back(track);
+    many.push_back(wide);
+    many.push_back(missing);
+    check(doc->views().saveStackPins(pins, many, error), "update project pins while Spectrum is visible");
+    root.frame();
+    const auto capped = broker->stats();
+    check(capped.consumers == baseline.consumers + 15 && capped.taps == baseline.taps + 15 &&
+              !attached(missing), "project pins are bounded to sixteen total curves including the visible primary");
+    check(doc->views().saveStackPins(many, pins, error), "restore the small pin set for page transitions");
+    root.frame();
+    choose(false);
+    check(noExtraPins(), "turning Pinned tracks off releases both overlay leases");
+    choose(true);
+    pages.setPage(Page::All);
+    {
+        // All may keep a physical tap for a visible table row's meters.
+        // Neither pinned spectrum plan should survive the page switch.
+        const auto before = broker->stats().spectralPlans;
+        SharedAnalysis::Request request{first, pages.detail.point(), 1024, pages.detail.view.channel()};
+        auto probeFirst = broker->acquire(request);
+        request.track = wide;
+        auto probeWide = broker->acquire(request);
+        check(probeFirst && probeWide && broker->stats().spectralPlans == before + 2,
+              "switching to All immediately drops both pinned spectrum plans");
+    }
+    pages.setPage(Page::Spectrum);
+    root.frame();
+    choose(true);
+    pages.setPage(Page::Compare);
+    check(!attached(first) && !attached(wide), "switching to Compare releases all pinned Spectrum demand immediately");
+
+    const auto select = [](juce::ComboBox &menu, const juce::String &name) {
+        for (int item = 0; item < menu.getNumItems(); ++item) {
+            if (menu.getItemText(item) != name) continue;
+            menu.setSelectedId(menu.getItemId(item), juce::sendNotificationSync);
+            return true;
+        }
+        return false;
+    };
+    root.frame();
+    const bool pairSelected = select(pages.compareA, "Pinned 11") && select(pages.compareB, "Renamed wide ID");
+    root.frame();
+    const auto a = tapFor(first), b = tapFor(wide);
+    check(pairSelected && a && b, "Compare still opens its own two explicitly selected identities");
+    if (a && b) {
+        std::array<float, 1024> audio;
+        audio.fill(.5f);
+        a->write(audio.data(), audio.data(), 1024, 0, true, 4);
+        audio.fill(.25f);
+        b->write(audio.data(), audio.data(), 1024, 0, true, 4);
+        broker->pump();
+        root.frame();
+        const auto pair = pages.comparisonView();
+        check(pair.status == AnalysisComparison::Status::Independent && pair.b.metadata &&
+                  pair.b.metadata->endpoint.request.track == wide,
+              "Compare publishes B from its original authored track");
+        const auto heldValue = pair.b.binsDbfs.empty() ? 0.f : pair.b.binsDbfs.front();
+        if (pages.holdB.onClick) pages.holdB.onClick();
+        check(pages.comparisonView().status == AnalysisComparison::Status::Held && !attached(wide),
+              "Hold B keeps its picture and releases its own live demand");
+        pages.setPage(Page::Spectrum);
+        root.frame();
+        check(pages.comparisonView().referenceHeld && attached(wide),
+              "Spectrum may reopen pinned B without clearing Compare's local hold");
+        pages.setPage(Page::Compare);
+        root.frame();
+        const auto held = pages.comparisonView();
+        check(held.referenceHeld && !held.b.binsDbfs.empty() && held.b.binsDbfs.front() == heldValue && !attached(wide),
+              "returning to Compare keeps the original held bins and no live B tap");
+    }
+    detachPeer();
+}
+
 void focusWorkspace(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;
     auto doc = ProjectDocument::open(directory / "focus-workspace.adi", true, device::withBuiltinDevices(), error);
@@ -2510,6 +2720,7 @@ int main() {
     stackEqSpectrum(commands, temporary.path());
     stackLimiterReduction(commands, temporary.path());
     foldedChannelBrowserSearch(commands, temporary.path());
+    pinnedSpectrumOverlay(commands, temporary.path());
     focusWorkspace(commands, temporary.path());
     focusOneBarScope(commands, temporary.path());
     cleanCompressor(commands, temporary.path());

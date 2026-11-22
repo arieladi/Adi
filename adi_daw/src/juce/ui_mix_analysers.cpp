@@ -2,6 +2,7 @@
 #include "ui_mix_analysers.hpp"
 #include "ui_look.hpp"
 #include "adi/ui/snapshot_reader.hpp"
+#include "adi/ui/window_state.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -357,7 +358,16 @@ MixAnalysers::MixAnalysers() {
     spectrumTraceBox.setSelectedId(static_cast<int>(Mode::Spectrum) + 1, juce::dontSendNotification);
     spectrumTraceBox.onChange = [this] {
         const auto id = spectrumTraceBox.getSelectedId();
-        if (page_ == Page::Spectrum && id > 0) detail.setMode(static_cast<Mode>(id - 1));
+        if (page_ != Page::Spectrum || id <= 0) return;
+        const auto mode = static_cast<Mode>(id - 1);
+        if (mode != Mode::Spectrum) clearPinnedSpectrum();
+        detail.setMode(mode);
+        pinnedTracks_.setEnabled(mode == Mode::Spectrum);
+    };
+    pinnedTracks_.setTitle("Pinned tracks");
+    pinnedTracks_.setTooltip("Overlay your Stack pins in the realtime Spectrum.");
+    pinnedTracks_.onClick = [this] {
+        if (!pinnedTracks_.getToggleState()) clearPinnedSpectrum();
     };
     pageBox.onChange = [this] {
         if (const int id = pageBox.getSelectedId(); id > 0) setPage(static_cast<Page>(id - 1));
@@ -374,6 +384,7 @@ MixAnalysers::MixAnalysers() {
     addAndMakeVisible(pageBox);
     addAndMakeVisible(sourceBox);
     addChildComponent(spectrumTraceBox);
+    addChildComponent(pinnedTracks_);
     addChildComponent(detail);
     detail.usePageControls();
     detail.view.enablePhaseBands();
@@ -401,6 +412,7 @@ void MixAnalysers::setPage(Page page) {
     const bool comparing = page == Page::Compare;
     sourceBox.setVisible(page != Page::Analysis && !comparing);
     spectrumTraceBox.setVisible(page == Page::Spectrum);
+    pinnedTracks_.setVisible(page == Page::Spectrum);
     for (auto &tile : tiles_) tile.setVisible(all);
     table_->setVisible(showTable);
     if (!showTable && !comparing) {
@@ -410,6 +422,8 @@ void MixAnalysers::setPage(Page page) {
         else detail.setMode(modes[index - 1]);
     }
     detail.setVisible(!showTable && !comparing);
+    pinnedTracks_.setEnabled(detail.mode() == Mode::Spectrum);
+    if (page != Page::Spectrum || detail.mode() != Mode::Spectrum) clearPinnedSpectrum();
     compare_->setVisible(comparing);
     resized();
 }
@@ -499,10 +513,41 @@ void MixAnalysers::updateComparison(const std::shared_ptr<SharedAnalysis> &broke
     };
     compare_->present(broker, selected(compareA.getSelectedId()), selected(compareB.getSelectedId()));
 }
+void MixAnalysers::updatePinnedSpectrum(const SnapshotReader &reader, std::uint64_t generation, std::int64_t primary,
+                                       const ViewStateStore *viewState) {
+    if (page_ != Page::Spectrum || detail.mode() != Mode::Spectrum || !pinnedTracks_.getToggleState() || !viewState) {
+        clearPinnedSpectrum();
+        return;
+    }
+    const auto &pins = viewState->stackPins();
+    const PinProjectionStamp current{viewState, reader.get(), generation, pins.revision, primary, look::themeId()};
+    if (pinnedSpectrumStamp_ == current) return;
+    // The primary trace counts toward the sixteen-curve Overview limit.
+    std::array<SharedSpectrumView::SpectrumOverlayTrack, SharedSpectrumView::kSpectrumOverlayTracks> selected{};
+    std::size_t count = 0;
+    const auto &tracks = reader.tracks();
+    if (!pins.ids.empty()) {
+        for (std::size_t i = 0; i < tracks.size() && count < selected.size(); ++i) {
+            const auto &track = *tracks[i];
+            if (track.id == primary || !std::binary_search(pins.ids.begin(), pins.ids.end(), track.id)) continue;
+            const auto colour = track.color && *track.color >= 0 ? look::paletteColour(*track.color) : look::trackColour(i);
+            selected[count++] = {track.id, channelName(track.id, track.name), colour};
+        }
+    }
+    detail.view.setSpectrumOverlayTracks(std::span{selected}.first(count));
+    pinnedSpectrumStamp_ = current;
+}
+void MixAnalysers::clearPinnedSpectrum() {
+    if (!pinnedSpectrumStamp_) return;
+    pinnedSpectrumStamp_.reset();
+    detail.view.setSpectrumOverlayTracks({});
+}
 void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const SnapshotReader &reader,
-                         std::int64_t main, std::int64_t selected, std::uint64_t viewGeneration) {
+                         std::int64_t main, std::int64_t selected, std::uint64_t viewGeneration,
+                         const ViewStateStore *viewState) {
     if (!isShowing() || suspended_ || getLocalBounds().isEmpty()) return;
     if (owner_.owner_before(broker) || broker.owner_before(owner_)) {
+        clearPinnedSpectrum();
         owner_ = broker;
         followSelection(followsSelection_);
         channelGeneration_.reset();
@@ -518,6 +563,7 @@ void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const Sn
         return;
     }
     const auto track = target(reader, main, selected);
+    updatePinnedSpectrum(reader, viewGeneration, track, viewState);
     if (page_ == Page::All) {
         for (auto &tile : tiles_) {
             tile.setSource(detail.point());
@@ -554,12 +600,14 @@ void MixAnalysers::resized() {
     auto area = getLocalBounds().reduced(look::border);
     auto header = area.removeFromTop(look::fieldHeight);
     const bool showsTrace = page_ == Page::Spectrum;
-    pageBox.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth() / (showsTrace ? 3 : 2))));
+    pageBox.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth() / (showsTrace ? 4 : 2))));
     header.removeFromLeft(look::gap);
     if (showsTrace) {
-        sourceBox.setBounds(header.removeFromLeft(std::min(look::mixChannelMaxWidth, header.getWidth() / 2)));
+        sourceBox.setBounds(header.removeFromLeft(std::min(look::mixChannelMaxWidth, header.getWidth() / 3)));
         header.removeFromLeft(look::gap);
-        spectrumTraceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
+        spectrumTraceBox.setBounds(header.removeFromLeft(std::min(look::mixChannelMaxWidth, header.getWidth() / 2)));
+        header.removeFromLeft(look::gap);
+        pinnedTracks_.setBounds(header.removeFromLeft(look::mixPageWidth));
     } else {
         sourceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
     }

@@ -61,6 +61,14 @@ class SharedSpectrumView final : public juce::Component,
     void setPalette(std::string_view id, bool reverse = false);
     std::string_view palette() const noexcept { return palettes::id(paletteIndex_); }
     bool paletteReversed() const noexcept { return paletteReversed_; }
+    struct SpectrumOverlayTrack {
+        std::int64_t track = 0;
+        juce::String name;
+        juce::Colour colour;
+        bool operator==(const SpectrumOverlayTrack &) const = default;
+    };
+    static constexpr std::size_t kSpectrumOverlayTracks = 15;
+    void setSpectrumOverlayTracks(std::span<const SpectrumOverlayTrack>);
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
     enum class SpectrumScale { Wide, Detail, Extended, Device };
@@ -119,6 +127,14 @@ class SharedSpectrumView final : public juce::Component,
     void updateRaster();
     void updateSpectrumProjection();
     void updateScaledSpectrum() noexcept;
+    struct SpectrumOverlay;
+    SharedAnalysis::Request spectrumRequest(std::int64_t track) const noexcept;
+    void acquireSpectrumOverlays() noexcept;
+    void releaseSpectrumOverlays(bool keepPictures = false) noexcept;
+    void updateSpectrumOverlays(bool primaryChanged) noexcept;
+    bool spectrumOverlayMatchesPrimary(const SpectrumOverlay &) const noexcept;
+    void updateSpectrumOverlayPlot(SpectrumOverlay &) noexcept;
+    void paintSpectrumOverlays(juce::Graphics &, juce::Rectangle<float>) const;
     bool spectrumMode() const noexcept {
         return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage ||
                mode_ == Mode::SpectrumMaximum || mode_ == Mode::SpectrumCumulativeMaximum;
@@ -171,6 +187,7 @@ class SharedSpectrumView final : public juce::Component,
     SpectrumSlopeCache spectrumProjection_;
     struct ScaledSpectrum;
     std::unique_ptr<ScaledSpectrum> scaledSpectrum_;
+    std::vector<SpectrumOverlay> spectrumOverlays_;
     SpectrumScale spectrumScale_ = SpectrumScale::Wide;
     bool spectrumCursorEnabled_ = false;
     std::optional<juce::Point<float>> spectrumCursorPosition_;

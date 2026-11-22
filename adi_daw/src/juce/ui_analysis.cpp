@@ -115,9 +115,11 @@ struct SharedSpectrumView::ScaledSpectrum {
         if (nextScale == scale && nextRate == rate && nextSize == size && nextCount == count) return;
         x.clear();
         if (std::isfinite(nextRate) && nextRate > 0 && nextSize > 0) {
-            const auto &axis = spectrumAxis(nextScale);
+            auto axis = spectrumAxis(nextScale);
             const auto hzPerBin = nextRate / nextSize;
             const auto lastHz = std::min(axis.highHz, nextRate * .5);
+            if (nextScale == SpectrumScale::Wide && lastHz > axis.lowHz)
+                axis.logWidth = std::log(lastHz / axis.lowHz);
             for (std::size_t i = 1; i < nextCount; ++i) {
                 const auto hz = hzPerBin * static_cast<double>(i);
                 if (hz > lastHz) break;
@@ -129,12 +131,12 @@ struct SharedSpectrumView::ScaledSpectrum {
         scale = nextScale; rate = nextRate; size = nextSize; count = nextCount;
     }
 
-    void update(std::span<const float> bins, std::span<const float> offsets) {
+    void update(std::span<const float> bins, std::span<const float> offsets, bool fillTrace = true) {
         line.clear();
         fill.clear();
         if (x.size() < 2) return;
         const auto &axis = spectrumAxis(scale);
-        const bool filled = spectrumScaleHasFill(scale);
+        const bool filled = fillTrace && spectrumScaleHasFill(scale);
         for (std::size_t i = 0; i < x.size(); ++i) {
             const auto bin = firstBin + i;
             const auto y = axis.y(bins[bin] + (offsets.empty() ? 0.f : offsets[bin]));
@@ -153,19 +155,30 @@ struct SharedSpectrumView::ScaledSpectrum {
         }
     }
 
-    void paint(juce::Graphics &g, juce::Rectangle<float> plot) const {
+    void paint(juce::Graphics &g, juce::Rectangle<float> plot, juce::Colour colour = look::value) const {
         if (line.isEmpty() || plot.getWidth() <= 1.f || plot.getHeight() <= 1.f) return;
-        const auto transform = juce::AffineTransform::scale(plot.getWidth() - 1.f, plot.getHeight() - 1.f)
+        const float inset = scale == SpectrumScale::Wide ? 0.f : 1.f;
+        const auto transform = juce::AffineTransform::scale(plot.getWidth() - inset, plot.getHeight() - inset)
             .translated(plot.getX(), plot.getY());
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(plot.toNearestInt());
         if (!fill.isEmpty()) {
-            g.setColour(look::value.withAlpha(spectrumFillOpacity));
+            g.setColour(colour.withAlpha(spectrumFillOpacity));
             g.fillPath(fill, transform);
         }
-        g.setColour(look::value);
+        g.setColour(colour);
         g.strokePath(line, juce::PathStrokeType(look::line), transform);
     }
+};
+
+struct SharedSpectrumView::SpectrumOverlay {
+    SpectrumOverlayTrack source;
+    SharedAnalysis::Lease lease;
+    SharedAnalysis::Lease::SourcePosition admission;
+    std::shared_ptr<const SharedAnalysis::Result> picture;
+    std::unique_ptr<ScaledSpectrum> plot;
+
+    void clearPicture() noexcept { picture.reset(); plot.reset(); }
 };
 
 struct SharedSpectrumView::Raster {
@@ -296,6 +309,7 @@ SharedSpectrumView::SharedSpectrumView() {
 }
 void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
+    if (mode_ == Mode::Spectrum) releaseSpectrumOverlays();
     if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage ||
         isMaximumSpectrum(mode) || isMaximumSpectrum(mode_)) frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
@@ -335,6 +349,7 @@ void SharedSpectrumView::enablePhaseBands() {
 }
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
+    releaseSpectrumOverlays();
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     point_ = point; device_ = device; resetClassic(false); updateDemand(); repaint();
@@ -343,9 +358,161 @@ void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     if (channel_ == channel) return;
     channel_ = channel;
     if (mode_ == Mode::Phase && phaseBandsEnabled_) return;
+    releaseSpectrumOverlays();
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     updateDemand(); repaint();
+}
+void SharedSpectrumView::setSpectrumOverlayTracks(std::span<const SpectrumOverlayTrack> tracks) {
+    if (std::ranges::equal(spectrumOverlays_, tracks, std::ranges::equal_to{}, &SpectrumOverlay::source)) return;
+
+    std::vector<SpectrumOverlay> next;
+    next.reserve(std::min(tracks.size(), kSpectrumOverlayTracks));
+    for (const auto &source : tracks) {
+        if (source.track <= 0 || std::ranges::any_of(next, [&](const auto &overlay) {
+                return overlay.source.track == source.track;
+            })) continue;
+        const auto existing = std::ranges::find_if(spectrumOverlays_, [&](const auto &overlay) {
+            return overlay.source.track == source.track;
+        });
+        if (existing == spectrumOverlays_.end()) next.emplace_back();
+        else next.push_back(std::move(*existing));
+        next.back().source = source;
+        if (next.size() == kSpectrumOverlayTracks) break;
+    }
+    spectrumOverlays_.swap(next);
+    if (mode_ == Mode::Spectrum && eligible()) repaint();
+}
+SharedAnalysis::Request SharedSpectrumView::spectrumRequest(std::int64_t track) const noexcept {
+    SharedAnalysis::Request request{track, point_, 1024, channel_, dsp::Window::Hann};
+    request.device = device_;
+    return request;
+}
+void SharedSpectrumView::acquireSpectrumOverlays() noexcept {
+    if (mode_ != Mode::Spectrum || device_ != 0) return;
+    for (auto &overlay : spectrumOverlays_) {
+        if (overlay.source.track == track_) {
+            overlay.lease.reset();
+            overlay.admission = {};
+            overlay.clearPicture();
+        } else if (!overlay.lease) {
+            try {
+                overlay.lease = broker_->acquire(spectrumRequest(overlay.source.track));
+                overlay.admission = overlay.lease.sourcePosition();
+            } catch (...) {
+                overlay.lease.reset();
+            }
+        }
+    }
+}
+void SharedSpectrumView::releaseSpectrumOverlays(bool keepPictures) noexcept {
+    for (auto &overlay : spectrumOverlays_) {
+        overlay.lease.reset();
+        overlay.admission = {};
+        if (!keepPictures) overlay.clearPicture();
+    }
+}
+bool SharedSpectrumView::spectrumOverlayMatchesPrimary(const SpectrumOverlay &overlay) const noexcept {
+    return overlay.picture && shown_ && overlay.picture->sampleRate == shown_->sampleRate &&
+           overlay.picture->request.fftSize == shown_->request.fftSize &&
+           overlay.picture->transportRevision == shown_->transportRevision &&
+           overlay.picture->advancing == shown_->advancing;
+}
+void SharedSpectrumView::updateSpectrumOverlayPlot(SpectrumOverlay &overlay) noexcept {
+    if (!spectrumOverlayMatchesPrimary(overlay)) {
+        overlay.plot.reset();
+        return;
+    }
+    const auto &picture = *overlay.picture;
+    const auto offsets = spectrumSlope_ == SpectrumSlope::Tilt45 ? spectrumProjection_.offsets() :
+        std::span<const float>{};
+    if (spectrumSlope_ == SpectrumSlope::Tilt45 && offsets.size() != picture.binsDbfs.size()) {
+        overlay.plot.reset();
+        return;
+    }
+    try {
+        if (!overlay.plot) overlay.plot = std::make_unique<ScaledSpectrum>();
+        overlay.plot->setFormat(spectrumScale_, picture.sampleRate, picture.request.fftSize, picture.binsDbfs.size());
+        overlay.plot->update(picture.binsDbfs, offsets, false);
+    } catch (...) {
+        overlay.plot.reset();
+    }
+}
+void SharedSpectrumView::updateSpectrumOverlays(bool primaryChanged) noexcept {
+    if (mode_ != Mode::Spectrum || spectrumOverlays_.empty()) return;
+    bool redraw = false;
+    for (std::size_t i = 0; i < spectrumOverlays_.size(); ++i) {
+        auto &overlay = spectrumOverlays_[i];
+        auto next = overlay.lease.read();
+        if (!next || next->generation != overlay.admission.generation || !overlay.admission.generation) {
+            if (next || overlay.picture || !overlay.admission.generation)
+                overlay.admission = overlay.lease.sourcePosition();
+            redraw = redraw || static_cast<bool>(overlay.plot);
+            overlay.clearPicture();
+            continue;
+        }
+        const auto size = static_cast<std::int64_t>(next->request.fftSize);
+        if (size <= 0 || next->firstSequence < 0 ||
+            next->firstSequence > std::numeric_limits<std::int64_t>::max() - size ||
+            next->firstSequence + size <= overlay.admission.written) continue;
+        // The primary and first seven additional curves follow the normal clock.
+        // Extra paths adopt new data at 15 Hz while the worker retains its hop rate.
+        const auto &prior = overlay.picture;
+        bool due = next != prior;
+        if (due && i >= 7 && prior && prior->generation == next->generation &&
+            prior->sourceEpoch == next->sourceEpoch && prior->transportRevision == next->transportRevision &&
+            prior->advancing == next->advancing && prior->sampleRate == next->sampleRate) {
+            const auto before = next->advancing ? prior->firstStamp : prior->firstSequence;
+            const auto after = next->advancing ? next->firstStamp : next->firstSequence;
+            if (after >= before)
+                due = static_cast<double>(static_cast<std::uint64_t>(after) - static_cast<std::uint64_t>(before))
+                    >= next->sampleRate / 15.;
+        }
+        if (due) overlay.picture = std::move(next);
+        if (due || (primaryChanged && spectrumOverlayMatchesPrimary(overlay) != static_cast<bool>(overlay.plot))) {
+            updateSpectrumOverlayPlot(overlay);
+            redraw = true;
+        }
+    }
+    if (redraw && !primaryChanged) repaint();
+}
+void SharedSpectrumView::paintSpectrumOverlays(juce::Graphics &g, juce::Rectangle<float> plot) const {
+    if (spectrumOverlays_.empty() || plot.isEmpty()) return;
+    for (const auto &overlay : spectrumOverlays_)
+        if (overlay.plot) overlay.plot->paint(g, plot, overlay.source.colour);
+
+    // Keep the labels within two short rows on smaller windows.
+    const auto rowHeight = static_cast<float>(look::fieldHeight);
+    auto legend = plot.reduced(static_cast<float>(look::gap), 0.f)
+                      .withHeight(std::min(2.f * rowHeight, plot.getHeight() * .25f));
+    const auto columns = std::max(1, static_cast<int>(legend.getWidth() / static_cast<float>(look::mixPageWidth)));
+    const auto rows = static_cast<int>(legend.getHeight() / rowHeight);
+    if (!rows) return;
+    const auto capacity = static_cast<std::size_t>(columns * rows);
+    const bool overflow = spectrumOverlays_.size() > capacity;
+    const auto count = std::min(capacity, spectrumOverlays_.size());
+    const auto width = legend.getWidth() / static_cast<float>(columns);
+    g.setFont(look::font(look::fontCaption));
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto index = static_cast<int>(i);
+        auto cell = juce::Rectangle<float>(legend.getX() + width * static_cast<float>(index % columns),
+            legend.getY() + rowHeight * static_cast<float>(index / columns), width, rowHeight)
+            .reduced(static_cast<float>(look::border), 0.f);
+        g.setColour(look::display.withAlpha(.85f));
+        g.fillRect(cell);
+        g.setColour(look::textOnBand);
+        if (overflow && i + 1 == count) {
+            const auto remaining = static_cast<int>(spectrumOverlays_.size() - i);
+            g.drawText("+" + juce::String(remaining), cell, juce::Justification::centredLeft, true);
+            break;
+        }
+        const auto &overlay = spectrumOverlays_[i];
+        auto key = cell.removeFromLeft(rowHeight).reduced(rowHeight * .25f);
+        g.setColour(overlay.source.colour);
+        g.fillRect(key.withSizeKeepingCentre(key.getWidth(), look::line));
+        g.setColour(look::textOnBand);
+        g.drawText(overlay.source.name, cell, juce::Justification::centredLeft, true);
+    }
 }
 void SharedSpectrumView::setPalette(std::string_view id, bool reverse) {
     if (palette() == id && paletteReversed_ == reverse) return;
@@ -370,6 +537,7 @@ void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
     spectrumSlope_ = slope;
     try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
     if (spectrumScale_ != SpectrumScale::Wide) updateScaledSpectrum();
+    for (auto &overlay : spectrumOverlays_) updateSpectrumOverlayPlot(overlay);
     repaint();
 }
 void SharedSpectrumView::setSpectrumScale(SpectrumScale scale) {
@@ -378,6 +546,7 @@ void SharedSpectrumView::setSpectrumScale(SpectrumScale scale) {
     updateSpectrumCursorInput();
     if (!spectrumMode() || !eligible()) return;
     updateScaledSpectrum();
+    for (auto &overlay : spectrumOverlays_) updateSpectrumOverlayPlot(overlay);
     repaint();
 }
 void SharedSpectrumView::updateScaledSpectrum() noexcept {
@@ -462,6 +631,7 @@ void SharedSpectrumView::freeze(bool value) {
         presentClassic();
         return;
     }
+    releaseSpectrumOverlays(value);
     if (value) lease_.reset();
     else {
         freshRequired_ = true; sourcePosition_ = {};
@@ -492,6 +662,10 @@ void SharedSpectrumView::clear() {
         armFreshBoundary();
     }
     if (mode_ == Mode::Spectrogram) historyClearPosition_ = sourcePosition_;
+    for (auto &overlay : spectrumOverlays_) {
+        overlay.admission = overlay.lease.sourcePosition();
+        overlay.clearPicture();
+    }
     resetPicture(); mainMeter_.reset(); raster_.reset();
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
 }
@@ -501,6 +675,13 @@ SharedSpectrumView::~SharedSpectrumView() {
 }
 void SharedSpectrumView::present(std::shared_ptr<SharedAnalysis> broker, std::int64_t track) {
     if (broker_ != broker || track_ != track) {
+        if (broker_ != broker) releaseSpectrumOverlays();
+        else for (auto &overlay : spectrumOverlays_)
+            if (overlay.source.track == track) {
+                overlay.lease.reset();
+                overlay.admission = {};
+                overlay.clearPicture();
+            }
         lease_.reset();
         resetPicture();
         mainMeter_.reset();
@@ -533,6 +714,7 @@ void SharedSpectrumView::updateDemand() noexcept {
     const auto previous = status_;
     const bool hadMainMeter = mainMeter_.has_value();
     if (!eligible()) {
+        releaseSpectrumOverlays();
         if (shown_ || lease_) freshRequired_ = true;
         lease_.reset();
         sourcePosition_ = {};
@@ -541,6 +723,7 @@ void SharedSpectrumView::updateDemand() noexcept {
         mainMeter_.reset();
         status_ = Status::Detached;
     } else if (!broker_->active()) {
+        releaseSpectrumOverlays();
         lease_.reset(); resetPicture(); raster_.reset(); mainMeter_.reset();
         sourcePosition_ = {}; freshRequired_ = true;
         status_ = Status::Unavailable;
@@ -549,8 +732,7 @@ void SharedSpectrumView::updateDemand() noexcept {
         if (mainMeterSource_.expired()) mainMeter_.reset();
     } else {
         if (!lease_) {
-            SharedAnalysis::Request request{track_, point_, 1024, channel_, dsp::Window::Hann};
-            request.device = device_;
+            auto request = spectrumRequest(track_);
             switch (mode_) {
             case Mode::Spectrum: request.outputs = SharedAnalysis::Spectrum; break;
             case Mode::Scope: request.outputs = SharedAnalysis::Scope; break;
@@ -688,6 +870,7 @@ void SharedSpectrumView::frame() noexcept {
         repaint();
     }
     if (!lease_) return;
+    acquireSpectrumOverlays();
     broker_->requestFrame();
     updateDemand(); // owner resolution may have changed pending availability/generation
     if (!lease_.available()) return;
@@ -745,6 +928,7 @@ void SharedSpectrumView::frame() noexcept {
     try { updateRaster(); } catch (...) { raster_.reset(); }
     try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
     if (spectrumScale_ != SpectrumScale::Wide && pictureChanged) updateScaledSpectrum();
+    updateSpectrumOverlays(pictureChanged);
 }
 void SharedSpectrumView::updateRaster() {
     if (mode_ != Mode::Spectrogram || !shown_) return;
@@ -883,6 +1067,7 @@ void SharedSpectrumView::componentParentHierarchyChanged(juce::Component &) { wa
 void SharedSpectrumView::componentMovedOrResized(juce::Component &, bool, bool) { updateDemand(); }
 void SharedSpectrumView::componentBeingDeleted(juce::Component &) {
     resetClassic(true);
+    releaseSpectrumOverlays();
     if (shown_ || lease_) freshRequired_ = true;
     sourcePosition_ = {};
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); status_ = Status::Detached;
@@ -1170,6 +1355,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
         g.setColour(look::value);
         g.strokePath(curve, juce::PathStrokeType(1.4f));
     }
+    if (mode_ == Mode::Spectrum) paintSpectrumOverlays(g, scaled ? scaledPlot : plot);
     if (spectrumCursorPosition_) {
         const auto pointer = *spectrumCursorPosition_;
         if (const auto reading = spectrumCursorReading(pointer)) {
