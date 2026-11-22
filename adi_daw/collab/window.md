@@ -101,6 +101,15 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-22, late night, window lane — queue item 8: WIN-01 (PR requested)
+
+**Item 8, WIN-01. PR requested.** Branch `window/function-keys`, head `724851f5`. Title: **adi_daw: window: the function keys do functions; a golden of every preset's key map (WIN-01, ADR-0209 d9)**. Body: [`collab/window/pr-bodies/window-function-keys.md`](window/pr-bodies/window-function-keys.md).
+- **Tests:** shell 2934, seams 553, document 313, window_state 109, 0 failures; the `ui.yml` six green; the sweeps clean on its lines.
+- **The PC goldens:** one more commit on this branch, from the next gate's Linux output (this gate's output was cleared before it was kept; the gate script now keeps it). The head moves then, and this entry gets the new one.
+- **Main's GCC 13 stop** (`tests/scanner_session_reopen.hpp` 208) is still there; reported to the engine seat on 22 November.
+
+---
+
 ## 2026-11-22, late night, window lane — queue items 8 to 15 written; gating; items 19 to 23 parked
 
 Each branch below is pushed. Its "PR requested" follows here once its gate passes: the build at -j2 and -j1, the UI suites, the Pd-off tree as `ui.yml` builds it, and the sweeps.
