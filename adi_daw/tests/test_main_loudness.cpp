@@ -2,16 +2,19 @@
 #include "adi/engine/main_loudness.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/dsp/auto_gain.hpp"
+#include "adi/dsp/loudness.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
 #include <numbers>
 #include <cstdlib>
 #include <new>
+#include <thread>
 namespace {
 std::atomic<long> allocations{0};
 std::atomic<bool> countAllocations{false};
@@ -95,6 +98,12 @@ void peaksAndWeights() {
     double bad=std::numeric_limits<double>::quiet_NaN();double* outputs[]{&bad,&bad};AudioIo io;io.out64=outputs;io.numOut=2;io.frames=1;weighted.meter.process(io);
     weighted.tone(0.5);
     check(std::isfinite(weighted.meter.readout().momentaryLufs.load()),"nonfinite device output does not poison future windows");
+    double huge = std::numeric_limits<double>::max();
+    double* extremes[]{&huge, &huge};
+    io.out64 = extremes;
+    weighted.meter.process(io);
+    check(weighted.meter.readout().truePeakDb.load() < 2010.0f,
+          "finite out-of-range wide samples leave Main's held peak finite");
 }
 void formatIdentity() {
     MainLoudness meter;
@@ -148,6 +157,111 @@ void noAllocations() {
     countAllocations.store(false);
     check(allocations.load()==0,"processing, gate publication and reset allocate nothing");
 }
+template<class Sample> void sharedMeter() {
+    constexpr double sampleRate = 8000.0;
+    constexpr std::array weights{1.0, 0.0};
+    MainLoudness meter;
+    dsp::LoudnessMeter reference;
+    check(meter.prepare(sampleRate, 2, weights), "Main accepts the same channel layout as the DSP meter");
+    reference.prepare(sampleRate, weights);
+    check(!meter.readout().snapshot(), "no readings publish before the audio adopts the format");
+
+    std::array<Sample, 521> input{}, zeros{};
+    const Sample* referenceInput[]{input.data(), zeros.data()};
+    AudioIo io;
+    io.frames = static_cast<std::int32_t>(input.size());
+    io.numOut = 1;
+    std::int64_t position = 0;
+    const auto run = [&] {
+        for (std::size_t frame = 0; frame < input.size(); ++frame) {
+            const auto phase = static_cast<double>(position++);
+            input[frame] = static_cast<Sample>(0.1 * std::sin(phase * std::numbers::pi / 4.0));
+        }
+        if constexpr (std::is_same_v<Sample, float>) {
+            float* channels[]{input.data(), nullptr};
+            io.out = channels;
+            meter.process(io);
+        } else {
+            double* channels[]{input.data(), nullptr};
+            io.out64 = channels;
+            meter.process(io);
+        }
+        reference.process(referenceInput, io.frames);
+    };
+    const auto compare = [&] {
+        const auto snapshot = meter.readout().snapshot();
+        if (!snapshot) return false;
+        const auto expected = reference.readings();
+        return snapshot->momentaryLufs == static_cast<float>(expected.momentary) &&
+               snapshot->shortTermLufs == static_cast<float>(expected.shortTerm) &&
+               snapshot->integratedLufs == static_cast<float>(expected.integrated) &&
+               snapshot->truePeakDb == static_cast<float>(expected.truePeak) &&
+               snapshot->rangeLu == static_cast<float>(expected.range) &&
+               snapshot->maxMomentaryLufs == static_cast<float>(expected.maxMomentary) &&
+               snapshot->maxShortTermLufs == static_cast<float>(expected.maxShortTerm) &&
+               snapshot->valid(MainLoudnessField::Range) == expected.rangeValid &&
+               snapshot->running == expected.running;
+    };
+    run();
+    const auto warming = meter.readout().snapshot();
+    check(warming && warming->valid(MainLoudnessField::TruePeak) &&
+          !warming->valid(MainLoudnessField::Momentary), "validity distinguishes a peak from an unwarmed window");
+    bool same = compare();
+    for (int block = 0; block < 62; ++block) {
+        run();
+        same = compare() && same;
+    }
+    check(same && meter.readout().snapshot()->valid(MainLoudnessField::Range),
+          "every Main reading equals the common meter with a missing output channel");
+    meter.setRunning(false);
+    reference.setRunning(false);
+    run();
+    check(compare(), "explicit pause shares the common meter's held readings");
+    meter.requestReset();
+    reference.reset();
+    meter.process(AudioIo{});
+    check(compare() && !meter.readout().snapshot()->valid(MainLoudnessField::TruePeak),
+          "zero-frame reset publishes cleared flags and values in one snapshot");
+}
+void coherentReadout() {
+    MainLoudness meter;
+    check(meter.prepare(8000, 1), "concurrent readout fixture prepares");
+    const auto identity = meter.preparedFormatSequence();
+    meter.process(AudioIo{});
+    std::array<float, 64> samples{};
+    samples.fill(0.25f);
+    float* output[]{samples.data()};
+    AudioIo blocks;
+    blocks.out = output;
+    blocks.numOut = 1;
+    blocks.frames = static_cast<std::int32_t>(samples.size());
+    std::atomic<bool> stop{false}, consistent{true};
+    std::atomic<unsigned> seen{0};
+    std::thread reader([&] {
+        while (!stop.load(std::memory_order_acquire)) {
+            const auto view = meter.readout().snapshot();
+            if (!view) continue;
+            seen.fetch_add(1, std::memory_order_relaxed);
+            if (view->formatSequence != identity ||
+                view->valid(MainLoudnessField::TruePeak) !=
+                    (std::isfinite(view->truePeakDb) && view->truePeakDb != -300.0f) ||
+                view->valid(MainLoudnessField::Momentary))
+                consistent.store(false, std::memory_order_relaxed);
+        }
+    });
+    for (int block = 0; block < 2000; ++block) {
+        meter.process(blocks);
+        meter.requestReset();
+        meter.process(AudioIo{});
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (seen.load(std::memory_order_relaxed) == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    stop.store(true, std::memory_order_release);
+    reader.join();
+    check(seen.load(std::memory_order_relaxed) > 0 && consistent.load(std::memory_order_relaxed),
+          "a reader sees matching peak validity through concurrent resets");
+}
 class Sine final:public Node {
 public:
     bool processesDouble() const noexcept override{return true;}
@@ -169,5 +283,5 @@ void session() {
     check(std::isinf(engine.mainLoudness().readout().integratedLufs.load()),"device stop requests a meter reset");
 }
 }
-int main(){try{windows<float>();windows<double>();peaksAndWeights();formatIdentity();noAllocations();session();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{windows<float>();windows<double>();peaksAndWeights();formatIdentity();noAllocations();sharedMeter<float>();sharedMeter<double>();coherentReadout();session();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
