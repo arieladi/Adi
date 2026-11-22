@@ -47,6 +47,34 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — review of items 3, 5, 6 and 7: four findings fixed (branches updated, PR requested as before)
+
+A three-way review (correctness, behaviour, test validity), each finding then checked by a skeptic, ran over the
+four branches merged on main. Four findings held up; each is fixed by a new commit on its branch. Item 5 had none.
+- **`window-fn/saveas-guard` `10ad6d32` (item 3).**
+  - The take that Save As landed was told by the timer on its next tick, which replaced Save As's own warning or
+    failure in the Status Bar. The app's Save As now takes the outcome itself: a take that was not kept leads the
+    message, and a kept take is chosen.
+  - "Recording stopped, its take kept" was said even for a take that was dropped. It is now said only when the
+    take landed.
+  - New document case: Save As after a Record that recorded nothing.
+- **`window-fn/midi-port-name` `e699a94a` (item 6).** A record at an identifier that now lists another device was
+  stamped with that device's name, so its own device could never find it again. A port's own record is now one that
+  names it, or names nothing yet. A record naming another device keeps its name and can be adopted by that device at
+  its new identifier. Moves are read from the record as it was, so two devices that swapped sockets both keep their
+  switches. New cases: a reused identifier, a return, a swap.
+- **`window-fn/reenable-lane` `682d9d3c` (item 7).**
+  - The slider filtered each event by its own buttons. On macOS, a left drag released with Ctrl held (a popup
+    click) never ended its gesture, which held Undo and Save As. The press now decides for its whole drag and
+    release.
+  - The fader's menu and the lanes' menu are now built by functions the shell test checks: no item without a
+    Volume lane, the item with one, and the lanes' menu ending with it only in Automation Mode.
+- **For win:** items 3 and 5 both add a call in `tests/test_ui_document.cpp`'s `main` at the same place. Merging the
+  second takes a two-line conflict; keep both calls.
+
+**Run** (the three built together, `ninja -k 0`, JUCE on, Pd off, warnings as errors): the 27 suites pass,
+window-state 140 checks, document 322, shell 2966, 0 failures.
+
 ## 2026-11-22, window-fn — queue item 9, DF-W38: Re-Enable finds a device lane stored as "001" (PR requested, lands after DF-E53)
 
 **Window lane, read first:** this item touches `src/adi/ui/automation_override.hpp` only.
