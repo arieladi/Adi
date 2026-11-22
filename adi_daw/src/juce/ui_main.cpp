@@ -88,7 +88,9 @@ class AdiApplication final : public juce::JUCEApplication,
   public:
     const juce::String getApplicationName() override { return "ADI"; }
     const juce::String getApplicationVersion() override { return ADI_VERSION_STRING; }
-    bool moreThanOneInstanceAllowed() override { return false; }
+    // WTS-01: a test launch is an instance of its own beside an ordinary ADI, never handing its command
+    // line to the running copy; an ordinary launch hands a file to the copy already running.
+    bool moreThanOneInstanceAllowed() override { return isTestLaunch(getCommandLineParameters()); }
     void initialise(const juce::String &commandLine) override {
         const auto args = juce::StringArray::fromTokens(commandLine, true);
         juce::File project;
@@ -100,6 +102,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 smokeOutput_ = juce::File(args[++i].unquoted());
             else if (a == "--smoke-settings")
                 smokeSettings_ = true; // the smoke renders the Settings window's Audio page
+            else if (a == "--control-test")
+                controlTest_ = true; // WTS-01: a test drives this instance (its API is WTS-05's)
             else if (a.startsWithChar('-')) {
                 setApplicationReturnValue(2);
                 quit();
@@ -112,6 +116,19 @@ class AdiApplication final : public juce::JUCEApplication,
             setApplicationReturnValue(2);
             quit();
             return;
+        }
+        // WTS-01: a test launch keeps everything under ADI_HOME, never the user's folders. --control-test
+        // refuses to start without it; a smoke run says so and keeps its settings beside its project
+        // until CI's smoke step sets ADI_HOME, when it refuses too.
+        if (const auto home = juce::SystemStats::getEnvironmentVariable("ADI_HOME", {}); home.isEmpty()) {
+            if (controlTest_) {
+                std::fprintf(stderr, "ADI: --control-test needs ADI_HOME, a folder of its own for this instance\n");
+                setApplicationReturnValue(2);
+                quit();
+                return;
+            }
+            if (smokeOutput_ != juce::File{})
+                std::fprintf(stderr, "ADI: a smoke run without ADI_HOME keeps its settings beside its project\n");
         }
         if (smokeOutput_ != juce::File{})
             settings_ = std::make_unique<settings::AppSettings>(
@@ -578,6 +595,9 @@ class AdiApplication final : public juce::JUCEApplication,
     // Every edit is already in the file (ADR-0203 d13): quitting asks nothing.
     void systemRequestedQuit() override { quit(); }
     void anotherInstanceStarted(const juce::String &commandLine) override {
+        // A test launch runs on its own (WTS-01); should one reach here, it opens nothing.
+        if (isTestLaunch(commandLine))
+            return;
         auto file = juce::File(commandLine.unquoted());
         if (file.existsAsFile())
             openSettled(file, false);
@@ -589,7 +609,8 @@ class AdiApplication final : public juce::JUCEApplication,
         if(!device::configurePluginSearchPaths(loader_,*settings_,error))report(error);
     }
     void report(const std::string &text) {
-        if (smokeOutput_ != juce::File{}) {
+        // A test launch reports to stderr, never in a window (WTS-01).
+        if (smokeOutput_ != juce::File{} || controlTest_) {
             std::fprintf(stderr, "ADI: %s\n", text.c_str());
             return;
         }
@@ -1038,6 +1059,8 @@ class AdiApplication final : public juce::JUCEApplication,
             out.view = std::move(editor);
             return out;
         };
+        // A test launch never takes the foreground from the person at the desk (WTS-01).
+        window_->quiet = smokeOutput_ != juce::File{} || controlTest_;
         window_->setVisible(true);
         if (fullScreen)
             window_->setFullScreen(true);
@@ -1454,6 +1477,7 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool noAudio_ = false, smokeSettings_ = false;
     juce::File smokeOutput_;
+    bool controlTest_ = false;
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
