@@ -94,6 +94,59 @@ void loudnessCeilingAndGates() {
     options.targetLufs=-14;options.truePeakCeilingDb=-1;const auto gated=tone(directory.path(),"gated",options,48000,true);
     check(gated.outputLufs && std::abs(*gated.outputLufs+14)<=0.1 && gated.encodingPasses>=2,"normalization corrects the gain when a boost changes absolute-gate membership");
 }
+void conditionalNormalization() {
+    test::TempDirectory directory{"normalization", "conditional"};
+    Normalization options;
+    options.mode = NormalizeMode::Loudness;
+    options.target = NormalizationTarget::Rms;
+    options.targetRmsDbfs = -24;
+    options.when = NormalizeWhen::OnlyAboveTarget;
+    bool needsPolicy = false;
+    try {
+        validateNormalization(options, 48000, 2);
+    } catch (const std::invalid_argument&) {
+        needsPolicy = true;
+    }
+    check(needsPolicy, "conditional loudness requires an explicit policy for skipped gain");
+
+    options.skippedLoudnessCeiling = SkippedLoudnessCeiling::PreserveLevel;
+    const auto quiet = tone(directory.path(), "quiet-above", options);
+    check(quiet.conditionalGainSkipped && !quiet.brickwallApplied && !quiet.ceilingLimited &&
+          quiet.appliedGainDb == 0 && quiet.captured.rmsDbfs && quiet.decoded.rmsDbfs &&
+          std::abs(*quiet.decoded.rmsDbfs - *quiet.captured.rmsDbfs) < 1e-6,
+          "Only Above preserves a quiet programme");
+    options.when = NormalizeWhen::OnlyBelowTarget;
+    const auto boosted = tone(directory.path(), "quiet-below", options);
+    check(!boosted.conditionalGainSkipped && boosted.appliedGainDb > 0 &&
+          boosted.decoded.rmsDbfs && std::abs(*boosted.decoded.rmsDbfs + 24) <= 0.1,
+          "Only Below boosts the same programme to the target");
+
+    options.targetRmsDbfs = -1;
+    options.truePeakCeilingDb = -12;
+    options.when = NormalizeWhen::OnlyAboveTarget;
+    const auto unchanged = tone(directory.path(), "crest-preserved", options);
+    check(unchanged.conditionalGainSkipped && !unchanged.ceilingLimited &&
+          unchanged.outputTruePeakDb && *unchanged.outputTruePeakDb > -12 && unchanged.appliedGainDb == 0,
+          "the explicit Preserve Level policy keeps a skipped crest unaltered");
+    options.skippedLoudnessCeiling = SkippedLoudnessCeiling::EnforceCeiling;
+    const auto capped = tone(directory.path(), "crest-capped", options, 48000, false,
+                             audio::WavFormat::Pcm24, audio::WavDither::Triangular);
+    check(capped.conditionalGainSkipped && capped.ceilingLimited &&
+          capped.outputTruePeakDb && *capped.outputTruePeakDb <= -12 && capped.appliedGainDb < 0,
+          "the explicit ceiling policy attenuates a skipped crest and reports both outcomes");
+
+    Normalization peak;
+    peak.mode = NormalizeMode::Peak;
+    peak.when = NormalizeWhen::OnlyAboveTarget;
+    const std::array<double, 2> samples{0.5, -0.5};
+    NormalizationCapture peakCapture(directory.path() / "peak.f64", 48000, 1, peak);
+    peakCapture.append(samples, 2);
+    const auto out = directory.path() / "peak.wav";
+    const auto skipped = peakCapture.finish(out, audio::WavFormat::Float32, audio::WavDither::None, 0);
+    check(skipped.conditionalGainSkipped && read(out) == std::vector<float>{0.5f, -0.5f},
+          "Peak Only Above preserves below-full-scale PCM");
+}
+
 void exportStatistics() {
     ExportAnalysis shortMeter(48000, 2);
     const std::array<double, 8> impulse{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -206,4 +259,4 @@ void refusalsAndCancellation() {
     check(refused && !std::filesystem::exists(directory.path()/"cancel.wav"),"owner cancellation interrupts normalization before its output is encoded");
 }
 }
-int main(){try{peakAndWidePrecision();loudnessCeilingAndGates();exportStatistics();moreTargets();refusalsAndCancellation();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{peakAndWidePrecision();loudnessCeilingAndGates();exportStatistics(); conditionalNormalization();moreTargets();refusalsAndCancellation();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -1652,6 +1652,15 @@ std::string serializeRunManifest(const RunReport& run) {
                     normalization["target_rms_dbfs"] = job.normalization.targetRmsDbfs;
                 }
             }
+            if (job.normalization.when != NormalizeWhen::Always) {
+                auto& normalization = profile["normalization"];
+                const auto* when = normalizeWhenName(job.normalization.when);
+                normalization["when"] = when ? Json(when) : Json(nullptr);
+                if (job.normalization.skippedLoudnessCeiling) {
+                    const auto* ceiling = skippedLoudnessCeilingName(*job.normalization.skippedLoudnessCeiling);
+                    normalization["skipped_ceiling"] = ceiling ? Json(ceiling) : Json(nullptr);
+                }
+            }
             if (job.encoding.container == ExportContainer::Mp3) {
                 profile["wav_encoding"] = nullptr;
                 profile["effective_dither"] = "none";
@@ -1792,7 +1801,8 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"captured_pcm", exportStatistics(report.captured)},
                     {"decoded_delivery", exportStatistics(report.decoded)},
                     {"applied_gain_db", report.appliedGainDb}, {"ceiling_limited", report.ceilingLimited},
-                    {"encoding_passes", report.encodingPasses}, {"brickwall_applied", report.brickwallApplied}};
+                    {"encoding_passes", report.encodingPasses}, {"brickwall_applied", report.brickwallApplied},
+                    {"conditional_gain_skipped", report.conditionalGainSkipped}};
             }
             item["result"] = std::move(value);
         }

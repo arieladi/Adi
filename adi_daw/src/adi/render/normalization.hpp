@@ -11,6 +11,11 @@ namespace adi::render {
 enum class NormalizeMode {Off,Peak,Loudness};
 enum class NormalizationTarget { Integrated, Rms, MaximumMomentary, MaximumShortTerm };
 
+enum class NormalizeWhen { Always, OnlyAboveTarget, OnlyBelowTarget };
+enum class SkippedLoudnessCeiling { PreserveLevel, EnforceCeiling };
+
+[[nodiscard]] const char* normalizeWhenName(NormalizeWhen) noexcept;
+[[nodiscard]] const char* skippedLoudnessCeilingName(SkippedLoudnessCeiling) noexcept;
 [[nodiscard]] const char* normalizationTargetName(NormalizationTarget) noexcept;
 struct Normalization {
     NormalizeMode mode=NormalizeMode::Off;
@@ -19,6 +24,9 @@ struct Normalization {
     NormalizationTarget target = NormalizationTarget::Integrated;
     double targetRmsDbfs = -14.0;
     bool brickwall=false;
+    NormalizeWhen when = NormalizeWhen::Always;
+    // The caller chooses the ceiling policy for conditional loudness gain.
+    std::optional<SkippedLoudnessCeiling> skippedLoudnessCeiling{};
 };
 // Values describe the named stage. Silence and an unfitted loudness
 // window have no numeric value. RMS gives each scalar sample equal weight.
@@ -51,6 +59,7 @@ struct NormalizationReport {
     unsigned encodingPasses=0;
     ExportStatistics captured{}, decoded{};
     bool brickwallApplied=false;
+    bool conditionalGainSkipped = false;
 };
 void validateNormalization(const Normalization&,std::uint32_t rate,int channels);
 /// Offline worker, using a fresh job-owned staging file. Retains interleaved

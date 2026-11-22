@@ -51,6 +51,15 @@ double targetLevel(const Normalization& options) {
     return options.target == NormalizationTarget::Rms ? options.targetRmsDbfs : options.targetLufs;
 }
 
+bool appliesTargetGain(NormalizeWhen when, double targetGainDb) noexcept {
+    switch (when) {
+    case NormalizeWhen::Always: return true;
+    case NormalizeWhen::OnlyAboveTarget: return targetGainDb < 0;
+    case NormalizeWhen::OnlyBelowTarget: return targetGainDb > 0;
+    }
+    return false;
+}
+
 void service(const std::function<void()>& callback) { if (callback) callback(); }
 
 void readBlock(std::ifstream& source,std::span<double> values) {
@@ -170,8 +179,35 @@ const char* normalizationTargetName(NormalizationTarget target) noexcept {
     return nullptr;
 }
 
+const char* normalizeWhenName(NormalizeWhen when) noexcept {
+    switch (when) {
+    case NormalizeWhen::Always: return "always";
+    case NormalizeWhen::OnlyAboveTarget: return "only_above_target";
+    case NormalizeWhen::OnlyBelowTarget: return "only_below_target";
+    }
+    return nullptr;
+}
+
+const char* skippedLoudnessCeilingName(SkippedLoudnessCeiling ceiling) noexcept {
+    switch (ceiling) {
+    case SkippedLoudnessCeiling::PreserveLevel: return "preserve_level";
+    case SkippedLoudnessCeiling::EnforceCeiling: return "enforce_ceiling";
+    }
+    return nullptr;
+}
+
 void validateNormalization(const Normalization& options,std::uint32_t rate,int channels) {
     if(options.mode!=NormalizeMode::Off && options.mode!=NormalizeMode::Peak && options.mode!=NormalizeMode::Loudness)throw std::invalid_argument("Unknown export normalization mode");
+    if (!normalizeWhenName(options.when) ||
+        (options.mode == NormalizeMode::Off && options.when != NormalizeWhen::Always)) {
+        throw std::invalid_argument("Invalid conditional normalization mode");
+    }
+    const bool conditionalLoudness = options.mode == NormalizeMode::Loudness &&
+                                     options.when != NormalizeWhen::Always;
+    if (conditionalLoudness != options.skippedLoudnessCeiling.has_value() ||
+        (options.skippedLoudnessCeiling && !skippedLoudnessCeilingName(*options.skippedLoudnessCeiling))) {
+        throw std::invalid_argument("Conditional loudness normalization requires an explicit skipped ceiling policy");
+    }
     if(options.mode==NormalizeMode::Off)return;
     if (options.mode == NormalizeMode::Loudness) {
         if (!normalizationTargetName(options.target)) {
@@ -240,17 +276,26 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
     report.sourceTruePeakDb = report.captured.truePeakDbtp;
     report.sourceSamplePeakDb = report.captured.samplePeakDbfs;
     const auto samplePeak = state.input.samplePeak();
-    const bool brickwall = state.options.mode == NormalizeMode::Loudness && state.options.brickwall;
-    double gainDb = 0;
-    double limiterCeiling = state.options.truePeakCeilingDb;
-    if(state.options.mode==NormalizeMode::Peak)gainDb=report.sourceSamplePeakDb?-*report.sourceSamplePeakDb:0;
-    else {
+    const bool loudness = state.options.mode == NormalizeMode::Loudness;
+    double targetGainDb = 0;
+    if (!loudness) {
+        if (report.sourceSamplePeakDb) targetGainDb = -*report.sourceSamplePeakDb;
+    } else {
         const auto sourceTarget = targetReading(report.captured, state.options.target);
         if (!sourceTarget || !report.sourceTruePeakDb) {
             throw std::runtime_error(std::string("No measurable ") +
                 normalizationTargetName(state.options.target) + " in this range; choose Peak or Off");
         }
-        gainDb = targetLevel(state.options) - *sourceTarget;
+        targetGainDb = targetLevel(state.options) - *sourceTarget;
+    }
+    const bool correctTarget = appliesTargetGain(state.options.when, targetGainDb);
+    report.conditionalGainSkipped = !correctTarget;
+    double gainDb = correctTarget ? targetGainDb : 0;
+    const bool verifyCeiling = loudness && (correctTarget ||
+        state.options.skippedLoudnessCeiling == SkippedLoudnessCeiling::EnforceCeiling);
+    const bool brickwall = verifyCeiling && state.options.brickwall;
+    double limiterCeiling = state.options.truePeakCeilingDb;
+    if (verifyCeiling) {
         const auto ceilingGain=state.options.truePeakCeilingDb-*report.sourceTruePeakDb;
         if (gainDb > ceilingGain) {
             if (!brickwall) gainDb = ceilingGain;
@@ -284,8 +329,8 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
                 } else readBlock(sourceFile,std::span<double>(values).first(samples));
                 for(std::size_t sample=0;sample<samples;++sample) {
                     auto value=values[sample];
-                    if(state.options.mode==NormalizeMode::Peak && samplePeak>0)value/=samplePeak;
-                    if(state.options.mode==NormalizeMode::Loudness && !report.brickwallApplied)value*=gain;
+                    if (!loudness && correctTarget && samplePeak > 0) value /= samplePeak;
+                    if (loudness && !report.brickwallApplied) value *= gain;
                     if(!std::isfinite(value) || (format==audio::WavFormat::Float32 && std::abs(value)>std::numeric_limits<float>::max()))throw std::runtime_error("Normalized audio exceeds the output format");
                     values[sample]=value;
                 }
@@ -308,13 +353,13 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
         report.outputLufs = report.decoded.integratedLufs;
         report.outputTruePeakDb = report.decoded.truePeakDbtp;
         report.appliedGainDb=gainDb+20.0*std::log10(quantizationGain);report.encodingPasses=pass+1;
-        if(state.options.mode!=NormalizeMode::Loudness)return report;
+        if (!verifyCeiling) return report;
         if(!report.outputTruePeakDb)throw std::runtime_error("Normalized output has no measurable true peak");
         if(*report.outputTruePeakDb<=state.options.truePeakCeilingDb) {
             // Absolute gating can admit windows after a large boost. Correct
             // against the encoded result, retaining the same captured audio.
             const auto outputTarget = targetReading(report.decoded, state.options.target);
-            if (outputTarget && (!brickwall || pass + 1 < 4)) {
+            if (correctTarget && outputTarget && (!brickwall || pass + 1 < 4)) {
                 const auto correction = targetLevel(state.options) - *outputTarget;
                 if(std::abs(correction)>0.1 && (brickwall || correction < 0 || !report.ceilingLimited)) {
                     const auto available=state.options.truePeakCeilingDb-*report.outputTruePeakDb;
