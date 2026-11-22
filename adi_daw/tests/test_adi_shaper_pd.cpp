@@ -131,6 +131,8 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         send(Shaper::SweepOn, sweepOn ? 1.0f : 0.0f);
         send(Shaper::DriveOn, driveOn ? 1.0f : 0.0f);
         send(Shaper::CrushOn, crushOn ? 1.0f : 0.0f);
+        // Exercise actual reordered processing on both the canonical and edited canvases.
+        if (driveOn && crushOn) send(Shaper::orderParam(Stage::Crush), 0);
         send(Shaper::SweepMidPolarity, 1.0f);
         for (auto stage : {Stage::Filter, Stage::Sweep, Stage::Crush}) {
             send(Shaper::modParam(stage, mid, Shaper::Type), stage == Stage::Crush ? 0.0f : 1.0f);
@@ -266,7 +268,7 @@ void automationKeepsTheClock() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 422, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
@@ -375,6 +377,21 @@ int main() try {
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
+    auto preOrder = adi::Payload::from_cbor(sevenStageState);
+    for (int i = 0; i < 7; ++i) {
+        const auto id = std::to_string(716 + i);
+        preOrder.at("params").erase(id);
+        preOrder.at("real").erase(id);
+        set(*device, 716 + i, (68.0 - 10.0 * i) / 127.0);
+    }
+    const auto reversedOrder = device->saveState("state");
+    device = open();
+    check(device->loadState("state", reversedOrder), "load reordered stages");
+    for (int i = 0; i < 7; ++i)
+        check(device->getParam(std::to_string(716+i)).real == 68 - 10*i, "saved rank restored");
+    check(device->loadState("state", adi::Payload::to_cbor(preOrder)), "load a project without ranks");
+    for (int i = 0; i < 7; ++i)
+        check(device->getParam(std::to_string(716+i)).real == 8 + 10*i, "old project restores legacy order");
     automationKeepsTheClock();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");

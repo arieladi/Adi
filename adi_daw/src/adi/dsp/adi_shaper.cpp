@@ -43,6 +43,8 @@ void sanitizeStereo(const float* inL, const float* inR, float* outL, float* outR
 AdiShaper::AdiShaper() noexcept {
     for (std::size_t i = 0; i < stages_.size(); ++i) {
         const auto kind = static_cast<Stage>(i);
+        ranks_[i] = static_cast<std::uint8_t>(8 + 10 * i);
+        order_[i] = kind;
         stages_[i].enabled = kind < Stage::Filter;
         for (auto& band : stages_[i].bands) {
             const bool startsAtZero = kind == Stage::Pan || kind == Stage::Drive;
@@ -54,6 +56,19 @@ AdiShaper::AdiShaper() noexcept {
     }
     for (auto& sweep : sweeps_) sweep.setMode(AdiShaperSweep::Mode::Flange);
     prepare(sampleRate_);
+}
+
+AdiShaper::StageOrder AdiShaper::orderFor(const StageRanks& ranks) noexcept {
+    StageOrder result{};
+    for (std::size_t i = 0; i < result.size(); ++i) {
+        std::size_t slot = i;
+        while (slot != 0 && ranks[static_cast<std::size_t>(result[slot - 1])] > ranks[i]) {
+            result[slot] = result[slot - 1];
+            --slot;
+        }
+        result[slot] = static_cast<Stage>(i);
+    }
+    return result;
 }
 
 void AdiShaper::prepare(double sampleRate) noexcept {
@@ -366,6 +381,16 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= VolumeOrder) {
+        const auto rank = static_cast<std::uint8_t>(std::round(std::clamp(value, 0.f, 127.f)));
+        auto& current = ranks_[static_cast<std::size_t>(id - VolumeOrder)];
+        if (rank != current) {
+            current = rank;
+            orderDirty_ = true;
+        }
+        return;
+    }
+    if (id >= LegacyCount) return;
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         for (std::size_t i = 0; i < stages_.size(); ++i) updateStage(static_cast<Stage>(i));
@@ -580,13 +605,34 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
         }
         if (repaired) sanitizeStereo(outL, outR, outL, outR, frames);
     };
-    run.template operator()<Stage::Volume>();
-    run.template operator()<Stage::Width>();
-    run.template operator()<Stage::Pan>();
-    run.template operator()<Stage::Filter>();
-    run.template operator()<Stage::Sweep>();
-    run.template operator()<Stage::Drive>();
-    run.template operator()<Stage::Crush>();
+    if (orderDirty_) {
+        order_ = orderFor(ranks_);
+        defaultOrder_ = std::is_sorted(order_.begin(), order_.end());
+        orderDirty_ = false;
+    }
+    if (defaultOrder_) {
+        run.template operator()<Stage::Volume>();
+        run.template operator()<Stage::Width>();
+        run.template operator()<Stage::Pan>();
+        run.template operator()<Stage::Filter>();
+        run.template operator()<Stage::Sweep>();
+        run.template operator()<Stage::Drive>();
+        run.template operator()<Stage::Crush>();
+    } else {
+        // Route one host segment at a time. Each stage retains its kernels,
+        // histories and free-running phase when it moves to a different slot.
+        for (const auto stage : order_) {
+            switch (stage) {
+            case Stage::Volume: run.template operator()<Stage::Volume>(); break;
+            case Stage::Width: run.template operator()<Stage::Width>(); break;
+            case Stage::Pan: run.template operator()<Stage::Pan>(); break;
+            case Stage::Filter: run.template operator()<Stage::Filter>(); break;
+            case Stage::Sweep: run.template operator()<Stage::Sweep>(); break;
+            case Stage::Drive: run.template operator()<Stage::Drive>(); break;
+            case Stage::Crush: run.template operator()<Stage::Crush>(); break;
+            }
+        }
+    }
     for (auto& stage : stages_) {
         if (!stage.enabled) continue;
         for (auto& band : stage.bands)
