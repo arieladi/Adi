@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Width follower holds the input peak and follows manual release
+
+`clones/shaper-width-follower` at `4607d889` — Track sliding input peaks and continuous release in Width. **Lands after 3 December.** The detector retains the largest input in the selected window before attack/release. Zero Hold pauses its history. Positive Hold can recover an earlier peak after a live window increase. Storage is prepared outside processing and supports the full half-second through 768 kHz.
+
+The continuous manual release fit used 99 decay readings and 45 blind readings. On the blind set 36 rounded coefficients matched exactly and the remaining nine differed by one unit in the last place. All 36 held-out signed envelope traces improved, with median RMS falling from 0.03750 to 0.00000108. Rack and registered Pd suites passed under MSVC /W4 /WX at both Pd precisions. The established long decay, sustained levels and the oldest peak at 768 kHz are covered.
+
+On 48 kHz kick and bass, the fixed positive Hold error fell from 0.000579085 to 0.0000000911 stereo RMS. Changing Hold during playback reduced it from 0.00111789 to 0.0000001417. The widened pair went from 0.0132070 to 0.000002788. Both block sizes produced the same readings. The default passed the input exactly and reported zero latency. Six historical manual Width maps were rescored against the seven-stage branch. The largest change in their overall RMS score was below 0.00000005.
+
+With positive Hold the previous, revised and reference devices took 9.5, 11.8 and 71.9 µs median at 256 frames, and 74.0, 104.2 and 502.0 µs at 2,048. Revised/reference p99 was 19.0/141.2 and 212.4/2,545.9 µs. Their deadline misses were 3/21 and 0/12 out of 30,720 callbacks at each size. The sliding window costs more than the prior held-envelope approximation. A new negative-offset reading produces signed Width side gain below zero outside these fixtures. Its lower bound is under measurement.
+
+PR requested
+
 ## 22 November 2026 — Manual input modulation of the Crush Hold rate
 
 The clones seat takes the per-band Hold follower in the ADI-Shaper DSP, Pd canvas and device tests. Controls 877–903 cover each band's enable, mode, amount, depth, offset, threshold, attack, hold and release. An older state restores all three followers off. This addition lands after 3 December. The three copies use the same manual detector law as Width.
