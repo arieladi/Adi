@@ -476,10 +476,27 @@ void testTempoConversion() {
     for (std::int64_t t : {0LL, 5765760LL, 4LL * 5765760, 10LL * 5765760}) {
         const auto sec = m.ticksToSeconds(t);
         const auto back = m.secondsToTicks(sec);
-        check(std::abs(back - t) <= 2,
+        check(back == t,
               "tick " + std::to_string(t) + " round-trips through seconds, got " +
                   std::to_string(back));
     }
+    constexpr std::int64_t first = 2 * 5765760 + 53;
+    constexpr std::int64_t second = 1920LL * 5765760 + 17;
+    m.events = {{0,113.0,0}, {first,89.75,0}, {second,139.25,0}};
+    bool exact = true, fractional = true;
+    for (const std::int64_t start : {std::int64_t{1}, first - 512, second - 512}) {
+        for (std::int64_t tick = start; tick < start + 1024; ++tick) {
+            const auto previous = m.ticksToSeconds(tick - 1);
+            const auto boundary = m.ticksToSeconds(tick);
+            const auto upcoming = m.ticksToSeconds(tick + 1);
+            exact = exact && m.secondsToTicks(boundary) == tick;
+            fractional = fractional &&
+                m.secondsToTicks(std::lerp(previous, boundary, .75)) == tick - 1 &&
+                m.secondsToTicks(std::lerp(boundary, upcoming, .25)) == tick;
+        }
+    }
+    check(exact, "exact tick boundaries round-trip across tempo steps and a long elapsed segment");
+    check(fractional, "a genuinely fractional time still maps to its preceding tick");
 }
 
 void testSnapshotFromRealProject() {
@@ -524,6 +541,58 @@ void testSnapshotFromRealProject() {
               "a project with no tempo events still has a map");
         check(b->tempo->bpmAt(0) == 120.0, "defaulting to 120 rather than dividing by 0");
     }
+}
+
+void testLinearClipSnapshot() {
+    section("linear clips use the timeline projection and retain their native clock");
+    Scratch sc("linear_clips");
+    if(!sc.store)throw std::runtime_error("create linear clip snapshot fixture");
+    auto& db=sc.store->db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Audio')");
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(5765760,60)");
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES"
+            "(9,1,'audio',1441440,100),(3,1,'audio',2882880,100),(10,1,'audio',5765760,100)");
+    db.exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES"
+            "(5,1,'audio',1,250000000,1500000000)");
+    const auto before=SnapshotBuilder::fromStore(*sc.store);
+    const auto& clips=before->tracks.front()->clips;
+    if(clips.size()!=4)throw std::runtime_error("read all four timeline clips");
+    check(clips[0]->id==9 && clips[1]->id==3 && clips[2]->id==5 && clips[3]->id==10,
+          "mixed clip clocks sort by projected start and then ID");
+    const auto findLinear=[](const Snapshot& snap) {
+        for(const auto& clip:snap.tracks.front()->clips)
+            if(clip->id==5)return clip;
+        throw std::runtime_error("find linear clip");
+    };
+    const auto linear=findLinear(*before);
+    check(linear->timeBase==1 && linear->posNs==250000000 && linear->lengthNs==1500000000 &&
+          linear->posTicks==2882880 && linear->lengthTicks==10090080,
+          "a linear clip spans the tempo change using its absolute start and end");
+
+    const auto same=SnapshotBuilder::fromStore(*sc.store,*before);
+    check(findLinear(*same)==linear,"unchanged native timing reuses the clip node");
+    db.exec("UPDATE clips SET pos_ns=pos_ns+1,length_ns=length_ns+1 WHERE id=5");
+    const auto moved=SnapshotBuilder::fromStore(*sc.store,*same);
+    const auto movedLinear=findLinear(*moved);
+    check(movedLinear!=linear && movedLinear->posNs==250000001 && movedLinear->lengthNs==1500000001 &&
+          movedLinear->posTicks==linear->posTicks && movedLinear->lengthTicks==linear->lengthTicks,
+          "a sub-tick native edit replaces a node with the same projected placement");
+    check(linear->posNs==250000000 && linear->lengthNs==1500000000,
+          "the retained snapshot preserves its original physical time");
+
+    db.exec("UPDATE tempo_map SET bpm=90 WHERE pos_ticks=5765760");
+    const auto reprojected=SnapshotBuilder::fromStore(*sc.store,*moved);
+    const auto faster=findLinear(*reprojected);
+    check(faster!=movedLinear && faster->posNs==movedLinear->posNs &&
+          faster->lengthNs==movedLinear->lengthNs && faster->lengthTicks==13693680,
+          "tempo edits reproject the end while keeping the native anchors");
+    check(reprojected->tracks.front()->clips.front()==clips.front(),
+          "tempo edits preserve an unchanged musical-time clip node");
+
+    db.exec("UPDATE clips SET pos_ns=9223372036854775807,length_ns=1 WHERE id=5");
+    const auto damaged=SnapshotBuilder::fromStore(*sc.store,*reprojected);
+    check(findLinear(*damaged)->lengthTicks==0 && damaged->tracks.front()->clips.size()==4,
+          "an unrepresentable native end does not overflow or hide its neighbors");
 }
 
 }  // namespace
@@ -636,6 +705,7 @@ int main() {
         testTrackDelaySnapshot();
         testTempoConversion();
         testSnapshotFromRealProject();
+        testLinearClipSnapshot();
         testDeviceSeam();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());

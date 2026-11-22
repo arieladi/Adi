@@ -7,7 +7,8 @@ namespace adi::engine {
 // Persistent, owner-created workers. start only posts nonblocking OS wakeups;
 // finish spins/yields on completion flags without taking a callback mutex or
 // entering a semaphore wait. Jobs inherit the caller's floating-point
-// environment (including x86 FTZ/DAZ), then restore their prior environment. Jobs and their context live until finish returns.
+// environment, including its denormal mode, then restore their prior environment.
+// Jobs and their context live until finish returns.
 class RenderWorkers {
 public:
     using Function=void(*)(void*,std::size_t) noexcept;

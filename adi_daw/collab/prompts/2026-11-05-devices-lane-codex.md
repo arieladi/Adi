@@ -141,10 +141,11 @@ Take the first item not yet merged or in a green PR; when blocked, log why and t
    **Glue Compressor and Gate**, the other two devices that take a sidechain key, so DEV-05's M4
    gate (a key from another track through each of Live's three taps, compensated, suspension
    held off while the key is live) keys Live's own devices; the key's routing, taps and planner
-   edge are the engine's, the device's key input is yours. Then the rest in the order of the 27
-   October prompt: Drum Buss, Dynamic Tube, Channel EQ, EQ Three, Erosion, Filter Delay, Grain
+   edge are the engine's, the device's key input is yours. Then **Limiter** (win's fix of 19
+   November: #259 was a release-time fix in ADI's own limiter core, not Live's device). Then the
+   rest in the order of the 27 October prompt: Drum Buss, Dynamic Tube, Channel EQ, EQ Three, Erosion, Filter Delay, Grain
    Delay, Beat Repeat, Looper, Pedal, Roar, Amp and Cabinet, Vinyl Distortion, Corpus, Spectral
-   Resonator, Spectral Time, Align Delay (Limiter merged, #259). Each device: its canonical canvas
+   Resonator, Spectral Time, Align Delay, then Auto Pan and Tuner (missing until 19 November). Each device: its canonical canvas
    on compiled-in externals, the native core in `src/adi/dsp/` adding no adapter delay, the panel
    per the device contract, Live's parameter names, ranges and defaults from the manual with fixed
    parameter ids, latency reported and kept while bypassed, a test against a measured render

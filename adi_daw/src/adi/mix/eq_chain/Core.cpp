@@ -71,6 +71,15 @@ template <class Value> class Mailbox {
     }
 };
 bool downstream(const Settings &s) noexcept { return s.carveEnabled || s.focusEnabled; }
+bool samePreparedConfiguration(const Settings &a, const Settings &b) noexcept {
+    return a.eqEnabled == b.eqEnabled && a.carveEnabled == b.carveEnabled && a.focusEnabled == b.focusEnabled &&
+           (!a.eqEnabled || eq::pinPlanSettings(a.eq, b.eq) == a.eq) &&
+           (!a.focusEnabled || focus::sameConfiguration(a.focus, b.focus));
+}
+enum class OfferDecision : std::uint64_t { Pending, Promised, Withdrawn };
+std::uint64_t decisionFor(std::uint64_t version, OfferDecision decision) noexcept {
+    return (version << 2U) | static_cast<std::uint64_t>(decision);
+}
 struct KeyStorage {
     AlignedKey<float> single;
     AlignedKey<double> dual;
@@ -159,6 +168,11 @@ struct Core::Impl {
     Mailbox<Candidate> requests;
     ReadyFields offers;
     std::atomic<std::uint64_t> readyVersion{0}, acknowledged{0};
+    // An observer that returns a pending plan and audio that withdraws a
+    // reversion decide on this same versioned cell. The owner waits for audio
+    // acknowledgment before it can reuse any child resources.
+    mutable std::atomic<std::uint64_t> offerDecision{0};
+    std::atomic<std::uint64_t> revertedVersion{0};
     std::atomic<std::uint64_t> requestedWork{0}, completedWork{0};
     std::atomic<std::uint64_t> keySeenEpoch{0}, warmFrames{0};
     std::atomic<std::uint64_t> eqPrimedVersion{0}, eqWarmFrames{0};
@@ -259,14 +273,16 @@ struct Core::Impl {
         if (!prepared || !supported(s))
             return false;
         desired = s;
-        if (candidateVersion || s == active)
+        if (candidateVersion) {
+            if (offerDecision.load(std::memory_order_relaxed) !=
+                decisionFor(candidateVersion, OfferDecision::Promised))
+                revertedVersion.store(samePreparedConfiguration(s, active) ? candidateVersion : 0,
+                                      std::memory_order_release);
             return true;
-        const bool sameEnables = s.eqEnabled == active.eqEnabled && s.carveEnabled == active.carveEnabled &&
-                                 s.focusEnabled == active.focusEnabled;
-        const bool sameEq = !s.eqEnabled || (!equalizer->pendingLatencyChange().token &&
-                                             eq::pinPlanSettings(s.eq, active.eq) == s.eq);
-        const bool sameFocus = !s.focusEnabled || focus::sameConfiguration(s.focus, active.focus);
-        if (sameEnables && sameEq && sameFocus) {
+        }
+        if (s == active)
+            return true;
+        if (samePreparedConfiguration(s, active) && (!s.eqEnabled || !equalizer->pendingLatencyChange().token)) {
             // Ordinary controls are consumed directly by the audio children.
             // They need neither an owner candidate nor a worker wakeup.
             active = s;
@@ -302,7 +318,8 @@ struct Core::Impl {
         if (ready && admitted != ready)
             return false;
         if (admitted != ownerAcknowledged) {
-            ownerActive = ownerCandidate.settings;
+            if (offerDecision.load(std::memory_order_acquire) != decisionFor(admitted, OfferDecision::Withdrawn))
+                ownerActive = ownerCandidate.settings;
             ownerAcknowledged = admitted;
         }
         Candidate next;
@@ -375,7 +392,8 @@ struct Core::Impl {
                     return false;
             }
             const auto change = focuser->pendingLatencyChange();
-            p.focusReadyToken = focuser->configurationStatus().ready;
+            const auto status = focuser->configurationStatus();
+            p.focusReadyToken = change.token ? status.ready : status.applied;
             p.focusEpoch = ownerFocusEpoch;
             ownerReady.focusOfferToken = change.token;
             p.focusLatency = change.token ? change.samples : focuser->latencySamples();
@@ -383,6 +401,7 @@ struct Core::Impl {
         p.totalLatency = p.eqLatency + p.focusLatency;
         offers.publish(ownerReady);
         lastBuiltVersion = version;
+        offerDecision.store(decisionFor(version, OfferDecision::Pending), std::memory_order_release);
         readyVersion.store(version, std::memory_order_release);
         completedWork.store(version, std::memory_order_release);
         return true;
@@ -407,7 +426,19 @@ struct Core::Impl {
     }
     PlanOffer pending() const noexcept {
         Ready r;
-        return ready(r) && warm(r) ? r.plan : PlanOffer{};
+        if (!ready(r) || !warm(r))
+            return {};
+        const auto version = r.plan.token;
+        const auto promised = decisionFor(version, OfferDecision::Promised);
+        if (offerDecision.load(std::memory_order_acquire) == promised)
+            return r.plan;
+        if (revertedVersion.load(std::memory_order_acquire) == version)
+            return {};
+        auto expected = decisionFor(version, OfferDecision::Pending);
+        if (offerDecision.compare_exchange_strong(expected, promised, std::memory_order_acq_rel) ||
+            expected == promised)
+            return r.plan;
+        return {};
     }
     Settings controls() const noexcept {
         auto result = desired;
@@ -430,14 +461,37 @@ struct Core::Impl {
         }
         if (p.focusEnabled) {
             const auto *f = publishedFocus.load(std::memory_order_acquire);
-            if (!f || f->configurationStatus().ready != p.focusReadyToken)
+            if (!f)
                 return false;
             const auto change = f->pendingLatencyChange();
+            const auto status = f->configurationStatus();
             if (change.token != r.focusOfferToken ||
+                (change.token ? status.ready : status.applied) != p.focusReadyToken ||
                 (change.token ? change.samples : f->latencySamples()) != p.focusLatency)
                 return false;
         }
         return !p.carveEnabled || publishedCarve.load(std::memory_order_acquire) != nullptr;
+    }
+    bool withdrawReversion(const Ready &r) noexcept {
+        if (revertedVersion.load(std::memory_order_relaxed) != candidateVersion || !validateReady(r))
+            return false;
+        auto expected = decisionFor(candidateVersion, OfferDecision::Pending);
+        if (!offerDecision.compare_exchange_strong(expected, decisionFor(candidateVersion, OfferDecision::Withdrawn),
+                                                   std::memory_order_acq_rel))
+            return false;
+        // Neither the host nor any caller has reserved this aggregate. Drop
+        // only the ready child tokens and leave applied signal state intact.
+        if (active.eqEnabled && r.plan.eqToken)
+            static_cast<void>(equalizer->requestConfiguration(desired.eq));
+        if (active.focusEnabled && r.focusOfferToken)
+            audioFocus->withdrawUnpromisedOffer(r.focusOfferToken);
+        active = desired;
+        audioReady = {};
+        eqPrimeContext = {};
+        primeVersion = 0;
+        candidateVersion = 0;
+        acknowledged.store(r.plan.token, std::memory_order_release);
+        return true;
     }
     BlockContext begin(std::uint64_t block, int configured, const Settings &s) noexcept {
         if (configured < 0 || !prepared || !supported(s))
@@ -462,6 +516,8 @@ struct Core::Impl {
                 available = true;
             }
         }
+        if (available && configured == activePlan.totalLatency && withdrawReversion(r))
+            available = false;
         if (available && (r.plan.carveEnabled || r.plan.focusEnabled)) {
             audioKeys = publishedKeys.load(std::memory_order_acquire);
             if (keySeenEpoch.load(std::memory_order_relaxed) != r.keyEpoch) {

@@ -708,11 +708,8 @@ jobs:
             fi
           done
 
-          # The sqlite3 that ends up inside our binary is the amalgamation
-          # vendored in SQLiteCpp, not the host's. Pinning SQLiteCpp to its 3.3.3
-          # tag moved this from 3.53.4 to 3.49.2, because its master branch was
-          # ahead of its own release. That is the pin working as intended, and it
-          # is the kind of thing that should be legible in a build log.
+          # Print the SQLite amalgamation version from the pinned dependency.
+          # This is the version linked into the built binary.
           ver=$(grep -m1 '#define SQLITE_VERSION  *"' \
                 adi_daw/third_party/SQLiteCpp/sqlite3/sqlite3.c | sed 's/.*"\(.*\)".*/\1/')
           echo
@@ -1026,7 +1023,22 @@ jobs:
       # a render through a MISSING plug-in still succeeds and still prints a
       # peak. That is right for a musician and useless here, so both renders
       # pass --require-devices, which exits 2 on a placeholder or a skip.
+      #
+      # DISCOVERY FIRST, THEN THE PROJECT (DEV-25, docs/ENGINE-PLUGIN-SCANNER.md
+      # "Real loader catalogue hydration"). Opening a project reads the stored
+      # plug-in catalogue and walks no folder: a plug-in the catalogue lacks
+      # loads only through its saved path, and add_clap_chain.py saves none,
+      # so it is NeedsDiscovery. As in Live, a plug-in is found by a scan of
+      # its folder (Live's startup scan or Rescan), not by opening a set. Here
+      # that scan is `adi_play --list`, and it runs first.
+      #
+      # ADI_HOME gives these CLAP steps a registry of their own. The default
+      # one already holds whatever the probe steps above scanned (the fixture
+      # VST3), and from the first row on it is the catalogue a project open
+      # trusts; sharing it would make these steps depend on step order.
       - name: Render a project through a CLAP
+        env:
+          ADI_HOME: ${{ runner.temp }}/adi-home-clap
         run: |
           set -euo pipefail
           play=""
@@ -1053,6 +1065,19 @@ jobs:
           python3 adi_daw/tools/make_demo_project.py render/clap.adi --clip-rates 48000
           python3 adi_daw/tools/add_clap_chain.py render/clap.adi \
                   com.adi.airwindows.sub=Sub
+          # The scan: Incremental discovery of the suite's folder only, which
+          # publishes Sub to this registry, or fails the step.
+          rc=0
+          listed=$("$play" --list --search-only "$ADI_CLAP_DIR" 2>&1) || rc=$?
+          echo "$listed"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::adi_play --list --search-only failed (exit $rc)"
+            exit 1
+          fi
+          if ! grep -q '^  clap  com\.adi\.airwindows\.sub  ' <<<"$listed"; then
+            echo "::error::adi_play --list did not catalogue com.adi.airwindows.sub"
+            exit 1
+          fi
           "$play" render/clap.adi --search "$ADI_CLAP_DIR" --render 4 \
                   --require-devices --require-peak -60 --expect-no-edits
 
@@ -1131,9 +1156,13 @@ jobs:
 
       # PROVE THE GATE CAN FAIL. A render step that passes because its check
       # stopped checking looks exactly like a render step that passes. This
-      # renders the same CLAP project with NO search path, so the plug-in is a
-      # stand-in, and requires the non-zero exit.
+      # renders the same CLAP project with NO search path and a registry that
+      # has never seen the suite (a fresh ADI_HOME, NOT the one the render
+      # step catalogued Sub into), so the plug-in is a stand-in, and requires
+      # the non-zero exit.
       - name: --require-devices fails on a stand-in
+        env:
+          ADI_HOME: ${{ runner.temp }}/adi-home-empty
         run: |
           set -euo pipefail
           if "$ADI_PLAY" render/clap.adi --render 1 --require-devices; then
@@ -1150,8 +1179,11 @@ jobs:
       #
       # Note it is a floor and not a match on the word "silence": adi_play
       # calls a peak silence only when it is exactly zero, and an idling
-      # plug-in is not exactly zero.
+      # plug-in is not exactly zero. It shares the render step's ADI_HOME, so
+      # Sub is catalogued and loads: the failure is the peak's, not a stand-in.
       - name: --require-peak fails when the devices load but nothing is heard
+        env:
+          ADI_HOME: ${{ runner.temp }}/adi-home-clap
         run: |
           set -euo pipefail
           if "$ADI_PLAY" render/clap.adi --search "$ADI_CLAP_DIR" \

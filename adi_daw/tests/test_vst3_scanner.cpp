@@ -69,10 +69,32 @@ void contract() {
     if(ec)std::printf("native symlink unavailable; original path case checked\n");
     const auto bad=temp.path()/"invalid.vst3";std::ofstream(bad)<<"not a module";
     check(device::scanVst3File(*scanner,juce::String::fromUTF8(utf8(bad).c_str()),descriptions).state==scan::State::Failed,"invalid VST3 module becomes a named child scan failure");
-    const auto held=descriptions.size();scan::Result callback;bool refused=false;error="untouched";
-    {audio::CallbackScope scope;callback=device::scanVst3File(*scanner,parent,descriptions);
-        refused=!device::decodeVst3Metadata(result.plugins,canonical,&decoded,error);}
-    check(callback.state==scan::State::CallbackRefused && refused && allocations==0 && audio::callbackFileIo==0 &&
+    const auto held = descriptions.size();
+    // MSVC's Debug STL can allocate iterator proxies even for an empty
+    // result. Measure that return/assignment separately from discovery work.
+    const auto emptyRefusal = [] {
+        scan::Result empty;
+        empty.state = scan::State::CallbackRefused;
+        return empty;
+    };
+    scan::Result control, callback;
+    unsigned emptyResultCost = 0, discoveryCost = 0, decodeCost = 0;
+    bool refused = false;
+    error = "untouched";
+    {
+        audio::CallbackScope scope;
+        const auto first = allocations.load();
+        control = emptyRefusal();
+        const auto afterControl = allocations.load();
+        callback = device::scanVst3File(*scanner,parent,descriptions);
+        const auto afterDiscovery = allocations.load();
+        refused = !device::decodeVst3Metadata(result.plugins,canonical,&decoded,error);
+        emptyResultCost = afterControl - first;
+        discoveryCost = afterDiscovery - afterControl;
+        decodeCost = allocations.load() - afterDiscovery;
+    }
+    check(control.state==scan::State::CallbackRefused && callback.state==scan::State::CallbackRefused &&
+        refused && discoveryCost==emptyResultCost && decodeCost==0 && audio::callbackFileIo==0 &&
         error=="untouched" && descriptions.size()==held,"VST3 discovery/decoder callbacks refuse before allocation or descriptor/diagnostic/OS mutation");
 }
 } // namespace

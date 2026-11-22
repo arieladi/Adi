@@ -98,7 +98,12 @@ struct Fixture {
         check(pd.sendParameter(device::OneShot::Attack + 1, 0) &&
               pd.sendParameter(device::OneShot::Release + 1, 0) &&
               pd.sendParameter(device::OneShot::Volume + 1, 0) &&
-              pd.sendParameter(device::OneShot::FadeOut + 1, 0), "oracle controls reach native core");
+              pd.sendParameter(device::OneShot::FadeOut + 1, 0) &&
+              // Mechanics, not defaults (see test_oneshot.cpp's configure).
+              pd.sendParameter(device::OneShot::FilterOn + 1, 0) &&
+              pd.sendParameter(device::OneShot::Snap + 1, 0) &&
+              pd.sendParameter(device::OneShot::LoopOn + 1, 0) &&
+              pd.sendParameter(device::OneShot::VelToVol + 1, 100), "oracle controls reach native core");
     }
     void block(const engine::Event* event = nullptr, int frames = 64, int offset = 0) {
         float* output[]{left.data(), right.data()};
@@ -123,31 +128,31 @@ void run() {
     Fixture f;
     if (!f.ready) return;
     auto on = note(1);
-    f.block(&on); f.block();
+    f.block(&on); f.block(); f.block();
     check(f.constant(0, 0), "missing sample produces silence");
     auto a = sample(.25f, -.125f);
     check(a && a->blake3 == "test-source-hash" && a->frames == 65536 && a->interleaved[1] == -.125f,
           "prepared slot preserves source hash and stereo audio metadata");
     check(f.pd.publishSample(1, std::move(a)), "prepared sample publishes through the existing host slot");
-    on = note(2); f.block(&on); f.block();
+    on = note(2); f.block(&on); f.block(); f.block();
     check(f.constant(.25f, -.125f), "real Pd MIDI plays the independent stereo amplitude oracle");
-    auto off = note(2, false); f.block(&off); f.block();
+    auto off = note(2, false); f.block(&off); f.block(); f.block();
     check(f.constant(0, 0), "real Pd note-off releases both channels");
-    on = note(3); f.block(&on); f.block();
+    on = note(3); f.block(&on); f.block(); f.block();
     check(f.pd.publishSample(1, sample(.5f, .125f)), "replacement sample publishes");
     f.pd.collectSamples(); f.block(); f.block();
     check(f.constant(0, 0), "replacement kills previous voices after the reported adapter tail");
-    on = note(4); f.block(&on); f.block();
+    on = note(4); f.block(&on); f.block(); f.block();
     check(f.constant(.5f, .125f), "new note uses replacement sample");
     check(f.pd.publishSample(1, device::clearOneShotSample(1)), "empty snapshot publishes a clear");
     f.block(); f.block(); f.pd.collectSamples();
     check(f.constant(0, 0), "clear retires old sample and silences held voices");
     check(f.pd.publishSample(1, sample(.25f, -.125f)), "sample recovers after clear");
-    on = note(5); f.block(&on); f.block();
+    on = note(5); f.block(&on); f.block(); f.block();
     check(f.constant(.25f, -.125f), "note on publication boundary reads new immutable data");
     check(f.pd.publishSample(1, sample(.5f, 0)) && f.pd.publishSample(1, sample(.375f, .0625f)),
           "multiple off-thread publications before a segment are accepted");
-    on = note(6); f.block(&on); f.block(); f.pd.collectSamples();
+    on = note(6); f.block(&on); f.block(); f.block(); f.pd.collectSamples();
     check(f.constant(.375f, .0625f), "latest publication wins without borrowing a retired sample");
     auto raw = std::make_unique<device::PdSampleBuffer>();
     raw->id = 1; raw->channels = 1; raw->frames = 64; raw->sampleRate = 48000;
@@ -156,7 +161,7 @@ void run() {
     f.block(); f.block();
     check(f.constant(0, 0), "unprepared replacement resets instead of analyzing or retaining old voices");
     check(f.pd.publishSample(1, sample(.25f, -.125f)), "prepared data restores playback");
-    on = note(7); f.block(&on); f.block();
+    on = note(7); f.block(&on); f.block(); f.block();
     bool chunks = true;
     for (int size : {1, 7, 63, 65, 127, 255}) {
         f.left.fill(9); f.right.fill(9);
@@ -177,7 +182,7 @@ void run() {
     Fixture other;
     if (other.ready) {
         check(other.pd.publishSample(1, sample(-.375f, .125f)), "second instance publishes independently");
-        on = note(20); f.block(&on); f.block(); other.block(&on); other.block();
+        on = note(20); f.block(&on); f.block(); f.block(); other.block(&on); other.block(); other.block();
         check(f.constant(.25f, -.125f) && other.constant(-.375f, .125f),
               "two Pd instances keep sample slots and MIDI identities separate");
         check(other.realtime && other.pd.consoleLines().empty(), "second instance callback and console remain clean");

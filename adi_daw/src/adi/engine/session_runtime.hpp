@@ -19,6 +19,8 @@ public:
     [[nodiscard]] Session* get() const noexcept { return owner_; }
 private:
     Session* owner_ = nullptr;
+    struct KeyRoutes;
+    std::shared_ptr<KeyRoutes> keyRoutes_;
     friend class Session;
 };
 class ProjectViewEndpoint {
