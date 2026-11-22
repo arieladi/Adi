@@ -17,6 +17,11 @@ namespace adi::ui {
 struct FocusScopeRange;
 class FocusScopeBarProjection;
 enum class FocusScopeChannels : std::uint8_t { Stereo = 1, Mid, Left, Right, Side };
+struct FocusScopeLayerAdjustment {
+    int offsetSamples = 0;
+    bool inverted = false;
+    bool operator==(const FocusScopeLayerAdjustment &) const = default;
+};
 struct FocusLagRequest;
 struct FocusLagPreview;
 // Owner-thread demand, immutable worker publications. No audio processor, callback lock,
@@ -201,7 +206,13 @@ class SharedAnalysis final {
         engine::ScopeSource a, b;
         FocusScopeChannels fold = FocusScopeChannels::Stereo;
         std::uint64_t selection = 0;
+        bool spectrum = false;
         bool operator==(const ScopeDifference &) const = default;
+    };
+    struct ScopeDifferenceSpectrum {
+        ScopeDifference source;
+        std::int32_t fftSize = 0;
+        std::vector<float> binsDbfs;
     };
     enum class BarScopeStatus { Idle, Pending, Ready, Missed };
     struct BarScopeResult {
@@ -210,6 +221,11 @@ class SharedAnalysis final {
         double sampleRate = 0.;
         std::uint64_t transportRevision = 0;
         std::shared_ptr<const FocusScopeBarProjection> projection;
+        std::optional<ScopeDifferenceSpectrum> residual;
+        // Empty bins in a matching result mean the selected residual is zero.
+        [[nodiscard]] const ScopeDifferenceSpectrum *differenceSpectrum(const ScopeDifference &expected) const noexcept {
+            return residual && residual->source == expected ? &*residual : nullptr;
+        }
     };
     class BarScopeLease {
       public:
@@ -223,7 +239,11 @@ class SharedAnalysis final {
         bool request(const FocusScopeRange &, std::uint64_t expectedRevision = 0) noexcept;
         // Use the same sources. Mid starts with a full unread window and can be dropped mid-capture.
         void setMonoRequested(FocusScopeChannels) noexcept;
+        void setPhaseRequested(bool) noexcept;
         void setDifferenceRequested(std::optional<ScopeDifference>) noexcept;
+        // Lane order. A changed preview invalidates the current bar without
+        // detaching the source taps. Missing entries default to no adjustment.
+        void setLayerAdjustments(std::span<const FocusScopeLayerAdjustment>) noexcept;
         double sampleRate() const noexcept;
         BarScopeStatus status() const noexcept;
         std::shared_ptr<const BarScopeResult> read() const noexcept;
