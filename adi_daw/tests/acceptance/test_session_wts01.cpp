@@ -613,13 +613,10 @@ void step6(Session &s, Report &report) {
                         labels.c_str(), worst, worstBlock),
                  "each point one step \"Add Automation Point\"; the gain follows (0, 0 dB) (2 bars, -24) (4 bars, -6) "
                  "within 0.1 dB");
-    // A built-in device's parameter: the window offers only Volume.
-    report.step("6b", V::NotBuilt, "Automation Mode shows each track's Volume only (automation_mode.hpp)",
-                "a device parameter's envelope drawn and followed",
-                "the lane chooser for a device parameter from an agreed sheet (AU-01 window half, ADR-0243), or "
-                "automation recording wired to the session (AU-03); owner window-fn");
-    // The engine as it stands: Utility on track 5 (track 4 deactivated so only x5 is heard), a lane on its Gain
-    // (+6 dB for 2 bars, then 0 dB).
+    // 6b. A built-in device's parameter, through the window's lane chooser (DF-W37): Utility on track 5
+    // (track 4 deactivated so only x5 is heard), its Gain chosen among the track's choices as the track
+    // header's Show Automation lists them, and its envelope drawn point by point as Automation Mode adds
+    // them (+6 dB for 2 bars, then 0 dB), each one step.
     int steps = 0;
     auto mute = ui::activateTracks(snap->tracks, 4, {});
     if (mute.refusal.empty() && submitEdits(doc, std::move(mute.ops)))
@@ -628,26 +625,30 @@ void step6(Session &s, Report &report) {
     if (utility)
         ++steps;
     const auto dev = scalar(doc, "SELECT MAX(id) FROM devices");
-    automation::LaneSpec lane;
-    lane.id = scalar(doc, "SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes");
-    lane.ownerKind = "device";
-    lane.ownerId = dev;
-    lane.paramRef = "11";
-    lane.paramName = "Gain";
-    lane.valueDomain = "normalized";
-    const auto data = scalar(doc, "SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data");
-    const auto point = [](std::uint64_t id, std::int64_t time, double value) {
-        return Payload{{"id", id}, {"time", time}, {"value", value}, {"curve", 1}, {"tension", 0.0}};
-    };
-    std::vector<OpRequest> laneOps{automation::createLane(lane),
-                                   automation::writePoints(data, lane.id, nullptr,
-                                                           Payload::array({point(1, 0, 126.0 / 155),
-                                                                           point(2, 2 * kBarTicks, 126.0 / 155),
-                                                                           point(3, 2 * kBarTicks + 1, 120.0 / 155),
-                                                                           point(4, 4 * kBarTicks, 120.0 / 155)}))};
+    // The window demands the devices' parameters while Automation Mode is on; the timer publishes them.
+    const int demandOwner = 0;
+    doc.parameterFeed().setDemand(&demandOwner, {dev});
+    driver.frame();
+    std::optional<ui::AutomationTarget> gain;
+    for (const auto &t : ui::automationChoices(*doc.view().current(), 5, doc.parameterFeed().current().get()))
+        if (t.ownerKind == "device" && t.ownerId == dev && t.paramName == "Gain")
+            gain = t;
     std::string laneError;
-    if (utility && submitEdits(doc, std::move(laneOps), &laneError))
-        ++steps;
+    bool drawn = gain.has_value();
+    for (const auto &[tick, value] : {std::pair<std::int64_t, double>{0, 126.0 / 155}, {2 * kBarTicks, 126.0 / 155},
+                                      {2 * kBarTicks + 1, 120.0 / 155}, {4 * kBarTicks, 120.0 / 155}}) {
+        if (!drawn)
+            break;
+        const auto now = doc.view().current();
+        ui::AutomationIds ids;
+        ids.lane = scalar(doc, "SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes");
+        ids.data = scalar(doc, "SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data");
+        ids.point = 1;
+        drawn = submitEdits(doc, ui::addAutomationPoint(ui::envelopeOf(*now, *gain), *gain, tick, value, 0.5, ids), &laneError);
+        if (drawn)
+            ++steps;
+    }
+    doc.parameterFeed().setDemand(&demandOwner, {});
     windowPlayFrom(doc, 0);
     Stereo gained;
     driver.run(1500, &gained);
@@ -674,12 +675,15 @@ void step6(Session &s, Report &report) {
         }
         (b < 750 ? first : second) = u;
     }
-    report.engine("6b", format("Utility %s; device lane %s; Utility's gain x%.6f before 2 bars, x%.6f after; max |d| "
-                               "%.2g (block %zu: x%.6f)",
-                               utility ? "inserted" : doc.error().c_str(),
-                               steps == 3 ? "submitted" : ("refused: " + laneError).c_str(), first, second, spread,
-                               spreadAt, spreadGain),
-                  format("x%.6f (+6 dB) then x1.000000 (0 dB), within 2e-5 outside blocks 746-789 (the jump)", gainOf(6)));
+    report.check("6b", utility && drawn && spread <= 2e-5,
+                 format("Utility %s; Gain %s in the chooser, its envelope %s; Utility's gain x%.6f before 2 bars, "
+                        "x%.6f after; max |d| %.2g (block %zu: x%.6f)",
+                        utility ? "inserted" : doc.error().c_str(), gain ? "offered" : "not offered",
+                        drawn ? "drawn in 4 steps" : ("refused: " + laneError).c_str(), first, second, spread, spreadAt,
+                        spreadGain),
+                 format("a device parameter's envelope drawn through the lane chooser and followed: x%.6f (+6 dB) then "
+                        "x1.000000 (0 dB), within 2e-5 outside blocks 746-789 (the jump)",
+                        gainOf(6)));
     for (int i = 0; i < steps; ++i)
         (void)doc.ops().undo();
     doc.synchronise();

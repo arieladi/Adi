@@ -1094,6 +1094,8 @@ void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
     reader_.emplace(view_.current());
+    if (automationMode_)
+        demandAutomationDevices(true); // a device added since is demanded too (DF-W37)
     const auto generation = view_.generation();
     if (generation_ != generation) {
         generation_ = generation;
@@ -2814,39 +2816,116 @@ ExportChoices AdiRootComponent::exportDefaults() const {
         c.sampleRate = static_cast<int>(current->sampleRate);
     return c;
 }
+void AdiRootComponent::demandAutomationDevices(bool on) {
+    if (!devices.parameterDemand)
+        return;
+    std::vector<std::int64_t> ids;
+    if (on)
+        if (const auto published = devices.publication ? devices.publication() : nullptr)
+            for (const auto &d : *published)
+                ids.push_back(d.id);
+    if (ids == automationDemand_)
+        return;
+    automationDemand_ = ids;
+    devices.parameterDemand(&automationTargets_, ids);
+}
 void AdiRootComponent::setAutomationMode(bool on) {
     automationMode_ = on;
+    demandAutomationDevices(on);
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
-    say(on ? "Automation Mode: each track shows its Volume envelope; click a lane to add a breakpoint, drag one "
-             "to move it, double-click one to delete it."
+    say(on ? "Automation Mode: each track shows its chosen envelope, its Volume until Show Automation chooses "
+             "another; click a lane to add a breakpoint, drag one to move it, double-click one to delete it."
            : "");
     arrangement.repaint();
 }
+std::vector<AutomationTarget> AdiRootComponent::automationChoices(std::int64_t track) const {
+    const auto current = view_.current();
+    if (!current)
+        return {};
+    const auto published = devices.publication ? devices.publication() : nullptr;
+    return ::adi::ui::automationChoices(*current, track, published.get());
+}
+AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
+    const auto chosen = automationTargets_.find(track);
+    if (chosen == automationTargets_.end())
+        return volumeTarget(track);
+    // The choice holds while the track still offers it (its device or send can go).
+    for (const auto &t : automationChoices(track))
+        if (t == chosen->second)
+            return t;
+    return volumeTarget(track);
+}
+void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget &target) {
+    automationTargets_[track] = target;
+    if (!automationMode_)
+        setAutomationMode(true);
+    say("Automation Mode shows " + (target.device == "Mixer" ? std::string() : target.device + ": ") + target.paramName + ".");
+    arrangement.repaint();
+}
+bool AdiRootComponent::showDeviceAutomation(std::int64_t device, const std::string &parameter) {
+    const auto published = devices.publication ? devices.publication() : nullptr;
+    if (!published)
+        return fail("That device's parameters are not known yet.");
+    for (const auto &d : *published)
+        if (d.id == device) {
+            const auto ref = engine::automationParamRef(d.format, parameter);
+            for (const auto &t : automationChoices(d.track))
+                if (t.ownerKind == "device" && t.ownerId == device && ref && t.paramRef == *ref) {
+                    showAutomation(d.track, t);
+                    return true;
+                }
+        }
+    return fail("That parameter cannot be automated.");
+}
+double AdiRootComponent::automationCurrent(const AutomationTarget &target) const {
+    const auto current = view_.current();
+    if (!current)
+        return target.minimum;
+    if (target.ownerKind == "track") {
+        const auto *t = current->findTrack(target.ownerId);
+        return t == nullptr ? target.minimum : target.paramRef == "pan" ? t->pan : t->volumeDb;
+    }
+    if (target.ownerKind == "routing") {
+        for (const auto &s : current->sends)
+            if (s && s->id == target.ownerId)
+                return s->gainDb;
+        return target.minimum;
+    }
+    // A device parameter: where its control plays now, as the feed reads it.
+    if (const auto published = devices.publication ? devices.publication() : nullptr)
+        for (const auto &d : *published)
+            if (d.id == target.ownerId)
+                for (const auto &r : d.parameters())
+                    if (const auto ref = engine::automationParamRef(d.format, r.id); ref && *ref == target.paramRef)
+                        return r.playing;
+    return target.minimum;
+}
 bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value) {
     const auto current = view_.current();
-    const auto *t = current ? current->findTrack(track) : nullptr;
-    if (t == nullptr)
+    if (current == nullptr || current->findTrack(track) == nullptr)
         return fail("That track is gone.");
+    const auto target = automationTarget(track);
     auto &db = submitter_.store().db();
     AutomationIds ids;
     ids.lane = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes").getInt64();
     ids.data = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data").getInt64();
     ids.point = 1;
-    return submitEdits(::adi::ui::addAutomationPoint(trackEnvelope(*current, track), track, "volume", tick, value,
-                                                     t->volumeDb, ids));
+    return submitEdits(::adi::ui::addAutomationPoint(envelopeOf(*current, target), target, tick, value,
+                                                     automationCurrent(target), ids));
 }
 bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value) {
     const auto current = view_.current();
     if (!current)
         return false;
-    auto ops = ::adi::ui::moveAutomationPoint(trackEnvelope(*current, track), "volume", point, tick, value);
+    const auto target = automationTarget(track);
+    auto ops = ::adi::ui::moveAutomationPoint(envelopeOf(*current, target), target, point, tick, value);
     return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t point) {
     const auto current = view_.current();
     if (!current)
         return false;
-    auto ops = ::adi::ui::deleteAutomationPoint(trackEnvelope(*current, track), point);
+    auto ops = ::adi::ui::deleteAutomationPoint(envelopeOf(*current, automationTarget(track)), point);
     return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::setSoloInPlace(bool on) {

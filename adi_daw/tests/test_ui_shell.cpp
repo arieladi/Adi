@@ -10258,6 +10258,47 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
         root.addReenableAutomation(none, nullptr);
         check(none.getNumItems() == 0, "a control with no lane gets no item");
     }
+    // Live's lane chooser (DF-W37; manual 25.2): the track's mixer and every device's parameters.
+    {
+        const auto choices = root.automationChoices(2);
+        const auto has = [&](const char *kind, std::int64_t owner, const char *ref) {
+            return std::any_of(choices.begin(), choices.end(), [&](const AutomationTarget &t) {
+                return t.ownerKind == kind && t.ownerId == owner && t.paramRef == ref;
+            });
+        };
+        check(choices.size() >= 3 && choices[0].paramRef == "volume" && choices[1].paramRef == "pan" &&
+                  has("device", 3, "7") && !has("device", 3, "gain") && root.automationTarget(2).paramRef == "volume",
+              "1 MIDI's chooser: Mixer Volume and Pan, then UI knobs' Cutoff; Gain, whose id the engine cannot bind, "
+              "is not offered; Volume shows until another is chosen");
+        root.setAutomationMode(false);
+        check(root.showDeviceAutomation(3, "7") && root.automationMode() && root.automationTarget(2).ownerKind == "device" &&
+                  root.automationTarget(2).paramName == "Cutoff" && root.automationTarget(2).device == "UI knobs",
+              "Show Automation from Cutoff's knob: Automation Mode on, the lane shows UI knobs: Cutoff");
+        const auto ops = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+        check(root.addAutomationPoint(2, 0, .25) && root.addAutomationPoint(2, 960, .75) &&
+                  document->ops().nextUndo()->label == "Add Automation Point",
+              "two breakpoints on Cutoff, each one step");
+        document->synchronise();
+        auto env = envelopeOf(*root.current(), root.automationTarget(2));
+        check(env.lane != nullptr && env.lane->id == 1 && env.data != nullptr && env.data->points.size() == 2 &&
+                  std::abs(env.data->points.front().value - .25) < 1e-9 && ops != 0,
+              "on the lane the device already had (its normalized Cutoff), not a second one");
+        const auto first = env.data ? env.data->points.front().id : 0;
+        check(root.moveAutomationPoint(2, first, 480, 1.5) && document->synchronise(), "the first moved past the top");
+        env = envelopeOf(*root.current(), root.automationTarget(2));
+        check(env.data != nullptr && env.data->points.front().time == 480 && env.data->points.front().value == 1.0,
+              "it moves in time, and its value stays inside the parameter's 0 to 1");
+        check(root.deleteAutomationPoint(2, first) && document->synchronise() &&
+                  envelopeOf(*root.current(), root.automationTarget(2)).data->points.size() == 1,
+              "and is deleted, one step");
+        // Back to Volume: the track's own lane, made with its first point.
+        root.showAutomation(2, volumeTarget(2));
+        check(root.addAutomationPoint(2, 0, -6) && document->synchronise() &&
+                  envelopeOf(*root.current(), volumeTarget(2)).lane != nullptr &&
+                  envelopeOf(*root.current(), volumeTarget(2)).lane->valueDomain == "real",
+              "Volume chosen again: its own lane in dB, made with the first point");
+        root.setAutomationMode(false);
+    }
     // A root with no session (the hooks unset) says so instead of toggling.
     root.reenableAutomation = nullptr;
     root.armAutomation = nullptr;

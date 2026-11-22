@@ -613,6 +613,21 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool automationMode() const noexcept { return automationMode_; }
     void setAutomationMode(bool on);
     bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
+    // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
+    // Volume until another is chosen; a choice whose device or send is gone reads as Volume again.
+    // Window state, kept while the window lives.
+    AutomationTarget automationTarget(std::int64_t track) const;
+    std::vector<AutomationTarget> automationChoices(std::int64_t track) const;
+    // Shows `target` on its track's lane and turns Automation Mode on (Live's Show Automation).
+    void showAutomation(std::int64_t track, const AutomationTarget &target);
+    // A device parameter's Show Automation, from its control's menu: false when it has no lane to show.
+    bool showDeviceAutomation(std::int64_t device, const std::string &parameter);
+    // The target's value now, where its control stands: the line drawn while its lane has no point.
+    double automationCurrent(const AutomationTarget &target) const;
+    // The feed publishes a device's parameters only to a surface that demands it: while Automation
+    // Mode is on, or a chooser is built, this window demands every device, so any track's chooser lists
+    // its devices' parameters. Off, the demand goes.
+    void demandAutomationDevices(bool on);
     bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
@@ -760,6 +775,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
     bool automationMode_ = false;
+    std::map<std::int64_t, AutomationTarget> automationTargets_;
+    std::vector<std::int64_t> automationDemand_;
     bool infoShown_ = true;
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs
