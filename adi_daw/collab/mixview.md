@@ -11,6 +11,10 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Native EQ cold export
+
+- **PR requested — `mixview/eq-initial-export-latency-20261122` `cafd7fde`.** A real registered EQ added through DeviceHost now publishes its first offline delay as prepared graph state. The regression test failed exactly the two false-report checks for 5 ms Lookahead and Zero Phase plus Lookahead on the unmodified host. All 940 host checks passed with the fix under /WX. The 240-sample audio delay and compensated PDC remain exact; a later actual delay edit still reports once and the next callback adopts the new graph latency. The before-date cumulative branch includes both native cold-export fixes.
+
 ## 2026-11-22 — Clip export history measured at the WAV boundary
 
 - **Cold export verified — `5702daa8`.** In the real WAV queue, the untouched project and both controls each used to raise one Limiter latency report on the stopped tick and write zero frames. With the adapter fix they raise none, keep the same graph and declared delay, and write all 48,000 stereo frames. The durable history check below is independent of startup admission.
