@@ -77,6 +77,12 @@ Exact GCC 14 and Clang 19 Debug warnings-as-errors passed all nine suites (Param
 
 `engine/df-e23-followups-staged` now saves the two tested commits at remote head `096edc93f972392b966fff5dbc5006976e0d1512`. It carries DF-E30 and one-click Post at `167d863e6af3008d477b45803f90e478c6e251f4` and DF-E55(b) immediately after it. Transfer these to Win's published reconciliation in order. The staging branch is based on the exposed November 19 head and is a Git backup for the transfer. **PR requested for the follow-ups on #677 once the reconciled head passes its gates.** The actual #677 head still resolves to `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`.
 
+### 2026-11-22 — DF-E24(a) VST3 auxiliary output sinks
+
+**PR requested** for `engine/df-e24-vst3-aux-sinks` at `2705f6d218c17235d4ba2c7e793fce9e1bd70631`. Title **DF-E24 clear auxiliary VST3 output sinks per segment**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8` with #651/#685 and the dormant-key adapter. The current host's declared bus layout and in-place programme path pass the expanded owned fixture. Active auxiliary outputs now start each segment with a clear dedicated sink, using their already prepared buffers.
+
+Native JUCE with the dedicated scanner and isolated ADI_HOME under Xvfb passed all 105 bus and key checks with GCC 14 and Clang 19 warnings as errors. With the exact main host, the two repeated-sink checks fail after the fixture writes a sentinel, one per sample width. The exact GCC fixture probe also passes 216 hosted expression, transport, preset and segmentation checks and 16 editor ownership checks. DF-E24(b,c) follow DF-E20 with #677.
+
 ## 2026-11-22 — N67 new input tracks monitor on Auto
 
 **PR requested** · `engine/n67-auto-monitor-default` · `f2802a0030d9e9ad0a02d4404276cf1ccf140422`
