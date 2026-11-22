@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-30 parked Scope, Phase and raw Spectrum timing
+
+A long muted interval can wrap the tap while its visible window is parked. Scope, Phase and raw Spectrum now account for the omitted complete hops and keep the fractional hop, so same-stamp monitoring wakes at the next original boundary. When balance is visible, that first reading includes only the audible part of its new hop while retaining the full two-second denominator.
+
+The same regression failed first in all four output combinations. All 812 broker checks now pass, including a ring wrap, no work while parked, the original hop and exact comparison to the uninterrupted samples, stamps, magnitudes and correlation. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed both changed units and Clang passed the implementation.
+
+Release ZIP SHA-256 `f11c76d0a6cea8d077938cbf8d01bbe3b44ba527c3e9338f01c75b7961b0bfa7`. EXE SHA-256 `8c404da3d5ac6b9f1fe443830e3150354bca8ce2093b3083bfff274451fd983c`. Timed CPU measurement and live comparison remain pending.
+
+PR requested — `mixview/mx30-ordinary-window-hop-phase-lands-after-2026-12-03` at `88452a316c6884ac80adf895e70710c4ea55df18`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 Integrated RMS and Max Crest
 
 Expanded pinned Spectrum now shows per-channel unweighted Integrated RMS and Max Crest alongside Balance and Correlation. It counts each sample once from the visible interval's admission. The crest holds the largest ratio of 50 ms RMS to running Integrated RMS after a 125 ms warm-up. The existing primary lease supplies the samples. Compact layout, Freeze and hiding release the level history. A fresh interval waits for new audio while the previous curve can stay visible.
