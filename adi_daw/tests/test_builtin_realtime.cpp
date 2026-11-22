@@ -370,10 +370,15 @@ void eachBuiltinAlone(std::int32_t frames, double seconds) {
     const double deadlineUs = static_cast<double>(frames) * 1e6 / kRate;
     const auto blocks = static_cast<int>(seconds * kRate / frames);
     adi::test::TempDirectory samples("builtin_realtime", "samples");
+    // Every available entry, with a canvas or native only (the Sampler has no
+    // canvas: a found gap, it was skipped).
+    std::size_t expected = 0, measured = 0;
+    bool sampler = false;
     for (const auto& info : builtinCatalog()) {
-        if (!info.available || builtinCanvas(info.uid).empty()) {
+        if (!info.available) {
             continue;
         }
+        ++expected;
         // Twice, each time a fresh device on the same input, so a stall that
         // recurs can be told from the machine's own (see Stats::stall).
         std::array<std::vector<double>, 2> runs;
@@ -402,7 +407,13 @@ void eachBuiltinAlone(std::int32_t frames, double seconds) {
         // deadline. Its bound says so; non-uniform partitioning would cut it.
         const double share = info.uid == "org.adidaw.builtin.hybrid-reverb" ? 0.25 : 0.15;
         judge(name, frames, statsOf(runs[0], runs[1], deadlineUs), allocated, deadlineUs, share);
+        ++measured;
+        sampler = sampler || info.uid == "org.adidaw.builtin.sampler";
     }
+    check(measured == expected && expected > 0, "at " + std::to_string(frames) + " frames every available built-in is "
+                                                "measured (" + std::to_string(measured) + " of " +
+                                                    std::to_string(expected) + ")");
+    check(sampler, "at " + std::to_string(frames) + " frames the Sampler, native only, with its 32 slots, is measured");
 }
 
 // --- Part 2: WTS-01's project ---------------------------------------------------
