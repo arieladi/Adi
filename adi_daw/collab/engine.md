@@ -42,6 +42,18 @@ The Window's Paste command currently restricts audio and MIDI by track label. N5
 
 Strict GCC 14 and Clang 19 each passed 1,984 checks across seven suites. A 1,001-point ramp reduced to two points, a joined linear and exponential run kept its original pivot, and the test rejected a sparse fit that exceeded tolerance between knots. Window selection and its tolerance control remain with the caller.
 
+### 22 November — AU-08 Arrangement envelope Copy, Paste and Duplicate
+
+**PR requested** for `engine/au08-envelope-clipboard` at `9ad32e5ea71b3ccf092fae2e9a8929dc7125f41c`, stacked on AU-02's guarded splice at `8e44fe5281b68e0c8b5014b548fd1b156e581f4a`. Copy owns the selected lane material, including partial nonlinear domains. Paste and adjacent Duplicate each prepare one sealed splice. Native offsets follow the destination clock. Numeric cross-parameter paste requires the same clock, domain and unit and checks destination bounds. Enum paste stays with its source parameter.
+
+Strict GCC 14 and Clang 19 each passed 2,034 checks across seven suites. Playback was checked at every sample for six curve types in each clock, including Hold steps, already sliced curves, exterior destination playback, sibling streams, and literal Undo/Redo.
+
+Parked AU-08 Cut and range Delete pending the removed-span playback rule, the selection adapter with window-fn, and cross-clock or cross-unit conversion pending a mapping rule. Other AU-08 native branches can advance independently.
+
+### FOR THE DIRECTOR
+
+- AU-08 Cut and Delete. I recommend the same half-open interval and exterior curve guards as Paste. Check Live with a selection starting inside a nonlinear ramp and ending just after a step to choose the value heard in the emptied range. I recommend carrying the left value through the range if Live leaves a gap with no interpolation.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
