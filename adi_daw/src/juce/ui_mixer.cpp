@@ -1137,10 +1137,14 @@ void MixerStrip::panMenu() {
 }
 // The volume fader's menu: Live's Re-Enable Automation for the track's Volume lane (manual 25.4, AU-04). A
 // track with no Volume lane has nothing to offer, and the fader shows no menu.
-void MixerStrip::volumeMenu() {
+juce::PopupMenu MixerStrip::volumeMenuItems() {
     juce::PopupMenu m;
     if (const auto current = panel_.root.current())
         panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "volume"));
+    return m;
+}
+void MixerStrip::volumeMenu() {
+    auto m = volumeMenuItems();
     if (m.getNumItems() > 0)
         m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&volume));
 }

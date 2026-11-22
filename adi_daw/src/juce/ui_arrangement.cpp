@@ -1567,6 +1567,17 @@ juce::PopupMenu ArrangementView::headerMenu() {
     return menu;
 }
 void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane) {
+    contextMenuItems(header, lane).showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
+        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+}
+const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const {
+    if (!root.automationMode())
+        return nullptr;
+    const auto *current = root.current().get(); // the root holds it: the pointer outlives this call
+    const auto *t = current != nullptr ? geometry.trackAt(reader(), y) : nullptr;
+    return t != nullptr ? laneOf(*current, "track", t->id, "volume") : nullptr;
+}
+juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::AutomationLaneNode *lane) {
     auto menu = header ? headerMenu() : juce::PopupMenu();
     if (!header) {
         auto &commands = root.commands();
@@ -1590,8 +1601,7 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header, const eng
         addGridItems(menu);
         root.addReenableAutomation(menu, lane);
     }
-    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
-        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+    return menu;
 }
 std::int64_t ArrangementView::colourIndex(std::int64_t track) const {
     const auto rows = geometry.rows(reader());
@@ -2843,9 +2853,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu()) {
         view.select(e.x, e.y, view.snaps(e.mods));
         // In Automation Mode the menu is the envelope's too: its lane's Re-Enable Automation (AU-04).
-        const auto current = view.root.automationMode() ? view.root.current() : nullptr;
-        const auto *t = current ? view.geometry.trackAt(view.reader(), e.y) : nullptr;
-        view.contextMenu(e.getScreenPosition(), false, t != nullptr ? laneOf(*current, "track", t->id, "volume") : nullptr);
+        view.contextMenu(e.getScreenPosition(), false, view.automationLaneAt(e.y));
     } else if (!panning) {
         // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);

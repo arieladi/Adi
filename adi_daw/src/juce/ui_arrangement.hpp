@@ -474,6 +474,10 @@ class ArrangementView final : public juce::Component {
     // The lanes' or a header's menu at `where`. `lane`: in Automation Mode, the envelope under the click, whose
     // Re-Enable Automation the lanes' menu ends with (AU-04).
     void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr);
+    juce::PopupMenu contextMenuItems(bool header, const engine::AutomationLaneNode *lane = nullptr);
+    // In Automation Mode, the Volume lane of the track at `y` that the engine plays, else null; a pointer into
+    // the root's current snapshot, for use at once.
+    const engine::AutomationLaneNode *automationLaneAt(int y) const;
     // A track header's menu: Insert Audio and MIDI Track; with a track selected, Rename, Delete, Group
     // and Ungroup, then Live's colour chooser (Live 12 manual 2.3.2), and on a group Assign Track
     // Color to Grouped Tracks and Clips (manual 18.3).

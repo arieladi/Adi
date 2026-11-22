@@ -36,22 +36,29 @@ class SoloButton final : public juce::TextButton {
 // JUCE's Slider starts a drag on any button when its own menu is off.
 class PrimaryButtonSlider final : public juce::Slider {
   public:
+    // A gesture belongs to the press that began it: a primary press's drag and release reach the Slider whatever
+    // keys or buttons join it (a Ctrl held at the release is a popup click on macOS), and a popup press's never do.
     void mouseDown(const juce::MouseEvent &e) override {
-        if (!e.mods.isPopupMenu())
+        primary_ = !e.mods.isPopupMenu();
+        if (primary_)
             juce::Slider::mouseDown(e);
     }
     void mouseDrag(const juce::MouseEvent &e) override {
-        if (!e.mods.isPopupMenu())
+        if (primary_)
             juce::Slider::mouseDrag(e);
     }
     void mouseUp(const juce::MouseEvent &e) override {
-        if (!e.mods.isPopupMenu())
+        if (primary_)
             juce::Slider::mouseUp(e);
+        primary_ = false;
     }
     void mouseDoubleClick(const juce::MouseEvent &e) override {
         if (!e.mods.isPopupMenu())
             juce::Slider::mouseDoubleClick(e);
     }
+
+  private:
+    bool primary_ = false;
 };
 class PeakHold final : public juce::Button {
   public:
@@ -189,6 +196,12 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     juce::Rectangle<int> meterArea() const noexcept;
     void panMenu();
     void volumeMenu();
+
+  public:
+    // The volume fader's menu as its right-click shows it: empty when the track has no Volume lane.
+    juce::PopupMenu volumeMenuItems();
+
+  private:
     void sendMenu(std::size_t index);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
     // Live's MIDI meter on a track with no instrument, at the head of the meter's column.
