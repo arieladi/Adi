@@ -32,13 +32,43 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
-### 2026-11-22 — DF-E63 native clip tick readers
+## 2026-11-22 — DF-E24(b,c) staged with the DF-E20 stack
 
-**PR requested** for `engine/df-e63-native-tick-readers` at `c37e20e0395ac3783e46c30f48f1583086cb025d`. Title **DF-E63 recover stored clip ticks across native readers**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8`, including #696's Clip Playback correction. Clip Fade validation, Clip Details End and inherited meter, and MIDI Clips origin/window now use the Tempo Map's existing stored-nanosecond integer recovery. MIDI sample placement still uses the exact session seconds. A native nonintegral split exercises all three, and a separate one-tick tail checks Note On and Note Off across the block.
+**PR requested with #677 after Win's reconciliation and the combined gate.** The additional staged commit is `72dfdc77deacf0269fa3ea7e27c1a32ea20ca40e` on `engine/df-e23-followups-staged`, after `096edc93`. Title **DF-E24 guard main routes and staged mixer lane ownership**. New direct and captured main routes and disabled-route activation refuse a second enabled track output. The planner retains the lowest-ID valid main route and reports every duplicate. Replay restores saved duplicates. The callback overlay changes published scalar controls through its image and reads automation from the acquired generation. The owner retains its lane pointer and holder during a rebuild. The cue monitor retains its explicit binding.
 
-Exact GCC 14 and Clang 19 Debug with warnings as errors, eight suites each (Clip Details, Clip Edit, Clip Playback, Edit Plan, Warp Playback, MIDI Clips, MIDI Capture and Engine). The planted native fixture failed 5/10 against main and passed 10/10 with the fix. In the fixture a real split MIDI attack moves from sample 8 to 9, the one-tick tail becomes audible, Clip Details recovers End and the inherited meter, and the fade accepts the full split span.
+GCC and Clang warnings-as-errors native overlays on the exposed #677 stack pass Catalog 111, Plan 77, Strip Lane Bindings 26, MIDI Clock Continuity 109 and Return Send Tap 122 checks each. GCC also passes Cue Monitor 96, Replay 69, Track Delete 38, UI Seams 533 and Ops Schema 267. The old stack fails three duplicate journal guards, one graph sum and six lane-capture or render checks. The staged Pre FX test now checks the actual callback against its acquired lane publication and reads unity PCM. The OPS validator passes. When transferring to the newer main, retain #696's 512-frame MIDI clock fixture in the explicit GraphHost fan-out test. The existing E20(a) CLAP commit on #677 was also retested against current main, with two planted boundary failures and 559 passing checks per compiler after the port.
 
-### 2026-11-22 — DF-E53 and DF-E56 exact heads reviewed
+## 2026-11-22 — DF-E24(a) VST3 auxiliary output sinks
+
+**PR requested** for `engine/df-e24-vst3-aux-sinks` at `2705f6d218c17235d4ba2c7e793fce9e1bd70631`. Title **DF-E24 clear auxiliary VST3 output sinks per segment**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8` with #651/#685 and the dormant-key adapter. The current host's declared bus layout and in-place programme path pass the expanded owned fixture. Active auxiliary outputs now start each segment with a clear dedicated sink, using their already prepared buffers.
+
+Native JUCE with the dedicated scanner and isolated ADI_HOME under Xvfb passed all 105 bus and key checks with GCC 14 and Clang 19 warnings as errors. With the exact main host, the two repeated-sink checks fail after the fixture writes a sentinel, one per sample width. The exact GCC fixture probe also passes 216 hosted expression, transport, preset and segmentation checks and 16 editor ownership checks. DF-E24(b,c) follow DF-E20 with #677.
+
+## 2026-11-22 — #677 follow-up commits available for transfer
+
+`engine/df-e23-followups-staged` now saves the two tested commits at remote head `096edc93f972392b966fff5dbc5006976e0d1512`. It carries DF-E30 and one-click Post at `167d863e6af3008d477b45803f90e478c6e251f4` and DF-E55(b) immediately after it. Transfer these to Win's published reconciliation in order. The staging branch is based on the exposed November 19 head and is a Git backup for the transfer. **PR requested for the follow-ups on #677 once the reconciled head passes its gates.** The actual #677 head still resolves to `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`.
+
+## 2026-11-22 — Mix View handoff for same-ID replacement receipts
+
+**PR requested** for `engine/param-replacement-receipt` at `4a1b47e7aa5a5fa8bd263bd33a98f28350ced716`. Title **Preserve parameter receipts across same-ID device replacement**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Credit the reproduction `eb41c1210dc464de45fd62c1813fb58cc4c6879c`. The ParamOps side waits for the replacement's exact Session publication and attachment. It skips queued parameter and state work for the incompatible device superseded within the transaction, including the replacement's gain inverse ahead of restoring the original. Compatible retained devices still receive their numeric inverse. The distinct plug-in replacement after refresh follows Mix View's existing Session resolver on `3f6b08b7297842162c3d576a626e9d65b32a392b`. No changes to the loaned resolver.
+
+Exact GCC 14 and Clang 19 Debug warnings-as-errors passed all nine suites (Param Live Replay, Param Ops, Applied Batches, Gesture, Gesture Graph, Gesture Playback, Engine, Param Edits and Device Copy). Param Live Replay passes 985 checks. With main's old ParamOps the same suite fails its waiting and Undo assertions. The GCC join with the exact Mix View resolver and expanded fixture passes 991 checks, including delayed replacement attachment, a superseded state change, exact original and replacement instance reuse through Undo and Redo, and the compatible Undo's recorded gain.
+
+## 2026-11-22 — DF-E55(b) gated for #677
+
+DF-E55(b) is committed locally at `096edc93f972392b966fff5dbc5006976e0d1512`, after the prepared DF-E30 and one-click Post commit `167d863e6af3008d477b45803f90e478c6e251f4`. Title **DF-E55 refuse new sends from Main or a VCA**. The shared source-role guard covers prepare and fresh `routing.connect` including captured rows. Grouped-return ancestry and saved history replay retain their rules.
+
+Exact exposed-branch native archive plus local overlays, GCC 14 warning-as-error Return Send Tap 121, UI Seams 533, Track Delete 38, Plan 75, Replay 69 and Ops Schema 267 checks. Changed units and the 121-check suite also pass with Clang 19 warnings as errors. The same fixture on the previous local commit fails six assertions. An old executable saved an undone real Main send, and the candidate passed 5/5 after reopen, including Redo and exact disconnect Undo with a Pre FX tap.
+
+**PR requested with #677 after Win's real merge is published and the combined head is green.** Remote #677 still advertises `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`. The three follow-ups are on the local stack pending that prerequisite. Window can also hide the VCA send knob under its existing mixer role check.
+
+## 2026-11-22 — DF-E55(a), refuse new devices on a VCA
+
+**PR requested** for `engine/df-e55-vca-device-insert` at `b157aa00084a30ec39d6a81d7cf75e6a90a38438`. Title **DF-E55 refuse device insertion on a VCA track**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Built-in and hosted prepare refuse with a VCA reason before preparing edits. Fresh `device.insert` resolves the owning track through rack chains, including the actual restored root of captured inserts. Journal replay preserves saved devices and their complete state.
+
+Eight exact GCC 14 and Clang 19 Debug suites with warnings as errors (Device Ops, Built-in Devices, Device Copy, Device Key Routes, Ops, Replay, Ops Schema, UI Seams). The planted main run failed two prepare and four journal assertions. The candidate passes 183 Built-in Devices and 147 Device Ops checks, including legacy Undo/Redo and atomic refusal. The OPS validator passes. DF-E55(b) follows #677 as the register requires.
+
+## 2026-11-22 — DF-E53 and DF-E56 exact heads reviewed
 
 **Changes requested from Gemini and Win.** DF-E53 `gemini/df-e53-canonical-param-ref` at `8cde0b320ca1d9b7fb36b32ceb3b21127f7fa646`. The binder, session override and parameter feed agree on the numeric key. The exact GCC warning-as-error Automation Lanes, Parameter Automation and Project Check suites passed 52, 150 and 73 checks. Two additional native probes found regressions:
 
@@ -53,35 +83,11 @@ DF-E56 `gemini/df-e56-mpe-router-overflow` at `c798e2a47f8e070b111a088ecb2818289
 
 The two loaned branches were reviewed at their published heads.
 
-### 2026-11-22 — DF-E55(a), refuse new devices on a VCA
+## 2026-11-22 — DF-E63 native clip tick readers
 
-**PR requested** for `engine/df-e55-vca-device-insert` at `b157aa00084a30ec39d6a81d7cf75e6a90a38438`. Title **DF-E55 refuse device insertion on a VCA track**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Built-in and hosted prepare refuse with a VCA reason before preparing edits. Fresh `device.insert` resolves the owning track through rack chains, including the actual restored root of captured inserts. Journal replay preserves saved devices and their complete state.
+**PR requested** for `engine/df-e63-native-tick-readers` at `c37e20e0395ac3783e46c30f48f1583086cb025d`. Title **DF-E63 recover stored clip ticks across native readers**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8`, including #696's Clip Playback correction. Clip Fade validation, Clip Details End and inherited meter, and MIDI Clips origin/window now use the Tempo Map's existing stored-nanosecond integer recovery. MIDI sample placement still uses the exact session seconds. A native nonintegral split exercises all three, and a separate one-tick tail checks Note On and Note Off across the block.
 
-Eight exact GCC 14 and Clang 19 Debug suites with warnings as errors (Device Ops, Built-in Devices, Device Copy, Device Key Routes, Ops, Replay, Ops Schema, UI Seams). The planted main run failed two prepare and four journal assertions. The candidate passes 183 Built-in Devices and 147 Device Ops checks, including legacy Undo/Redo and atomic refusal. The OPS validator passes. DF-E55(b) follows #677 as the register requires.
-
-### 2026-11-22 — DF-E55(b) gated for #677
-
-DF-E55(b) is committed locally at `096edc93f972392b966fff5dbc5006976e0d1512`, after the prepared DF-E30 and one-click Post commit `167d863e6af3008d477b45803f90e478c6e251f4`. Title **DF-E55 refuse new sends from Main or a VCA**. The shared source-role guard covers prepare and fresh `routing.connect` including captured rows. Grouped-return ancestry and saved history replay retain their rules.
-
-Exact exposed-branch native archive plus local overlays, GCC 14 warning-as-error Return Send Tap 121, UI Seams 533, Track Delete 38, Plan 75, Replay 69 and Ops Schema 267 checks. Changed units and the 121-check suite also pass with Clang 19 warnings as errors. The same fixture on the previous local commit fails six assertions. An old executable saved an undone real Main send, and the candidate passed 5/5 after reopen, including Redo and exact disconnect Undo with a Pre FX tap.
-
-**PR requested with #677 after Win's real merge is published and the combined head is green.** Remote #677 still advertises `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`. The three follow-ups are on the local stack pending that prerequisite. Window can also hide the VCA send knob under its existing mixer role check.
-
-### 2026-11-22 — Mix View handoff for same-ID replacement receipts
-
-**PR requested** for `engine/param-replacement-receipt` at `4a1b47e7aa5a5fa8bd263bd33a98f28350ced716`. Title **Preserve parameter receipts across same-ID device replacement**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Credit the reproduction `eb41c1210dc464de45fd62c1813fb58cc4c6879c`. The ParamOps side waits for the replacement's exact Session publication and attachment. It skips queued parameter and state work for the incompatible device superseded within the transaction, including the replacement's gain inverse ahead of restoring the original. Compatible retained devices still receive their numeric inverse. The distinct plug-in replacement after refresh follows Mix View's existing Session resolver on `3f6b08b7297842162c3d576a626e9d65b32a392b`. No changes to the loaned resolver.
-
-Exact GCC 14 and Clang 19 Debug warnings-as-errors passed all nine suites (Param Live Replay, Param Ops, Applied Batches, Gesture, Gesture Graph, Gesture Playback, Engine, Param Edits and Device Copy). Param Live Replay passes 985 checks. With main's old ParamOps the same suite fails its waiting and Undo assertions. The GCC join with the exact Mix View resolver and expanded fixture passes 991 checks, including delayed replacement attachment, a superseded state change, exact original and replacement instance reuse through Undo and Redo, and the compatible Undo's recorded gain.
-
-### 2026-11-22 — #677 follow-up commits available for transfer
-
-`engine/df-e23-followups-staged` now saves the two tested commits at remote head `096edc93f972392b966fff5dbc5006976e0d1512`. It carries DF-E30 and one-click Post at `167d863e6af3008d477b45803f90e478c6e251f4` and DF-E55(b) immediately after it. Transfer these to Win's published reconciliation in order. The staging branch is based on the exposed November 19 head and is a Git backup for the transfer. **PR requested for the follow-ups on #677 once the reconciled head passes its gates.** The actual #677 head still resolves to `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`.
-
-### 2026-11-22 — DF-E24(a) VST3 auxiliary output sinks
-
-**PR requested** for `engine/df-e24-vst3-aux-sinks` at `2705f6d218c17235d4ba2c7e793fce9e1bd70631`. Title **DF-E24 clear auxiliary VST3 output sinks per segment**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8` with #651/#685 and the dormant-key adapter. The current host's declared bus layout and in-place programme path pass the expanded owned fixture. Active auxiliary outputs now start each segment with a clear dedicated sink, using their already prepared buffers.
-
-Native JUCE with the dedicated scanner and isolated ADI_HOME under Xvfb passed all 105 bus and key checks with GCC 14 and Clang 19 warnings as errors. With the exact main host, the two repeated-sink checks fail after the fixture writes a sentinel, one per sample width. The exact GCC fixture probe also passes 216 hosted expression, transport, preset and segmentation checks and 16 editor ownership checks. DF-E24(b,c) follow DF-E20 with #677.
+Exact GCC 14 and Clang 19 Debug with warnings as errors, eight suites each (Clip Details, Clip Edit, Clip Playback, Edit Plan, Warp Playback, MIDI Clips, MIDI Capture and Engine). The planted native fixture failed 5/10 against main and passed 10/10 with the fix. In the fixture a real split MIDI attack moves from sample 8 to 9, the one-tick tail becomes audible, Clip Details recovers End and the inherited meter, and the fade accepts the full split span.
 
 ## 2026-11-22 — N67 new input tracks monitor on Auto
 
