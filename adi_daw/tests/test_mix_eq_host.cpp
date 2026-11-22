@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "juce/device_host.hpp"
 #include "juce/mix_eq_host.hpp"
+#include "juce/mix_function_host.hpp"
 #include "adi/mix/eq/Backend.hpp"
 #include "adi/mix/eq/Core.hpp"
 #include "adi/mix/eq/Preview.hpp"
@@ -486,6 +488,85 @@ template <class Sample> void neutralSilenceCanBeOmitted() {
           "returning a used nonneutral EQ to default does not certify its old history");
 }
 
+void offlineInitialLatency(bool zeroPhase) {
+    rows::PluginRef reference;
+    reference.format = "internal";
+    reference.uid = "org.adidaw.mix.eq";
+    reference.name = "EQ";
+    engine::DeviceRequest request;
+    request.ref = &reference;
+    request.exporting = true;
+    std::string error;
+    auto instance = device::makeMixFunction(request, error);
+    check(instance != nullptr, "cold export graph loads the registered native EQ");
+    if (!instance) return;
+    instance->setOffline(true);
+    const bool configured = set(*instance, 8, .5) &&
+        (!zeroPhase || (set(*instance, 0, 1) && set(*instance, 9, 1) && set(*instance, 14, .6)));
+    check(configured, "offline native EQ starts with 5 ms Lookahead and the requested phase");
+    if (!configured) return;
+
+    auto* native = instance.get();
+    const auto initialEpoch = native->latencyEpoch();
+    device::DeviceHost host;
+    auto& node = host.add(std::move(instance), reference.name);
+    struct Tone final : engine::Node {
+        bool alwaysProcess() const noexcept override { return true; }
+        void process(const engine::NodeIo& io) noexcept override {
+            for (int ch = 0; ch < io.channels; ++ch)
+                std::fill_n(io.out[ch] + io.blockOffset, io.frames, .25f);
+        }
+    } tone;
+    engine::Graph graph;
+    const auto output = graph.addNode(node);
+    check(graph.connect(graph.addNode(tone), output), "export source connects to the native EQ");
+    graph.setOutput(output);
+    constexpr int frames = 256, lookaheadSamples = 240;
+    graph.prepare(48000, frames);
+    const auto declared = native->latencySamples();
+    check(graph.ok() && graph.latencySamples() == declared &&
+              (zeroPhase ? declared > lookaheadSamples : declared == lookaheadSamples),
+          "the first export graph already includes native EQ setup latency");
+    if (!graph.ok()) return;
+    host.attachGraph(graph);
+    host.coalescer().setQuietPeriodMs(0);
+    host.tick(0);
+    const auto preparedReports = host.coalescer().stats().reports;
+    const auto preparedEpoch = native->latencyEpoch();
+    check(preparedReports == 0 && preparedEpoch == initialEpoch,
+          "declaring the initial offline EQ delay does not invalidate the already prepared export graph");
+
+    std::array<float, frames> left{}, right{};
+    const std::array<float*, 2> planes{left.data(), right.data()};
+    engine::AudioIo io;
+    io.out = planes.data();
+    io.numOut = 2;
+    io.frames = frames;
+    io.exporting = true;
+    io.renderBlock = 1;
+    graph.process(io);
+    if (!zeroPhase)
+        check(left == right &&
+                  std::all_of(left.begin(), left.begin() + lookaheadSamples, [](float x) { return x == 0.f; }) &&
+                  std::all_of(left.begin() + lookaheadSamples, left.end(), [](float x) { return x == .25f; }),
+              "the first audio callback uses the already advertised 240-sample delay");
+
+    check(set(*native, 8, 0) && (!zeroPhase || set(*native, 0, 0)),
+          "a later owner edit requests removal of the prepared EQ delay");
+    ++io.renderBlock;
+    graph.process(io);
+    host.tick(1);
+    check(native->latencySamples() == 0 && native->latencyEpoch() == preparedEpoch + 1 &&
+              host.coalescer().stats().reports == preparedReports + 1,
+          "a real edit of the prepared EQ latency reports once to the export guard");
+    ++io.renderBlock;
+    graph.process(io);
+    host.tick(2);
+    check(graph.latencySamples() == 0 && host.coalescer().stats().reports == preparedReports + 1,
+          "the following callback adopts the changed graph PDC without another report");
+    graph.release();
+}
+
 void neutralEqGraphSuspension(bool recallContractedDefault) {
     auto eq = make(q::makeBackend());
     check(eq != nullptr, "graph suspension fixture creates the real native EQ");
@@ -578,6 +659,8 @@ int main() {
     neutralSilenceCanBeOmitted<float>();neutralSilenceCanBeOmitted<double>();
     neutralEqGraphSuspension(false);
     neutralEqGraphSuspension(true);
+    offlineInitialLatency(false);
+    offlineInitialLatency(true);
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}
     check(allocations==0&&deallocations==0,"native controller and direct core allocate/free nothing during callbacks");
     std::printf("Mix EQ host: %d checks, %d failures\n",checks,failures);return failures?1:0;
