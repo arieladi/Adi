@@ -69,6 +69,7 @@ if(ADI_WITH_PD)
     adi_embed_native_pd(vinylDistortion "pd/devices/Vinyl Distortion.pd")
     adi_embed_native_pd(filterDelay "pd/devices/Filter Delay.pd")
     adi_embed_native_pd(djFilter "pd/devices/DJ Filter.pd")
+    adi_embed_native_pd(autoShift "pd/devices/Auto Shift.pd")
     string(APPEND ADI_NATIVE_PD_HEADER "} // namespace adi::device::canonical\n")
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/adi_native_pd_patches.hpp"
         CONTENT "${ADI_NATIVE_PD_HEADER}")
