@@ -1520,11 +1520,11 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
         }
         check(layout && layout->isShowing(), "Focus Scope offers its own display selector");
         if (!layout || !layout->isShowing()) return;
-        check(layout->getNumItems() == 4 && layout->getText() == "Overlay" &&
+        check(layout->getNumItems() == 5 && layout->getText() == "Overlay" &&
                   layout->getItemText(1) == "Layers" && layout->getItemText(2) == "Stack" &&
-                  layout->getItemText(3) == "Sum",
-              "the scope selector keeps Overlay as the default and offers Layers, Stack and Sum");
-        if (layout->getNumItems() != 4) return;
+                  layout->getItemText(3) == "Sum" && layout->getItemText(4) == "Difference",
+              "the scope selector keeps Overlay as the default and offers Layers, Stack, Sum and Difference");
+        if (layout->getNumItems() != 5) return;
 
         writeSum(.25f, .25f, -.125f, -.125f);
         const auto before = broker->stats();
