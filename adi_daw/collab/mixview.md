@@ -15,7 +15,7 @@ Align Apply, Hear Removed and native Carve/Focus exposure still need the owner h
 
 ## 2026-11-22 — Cumulative Windows Release for Win
 
-The exact x64 Release at `80eacfe89c83a064e7fec26cc0c0ffc972b4218b` builds against main `0ea10b8e`. The SSD build completed. The original scratch build tree remains available. Nineteen CTests passed, including 605 broker, 453 Spectrum, 291 function-component, 129 document identity, 114 owned VST3 and 463 Focus checks. The three component-only shell modes passed 906 Mix View, 329 Arrangement and 7 Appearance checks.
+The exact x64 Release at `80eacfe89c83a064e7fec26cc0c0ffc972b4218b` builds against main `0ea10b8e`. Nineteen CTests passed, including 605 broker, 453 Spectrum, 291 function-component, 129 document identity, 114 owned VST3 and 463 Focus checks. The three component-only shell modes passed 906 Mix View, 329 Arrangement and 7 Appearance checks.
 
 **PR requested.** `mixview/cumulative-20261122` at `05fedb1d`, successor to the 20 November cumulative stack. ADR-0251 keeps the Classic Scope artwork and ADI name. This preserves main's shared catalogue, Export and automation behavior.
 
@@ -44,7 +44,7 @@ The exact x64 Release at `80eacfe89c83a064e7fec26cc0c0ffc972b4218b` builds again
 
 **PR requested.** `mixview/focus-lazy-storage-20261122` at `80eacfe8`, after the joined review ancestry `bc118bae`. Keep this as a separate two-commit core review. Preparing native IIR without phase allocates no transform storage. The first FIR or phase configuration allocates it on the owner before latency admission. The red baseline failed two storage assertions; the optimized Windows x64 Release passed 463 checks and compared 5,081,550 samples, with exact first render and re-entry and zero callback allocations. This tip includes the separate Mix View slices awaiting the cumulative build.
 
-The D: archive link stopped making sustained progress. Only the Mix View build was interrupted. Its compiled objects are being transferred to an SSD cache and its original tree is retained. The exact cumulative Release candidate is now `80eacfe8`.
+The exact cumulative Release candidate is now `80eacfe8`.
 
 
 ## 2026-11-22 — current-main integration and Windows Release gates
