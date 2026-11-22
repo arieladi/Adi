@@ -1384,6 +1384,45 @@ void stereoFoldDelivery() {
     check(renderWav(job, observer).state == JobState::Failed && f.noStage(),
           "an ambiguous multichannel fold is refused before staging");
 }
+void deliveryProfilePreflight() {
+    Job profile;
+    profile.session = {2,48000,64};
+    const std::array formats{
+        std::pair{ExportContainer::Wav, true},
+        std::pair{ExportContainer::Aiff, true},
+        std::pair{ExportContainer::Flac, flacExportAvailable()},
+        std::pair{ExportContainer::Mp3, mp3ExportAvailable()},
+        std::pair{ExportContainer::OggVorbis, vorbisExportAvailable()},
+        std::pair{ExportContainer::OggOpus, opusExportAvailable()}
+    };
+    const auto reason = [](const Job& job) {
+        try {
+            validateDeliveryProfile(job);
+        } catch (const std::exception& error) {
+            return std::string(error.what());
+        }
+        return std::string{};
+    };
+    for (const auto& [container, available] : formats) {
+        profile.encoding.container = container;
+        profile.encoding.format = audio::WavFormat::Pcm24;
+        check(reason(profile).empty() == available,
+              "profile validation reports the compiled format without opening a project or directory");
+    }
+
+    Fixture f;
+    profile.project = f.store->path();
+    profile.directory = f.dir.path() / "out";
+    profile.beginSample = 0;
+    profile.endSample = 10;
+    profile.encoding.container = ExportContainer::Wav;
+    profile.encoding.speakerMask = 4;
+    const auto preview = reason(profile);
+    const auto run = renderWav(profile, {});
+    check(!preview.empty() && run.state == JobState::Failed && run.error == preview && f.noStage(),
+          "the runner and delivery profile reject the same invalid speaker layout");
+}
+
 void waveSpeakerMask() {
     Fixture f;
     auto job = f.job("speaker-mask");
@@ -2884,7 +2923,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); loopAndTailRenders(); gaplessCycleRenders(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); sparseRenderMatrix(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); brickwallNormalization(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); loopAndTailRenders(); gaplessCycleRenders(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); sparseRenderMatrix(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); deliveryProfilePreflight(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); brickwallNormalization(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

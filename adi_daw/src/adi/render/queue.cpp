@@ -234,63 +234,13 @@ void validate(const Job& j, bool plannedRange = false) {
     if (j.project.empty() || (!j.analysisOnly && j.directory.empty())) {
         throw std::invalid_argument("project and output directory are required for a delivery");
     }
-    if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
-        throw std::invalid_argument("unsupported export collision policy");
     if (!j.regionId && (j.beginSample < 0 || j.endSample <= j.beginSample)) throw std::invalid_argument("export range must be nonempty and nonnegative");
-    if (!std::isfinite(j.session.sampleRate) || j.session.sampleRate < 8000 || j.session.sampleRate > 768000 ||
-        std::floor(j.session.sampleRate) != j.session.sampleRate)
-        throw std::invalid_argument("export sample rate must be an integer from 8000 through 768000");
-    if (j.session.channels < 1 || j.session.channels > 64 || j.session.maxFrames < 1 || j.session.maxFrames > 4096)
-        throw std::invalid_argument("export needs 1..64 channels and 1..4096 frames per block");
-    if (j.session.precision != engine::Precision::Float32 && j.session.precision != engine::Precision::Float64)
-        throw std::invalid_argument("unknown processing precision");
     if (j.regionId && *j.regionId <= 0) throw std::invalid_argument("region ID must be positive");
     if (j.source.trackId < 0 || !signalTapName(j.source.resolvedTap()) ||
         (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
         throw std::invalid_argument("invalid direct stem source or tap");
     validateTail(j, plannedRange);
-    if (j.ratePolicy != ExportRatePolicy::RequestedRate && j.ratePolicy != ExportRatePolicy::ProjectThenDownsample)
-        throw std::invalid_argument("unknown export sample rate policy");
-    if (j.analysisOnly) {
-        if (j.niStems || j.exactWavFilename || !j.deliveries.empty() || j.normalization.mode != NormalizeMode::Off) {
-            throw std::invalid_argument("Analyze Only accepts one source and no encoding or normalization");
-        }
-        (void)deliveryChannels(j, j.encoding.channelFold);
-        return;
-    }
-    const auto fold = j.deliveries.empty() ? j.encoding.channelFold : j.deliveries.front().encoding.channelFold;
-    const auto channels = deliveryChannels(j, fold);
-    if (j.deliveries.empty()) {
-        validateEncoding(j, j.encoding, channels);
-    } else {
-        if (j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off) {
-            throw std::invalid_argument("Multiple deliveries require a template source with Normalize Off");
-        }
-        const auto base = resolveName(j.nameTemplate, {"project", "master", "group", "120", 1, "region"});
-        std::set<std::string> names;
-        for (const auto& delivery : j.deliveries) {
-            if (delivery.encoding.channelFold != fold) {
-                throw std::invalid_argument("Multiple deliveries must share the same channel layout");
-            }
-            validateEncoding(j, delivery.encoding, channels);
-            const auto name = deliveryName(base, delivery);
-            if (!names.insert(foldedFilename(media::pathFromUtf8(name))).second) {
-                throw std::invalid_argument("Multiple deliveries resolve to the same filename");
-            }
-        }
-    }
-    validateNiStems(j);
-    validateNormalization(j.normalization, static_cast<std::uint32_t>(j.session.sampleRate), channels);
-    if (j.exactWavFilename) {
-        if (j.niStems || j.collision == Collision::Increment)
-            throw std::invalid_argument("a literal WAV filename requires a single WAV with Fail or Replace");
-        const auto& literal = *j.exactWavFilename;
-        if (portableName(literal) != literal ||
-            !foldedFilename(media::pathFromUtf8(literal)).ends_with(".wav"))
-            throw std::invalid_argument("the selected WAV filename is not a portable literal .wav name");
-    } else {
-        (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
-    }
+    validateDeliveryProfile(j);
 }
 struct Stage {
     fs::path path;
@@ -604,6 +554,60 @@ void verifyMedia(MediaVerification& report, const Control& control, bool publica
     verified = true;
 }
 } // namespace
+
+void validateDeliveryProfile(const Job& j) {
+    if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
+        throw std::invalid_argument("unsupported export collision policy");
+    if (!std::isfinite(j.session.sampleRate) || j.session.sampleRate < 8000 || j.session.sampleRate > 768000 ||
+        std::floor(j.session.sampleRate) != j.session.sampleRate)
+        throw std::invalid_argument("export sample rate must be an integer from 8000 through 768000");
+    if (j.session.channels < 1 || j.session.channels > 64 || j.session.maxFrames < 1 || j.session.maxFrames > 4096)
+        throw std::invalid_argument("export needs 1..64 channels and 1..4096 frames per block");
+    if (j.session.precision != engine::Precision::Float32 && j.session.precision != engine::Precision::Float64)
+        throw std::invalid_argument("unknown processing precision");
+    if (j.ratePolicy != ExportRatePolicy::RequestedRate && j.ratePolicy != ExportRatePolicy::ProjectThenDownsample)
+        throw std::invalid_argument("unknown export sample rate policy");
+    if (j.analysisOnly) {
+        if (j.niStems || j.exactWavFilename || !j.deliveries.empty() || j.normalization.mode != NormalizeMode::Off) {
+            throw std::invalid_argument("Analyze Only accepts one source and no encoding or normalization");
+        }
+        (void)deliveryChannels(j, j.encoding.channelFold);
+        return;
+    }
+    const auto fold = j.deliveries.empty() ? j.encoding.channelFold : j.deliveries.front().encoding.channelFold;
+    const auto channels = deliveryChannels(j, fold);
+    if (j.deliveries.empty()) {
+        validateEncoding(j, j.encoding, channels);
+    } else {
+        if (j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off) {
+            throw std::invalid_argument("Multiple deliveries require a template source with Normalize Off");
+        }
+        const auto base = resolveName(j.nameTemplate, {"project", "master", "group", "120", 1, "region"});
+        std::set<std::string> names;
+        for (const auto& delivery : j.deliveries) {
+            if (delivery.encoding.channelFold != fold) {
+                throw std::invalid_argument("Multiple deliveries must share the same channel layout");
+            }
+            validateEncoding(j, delivery.encoding, channels);
+            const auto name = deliveryName(base, delivery);
+            if (!names.insert(foldedFilename(media::pathFromUtf8(name))).second) {
+                throw std::invalid_argument("Multiple deliveries resolve to the same filename");
+            }
+        }
+    }
+    validateNiStems(j);
+    validateNormalization(j.normalization, static_cast<std::uint32_t>(j.session.sampleRate), channels);
+    if (j.exactWavFilename) {
+        if (j.niStems || j.collision == Collision::Increment)
+            throw std::invalid_argument("a literal WAV filename requires a single WAV with Fail or Replace");
+        const auto& literal = *j.exactWavFilename;
+        if (portableName(literal) != literal ||
+            !foldedFilename(media::pathFromUtf8(literal)).ends_with(".wav"))
+            throw std::invalid_argument("the selected WAV filename is not a portable literal .wav name");
+    } else {
+        (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
+    }
+}
 
 std::string resolveName(const std::string& pattern, const NameContext& context) {
     std::string name;

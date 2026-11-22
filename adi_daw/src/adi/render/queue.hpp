@@ -257,6 +257,11 @@ struct FileConversion {
 // remaining slots Pending. Progress uses one-based request IDs in this call.
 [[nodiscard]] std::vector<Result> convertAudioFiles(std::span<const FileConversion>, Control = {});
 
+// Validates the configured format, delivery clock/layout and naming options.
+// Throws the same profile error as enqueue or render. Leaves the project,
+// sources and output directory unopened and does not resolve a selection.
+void validateDeliveryProfile(const Job&);
+
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,
                                     std::uint64_t counter = 1);
