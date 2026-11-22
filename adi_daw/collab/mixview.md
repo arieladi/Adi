@@ -11,6 +11,13 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — MX-36, reuse Stack parameter demand storage
+- Stack reuses its previous device-ID buffer across unchanged layouts. It keeps the sorted demand comparison and restores spare storage before notifying. Fold and unfold each deliver one demand change.
+- The measured part of four warm headless frames allocated four temporary ID buffers before the fix and zero after it. The same card and parameter demand remain active. The exact Release passes 331 function checks, 99 real device document checks, all 24 named CTests and the 906/329/7 component checks. Both units passed MSVC /W4 /WX and the production unit passed Clang.
+- Needs Devices — `DeviceChainStrip` builds a separate temporary demand vector. Stack's change stays in its own paths.
+- Scheduled ADI.exe SHA-256 `cafac9d76546804198f38cb7e8a5d19150c8acce52f8e618d14ea3f0668d305c`. ZIP SHA-256 `e5f917ff6bacb211c62b2a9d4143687f612ce702229437a08d8d5bdcb94ee322`. The same private Focus and Spectrum live checks apply.
+- PR requested — `mixview/mx36-stack-demand-lands-after-2026-12-03` at `d9c18ca6`, also the scheduled preview head. Lands after 3 December.
+
 ## 2026-11-22 — MX-13, real Device Output stamps through the analyser broker
 - Extended the native limiter document fixture with Scope requests for Device Input and Device Output and a Device Spectrum lease. With both native providers and real graph compensation, the output picture shares the Spectrum result, retains the physical tap's waveform and stamp, and matches non-silent compensated input at the same heard sample. Releasing the analyser demand leaves the independent direct observers attached.
 - The targeted suite passes 99 checks, the exact test unit passes MSVC /W4 /WX, and all 24 named CTests and the 906/329/7 components pass. This adds a headless test to the existing product behavior. The scheduled app release remains `6c13c217`.
