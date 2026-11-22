@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 opt-in True Peak in Spectrum
+
+The expanded Spectrum has a TP toggle that starts off. It switches the held peak readout to per-channel ADI dBTP. Sample Clips continues to report samples above full scale. True Peak uses the existing meter on the primary Spectrum worker lease. Its interval starts at the current writer and ends when disabled, compact, hidden or frozen. A frozen picture retains its readings.
+
+The missing measurement failed first at four rates and the software test caught the missing switch. All 887 broker and 471 Mix Functions checks now pass. They cover exact ADI meter results from 44.1 through 192 kHz, irregular writes, intersample overs, retained sample counters, reset, a certified silent tap wrap and unchanged tap and FFT demand. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed five units and Clang passed all three implementations.
+
+Release ZIP SHA-256 `c3995a9d4c18a60ebc395f79e460f3d62b034ce4020c5a69d7bbdff0e596260f`. EXE SHA-256 `c3e1fed96286fc9e5cc696407793859a906b06b772eb662b793d65d2e33839bb`. The brief includes a stereo float fixture with sample peaks below full scale and a left intersample over. The reference's exact interpolation and timed CPU remain for further measurement.
+
+PR requested — `mixview/mx21-spectrum-true-peak-lands-after-2026-12-03` at `ed6f816080b7ba5f13bcbc7435502be930a0788b`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-30 parked Realtime Maximum and Sigma timing
 
 Realtime Maximum and Sigma now preserve their original hop through certified stopped silence once their histories have settled to zero. Existing views hold their picture during the silent interval. An additional Scope or opposite realtime trace can join after the tap wraps. The previously admitted view keeps its clock and the new trace waits for a complete window after its own admission.
