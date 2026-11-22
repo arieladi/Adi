@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Automatic release in the two input followers
+
+Toggling automatic release alone changed all seven original Hold programs that enable it. On kick and bass the isolated stereo RMS change was 0.001205–0.015062. Twelve new comparisons of signed stereo markers selected the current-frame signal from Width as the control for Hold at 44.1, 48 and 96 kHz. Shifting the control by either one frame raised each error to at least 0.227 RMS.
+
+The manual release setting still controls the extremes. The slow limit is approximately the selected manual time plus 250 ms, and the fast limit is about one quarter of the manual time. At 20% these measured approximately 336 ms and 21.46 ms. For a 0.625 to 0.00390625 amplitude step, the midpoint in decay rate arrived 16.92–16.99 ms after the edge across the three rates. A later four-frame pulse below the current envelope still changed the subsequent envelope by 0.00914. Increasing manual Hold delayed the audible fall while the automatic release detector continued to track the underlying input.
+
+The repeatable test holds a half-scale peak for 500 ms and reads the next falling envelope sample each time the outer envelope returns to exactly half scale. Twice that falling sample gives the instantaneous decay coefficient. A small drop and a large drop produce different fastest rates. Pulse pairs at five and 1,024 frames reject both a fixed transition timer and the sum of isolated pulse responses. Automatic release remains outside the manual port pending a detector that also predicts these held-out pairs.
+
 ## 22 November 2026 — Width can reverse the side channel in Multiply
 
 When a negative offset puts the normalized modulation below zero, Width's Multiply mode keeps the signed result. Add has a zero lower limit. A positive result in either mode tops out at one, corresponding to a physical side gain of two. At base 0.125, amount 0.5, depth two and minimum offset, a 0.25 input peak produced a normalized result of −0.96875 in Multiply. The physical side gain is −1.9375, which reverses the stereo difference while keeping the mid signal.
