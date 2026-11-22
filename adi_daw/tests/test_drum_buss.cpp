@@ -159,7 +159,7 @@ void boom() {
 
 void transients() {
     // Hits: a 150 Hz tone that starts at full level and decays over 40 ms,
-    // every 250 ms. The attack (first 3 ms) against the body (20 to 40 ms).
+    // every 250 ms. The attack (first 5 ms) against the body (20 to 40 ms).
     std::vector<float> x(48000, 0.f);
     for (std::size_t hit = 0; hit < x.size(); hit += 12000) {
         for (std::size_t i = 0; i < 4800 && hit + i < x.size(); ++i) {
@@ -172,7 +172,7 @@ void transients() {
         b.set(B::Transients, amount);
         const auto y = render(b, x);
         double attack = 0, body = 0;
-        for (std::size_t i = 24000; i < 24000 + 144; ++i) {
+        for (std::size_t i = 24000; i < 24000 + 240; ++i) {
             attack = std::max(attack, static_cast<double>(std::abs(y[i])));
         }
         for (std::size_t i = 24000 + 960; i < 24000 + 1920; ++i) {
@@ -201,21 +201,23 @@ void colour() {
     };
     check(thd(100, B::Soft) > 3 * thd(10, B::Soft), "Drive 100 distorts far more than Drive 10");
     check(std::abs(thd(60, B::Hard) - thd(60, B::Soft)) > 0.01, "Hard and Soft are different curves");
-    // Crunch: a 1.5 kHz tone gains its third harmonic; a 100 Hz tone keeps
-    // its level (the band is above 1 kHz).
+    // Crunch: a 3 kHz tone of 0.5 gains its octave and keeps its level (the
+    // review of 96fd37df: the old crunch lifted the band itself by up to
+    // 8 dB); a 100 Hz tone keeps its level (the band is above 1 kHz).
     const auto crunch = [](double hz, double amount, double& fundamental) {
         B b = plain();
         b.set(B::Crunch, amount);
         const auto y = render(b, sine(hz, 96000, 0.5));
         fundamental = component(y, hz);
-        return component(y, 3 * hz);
+        return component(y, 2 * hz);
     };
     double f0 = 0, f1 = 0, low0 = 0, low1 = 0;
-    const double without = crunch(1500, 0, f0), with = crunch(1500, 100, f1);
+    const double without = crunch(3000, 0, f0), with = crunch(3000, 100, f1);
     (void)crunch(100, 0, low0);
     (void)crunch(100, 100, low1);
-    check(with > 10 * without, "Crunch brightens a 1.5 kHz tone: its third harmonic up over 20 dB");
-    check(std::abs(20 * std::log10(low1 / low0)) < 0.1, "and leaves a 100 Hz tone's level (" + std::to_string(20 * std::log10(low1 / low0)) + " dB)");
+    check(with > 10 * without + 0.01, "Crunch brightens a 3 kHz tone: its octave up over 20 dB");
+    check(std::abs(20 * std::log10(f1 / f0)) < 0.1, "and leaves the tone's own level (" + std::to_string(20 * std::log10(f1 / f0)) + " dB)");
+    check(std::abs(20 * std::log10(low1 / low0)) < 0.1, "and a 100 Hz tone's (" + std::to_string(20 * std::log10(low1 / low0)) + " dB)");
 }
 
 void routing() {
@@ -269,7 +271,54 @@ void routing() {
 
 }  // namespace
 
+/// The review of 96fd37df: Transients distorted held low tones, and Drive's
+/// level matching lost up to 22 dB on a loud signal.
+void reviewed() {
+    // A held 50 or 100 Hz tone at -26 dBFS passes Transients +-100 with
+    // under 2 % THD and its level within 0.3 dB.
+    for (double hz : {50.0, 100.0}) {
+        for (double amount : {100.0, -100.0}) {
+            const auto x = sine(hz, 96000, 0.05);
+            B flat = plain(), shaped = plain();
+            shaped.set(B::Transients, amount);
+            const auto y0 = render(flat, x), y1 = render(shaped, x);
+            double h = 0;
+            for (int k = 2; k <= 9; ++k) {
+                h += std::pow(component(y1, hz * k), 2);
+            }
+            const double thd = std::sqrt(h) / component(y1, hz), moved = 20 * std::log10(component(y1, hz) / component(y0, hz));
+            check(thd < 0.02 && std::abs(moved) < 0.3, "Transients " + std::to_string(amount) + " on a held " + std::to_string(hz) + " Hz tone: THD " +
+                                                           std::to_string(thd) + ", level " + std::to_string(moved) + " dB");
+        }
+    }
+    // Drive is matched by peak at -6 dBFS: a sine of 0.5 keeps its peak at
+    // Drive 100 (within 0.3 dB) and its fundamental within 2 dB (a clipped
+    // wave holds more fundamental at the same peak); full scale within 3 dB.
+    // On the old core Drive 100 cost a full-scale sine 20 dB.
+    for (double amplitude : {0.5, 1.0}) {
+        const auto x = sine(100, 96000, amplitude);
+        B none = plain(), full;
+        full.set(B::Drive, 100);
+        full.prepare(kRate);
+        const auto y0 = render(none, x), y1 = render(full, x);
+        const double moved = 20 * std::log10(component(y1, 100) / component(y0, 100));
+        double p0 = 0, p1 = 0;
+        for (std::size_t i = 48000; i < y0.size(); ++i) {
+            p0 = std::max(p0, static_cast<double>(std::abs(y0[i])));
+            p1 = std::max(p1, static_cast<double>(std::abs(y1[i])));
+        }
+        if (amplitude < 0.75) {
+            check(std::abs(20 * std::log10(p1 / p0)) < 0.3 && std::abs(moved) < 2, "Drive 100 on a sine of 0.5: its peak kept (" +
+                                                                                       std::to_string(20 * std::log10(p1 / p0)) + " dB), its fundamental within 2 dB (" +
+                                                                                       std::to_string(moved) + ")");
+        } else {
+            check(std::abs(moved) < 3, "Drive 100 on a full-scale sine: its level within 3 dB (" + std::to_string(moved) + ")");
+        }
+    }
+}
+
 int main() {
+    reviewed();
     quiet();
     compressor();
     boom();

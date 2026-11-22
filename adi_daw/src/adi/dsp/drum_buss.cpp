@@ -44,8 +44,13 @@ void DrumBuss::prepare(double sampleRate) noexcept {
     compEnv_ = 0;
     compAttack_ = coefficient(0.001, rate_);
     compRelease_ = coefficient(0.100, rate_);
-    fastA_ = coefficient(0.001, rate_);
-    slowA_ = coefficient(0.050, rate_);
+    fastA_ = coefficient(0.0005, rate_);
+    slowA_ = coefficient(0.010, rate_);
+    releaseA_ = coefficient(0.300, rate_);
+    smoothA_ = coefficient(0.0005, rate_);
+    crunchPole_ = std::exp(-2 * std::numbers::pi * 20 / rate_);
+    crunchDcIn_ = crunchDcOut_ = {};
+    shape_ = {1, 1};
     update();
 }
 
@@ -70,6 +75,7 @@ void DrumBuss::update() noexcept {
     boom_ = {alpha / a0, 0, -alpha / a0, -2 * std::cos(w) / a0, (1 - alpha) / a0};
     trim_ = level(p_[Trim]);
     drive_ = level(24 * p_[Drive] / 100);
+    match_ = curve(static_cast<int>(p_[Type]), 0.5) / curve(static_cast<int>(p_[Type]), 0.5 * drive_);
     crunch_ = p_[Crunch] / 100;
     transients_ = p_[Transients] / 100;
     boomGain_ = 4 * p_[Boom] / 100;
@@ -103,18 +109,30 @@ void DrumBuss::process(const float* inL, const float* inR, float* outL, float* o
         }
         for (std::size_t c = 0; c < 2; ++c) {
             const double in = gain * x[c];
-            double y = curve(type, drive_ * in) / drive_;
-            const double band = run(crunchBand_, crunchState_[c], y);
-            // Crunch adds only the distortion of the high band (no slope at
-            // 0, so a quiet signal is untouched): band - tanh(4 band) / 4.
-            y += 4 * crunch_ * (band - std::tanh(4 * band) / 4);
+            // Drive, matched at -6 dBFS: a peak of 0.5 keeps its level, a
+            // quieter signal gains (the curve compresses), a louder one is held.
+            double y = curve(type, drive_ * in) * match_;
+            // Crunch: the high band's square, its DC removed, an octave up.
+            // A sine's square holds no fundamental, so Crunch brightens
+            // without lifting the band, and being of the second order it
+            // leaves a quiet signal untouched.
+            const double band = std::clamp(run(crunchBand_, crunchState_[c], y), -1.0, 1.0), sq = band * band;
+            const double even = sq - crunchDcIn_[c] + crunchPole_ * crunchDcOut_[c];
+            crunchDcIn_[c] = sq;
+            crunchDcOut_[c] = settle(even);
+            y += 2 * crunch_ * even;
             y = run(damp_, dampState_[c], y);
-            // Transients: the fast envelope over the slow, as a gain.
+            // Transients: a peak envelope (0.5 ms attack, 300 ms release)
+            // against itself lagged by a 10 ms one-pole. A held tone keeps
+            // the two together; an onset parts them for about the lag. Their
+            // ratio, smoothed over 0.5 ms, is the gain.
             const double a = std::abs(in);
-            fast_[c] = settle(a + fastA_ * (fast_[c] - a));
-            slow_[c] = settle(a + slowA_ * (slow_[c] - a));
-            if (transients_ != 0 && slow_[c] > 1e-9) {
-                y *= std::clamp(1 + transients_ * (fast_[c] - slow_[c]) / slow_[c], 0.25, 4.0);
+            fast_[c] = settle(a + (a > fast_[c] ? fastA_ : releaseA_) * (fast_[c] - a));
+            slow_[c] = settle(fast_[c] + slowA_ * (slow_[c] - fast_[c]));
+            const double target = slow_[c] > 1e-9 ? std::clamp(1 + transients_ * (fast_[c] - slow_[c]) / slow_[c], 0.25, 4.0) : 1.0;
+            shape_[c] = target + smoothA_ * (shape_[c] - target);
+            if (transients_ != 0) {
+                y *= shape_[c];
             }
             y += boomGain_ * run(boom_, boomState_[c], in);
             const double wet = output_ * y;

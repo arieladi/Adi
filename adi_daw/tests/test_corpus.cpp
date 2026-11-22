@@ -236,7 +236,82 @@ void routing() {
 
 }  // namespace
 
+/// The review of eb01d991: three findings, each a check that fails on the
+/// old core.
+void reviewed() {
+    // A 2 ms half-sine hit rings at the same level at 44.1 to 192 kHz.
+    const auto hitPeak = [](double rate) {
+        P p;
+        p.set(P::Type, P::String);
+        p.prepare(rate);
+        const auto n = static_cast<std::size_t>(rate);
+        std::vector<float> x(n, 0.f), l(n), r(n);
+        const auto len = static_cast<std::size_t>(0.002 * rate);
+        for (std::size_t i = 0; i < len; ++i) {
+            x[i] = static_cast<float>(0.5 * std::sin(std::numbers::pi * static_cast<double>(i) / static_cast<double>(len)));
+        }
+        p.process(x.data(), x.data(), l.data(), r.data(), n);
+        double peak = 0;
+        for (float v : l) {
+            peak = std::max(peak, static_cast<double>(std::abs(v)));
+        }
+        return peak;
+    };
+    const double at48 = hitPeak(48000);
+    double worst = 0;
+    for (double rate : {44100.0, 96000.0, 192000.0}) {
+        worst = std::max(worst, std::abs(20 * std::log10(hitPeak(rate) / at48)));
+    }
+    check(worst < 0.5, "a 2 ms hit rings at the same level at every rate (worst " + std::to_string(worst) + " dB from 48 kHz)");
+    // A full-scale tone held at a mode at the longest Decay stays under
+    // full scale, at 48 and 192 kHz.
+    for (double rate : {48000.0, 192000.0}) {
+        P p;
+        p.set(P::Type, P::String);
+        p.set(P::Decay, 100);
+        p.prepare(rate);
+        const auto n = static_cast<std::size_t>(rate * 2);
+        std::vector<float> x(n), l(n), r(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            x[i] = static_cast<float>(std::sin(2 * std::numbers::pi * 440 * static_cast<double>(i) / rate));
+        }
+        p.process(x.data(), x.data(), l.data(), r.data(), n);
+        double peak = 0;
+        for (float v : l) {
+            peak = std::max(peak, static_cast<double>(std::abs(v)));
+        }
+        check(peak <= 1.0, "a full-scale tone held at a mode at Decay 100 stays under full scale at " + std::to_string(rate) + " (" +
+                               std::to_string(peak) + ")");
+    }
+    // The membrane's sixteen modes are the Bessel zeros j_mn in order, each
+    // over j_01, found here by bisection on std::cyl_bessel_j.
+    std::vector<double> zeros;
+    for (int m = 0; m <= 9; ++m) {
+        double prev = std::cyl_bessel_j(static_cast<double>(m), 0.5);
+        for (double x = 0.51; x < 16; x += 0.01) {
+            const double v = std::cyl_bessel_j(static_cast<double>(m), x);
+            if (prev * v < 0) {
+                double a = x - 0.01, b = x;
+                for (int k = 0; k < 60; ++k) {
+                    const double c = 0.5 * (a + b);
+                    (std::cyl_bessel_j(static_cast<double>(m), a) * std::cyl_bessel_j(static_cast<double>(m), c) <= 0 ? b : a) = c;
+                }
+                zeros.push_back(0.5 * (a + b));
+            }
+            prev = v;
+        }
+    }
+    std::sort(zeros.begin(), zeros.end());
+    const auto table = P::ratios(P::Membrane);
+    double off = 0;
+    for (std::size_t k = 0; k < P::kModes; ++k) {
+        off = std::max(off, std::abs(table[k] - zeros[k] / zeros[0]));
+    }
+    check(off < 1e-3, "Membrane: all sixteen ratios are the Bessel zeros in order (worst " + std::to_string(off) + ")");
+}
+
 int main() {
+    reviewed();
     modes();
     decay();
     nodes();
