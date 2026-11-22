@@ -2,6 +2,7 @@
 #include "adi/dsp/pitch_detector.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace adi::dsp {
@@ -106,8 +107,15 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
     // exact energies reads as a perfect dip at an arbitrary lag), and a level
     // under kFloor (-80 dBFS RMS) holds no pitch worth showing.
     double mean = 0;
+    // Each quarter's own variance (its energy about its own mean), for the
+    // onset rule below: a silent quarter reads 0 whatever the window's mean
+    // or a DC offset, a low note's quarter keeps its tone.
+    std::array<double, 4> sum{}, squares{};
     for (std::size_t j = 0; j < size_; ++j) {
-        mean += std::isfinite(window[j]) ? static_cast<double>(window[j]) : 0.0;
+        const double v = std::isfinite(window[j]) ? static_cast<double>(window[j]) : 0.0;
+        mean += v;
+        sum[j * 4 / size_] += v;
+        squares[j * 4 / size_] += v * v;
     }
     mean /= static_cast<double>(size_);
     energy_[0] = 0;
@@ -170,19 +178,19 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
     // period. A pitch moving inside the window (vibrato, a glide) may put the
     // fine dip a few samples from the coarse one; that reading stands.
     const std::size_t length = size_ - half - 2;
-    // A window with a quarter all but silent (under 1 % of the loudest
-    // quarter's energy) holds a note starting or stopping: there the fine
-    // difference slopes with the energy and pulls the walk, so its period
-    // must stay within 1.5 samples of the coarse dip. A sung vibrato's
-    // tremolo (+-50 % amplitude keeps every quarter above 13 %), a glide or
-    // a steady level keeps the walk.
-    double quietest = energy_[size_], loudest = 0;
+    // A window with a quarter under 5 % of the loudest quarter (each
+    // quarter's own variance) holds a note starting, stopping or dying
+    // fast: there the fine difference slopes with the energy and pulls the
+    // walk, so its period must stay within 1.5 samples of the coarse dip. A
+    // sung vibrato's tremolo (+-50 % amplitude keeps every quarter above
+    // 13 %), a glide or a steady level keeps the walk.
+    double quietest = 1e300, loudest = 0;
     for (std::size_t k = 0; k < 4; ++k) {
-        const double q = energy_[(k + 1) * size_ / 4] - energy_[k * size_ / 4];
+        const double n = static_cast<double>(size_ / 4), q = squares[k] - sum[k] * sum[k] / n;
         quietest = std::min(quietest, q);
         loudest = std::max(loudest, q);
     }
-    const bool onset = quietest < 0.01 * loudest;
+    const bool onset = quietest < 0.05 * loudest;
     const auto diff = [&](std::size_t lag) {
         ++work_;
         return difference(window, lag, length);
