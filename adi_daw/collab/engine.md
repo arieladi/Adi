@@ -36,6 +36,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-13 native Pd join verified
+
+The scratch join of `engine/dev13-node-segment-quantum` `59453a16` and `devices/pd-block-quantum` `b8ff1a6e` passed 758 strict GCC checks. The real Pd device rendered five callbacks per combination at 64, 128, 256 and 511 frames with all admissible offsets among 1, 63, 64, 65 and 127. Both channels nulled at the declared adapter delay, with exact segment call counts and zero unexpected fallbacks. The device declared zero at 64, 128 and 256, and one 64-sample block at 511. The first probe had used the stock fixture's synthetic latency report. The successful run used an isolated identity fixture reporting zero own delay.
+
+Keep main's already-landed tick-carried transport and position virtual when reconciling the three Devices files. The production engine branch and its PR request remain at `59453a16`. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev13-node-segment-quantum)
+
 ## 2026-11-22 — DEV-13 / DF-E40(a) node segment quantum, lands after 3 December
 
 Branch `engine/dev13-node-segment-quantum` at `59453a164662768232a8815d2c459f62ce84f174`, from main `87ea349c`. Suggested PR title **Keep node segments on the declared processing quantum**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev13-node-segment-quantum)
