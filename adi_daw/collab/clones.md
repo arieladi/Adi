@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Independent stereo center offsets for Sweep
+
+`clones/shaper-sweep-stereo` at `099aaa4f` — Add independent stereo center offsets to Sweep bands. **Lands after 3 December.** Stable IDs 853–855 expose the signed controls in the low, middle and high bands. A saved project with no offset keys restores centered stereo. The flanger uses its existing delay range. The four phaser depths reach lower and higher frequencies with spread, including the measured limit just below Nyquist.
+
+All five new impulse cases failed on main. The largest normalized tap error fell from 0.699897 to 0.00001282. Another 30,720 stereo frames checked moving center, feedback, polarity, repeated offset changes and returning to center with a ringing tail. The rack, Sweep and registered native/edited Pd suites all passed under MSVC /W4 /WX at both signal precisions.
+
+On stereo kick and bass with a moving eight-stage phaser, median/p99 callback duration was 27.8/44.4 µs centered and 39.7/60.2 µs at +50% spread for 256 frames. At 2,048 frames the readings were 217.8/379.6 and 249.9/376.8 µs. All 40,960 callbacks met their deadline. Processing reported zero added latency.
+
+Switching only the measured offsets on the seven-stage 116-program comparison improved 69 errors, increased 39 and left eight within 0.000001 stereo RMS. One program crossed from 0.00111743 to 0.000956235. Of eleven earlier Trim regressions using the control, four improved, five worsened and two stayed within tolerance. These comparisons use the seven-stage main baseline.
+
+PR requested
+
 ## 22 November 2026 — Reverb on the historical 873-program comparison
 
 The historical bank had 39 programs below 0.001 stereo RMS, including one of the 163 programs using Reverb. We reproduced all 163 archived, four-bar stereo renders byte for byte with their corresponding registered historical builds. The comparison then replayed 162 in source order with the held weighted curves, Time, band Trim and the corrected room from `df9f2778`. Downstream clocks account for each preceding processor's latency. One program requires an unavailable band solo.
