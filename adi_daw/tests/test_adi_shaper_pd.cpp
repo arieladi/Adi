@@ -101,7 +101,7 @@ void cachedPdTransport(const std::string& directory, bool native) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false) {
+                  bool crushOn = false, bool trimmed = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
@@ -126,6 +126,12 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         if (onlyVolume) {
             for (int j = 0; j < 8; ++j)
                 send(Shaper::bandParam(Stage::Volume, mid, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 50);
+        }
+        if (trimmed) {
+            send(Shaper::VolumeMidTrim,-6.f);
+            send(Shaper::WidthMidTrim,6.f);
+            for (int j=0;j<8;++j)
+                send(Shaper::bandParam(Stage::Width,mid,static_cast<Shaper::BandControl>(Shaper::Point1+j)),0);
         }
         send(Shaper::FilterOn, filterOn ? 1.0f : 0.0f);
         send(Shaper::SweepOn, sweepOn ? 1.0f : 0.0f);
@@ -196,9 +202,14 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
             const auto index = i - 64;
             check(std::isfinite(crossed[i]) && std::isfinite(direct[ch][index]), "finite modulation output");
             errorPeak = std::max(errorPeak, static_cast<double>(std::abs(crossed[i] - direct[ch][index])));
-            if (onlyVolume)
-                check(crossed[i] == 0.5f * input[ch][index] && direct[ch][index] == crossed[i],
+            if (onlyVolume && trimmed) {
+                const float expected = .25f * (input[0][index] + input[1][index]);
+                check(std::abs(crossed[i] - expected) < 1.e-7f && direct[ch][index] == crossed[i],
+                      "both stereo paths follow the band controls and trims");
+            } else if (onlyVolume) {
+                check(crossed[i] == .5f * input[ch][index] && direct[ch][index] == crossed[i],
                       "half gain is sample-exact through native and edited stereo signal paths");
+            }
             const float alignedDry = !driveOn ? input[ch][index] : index >= 16 ? input[ch][index - 16] : 0.0f;
             effectPeak = std::max(effectPeak, static_cast<double>(std::abs(alignedDry - direct[ch][index])));
         }
@@ -219,6 +230,82 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         }
     }
 }
+
+void timePd() {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    constexpr auto mid = Shaper::Band::Mid;
+    constexpr int samples = 768, seek = 128, marker = 144;
+    Engine native(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2);
+    Engine pd(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2, Engine::Execution::PureData,
+              Engine::BlockMode::Buffered);
+    const auto decl = adi::device::parsePdDeclarations(adi::builtinCanvas(uid));
+    std::array<adi::device::PdLatencyReceiver, 2> latency;
+    std::array<Engine*, 2> paths{&native, &pd};
+    std::array<std::array<float, samples>, 2> input{};
+    input[0][0] = .5f;
+    input[1][0] = -.75f;
+    input[0][marker] = -.25f;
+    input[1][marker] = .5f;
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        auto& path = *paths[i];
+        std::string error;
+        path.addSearchPath(ADI_PD_PATCH_DIR);
+        check(path.open(latency[i], error), "Time fixture opens canvas");
+        path.prepare(48000, 97);
+        path.bindParameters(decl);
+        auto param = [&](Shaper::Param id, float value) {
+            check(path.sendParameter(static_cast<int>(id) + 1, value), "Time parameter message");
+        };
+        param(Shaper::TimeOn, 1);
+        param(Shaper::MasterMix, 50);
+        param(Shaper::timeParam(mid, Shaper::TimeMix), 50);
+        param(Shaper::timeParam(mid, Shaper::TimeRange), 5);
+        for (int point = 0; point < 8; ++point)
+            param(Shaper::timeParam(mid, static_cast<Shaper::TimeControl>(Shaper::Time1 + point)), 0);
+        path.requestLatencyReport();
+        const int adapter = path.adapterLatencySamples();
+        check(latency[i].latencySamples() == 0 && adapter == (path.isNative() ? 0 : 64),
+              "Time reports zero intentional-delay compensation on both paths");
+        std::array<std::array<float, samples>, 2> result{};
+        constexpr std::array sizes{31, 7, 66, 17, 97};
+        for (int f = 0, block = 0; f < samples; ++block) {
+            const int n = std::min(sizes[static_cast<std::size_t>(block) % sizes.size()],
+                                   (f < seek ? seek : samples) - f);
+            const int timeline = f + (f < seek ? 0 : 192000);
+            adi::engine::DeviceTransport exact;
+            exact.playing = true;
+            exact.sample = timeline;
+            exact.quarterNotes = timeline / 24000.0;
+            adi::engine::TransportInfo transport;
+            transport.playing = true;
+            transport.timelineSample = timeline;
+            transport.bar = 1 + timeline / 96000;
+            transport.beat = 1 + timeline / 24000 % 4;
+            transport.ticksInQuarter = std::llround((timeline % 24000) * (adi::textproj::kPPQ / 24000.0));
+            const float* in[]{input[0].data() + f, input[1].data() + f};
+            float* out[]{result[0].data() + f, result[1].data() + f};
+            adi::engine::NodeIo io;
+            io.deviceTransport = &exact;
+            io.transport = &transport;
+            io.in = in;
+            io.out = out;
+            io.channels = 2;
+            io.frames = n;
+            path.process(io);
+            f += n;
+        }
+        for (std::size_t ch = 0; ch < input.size(); ++ch) {
+            for (int f = 0; f < samples - adapter; ++f) {
+                const float expected = .75f * input[ch][static_cast<std::size_t>(f)]
+                                     + (f == marker + 239 ? .25f * input[ch][marker] : 0.f);
+                check(result[ch][static_cast<std::size_t>(f + adapter)] == expected,
+                      "Time preserves immediate dry, resets stale history on seek and returns the new delayed marker");
+            }
+        }
+    }
+}
+
 // The host splits a block at every lane event (DF-E50), and every piece of
 // the segment carries the transport of the segment's first sample. A synced
 // curve must keep its own clock after the first piece: lane values for an
@@ -266,15 +353,39 @@ void automationKeepsTheClock() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
-    for (int id = 1; id <= 415; ++id)
+    constexpr int count = adi::dsp::AdiShaper::BaseCount;
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == count + 2 * adi::dsp::AdiShaperWaveBank::slots + 6, "device registration");
+    for (int id = 1; id <= count; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    auto beforeTrim=adi::Payload::from_cbor(device->saveState("state"));
+    for (int id=3073;id<=3078;++id) {
+        const auto name=std::to_string(id);
+        const auto* desc=device->paramAt(device->paramCount()-6+id-3073);
+        constexpr std::array names{"Volume Low Trim","Volume Mid Trim","Volume High Trim",
+                                   "Width Low Gain","Width Mid Gain","Width High Gain"};
+        const double limit = id < 3076 ? 24.0 : 12.0;
+        check(desc && desc->id == name && desc->name == names[static_cast<std::size_t>(id-3073)] &&
+              desc->unit == "dB" && desc->defaultValue.normalized == .5 &&
+              desc->minReal == -limit && desc->maxReal == limit, "trim descriptor and unity default");
+        beforeTrim.at("params").erase(name);
+        beforeTrim.at("real").erase(name);
+        set(*device,id,.75);
+    }
+    const auto custom=device->saveState("state");
+    check(device->loadState("state",adi::Payload::to_cbor(beforeTrim)), "recall state without trim parameters");
+    for (int id=3073;id<=3078;++id) check(device->getParam(std::to_string(id)).real==0, "old state resets trims");
+    check(device->loadState("state",custom), "recall edited trims");
+    for (int id=3073;id<=3078;++id) check(device->getParam(std::to_string(id)).normalized==.75, "trim state round trip");
+    device=open();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
     // Restore an actual earlier-format parameter map, with no Filter or Sweep keys.
     auto state = adi::Payload::from_cbor(device->saveState("state"));
-    for (int id = 134; id <= 415; ++id) state.at("params").erase(std::to_string(id));
+    for (int id = 134; id <= count; ++id) {
+        state.at("params").erase(std::to_string(id));
+        state.at("real").erase(std::to_string(id));
+    }
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(state)), "restore earlier curve and width");
     check(device->getParam("134").real == 0 && device->getParam("209").real == 0,
@@ -343,7 +454,10 @@ int main() try {
     set(*device, 253, 0.72);
     set(*device, 285, 1);
     auto modState = adi::Payload::from_cbor(device->saveState("state"));
-    for (int id = 287; id <= 415; ++id) modState.at("params").erase(std::to_string(id));
+    for (int id = 287; id <= count; ++id) {
+        modState.at("params").erase(std::to_string(id));
+        modState.at("real").erase(std::to_string(id));
+    }
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(modState)) && device->getParam("134").real == 1
           && device->getParam("209").real == 1 && std::abs(device->getParam("170").real - 37) < 1e-4
@@ -356,11 +470,30 @@ int main() try {
     set(*device, 341, 1);
     device->process(io);
     check(device->latencySamples() == 16 && device->latencyEpoch() != firstEpoch, "catalogued host republishes Drive latency");
-    const auto sevenStageState = device->saveState("state");
+    auto sevenStageState = adi::Payload::from_cbor(device->saveState("state"));
+    for (int id = 416; id <= count; ++id) {
+        sevenStageState.at("params").erase(std::to_string(id));
+        sevenStageState.at("real").erase(std::to_string(id));
+    }
     device = open();
-    check(device->loadState("state", sevenStageState), "restore seven-stage project state");
+    check(device->loadState("state", adi::Payload::to_cbor(sevenStageState)), "restore seven-stage project state");
     device->process(io);
-    check(device->latencySamples() == 16 && device->getParam("341").real == 1, "active Drive latency restores with Crush");
+    check(device->latencySamples() == 16 && device->getParam("341").real == 1 && device->getParam("416").real == 0
+          && device->getParam("463").real == 100, "old state restores Drive, Crush and neutral Time defaults");
+    set(*device, 416, 1);
+    set(*device, 463, .31);
+    using Wave = adi::dsp::AdiShaperWaveBank;
+    const Wave::Point point{.31f, .64f, -.5f, Wave::Shape::Bend};
+    const int address = Wave::address(Wave::key(7, 1, 0), point), height = Wave::value(point);
+    set(*device, Wave::firstId, static_cast<double>(address) / Wave::wordMax);
+    set(*device, Wave::firstId + 1, static_cast<double>(height) / Wave::wordMax);
+    const auto eightStageState = device->saveState("state");
+    device = open();
+    check(device->loadState("state", eightStageState) && device->getParam("416").real == 1
+          && std::abs(device->getParam("463").real - 31) < 1e-4, "Time enable and last curve point persist");
+    check(std::llround(device->getParam(std::to_string(Wave::firstId)).real) == address
+          && std::llround(device->getParam(std::to_string(Wave::firstId + 1)).real) == height,
+          "Time free-point position, shape, height and bend persist at their original IDs");
     // Recall a sparse pre-Drive project into a running instance with Drive active.
     check(device->loadState("state", adi::Payload::to_cbor(modState)), "recall sparse project over an active instance");
     device->process(io);
@@ -368,7 +501,7 @@ int main() try {
           && device->getParam("341").real == 0 && device->getParam("209").real == 1,
           "missing stages regain defaults and release PDC while saved stages stay enabled");
     // A value saved only in its unit (no position) is read, not reset to its default.
-    auto realOnly = adi::Payload::from_cbor(sevenStageState);
+    auto realOnly = sevenStageState;
     realOnly.at("params").erase("170");
     check(realOnly.at("real").contains("170") && std::abs(open()->getParam("170").real - 37) > 1,
           "fixture: Filter value saved in its unit differs from the default");
@@ -382,12 +515,14 @@ int main() try {
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);
+    modulationPd(editedDir, false, false, false, false, true);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
     modulationPd(editedDir, true, true);
     modulationPd(editedDir, false, false, true, false);
     modulationPd(editedDir, false, false, false, true);
     modulationPd(editedDir, false, false, true, true);
+    timePd();
     std::puts("ADI-Shaper built-in state, transport and editable modulation parity passed.");
     return 0;
 } catch (const std::exception& error) {
