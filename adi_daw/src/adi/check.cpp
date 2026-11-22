@@ -3,6 +3,7 @@
 #include "adi/check.hpp"
 
 #include "adi/blob.hpp"
+#include "adi/device_param_ref.hpp"
 #include "adi/history_compaction.hpp"
 #include "adi/history_roots.hpp"
 #include "adi/media/media_ops.hpp"
@@ -11,11 +12,9 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
-#include <limits>
 #include <map>
 #include <set>
 #include <string>
-#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -590,17 +589,6 @@ void checkRemarks(Ctx& c) {
     }
 }
 
-bool isCanonicalDeviceParamRef(std::string_view text) noexcept {
-    if (text.empty() || text.size() > 10) return false;
-    if (text.size() > 1 && text[0] == '0') return false;
-    std::uint64_t value = 0;
-    for (const char ch : text) {
-        if (ch < '0' || ch > '9') return false;
-        value = value * 10 + static_cast<std::uint64_t>(ch - '0');
-    }
-    return value <= std::numeric_limits<std::uint32_t>::max();
-}
-
 void checkAutomationLanes(Ctx& c) {
     c.ran();
     try {
@@ -610,12 +598,16 @@ void checkAutomationLanes(Ctx& c) {
         while (st.executeStep()) {
             const auto id = st.getColumn(0).getInt64();
             const auto ref = st.getColumn(1).getString();
-            if (!isCanonicalDeviceParamRef(ref)) {
-                c.add(Severity::Error, "automation.paramRef",
-                      "automation_lanes#" + std::to_string(id) + ".param_ref",
-                      "device param_ref '" + ref +
-                          "' is not a canonical decimal parameter id (SPEC 6.3.3)");
-            }
+            std::uint32_t paramId = 0;
+            bool canonical = false;
+            const bool parsed = parseDeviceParamRef(ref, paramId, &canonical);
+            if (parsed && canonical) continue;
+            const std::string detail = parsed
+                ? "device param_ref '" + ref + "' is not canonical decimal (SPEC 6.3.3); played as parameter " +
+                      std::to_string(paramId)
+                : "device param_ref '" + ref + "' is not a canonical decimal parameter id (SPEC 6.3.3); not played";
+            c.add(Severity::Warning, "automation.paramRef",
+                  "automation_lanes#" + std::to_string(id) + ".param_ref", detail);
         }
     } catch (const std::exception& e) {
         c.add(Severity::Error, "automation.checkFailed", "automation_lanes", e.what());

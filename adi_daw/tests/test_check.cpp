@@ -467,10 +467,37 @@ void testDeviceAutomationParamRef() {
         "  (3, 'device', 1, '1', 'normalized'),"
         "  (4, 'device', 1, '4294967295', 'normalized')");
     const auto cleanRep = checkProject(*f.store);
-    check(!has(cleanRep, "automation.paramRef") && cleanRep.clean(),
+    check(!has(cleanRep, "automation.paramRef") && cleanRep.clean() && cleanRep.warnings == 0,
           "canonical device param_refs and non-device lanes check clean: " + describe(cleanRep));
 
-    for (const char* bad : {"001", "00", "07", "+1", "-1", " 1", "4294967296", "cutoff", ""}) {
+    struct NumericCase {
+        const char* ref;
+        const char* playedAs;
+    };
+    const NumericCase numericCases[] = {
+        {"001", "played as parameter 1"},
+        {"00", "played as parameter 0"},
+        {"07", "played as parameter 7"},
+        {"00000000001", "played as parameter 1"},
+    };
+    for (const auto& tc : numericCases) {
+        SQLite::Statement ins(
+            f.db(),
+            "INSERT OR REPLACE INTO automation_lanes(id, owner_kind, owner_id, param_ref, value_domain) "
+            "VALUES (20, 'device', 1, ?, 'normalized')");
+        ins.bind(1, tc.ref);
+        ins.exec();
+        const auto rep = checkProject(*f.store);
+        const bool caught = std::any_of(rep.findings.begin(), rep.findings.end(), [&](const Finding& finding) {
+            return finding.severity == Severity::Warning && finding.code == "automation.paramRef" &&
+                   finding.where == "automation_lanes#20.param_ref" &&
+                   finding.detail.find(tc.playedAs) != std::string::npos;
+        });
+        check(caught && rep.clean() && rep.warnings > 0,
+              std::string("warns on numeric non-canonical device param_ref '") + tc.ref + "': " + describe(rep));
+    }
+
+    for (const char* bad : {"+1", "-1", " 1", "4294967296", "cutoff", ""}) {
         SQLite::Statement ins(
             f.db(),
             "INSERT OR REPLACE INTO automation_lanes(id, owner_kind, owner_id, param_ref, value_domain) "
@@ -479,15 +506,18 @@ void testDeviceAutomationParamRef() {
         ins.exec();
         const auto rep = checkProject(*f.store);
         const bool caught = std::any_of(rep.findings.begin(), rep.findings.end(), [](const Finding& finding) {
-            return finding.severity == Severity::Error && finding.code == "automation.paramRef" &&
-                   finding.where == "automation_lanes#20.param_ref";
+            return finding.severity == Severity::Warning && finding.code == "automation.paramRef" &&
+                   finding.where == "automation_lanes#20.param_ref" &&
+                   finding.detail.find("not played") != std::string::npos;
         });
-        check(caught && !rep.clean(),
-              std::string("rejects non-canonical or invalid device param_ref '") + bad + "': " + describe(rep));
+        check(caught && rep.clean() && rep.warnings > 0,
+              std::string("warns on non-numeric or out-of-range device param_ref '") + bad + "': " + describe(rep));
     }
 
     f.db().exec("DELETE FROM automation_lanes WHERE id = 20");
-    check(checkProject(*f.store).clean(), "clean again once the offending lane is removed");
+    const auto restoredRep = checkProject(*f.store);
+    check(restoredRep.clean() && restoredRep.warnings == 0,
+          "clean with zero warnings once the offending lane is removed");
 }
 
 }  // namespace

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/param_automation.hpp"
 
+#include "adi/device_param_ref.hpp"
+
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 namespace adi::engine {
 
@@ -87,20 +88,6 @@ void DeviceAutomation::emitAtInput(EventList& out, std::int32_t frames, std::int
 
 // ---------------------------------------------------------------------------
 
-namespace {
-bool parseParamId(const std::string& text, std::uint32_t& out) {
-    if (text.empty() || text.size() > 10) return false;
-    std::uint64_t v = 0;
-    for (const char c : text) {
-        if (c < '0' || c > '9') return false;
-        v = v * 10 + static_cast<std::uint64_t>(c - '0');
-    }
-    if (v > std::numeric_limits<std::uint32_t>::max()) return false;
-    out = static_cast<std::uint32_t>(v);
-    return true;
-}
-}  // namespace
-
 std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<const AutomationProgram> program,
                                                               const std::set<std::int64_t>& overridden,
                                                               const Transport& transport, double sampleRate) {
@@ -117,7 +104,7 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
             continue;
         }
         std::uint32_t paramId = 0;
-        if (!parseParamId(lane.paramRef, paramId)) {
+        if (!parseDeviceParamRef(lane.paramRef, paramId)) {
             out->problems.push_back(who + ": param_ref '" + lane.paramRef +
                                     "' is not a plug-in parameter id; not played");
             continue;

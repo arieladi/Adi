@@ -595,10 +595,14 @@ meaningless, while `real` survives. Where both are knowable, writers SHOULD stor
 `real` and let the runtime map.
 
 **A device lane** (`owner_kind = 'device'`, ADR-0165) names its parameter in
-`param_ref` by the plug-in's numeric id, in decimal: a VST3 `ParamID` or a
-CLAP id. The reference runtime plays `normalized` device lanes today. A `real`
-device lane is kept and reported until the plug-in's mapping is available to
-the engine. A track lane's `param_ref` is a strip parameter (§6.9).
+`param_ref` by the plug-in's numeric id (a VST3 `ParamID`, a CLAP id, or a
+built-in's id) in canonical unsigned decimal: digits only, no sign, no leading
+zero (`"0"` allowed), at most `4294967295`. Writers MUST write the canonical
+form; a reader plays a numeric non-canonical ref (such as `"001"`) as its
+numeric value and reports it. The reference runtime plays `normalized` device
+lanes today. A `real` device lane is kept and reported until the plug-in's
+mapping is available to the engine. A track lane's `param_ref` is a strip
+parameter (§6.9).
 
 ### 6.4 Audio clips and warping
 

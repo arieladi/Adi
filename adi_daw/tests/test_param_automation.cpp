@@ -304,14 +304,16 @@ void testBinding() {
     }
     {
         // DF-E53: laneFor is keyed on the parsed canonical id so "001" is found by "1".
-        Transport t;
-        const auto p = compileAutomation(laneModel({{0, 0.5}}, 48000.0, "001"), 48000.0);
-        const auto b = bindDeviceAutomation(p, {}, t, 48000.0);
-        check(b->problems.empty() && b->byDevice.count(1) == 1 && b->byDevice.at(1)->laneCount() == 1,
-              "a legacy non-canonical '001' lane still binds");
-        check(b->laneFor.count({1, "1"}) == 1 && b->laneFor.at({1, "1"}) == 1 &&
-                  b->laneFor.count({1, "001"}) == 0,
-              "laneFor keys a legacy '001' lane under canonical '1'");
+        for (const char* legacy : {"001", "00000000001"}) {
+            Transport t;
+            const auto p = compileAutomation(laneModel({{0, 0.5}}, 48000.0, legacy), 48000.0);
+            const auto b = bindDeviceAutomation(p, {}, t, 48000.0);
+            check(b->problems.empty() && b->byDevice.count(1) == 1 && b->byDevice.at(1)->laneCount() == 1,
+                  std::string("a legacy non-canonical '") + legacy + "' lane still binds");
+            check(b->laneFor.count({1, "1"}) == 1 && b->laneFor.at({1, "1"}) == 1 &&
+                      b->laneFor.count({1, legacy}) == 0,
+                  std::string("laneFor keys a legacy '") + legacy + "' lane under canonical '1'");
+        }
     }
     {
         // DF-E53: two lanes "001" and "1" collide on the same parsed parameter id.
