@@ -371,14 +371,16 @@ void eachBuiltinAlone(std::int32_t frames, double seconds) {
     const auto blocks = static_cast<int>(seconds * kRate / frames);
     adi::test::TempDirectory samples("builtin_realtime", "samples");
     // Every available entry, with a canvas or native only (the Sampler has no
-    // canvas: a found gap, it was skipped).
-    std::size_t expected = 0, measured = 0;
+    // canvas: a found gap, it was skipped). The count expected is the
+    // catalogue's, taken apart from the loop, so a skip anywhere in it shows.
+    const auto expected = static_cast<std::size_t>(std::count_if(
+        builtinCatalog().begin(), builtinCatalog().end(), [](const BuiltinInfo& info) { return info.available; }));
+    std::size_t measured = 0;
     bool sampler = false;
     for (const auto& info : builtinCatalog()) {
         if (!info.available) {
             continue;
         }
-        ++expected;
         // Twice, each time a fresh device on the same input, so a stall that
         // recurs can be told from the machine's own (see Stats::stall).
         std::array<std::vector<double>, 2> runs;
@@ -413,7 +415,24 @@ void eachBuiltinAlone(std::int32_t frames, double seconds) {
     check(measured == expected && expected > 0, "at " + std::to_string(frames) + " frames every available built-in is "
                                                 "measured (" + std::to_string(measured) + " of " +
                                                     std::to_string(expected) + ")");
-    check(sampler, "at " + std::to_string(frames) + " frames the Sampler, native only, with its 32 slots, is measured");
+    // Its 32 slots: runAlone loads every sample role the device declares or
+    // fails, so the Sampler measured had 32 samples in it.
+    std::size_t slots = 0;
+    {
+        const auto ref = referenceFor("org.adidaw.builtin.sampler");
+        engine::DeviceRequest request;
+        request.ref = &ref;
+        request.maxFrames = frames;
+        std::string error;
+        if (auto device = device::makeBuiltinDevice(request, error)) {
+            for (const auto& role : device->stateRoles()) {
+                slots += role.rfind("sample:", 0) == 0 ? 1u : 0u;
+            }
+        }
+    }
+    check(sampler && slots == 32, "at " + std::to_string(frames) +
+                                      " frames the Sampler, native only, with its 32 slots, is measured (" +
+                                      std::to_string(slots) + " slots)");
 }
 
 // --- Part 2: WTS-01's project ---------------------------------------------------
