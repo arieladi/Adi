@@ -11,9 +11,18 @@ PitchDetector::PitchDetector() { prepare(48000); }
 void PitchDetector::prepare(double sampleRate) noexcept {
     rate_ = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
     // Half the window holds the longest period, with room to walk past it.
-    std::size_t size = 1024;
-    while (size / 2 < static_cast<std::size_t>(std::ceil(rate_ / kLowestHz)) + 8) {
+    // A rate no host sends (a window past 2^26 samples) leaves the detector
+    // inert rather than doubling past what a size_t holds.
+    const double need = std::ceil(rate_ / kLowestHz) + 8;
+    std::size_t size = need <= 67108864.0 ? 1024 : 0;
+    while (size != 0 && static_cast<double>(size / 2) < need) {
         size *= 2;
+    }
+    if (size == 0) {
+        fft_.reset();
+        size_ = 0;
+        reset();
+        return;
     }
     // A transform PFFFT cannot plan, or memory that cannot be had, leaves
     // the detector inert (no reading): never a throw out of a host's DSP
@@ -85,6 +94,7 @@ double PitchDetector::difference(const float* w, std::size_t lag, std::size_t le
 bool PitchDetector::analyse(const float* window, double& hz, double& clarity) noexcept {
     hz = 0;
     clarity = 0;
+    work_ = 0;
     if (window == nullptr || size_ == 0) {
         return false;
     }
@@ -152,10 +162,19 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
     // half the window. Each pass's error is small enough that m x error stays
     // well inside half a period, so the walk lands in the dip of the m-th
     // multiple and not a neighbour's; the last pass divides its error by m.
+    //
+    // Its cost is bounded, as it runs on the audio thread: at most kPasses
+    // passes of at most kSteps steps. A walk that leaves the coarse dip (a
+    // window of silence then a tone drives it toward the shortest lags) ends
+    // the reading: the window holds no single period.
     const std::size_t length = size_ - half - 2;
+    const auto diff = [&](std::size_t lag) {
+        ++work_;
+        return difference(window, lag, length);
+    };
     double period = static_cast<double>(tau);
     std::size_t multiple = 0;
-    while (true) {
+    for (int pass = 0; pass < kPasses; ++pass) {
         const auto fits = static_cast<std::size_t>(static_cast<double>(half - 2) / period);
         const std::size_t next = multiple == 0 ? 1 : std::min(fits, multiple * 4);
         if (next <= multiple) {
@@ -164,10 +183,9 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
         multiple = next;
         auto at = static_cast<std::size_t>(std::lround(static_cast<double>(multiple) * period));
         at = std::clamp<std::size_t>(at, 2, half - 2);
-        double here = difference(window, at, length);
-        const auto steps = static_cast<std::size_t>(period) + 2;
-        for (std::size_t step = 0; step < steps; ++step) {
-            const double left = difference(window, at - 1, length), right = difference(window, at + 1, length);
+        double here = diff(at);
+        for (std::size_t step = 0; step < kSteps; ++step) {
+            const double left = diff(at - 1), right = diff(at + 1);
             if (left < here && at - 1 >= 2) {
                 --at;
                 here = left;
@@ -178,10 +196,13 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
                 break;
             }
         }
-        const double a = difference(window, at - 1, length), c = difference(window, at + 1, length);
+        const double a = diff(at - 1), c = diff(at + 1);
         const double curve = a - 2 * here + c;
         const double offset = curve > 0 ? std::clamp(0.5 * (a - c) / curve, -0.5, 0.5) : 0.0;
         period = (static_cast<double>(at) + offset) / static_cast<double>(multiple);
+        if (!(std::abs(period - static_cast<double>(tau)) < 1.5)) {
+            return false;   // the walk left the coarse dip
+        }
     }
     hz = rate_ / period;
     clarity = std::clamp(1 - best, 0.0, 1.0);
