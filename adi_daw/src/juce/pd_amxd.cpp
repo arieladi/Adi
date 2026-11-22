@@ -67,7 +67,8 @@ std::string number(double v) {
 struct Box {
     std::string id, maxClass, text;
     std::vector<std::string> words;   ///< newobj text split
-    double x = 0, y = 0;
+    double x = 0, y = 0, width = 0;
+    int inlets = 0;
     std::vector<bool> signalOutlet;
     json raw;
     /// Why the box's #-arguments could not be replaced; empty when they were.
@@ -145,6 +146,8 @@ public:
                 if (b.contains("patching_rect") && b["patching_rect"].is_array() &&
                     b["patching_rect"].size() >= 2) {
                     box.x = b["patching_rect"][0].get<double>();
+                    if (b["patching_rect"].size() >= 3 && b["patching_rect"][2].is_number())
+                        box.width = b["patching_rect"][2].get<double>();
                     box.y = b["patching_rect"][1].get<double>();
                 }
                 if (b.contains("outlettype") && b["outlettype"].is_array())
@@ -152,6 +155,7 @@ public:
                         const std::string s = t.is_string() ? t.get<std::string>() : "";
                         box.signalOutlet.push_back(s == "signal" || s == "multichannelsignal");
                     }
+                if (b.contains("numinlets") && b["numinlets"].is_number()) box.inlets = b["numinlets"].get<int>();
                 if (box.maxClass == "newobj") box.words = words(box.text);
                 index_[box.id] = boxes_.size();
                 boxes_.push_back(std::move(box));
@@ -230,12 +234,20 @@ public:
                 }
                 continue;
             }
-            // Max: right to left by destination x; equal x, lower box first.
+            // Max: right to left by the x of the destination INLET (its box's
+            // left edge plus its place along the box: inlets are spread evenly
+            // over its width), so one outlet into two inlets of one box feeds
+            // the right inlet first; equal x, lower box first.
+            const auto inletX = [&](const Line* l) {
+                const Box& d = boxes_[index_.at(l->dst)];
+                if (d.inlets < 2) return d.x + static_cast<double>(l->inlet);
+                return d.x + std::max(d.width - 7.0, 0.0) * static_cast<double>(l->inlet) / static_cast<double>(d.inlets - 1) +
+                       1e-3 * static_cast<double>(l->inlet);
+            };
             std::sort(ls.begin(), ls.end(), [&](const Line* a, const Line* b) {
-                const Box& da = boxes_[index_.at(a->dst)];
-                const Box& db = boxes_[index_.at(b->dst)];
-                if (da.x != db.x) return da.x > db.x;
-                return da.y > db.y;
+                const double xa = inletX(a), xb = inletX(b);
+                if (xa != xb) return xa > xb;
+                return boxes_[index_.at(a->dst)].y > boxes_[index_.at(b->dst)].y;
             });
             std::string t = "t";
             for (std::size_t i = 0; i < ls.size(); ++i) t += " a";
@@ -378,18 +390,8 @@ private:
             if (anyConnection(b)) refuse(b, mc, "a decoration with connections");
             return;
         }
-        if (mc == "message") return single(b, "#X msg " + at(b.x, b.y) + " " + pdEscape(b.text));
-        if (mc == "flonum") return single(b, "#X floatatom " + at(b.x, b.y) + " 5 0 0 0 - - - 0");
-        if (mc == "number") {
-            // Max's number box holds an int: what arrives is truncated first.
-            Fragment f;
-            f.records = {"#X obj " + at(b.x, b.y - 20) + " i", "#X floatatom " + at(b.x, b.y) + " 5 0 0 0 - - - 0"};
-            f.internal = {{0, 0, 1, 0}};
-            f.inlets = {{0, 0}};
-            f.outlets = {{1, 0}};
-            frags_[b.id] = std::move(f);
-            return;
-        }
+        if (mc == "message") return message(b);
+        if (mc == "flonum" || mc == "number") return numberBox(b, mc == "number");
         if (mc == "inlet" || mc == "outlet") {
             const bool signal = mc == "inlet" ? (!b.signalOutlet.empty() && b.signalOutlet[0]) : fedSignal(b, 0);
             return obj(b, mc + (signal ? "~" : ""));
@@ -418,32 +420,39 @@ private:
             // no argument; otherwise the argument form, whose right inlet
             // takes floats as Max's does.
             if (fedSignal(b, 1)) return obj(b, cls);
-            return obj(b, cls + " " + (args.empty() ? std::string("0") : args[0]));
+            // With no argument Max's [/~] divides by 1 (its reference); the others start at 0.
+            return obj(b, cls + " " + (args.empty() ? std::string(cls == "/~" ? "1" : "0") : args[0]));
         }
         if (cls == "cycle~" || cls == "phasor~" || cls == "sig~") {
             if (args.size() > 1 || !allNumbers) return refuse(b, cls, "only a numeric frequency is translated");
             if (cls == "cycle~" && connected(b, false, 1)) return cyclePhase(b, args);
+            if (cls == "phasor~" && fedSignal(b, 1))
+                return refuse(b, cls, "a signal into its right inlet resets the phase in Max (hard sync); Pd's is a float inlet");
             return obj(b, (cls == "cycle~" ? std::string("osc~") : cls) + (args.empty() ? "" : " " + args[0]));
         }
         if (cls == "plugin~" || cls == "plugout~") {
             if (depth_ > 0) return refuse(b, cls, "audio ports belong in the device's own patcher");
-            if (!allNumbers) return refuse(b, cls, "channel numbers only");
-            std::string t = cls == "plugin~" ? "adc~" : "dac~";
-            if (args.empty()) t += " 1 2";
-            for (const auto& a : args) t += " " + a;
-            return obj(b, t);
+            // Max keeps channel arguments only "as a courtesy to Max 4 users":
+            // they do not route (its reference). Left is 1, right is 2.
+            if (!(args.empty() || (args.size() == 2 && args[0] == "1" && args[1] == "2")))
+                return refuse(b, cls, "Max ignores its channel arguments (kept for Max 4 plug-ins); how many ports it then has is not read");
+            return obj(b, std::string(cls == "plugin~" ? "adc~" : "dac~") + " 1 2");
         }
-        if (cls == "loadbang") return obj(b, "loadbang");
+        if (cls == "loadbang") return loadBang(b);
         if (cls == "live.thisdevice") {
+            // Its left outlet also bangs in Max when a preset is loaded or the
+            // device saved; ADI has neither event for a device. Its bang
+            // comes in Pd's loadbang order, not once the device is complete.
             if (connected(b, true, 1) || connected(b, true, 2))
                 return refuse(b, cls, "only its load bang (left outlet) is translated");
-            return obj(b, "loadbang");
+            return loadBang(b);
         }
         if (cls == "metro") {
             if (args.size() != 1 || !isNumber(args[0])) return refuse(b, cls, "only a time in ms is translated");
             return obj(b, "metro " + args[0]);
         }
-        if (cls == "t" || cls == "trigger") return trigger(b, args);
+        // With no arguments Max's [t] has two int outlets (Pd's, two bangs).
+        if (cls == "t" || cls == "trigger") return trigger(b, args.empty() ? std::vector<std::string>{"i", "i"} : args);
         if (cls == "line~") return line(b, args);
         if (cls == "prepend" || cls == "append") {
             if (args.empty()) return refuse(b, cls, "nothing to add");
@@ -631,23 +640,133 @@ private:
         frags_[b.id] = std::move(f);
     }
 
-    /// Max [gate n init]: the left inlet picks an outlet (0 closes it), the
-    /// right inlet's message goes out there. Pd: the choice is the prefix a
-    /// [list prepend] puts on the message, and [route 1 .. n] sends it on.
+    /// Max [gate n init]: the left inlet picks an outlet (0 closes it; above n
+    /// the rightmost, below 0 the leftmost, as its reference says), the right
+    /// inlet's message goes out there, and a bang in the left inlet reports
+    /// the open outlet out of the left one. Pd: the clamped choice is the
+    /// prefix a [list prepend] puts on the message, [route 1 .. n] sends it
+    /// on, and an [f] holds it for the report.
     void gate(const Box& b, const std::vector<std::string>& args) {
         if (args.size() > 2 || !std::all_of(args.begin(), args.end(), isIntLiteral))
             return refuse(b, "gate", "outlet count and initial choice, as ints");
         const int n = args.empty() ? 1 : std::atoi(args[0].c_str());
-        const std::string init = args.size() > 1 ? args[1] : "0";
         if (n < 1 || n > 64) return refuse(b, "gate", "between 1 and 64 outlets");
+        const int given = args.size() > 1 ? std::atoi(args[1].c_str()) : 0;
+        const std::string init = std::to_string(given < 0 ? 1 : std::min(given, n));
         std::string routes = "route";
         for (int k = 1; k <= n; ++k) routes += " " + std::to_string(k);
         Fragment f;
-        f.records = {"#X obj " + at(b.x, b.y - 20) + " i", "#X obj " + at(b.x, b.y) + " list prepend " + init,
-                     "#X obj " + at(b.x, b.y + 20) + " " + routes};
-        f.internal = {{0, 0, 1, 1}, {1, 0, 2, 0}};
-        f.inlets = {{0, 0}, {1, 0}};
-        for (int k = 0; k < n; ++k) f.outlets.emplace_back(2, k);
+        f.records = {"#X obj " + at(b.x, b.y - 80) + " route bang",           // 0
+                     "#X obj " + at(b.x + 40, b.y - 60) + " i",               // 1
+                     "#X obj " + at(b.x + 40, b.y - 40) + " moses 0",         // 2
+                     "#X msg " + at(b.x + 40, b.y - 20) + " 1",               // 3
+                     "#X obj " + at(b.x + 90, b.y - 20) + " min " + std::to_string(n),   // 4
+                     "#X obj " + at(b.x + 40, b.y) + " t f f",                // 5
+                     "#X obj " + at(b.x, b.y + 20) + " list prepend " + init, // 6
+                     "#X obj " + at(b.x, b.y + 40) + " " + routes,            // 7
+                     "#X obj " + at(b.x + 140, b.y) + " f " + init,           // 8 the report
+                     "#X obj " + at(b.x, b.y + 60) + " t a"};                 // 9 the left outlet
+        f.internal = {{0, 0, 8, 0}, {0, 1, 1, 0}, {1, 0, 2, 0}, {2, 0, 3, 0}, {2, 1, 4, 0}, {3, 0, 5, 0},
+                      {4, 0, 5, 0}, {5, 1, 8, 1}, {5, 0, 6, 1}, {6, 0, 7, 0}, {7, 0, 9, 0}, {8, 0, 9, 0}};
+        f.inlets = {{0, 0}, {6, 0}};
+        f.outlets.emplace_back(9, 0);
+        for (int k = 1; k < n; ++k) f.outlets.emplace_back(7, k);
+        frags_[b.id] = std::move(f);
+    }
+
+    /// Max's [loadbang] (and live.thisdevice) also bangs when banged.
+    void loadBang(const Box& b) {
+        if (!connected(b, false, 0)) return obj(b, "loadbang");
+        Fragment f;
+        f.records = {"#X obj " + at(b.x, b.y) + " loadbang", "#X obj " + at(b.x, b.y + 20) + " t b"};
+        f.internal = {{0, 0, 1, 0}};
+        f.inlets = {{1, 0}};
+        f.outlets = {{1, 0}};
+        frags_[b.id] = std::move(f);
+    }
+
+    /// A Max message box. Its "---" names are the device's own, as in [s]
+    /// and [r]; a quoted run is one symbol in Max, which a Pd message cannot
+    /// hold; its right inlet sets its contents without output (Pd's "set").
+    /// Pd does not expand $0 in a message's ";" receiver, so a message that
+    /// sends to a device-local name has each ";" part as its own message into
+    /// an [s $0-name], all fired in Max's order (the outlet's part first)
+    /// from one [t a ...]; a "---" name anywhere else in it is refused.
+    void message(const Box& b) {
+        if (b.text.find('"') != std::string::npos) return refuse(b, "message", "quoted symbols are not translated yet");
+        std::vector<std::string> parts{""};
+        for (const char c : b.text) {
+            if (c == ';') parts.emplace_back();
+            else parts.back() += c;
+        }
+        bool local = false;
+        for (std::size_t k = 1; k < parts.size(); ++k) {
+            const auto w = words(parts[k]);
+            local = local || (!w.empty() && w[0].rfind("---", 0) == 0);
+        }
+        for (std::size_t k = 0; k < parts.size(); ++k) {
+            auto w = words(parts[k]);
+            for (std::size_t j = k == 0 ? 0 : 1; j < w.size(); ++j)
+                if (w[j].find("---") != std::string::npos)
+                    return refuse(b, "message", "a device-local (---) name inside a message is not translated");
+        }
+        if (!local) {
+            const std::string record = "#X msg " + at(b.x, b.y) + " " + pdEscape(b.text);
+            if (!connected(b, false, 1)) return single(b, record);
+            Fragment f;
+            f.records = {record, "#X obj " + at(b.x + 60, b.y - 40) + " list prepend set",
+                         "#X obj " + at(b.x + 60, b.y - 20) + " list trim"};
+            f.internal = {{1, 0, 2, 0}, {2, 0, 0, 0}};
+            f.inlets = {{0, 0}, {1, 0}};
+            f.outlets = {{0, 0}};
+            frags_[b.id] = std::move(f);
+            return;
+        }
+        if (connected(b, false, 1)) return refuse(b, "message", "setting a message that sends to a device-local name is not translated");
+        Fragment f;
+        const int n = static_cast<int>(parts.size());
+        std::string t = "t";
+        for (int k = 0; k < n; ++k) t += " a";
+        f.records.push_back("#X obj " + at(b.x, b.y - 30) + " " + t);
+        for (int k = 0; k < n; ++k) {
+            const auto w = words(parts[static_cast<std::size_t>(k)]);
+            std::string body;
+            for (std::size_t j = k == 0 ? 0 : 1; j < w.size(); ++j) body += (body.empty() ? "" : " ") + w[j];
+            const int msg = static_cast<int>(f.records.size());
+            f.records.push_back("#X msg " + at(b.x + 80.0 * k, b.y) + (body.empty() ? "" : " " + pdEscape(body)));
+            f.internal.push_back({0, n - 1 - k, msg, 0});   // [t] fires right to left: the first part first
+            if (k > 0 && !w.empty()) {
+                const std::string dest = w[0].rfind("---", 0) == 0 ? "\\$0-" + w[0].substr(3) : w[0];
+                f.records.push_back("#X obj " + at(b.x + 80.0 * k, b.y + 20) + " s " + dest);
+                f.internal.push_back({msg, 0, msg + 1, 0});
+            }
+        }
+        f.inlets = {{0, 0}};
+        f.outlets = {{1, 0}};
+        frags_[b.id] = std::move(f);
+    }
+
+    /// Max's number box (an int unless its format is 6, Decimal
+    /// Floating-Point) and flonum, limited to their minimum and maximum
+    /// (what they output, as their reference says).
+    void numberBox(const Box& b, bool intBox) {
+        const auto attr = [&](const char* key) -> std::optional<double> {
+            if (b.raw.contains(key) && b.raw[key].is_number()) return b.raw[key].get<double>();
+            return std::nullopt;
+        };
+        const int format = static_cast<int>(attr("format").value_or(0));
+        if (intBox && (format == 7 || format == 8)) return refuse(b, b.maxClass, "the List and Text formats are not translated");
+        const bool truncate = intBox && format != 6;
+        const auto lo = attr("minimum"), hi = attr("maximum");
+        Fragment f;
+        if (truncate) f.records.push_back("#X obj " + at(b.x, b.y - 40) + " i");
+        if (lo || hi)
+            f.records.push_back("#X obj " + at(b.x, b.y - 20) + " clip " + number(lo.value_or(-1e37)) + " " + number(hi.value_or(1e37)));
+        const int atom = static_cast<int>(f.records.size());
+        f.records.push_back("#X floatatom " + at(b.x, b.y) + " 5 0 0 0 - - - 0");
+        for (int k = 0; k < atom; ++k) f.internal.push_back({k, 0, k + 1, 0});
+        f.inlets = {{0, 0}};
+        f.outlets = {{atom, 0}};
         frags_[b.id] = std::move(f);
     }
 
@@ -659,18 +778,22 @@ private:
             return refuse(b, "selector~", "input count and initial choice, as ints");
         if (fedSignal(b, 0)) return refuse(b, "selector~", "a signal choosing the input is not translated yet");
         const int n = args.empty() ? 1 : std::atoi(args[0].c_str());
-        const int init = args.size() > 1 ? std::atoi(args[1].c_str()) : 0;
         if (n < 1 || n > 64) return refuse(b, "selector~", "between 1 and 64 inputs");
+        // A choice above n is the rightmost input (its reference); below 0,
+        // silence as 0 is (an assumption, read with reading 14).
+        const int init = std::clamp(args.size() > 1 ? std::atoi(args[1].c_str()) : 0, 0, n);
         Fragment f;
-        f.records.push_back("#X obj " + at(b.x, b.y - 40) + " i");   // 0: the choice
+        f.records.push_back("#X obj " + at(b.x, b.y - 60) + " i");   // 0: the choice
         f.inlets.emplace_back(0, 0);
-        const int sum = 1;
+        f.records.push_back("#X obj " + at(b.x, b.y - 40) + " clip 0 " + std::to_string(n));   // 1
+        f.internal.push_back({0, 0, 1, 0});
+        const int sum = 2;
         f.records.push_back("#X obj " + at(b.x, b.y + 40) + " *~ 1");
         for (int k = 1; k <= n; ++k) {
             const int eq = static_cast<int>(f.records.size());
             f.records.push_back("#X obj " + at(b.x + 50.0 * k, b.y - 20) + " == " + std::to_string(k));
             f.records.push_back("#X obj " + at(b.x + 50.0 * k, b.y) + " *~ " + (k == init ? "1" : "0"));
-            f.internal.push_back({0, 0, eq, 0});
+            f.internal.push_back({1, 0, eq, 0});
             f.internal.push_back({eq, 0, eq + 1, 1});
             f.internal.push_back({eq + 1, 0, sum, 0});
             f.inlets.emplace_back(eq + 1, 0);
@@ -731,6 +854,13 @@ private:
             return refuse(b, "biquad~",
                           "Max smooths coefficient changes (its smooth attribute, on by default) in a way not yet "
                           "read; with @smooth 0 it translates");
+        if (!args.empty()) {
+            // Pd's biquad~ silences coefficients whose poles lie outside the
+            // unit circle; Max's runs away with them. Refused, not silenced.
+            const double fb1 = -std::strtod(args[3].c_str(), nullptr), fb2 = -std::strtod(args[4].c_str(), nullptr);
+            const bool stable = fb1 * fb1 + 4 * fb2 < 0 ? fb2 >= -1 : (fb2 <= 1 && fb1 <= 1 - fb2 && fb1 >= fb2 - 1);
+            if (!stable) return refuse(b, "biquad~", "unstable coefficients: Pd's biquad~ silences them, Max's runs away");
+        }
         const auto neg = [](const std::string& v) { return number(-std::strtod(v.c_str(), nullptr)); };
         const std::string init = args.empty() ? "" : " " + neg(args[3]) + " " + neg(args[4]) + " " + args[0] + " " +
                                                          args[1] + " " + args[2];
@@ -868,7 +998,8 @@ private:
     }
 
     void liveControl(const Box& b, bool toggle = false) {
-        if (connected(b, true, 1)) return refuse(b, b.maxClass, "only its value outlet is translated");
+        for (int o = 1; o < 4; ++o)
+            if (connected(b, true, o)) return refuse(b, b.maxClass, "only its value outlet is translated");
         for (int i = 0; i < 4; ++i)
             if (connected(b, false, i)) return refuse(b, b.maxClass, "setting it from the patch is not translated");
         json v = json::object();
@@ -882,6 +1013,8 @@ private:
             return def;
         };
         const int type = static_cast<int>(num("parameter_type", 0));
+        if (type != 2 && !toggle && num("parameter_steps", 0) >= 2)
+            return refuse(b, b.maxClass, "its Steps quantize the parameter, which [adi.param] does not yet");
         std::string name = v.value("parameter_longname", b.raw.value("varname", std::string("Parameter")));
         std::replace(name.begin(), name.end(), ' ', '_');
         double lo = num("parameter_mmin", 0.0), hi = num("parameter_mmax", 127.0);

@@ -825,6 +825,140 @@ void testCyclePhaseIsAnOffset() {
     }
 }
 
+/// Prints from a translated control patch, sorted (for checks where the
+/// order between prints is not the point).
+std::vector<std::string> sortedPrints(const std::string& json) {
+    const auto t = translateMaxPatcher(json, AmxdKind::AudioEffect);
+    auto got = t.ok() ? printed(t.pdPatch) : std::vector<std::string>{"refused: " + (t.refused.empty() ? t.error : t.refused[0].reason)};
+    return got;
+}
+std::string shownAll(const std::vector<std::string>& v) {
+    std::string s;
+    for (const auto& g : v) s += (s.empty() ? "" : " | ") + g;
+    return s;
+}
+bool refusedFor(const std::string& json, const std::string& why) {
+    const auto t = translateMaxPatcher(json, AmxdKind::AudioEffect);
+    return !t.ok() && !t.refused.empty() && t.refused[0].reason.find(why) != std::string::npos;
+}
+
+void testStepNine() {
+    section("DEV-16 step 9 -- the audit against Max's reference pages");
+    // A bare [/~] divides by 1.
+    {
+        const std::string json = patcher({box("obj-1", "plugin~", 20, 20, kSig2), box("obj-2", "/~", 20, 80, kSig),
+                                          box("obj-3", "/~", 120, 80, kSig), box("obj-4", "plugout~", 20, 140, "")},
+                                         {line("obj-1", 0, "obj-2", 0), line("obj-1", 1, "obj-3", 0), line("obj-2", 0, "obj-4", 0),
+                                          line("obj-3", 0, "obj-4", 1)});
+        float gain = 0;
+        int latency = 0;
+        std::string error;
+        const auto t = translateMaxPatcher(json, AmxdKind::AudioEffect);
+        const auto residue = t.ok() ? render(t.pdPatch, gain, latency, error) : std::vector<float>{};
+        check(t.ok() && !residue.empty() && std::fabs(gain - 1.0f) < 1e-6, "a bare [/~] passes its input (x " + std::to_string(gain) + ")" + error);
+    }
+    // [selector~ 2 1] told 3 plays input 2 (sig~ 0.5), told -1 nothing.
+    for (const auto& [choice, want] : std::vector<std::pair<std::string, double>>{{"3", 0.5}, {"-1", 0.0}, {"1", 0.25}}) {
+        const std::string json = patcher(
+            {box("obj-1", "loadbang", 200, 10, R"("bang")"), box("obj-2", choice, 200, 40, R"("")", "message"),
+             box("obj-3", "sig~ 0.25", 20, 40, kSig), box("obj-4", "sig~ 0.5", 100, 40, kSig),
+             box("obj-5", "selector~ 2 1", 20, 80, kSig), box("obj-6", "plugout~", 20, 140, "")},
+            {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-5", 0), line("obj-3", 0, "obj-5", 1), line("obj-4", 0, "obj-5", 2),
+             line("obj-5", 0, "obj-6", 0), line("obj-5", 0, "obj-6", 1)});
+        const auto t = translateMaxPatcher(json, AmxdKind::AudioEffect);
+        int latency = 0;
+        std::string error;
+        const auto out = t.ok() ? renderOut(t.pdPatch, 1024, latency, error) : std::vector<float>{};
+        const double got = out.empty() ? -9 : out.back();
+        check(std::fabs(got - want) < 1e-6, "[selector~ 2 1] told " + choice + ": " + std::to_string(got) + " (Max: " + std::to_string(want) + ")" + error);
+    }
+    // [gate 2] told 3, then 5: 5 out of outlet 2 (the rightmost). The
+    // loadbang feeds the right-hand message first (Max's order).
+    const auto gated = [](const std::string& choice) {
+        return patcher({box("obj-1", "loadbang", 100, 10, R"("bang")"), box("obj-2", choice, 200, 40, R"("")", "message"),
+                        box("obj-3", "5", 10, 40, R"("")", "message"), box("obj-4", "gate 2", 200, 80, R"("","")"),
+                        box("obj-5", "print Y", 150, 140, ""), box("obj-6", "print X", 250, 140, "")},
+                       {line("obj-1", 0, "obj-2", 0), line("obj-1", 0, "obj-3", 0), line("obj-2", 0, "obj-4", 0),
+                        line("obj-3", 0, "obj-4", 1), line("obj-4", 0, "obj-5", 0), line("obj-4", 1, "obj-6", 0)});
+    };
+    check(sortedPrints(gated("3")) == std::vector<std::string>{"X: 5"}, "[gate 2] told 3: the rightmost outlet (" + shownAll(sortedPrints(gated("3"))) + ")");
+    // A bang into [gate 2 1]'s left inlet reports 1 out of the left outlet.
+    {
+        const std::string json = patcher({box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-4", "gate 2 1", 10, 80, R"("","")"),
+                                          box("obj-5", "print X", 10, 140, "")},
+                                         {line("obj-1", 0, "obj-4", 0), line("obj-4", 0, "obj-5", 0)});
+        check(sortedPrints(json) == std::vector<std::string>{"X: 1"}, "a bang into [gate 2 1] reports 1 (" + shownAll(sortedPrints(json)) + ")");
+    }
+    // A bare [t] sends the number out of both outlets.
+    check(sortedPrints(probe("5", "t", R"("int","int")", 2)) == std::vector<std::string>{"X: 5", "X: 5"},
+          "a bare [t] fed 5 sends 5 twice (" + shownAll(sortedPrints(probe("5", "t", R"("int","int")", 2))) + ")");
+    // One outlet into both inlets of [* ]: the right inlet first, 3 x 3 = 9,
+    // whatever order the patch lines are listed in.
+    {
+        const std::string json = patcher({box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "3", 10, 40, R"("")", "message"),
+                                          box("obj-3", "*", 10, 80, R"("int")", "newobj", R"(,"numinlets":2)"),
+                                          box("obj-4", "print X", 10, 140, "")},
+                                         {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0), line("obj-2", 0, "obj-3", 1),
+                                          line("obj-3", 0, "obj-4", 0)});
+        check(sortedPrints(json) == std::vector<std::string>{"X: 9"}, "[3( into both inlets of [*]: 9, the right inlet first (" + shownAll(sortedPrints(json)) + ")");
+    }
+    // [loadbang] banged in its inlet bangs again.
+    {
+        const std::string json = patcher({box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "loadbang", 10, 60, R"("bang")"),
+                                          box("obj-3", "print X", 10, 120, "")},
+                                         {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0)});
+        check(sortedPrints(json) == std::vector<std::string>{"X: bang", "X: bang"}, "a [loadbang] banged in its inlet bangs again (" + shownAll(sortedPrints(json)) + ")");
+    }
+    // A message box's ---name reaches [r ---name].
+    {
+        const std::string json = patcher({box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "; ---v 7", 10, 40, R"("")", "message"),
+                                          box("obj-3", "r ---v", 200, 80, R"("")"), box("obj-4", "print X", 200, 140, "")},
+                                         {line("obj-1", 0, "obj-2", 0), line("obj-3", 0, "obj-4", 0)});
+        check(sortedPrints(json) == std::vector<std::string>{"X: 7"}, "[; ---v 7( reaches [r ---v] (" + shownAll(sortedPrints(json)) + ")");
+    }
+    // A message box's right inlet sets it: 7 set, then a bang sends 7.
+    {
+        const std::string json = patcher({box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "7", 200, 40, R"("")", "message"),
+                                          box("obj-3", "0", 10, 80, R"("")", "message"), box("obj-4", "print X", 10, 140, "")},
+                                         {line("obj-1", 0, "obj-2", 0), line("obj-1", 0, "obj-3", 0), line("obj-2", 0, "obj-3", 1),
+                                          line("obj-3", 0, "obj-4", 0)});
+        check(sortedPrints(json) == std::vector<std::string>{"X: 7"}, "7 into a message box's right inlet, then a bang: 7 (" + shownAll(sortedPrints(json)) + ")");
+    }
+    // Number boxes: a flonum from 0 to 1 fed 1.5 gives 1; a number box in
+    // Decimal Floating-Point (format 6) fed 0.75 gives 0.75.
+    {
+        std::string json = probe("1.5", "", R"("","bang")", 1);
+        const std::string from = R"("maxclass":"newobj","text":"")";
+        json.replace(json.find(from), from.size(), R"("maxclass":"flonum","minimum":0.0,"maximum":1.0,"text":"")");
+        check(sortedPrints(json) == std::vector<std::string>{"X: 1"}, "a flonum from 0 to 1 fed 1.5 gives 1 (" + shownAll(sortedPrints(json)) + ")");
+    }
+    {
+        std::string json = probe("0.75", "", R"("","bang")", 1);
+        const std::string from = R"("maxclass":"newobj","text":"")";
+        json.replace(json.find(from), from.size(), R"("maxclass":"number","format":6,"text":"")");
+        check(sortedPrints(json) == std::vector<std::string>{"X: 0.75"}, "a number box in format 6 fed 0.75 gives 0.75 (" + shownAll(sortedPrints(json)) + ")");
+    }
+    // Refused, with the reason.
+    check(refusedFor(patcher({box("obj-1", R"(\"my name\")", 10, 10, R"("")", "message")}, {}), "quoted"), "a quoted message is refused");
+    check(refusedFor(patcher({box("obj-1", "plugout~ 2 1", 10, 10, "")}, {}), "channel arguments"), "plugout~ 2 1 is refused (Max ignores the arguments)");
+    check(translateMaxPatcher(patcher({box("obj-1", "plugout~ 1 2", 10, 10, "")}, {}), AmxdKind::AudioEffect).ok(), "plugout~ 1 2 translates");
+    check(refusedFor(patcher({box("obj-1", "phasor~ 110", 10, 10, kSig), box("obj-2", "phasor~ 220", 10, 60, kSig)}, {line("obj-1", 0, "obj-2", 1)}),
+                     "hard sync"),
+          "a signal into [phasor~]'s right inlet is refused (hard sync)");
+    check(refusedFor(patcher({box("obj-1", "biquad~ 1 0 0 0 1.2", 10, 10, kSig)}, {}), "unstable"), "an unstable biquad~ is refused");
+    {
+        const std::string attrs = R"(,"saved_attribute_attributes":{"valueof":{"parameter_longname":"Steps","parameter_mmin":0.0,)"
+                                  R"("parameter_mmax":64.0,"parameter_type":0,"parameter_steps":4}})";
+        check(refusedFor(patcher({box("obj-1", "", 10, 10, R"("","float")", "live.dial", attrs)}, {}), "Steps"), "a live.dial with Steps is refused");
+        check(refusedFor(patcher({box("obj-1", "", 10, 10, R"("","","float")", "live.menu",
+                                      R"(,"saved_attribute_attributes":{"valueof":{"parameter_type":2,"parameter_enum":["a","b"]}})"),
+                                  box("obj-2", "print X", 10, 60, "")},
+                                 {line("obj-1", 2, "obj-2", 0)}),
+                         "value outlet"),
+              "live.menu's right outlet is refused");
+    }
+}
+
 void testTheOrderIsHeard() {
     section("DEV-16 -- and the right-to-left order is what Pd does");
     const auto t = translateMaxPatcher(
@@ -868,6 +1002,7 @@ int main() {
     testBpatchersPlay();
     testCyclePhaseIsAnOffset();
     testLineEnds();
+    testStepNine();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;

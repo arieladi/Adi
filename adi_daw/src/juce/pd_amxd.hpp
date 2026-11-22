@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The `.amxd` translator, steps 1 to 7 -- DEV-16 (ADR-0203 d8: an addition at P2).
+// The `.amxd` translator, steps 1 to 9 -- DEV-16 (ADR-0203 d8: an addition at P2).
 //
 // A Max for Live device file is a small chunked container -- `ampf` with the
 // device kind, `meta`, then `ptch` holding the Max patcher as JSON -- and the
@@ -40,6 +40,17 @@
 //     takes 2 as its divisor and truncates what it is fed, as [+ 1] does.
 //   * [cycle~]'S PHASE INLET (step 6) offsets the phase in Max and resets it
 //     in Pd's [osc~]: such a [cycle~] is [phasor~] -> [+~] -> [cos~].
+//   * Step 9, from an audit of the table against Max's reference pages: a
+//     bare [/~] divides by 1; a bare [t] has two int outlets; [gate] and
+//     [selector~] clamp a choice past their count; a bang into [gate]
+//     reports the open outlet; [loadbang] and live.thisdevice take a bang;
+//     plugin~/plugout~'s channel arguments do not route; a message box's
+//     "---" names are the device's, and its right inlet sets it; number
+//     boxes keep their minimum, maximum and float format; and the fan-out
+//     order follows the destination INLET's x, so one outlet into both
+//     inlets of a box feeds the right one first. Refused: quoted symbols in
+//     messages, a signal into [phasor~]'s right inlet (hard sync), unstable
+//     biquad~ arguments, live.* Steps and their outlets past the first.
 //   * BPATCHERS (step 5). One whose patcher is embedded becomes a [pd name]
 //     as a [p] does; Max replaces #1 to #9 in its boxes by its arguments and
 //     #0 by a name unique to the instance, and so does the translation (#0
