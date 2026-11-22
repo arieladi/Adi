@@ -139,7 +139,7 @@ void MpeRouter::configure(ExpressionRoute route, const ExpressionCaps& caps,
     reset();
 }
 
-void MpeRouter::reset() noexcept {
+void MpeRouter::resetLiveState() noexcept {
     notes_.fill(Note{});
     active_.fill(0);
     lastOn_.fill(0);
@@ -148,9 +148,46 @@ void MpeRouter::reset() noexcept {
     mcmPending_ = route_ == ExpressionRoute::MpeMidi;
 }
 
+void MpeRouter::reset() noexcept {
+    resetLiveState();
+    pendingCount_ = 0;
+}
+
+void MpeRouter::enqueuePendingOff(const Note& nt, double velocity) noexcept {
+    if (pendingCount_ >= kMaxNotes) return;
+    PendingNoteOff& p = pendingOffs_[static_cast<std::size_t>(pendingCount_++)];
+    p.channel = nt.channel;
+    p.key = nt.key;
+    p.id = nt.id;
+    p.velocity = velocity;
+}
+
+void MpeRouter::drainPendingOffs(std::int32_t frame, MpeOutList& out) noexcept {
+    int sent = 0;
+    while (sent < pendingCount_) {
+        const PendingNoteOff& p = pendingOffs_[static_cast<std::size_t>(sent)];
+        MpeOut o;
+        o.kind = MpeOut::Kind::NoteOff;
+        o.channel = p.channel;
+        o.key = p.key;
+        o.noteId = p.id;
+        o.value = p.velocity;
+        o.frame = frame;
+        if (!out.push(o)) break;
+        ++sent;
+    }
+    if (sent > 0) {
+        const int remaining = pendingCount_ - sent;
+        for (int i = 0; i < remaining; ++i)
+            pendingOffs_[static_cast<std::size_t>(i)] =
+                pendingOffs_[static_cast<std::size_t>(sent + i)];
+        pendingCount_ = remaining;
+    }
+}
+
 void MpeRouter::switchTo(ExpressionRoute route, std::int32_t frame, MpeOutList& out) noexcept {
     if (route == route_) return;
-    bool allEnded = true;
+    drainPendingOffs(frame, out);
     for (Note& nt : notes_) {
         if (!nt.used) continue;
         MpeOut o;
@@ -159,18 +196,10 @@ void MpeRouter::switchTo(ExpressionRoute route, std::int32_t frame, MpeOutList& 
         o.key = nt.key;
         o.noteId = nt.id;
         o.frame = frame;
-        if (!out.push(o)) {
-            allEnded = false;
-            continue;
-        }
-        const auto c = static_cast<std::size_t>(nt.channel);
-        if (active_[c] > 0) --active_[c];
-        if (active_[c] == 0) lastOff_[c] = ++clock_;
-        nt.used = false;
+        if (!out.push(o)) enqueuePendingOff(nt, 0.0);
     }
-    if (!allEnded) return;
     route_ = route;
-    reset();
+    resetLiveState();
 }
 
 int MpeRouter::liveNotes() const noexcept {
@@ -268,7 +297,8 @@ void MpeRouter::sendMcm(std::int32_t frame, MpeOutList& out) noexcept {
 
 void MpeRouter::route(const Event* events, std::int32_t n, std::int32_t segmentStart,
                       MpeOutList& out) noexcept {
-    if (mcmPending_) {
+    drainPendingOffs(segmentStart, out);
+    if (pendingCount_ == 0 && mcmPending_) {
         const std::int64_t droppedBefore = out.dropped();
         sendMcm(segmentStart, out);
         if (out.dropped() == droppedBefore) mcmPending_ = false;
@@ -378,7 +408,7 @@ void MpeRouter::noteOff(const Event& e, MpeOutList& out) noexcept {
     o.noteId = nt->id;
     o.value = clampUnit(e.value);
     o.frame = e.frame;
-    if (!out.push(o)) return;
+    if (!out.push(o)) enqueuePendingOff(*nt, o.value);
 
     const auto c = static_cast<std::size_t>(nt->channel);
     if (active_[c] > 0) --active_[c];

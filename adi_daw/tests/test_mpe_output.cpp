@@ -685,7 +685,7 @@ void testFullOutputListPreservesState() {
               "NoteExpression: overflowed note-on is not tracked");
     }
 
-    // 5. NoteOff overflow keeps the note live so a later retry ends it on its channel.
+    // 5. NoteOff overflow queues the NoteOff as pending, frees the note slot, and delivers it first on the next block.
     {
         MpeRouter r;
         r.configure(ExpressionRoute::MpeMidi, ExpressionCaps{}, 2);
@@ -696,55 +696,139 @@ void testFullOutputListPreservesState() {
 
         Out full(0);
         route(r, {off(10, 1, 60)}, full, 10);
-        check(full.list.dropped() == 1 && r.liveNotes() == 2 && r.channelOf(1) == 1,
-              "dropped NoteOff keeps note 1 live on channel 1");
+        check(full.list.dropped() == 1 && r.liveNotes() == 1 && r.channelOf(1) == -1 && r.channelOf(2) == 2,
+              "dropped NoteOff frees note 1's slot while keeping note 2 live");
 
-        Out retry(4);
-        route(r, {off(20, 1, 60)}, retry, 20);
-        const auto v = retry.all();
-        check(v.size() == 1 && v[0].kind == MpeOut::Kind::NoteOff && v[0].channel == 1 && v[0].key == 60 &&
-                  r.unknownNotes() == 0 && r.liveNotes() == 1 && r.channelOf(1) == -1,
-              "retried NoteOff pushes on channel 1 and releases note 1 without unknownNotes");
+        // Next block with empty input delivers the dropped NoteOff on its original channel.
+        Out next(8);
+        route(r, {}, next, 20);
+        const auto v = next.all();
+        check(v.size() == 1 && next.list.dropped() == 0 &&
+                  v[0].kind == MpeOut::Kind::NoteOff && v[0].noteId == 1 &&
+                  v[0].channel == 1 && v[0].key == 60 && v[0].frame == 20 &&
+                  r.unknownNotes() == 0 && r.liveNotes() == 1,
+              "next block delivers the dropped NoteOff on channel 1 at segmentStart");
+
+        Out after(8);
+        route(r, {}, after, 30);
+        check(after.list.size() == 0, "delivered NoteOff is not sent a second time");
     }
 
-    // 6. switchTo overflow: zero capacity keeps old route and all notes; partial capacity ends only pushed notes.
+    // 5b. 128 dropped NoteOffs do not fill the note table; next block drains all 128 and accepts 128 fresh notes.
+    {
+        MpeRouter r;
+        r.configure(ExpressionRoute::Plain, ExpressionCaps{});
+        std::vector<Event> ons, offs, fresh;
+        for (int i = 1; i <= MpeRouter::kMaxNotes; ++i) {
+            ons.push_back(on(0, static_cast<std::uint64_t>(i), i % 128));
+            offs.push_back(off(1, static_cast<std::uint64_t>(i), i % 128));
+            fresh.push_back(on(2, static_cast<std::uint64_t>(MpeRouter::kMaxNotes + i), i % 128));
+        }
+        Out start(256);
+        route(r, ons, start, 0);
+        check(r.liveNotes() == MpeRouter::kMaxNotes && r.tableFull() == 0,
+              "table filled with 128 live notes");
+
+        Out zero(0);
+        route(r, offs, zero, 10);
+        check(zero.list.dropped() == MpeRouter::kMaxNotes && r.liveNotes() == 0,
+              "128 dropped NoteOffs release all 128 slots instead of stranding the table");
+
+        Out nextBlock(512);
+        route(r, fresh, nextBlock, 20);
+        const auto v = nextBlock.all();
+        check(v.size() == 2 * MpeRouter::kMaxNotes && nextBlock.list.dropped() == 0 &&
+                  r.tableFull() == 0 && r.liveNotes() == MpeRouter::kMaxNotes,
+              "next block delivers all 128 pending NoteOffs and admits 128 new notes with zero tableFull");
+        bool offsFirst = v.size() == 2 * MpeRouter::kMaxNotes;
+        for (int i = 0; offsFirst && i < MpeRouter::kMaxNotes; ++i) {
+            const auto& o = v[static_cast<std::size_t>(i)];
+            if (o.kind != MpeOut::Kind::NoteOff || o.frame != 20 || o.noteId != static_cast<std::uint64_t>(i + 1))
+                offsFirst = false;
+        }
+        check(offsFirst, "all 128 pending NoteOffs go out first, in order, before any new NoteOn");
+    }
+
+    // 6. switchTo switches route at once; unpushed NoteOffs drain first on the next route() (2-block partial switch).
+    {
+        // Reviewer's probe: 120 live notes switched into a 104-slot list finishes within two blocks.
+        MpeRouter r;
+        r.configure(ExpressionRoute::Plain, ExpressionCaps{});
+        std::vector<Event> notes;
+        for (int i = 1; i <= 120; ++i)
+            notes.push_back(on(0, static_cast<std::uint64_t>(i), i % 128));
+        Out setup(256);
+        route(r, notes, setup, 0);
+        check(r.liveNotes() == 120 && r.current() == ExpressionRoute::Plain,
+              "120 sounding notes on Plain before switchTo");
+
+        // Block 1: switchTo into a 104-slot list switches route at once and queues the remaining 16 NoteOffs.
+        Out block1(104);
+        r.switchTo(ExpressionRoute::MpeMidi, 10, block1.list);
+        check(block1.list.size() == 104 && block1.list.dropped() == 16 &&
+                  r.current() == ExpressionRoute::MpeMidi && r.liveNotes() == 0,
+              "partial switchTo pushes 104 NoteOffs, switches route immediately, and queues 16");
+        // Calling route() on the same full list (as vst3_host does) preserves pending NoteOffs and MCM.
+        route(r, {}, block1, 10);
+        check(block1.list.size() == 104, "route() on the still-full block1 list leaves it full");
+
+        // Block 2: fresh 104-slot list receives the remaining 16 NoteOffs FIRST, then the 3 MCM controls, then a note.
+        Out block2(104);
+        route(r, {on(30, 500, 60)}, block2, 20);
+        const auto v2 = block2.all();
+        check(v2.size() == 16 + 3 + 4 && block2.list.dropped() == 0 &&
+                  r.liveNotes() == 1 && r.channelOf(500) == 1,
+              "block 2 finishes all 16 pending NoteOffs, sends the 3-message MCM, and starts the new MPE note");
+        bool orderOk = v2.size() == 16 + 3 + 4;
+        for (int i = 0; orderOk && i < 16; ++i) {
+            const auto& o = v2[static_cast<std::size_t>(i)];
+            if (o.kind != MpeOut::Kind::NoteOff || o.channel != 0 || o.frame != 20 ||
+                o.noteId != static_cast<std::uint64_t>(105 + i))
+                orderOk = false;
+        }
+        if (orderOk) {
+            orderOk = v2[16].kind == MpeOut::Kind::Control && v2[16].ctrl == 101 &&
+                      v2[17].ctrl == 100 && v2[18].ctrl == 6 &&
+                      v2[22].kind == MpeOut::Kind::NoteOn && v2[22].noteId == 500 && v2[22].channel == 1;
+        }
+        check(orderOk, "remaining 16 NoteOffs arrive on channel 0 ahead of MCM and new MpeMidi note");
+    }
+
+    // 6b. Partial switchTo from MpeMidi to Plain preserves original member channels across blocks, and reset clears pending.
     {
         MpeRouter r;
         r.configure(ExpressionRoute::MpeMidi, ExpressionCaps{}, 3);
         Out init(32);
         route(r, {on(0, 1, 60), on(0, 2, 64), on(0, 3, 67)}, init, 0);
-        check(r.liveNotes() == 3 && r.current() == ExpressionRoute::MpeMidi,
-              "three sounding notes before switchTo");
-
-        Out zero(0);
-        r.switchTo(ExpressionRoute::Plain, 10, zero.list);
-        check(zero.list.size() == 0 && zero.list.dropped() == 3,
-              "switchTo with zero capacity drops all 3 NoteOffs");
-        check(r.current() == ExpressionRoute::MpeMidi && r.liveNotes() == 3 &&
-                  r.channelOf(1) == 1 && r.channelOf(2) == 2 && r.channelOf(3) == 3,
-              "switchTo with zero capacity keeps old route and every live note");
 
         Out one(1);
         r.switchTo(ExpressionRoute::Plain, 12, one.list);
         const auto v1 = one.all();
         check(v1.size() == 1 && one.list.dropped() == 2 &&
                   v1[0].kind == MpeOut::Kind::NoteOff && v1[0].noteId == 1 &&
-                  v1[0].channel == 1 && v1[0].key == 60 && v1[0].frame == 12,
-              "partial switchTo emits one NoteOff on its original channel");
-        check(r.current() == ExpressionRoute::MpeMidi && r.liveNotes() == 2 &&
-                  r.channelOf(1) == -1 && r.channelOf(2) == 2 && r.channelOf(3) == 3,
-              "partial switchTo releases only the ended note and keeps the old route");
+                  v1[0].channel == 1 && v1[0].key == 60 && v1[0].frame == 12 &&
+                  r.current() == ExpressionRoute::Plain && r.liveNotes() == 0,
+              "partial MpeMidi->Plain switch emits 1 NoteOff, switches to Plain, queues remaining 2");
 
         Out rest(8);
-        r.switchTo(ExpressionRoute::Plain, 15, rest.list);
+        route(r, {on(20, 4, 72)}, rest, 15);
         const auto v2 = rest.all();
-        check(v2.size() == 2 && rest.list.dropped() == 0 &&
-                  v2[0].kind == MpeOut::Kind::NoteOff && v2[0].noteId == 2 && v2[0].channel == 2 &&
-                  v2[1].kind == MpeOut::Kind::NoteOff && v2[1].noteId == 3 && v2[1].channel == 3 &&
-                  v2[0].frame == 15 && v2[1].frame == 15,
-              "completing switchTo ends only the remaining notes without duplicating note 1");
-        check(r.current() == ExpressionRoute::Plain && r.liveNotes() == 0,
-              "and switches the route once every sounding note has ended");
+        check(v2.size() == 3 && rest.list.dropped() == 0 &&
+                  v2[0].kind == MpeOut::Kind::NoteOff && v2[0].noteId == 2 && v2[0].channel == 2 && v2[0].frame == 15 &&
+                  v2[1].kind == MpeOut::Kind::NoteOff && v2[1].noteId == 3 && v2[1].channel == 3 && v2[1].frame == 15 &&
+                  v2[2].kind == MpeOut::Kind::NoteOn && v2[2].noteId == 4 && v2[2].channel == 0 && v2[2].frame == 20,
+              "next route() drains notes 2 and 3 on their original member channels before the Plain note-on");
+
+        // reset() drops any unsent pending NoteOffs (reactivated plug-in forgot its voices).
+        Out zero(0);
+        r.switchTo(ExpressionRoute::MpeMidi, 30, zero.list);
+        check(zero.list.dropped() == 1 && r.current() == ExpressionRoute::MpeMidi,
+              "zero-capacity switch queues note 4's NoteOff and switches route");
+        r.reset();
+        Out afterReset(8);
+        route(r, {}, afterReset, 40);
+        check(afterReset.list.size() == 3 && afterReset.list.at(0).kind == MpeOut::Kind::Control,
+              "reset() clears pending NoteOffs so only the fresh MCM is sent");
     }
 
     // 7. Filling a bounded list across a dense block keeps router state matching emitted messages.
@@ -764,9 +848,18 @@ void testFullOutputListPreservesState() {
         }
         check(bounded.list.size() == 16 && bounded.list.dropped() > 0 && sentOn == 3 && sentOff == 0,
               "bounded list fills mid-block after MCM and 3 notes");
-        check(r.liveNotes() == sentOn - sentOff &&
-                  r.channelOf(1) == 1 && r.channelOf(2) == 2 && r.channelOf(3) == 3 && r.channelOf(4) == -1,
-              "router tracks only the notes whose NoteOn actually reached the output list");
+        // All 3 notes that actually started received NoteOffs in the same block while out was full,
+        // so they are released and queued as pending NoteOffs for the next block (and notes 4..10 never started).
+        check(r.liveNotes() == 0 && r.channelOf(1) == -1 && r.channelOf(4) == -1,
+              "dropped NoteOffs for started notes release their slots while dropped NoteOns were never tracked");
+        Out next(16);
+        route(r, {}, next, 40);
+        const auto drained = next.all();
+        check(drained.size() == 3 &&
+                  drained[0].kind == MpeOut::Kind::NoteOff && drained[0].noteId == 1 && drained[0].channel == 1 &&
+                  drained[1].kind == MpeOut::Kind::NoteOff && drained[1].noteId == 2 && drained[1].channel == 2 &&
+                  drained[2].kind == MpeOut::Kind::NoteOff && drained[2].noteId == 3 && drained[2].channel == 3,
+              "next block delivers NoteOffs for exactly the 3 notes that had started");
     }
 }
 
