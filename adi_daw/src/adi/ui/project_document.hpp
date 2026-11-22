@@ -132,6 +132,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     // not an undo step: the override is session state (ADR-0162), and so is its end. True with
     // nothing overridden too; false with `error()` when the session's rebuild failed.
     bool reenableAutomation();
+    // Live's Options > Delay Compensation (manual 18.7; MX-04): the session lines every track up with
+    // the slowest chain, or compensates nothing and suspends Track Delay, keeping its stored values.
+    // The application's setting, not the project's: not an op and not an undo step. False with
+    // `error()` when the session refused it.
+    bool setDelayCompensation(bool on);
     // The parameter's context menu in Live (manual 25.4): one overridden lane follows its envelope
     // again; the others stay overridden. Session state as above, no undo step. False with `error()`
     // when the lane was not overridden or the rebuild failed.

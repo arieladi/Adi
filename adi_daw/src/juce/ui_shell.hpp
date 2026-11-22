@@ -159,7 +159,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
         ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
         ExportAudio,       // the File menu's Export Audio/Video (manual 5.2.1), Ctrl/Cmd+Shift+R
-        LastId = ExportAudio
+        DelayCompensation, // Live's Options > Delay Compensation (manual 18.7; MX-04)
+        LastId = DelayCompensation
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -180,6 +181,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // How Follow keeps the playhead on screen: by page (Live's default), or by scrolling.
     bool followByPage() const noexcept { return followByPage_; }
     bool setTabMovesFocus(bool on, std::string &why);
+    // Live's Options > Delay Compensation (manual 18.7; MX-04; `audio.delayCompensation`, on by
+    // default): every track lined up with the slowest chain. Off, nothing is compensated and Track
+    // Delay is unavailable, its stored values kept. An application setting, not an undo step.
+    bool delayCompensation() const noexcept { return delayCompensation_; }
+    bool setDelayCompensation(bool on, std::string &why);
     // Live's Wrap Tab Navigation (§41.1.1), on by default: Tab from an area's last control
     // returns to its first; off, it stops there.
     bool wrapTabNavigation() const noexcept { return wrapTab_; }
@@ -250,6 +256,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
+    bool delayCompensation_ = true;
     bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
@@ -374,6 +381,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool()> endMixerDrag;
     std::function<void()> cancelMixerDrag;
     std::function<bool()> reenableAutomation;
+    // The session follows Options > Delay Compensation (MX-04): set by the application, called when
+    // the command toggles the setting. Unset, the setting changes and the session hears it at the next
+    // project open.
+    std::function<bool(bool)> applyDelayCompensation; // false: refused, and the reason said
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
     // envelope again; false with the reason said. Session state, no undo step, as the global switch.
     std::function<bool(std::int64_t)> reenableLane;
