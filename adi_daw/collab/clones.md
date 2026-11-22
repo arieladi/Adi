@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Four-track Drive deadline audit
+
+The original nine-trial run on `44de27f0` missed 713 of 73,728 callback deadlines, down from 1,209. The aggregate one-percent boundary therefore fell below 5.3333 ms on the repair. The earlier 4.5697 ms is the median of nine trial p99s. Three individual trials still exceeded the deadline at 6.9778, 5.9085 and 13.1699 ms.
+
+A fresh run stored wall duration and processing-thread cycles together for each callback. The existing fix met the p99 deadline in all nine trials on four moving tracks. Pooled p99 was 0.6419 ms, with 223 misses. The longest callback took 99.035 ms while using fewer thread cycles than the pooled cycle p99. Thread elapsed time on the test system advanced in 15.625 ms steps, so the recorded data do not identify the interruption's cause.
+
+A private variant kept a wider history at a cost of 1,040 bytes per band. It preserved all four stereo captures and the 16-frame delay. Its pooled p99 was 0.5110 ms with 143 misses, but its trial p99 improved in only three of nine pairs and median cycles in five. The existing review request stands at `44de27f0`.
+
+PR requested
+
 ## 22 November 2026 — Driven Filter holdouts establish a remaining rate dependency
 
 For the resonant low-pass used by 29 previous regressions, a 48 kHz model fitted only to small perturbations around positive and negative steady inputs was evaluated on 36 separate warm-start settings. All inputs and reference outputs repeated sample for sample at 256 and 2,048 frames. The comparator detected a single deliberately changed sample. Signed multitone, independent stereo broadband and kick and bass probed different parts of the response.
