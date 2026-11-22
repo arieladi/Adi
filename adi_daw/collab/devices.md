@@ -21,7 +21,7 @@ Time. Beat Repeat and External Audio Effect are left out of the count; they are 
   - This seat starts Amp now, on its own branch, and stops there if the answer is no.
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 38 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 39 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -187,6 +187,9 @@ method); Live's files and renders stay in the director's research.
     with Comp on, then off: the gain reduction. Drive at 0, 50 and 100 % in each Type, and Crunch at
     0 and 100 %, on a 200 Hz sine at −6 dBFS: the harmonics. A click with Boom at 100 % at three Boom
     Freq and Decay settings: the ring's pitch and length. Transients at ±100 on a kick: the attack.
+39. **Dynamic Tube (built after 3 December).** A fresh Dynamic Tube, every control as shown. A
+    200 Hz sine at −6 dBFS for each Tube at Drive 0, 12 and 24 dB, Bias 0 and 100 %: the first five
+    harmonics. A drum loop with Envelope at ±100 %: how the colour follows the level.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -201,6 +204,23 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Dynamic Tube — lands after 3 December
+
+**PR requested:** head `devices/dynamic-tube` (2b507061), base `main`, after `devices/drum-buss`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.** Tube saturation. Its operating point is Bias plus Envelope times the input's
+  envelope, and it is normalised by its slope there, so a quiet signal passes at unity. Three
+  curves, a Tone tilt with its inverse, Output and Dry/Wet.
+- **Tests:**
+  - `adi_dynamic_tube_tests` 13. A quiet sine passes at Output's gain within 0.05 dB in all 81
+    combinations. Each curve's slope matches its numerical derivative. No bias, no second
+    harmonic; Bias or Envelope give one. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 41 built-ins.
+- **CTest:** the fixed stack at `devices/live-amp` (c4d52f4b) passed 286/286 at 32. The 64 run is
+  pending.
+- **Reading 39, added to the ONE list.**
 
 ## 2026-11-22 — DEV-22, the chapter's next missing effect: Drum Buss — lands after 3 December
 
