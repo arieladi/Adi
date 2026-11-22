@@ -985,12 +985,14 @@ void MixFocus::updateScopeDifference() {
     if (showsScopeDifference()) {
         const auto pair = matchMembers();
         const auto view = scopeChannelView();
+        const bool spectrum = differenceSpectrum_.getToggleState();
+        // The waveform already holds both lanes. The spectrum uses the actual channel selection.
+        const auto fold = spectrum || focusScopeIsFolded(view) ? view : FocusScopeChannels::Stereo;
         if (pair[0] && pair[1])
             next = SharedAnalysis::ScopeDifference{
                 {pair[0]->id, engine::ScopePoint::PostFader, 0},
                 {pair[1]->id, engine::ScopePoint::PostFader, 0},
-                view, differenceRequest_ ? differenceRequest_->selection : 0,
-                differenceSpectrum_.getToggleState()};
+                fold, differenceRequest_ ? differenceRequest_->selection : 0, spectrum};
     }
     if (next == differenceRequest_) return;
     if (next) next->selection = ++differenceSelection_;
