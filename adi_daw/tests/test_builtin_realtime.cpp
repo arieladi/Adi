@@ -414,11 +414,9 @@ void eachBuiltinAlone(std::int32_t frames, double seconds) {
                                                                          "change " +
                                       std::to_string(changed) + ")");
         }
-        // Hybrid Reverb with a 5 s impulse is a uniformly partitioned
-        // convolution: about 1,900 complex multiply-adds a sample, spread
-        // evenly over the callbacks (no spike), measured at 17-20 % of the
-        // deadline. Its bound says so; non-uniform partitioning would cut it.
-        const double share = info.uid == "org.adidaw.builtin.hybrid-reverb" ? 0.25 : 0.15;
+        // Hybrid Reverb with a 5 s impulse runs in non-uniform partitions
+        // (item 10): the common bound, no exception.
+        const double share = 0.15;
         judge(name, frames, statsOf(runs[0], runs[1], deadlineUs), allocated, deadlineUs, share);
         ++measured;
         sampler = sampler || info.uid == "org.adidaw.builtin.sampler";

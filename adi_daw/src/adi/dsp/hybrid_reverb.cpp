@@ -34,9 +34,10 @@ HybridImpulse prepareHybridImpulse(std::span<const float> samples, int channels,
     RealFft transform(static_cast<std::int32_t>(HybridImpulse::fftSize));
     if (!transform.valid()) throw std::bad_alloc();
     std::array<float, HybridImpulse::fftSize> frame{};
+    // The shaped impulse, each channel, before it is partitioned.
+    std::array<std::vector<float>, 2> taps;
     for (std::size_t c = 0; c < 2; ++c) {
-        auto &spectra = ir.spectra[c];
-        spectra.resize((ir.frames + 255) / 256);
+        taps[c].assign(ir.frames, 0.f);
         for (std::size_t i = 0; i < ir.frames; ++i) {
             const double pos = static_cast<double>(i) / options.size;
             const auto a = std::min(sourceFrames - 1, static_cast<std::size_t>(pos)),
@@ -51,20 +52,55 @@ HybridImpulse prepareHybridImpulse(std::span<const float> samples, int channels,
             if (options.decaySeconds > 0)
                 value *= std::exp(-std::log(1000.) * static_cast<double>(i) /
                                   (options.decaySeconds * rate));
-            spectra[i / 256][i % 256] = static_cast<float>(value);
+            taps[c][i] = static_cast<float>(value);
         }
-        for (auto &spectrum : spectra) {
-            // The first partition samples temporarily hold the shaped IR.
-            // The second half of frame stays zero for overlap-add padding.
-            for (std::size_t i = 0; i < HybridImpulse::partition; ++i)
-                frame[i] = spectrum[i].real();
-            transform.forward(frame, spectrum);
+        // The head: up to headParts partitions of 256. The second half of
+        // frame stays zero for overlap-add padding.
+        auto &spectra = ir.spectra[c];
+        spectra.resize(std::min(HybridImpulse::headParts, (ir.frames + 255) / 256));
+        for (std::size_t k = 0; k < spectra.size(); ++k) {
+            for (std::size_t i = 0; i < HybridImpulse::partition; ++i) {
+                const auto at = k * HybridImpulse::partition + i;
+                frame[i] = at < ir.frames ? taps[c][at] : 0.f;
+            }
+            transform.forward(frame, spectra[k]);
+        }
+    }
+    // The longer stages: each part's block of taps, zero-padded to twice the
+    // block, transformed once here.
+    for (std::size_t s = 0; s < HybridImpulse::stages; ++s) {
+        const auto block = HybridImpulse::stageBlock[s], offset = HybridImpulse::stageOffset[s];
+        const auto end = std::min(ir.frames, HybridImpulse::stageEnd[s]);
+        auto &stage = ir.stage[s];
+        stage.parts = end > offset ? (end - offset + block - 1) / block : 0;
+        if (stage.parts == 0) {
+            continue;
+        }
+        RealFft longer(static_cast<std::int32_t>(2 * block));
+        if (!longer.valid()) throw std::bad_alloc();
+        std::vector<float> padded(2 * block);
+        for (std::size_t c = 0; c < 2; ++c) {
+            stage.spectra[c].assign(stage.parts * (block + 1), {});
+            for (std::size_t k = 0; k < stage.parts; ++k) {
+                std::fill(padded.begin(), padded.end(), 0.f);
+                for (std::size_t i = 0; i < block; ++i) {
+                    const auto at = offset + k * block + i;
+                    if (at < end) {
+                        padded[i] = taps[c][at];
+                    }
+                }
+                longer.forward(padded, std::span(stage.spectra[c]).subspan(k * (block + 1), block + 1));
+            }
         }
     }
     return ir;
 }
 HybridReverb::HybridReverb() : fft_(static_cast<std::int32_t>(HybridImpulse::fftSize)) {
     if (!fft_.valid()) throw std::bad_alloc();
+    for (std::size_t s = 0; s < HybridImpulse::stages; ++s) {
+        stages_[s].fft = std::make_unique<RealFft>(static_cast<std::int32_t>(2 * HybridImpulse::stageBlock[s]));
+        if (!stages_[s].fft->valid()) throw std::bad_alloc();
+    }
     for (int i = 0; i < Count; ++i)
         p_[static_cast<std::size_t>(i)] = ranges[i].initial;
 }
@@ -82,7 +118,27 @@ void HybridReverb::prepare(double rate) {
     algorithm_.set(LiveReverb::Mix, 100);
     algorithm_.set(LiveReverb::Predelay, 0);
     for (auto &h : history_)
-        h.resize(HybridImpulse::maxFrames / 256);
+        h.resize(HybridImpulse::headParts);
+    for (std::size_t s = 0; s < HybridImpulse::stages; ++s) {
+        auto &stage = stages_[s];
+        const auto block = HybridImpulse::stageBlock[s];
+        stage.capacity = (HybridImpulse::stageEnd[s] - HybridImpulse::stageOffset[s] + block - 1) / block;
+        for (std::size_t c = 0; c < 2; ++c) {
+            stage.input[c].assign(block, 0.f);
+            stage.history[c].assign(stage.capacity * (block + 1), {});
+            stage.sum[c].assign(block + 1, {});
+        }
+        stage.frame.assign(2 * block, 0.f);
+        stage.bins.assign(block + 1, {});
+        stage.head = stage.capacity - 1;
+        stage.used = stage.done = stage.total = 0;
+        stage.start = 0;
+        stage.ir = nullptr;
+        stage.live = false;
+    }
+    for (auto &t : tail_)
+        t.assign(tailSize, 0.);
+    samples_ = 0;
     for (auto &p : predelay_)
         p.assign(static_cast<std::size_t>(std::ceil(rate_ * 12)) + 2, 0);
     input_ = {};
@@ -97,6 +153,104 @@ void HybridReverb::prepare(double rate) {
     mix_ = p_[Mix] / 100;
     blend_ = p_[Blend] / 100;
 }
+void HybridReverb::stageAccumulate(std::size_t s, std::size_t target) noexcept {
+    auto &stage = stages_[s];
+    const auto bins = HybridImpulse::stageBlock[s] + 1;
+    while (stage.done < target) {
+        const auto k = stage.done++;
+        // Part k pairs the impulse's k-th block of this stage with the input
+        // block k before the newest.
+        const auto slot = (stage.head + stage.capacity - k) % stage.capacity;
+        for (std::size_t c = 0; c < 2; ++c) {
+            const auto *prior = stage.history[c].data() + slot * bins;
+            const auto *kernel = stage.ir->stage[s].spectra[c].data() + k * bins;
+            auto *sum = stage.sum[c].data();
+            for (std::size_t b = 0; b < bins; ++b) {
+                const double ar = prior[b].real(), ai = prior[b].imag();
+                const double br = kernel[b].real(), bi = kernel[b].imag();
+                sum[b] = {sum[b].real() + (ar * br - ai * bi), sum[b].imag() + (ar * bi + ai * br)};
+            }
+        }
+    }
+}
+
+void HybridReverb::stageFinish(std::size_t s, const HybridImpulse *ir) noexcept {
+    auto &stage = stages_[s];
+    if (!stage.live) {
+        return;
+    }
+    const auto block = HybridImpulse::stageBlock[s];
+    if (ir != stage.ir) {
+        // The impulse changed during the period: the parts are summed again
+        // from the new one, here, once (as the head does).
+        for (auto &sum : stage.sum) {
+            std::fill(sum.begin(), sum.end(), std::complex<double>{});
+        }
+        const bool usable = ir && ir->sampleRate == rate_ && ir->stage[s].parts > 0;
+        stage.ir = usable ? ir : nullptr;
+        stage.done = 0;
+        stage.total = stage.ir ? std::min(stage.used, stage.ir->stage[s].parts) : 0;
+    }
+    if (stage.ir) {
+        stageAccumulate(s, stage.total);
+        for (std::size_t c = 0; c < 2; ++c) {
+            // Summed in double, rounded once before the float inverse, as the head.
+            for (std::size_t b = 0; b <= block; ++b) {
+                stage.bins[b] = static_cast<std::complex<float>>(stage.sum[c][b]);
+            }
+            stage.fft->inverse(stage.bins, stage.frame);
+            for (std::size_t i = 0; i < 2 * block; ++i) {
+                const auto at = static_cast<std::size_t>(stage.start + static_cast<std::int64_t>(i)) % tailSize;
+                tail_[c][at] += static_cast<double>(stage.frame[i]);
+            }
+        }
+    }
+    for (auto &sum : stage.sum) {
+        std::fill(sum.begin(), sum.end(), std::complex<double>{});
+    }
+    stage.live = false;
+}
+
+void HybridReverb::stageStart(std::size_t s, const HybridImpulse *ir) noexcept {
+    auto &stage = stages_[s];
+    const auto block = HybridImpulse::stageBlock[s];
+    // The block just completed is the newest in the history, whatever the
+    // impulse: one may arrive later and needs the input that came before it.
+    stage.head = (stage.head + 1) % stage.capacity;
+    for (std::size_t c = 0; c < 2; ++c) {
+        std::copy(stage.input[c].begin(), stage.input[c].end(), stage.frame.begin());
+        std::fill(stage.frame.begin() + static_cast<std::ptrdiff_t>(block), stage.frame.end(), 0.f);
+        stage.fft->forward(stage.frame, std::span(stage.history[c]).subspan(stage.head * (block + 1), block + 1));
+    }
+    stage.used = std::min(stage.used + 1, stage.capacity);
+    const bool usable = ir && ir->sampleRate == rate_ && ir->stage[s].parts > 0;
+    stage.ir = usable ? ir : nullptr;
+    stage.total = stage.ir ? std::min(stage.used, stage.ir->stage[s].parts) : 0;
+    stage.done = 0;
+    stage.live = stage.ir != nullptr;
+    // That block began `block` samples ago; its sum is heard `offset` later.
+    stage.start = samples_ - static_cast<std::int64_t>(block) + static_cast<std::int64_t>(HybridImpulse::stageOffset[s]);
+}
+
+void HybridReverb::stageSample(std::size_t s, const HybridImpulse *ir) noexcept {
+    auto &stage = stages_[s];
+    const auto block = HybridImpulse::stageBlock[s];
+    const auto position = static_cast<std::size_t>(samples_ % static_cast<std::int64_t>(block));
+    if (position != 0) {
+        // By sample `position` of the block, that share of the parts is done:
+        // a schedule by position alone, so any blocking renders the same bits.
+        if (stage.live && ir == stage.ir) {
+            stageAccumulate(s, (stage.total * position + block - 1) / block);
+        }
+        return;
+    }
+    // A block boundary: the period's sum is heard, the block just completed
+    // starts the next. A stage of block B starting at offset S >= 2B - 256
+    // has its whole period: the first time it adds to is still to be heard.
+    stageFinish(s, ir);
+    stageStart(s, ir);
+}
+
 void HybridReverb::accumulatePartition(std::size_t p) noexcept {
     // Partition p (from 1) of the NEXT block: the block p blocks before the
     // one that block will write at head_.
@@ -208,6 +362,10 @@ void HybridReverb::process(const float *left, const float *right, float *outL, f
         const double in[2]{left ? left[i] : 0, right ? right[i] : 0};
         float algoIn[2]{}, algoOut[2]{};
         double convolution[2]{}, dry[2]{};
+        // The later stages' share of the convolution sample heard now (it
+        // trails the input by the head's latency); its ring cell is cleared.
+        const std::int64_t heard = samples_ - static_cast<std::int64_t>(HybridImpulse::partition);
+        const std::size_t tailAt = heard >= 0 ? static_cast<std::size_t>(heard) % tailSize : 0;
         for (std::size_t c = 0; c < 2; ++c) {
             dry[c] = dry_[c][cursor_];
             dry_[c][cursor_] = in[c];
@@ -217,7 +375,15 @@ void HybridReverb::process(const float *left, const float *right, float *outL, f
             predelay_[c][delayAt_] = static_cast<float>(clean(drive));
             const double wet = delay ? old : drive;
             convolution[c] = output_[c][cursor_];
+            if (heard >= 0) {
+                convolution[c] += tail_[c][tailAt];
+                tail_[c][tailAt] = 0;
+            }
             input_[c][cursor_] = wet;
+            for (std::size_t s = 0; s < HybridImpulse::stages; ++s) {
+                const auto block = static_cast<std::int64_t>(HybridImpulse::stageBlock[s]);
+                stages_[s].input[c][static_cast<std::size_t>(samples_ % block)] = static_cast<float>(wet);
+            }
             algoIn[c] = static_cast<float>(route == 0 ? convolution[c] : aligned_[c][cursor_]);
             aligned_[c][cursor_] = wet;
         }
@@ -254,6 +420,10 @@ void HybridReverb::process(const float *left, const float *right, float *outL, f
         if (cursor_ == 256) {
             partition(ir);
             cursor_ = 0;
+        }
+        ++samples_;
+        for (std::size_t s = 0; s < HybridImpulse::stages; ++s) {
+            stageSample(s, ir);
         }
     }
 }
