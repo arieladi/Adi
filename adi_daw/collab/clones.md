@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Audio retrigger for the Volume contour
+
+`clones/shaper-audio-retrigger` at `e08b932f` — Retrigger the Volume contour from the internal stereo detector. **Lands after 3 December.** IDs 754–764 select sync, looping retrigger or one-shot for each band, the held endpoint and detector controls. The original 415 controls keep their IDs. Loading an older state over an active detector restores sync and releases the added delay.
+
+A decaying 920 Hz burst on one channel and a pilot on the other exposed the new contour starts at frames 14,671, 54,171 and 82,071 at 48 kHz. The smaller burst at 31,300 left the contour running. Measured and reported delays agreed in all twelve rate/algorithm/smoothing cases at 44.1, 48 and 96 kHz. At 48 kHz the short and extended modes added 672 and 1,152 frames, or 961 and 1,441 with smoothing. The two short profiles share the presently measured internal detector response.
+
+The main DSP failed 39 new assertions. The strict Release tests passed on the new head, including exact native/edited stereo output across the off-grid onset and sparse project recall in both Pd precisions.
+
+PR requested
+
 ## 22 November 2026 — Procedural Noise for the built-in ADI-Shaper
 
 `clones/shaper-noise-port` at `5e9b063d` — Port calibrated procedural Noise to ADI-Shaper. **Lands after 3 December.** IDs 536–625 hold the three bands and their controls. The original 415 IDs keep their meanings. A sparse project recalls with Noise off, including when loaded over a running instance with Noise enabled. The stage uses ADI’s procedural pink source.
