@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, EX-04 FLAC writer
+
+**PR requested** — `engine-win/export-flac-writer` `d54c75a8`, on main `87ea349c` and EX-06 `7a9fe563`. Pins libFLAC 1.5.0 to `1507800de4b70e21be71f38caa0d9079d0bc6e45` (BSD-3-Clause). The local strict x64 MSVC build passed 444 render checks and 171 WAV/quantizer checks. The stock libFLAC decoder verified samples and MD5 for 4201-frame PCM16 and PCM24 against matching dithered WAV renders. The last partial block and suffix-preserving collision handling passed. Float32 is refused. Private WAV repacking adds one streaming write and read and applies no second quantization.
+
+**Needs Win:** the workflow fetch/CI hunk for the pinned source is yours. The app build discovers it under third_party/flac or via ADI_FLAC_SOURCE. The AIFF sibling is also based on the quantizer. Both share export-container branches of validation, naming and publication, so integrate those hunks together in the landing window. Window-fn can wire the two containers once landed.
+
 ## 2026-11-22, EX-04 AIFF writer and TM-MD-03 ownership
 
 **PR requested** — `engine-win/export-aiff-writer` `90a3b1e5`, on main `87ea349c` and EX-06 `7a9fe563`. PCM16/24 publish as big-endian AIFF and Float32 as AIFF-C fl32, with seeded PCM dither applied once in the private WAV stage. The Windows /W4 /WX render suite passed 449 checks including full sample equality at all three encodings, odd-byte mono padding, and exact-WAV/unsupported format refusal. The WAV/quantizer suite passed 171 checks. The private WAV adds one write and read before publication. The format remains unwired in the Export window.
