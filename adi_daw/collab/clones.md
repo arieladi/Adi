@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Filter the full signal feeding a Hold detector
+
+`clones/shaper-hold-input` at `f6cb7904` — Add high-pass and low-pass cutoffs to each full-input detector. **Lands after 3 December.** The six appended controls retain open cutoffs on older states. The rack, Crush, detector filter and registered Pd suites passed under MSVC /W4 /WX in both precisions. The embedded patch was verified byte for byte. Cutoff automation and re-entry after a neutral setting were tested against independently measured sample trajectories.
+
+At 256 and 2,048 frames the filtered kick-and-bass comparison fell from 0.003615 to 0.000446 stereo RMS error. With overlapping cutoff controls it fell from 0.004452 to 0.000333. The previous off, open and linked renders remained byte-identical. All repeated captures agreed across block sizes and all arms reported zero latency.
+
+At 256/2,048 frames the cut pair used 59.1/472.6 µs median and 108.2/1,894.5 µs p99. The reference used 154.2/1,173.2 µs median and 1,619.5/6,927.8 µs p99. Deadline misses were 1/6 for ADI and 93/4 for the reference, per 20,480 callbacks at each size. Of the nine eligible saved manual settings, two select the full input and both leave these cuts open.
+
+PR requested
+
 ## 22 November 2026 — Select the detector input for each Hold band
 
 `clones/shaper-hold-input` at `2d5e13d5` — Select the split band or the full signal entering Crush. **Lands after 3 December.** Each band's selector defaults to the linked split. A quarter-level change before Crush produced byte-identical reference audio whether applied inside the rack or to its input. Reversing the two stages produced 0.0150–0.0166 stereo RMS error. Three band probes also distinguish the full stage input from the dry track input.
