@@ -44,17 +44,22 @@ void SpectrumDevice::update() noexcept {
     Analysis a;
     a.fftSize = 1024 << static_cast<int>(p_[Block]);
     a.channel = static_cast<ChannelKind>(static_cast<int>(p_[Channel]));
-    a.hopSamples = std::clamp(static_cast<std::int32_t>(std::lround(p_[Refresh] / 1000 * rate_)), std::int32_t{1},
-                              LinearMagnitudeAverage::kMaximumHop);
+    // The hop is Refresh itself at every rate, up to 2 s (96,000 samples at
+    // 48 kHz, 384,000 at 192 kHz): it is the worker's cadence.
+    a.hopSamples = std::max(std::int32_t{1}, static_cast<std::int32_t>(std::lround(p_[Refresh] / 1000 * rate_)));
     // Each analysis keeps 1 - 1/Avg of the average: the averager's decay is
     // the time that takes to fall 20 dB, 0.1 = (1 - 1/Avg)^(analyses), so
     // decay = hop / rate x ln 0.1 / ln(1 - 1/Avg). Avg 1 keeps a vanishing
-    // remainder (1e-9), so each analysis all but replaces the last.
+    // remainder (1e-9), so each analysis all but replaces the last. The
+    // averager takes a hop of at most kMaximumHop, and its coefficient per
+    // analysis depends only on decay / hop, so it is told the lesser hop and
+    // the decay for that hop: each analysis still moves it 1/Avg, whatever
+    // Refresh is.
     const double keep = std::max(1 - 1 / p_[Avg], 1e-9);
     a.average.bins = static_cast<std::size_t>(a.fftSize / 2 + 1);
     a.average.sampleRate = rate_;
-    a.average.hopSamples = a.hopSamples;
-    a.average.decay20dBSeconds = static_cast<double>(a.hopSamples) / rate_ * std::log(0.1) / std::log(keep);
+    a.average.hopSamples = std::min(a.hopSamples, LinearMagnitudeAverage::kMaximumHop);
+    a.average.decay20dBSeconds = static_cast<double>(a.average.hopSamples) / rate_ * std::log(0.1) / std::log(keep);
     analysis_ = a;
 }
 

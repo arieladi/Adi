@@ -20,6 +20,7 @@ void AutoShift::prepare(double sampleRate) {
     detector_.prepare(rate_);
     shifter_.prepare(rate_);
     target_ = current_ = 0;
+    window_ = kWindowMs;
     clock_ = 0;
     retune();
 }
@@ -59,11 +60,28 @@ double AutoShift::nearest(double note, int root, int scale) noexcept {
     return best;
 }
 
-double AutoShift::shift() const noexcept { return p_[Shift] + std::clamp(p_[Detune] + current_, -100.0, 100.0) / 100; }
+double AutoShift::shift() const noexcept { return p_[Shift] + (p_[Detune] + current_) / 100; }
 
 void AutoShift::retune() noexcept {
-    shifter_.set(Shifter::Coarse, p_[Shift]);
-    shifter_.set(Shifter::Fine, std::clamp(p_[Detune] + current_, -100.0, 100.0));
+    // The whole shift goes through Coarse (a double the Shifter does not
+    // round), so Detune and a whole-tone correction are never clamped.
+    shifter_.set(Shifter::Coarse, shift());
+    shifter_.set(Shifter::Fine, 0);
+    shifter_.set(Shifter::Window, window_);
+}
+
+double AutoShift::windowFor(double hz) noexcept {
+    // Half the window spans a whole number of the input's periods, the
+    // number nearest kWindowMs / 2: the Shifter's two taps, half a window
+    // apart, then read the same phase of the tone and its level holds
+    // through every crossfade. (A fixed 50 ms put them in antiphase for
+    // tones near (k + 1/2) / 25 ms, 420 or 460 Hz, and the tone fell 40 dB
+    // at each crossfade's middle.)
+    if (!(hz > 0) || !std::isfinite(hz)) {
+        return kWindowMs;
+    }
+    const double period = 1000 / hz, periods = std::max(1.0, std::round(kWindowMs / 2 / period));
+    return std::clamp(2 * periods * period, Shifter::ranges[Shifter::Window].low, Shifter::ranges[Shifter::Window].high);
 }
 
 void AutoShift::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
@@ -72,9 +90,13 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
         // call, so every block size gives the same samples.
         if (clock_ % kChunk == 0) {
             double hz = 0, clarity = 0;
+            const bool clear = detector_.estimate(hz, clarity) && clarity >= kClarity;
+            if (clear) {
+                window_ = windowFor(hz);   // with the correction off too: Shift needs it
+            }
             if (p_[Correction] < 0.5) {
                 target_ = 0;
-            } else if (detector_.estimate(hz, clarity) && clarity >= kClarity) {
+            } else if (clear) {
                 const double note = 69 + 12 * std::log2(hz / p_[Reference]);
                 const double goal = nearest(note, static_cast<int>(p_[Root]), static_cast<int>(p_[Scale]));
                 target_ = p_[Strength] / 100 * 100 * (goal - note);
