@@ -295,6 +295,13 @@ std::vector<AdiShaperPanel::Control> AdiShaperPanel::controls() const {
     std::vector<Control> v;
     v.push_back({{628, 6, 76, 30}, 1, "Master Mix", percent(read(1)), 1});
     v.push_back({{923, 96, 66, 96}, m.mix, "Mix", percent(read(m.mix)), 1});
+    if (binding_.hasBandTrim && key_.stage <= 1) {
+        const auto stage = static_cast<Core::Stage>(key_.stage);
+        const int id = Core::trimParam(stage, static_cast<Core::Band>(key_.band)) + 1;
+        const double gainDb = (2.0 * read(id) - 1.0) * Core::trimLimitDb(stage);
+        v.push_back({{422, 96, 57, 96}, id, stage == Core::Stage::Volume ? "Trim" : "Gain",
+                     juce::String(gainDb, std::abs(gainDb) >= 10.0 ? 1 : 2) + " dB", 1});
+    }
     const bool hz = read(m.clock) > .5;
     const auto &curve = points();
     const auto current =
@@ -705,6 +712,9 @@ void AdiShaperPanel::drawContour(juce::Graphics &g) const {
         }
     }
 }
+float AdiShaperPanel::outputMeterLeft() const noexcept {
+    return binding_.hasBandTrim && key_.stage <= 1 ? 485.f : 440.f;
+}
 void AdiShaperPanel::drawLive(juce::Graphics &g) {
     const auto accent = colour(key_.stage);
     const auto plot = graph();
@@ -721,12 +731,13 @@ void AdiShaperPanel::drawLive(juce::Graphics &g) {
         g.setColour(ink.withAlpha(.65f));
         g.strokePath(p, juce::PathStrokeType(1));
     }
+    const float meterX = outputMeterLeft();
     for (int i = 0; i < 2; ++i) {
         const float v = peaks_[static_cast<std::size_t>(i)], y = 129.f + i * 20;
 
         g.setColour(v > 1 ? juce::Colours::orangered : accent);
-        g.fillRect(459.f, y, 45.f * clamp01((v > 0 ? 20.f * std::log10(v) + 60.f : 0.f) / 60.f), 3.f);
-        label(g, db(v), {506, y - 8, 45, 16}, 10, ink);
+        g.fillRect(meterX + 19, y, 45.f * clamp01((v > 0 ? 20.f * std::log10(v) + 60.f : 0.f) / 60.f), 3.f);
+        label(g, db(v), {meterX + 66, y - 8, 45, 16}, 10, ink);
     }
     auto envelope = [&](std::size_t slot, juce::Colour c) {
         const auto count = std::min(traces_[slot].size(), traces_[slot + 1].size());
@@ -825,13 +836,14 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
                                 : volumePercent(mean),
               {348, 168, 74, 18}, 14, ink);
     }
-    box(g, {440, 96, 115, 96}, plate);
-    label(g, "Output", {444, 98, 107, 21}, 12, dim);
+    const float meterX = outputMeterLeft();
+    box(g, {meterX, 96, 115, 96}, plate);
+    label(g, "Output", {meterX + 4, 98, 107, 21}, 12, dim);
     for (int i = 0; i < 2; ++i) {
         const float y = 129.f + i * 20;
-        label(g, i ? "R" : "L", {443, y - 8, 12, 16}, 10, dim);
+        label(g, i ? "R" : "L", {meterX + 3, y - 8, 12, 16}, 10, dim);
         g.setColour(rail);
-        g.fillRect(459.f, y, 45.f, 3.f);
+        g.fillRect(meterX + 19, y, 45.f, 3.f);
     }
     if (key_.stage == 3 || key_.stage == 4 || key_.stage == 6) {
         const std::array<const char *, 2> text = key_.stage == 3   ? std::array{"Cutoff", "Resonance"}
