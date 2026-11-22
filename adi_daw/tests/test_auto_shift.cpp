@@ -188,16 +188,22 @@ void robustness() {
     S s;
     std::vector<float> bad(4096, std::numeric_limits<float>::quiet_NaN()), o(4096), p(4096);
     const auto x = sine(300, 4096);
+    const auto finite = [&] {
+        return std::all_of(o.begin(), o.end(), [](float v) { return std::isfinite(v); }) &&
+               std::all_of(p.begin(), p.end(), [](float v) { return std::isfinite(v); });
+    };
     counting = true;
     s.process(x.data(), x.data(), o.data(), p.data(), x.size());
     s.process(bad.data(), bad.data(), o.data(), p.data(), bad.size());
+    const bool nanBlock = finite();   // checked as it comes out, both channels
     s.set(S::Scale, S::Minor);
     s.set(S::Shift, -7);
     s.set(S::Smooth, 20);
     s.process(x.data(), x.data(), o.data(), p.data(), x.size());
+    const bool after = finite();
     counting = false;
     check(allocations == 0, "processing and moved controls allocate nothing");
-    check(std::all_of(o.begin(), o.end(), [](float v) { return std::isfinite(v); }), "a NaN input leaves the output finite");
+    check(nanBlock && after, "a NaN input's own block, and the one after it, come out finite");
     std::vector<float> first;
     bool identical = true;
     const auto y = sine(446, 30000);
@@ -216,7 +222,56 @@ void robustness() {
 
 }  // namespace
 
+/// The second review's findings, each a check that fails on the old core.
+void reviewed() {
+    // A corrected tone keeps its level through every crossfade: the 20 ms
+    // RMS after the correction has settled stays within 1 dB of the input's,
+    // at pitches whose period put the fixed 50 ms window's taps in antiphase
+    // (420 and 460 Hz, C major's 300 Hz: dips of 40 dB) and at benign ones.
+    struct Tone {
+        double hz;
+        int scale;
+    };
+    for (const Tone t : {Tone{460, S::Chromatic}, Tone{420, S::Chromatic}, Tone{300, S::Major}, Tone{446, S::Chromatic}, Tone{280, S::Major}}) {
+        S s;
+        s.set(S::Scale, t.scale);
+        s.prepare(kRate);
+        const auto x = sine(t.hz, 48000 * 8, 0.4);
+        const auto y = render(s, x, 256);
+        double lowest = 1e9;
+        for (std::size_t at = 96000; at + 960 <= y.size(); at += 480) {
+            double e = 0;
+            for (std::size_t i = 0; i < 960; ++i) {
+                e += static_cast<double>(y[at + i]) * y[at + i];
+            }
+            lowest = std::min(lowest, std::sqrt(e / 960));
+        }
+        const double dip = 20 * std::log10(lowest / (0.4 / std::sqrt(2.0)));
+        check(dip > -1, std::to_string(t.hz) + " Hz corrected: its level holds through the crossfades (lowest " + std::to_string(dip) + " dB)");
+    }
+    check(std::abs(S::windowFor(460) - 2 * 12 * 1000 / 460.0) < 1e-9 && S::windowFor(30) > 60, "the window spans whole periods");
+    // Detune with a whole-tone correction is not clamped: C major, Detune
+    // +50, MIDI 61.1 (278.79 Hz) goes to D (+90 cents) and 50 cents on, 1.40
+    // semitones in all, 302.27 Hz.
+    S d;
+    d.set(S::Scale, S::Major);
+    d.set(S::Detune, 50);
+    d.prepare(kRate);
+    const double in = 440 * std::exp2((61.1 - 69) / 12), want = 440 * std::exp2((62.5 - 69) / 12);
+    const auto y = render(d, sine(in, 144000, 0.4));
+    check(std::abs(d.shift() - 1.4) < 1e-3, "C major, Detune +50: a shift of 1.40 semitones, unclamped (" + std::to_string(d.shift()) + ")");
+    const double got = peak(y, want);
+    check(std::abs(cents(got, want)) < 1, "and it comes out at 302.27 Hz (" + std::to_string(got) + ")");
+    // With the window following the tone, a large Shift comes out clean too.
+    S up;
+    up.set(S::Shift, 12);
+    up.prepare(kRate);
+    const double at880 = peak(render(up, sine(446, 144000, 0.4)), 880);
+    check(std::abs(cents(at880, 880)) < 1, "446 Hz corrected, then Shift +12: 880 Hz (" + std::to_string(at880) + ")");
+}
+
 int main() {
+    reviewed();
     scales();
     correction();
     smoothAndHold();

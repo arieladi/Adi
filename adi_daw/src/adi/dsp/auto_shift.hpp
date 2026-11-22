@@ -13,7 +13,8 @@
 //   Smooth      0 to 1,000 ms: how long the correction takes to arrive (a
 //               one-pole glide; 0 snaps).
 //   Shift       -24 to +24 semitones, after the correction.
-//   Detune      -50 to +50 cents, after the correction.
+//   Detune      -50 to +50 cents, after the correction (with it, the shift
+//               may pass a semitone: it is never clamped).
 //   Reference   the A4 the scale is tuned to, 410 to 480 Hz.
 //   Dry/Wet     0 to 100 %: the Shifter's Mix.
 //
@@ -21,10 +22,11 @@
 // window (1,024 samples at 48 kHz), from the last window, and the Shifter is
 // retuned every 64 samples. A reading under the Tuner's clarity threshold
 // holds the last correction, so a consonant or a breath does not snap the
-// pitch. The Shifter's window is fixed at 50 ms here. A correction (a few
-// cents a second of crossfade) comes out as a clean tone at the corrected
-// pitch; a large Shift has the Shifter's own sound, lines a crossfade rate
-// apart under an envelope at the commanded pitch.
+// pitch. The Shifter's window follows the reading: half of it spans the
+// whole number of the input's periods nearest 25 ms, so the Shifter's two
+// taps read the same phase of the tone and a corrected tone keeps its level
+// through every crossfade, and comes out a clean tone at the corrected pitch.
+// The whole shift goes through the Shifter's Coarse, never clamped.
 //
 // WHAT IS NOT LIVE'S YET, and says so: the controls and their ranges, the
 // scale list, the formant and vibrato sections and the MIDI scale input (not
@@ -67,6 +69,9 @@ public:
     /// The shift the Shifter is told, in semitones: Shift, plus Detune and
     /// the correction in cents.
     [[nodiscard]] double shift() const noexcept;
+    /// The Shifter's window for a tone at `hz`, in ms: half of it a whole
+    /// number of the tone's periods, nearest kWindowMs / 2.
+    [[nodiscard]] static double windowFor(double hz) noexcept;
 
 private:
     static constexpr std::size_t kChunk = 64;
@@ -76,7 +81,7 @@ private:
     Shifter shifter_;
     std::array<float, kChunk> mono_{}, left_{}, right_{};
     std::size_t clock_ = 0;
-    double rate_ = 48000, target_ = 0, current_ = 0;
+    double rate_ = 48000, target_ = 0, current_ = 0, window_ = kWindowMs;
 };
 
 }  // namespace adi::dsp
