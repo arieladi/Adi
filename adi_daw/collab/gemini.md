@@ -4,6 +4,32 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 10 (WERROR-SWEEP): full-tree `-DADI_WERROR=ON` sweep on GCC 12.2 and Clang 14.0.6
+
+Head: `main` (`abbc32ab`, includes `#712 land/mixview2-1122`), Debug (`-g0`), `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON -DADI_BUILD_BENCHMARKS=ON`, DF-M62 (`adi_daw/src/adi/mix/limiter/Dsp/FloatRealTransform.h:61`) patched locally and reverted after the run. Every `.o` translation unit in the tree (**739 / 739**) was compiled with `ninja -k 0`.
+
+### Summary
+
+- **GCC 12.2.0 (Debug, `-DADI_WERROR=ON`)**: **738 / 739 objects clean** (0 warnings-as-errors across all 738 compiling objects, including all 52 newly landed `#712` Mix View 2 files).
+- **Clang 14.0.6 (Debug, `-DADI_WERROR=ON`)**: **728 / 739 objects clean** (0 warnings-as-errors across all 728 compiling objects, including all `#712` Mix View 2 files and `adi_ui_seams_tests`; 11 objects fail on C++20 front-end / libstdc++ 12 compatibility errors across 5 source sites).
+
+### Findings beyond DF-M62 (`FloatRealTransform.h:61`, fixed on `d22b81c1`)
+
+| File:line | Compiler / Config | Diagnostic | Repro | Owner |
+|---|---|---|---|---|
+| `adi_daw/CMakeLists.txt:2083-2084` (`tests/test_ui_seams.cpp`) | GCC 12.2.0 | Unrecognized option `-fsanitize-trap=signed-integer-overflow` (added in GCC 13) | `cmake -DCMAKE_CXX_COMPILER=g++ -DADI_WERROR=ON` then `cmake --build . --target adi_ui_seams_tests` | `window-fn` / `win` |
+| `adi_daw/src/adi/engine/timeline_clips.hpp:13` | Clang 14.0.6 (libstdc++ 12) | `std::views::filter` fails libstdc++ 12 `sentinel_t` constraint (blocks 8 TUs: `automation_clips.cpp`, `clip_playback.cpp`, `gain_stage.cpp`, `midi_clips.cpp`, `midi_controllers.cpp`, `freeze_capture.cpp`, `freeze_commands.cpp`, `test_take_lane_ops.cpp`) | `cmake -DCMAKE_CXX_COMPILER=clang++ -DADI_WERROR=ON` then compile `automation_clips.cpp.o` | `engine` / `engine-win` |
+| `adi_daw/src/adi/engine/midi_clips.cpp:659` | Clang 14.0.6 | Hard error: lambda captures structured binding `source` (Clang < 16 rejects P1091R3) | `cmake -DCMAKE_CXX_COMPILER=clang++` then compile `midi_clips.cpp.o` | `engine` |
+| `adi_daw/src/adi/engine/param_ops.cpp:339,347,1995,2008` | Clang 14.0.6 | Hard error: lambda captures structured bindings `role`, `id` | `cmake -DCMAKE_CXX_COMPILER=clang++` then compile `param_ops.cpp.o` | `engine` |
+| `adi_daw/src/adi/project_files.cpp:308` | Clang 14.0.6 | Hard error: lambda captures structured binding `hash` | `cmake -DCMAKE_CXX_COMPILER=clang++` then compile `project_files.cpp.o` | `engine` |
+| `adi_daw/tests/test_gain_stage.cpp:138` | Clang 14.0.6 | Hard error: lambda captures structured binding `track` | `cmake -DCMAKE_CXX_COMPILER=clang++` then compile `test_gain_stage.cpp.o` | `engine` |
+
+**Cross-references from other non-default configurations swept in items 4 and 5:**
+- `-DADI_PD_FLOATSIZE_64=ON` (item 4): `adi_daw/src/adi/pd_builtins/colorcab_tilde.cpp:25` and `adi_daw/src/adi/pd_builtins/oneshot_tilde.cpp:33,78,86,88` fail `-Werror=float-conversion` (GCC 12) / `-Werror,-Wimplicit-float-conversion` (Clang 14), owner `devices`.
+- GCC 12.2 Release `-O3 -DADI_WERROR=ON` (item 5): libstdc++ 12 `-Werror=restrict` (`src/adi/digest.cpp:38`, `src/juce/pd_engine.cpp:1203`), `-Werror=maybe-uninitialized` on `std::optional` (`src/adi/return_send_tap.cpp:64`, `src/adi/clip_commands.cpp:471`, `nlohmann/json.hpp:1228`), `-Werror=stringop-overflow` (`src/adi/audio/mp4_aac.cpp`), and `-Werror=mismatched-new-delete` (`tests/test_loudness.cpp:48`).
+
+---
+
 ## 2026-11-22 — Queue item 9 (DF-E12): root cause found and reproduced for flaky `Store::create` of `Cached.adi`
 
 **For the engine seat (owner: `engine`).** Head: `main` (`abbc32ab`), GCC 12.2.0 Debug, ext4 temp filesystem.
