@@ -2226,7 +2226,7 @@ void compareAndAveragePages() {
     check(broker->stats().consumers == 0 && broker->stats().spectralPlans == 0,
           "the final maximum view leaves no analysis demand");
 
-    const auto cumulativeId = static_cast<int>(Mode::SpectrumMaximum) + 2;
+    const auto cumulativeId = static_cast<int>(Mode::SpectrumCumulativeMaximum) + 1;
     pages.setVisible(true);
     pages.spectrumTraceBox.setSelectedId(cumulativeId, juce::sendNotificationSync);
     pages.frame(broker, original, main, guitar);
@@ -2235,9 +2235,8 @@ void compareAndAveragePages() {
               pages.detail.scaleBox.isShowing(),
           "Cumulative Maximum uses the Spectrum trace selector and the existing scale controls");
     if (pages.spectrumTraceBox.getText() == "Cumulative Maximum") {
-        constexpr auto cumulativeOutput = std::uint32_t{SharedAnalysis::RealtimeMaximum} << 1;
         auto secondRequest = maximumRequest;
-        secondRequest.outputs = cumulativeOutput;
+        secondRequest.outputs = SharedAnalysis::CumulativeMaximum;
         auto siblingMaximum = broker->acquire(secondRequest);
         const auto start = first->written();
         write(*first, .8f, start, 4);

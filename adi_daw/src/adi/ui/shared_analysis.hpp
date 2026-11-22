@@ -23,6 +23,7 @@ class FocusScopeBarProjection;
 class SharedAnalysis final {
     struct State;
     struct Domain;
+    struct CumulativeHistory;
     struct CaptureDomain;
     struct BarScopeDomain;
     struct Scheduler;
@@ -39,7 +40,8 @@ class SharedAnalysis final {
     enum class Channel : std::uint8_t { Mid, Side, Left, Right, StereoPower };
     enum class Mode { Worker, Manual };
     enum Output : std::uint32_t {
-        Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32, RealtimeMaximum = 64
+        Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32,
+        RealtimeMaximum = 64, CumulativeMaximum = 128
     };
     struct StereoMeterProfile {
         bool midSide = false;
@@ -137,7 +139,11 @@ class SharedAnalysis final {
         // Only Average1s leases: same immutable sidecar/window for compatible
         // consumers. Missing/refused publication returns null; inspect status.
         std::shared_ptr<const AverageResult> readAverage() const noexcept;
+        // Cumulative demand shares the FFT and owns its own hold interval.
+        // A combined lease can select the maximum output explicitly.
         std::shared_ptr<const MaximumResult> readMaximum() const noexcept;
+        std::shared_ptr<const MaximumResult> readMaximum(Output) const noexcept;
+        bool restartCumulativeMaximum() noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
         bool restartStereoMeter() noexcept;
         // Owner-only activation barrier, not a paint/audio query. A nonzero
@@ -145,9 +151,10 @@ class SharedAnalysis final {
         // sample count, independent of analysis backlog or publication revisions.
         SourcePosition sourcePosition() const noexcept;
       private:
-        Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t);
+        Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t, std::shared_ptr<CumulativeHistory>);
         std::weak_ptr<State> state_;
         std::shared_ptr<Domain> domain_;
+        std::shared_ptr<CumulativeHistory> cumulative_;
         std::uint32_t outputs_ = 0;
         friend class SharedAnalysis;
     };

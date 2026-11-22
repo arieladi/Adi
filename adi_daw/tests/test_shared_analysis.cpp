@@ -252,7 +252,6 @@ void realtimeMaximumDecayAndAdmission() {
 }
 void cumulativeMaximumSpectrum() {
     constexpr int window = 1024;
-    constexpr auto cumulativeOutput = std::uint32_t{SharedAnalysis::RealtimeMaximum} << 1;
     Fixture f;
     SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
     request.window = adi::dsp::Window::Rectangular;
@@ -264,7 +263,7 @@ void cumulativeMaximumSpectrum() {
     tone(*f.tap, window, .9f);
     f.broker.pump();
     const auto oldPeak = raw.read();
-    request.outputs = cumulativeOutput;
+    request.outputs = SharedAnalysis::CumulativeMaximum;
     auto cumulative = f.broker.acquire(request);
     auto sibling = f.broker.acquire(request);
     check(cumulative.available() && sibling.available() && f.broker.stats().domains == 1 &&
@@ -314,7 +313,7 @@ void cumulativeMaximumSpectrum() {
           "removing one cumulative observer preserves the history of another");
     cumulative = f.broker.acquire(request);
     f.broker.pump();
-    check(!cumulative.readMaximum(), "reopening the final cumulative observer waits for a fresh window");
+    check(!cumulative.readMaximum(), "reopening a cumulative observer waits for a fresh window");
     f.tap->write(quiet.data(), quiet.data(), window, 65 * window, true);
     f.broker.pump();
     const auto reopened = cumulative.readMaximum();

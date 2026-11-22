@@ -48,7 +48,8 @@ class SharedSpectrumView final : public juce::Component,
     ~SharedSpectrumView() override;
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
     enum class Mode {
-        Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope, SpectrumMaximum
+        Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope,
+        SpectrumMaximum, SpectrumCumulativeMaximum
     };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
@@ -114,7 +115,8 @@ class SharedSpectrumView final : public juce::Component,
     void updateSpectrumProjection();
     void updateScaledSpectrum() noexcept;
     bool spectrumMode() const noexcept {
-        return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage || mode_ == Mode::SpectrumMaximum;
+        return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage ||
+               mode_ == Mode::SpectrumMaximum || mode_ == Mode::SpectrumCumulativeMaximum;
     }
     Status pictureStatus() const noexcept;
     void resetPicture() noexcept;
