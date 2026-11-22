@@ -3707,6 +3707,9 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::SoloSelected:
+        // With Cue Switches, S cues the track as its Cue button does (MX-08); complete on its own.
+        if (const auto current = view_.current(); current && current->cue.cueMode)
+            return cueTrack(arrangement.geometry.selection.track);
         if (!soloTrack(arrangement.geometry.selection.track, false))
             return false;
         break;

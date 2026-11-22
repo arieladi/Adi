@@ -405,7 +405,8 @@ void MixerStrip::frame(bool changed) noexcept {
                             juce::dontSendNotification);
         // A group holding a soloed track shows its Solo half coloured (Live 12 manual 18.3). The
         // property is set once at construction, so a frame only changes its value.
-        const bool half = kind_ == "group" && !t->soloed && holdsSoloed(panel_.root.reader().tracks(), track_);
+        // In Cue mode the button is the Cue button, and solos are not heard: no half colour from them.
+        const bool half = !cueMode && kind_ == "group" && !t->soloed && holdsSoloed(panel_.root.reader().tracks(), track_);
         if (static_cast<bool>(solo.getProperties()[kHalfLit]) != half) {
             solo.getProperties().set(kHalfLit, half);
             solo.repaint();
@@ -765,7 +766,7 @@ void MixerStrip::cueOutMenu() {
     const int outputs = panel_.root.outputChannels ? panel_.root.outputChannels() : 0;
     const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
     juce::PopupMenu m;
-    for (int pair = 0; pair == 0 || pair + 1 < outputs; pair += 2)
+    for (int pair = 0; pair == 0 || (pair + 1 < outputs && pair <= 62); pair += 2) // the op's pairs end at 63/64
         m.addItem(juce::String(pair + 1) + "/" + juce::String(pair + 2), true, pair == first,
                   [safe = SafePointer<MixerStrip>(this), pair] {
                       if (safe)
@@ -935,16 +936,17 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             panel_.root.say("This send is off. Right-click it for Enable Send.");
         return;
     }
+    // Main's Cue Out chooser opens on any click, as Live's choosers do (MX-08).
+    if (e.eventComponent == this && onCueOut(e.getPosition())) {
+        cueOutMenu();
+        return;
+    }
     if (!e.mods.isPopupMenu()) {
         // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks
         // together when it is among them.
         if (e.eventComponent == this)
             if (const auto mode = monitorAt(e.getPosition()))
                 panel_.root.setMonitor(track_, *mode);
-        return;
-    }
-    if (e.eventComponent == this && onCueOut(e.getPosition())) {
-        cueOutMenu();
         return;
     }
     if (e.eventComponent == this && onMonitorInOrAuto(e.getPosition())) {

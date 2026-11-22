@@ -2066,6 +2066,11 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                 column->solo.onClick();
             root.frame();
             check(!cued(*root.current(), 3), "a second click uncues it");
+            root.arrangement.geometry.selection.track = 3;
+            check(root.command(AppCommands::SoloSelected) && cued(*root.current(), 3) &&
+                      !root.current()->findTrack(3)->soloed && root.undoTitle(false) == title,
+                  "S cues the selected track in Cue mode, no undo step");
+            check(root.command(AppCommands::SoloSelected) && !cued(*root.current(), 3), "and uncues it");
         }
         mainStrip = rowOf(root.mixerView, 7);
         check(mainStrip != nullptr && mainStrip->cueVolume.isVisible() && mainStrip->cueVolume.getTitle() == "Cue Volume",
