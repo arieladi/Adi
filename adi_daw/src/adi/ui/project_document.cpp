@@ -153,6 +153,13 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
                  " already exists; ADI never replaces a project. Choose another name.";
         return false;
     }
+    // A take recording or landing goes into the file it was recorded in, before the file switches
+    // (PD06-SAVEAS-GUARD): Record stops, the take lands as its one undo step, then Save As goes on.
+    const bool wasRecording = recording_;
+    if (!landTakeHere()) {
+        error_ = "The take is still being saved; try Save As again in a moment.";
+        return false;
+    }
     // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
     // the members hold the Store itself, which keeps its identity across the switch.
     refreshReportedLatenciesForSave();
@@ -162,6 +169,9 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         return false;
     }
     warning_ = result.warning;
+    // Said only of a take that landed; one that was not kept says so itself (`takeLanded`).
+    if (wasRecording && landed_ && landed_->ok)
+        warning_ = std::string("Recording stopped, its take kept, before Save As.") + (warning_.empty() ? "" : " ") + warning_;
     {
         std::lock_guard lock(waveformSource_->mutex);
         waveformSource_->path = store_->path();
@@ -1041,7 +1051,24 @@ void ProjectDocument::release() {
     session_.release(); // stops a running capture; the timer lands what it holds
     deviceStopped_.store(true, std::memory_order_release);
 }
-void ProjectDocument::settleRecording() {
+bool ProjectDocument::landTakeHere() {
+    if (!recording_ && !landing_)
+        return true;
+    if (recording_)
+        stopRecording();
+    // The device's callback moves the capture past its end while it runs; a stopped device settles it
+    // here, as `settleRecording` does. Up to ten seconds for the recorder's worker.
+    for (int waited = 0; landing_ && waited < 5000; ++waited) {
+        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire))) {
+            landing_ = false;
+            landTake(*result);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return !landing_;
+}
+bool ProjectDocument::settleRecording() {
     // The driver is detached: nothing will move the callback past the capture, so it is settled here.
     if (recording_)
         stopRecording();
@@ -1050,10 +1077,11 @@ void ProjectDocument::settleRecording() {
         if (auto result = session_.recording().poll(true)) {
             landing_ = false;
             landTake(*result);
-            return;
+            return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
+    return !landing_;
 }
 bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {

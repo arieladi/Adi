@@ -552,7 +552,7 @@ class AdiApplication final : public juce::JUCEApplication,
         detachAudio();
         // A take still recording or landing goes into its project before the project closes (MX-09).
         if (document_)
-            document_->settleRecording();
+            (void)document_->settleRecording(); // Quit: nothing is left to tell
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
@@ -622,8 +622,9 @@ class AdiApplication final : public juce::JUCEApplication,
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
         // could not be kept says so before that project goes.
         if (document_) {
-            document_->settleRecording();
-            if (auto landed = document_->takeLanded(); landed && !landed->ok)
+            if (!document_->settleRecording())
+                report("The last take was still being saved and could not be kept; the new project opened.");
+            else if (auto landed = document_->takeLanded(); landed && !landed->ok)
                 report(landed->message);
         }
         mainMeterSource_.reset();
@@ -1094,8 +1095,18 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_ || !root_ || !window_)
             return;
         const auto before = document_->deviceCopyIdentity();
-        if (!document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()))) {
-            root_->say(document_->error());
+        const bool saved = document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()));
+        // A take landed before the switch (PD06-SAVEAS-GUARD) is told here with Save As's own words, so the
+        // timer finds nothing to say over them; a kept take is chosen, as when it lands on its own.
+        std::string landedFirst;
+        if (auto landed = document_->takeLanded()) {
+            if (!landed->ok)
+                landedFirst = landed->message + " ";
+            else if (!landed->clips.empty())
+                root_->selectClip(landed->clips.front());
+        }
+        if (!saved) {
+            root_->say(landedFirst + document_->error());
             return;
         }
         // The same project under a new file: a copy held from it still pastes into it.
@@ -1103,7 +1114,7 @@ class AdiApplication final : public juce::JUCEApplication,
             deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
         commands_->clipClipboard().rebase(before, document_->deviceCopyIdentity());
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
-        root_->say(document_->warning());
+        root_->say(landedFirst + document_->warning());
     }
     // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
     // else in the window changes.

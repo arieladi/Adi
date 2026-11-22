@@ -10,6 +10,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <chrono>
 #include <cmath>
@@ -883,6 +884,99 @@ void peakSpans() {
     check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
 }
 
+// PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in
+// the file it was recorded in first, as one undo step, and then switches; the saved file holds it.
+void saveAsKeepsTheTake(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "guard.adi", true, {}, error);
+    check(doc != nullptr, "a project to record into");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "3 Audio armed");
+    std::array<float, 64> in{}, l{}, r{};
+    const float *inputs[]{in.data()};
+    float *outputs[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        for (int i = 0; i < 64; ++i)
+            in[static_cast<std::size_t>(i)] = static_cast<float>((stream + i) % 13) / 32.f - .2f;
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    };
+    const auto clipsIn = [](const std::filesystem::path &file) {
+        SQLite::Database db(file.string(), SQLite::OPEN_READONLY);
+        return db.execAndGet("SELECT count(*) FROM clips WHERE track_id = 4").getInt();
+    };
+    const auto clipsBefore = doc->store().db().execAndGet("SELECT count(*) FROM clips WHERE track_id = 4").getInt();
+    // 1. During Record, the device still calling back on its own thread, as the app's does.
+    check(doc->startRecording(0, 1, false) && doc->recording(), "Record");
+    for (int b = 0; b < 16; ++b)
+        block();
+    std::atomic<bool> running{true};
+    std::thread callback([&] {
+        while (running.load()) {
+            block();
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+    });
+    const auto first = dir / "guard-as.adi";
+    const bool saved = doc->saveAs(first);
+    running = false;
+    callback.join();
+    const auto landed = doc->takeLanded();
+    check(saved && !doc->recording() && !doc->landingTake() && landed && landed->ok && landed->clips.size() == 1,
+          "Save As during Record stops it, lands the take, then saves");
+    check(doc->store().path() == first && clipsIn(first) == clipsBefore + 1 && clipsIn(dir / "guard.adi") == clipsBefore + 1 &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Record Audio" &&
+              doc->warning().find("Recording stopped") != std::string::npos,
+          "the take is one undo step in the file it was recorded in, and in the saved file; the Status Bar says so");
+    // 2. While the take's placement is pending: stopped, the device gone, the take not yet landed. A
+    // project of its own: a take recorded after a Save As waits on the session re-reading the file's
+    // identity (the engine's need in window-fn's log).
+    doc.reset();
+    doc = ui::ProjectDocument::open(dir / "pending.adi", true, {}, error);
+    check(doc != nullptr, "a second project to record into");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "3 Audio armed there");
+    check(doc->startRecording(0, 1, false), "Record again");
+    for (int b = 0; b < 16; ++b)
+        block();
+    doc->stopRecording();
+    doc->release();
+    check(doc->landingTake(), "stopped: the take is pending");
+    const auto second = dir / "pending-as.adi";
+    check(doc->saveAs(second) && !doc->landingTake() && clipsIn(second) == clipsBefore + 1 &&
+              clipsIn(dir / "pending.adi") == clipsBefore + 1 && doc->warning().find("Recording stopped") == std::string::npos,
+          "Save As with the take pending lands it first, in the file it was recorded in, then saves");
+    const auto again = doc->takeLanded();
+    check(again && again->ok && again->clips.size() == 1 && doc->ops().nextUndo() &&
+              doc->ops().nextUndo()->label == "Record Audio",
+          "as one undo step");
+    // 3. Save As during a Record that recorded nothing (the device gone before a block): no take is kept, and
+    // Save As does not say one was.
+    doc->prepare(48000, 64);
+    check(doc->startRecording(0, 1, false), "Record once more");
+    doc->release();
+    const auto third = dir / "nothing-as.adi";
+    const bool savedThird = doc->saveAs(third);
+    const auto dropped = doc->takeLanded();
+    check(savedThird && dropped && !dropped->ok && dropped->message.find("not kept") != std::string::npos &&
+              doc->warning().find("its take kept") == std::string::npos && clipsIn(third) == clipsBefore + 1,
+          "Save As after a Record with nothing recorded: the take is not kept, says so, and Save As does not claim it");
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -905,6 +999,8 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());
+        test::TempDirectory guardDir("ui_document", "guard");
+        saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
         mixerDragHeard(dragDir.path());
     }
