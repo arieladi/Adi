@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/interchange/otio_time.hpp"
+#include "adi/interchange/otio_timeline.hpp"
 
 #include <cstdio>
 #include <limits>
@@ -95,12 +96,110 @@ void ranges() {
     check(!readRange(malformed) && writeRange({}).has_value(),
           "partial ranges are refused and zero length is representable");
 }
+
+Json wireRange(int start, int duration, const Json &rate) {
+    return Json{{"OTIO_SCHEMA", "TimeRange.1"}, {"start_time", wireTime(start, rate)},
+                {"duration", wireTime(duration, rate)}};
+}
+
+Json linearDocument() {
+    const Json gap{{"OTIO_SCHEMA", "Gap.1"}, {"source_range", wireRange(0, 8, 24)}};
+    const Json legacy{{"OTIO_SCHEMA", "Clip.1"}, {"name", "Recorder"},
+                      {"source_range", wireRange(-15, 24, 24)}, {"enabled", false},
+                      {"media_reference", Json{{"OTIO_SCHEMA", "MissingReference.1"}}}};
+    const Json media{{"OTIO_SCHEMA", "ExternalReference.1"}, {"target_url", "file:///media/a%20b.wav"},
+                     {"available_range", wireRange(120, 1001, 29.97)}};
+    const Json modern{{"OTIO_SCHEMA", "Clip.2"}, {"name", "Source"}, {"source_range", nullptr},
+                      {"media_references", Json{{"backup", Json{{"OTIO_SCHEMA", "MissingReference.1"}}},
+                                                 {"capture/1~", media}}},
+                      {"active_media_reference_key", "capture/1~"}};
+    const Json audio{{"OTIO_SCHEMA", "Track.1"}, {"kind", "Audio"}, {"name", "A1"},
+                     {"children", Json::array({gap, legacy, modern})}};
+    const Json video{{"OTIO_SCHEMA", "Track.1"}, {"name", "V1"}, {"children", Json::array()}};
+    return Json{{"OTIO_SCHEMA", "Timeline.1"}, {"name", "Live room"}, {"global_start_time", wireTime(86400, 24)},
+                {"tracks", Json{{"OTIO_SCHEMA", "Stack.1"}, {"children", Json::array({audio, video})}}}};
+}
+
+void expectTimelineError(const Json &wire, TimelineIssue issue, const std::string &path,
+                         const char *message) {
+    const auto parsed = readLinearTimeline(wire);
+    const auto *error = std::get_if<TimelineError>(&parsed);
+    check(error && error->issue == issue && error->path == path, message);
+}
+
+void linearTimeline() {
+    auto wire = linearDocument();
+    const auto parsed = readLinearTimeline(wire);
+    wire.clear();
+    const auto *timeline = std::get_if<LinearTimeline>(&parsed);
+    check(timeline && timeline->name == "Live room" && timeline->globalStart &&
+              timeline->globalStart->valueNumerator == 86400 && timeline->tracks.size() == 2,
+          "capture timeline name, time origin and ordered tracks independently of the source DOM");
+    if (!timeline || timeline->tracks.size() != 2)
+        return;
+    const auto &audio = timeline->tracks[0];
+    const auto &video = timeline->tracks[1];
+    check(audio.kind == TrackKind::Audio && audio.name == "A1" && audio.items.size() == 3 &&
+              video.kind == TrackKind::Video && video.items.empty(),
+          "read serial tracks and default an omitted OTIO track kind to video");
+    if (audio.items.size() != 3)
+        return;
+    const auto &gap = audio.items[0];
+    const auto &legacy = audio.items[1];
+    const auto &modern = audio.items[2];
+    check(gap.kind == ItemKind::Gap && gap.source.duration.valueNumerator == 8 &&
+              legacy.kind == ItemKind::Clip && legacy.media == MediaKind::Missing && !legacy.enabled &&
+              legacy.source.start.valueNumerator == -15 && legacy.source.duration.valueNumerator == 24,
+          "gaps, disabled legacy clips and signed source trims preserve their exact ranges");
+    check(modern.media == MediaKind::External && modern.targetUrl == "file:///media/a%20b.wav" &&
+              modern.source.start.valueNumerator == 120 && modern.source.duration.valueNumerator == 1001 &&
+              modern.source.duration.rate.numerator == 30'000 && modern.source.duration.rate.denominator == 1001,
+          "Clip.2 selects active media and uses its exact available range for an untrimmed source");
+    auto inactive = linearDocument();
+    inactive["tracks"]["enabled"] = false;
+    const auto disabled = readLinearTimeline(inactive);
+    const auto *disabledTimeline = std::get_if<LinearTimeline>(&disabled);
+    check(disabledTimeline && disabledTimeline->tracks.size() == 2 &&
+              !disabledTimeline->tracks[0].enabled && !disabledTimeline->tracks[1].enabled,
+          "the stack's enabled state applies to every track");
+}
+
+void unsupportedTimelines() {
+    auto wire = linearDocument();
+    wire["tracks"]["children"][0]["children"][1]["OTIO_SCHEMA"] = "Transition.1";
+    expectTimelineError(wire, TimelineIssue::UnsupportedSchema, "/tracks/children/0/children/1/OTIO_SCHEMA",
+                        "timing-bearing unsupported items get their exact location");
+    wire = linearDocument();
+    wire["tracks"]["children"][1]["source_range"] = wireRange(0, 1, 24);
+    expectTimelineError(wire, TimelineIssue::UnsupportedTrim, "/tracks/children/1/source_range",
+                        "composition trimming cannot silently alter track placement");
+    wire = linearDocument();
+    wire["tracks"]["children"][0]["children"][1]["effects"] = Json::array({Json{{"OTIO_SCHEMA", "FreezeFrame.1"}}});
+    expectTimelineError(wire, TimelineIssue::UnsupportedEffects, "/tracks/children/0/children/1/effects",
+                        "unmodelled effects refuse a misleading time projection");
+    wire = linearDocument();
+    wire["tracks"]["children"][0]["children"][2]["media_references"].erase("capture/1~");
+    expectTimelineError(wire, TimelineIssue::MissingMediaReference,
+                        "/tracks/children/0/children/2/media_references/capture~11~0",
+                        "missing active reference reports an escaped JSON Pointer");
+    wire = linearDocument();
+    wire["tracks"]["children"][0]["children"][2]["media_references"]["capture/1~"].erase("available_range");
+    expectTimelineError(wire, TimelineIssue::MissingSourceRange,
+                        "/tracks/children/0/children/2/media_references/capture~11~0/available_range",
+                        "a clip without either usable duration source is refused");
+    wire = linearDocument();
+    wire["tracks"]["children"][0]["children"][0]["source_range"]["duration"]["value"] = -1;
+    expectTimelineError(wire, TimelineIssue::InvalidTime, "/tracks/children/0/children/0/source_range",
+                        "malformed exact time carries the clip or gap path");
+}
 } // namespace
 
 int main() {
     parseTime();
     ntscAndLimits();
     ranges();
+    linearTimeline();
+    unsupportedTimelines();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
