@@ -3236,6 +3236,167 @@ void exactSilentStereoLanes() {
                   "compatible full/compact silence pictures share the same publication without redundant transforms");
         }
 }
+void spectrumLevels() {
+    constexpr int rate = 48000, window = 480, hop = 240, crestFrames = rate / 20;
+    constexpr int warmup = rate / 8, earlyImpulse = warmup - crestFrames;
+    constexpr std::uint64_t revision = 19;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = hop;
+    auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+    const auto before = f.broker.stats();
+    std::vector<float> left, right;
+    std::int64_t nextStamp = 0;
+    auto write = [&](int count, float l, float r, std::uint64_t rev) {
+        left.assign(static_cast<std::size_t>(count), l);
+        right.assign(static_cast<std::size_t>(count), r);
+        f.tap->write(left.data(), right.data(), count, nextStamp, true, rev);
+        nextStamp += count;
+    };
+    auto feed = [&](int count, float l, float r, int block) {
+        while (count > 0) {
+            const auto frames = std::min(count, block);
+            write(frames, l, r, revision);
+            f.broker.pump();
+            count -= frames;
+        }
+    };
+    const auto reading = [](const auto &picture, double rmsL, double rmsR, double crestL, double crestR) {
+        return picture && picture->spectrumLevels &&
+            near(picture->spectrumLevels->integratedRms[0], rmsL, 1.e-8) &&
+            near(picture->spectrumLevels->integratedRms[1], rmsR, 1.e-8) &&
+            near(picture->spectrumLevels->maxCrestDb[0], crestL, 1.e-7) &&
+            near(picture->spectrumLevels->maxCrestDb[1], crestR, 1.e-7);
+    };
+
+    // The existing tap already holds nonzero pre-admission audio, and its
+    // last 240 frames will overlap the first new FFT picture.
+    write(window + hop, .875f, .75f, revision);
+    levels.setSpectrumLevelsEnabled(true);
+    f.broker.pump();
+    const auto preAdmission = raw.read();
+    check(preAdmission && !preAdmission->spectrumLevels && f.broker.stats().spectrumLevelHistories == 1,
+          "Spectrum level demand fences at the current writer, excluding unread earlier audio");
+    const auto partialBefore = f.broker.stats();
+    feed(hop - 1, .25f, .125f, hop);
+    check(raw.read() == preAdmission && f.broker.stats().publications == partialBefore.publications,
+          "new level samples alone do not publish a partial Spectrum picture");
+    feed(1, .25f, .125f, hop);
+    const auto first = levels.read();
+    check(reading(first, .25, .125, 0., 0.) && first == raw.read() &&
+              first->firstSequence == window && f.broker.stats().transforms == partialBefore.transforms + 1,
+          "the first shared level picture counts only its newly admitted samples");
+    feed(rate - hop, .25f, .125f, 377);
+    const auto baseline = raw.read();
+    check(reading(baseline, .25, .125, 0., 0.),
+          "integrated levels count each sample once across arbitrary writes and overlapped FFT hops");
+
+    feed(crestFrames, .5f, .125f, 613);
+    const auto loud = levels.read();
+    const auto peakCrest = 10. * std::log10(3.5);
+    check(reading(loud, std::sqrt(1. / 14.), .125, peakCrest, 0.),
+          "the 50 millisecond running RMS and integrated denominator give the calibrated held crest");
+    feed(crestFrames, .25f, .125f, 421);
+    const auto tail = levels.read();
+    check(reading(tail, std::sqrt((rate + 5. * crestFrames) / (16. * (rate + 2 * crestFrames))),
+                  .125, peakCrest, 0.) && tail == raw.read() && tail != loud,
+          "the maximum ratio holds as the integrated RMS changes; a held short RMS alone would drift");
+
+    // A new transport epoch clears the held ratio and the RMS interval. An
+    // impulse among otherwise fairly quiet samples would exceed 0 dB if the
+    // startup guard erroneously accepted it before the rolling RMS cleared.
+    const auto previousEpoch = tail ? tail->sourceEpoch : 0;
+    nextStamp = 200000;
+    write(window, 0.f, 0.f, revision + 1);
+    f.broker.pump();
+    const auto reset = raw.read();
+    check(reading(reset, 0., 0., 0., 0.) &&
+              reset->sourceEpoch > previousEpoch && reset->firstStamp == 200000,
+          "a timeline break clears both integrated RMS and held crest at the first full window");
+    for (int elapsed = window; elapsed < warmup; elapsed += hop) {
+        left.assign(hop, 0.f); right.assign(hop, 0.f);
+        if (elapsed == earlyImpulse) left.front() = .5f;
+        f.tap->write(left.data(), right.data(), hop, nextStamp, true, revision + 1);
+        nextStamp += hop;
+        f.broker.pump();
+    }
+    const auto warmed = raw.read();
+    check(reading(warmed, .5 / std::sqrt(static_cast<double>(warmup)), 0., 0., 0.),
+          "a startup impulse cannot set a crest after its 50 millisecond energy has cleared");
+    left.assign(hop, .5f); right.assign(hop, .25f);
+    left[0] = std::numeric_limits<float>::quiet_NaN();
+    left[1] = std::numeric_limits<float>::infinity();
+    right[2] = -std::numeric_limits<float>::infinity();
+    f.tap->write(left.data(), right.data(), hop, nextStamp, true, revision + 1);
+    nextStamp += hop;
+    f.broker.pump();
+    const auto finite = raw.read();
+    const auto integratedL = std::sqrt(.25 * (hop - 1) / (warmup + hop));
+    const auto integratedR = .25 * std::sqrt(static_cast<double>(hop - 1) / (warmup + hop));
+    const auto crestAfterWarmup = 10. * std::log10(static_cast<double>(warmup + hop) / crestFrames);
+    const auto expectedCrestL = crestAfterWarmup + 10. * std::log10(static_cast<double>(hop - 2) / (hop - 1));
+    check(reset && reading(finite, integratedL, integratedR, expectedCrestL, crestAfterWarmup) &&
+              finite->nonFiniteSamples == 3 && finite->sourceEpoch == reset->sourceEpoch,
+          "nonfinite lane samples contribute zero power and still occupy their time positions");
+
+    const auto measured = f.broker.stats();
+    check(measured.taps == before.taps && measured.domains == before.domains &&
+              measured.spectralPlans == before.spectralPlans && f.acquireCalls == 1,
+          "visible level measurement shares the tap and Spectrum transform plan");
+    levels.reset();
+    write(hop, .25f, .125f, revision + 1);
+    f.broker.pump();
+    const auto undemanded = raw.read();
+    const auto dropped = f.broker.stats();
+    check(undemanded && !undemanded->spectrumLevels && dropped.spectrumLevelHistories == 0 &&
+              dropped.taps == 1 && dropped.spectralPlans == 1 && dropped.transforms == measured.transforms + 1,
+          "dropping the last levels reader frees its bounded history while ordinary Spectrum stays live");
+    raw.reset();
+    check(f.broker.stats().taps == 0 && f.broker.stats().spectrumLevelHistories == 0 && f.releaseCalls == 1,
+          "hiding the final Spectrum releases the shared tap and level history");
+}
+
+void parkedSpectrumLevels() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    Fixture parked, reference;
+    parked.tap = std::make_shared<ScopeTap>(48000., .25);
+    reference.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1};
+    request.fftSize = window; request.hopSize = hop;
+    auto levels = parked.broker.acquire(request), continuous = reference.broker.acquire(request);
+    levels.setSpectrumLevelsEnabled(true); continuous.setSpectrumLevelsEnabled(true);
+    const std::array<float, window> zeros{};
+    std::array<float, window> live;
+    live.fill(.5f);
+    const auto append = [](Fixture &fixture, const float *samples, int count) {
+        fixture.tap->write(samples, samples, count, 0, false, 2);
+        fixture.broker.pump();
+    };
+    append(parked, nullptr, window); append(reference, zeros.data(), window);
+    const auto start = levels.read();
+    const auto settled = parked.broker.stats();
+    for (int i = 0; i < blocks; ++i) {
+        append(parked, nullptr, block); append(reference, zeros.data(), block);
+    }
+    const auto idle = parked.broker.stats();
+    check(parked.tap->oldest() > window && start && start->spectrumLevels && levels.read() == start &&
+              idle.cursorReads == settled.cursorReads && idle.analysisWindows == settled.analysisWindows &&
+              idle.transforms == settled.transforms && idle.publications == settled.publications,
+          "an exact-zero level interval stays parked without further reads or publications at a ring wrap");
+    append(parked, live.data(), untilHop - 1); append(reference, live.data(), untilHop - 1);
+    check(levels.read() == start, "stopped monitoring preserves the level display until the original hop completes");
+    append(parked, live.data(), 1); append(reference, live.data(), 1);
+    const auto resumed = levels.read(), oracle = continuous.read();
+    check(start && resumed && oracle && resumed->spectrumLevels && oracle->spectrumLevels &&
+              resumed->firstSequence == oracle->firstSequence &&
+              resumed->sourceEpoch == start->sourceEpoch && resumed->overrunCount == start->overrunCount &&
+              resumed->spectrumLevels->integratedRms == oracle->spectrumLevels->integratedRms &&
+              resumed->spectrumLevels->maxCrestDb == oracle->spectrumLevels->maxCrestDb &&
+              resumed->spectrumLevels->maxCrestDb.front() > 0.,
+          "parked levels count the omitted zeros for the exact uninterrupted RMS and crest on wake");
+}
+
 void sharedAverage() {
     Fixture f;
     SharedAnalysis::Request request{1}; request.hopSize = 1024;
@@ -4525,7 +4686,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); parkedSpectrumLevels(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

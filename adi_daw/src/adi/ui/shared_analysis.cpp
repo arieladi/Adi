@@ -470,6 +470,92 @@ class StereoBalanceHistory {
                        frames == fullLength && sum[0] == 0. && sum[1] == 0.};
     }
 };
+
+class SpectrumLevelHistory {
+    using Stereo = std::array<double, 2>;
+    static constexpr double silenceGuard = 1.e-15;
+    const std::size_t warmup_;
+    const double windowFrames_;
+    std::vector<Stereo> powers_;
+    std::int64_t admission_;
+    std::size_t position_ = 0;
+    std::uint64_t frames_ = 0;
+    Stereo integrated_{}, rolling_{}, crest_{1., 1.}, crestSquared_{1., 1.};
+    std::array<std::size_t, 2> rollingNonzero_{};
+
+    static double power(float sample) noexcept {
+        return std::isfinite(sample) ? static_cast<double>(sample) * sample : 0.;
+    }
+
+  public:
+    std::optional<SharedAnalysis::SpectrumLevels> completed;
+
+    SpectrumLevelHistory(double rate, std::int64_t admission)
+        : warmup_(static_cast<std::size_t>(std::llround(rate * .125))),
+          windowFrames_(static_cast<double>(std::max(1ll, std::llround(rate * .05)))),
+          powers_(static_cast<std::size_t>(windowFrames_)), admission_(admission) {}
+
+    void reset() noexcept {
+        // Pre-reset ring entries become ineligible until overwritten.
+        position_ = 0; frames_ = 0;
+        integrated_ = {}; rolling_ = {}; crest_ = {1., 1.}; crestSquared_ = {1., 1.};
+        rollingNonzero_ = {}; completed.reset();
+    }
+    void startAt(std::int64_t admission) noexcept { admission_ = admission; reset(); }
+    bool silent() const noexcept { return integrated_[0] == 0. && integrated_[1] == 0.; }
+
+    void skipSilence(std::int64_t first, std::int64_t end) noexcept {
+        const auto count = std::max(std::int64_t{0}, end - std::max(first, admission_));
+        const auto length = static_cast<std::uint64_t>(powers_.size());
+        // Fill logically without touching the ring. After a reset the first
+        // traversal may still contain stale power values, so clear only the
+        // prefix that becomes readable.
+        if (frames_ < length && count > 0) {
+            const auto fill = static_cast<std::size_t>(std::min(length - frames_, static_cast<std::uint64_t>(count)));
+            std::fill_n(powers_.begin() + static_cast<std::ptrdiff_t>(position_), fill, Stereo{});
+            position_ = (position_ + fill) % powers_.size();
+        }
+        frames_ += static_cast<std::uint64_t>(count);
+    }
+
+    void advance(std::int64_t first, std::span<const float> left, std::span<const float> right) noexcept {
+        const auto begin = static_cast<std::size_t>(std::clamp(admission_ - first,
+            std::int64_t{0}, static_cast<std::int64_t>(left.size())));
+        for (std::size_t i = begin; i < left.size(); ++i) {
+            const auto previous = frames_ < powers_.size() ? Stereo{} : powers_[position_];
+            const Stereo next{power(left[i]), power(right[i])};
+            powers_[position_] = next;
+            if (++position_ == powers_.size()) position_ = 0;
+            ++frames_;
+            const auto count = static_cast<double>(frames_);
+            for (std::size_t c = 0; c < next.size(); ++c) {
+                integrated_[c] += next[c];
+                rollingNonzero_[c] -= static_cast<std::size_t>(previous[c] > 0.);
+                rollingNonzero_[c] += static_cast<std::size_t>(next[c] > 0.);
+                rolling_[c] = rollingNonzero_[c] ? std::max(0., (rolling_[c] - previous[c]) + next[c]) : 0.;
+                // The silence guard moves a ratio above one toward one. A
+                // squared comparison can reject non-records without square roots.
+                if (frames_ > warmup_ && rolling_[c] * count > crestSquared_[c] * integrated_[c] * windowFrames_) {
+                    const auto candidate = (std::sqrt(rolling_[c] / windowFrames_) + silenceGuard) /
+                                           (std::sqrt(integrated_[c] / count) + silenceGuard);
+                    if (candidate > crest_[c]) {
+                        crest_[c] = candidate;
+                        crestSquared_[c] = candidate * candidate;
+                    }
+                }
+            }
+        }
+    }
+
+    void completeWindow() noexcept {
+        if (frames_ == 0) return;
+        completed.emplace();
+        for (std::size_t c = 0; c < integrated_.size(); ++c) {
+            completed->integratedRms[c] = std::sqrt(integrated_[c] / static_cast<double>(frames_));
+            completed->maxCrestDb[c] = 20. * std::log10(crest_[c]);
+        }
+    }
+};
 } // namespace
 struct SharedAnalysis::SpectrumBlockAverage {
     // Worker and owner mutations hold the domain mutex. Readers see immutable snapshots.
@@ -571,6 +657,9 @@ struct SharedAnalysis::Domain {
     std::vector<std::shared_ptr<CumulativeAverageHistory>> cumulativeAverages;
     std::unique_ptr<StereoBalanceHistory> balanceHistory;
     std::atomic<bool> balanceActive{false};
+    std::size_t spectrumLevelUsers = 0;
+    std::unique_ptr<SpectrumLevelHistory> spectrumLevelHistory;
+    std::atomic<bool> spectrumLevelsActive{false}, spectrumLevelsParkedSettled{true};
     std::atomic<bool> balanceParkedSettled{true};
     std::size_t balanceUsers = 0;
     std::vector<std::shared_ptr<SpectrumBlockAverage>> blockAverages;
@@ -856,6 +945,24 @@ struct SharedAnalysis::Domain {
             prepareBalance();
         }
     }
+    void prepareSpectrumLevels() noexcept {
+        spectrumLevelHistory.reset();
+        const auto rate = tap ? tap->sampleRate() : 0.;
+        if (spectrumLevelUsers && rate > 0. && rate <= 768000.) {
+            try { spectrumLevelHistory = std::make_unique<SpectrumLevelHistory>(rate, tap->written()); }
+            catch (...) { /* Level statistics are optional. */ }
+        }
+        spectrumLevelsActive.store(static_cast<bool>(spectrumLevelHistory), std::memory_order_release);
+        spectrumLevelsParkedSettled.store(!spectrumLevelHistory, std::memory_order_release);
+        dirty.store(true, std::memory_order_release);
+    }
+    void changeSpectrumLevelDemand(bool enabled) noexcept {
+        if (enabled) {
+            if (++spectrumLevelUsers == 1) prepareSpectrumLevels();
+        } else if (--spectrumLevelUsers == 0) {
+            prepareSpectrumLevels();
+        }
+    }
     std::shared_ptr<SpectrumBlockAverage> admitBlockAverage(
         std::uint32_t depth, std::int64_t sequence) {
         if (depth <= 1) return {};
@@ -889,6 +996,10 @@ struct SharedAnalysis::Domain {
                 balanceHistory->reset();
                 balanceParkedSettled.store(false, std::memory_order_release);
             }
+            if (spectrumLevelHistory) {
+                spectrumLevelHistory->reset();
+                spectrumLevelsParkedSettled.store(false, std::memory_order_release);
+            }
             resetAverageForGap();
             // A discontinuity clears the history but cannot admit older
             // samples from the same tap. A replacement tap uses startAt().
@@ -908,6 +1019,7 @@ struct SharedAnalysis::Domain {
         if (tap && !fresh) cursor.next = std::max(tap->oldest(), tap->written() - request.fftSize);
         if (phaseBandPlan) phaseBandPlan->bindRate(tap ? tap->sampleRate() : 0.);
         if (balanceUsers) prepareBalance();
+        if (spectrumLevelUsers) prepareSpectrumLevels();
         if (meter) {
             neutralMeter.store(false, std::memory_order_release);
             publishMeter({});
@@ -931,6 +1043,10 @@ struct SharedAnalysis::Domain {
         if (balanceHistory) {
             balanceHistory->startAt(cursor.next);
             balanceParkedSettled.store(false, std::memory_order_release);
+        }
+        if (spectrumLevelHistory) {
+            spectrumLevelHistory->startAt(cursor.next);
+            spectrumLevelsParkedSettled.store(false, std::memory_order_release);
         }
         activateAverage(sequence);
         activateMaximum(sequence);
@@ -978,6 +1094,11 @@ struct SharedAnalysis::Domain {
             balanceHistory.reset();
             balanceActive.store(false, std::memory_order_release);
             balanceParkedSettled.store(true, std::memory_order_release);
+        }
+        if (!bits && spectrumLevelHistory) {
+            spectrumLevelHistory.reset();
+            spectrumLevelsActive.store(false, std::memory_order_release);
+            spectrumLevelsParkedSettled.store(true, std::memory_order_release);
         }
         if (!(bits & PhaseBands)) phaseBandPlan.reset();
         if (!(bits & Strip) && strip) {
@@ -1032,6 +1153,7 @@ struct SharedAnalysis::Domain {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
                balanceParkedSettled.load(std::memory_order_acquire) &&
+               spectrumLevelsParkedSettled.load(std::memory_order_acquire) &&
                (!(bits & Strip) || neutralStrip.load(std::memory_order_acquire)) &&
                (!(bits & DeviceBlockAverage) || blockAveragesQuiet.load(std::memory_order_acquire)) &&
                // Cumulative averaging counts silent hops even when its bins already sit at the floor.
@@ -1046,18 +1168,23 @@ struct SharedAnalysis::Domain {
     }
     void skipCertifiedSilenceTo(std::int64_t next) noexcept {
         if (next <= cursor.next) return;
-        if (canParkAverage(outputs.load(std::memory_order_relaxed))) {
-            // The accepted linear history is exactly zero. An omitted zero hop
-            // cannot change it, but still belongs to the audible hop timeline.
+        const bool averageParked = canParkAverage(outputs.load(std::memory_order_relaxed));
+        if (spectrumLevelHistory) spectrumLevelHistory->skipSilence(cursor.next, next);
+        if (averageParked || spectrumLevelHistory) {
+            // The retained history is exactly zero. Omitted samples still
+            // belong to the audible sequence and retain the original hop phase.
             const auto frames = next - cursor.next + static_cast<std::int64_t>(sinceWindow);
             const auto omitted = static_cast<std::uint64_t>(frames / request.hopSize);
             sinceWindow = static_cast<std::size_t>(frames % request.hopSize);
             if (omitted > 0) {
                 const auto complete = next - static_cast<std::int64_t>(sinceWindow);
                 windowSerial += omitted;
-                averageWindows += omitted;
-                averageWindow = spectralWindow = windowSerial;
-                if (averageBins) averageBinsWindow = averageWindow;
+                if (averageParked) {
+                    averageWindows += omitted;
+                    averageWindow = windowSerial;
+                    if (averageBins) averageBinsWindow = averageWindow;
+                }
+                spectralWindow = windowSerial;
                 firstSequence = complete - request.fftSize;
                 completedWindowEnd.store(complete, std::memory_order_release);
             }
@@ -1068,8 +1195,8 @@ struct SharedAnalysis::Domain {
         if (balanceHistory)
             balanceHistory->rebaseSilentWindow(next - static_cast<std::int64_t>(sinceWindow));
     }
-    void catchUpParkedAverageBeforeAddingOutput() noexcept {
-        if (!tap || !canParkAverage(outputs.load(std::memory_order_relaxed))) return;
+    void catchUpParkedSilence() noexcept {
+        if (!tap) return;
         const auto quiet = tap->lastParkedSilence();
         if (quiet.end <= cursor.next || !settledParkedSilence(quiet)) return;
         skipCertifiedSilenceTo(quiet.end);
@@ -1261,6 +1388,14 @@ struct SharedAnalysis::Domain {
             const auto reading = balanceHistory->reading(windowEnd);
             if (reading) latest->balanceRms2s = reading->rms;
             balanceParkedSettled.store(reading && reading->fullSilence, std::memory_order_release);
+        }
+        if (spectrumLevelHistory) {
+            if (newWindow) {
+                spectrumLevelHistory->completeWindow();
+                spectrumLevelsParkedSettled.store(spectrumLevelHistory->completed && spectrumLevelHistory->silent(),
+                                                  std::memory_order_release);
+            }
+            latest->spectrumLevels = spectrumLevelHistory->completed;
         }
         if (needsSpectrum) {
             if (spectralWindow != windowSerial) {
@@ -2116,7 +2251,8 @@ struct SharedAnalysis::State {
     void drop(const std::shared_ptr<Domain> &domain, std::uint32_t outputs,
               const std::shared_ptr<CumulativeHistory> &cumulative,
               const std::shared_ptr<SpectrumBlockAverage> &blockAverage,
-              const std::shared_ptr<CumulativeAverageHistory> &cumulativeAverage, bool balanceEnabled) noexcept {
+              const std::shared_ptr<CumulativeAverageHistory> &cumulativeAverage, bool balanceEnabled,
+              bool spectrumLevelsEnabled) noexcept {
         ownerOnly();
         bool detach = false;
         const auto key = domain->request.source();
@@ -2128,6 +2264,7 @@ struct SharedAnalysis::State {
             if (domain->consumers) {
                 std::lock_guard domainLock(domain->mutex);
                 if (balanceEnabled) domain->changeBalanceDemand(false);
+                if (spectrumLevelsEnabled) domain->changeSpectrumLevelDemand(false);
                 domain->dropCumulative(cumulative);
                 domain->dropBlockAverage(blockAverage);
                 if (cumulativeAverage) std::erase(domain->cumulativeAverages, cumulativeAverage);
@@ -2279,6 +2416,11 @@ struct SharedAnalysis::State {
                 }
                 if (!read.frames) break;
                 samples += static_cast<std::size_t>(read.frames);
+                if (d.spectrumLevelHistory) {
+                    const auto frames = static_cast<std::size_t>(read.frames);
+                    d.spectrumLevelHistory->advance(read.firstSequence, std::span(readLeft).first(frames),
+                                                    std::span(readRight).first(frames));
+                }
                 for (std::int32_t i = 0; i < read.frames; ++i) {
                     d.ringLeft[d.position] = readLeft[static_cast<std::size_t>(i)];
                     d.ringRight[d.position] = readRight[static_cast<std::size_t>(i)];
@@ -2412,7 +2554,8 @@ SharedAnalysis::Lease::~Lease() { reset(); }
 SharedAnalysis::Lease::Lease(Lease &&other) noexcept
     : state_(std::move(other.state_)), domain_(std::move(other.domain_)), cumulative_(std::move(other.cumulative_)),
       spectrumBlockAverage_(std::move(other.spectrumBlockAverage_)), cumulativeAverage_(std::move(other.cumulativeAverage_)),
-      outputs_(std::exchange(other.outputs_, 0)), balanceEnabled_(std::exchange(other.balanceEnabled_, false)) {}
+      outputs_(std::exchange(other.outputs_, 0)), balanceEnabled_(std::exchange(other.balanceEnabled_, false)),
+      spectrumLevelsEnabled_(std::exchange(other.spectrumLevelsEnabled_, false)) {}
 SharedAnalysis::Lease &SharedAnalysis::Lease::operator=(Lease &&other) noexcept {
     if (this != &other) {
         reset();
@@ -2423,13 +2566,15 @@ SharedAnalysis::Lease &SharedAnalysis::Lease::operator=(Lease &&other) noexcept 
         cumulativeAverage_ = std::move(other.cumulativeAverage_);
         outputs_ = std::exchange(other.outputs_, 0);
         balanceEnabled_ = std::exchange(other.balanceEnabled_, false);
+        spectrumLevelsEnabled_ = std::exchange(other.spectrumLevelsEnabled_, false);
     }
     return *this;
 }
 void SharedAnalysis::Lease::reset() noexcept {
     if (domain_) if (auto state = state_.lock())
-        state->drop(domain_, outputs_, cumulative_, spectrumBlockAverage_, cumulativeAverage_, balanceEnabled_);
+        state->drop(domain_, outputs_, cumulative_, spectrumBlockAverage_, cumulativeAverage_, balanceEnabled_, spectrumLevelsEnabled_);
     balanceEnabled_ = false;
+    spectrumLevelsEnabled_ = false;
     cumulativeAverage_.reset();
     spectrumBlockAverage_.reset();
     cumulative_.reset(); domain_.reset(); state_.reset(); outputs_ = 0;
@@ -2497,6 +2642,16 @@ void SharedAnalysis::Lease::setStereoBalanceEnabled(bool enabled) noexcept {
     const std::lock_guard lock(domain_->mutex);
     domain_->changeBalanceDemand(enabled);
     balanceEnabled_ = enabled;
+}
+void SharedAnalysis::Lease::setSpectrumLevelsEnabled(bool enabled) noexcept {
+    if (enabled == spectrumLevelsEnabled_ || !domain_ || !spectralOutput(outputs_)) return;
+    const auto state = state_.lock();
+    if (!state || !domain_->active.load(std::memory_order_acquire)) return;
+    state->ownerOnly();
+    const std::lock_guard lock(domain_->mutex);
+    if (enabled) domain_->catchUpParkedSilence();
+    domain_->changeSpectrumLevelDemand(enabled);
+    spectrumLevelsEnabled_ = enabled;
 }
 std::shared_ptr<const SharedAnalysis::StereoMeterResult> SharedAnalysis::Lease::readStereoMeter() const noexcept {
     return available() && domain_->meter ? domain_->readMeterResult() : nullptr;
@@ -2740,7 +2895,9 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint3
         if (cumulativeAverage) found->second->cumulativeAverages.reserve(found->second->cumulativeAverages.size() + 1);
         if (!found->second->ensureOutputPlans(request.outputs)) return {};
         const auto newlyRequested = request.outputs & ~found->second->outputs.load(std::memory_order_acquire);
-        if (newlyRequested) found->second->catchUpParkedAverageBeforeAddingOutput();
+        if (newlyRequested && (found->second->spectrumLevelHistory ||
+                               found->second->canParkAverage(found->second->outputs.load(std::memory_order_relaxed))))
+            found->second->catchUpParkedSilence();
         const auto sequence = found->second->tap ? found->second->tap->written() : 0;
         auto blockAverage = found->second->admitBlockAverage(averageBlocks, sequence);
         found->second->addCumulative(cumulative, sequence);
@@ -2947,6 +3104,7 @@ SharedAnalysis::Stats SharedAnalysis::stats() const {
         result.spectralPlans += static_cast<std::size_t>(domain->spectrum != nullptr) +
                                 static_cast<std::size_t>(domain->phaseBandPlan != nullptr);
         result.stereoBalanceHistories += static_cast<std::size_t>(domain->balanceActive.load(std::memory_order_acquire));
+        result.spectrumLevelHistories += static_cast<std::size_t>(domain->spectrumLevelsActive.load(std::memory_order_acquire));
         result.droppedHistoryColumns += domain->droppedHistory.load(std::memory_order_relaxed);
     }
     result.historyBytes = state_->historyBudget->bytes.load(std::memory_order_acquire);

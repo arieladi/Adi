@@ -2133,6 +2133,8 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         };
         const auto balance = [&] { return statistic("RMS Balance"); };
         const auto correlation = [&] { return statistic("Stereo Correlation"); };
+        const auto integratedRms = [&] { return statistic("Integrated RMS"); };
+        const auto maxCrest = [&] { return statistic("Max Crest"); };
         std::uint64_t stereoRevision = 4;
         const auto sendLevels = [&](float left, float right, bool newEpoch = false) {
             const auto tap = tapFor(main);
@@ -2148,21 +2150,27 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
 
         pages.setPage(Page::Spectrum);
         choose(false);
-        check(balance().isEmpty() && correlation().isEmpty(),
-              "ordinary Spectrum has no pinned readouts");
+        check(balance().isEmpty() && correlation().isEmpty() && integratedRms().isEmpty() && maxCrest().isEmpty() &&
+                  broker->stats().spectrumLevelHistories == 0,
+              "ordinary Spectrum has no pinned readouts or level history");
         choose(true);
         const auto plan = broker->stats();
-        const bool wroteInverted = sendLevels(.5f, -.25f);
+        bool wroteInverted = true;
+        for (int block = 0; block < 4; ++block) wroteInverted = sendLevels(.5f, -.25f) && wroteInverted;
         const auto picture = pages.detail.view.snapshot();
         const auto observedBalance = balance(), observedCorrelation = correlation();
         check(wroteInverted && picture && picture->rms[0] == .5f && picture->rms[1] == .25f &&
                   picture->correlation == -1. && observedBalance.contains("L 6.0") &&
                   observedCorrelation.contains("-1.00"),
               "pinned readouts use the primary window's RMS direction and signed anti-correlation");
+        const auto observedRms = integratedRms(), observedCrest = maxCrest();
+        check(observedRms.contains("L -6.0") && observedRms.contains("R -12.0") &&
+                  observedCrest.contains("L 0.0") && observedCrest.contains("R 0.0"),
+              "the expanded pinned second row shows stereo integrated dBFS and maximum crest");
         const auto published = broker->stats();
         check(published.consumers == plan.consumers && published.taps == plan.taps &&
                   published.domains == plan.domains && published.spectralPlans == plan.spectralPlans &&
-                  published.stereoBalanceHistories == 1,
+                  published.stereoBalanceHistories == 1 && published.spectrumLevelHistories == 1,
               "pinned readouts do not add a consumer or plan to the existing primary and pin spectra");
         for (int frame = 0; frame < 4; ++frame) { root.frame(); broker->pump(); }
         const auto statisticsIdle = broker->stats();
@@ -2172,17 +2180,37 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
 
         const auto fullBounds = pages.getBounds();
         const auto fullBottom = pages.detail.getBottom();
+        const auto firstRowWidth = 2 * look::mixChannelMinWidth + look::gap + 2 * look::border;
+        pages.setBounds(fullBounds.withWidth(firstRowWidth));
+        root.frame();
+        const auto oneRow = broker->stats();
+        check(balance() == observedBalance && correlation() == observedCorrelation &&
+                  integratedRms().isEmpty() && maxCrest().isEmpty() && oneRow.stereoBalanceHistories == 1 &&
+                  oneRow.spectrumLevelHistories == 0 && oneRow.taps == statisticsIdle.taps &&
+                  oneRow.consumers == statisticsIdle.consumers && oneRow.transforms == statisticsIdle.transforms &&
+                  oneRow.spectralPlans == statisticsIdle.spectralPlans && pages.detail.view.snapshot() == picture &&
+                  pages.detail.getBottom() == fullBottom + look::mixChannelRowHeight,
+              "the intermediate width keeps balance and correlation and releases the second row alone");
         pages.setBounds(fullBounds.withWidth(look::mixChannelMinWidth));
         root.frame();
         const auto compact = broker->stats();
         check(balance().isEmpty() && correlation().isEmpty() && pages.detail.getBottom() > fullBottom &&
                   pages.detail.view.snapshot() == picture && compact.domains == statisticsIdle.domains &&
-                  compact.transforms == statisticsIdle.transforms && compact.stereoBalanceHistories == 0,
+                  compact.transforms == statisticsIdle.transforms && compact.stereoBalanceHistories == 0 &&
+                  compact.spectrumLevelHistories == 0 && integratedRms().isEmpty() && maxCrest().isEmpty(),
               "compact pinned Spectrum removes the readout row without losing the primary picture");
         pages.setBounds(fullBounds);
         root.frame();
-        check(!observedBalance.isEmpty() && balance() == observedBalance && correlation() == observedCorrelation,
-              "expanding the panel restores readouts from its existing picture");
+        check(!observedBalance.isEmpty() && balance() == observedBalance && correlation() == observedCorrelation &&
+                  integratedRms().contains("--") && maxCrest().contains("--") &&
+                  pages.detail.view.snapshot() == picture && broker->stats().spectrumLevelHistories == 1,
+              "expanding the panel preserves its picture while admitting a fresh level interval");
+        bool wroteReopened = true;
+        for (int block = 0; block < 4; ++block) wroteReopened = sendLevels(.5f, -.25f) && wroteReopened;
+        const auto reopenedPicture = pages.detail.view.snapshot();
+        check(wroteReopened && reopenedPicture && reopenedPicture != picture &&
+                  integratedRms() == observedRms && maxCrest() == observedCrest,
+              "new audio restores the level values after the row reopens");
 
         const auto freeze = [&](bool value) {
             auto &button = pages.detail.freezeButton;
@@ -2192,11 +2220,14 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         };
         freeze(true);
         check(!pages.detail.view.subscribed() && !attached(first) && !attached(wide) &&
-                  pages.detail.view.snapshot() == picture && !observedBalance.isEmpty() &&
-                  balance() == observedBalance && correlation() == observedCorrelation,
+                  pages.detail.view.snapshot() == reopenedPicture && !observedBalance.isEmpty() &&
+                  balance() == observedBalance && correlation() == observedCorrelation &&
+                  !observedRms.isEmpty() && integratedRms() == observedRms && maxCrest() == observedCrest &&
+                  broker->stats().spectrumLevelHistories == 0,
               "Freeze preserves the same statistics and releases their existing Spectrum demand");
         freeze(false);
-        check(!balance().contains("L 6.0") && !correlation().contains("-1.00"),
+        check(!balance().contains("L 6.0") && !correlation().contains("-1.00") &&
+                  !integratedRms().contains("-6.0") && !maxCrest().contains("0.0"),
               "resuming clears frozen numbers until a fresh Spectrum window arrives");
         const bool wroteAligned = sendLevels(.25f, .5f);
         check(wroteAligned && balance().contains("R 6.0") && correlation().contains("+1.00"),
@@ -2282,7 +2313,8 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         check(balance().isEmpty() && correlation().isEmpty() && !pages.detail.view.subscribed() &&
                   !attached(first) && !attached(wide) && hiddenIdle.workerPasses == hidden.workerPasses &&
                   hiddenIdle.transforms == hidden.transforms && hiddenIdle.publications == hidden.publications &&
-                  hiddenIdle.stereoBalanceHistories == 0,
+                  hiddenIdle.stereoBalanceHistories == 0 && hiddenIdle.spectrumLevelHistories == 0 &&
+                  integratedRms().isEmpty() && maxCrest().isEmpty(),
               "a hidden Spectrum exposes no readouts and adds no worker activity");
     }
     detachPeer();

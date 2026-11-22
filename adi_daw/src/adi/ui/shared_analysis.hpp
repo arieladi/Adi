@@ -95,6 +95,9 @@ class SharedAnalysis final {
         std::shared_ptr<const std::vector<float>> binsDbfs;
         std::int64_t firstSequence = 0;
     };
+    struct SpectrumLevels {
+        std::array<double, 2> integratedRms{}, maxCrestDb{};
+    };
     struct Result {
         Request request;
         std::uint64_t revision = 0, sourceEpoch = 0, generation = 0, windowSerial = 0;
@@ -108,6 +111,7 @@ class SharedAnalysis final {
         // dsp::Spectrum's coherent sine calibration; Scope/Phase keep unwindowed samples.
         std::array<float, 2> peak{}, rms{};
         std::optional<std::array<float, 2>> balanceRms2s;
+        std::optional<SpectrumLevels> spectrumLevels;
         std::size_t clippedSamples = 0; // Meters: finite samples at or above full scale across both channels.
         double correlation = 0;
         // Optional L/R correlation in ascending ERB bands. Missing lanes
@@ -171,6 +175,7 @@ class SharedAnalysis final {
         // Successful insertions into this broker's shared scheduler queue.
         std::uint64_t successfulEnqueues = 0;
         std::size_t stereoBalanceHistories = 0;
+        std::size_t spectrumLevelHistories = 0;
     };
     class Lease {
       public:
@@ -204,6 +209,7 @@ class SharedAnalysis final {
         bool restartCumulativeAverage() noexcept;
         std::shared_ptr<const RealtimeSigmaResult> readRealtimeSigma() const noexcept;
         void setStereoBalanceEnabled(bool) noexcept;
+        void setSpectrumLevelsEnabled(bool) noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
         std::shared_ptr<const StripResult> readStrip() const noexcept;
         bool restartStereoMeter() noexcept;
@@ -222,7 +228,7 @@ class SharedAnalysis final {
         std::shared_ptr<SpectrumBlockAverage> spectrumBlockAverage_;
         std::shared_ptr<CumulativeAverageHistory> cumulativeAverage_;
         std::uint32_t outputs_ = 0;
-        bool balanceEnabled_ = false;
+        bool balanceEnabled_ = false, spectrumLevelsEnabled_ = false;
         friend class SharedAnalysis;
     };
     // A continuous acquisition has its own sequence cursor. The physical tap
