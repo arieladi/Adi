@@ -1063,16 +1063,50 @@ void invertPitches() {
     check(100.0 * reflected.key + reflected.tuning_cents == 6550.0,
           "a second reflection restores the original physical pitch");
 }
+void transposeDegrees() {
+    Fixture f("transpose_degrees");
+    auto root = native(wideId, -5); root.key = 60; root.tuning_cents = 0;
+    auto seventh = native(2, 10); seventh.key = 71; seventh.tuning_cents = 0;
+    auto outside = native(3, 15); outside.key = 61; outside.tuning_cents = 0;
+    const auto a = rawRecord(root), b = rawRecord(seventh), c = rawRecord(outside);
+    const auto original = envelope({a, b, c});
+    f.seed(2, original);
+    f.expression(2, wideId, 64);
+    const auto snapshot = notes::captureNotes(*f.store, 2);
+    std::string error;
+    const auto context = engine::compileScaleContext({}, {}, error);
+    require(context.has_value(), error);
+    const std::array<std::uint64_t, 2> selected{2, wideId};
+    const auto increment = notes::prepareTransposeDegrees(snapshot, selected, *context, 1);
+    require(increment.ok && increment.requests.size() == 1, increment.error);
+    const auto denied = notes::prepareTransposeDegrees(
+        snapshot, std::array<std::uint64_t, 2>{wideId, 3}, *context, -1);
+    const auto noMovement = notes::prepareTransposeDegrees(snapshot, selected, *context, 0);
+    check(!denied.ok && denied.requests.empty() && noMovement.ok && noMovement.requests.empty(),
+          "degree transposition refuses off-scale selection and emits nothing at zero");
+    const auto raised = envelope({changeRecord(a, [](auto &n) { n.key = 62; }),
+                                  changeRecord(b, [](auto &n) { n.key = 72; }), c});
+    check(notes::commitDiff(*f.store, increment).ok && f.blob(2) == raised &&
+              f.expressionCount(2, wideId) == 1,
+          "one degree moves by either a semitone or a tone while retaining the note and expression");
+    const auto decrement = notes::prepareTransposeDegrees(notes::captureNotes(*f.store, 2),
+                                                           selected, *context, -1);
+    check(notes::commitDiff(*f.store, decrement).ok && f.blob(2) == original,
+          "negative transposition returns both pitches through the period boundary");
+    History history(*f.store);
+    check(history.undo().ok && f.blob(2) == raised && history.redo().ok && f.blob(2) == original,
+          "degree transpose retains byte-exact history replay");
+}
 } // namespace
 int main() {
-    const std::array<std::pair<const char*, void (*)()>, 12> cases = {{
+    const std::array<std::pair<const char*, void (*)()>, 13> cases = {{
         {"immutable and pure", immutableAndPure}, {"10,000 notes", tenThousandOneWrite},
         {"future and expressions", futureAndExpressions}, {"creation", creationAndSignedRows},
         {"numeric and malformed", numericAndMalformed}, {"stale guards", staleGuards},
         {"coherent capture", coherentOwnerCapture}, {"SQL storage classes", sqlStorageClassGuards},
         {"seeded commits", runNoteDiffSeeds},
         {"late failures", lateFailures}, {"Fit to Scale", fitToScale},
-        {"pitch inversion", invertPitches}}};
+        {"pitch inversion", invertPitches}, {"degree transposition", transposeDegrees}}};
     for (const auto& [name, run] : cases) {
         try { run(); }
         catch (const std::exception& error) {

@@ -27,5 +27,11 @@ OpRequest transposeRequest(std::int64_t clip, std::span<const std::uint64_t> ids
 /// cents. Preserve note IDs, positions, durations and expression.
 [[nodiscard]] PreparedDiff prepareInvertPitches(const Snapshot &, std::span<const std::uint64_t> ids,
                                                  double axisCents);
+/// Transpose explicitly selected in-scale notes by a signed number of scale
+/// degrees. A zero step is a no-op. Off-scale notes need a separate fit.
+[[nodiscard]] PreparedDiff prepareTransposeDegrees(const Snapshot &,
+                                                     std::span<const std::uint64_t> ids,
+                                                     const engine::ScaleContext &, std::int64_t steps,
+                                                     std::optional<double> tonicCents = std::nullopt);
 std::span<const OpDescriptor> transformOps();
 } // namespace adi::notes
