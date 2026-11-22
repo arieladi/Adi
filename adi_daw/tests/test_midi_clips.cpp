@@ -19,6 +19,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1262,9 +1263,10 @@ void storedSplitClock() {
               "Clip Details uses the split origin for inherited meter");
         f.load();
         f.render();
-        auto firstAttack=std::find_if(f.instrument->heard.begin(),f.instrument->heard.begin()+f.instrument->count,
+        const auto heardEnd=f.instrument->heard.begin()+static_cast<std::ptrdiff_t>(f.instrument->count);
+        auto firstAttack=std::find_if(f.instrument->heard.begin(),heardEnd,
                                      [](const auto& event){return event.e.type==EventType::NoteOn;});
-        if (firstAttack==f.instrument->heard.begin()+f.instrument->count)
+        if (firstAttack==heardEnd)
             throw std::runtime_error("missing origin fixture note");
         check(firstAttack->clock==9 && f.instrument->balance()==0,
               "audible split MIDI attack follows the recovered tick across the tempo step");
