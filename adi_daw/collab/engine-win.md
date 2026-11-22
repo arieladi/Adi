@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, CT-04 engine take-comp splice
+
+**PR requested** — `engine-win/comp-take-splice` `2d911206` on main `87ea349c` and CT-01 `4c2b07f3`, for the after-3-December window. A literal audio or MIDI take range within one known take uses the existing immutable clip image, clock trimming and placement planner. It replaces the matching range on the same track's main lane with one guarded arranger.splice. Take name and media/clip-local data are retained, with no persisted provenance field and no track-automation edit. The four native Windows /W4 /WX suites passed 1,631 checks, including two actual audio takes, exact PCM and identical Undo/Redo. The engine reviews the edit-plan hunk. Window-fn can bind the gesture and derive highlights from the current source and main copies.
+
+**FOR THE DIRECTOR — CT-04:** empty lanes, painting through gaps and dragging beyond the source boundary still await M6-A6H-030. Recommendation: keep the plain covered-range splice, and clamp a drag to the source boundary pending the Live reading. The current producer refuses uncovered ranges. Audition, the edge gesture, and generated seam fades remain separate.
+
 ## 2026-11-22, EX-03 Render as Loop and export tails
 
 **PR requested** — `engine-win/export-loop-tails` `d84677d2` on main `87ea349c`. Uses the same graph for the unwritten loop lap and latency-compensated written lap. Fixed and Until Silent tails stop new timeline input at the authored range end and keep processing the graph. Until Silent counts consecutive quiet frames across the output channels, including the hold, up to the specified maximum. Independent tails/loops are refused for gapless and NI Stems jobs. Native Windows /W4 /WX passed 460 render checks and 85 NI Stems checks (native AAC unavailable). A 17-sample delayed feedback effect verified continuous equivalence, immunity to a later arrangement impulse, exact hold and maximum, and a sample-for-sample second lap with wrapped decay.
