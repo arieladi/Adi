@@ -23,7 +23,9 @@
 
 #include "adi/engine/process.hpp"
 
+#include <atomic>
 #include <cstdint>
+#include <optional>
 
 namespace adi::device {
 
@@ -45,6 +47,12 @@ struct OpenResult {
     }
 };
 
+struct CallbackLoad {
+    double current = 0.0; ///< work time divided by the actual callback budget
+    double average = 0.0;
+    std::uint64_t overBudget = 0; ///< measured callbacks whose work exceeded their budget
+};
+
 /// Drives one `engine::BlockProcessor` from whatever a device hands over.
 ///
 /// Thread discipline, which is the whole point of the type:
@@ -55,7 +63,9 @@ struct OpenResult {
 /// second one of either is a bug rather than a use case.
 class DeviceCore {
 public:
+    using MonotonicNow = std::int64_t (*)() noexcept; ///< monotonic nanoseconds
     DeviceCore() = default;
+    explicit DeviceCore(MonotonicNow now) noexcept : now_(now ? now : monotonicNow) {}
     DeviceCore(const DeviceCore&) = delete;
     DeviceCore& operator=(const DeviceCore&) = delete;
 
@@ -129,7 +139,18 @@ public:
     /// How many times the block size has been changed on a live stream.
     [[nodiscard]] int           reconfigurations() const { return reconfigs_; }
 
+    /// Coherent message-thread reading. Empty before the first measured
+    /// callback, after close, or if a bounded read races with publication.
+    [[nodiscard]] std::optional<CallbackLoad> callbackLoad() const noexcept;
+
 private:
+    static std::int64_t monotonicNow() noexcept;
+    void publishCallbackLoad(CallbackLoad, bool ready) noexcept;
+    void measureCallback(std::int64_t begin, std::int64_t end, std::int32_t frames) noexcept;
+    MonotonicNow now_ = monotonicNow;
+    std::atomic<std::uint64_t> loadSequence_{0}, loadOverBudget_{0};
+    std::atomic<double> loadCurrent_{0.0}, loadAverage_{0.0};
+    std::atomic<bool> loadReady_{false};
     engine::BlockProcessor* proc_ = nullptr;
     bool         open_       = false;
     double       sampleRate_ = 0.0;
