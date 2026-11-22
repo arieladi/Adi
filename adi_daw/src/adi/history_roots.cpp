@@ -158,5 +158,23 @@ void syncCurrentRoot(Store &store) {
     content.bind(1, *hash);
     content.exec();
 }
+void initializeStoredOrigin(Store &store) {
+    auto &db = store.db();
+    SQLite::Transaction transaction(db);
+    OpJournal journal(store);
+    if (journal.count() != 0 || journal.headSeq() || hasStoredRoots(db))
+        throw std::runtime_error("a template's new history must be empty");
+    const auto hash = storeCheckpointContent(db, checkpointState(store));
+    const auto root = materializeRoot(store, std::nullopt, hash);
+    SQLite::Statement origin(db, "INSERT INTO history_origin_root(id,root_seq) VALUES(1,?)");
+    origin.bind(1, root);
+    origin.exec();
+    SQLite::Statement head(db, "UPDATE op_branches SET head_seq=? WHERE is_current=1");
+    head.bind(1, root);
+    if (head.exec() != 1)
+        throw std::runtime_error("template has no current history branch");
+    syncCurrentRoot(store);
+    transaction.commit();
+}
 } // namespace history_detail
 } // namespace adi

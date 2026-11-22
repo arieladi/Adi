@@ -186,6 +186,120 @@ void checkpointRelocation() {
     {SQLite::Transaction transaction(cached->db());history_detail::installCheckpoint(*cached,history_detail::readCheckpointContent(copy->db(),copiedHash));transaction.commit();}
     check(resolves(*cached) && digestProject(*cached).text==digestProject(*replay).text,"content-addressed checkpoint and compatibility image relocate identically");
 }
+void templates() {
+    Fixture f;
+    auto &source = *f.store;
+    History history(source);
+    UndoRetentionPolicy policy;
+    policy.maxTransactions = 2;
+    check(history.setUndoRetentionPolicy(policy).ok, "template source retention fixture");
+    OpRequest edit;
+    edit.opType = "project.setName";
+    for (const auto *name : {"A", "B", "C"}) {
+        edit.payload = {{"name", name}};
+        if (!OpJournal(source).commit(edit).ok)
+            throw std::runtime_error("template source edit");
+    }
+    check(history.undo().ok, "template source can leave a prior redo tip");
+    edit.payload = {{"name", "Template State"}};
+    check(OpJournal(source).commit(edit).ok && history.branches().size() >= 2,
+          "template source has an inactive undo branch");
+    source.db().exec("INSERT INTO session_lock VALUES(1,'original-host',12,'fixture',1,2);"
+                     "INSERT INTO history_snapshots(id,name,op_seq,branch_id,created_utc) "
+                     "SELECT 1,'Original snapshot',head_seq,id,0 FROM op_branches WHERE is_current=1;"
+                     "INSERT INTO agent_requests(txn_id,request,created_utc) VALUES(1,'Original request',0);"
+                     "UPDATE adi_meta SET value='source-uuid' WHERE key='project_uuid';");
+    const auto sourceHistory = historyBytes(source);
+    const auto sourceDigest = digestProject(source).text;
+    const auto sourceHead = OpJournal(source).headSeq();
+    const auto path = f.target("User Library/Templates", fs::path(u8"תבנית.adi"));
+    const auto ordinary = f.target("ordinary");
+    check(!source.isTemplate() && !source.createFromTemplate(ordinary).ok && !fs::exists(ordinary),
+          "an ordinary project is refused as a template and publishes nothing");
+    const auto saved = source.saveTemplate(path);
+    check(saved.ok, saved.error.empty() ? "save committed project state as template" : saved.error.c_str());
+    if (!saved.ok)
+        return;
+    check(!source.saveTemplate(path).ok && !source.saveTemplate(f.source).ok &&
+              fs::equivalent(source.path(), f.source) && !source.isTemplate() &&
+              sourceHistory == historyBytes(source) && sourceDigest == digestProject(source).text &&
+              sourceHead == OpJournal(source).headSeq() &&
+              source.db().execAndGet("SELECT count(*) FROM session_lock").getInt() == 1,
+          "template publication keeps the active source and refuses a default collision");
+    StoreError error{};
+    auto stored = Store::open(path, error, true);
+    check(stored && stored->readOnly() && stored->isTemplate(), "the library template opens with its marker");
+    if (!stored)
+        return;
+    const auto templateUuid = stored->db().execAndGet(
+        "SELECT value FROM adi_meta WHERE key='project_uuid'").getString();
+    check(templateUuid.size() == 32 && templateUuid != "source-uuid" &&
+              stored->db().execAndGet("SELECT count(*) FROM session_lock").getInt() == 0 &&
+              stored->db().execAndGet("SELECT count(*) FROM ops WHERE op_type<>'history.root'").getInt() == 0 &&
+              stored->db().execAndGet("SELECT count(*) FROM agent_requests").getInt() == 0 &&
+              stored->db().execAndGet("SELECT count(*) FROM history_snapshots").getInt() == 0 &&
+              stored->db().execAndGet("SELECT count(*) FROM op_branches").getInt() == 1 &&
+              !History(*stored).canUndo() && !History(*stored).canRedo() && resolves(*stored),
+          "the template keeps its state and media with a fresh independent root");
+    const auto createdPath = f.target("sets/nested", "New.adi");
+    const auto created = stored->createFromTemplate(createdPath);
+    check(created.ok, created.error.empty() ? "create a Set from a read-only template" : created.error.c_str());
+    check(!stored->createFromTemplate(createdPath).ok && stored->isTemplate(),
+          "instantiating an existing pathname preserves its file and source template");
+    auto project = Store::open(createdPath, error);
+    check(project && !project->isTemplate() && resolves(*project), "the new Set is writable and resolves source audio");
+    if (!project)
+        return;
+    check(project->db().execAndGet("SELECT value FROM adi_meta WHERE key='project_uuid'").getString() != templateUuid &&
+              project->db().execAndGet("SELECT name FROM project").getString() == "Template State",
+          "the resulting Set gets a new identity and the current template project state");
+    const auto baseline = digestProject(*project).text;
+    History newHistory(*project);
+    edit.payload = {{"name", "First edit"}};
+    check(!newHistory.canUndo() && OpJournal(*project).commit(edit).ok && newHistory.canUndo(),
+          "the first edit is the only undoable step in a new Set");
+    auto replay = Store::create(createdPath.parent_path() / "Replay.adi", error);
+    if (!replay)
+        throw std::runtime_error("cannot create template replay fixture");
+    const auto replayBase = History::restoreReplayBase(*project, *replay);
+    check(replayBase.ok && replayBase.retainedSeqs.size() == 1 && resolves(*replay) &&
+              digestProject(*replay).text == baseline,
+          "verifiable replay restores the exact rebased template root and one retained edit");
+    check(newHistory.undo().ok && !newHistory.canUndo() && digestProject(*project).text == baseline &&
+              newHistory.redo().ok && project->db().execAndGet("SELECT name FROM project").getString() == "First edit",
+          "Undo returns to the template root and Redo restores the first edit");
+    project.reset();
+    project = Store::open(createdPath, error);
+    check(project && History(*project).undo().ok && digestProject(*project).text == baseline,
+          "the new baseline survives close, reopen and undo");
+}
+void olderTemplate() {
+    Fixture f;
+    const auto sourcePath = f.target("legacy", "Template.adi");
+    check(f.store->saveTemplate(sourcePath).ok, "older template fixture is saved");
+    {
+        SQLite::Database old(media::pathUtf8(sourcePath), SQLite::OPEN_READWRITE);
+        old.exec("DROP TABLE routing_send_taps;"
+                 "UPDATE adi_meta SET value='22' WHERE key='schema_minor';"
+                 "PRAGMA user_version=1022;");
+    }
+    StoreError error{};
+    auto source = Store::open(sourcePath, error, true);
+    check(source && source->isTemplate() && source->schemaMinor() == 22,
+          "a supported older file can be read as a template");
+    if (!source)
+        return;
+    const auto path = f.target("legacy-instance", "Instance.adi");
+    const auto created = source->createFromTemplate(path);
+    check(created.ok, created.error.empty() ? "upgrade the private copy during creation" : created.error.c_str());
+    auto instance = Store::open(path, error);
+    check(instance && instance->schemaMinor() == kSchemaMinor && !instance->upgradedFromMinor() &&
+              instance->db().tableExists("routing_send_taps") && resolves(*instance) &&
+              !History(*instance).canUndo(),
+          "the delivered Set has the current schema and usable media and history");
+    check(source->db().execAndGet("PRAGMA user_version").getInt() == 1022 && source->isTemplate(),
+          "template creation leaves the original file at its exact older version");
+}
 void unknownMajorAndReaders() {
     Fixture f;f.store->db().exec("PRAGMA busy_timeout=0");
     {
@@ -207,7 +321,9 @@ void unknownMajorAndReaders() {
     check(reopened && reopened->schemaMajor()==2 && reopened->readOnly(),"the future copy keeps its version and read-only policy");
     const auto refused=f.target("future-save-as");
     check(!newer->saveAs(refused).ok && !fs::exists(refused),"Save As cannot turn an unsupported major into an editable project");
+    check(!newer->saveTemplate(refused).ok && !fs::exists(refused),
+          "an unsupported schema cannot be rewritten as a template");
 }
 }
-int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();templates();olderTemplate();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

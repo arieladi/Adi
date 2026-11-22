@@ -4,7 +4,9 @@
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/applied_batches_detail.hpp"
 #include "adi/ops.hpp"
+#include "adi/version.hpp"
 #include "adi/history_content.hpp"
+#include "adi/history_roots.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/media/published_rollback.hpp"
@@ -139,6 +141,53 @@ void rebaseHistory(SQLite::Database& db,const fs::path& oldFolder,const fs::path
     },true);
     transaction.commit();
 }
+bool templateFlag(SQLite::Database &db) {
+    return db.execAndGet("SELECT EXISTS(SELECT 1 FROM adi_meta WHERE "
+                         "key='project_template' AND value='1')").getInt() != 0;
+}
+void resetTemplateHistory(SQLite::Database &db, bool writingTemplate) {
+    if (!writingTemplate && !templateFlag(db))
+        throw std::runtime_error("source project is not a template");
+    if (db.execAndGet("SELECT EXISTS(SELECT 1 FROM project WHERE id=1)").getInt() == 0)
+        throw std::runtime_error("template requires project state");
+    SQLite::Transaction transaction(db);
+    // Seed the same empty main branch as a newly created Set. The backed-up
+    // project rows are already the new root, so no historical ops are replayed.
+    db.exec("DELETE FROM history_snapshots;"
+            "DELETE FROM op_branches;"
+            "DELETE FROM history_origin_root;"
+            "DELETE FROM history_checkpoint_content;"
+            "DELETE FROM history_checkpoint;"
+            "DELETE FROM history_roots;"
+            "DELETE FROM history_state_manifests;"
+            "DELETE FROM history_state_rows;"
+            "DELETE FROM ops;"
+            "DELETE FROM op_clients;"
+            "DELETE FROM agent_requests;"
+            "DELETE FROM sqlite_sequence WHERE name='ops';"
+            "DELETE FROM session_lock;"
+            "DELETE FROM adi_meta WHERE key GLOB 'history.daily.*' OR key GLOB 'history.undo.*';"
+            "INSERT INTO op_branches(id,name,head_seq,created_utc,is_current,created_by) "
+            "VALUES(1,'main',NULL,0,1,'system');"
+            "UPDATE adi_meta SET value=lower(hex(randomblob(16))) WHERE key='project_uuid';");
+    if (writingTemplate)
+        db.exec("INSERT INTO adi_meta(key,value) VALUES('project_template','1') "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+    else
+        db.exec("DELETE FROM adi_meta WHERE key='project_template'");
+    const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    SQLite::Statement times(db, "UPDATE adi_meta SET value=? WHERE key IN ('created_utc','modified_utc')");
+    times.bind(1, std::to_string(now));
+    times.exec();
+    SQLite::Statement writer(db, "UPDATE adi_meta SET value=? WHERE key IN ('created_by','modified_by')");
+    writer.bind(1, std::string("adi_tool ") + kVersion);
+    writer.exec();
+    SQLite::Statement check(db, "PRAGMA foreign_key_check");
+    if (check.executeStep())
+        throw std::runtime_error("template contains a broken project reference");
+    transaction.commit();
+}
 std::error_code projectDestinationReady(const fs::path& target) {
     // A closed backup must never inherit another database's WAL or rollback
     // journal. Do not checkpoint/delete someone else's recovery material.
@@ -175,11 +224,25 @@ StoreFileResult Store::saveCopy(const std::filesystem::path& output,StoreFileCol
     auto result=saveCopyImpl(output,collision);
     return {result.ok,std::move(result.error),std::move(result.warning)};
 }
-Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFileCollision collision) const {
+StoreFileResult Store::saveTemplate(const std::filesystem::path &output, StoreFileCollision collision) const {
+    auto result = saveCopyImpl(output, collision, CopyKind::Template);
+    return {result.ok, std::move(result.error), std::move(result.warning)};
+}
+StoreFileResult Store::createFromTemplate(const std::filesystem::path &output) const {
+    auto result = saveCopyImpl(output, StoreFileCollision::Fail, CopyKind::FromTemplate);
+    return {result.ok, std::move(result.error), std::move(result.warning)};
+}
+bool Store::isTemplate() const {
+    return !audio::onAudioThread && !closed_ && db_ && major_ == kSchemaMajor && templateFlag(*db_);
+}
+Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFileCollision collision,
+                                    CopyKind kind) const {
     if(audio::onAudioThread)return {false,{},{}};
     try {
         if(!validCollision(collision))return {false,"unknown save collision mode",{}};
         if(closed_ || !db_)return {false,"project is closed",{}};
+        if (kind != CopyKind::Project && (major_ != kSchemaMajor || minor_ > kSchemaMinor))
+            return {false, "templates require a supported project schema version", {}};
         if(!sqlite3_get_autocommit(db_->getHandle()))return {false,"finish the current transaction before saving a copy",{}};
         const auto target=fs::absolute(output).lexically_normal();
         if(!fs::is_directory(target.parent_path()))return {false,"output directory does not exist",{}};
@@ -197,19 +260,34 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFi
         if(projectDestinationReady(target))return {false,"destination is open or has unrecovered SQLite sidecars",{}};
         Stage stage(target.parent_path());const auto staged=stage.path/"project.adi";
         {
-            SQLite::Database destination(media::pathUtf8(staged),SQLite::OPEN_READWRITE|SQLite::OPEN_CREATE);
+            auto destination = std::make_unique<SQLite::Database>(
+                media::pathUtf8(staged), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
             {
-                SQLite::Backup backup(destination,*db_);
+                SQLite::Backup backup(*destination,*db_);
                 if(backup.executeStep()!=SQLITE_DONE)throw std::runtime_error("database snapshot busy or incomplete");
+            }
+            if (kind != CopyKind::Project) {
+                destination->exec("PRAGMA foreign_keys=ON");
+                std::string why;
+                if (minor_ < kSchemaMinor && !migrateToCurrent(*destination, minor_, why))
+                    throw std::runtime_error("cannot upgrade private template copy: " + why);
+                resetTemplateHistory(*destination, kind == CopyKind::Template);
             }
             // Rebase between the folders as SQLite names them, the bases that
             // resolveMedia() joins rel_path onto (the stage sits inside the
             // copy's folder). On unix SQLite resolves symlinks (macOS: /var is
             // /private/var) and ".." climbs physical parents, so a path made
             // relative to fs::absolute()'s spelling climbs the wrong distance.
-            if(major_==kSchemaMajor)rebaseHistory(destination,media::projectFolder(*this),media::projectFolder(destination).parent_path());
-            destination.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-            destination.exec("PRAGMA journal_mode=DELETE");
+            if(major_==kSchemaMajor)rebaseHistory(*destination,media::projectFolder(*this),media::projectFolder(*destination).parent_path());
+            if (kind == CopyKind::Project) {
+                destination->exec("PRAGMA wal_checkpoint(TRUNCATE)");
+                destination->exec("PRAGMA journal_mode=DELETE");
+            } else {
+                Store copy(std::move(destination), staged, false, {});
+                history_detail::initializeStoredOrigin(copy);
+                if (!copy.closeFinalized())
+                    throw std::runtime_error("cannot close staged template copy: " + copy.lastError());
+            }
         }
         media::PublishResult result;
         if(collision==StoreFileCollision::ReplaceConfirmed){

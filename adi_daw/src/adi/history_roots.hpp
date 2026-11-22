@@ -15,6 +15,9 @@ std::int64_t rootForPoint(SQLite::Database &, std::optional<std::int64_t>);
 // Caller owns the transaction and has captured/validated every point before
 // replacing any old op. nullopt allocates an internal origin metadata record.
 std::int64_t materializeRoot(Store &, std::optional<std::int64_t>, const std::string &verifiedHash);
+// Capture the starting project rows of a new Set built from a template.
+// The new history must have an empty main branch and no saved checkpoints.
+void initializeStoredOrigin(Store &);
 UndoCompactionResult compactStoredUndo(Store &, const UndoRetentionPolicy &);
 void syncCurrentRoot(Store &);
 } // namespace history_detail

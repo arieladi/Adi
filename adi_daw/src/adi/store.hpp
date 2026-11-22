@@ -128,6 +128,15 @@ public:
     /// aliases refuse replacement. Rebase media
     /// paths in both rows and captured history so undo/redo still finds audio.
     [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail) const;
+    /// Save the committed project state as a template. The caller chooses a
+    /// path in the User Library's Templates folder. The new file starts with
+    /// a fresh identity and history root. Referenced media stays in place.
+    [[nodiscard]] StoreFileResult saveTemplate(const std::filesystem::path&,
+                                              StoreFileCollision=StoreFileCollision::Fail) const;
+    /// Create a new, history-free project from this template without
+    /// replacing any destination. Callers may open the template read-only.
+    [[nodiscard]] StoreFileResult createFromTemplate(const std::filesystem::path&) const;
+    [[nodiscard]] bool isTemplate() const;
     /// Save a copy, then switch this same Store object to the new writable file.
     /// Existing OpJournal/History references remain valid. Requires no live SQL
     /// statements. Refresh ProjectView/Session and the window's filename after
@@ -212,7 +221,9 @@ private:
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
     struct CopyState;
-    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision) const;
+    enum class CopyKind { Project, Template, FromTemplate };
+    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision,
+                           CopyKind = CopyKind::Project) const;
     bool applySessionPragmas();
     // Source invalidation has already completed; fold WAL and release SQLite.
     bool closeFinalized();

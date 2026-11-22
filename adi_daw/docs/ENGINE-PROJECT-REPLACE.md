@@ -59,3 +59,15 @@ process tests check foreign lease exclusion, preservation of SQLite's record
 locks, and exit immediately after rename. The existing project-files, collection,
 gesture and applied-batch suites remain part of the full gate. Native Windows
 and Apple execution belong to their seats; Linux cannot claim those results.
+
+## Project templates (PD-14)
+
+`Store::saveTemplate` publishes a marked `.adi` to the caller's Templates
+folder through the same staged save. `Store::createFromTemplate` takes a
+marked Store, which can be open read-only, and saves a new Set at a free path.
+Both operations give the new file its own project identity, rebase media
+references to the destination folder, and capture the resulting state as one
+stored history root. The source keeps its edit history and active lock. The
+new Set starts with the template material and an empty Undo and Redo stack.
+An older supported template is migrated in the private copy.
+The window owns the Templates picker and the `files.startTemplate` preference.
