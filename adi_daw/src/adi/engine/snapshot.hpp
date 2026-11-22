@@ -113,6 +113,7 @@ struct ClipNode {
     // posTicks and lengthTicks are the timeline projection for either clock.
     std::int64_t timeBase=0;
     std::optional<std::int64_t> posNs,lengthNs;
+    std::optional<std::int64_t> laneId{}; // null belongs to the main arrangement row
 };
 
 struct TrackNode {
@@ -135,8 +136,9 @@ struct TrackNode {
     std::int64_t delaySamples = 0; // stored samples at Snapshot::sampleRate; ms = 1000 * samples / rate
     std::string panMode = "stereo";
     double panLeft = -1.0, panRight = 1.0;
-    std::vector<std::shared_ptr<const ClipNode>> clips;
+    std::vector<std::shared_ptr<const ClipNode>> clips; // main arrangement row, ordered by position/id
     std::optional<ReturnSendTap> returnSendTap{};
+    std::vector<std::shared_ptr<const ClipNode>> takeClips; // same ordering; each node names its lane
 };
 
 /// A routing row with kind='send', including disabled rows. Destinations can

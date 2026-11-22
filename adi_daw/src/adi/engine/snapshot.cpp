@@ -41,7 +41,7 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 /// the first time someone forgets to set it.
 bool same(const ClipNode& a, const ClipNode& b) {
     return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
-           a.timeBase==b.timeBase && a.posNs==b.posNs && a.lengthNs==b.lengthNs &&
+           a.timeBase==b.timeBase && a.posNs==b.posNs && a.lengthNs==b.lengthNs && a.laneId==b.laneId &&
            a.muted == b.muted && a.gainDb == b.gainDb && a.fadeInTicks==b.fadeInTicks &&
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
@@ -93,11 +93,9 @@ bool same(const TrackNode& a, const TrackNode& b) {
         a.kind != b.kind || a.role != b.role || a.recording != b.recording || a.returnSendTap != b.returnSendTap || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
         a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
-        a.clips.size() != b.clips.size() ||
+        a.clips != b.clips || a.takeClips != b.takeClips || // pointer identity: already shared
         a.frozen != b.frozen || a.frozenByGroup != b.frozenByGroup || a.freezeMediaId != b.freezeMediaId || a.freezeMode != b.freezeMode)
         return false;
-    for (std::size_t i = 0; i < a.clips.size(); ++i)
-        if (a.clips[i] != b.clips[i]) return false;   // pointer identity: already shared
     return true;
 }
 
@@ -250,6 +248,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     for (const auto& t : previous.tracks) {
         prevTracks[t->id] = t;
         for (const auto& c : t->clips) prevClips[c->id] = c;
+        for (const auto& c : t->takeClips) prevClips[c->id] = c;
     }
 
     try {
@@ -367,12 +366,14 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     }catch(const std::exception&){}
 
     // --- clips, grouped by track -------------------------------------------------
-    std::map<std::int64_t, std::vector<std::shared_ptr<const ClipNode>>> clipsByTrack;
+    using ClipList = std::vector<std::shared_ptr<const ClipNode>>;
+    struct ClipRows { ClipList main, takes; };
+    std::map<std::int64_t, ClipRows> clipsByTrack;
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
             "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
-            "content_offset_ticks,time_base,pos_ns,length_ns "
+            "content_offset_ticks,time_base,pos_ns,length_ns,lane_id "
             "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
@@ -397,6 +398,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.timeBase=st.getColumn(12).getInt64();
             c.posNs=linear(13);
             c.lengthNs=linear(14);
+            c.laneId=linear(15);
             if(c.timeBase==1) {
                 c.posTicks=c.posNs?snap->tempo->storedNanosecondsToTicks(*c.posNs):0;
                 c.lengthTicks=0;
@@ -410,20 +412,23 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             if (const auto lanes = controllersByClip.find(c.id); lanes != controllersByClip.end())
                 c.controllers = lanes->second;
 
+            auto& rows = clipsByTrack[trackId];
+            auto& destination = c.laneId ? rows.takes : rows.main;
             const auto prev = prevClips.find(c.id);
             if (prev != prevClips.end() && same(*prev->second, c))
-                clipsByTrack[trackId].push_back(prev->second);        // shared
+                destination.push_back(prev->second);
             else
-                clipsByTrack[trackId].push_back(std::make_shared<const ClipNode>(c));
+                destination.push_back(std::make_shared<const ClipNode>(std::move(c)));
         }
     } catch (const std::exception&) {
     }
     const auto clipOrder=[](const auto& a,const auto& b) {
         return std::tie(a->posTicks,a->id)<std::tie(b->posTicks,b->id);
     };
-    for(auto& [track,clips]:clipsByTrack)
-        if(!std::is_sorted(clips.begin(),clips.end(),clipOrder))
-            std::sort(clips.begin(),clips.end(),clipOrder);
+    for (auto& [track, rows] : clipsByTrack)
+        for (auto* clips : {&rows.main, &rows.takes})
+            if (!std::is_sorted(clips->begin(), clips->end(), clipOrder))
+                std::sort(clips->begin(), clips->end(), clipOrder);
 
     struct PanSettings {std::string mode;double left=-1.0,right=1.0;};
     std::map<std::int64_t,PanSettings> panSettings;
@@ -489,8 +494,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 t.frozen = true;
                 t.freezeMode = "group-member";
             }
-            if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
-                t.clips = it->second;
+            if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end()) {
+                t.clips = std::move(it->second.main);
+                t.takeClips = std::move(it->second.takes);
+            }
 
             const auto prev = prevTracks.find(t.id);
             if (prev != prevTracks.end() && same(*prev->second, t))
@@ -677,13 +684,14 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
         for (const auto& tb : b.tracks) {
             if (ta == tb) { ++shared; break; }
         }
-        for (const auto& ca : ta->clips) {
-            for (const auto& tb : b.tracks)
-                if (std::find(tb->clips.begin(), tb->clips.end(), ca) != tb->clips.end()) {
-                    ++shared;
-                    break;
-                }
-        }
+        for (const auto* clips : {&ta->clips, &ta->takeClips})
+            for (const auto& ca : *clips)
+                for (const auto& tb : b.tracks)
+                    if (std::find(tb->clips.begin(), tb->clips.end(), ca) != tb->clips.end() ||
+                        std::find(tb->takeClips.begin(), tb->takeClips.end(), ca) != tb->takeClips.end()) {
+                        ++shared;
+                        break;
+                    }
     }
     for (const auto& sa : a.sends)
         if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;
