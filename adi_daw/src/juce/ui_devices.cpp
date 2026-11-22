@@ -303,7 +303,7 @@ void drawEqGrid(juce::Graphics &g, juce::Rectangle<float> graph) {
     }
     g.setColour(look::outline);
     g.drawHorizontalLine(juce::roundToInt(graph.getCentreY()), graph.getX(), graph.getRight());
-    if (graph.getHeight() >= 2 * look::fieldHeight) {
+    if (graph.getHeight() >= static_cast<float>(2 * look::fieldHeight)) {
         g.setColour(look::gridLine);
         for (float offset : {-1.f / 3.f, 1.f / 3.f}) {
             const auto y = graph.getCentreY() + offset * graph.getHeight();

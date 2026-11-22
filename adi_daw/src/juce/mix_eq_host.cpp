@@ -11,6 +11,14 @@
 #include <sstream>
 #include <stdexcept>
 
+// physical() must return a default exactly (Gain Scale -100 + 300 * (200/300)
+// is 100 only when the product rounds before the add), so no fused
+// multiply-adds; cmake/mix_cores.cmake also passes -ffp-contract=off, because
+// GCC ignores this pragma.
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 namespace adi::device {
 namespace {
 namespace q = mix::eq;
