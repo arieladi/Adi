@@ -32,6 +32,29 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — Empty factory New callback cost
+
+Branch `engine/empty-project-cost` at `899a3a269af0074d895b2dab27628c09c51f441d`, from main `ac07be74`. Suggested PR title **Skip silent Main loudness work and benchmark factory New**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/empty-project-cost)
+
+Main now advances already silent filter and true-peak histories in blocks, retaining window positions and held peaks. The integrated histogram is rescanned only when a new entry can change its result. `adi_block_benchmark --empty-project` creates real factory New with both return FX. The now-landed `adi_builtin_realtime_tests` also covers stopped and rolling New with zero allocations starting at its first callback.
+
+| Factory New at 48 kHz | Before p50 µs | After p50 µs | Before p99 µs | After p99 µs |
+|---|---:|---:|---:|---:|
+| 64 frames stopped | 92.584 | 86.826 | 295.206 | 282.675 |
+| 64 frames rolling | 92.984 | 86.905 | 303.336 | 284.617 |
+| 128 frames stopped | 186.267 | 172.932 | 541.123 | 512.128 |
+| 128 frames rolling | 185.745 | 173.411 | 533.252 | 518.304 |
+
+These are medians of five alternating pairs of 12,000 callbacks per case, GCC 14 Release `-O2` pinned to one cloud CPU. The stock loudness object was relinked into the same `ac07be74` core. Output was verified bit by bit after poisoning both output buffers. The focused factory-New suite passed 8/8 with 2 of 31 nodes processing and 29 suspended. Isolated Main's silent p99 fell from 73.366 to 0.299 µs at 64 frames and 144.407 to 0.513 µs at 128. Sampling on the pre-#708 Release baseline attributed most remaining CPU to the factory Reverb/Delay. In the after-meter profile they took about 82% of text CPU samples, with source events 3.83%, Graph runNode 3.06%, strip tap 0.51%, GraphHost block acquisition 0.26%, and Main loudness 0.26%. Planning occurs on the owner side. The return DSP must maintain clocks, modulation and tails.
+
+Gates: Main loudness 57/57, bit-identical sounding and draining filter traces in the offline meter control at four rates and both precisions, benchmark self-test and existing loudness mode passed. WTS-01 before and after produced identical outcomes for all 13 steps, including existing DF-E64 2b as the sole failure. Clang 19 Release compiled every changed C++ unit with warnings as errors. In the GCC Release scratch build, existing `maybe-uninitialized` diagnostics in ParamOps, ClipCommands and SampleDefaults and the existing allocator shim's `mismatched-new-delete` diagnostic were downgraded on those four objects only. The broader #708 elapsed-time gates missed on the cloud; a stock control is running. The factory-New silence and allocation gates passed.
+
+| Seat | Needs |
+|---|---|
+| devices | Consider the separately proven single-wrap ring indexing in the factory Reverb and Delay. The scratch render matched active, Freeze and rollover PCM at 64 and 128 frames. The engine change leaves those DSP kernels alone. |
+
+PR requested
+
 ## 2026-11-22 — #677 landed with DF-E30 and one-click Post
 
 Win landed #677 from `25e3dfe9f2c46773c6af6f9931df92410c066347` as `cc74097c862bd8dc3ccbde93e88983c2df137d17`. Main `ac07be74` includes that merge. Both `adi_daw` and Step 7 UI passed at the exact PR head, including the GCC, Clang, and macOS/Windows JUCE jobs. [PR checks](https://github.com/arieladi/Adi/pull/677/checks)
