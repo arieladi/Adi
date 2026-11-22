@@ -168,6 +168,40 @@ void midiPortsCore() {
     const auto *row = settings::find("midi.ports");
     std::string why;
     check(row != nullptr && settings::validate(*row, record, why), "the record written back is one the registry takes");
+    // N61: a port's record keeps its name, and follows the port to a new identifier.
+    {
+        const auto named = withMidiPortSwitch(settings::Value::object(), "in:a", "track", true, "Keys");
+        check(named["in:a"]["name"] == "Keys" && settings::validate(*row, named, why),
+              "a switch written keeps the port's name with its record (midi.port.name), and the registry takes it");
+        auto old = settings::Value::object();
+        old["in:a"] = {{"track", true}};
+        old["out:a"] = {{"remote", true}};
+        const auto stamped = reconcileMidiPorts(old, {{"in:a", "Keys"}, {"out:a", "Keys"}, {"in:b", "Pads"}});
+        check(stamped && (*stamped)["in:a"]["name"] == "Keys" && (*stamped)["out:a"]["name"] == "Keys" &&
+                  !stamped->contains("in:b") && settings::validate(*row, *stamped, why),
+              "a listed port's record is stamped with its name; a port with no record gets none");
+        check(!reconcileMidiPorts(*stamped, {{"in:a", "Keys"}, {"out:a", "Keys"}, {"in:b", "Pads"}}),
+              "a record that agrees is not written again");
+        auto kept = settings::Value::object();
+        kept["in:old"] = {{"track", true}, {"mpe", true}, {"name", "Keys"}};
+        kept["out:old"] = {{"remote", true}, {"name", "Keys"}};
+        const auto moved = reconcileMidiPorts(kept, {{"in:new", "Keys"}, {"out:new", "Keys"}});
+        const auto in = moved ? midiPortSwitches(*moved, "in:new") : MidiPortSwitches{};
+        check(moved && in.track && in.mpe && midiPortSwitches(*moved, "out:new").remote && !moved->contains("in:old") &&
+                  !moved->contains("out:old") && settings::validate(*row, *moved, why),
+              "the identifier changes, the name is kept: each direction's record moves to the new identifier, "
+              "Track and MPE kept");
+        const auto other = reconcileMidiPorts(kept, {{"in:new", "Pads"}});
+        check(!other, "a port of another name adopts no record");
+        const auto stillThere = reconcileMidiPorts(kept, {{"in:old", "Keys"}, {"in:new", "Keys"}});
+        check(!stillThere, "a record whose port is still listed stays with it; the second port of that name gets none");
+        const auto two = reconcileMidiPorts(kept, {{"in:new", "Keys"}, {"in:newer", "Keys"}});
+        check(!two, "two new ports of one name: which one the record was is unknown, so neither takes it");
+        auto pair = kept;
+        pair["in:older"] = {{"sync", true}, {"name", "Keys"}};
+        const auto ambiguous = reconcileMidiPorts(pair, {{"in:new", "Keys"}});
+        check(!ambiguous, "two records of one name and one new port: neither moves");
+    }
     // The ring: in order, refusing when full, counting what it lost.
     MidiEventRing<4> ring;
     for (std::uint32_t i = 0; i < 5; ++i) {

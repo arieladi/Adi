@@ -15865,6 +15865,40 @@ int main(int argc, char **argv) {
               "a click on Track writes the port's record at once, and the host follows");
         table.rebuild();
         check(table.rows()[0]->switches[0]->getToggleState() != midiPortDefault("track"), "the table shows what is kept");
+        check(settings.get("midi.ports")["in:port-1"].value("name", std::string()) == "Keystation 61",
+              "the record keeps the port's name (N61)");
+        check(settings.set("midi.ports", settings::Value::object(), {}, refused), "the records cleared again");
+    }
+    {
+        // N61: the keyboard on another USB socket, under a new identifier: its record follows it by name.
+        std::string refused;
+        auto before = settings::Value::object();
+        before["in:socket-1"] = {{"track", !midiPortDefault("track")}, {"mpe", !midiPortDefault("mpe")}, {"name", "Keystation 61"}};
+        check(settings.set("midi.ports", before, {}, refused), "a record under the old identifier");
+        MidiPortHost::Port keys, pads;
+        keys.id = "in:socket-2";
+        keys.name = "Keystation 61";
+        keys.input = true;
+        pads.id = "in:socket-3";
+        pads.name = "Pad Controller";
+        pads.input = true;
+        int writes = 0;
+        MidiPortHost portHost([&settings] { return settings.get("midi.ports"); }, {keys, pads},
+                              [&](const settings::Value &ports) {
+                                  ++writes;
+                                  std::string why;
+                                  return settings.set("midi.ports", ports, {}, why);
+                              });
+        const auto after = settings.get("midi.ports");
+        const auto moved = std::find_if(portHost.ports().begin(), portHost.ports().end(),
+                                        [](const MidiPortHost::Port &p) { return p.id == "in:socket-2"; });
+        check(writes == 1 && !after.contains("in:socket-1") && after.contains("in:socket-2") &&
+                  !after.contains("in:socket-3") && moved != portHost.ports().end() &&
+                  moved->switches.track != midiPortDefault("track") && moved->switches.mpe != midiPortDefault("mpe"),
+              "the identifier changes, the name is kept: the record moves, Track and MPE survive from the first "
+              "listing; the unrelated port gets no record");
+        portHost.refresh();
+        check(writes == 1, "a record that agrees is not written again");
         check(settings.set("midi.ports", settings::Value::object(), {}, refused), "the records cleared again");
     }
     // The Settings window in Live's shape (ADR-0203 d11, Master Reference V.1).

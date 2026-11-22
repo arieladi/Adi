@@ -10,10 +10,12 @@
 //   lock, no allocation once made.
 #pragma once
 #include "adi/settings/registry.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 namespace adi::ui {
@@ -48,15 +50,79 @@ inline MidiPortSwitches midiPortSwitches(const settings::Value &ports, const std
     read("mpe", out.mpe);
     return out;
 }
-// The record with one switch of port `id` set: the value the Settings write back whole.
-inline settings::Value withMidiPortSwitch(settings::Value ports, const std::string &id, const char *field, bool on) {
+// The record with one switch of port `id` set: the value the Settings write back whole. A port's `name`, when
+// given, is kept with it (`midi.port.name`), so the record can be found again if the identifier changes.
+inline settings::Value withMidiPortSwitch(settings::Value ports, const std::string &id, const char *field, bool on,
+                                          const std::string &name = {}) {
     if (!ports.is_object())
         ports = settings::Value::object();
     auto &record = ports[id];
     if (!record.is_object())
         record = settings::Value::object();
     record[field] = on;
+    if (!name.empty())
+        record["name"] = name;
     return ports;
+}
+// A port as the system lists it now: its key in `midi.ports` ("in:" or "out:" and the system's identifier) and
+// its name.
+struct MidiPortListing {
+    std::string id, name;
+};
+// The `midi.ports` record against the ports listed now (N61): each listed port's record keeps the port's name
+// (`midi.port.name`), and a port whose identifier has no record adopts the record of the same direction and
+// name whose port is no longer listed, re-keyed to the new identifier, as a keyboard on another USB socket
+// keeps its switches. Only an unambiguous match moves: one such record and one such port. Two ports of one
+// name (two keyboards of a kind) stay apart, and a port of another name gets no record. The new value, or
+// nothing when the record already agrees.
+inline std::optional<settings::Value> reconcileMidiPorts(const settings::Value &ports,
+                                                         const std::vector<MidiPortListing> &listed) {
+    if (!ports.is_object())
+        return std::nullopt;
+    const auto direction = [](const std::string &id) { return id.substr(0, id.find(':') + 1); };
+    const auto listedAs = [&](const std::string &id) {
+        return std::any_of(listed.begin(), listed.end(), [&](const MidiPortListing &p) { return p.id == id; });
+    };
+    const auto hasRecord = [](const settings::Value &value, const std::string &id) {
+        const auto it = value.find(id);
+        return it != value.end() && it->is_object();
+    };
+    auto out = ports;
+    bool changed = false;
+    for (const auto &port : listed) {
+        if (port.name.empty() || hasRecord(out, port.id))
+            continue;
+        const auto same = [&](const std::string &id, const std::string &name) {
+            return direction(id) == direction(port.id) && name == port.name;
+        };
+        std::vector<std::string> stale;
+        for (auto it = out.begin(); it != out.end(); ++it) {
+            const auto named = it->is_object() ? it->find("name") : it->end();
+            if (named != it->end() && named->is_string() && same(it.key(), named->get<std::string>()) &&
+                !listedAs(it.key()))
+                stale.push_back(it.key());
+        }
+        const auto unrecorded = std::count_if(listed.begin(), listed.end(), [&](const MidiPortListing &p) {
+            return same(p.id, p.name) && !hasRecord(ports, p.id);
+        });
+        if (stale.size() != 1 || unrecorded != 1)
+            continue;
+        out[port.id] = out[stale.front()];
+        out.erase(stale.front());
+        changed = true;
+    }
+    for (const auto &port : listed) {
+        if (port.name.empty() || !hasRecord(out, port.id))
+            continue;
+        auto &record = out[port.id];
+        if (const auto named = record.find("name"); named == record.end() || *named != port.name) {
+            record["name"] = port.name;
+            changed = true;
+        }
+    }
+    if (!changed)
+        return std::nullopt;
+    return out;
 }
 // One MIDI 1.0 message as a port delivered it: up to three bytes (system exclusive is not carried),
 // when it arrived in milliseconds of the host's high-resolution clock, and which port it came from.
