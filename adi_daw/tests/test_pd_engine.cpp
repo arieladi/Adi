@@ -1924,7 +1924,8 @@ void testAPatchCannotQuitOrReconfigurePd() {
     tmp.write("victim.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 inlet~;\n");
     const char* messages[] = {"quit 7", "exit 7", "verifyquit 7", "open victim.pd .",
                               "menunew Untitled .", "add-to-path /tmp 0",
-                              "save-preferences", "fast-forward 1e+09", "audio-setapi 1"};
+                              "save-preferences", "fast-forward 1e+09", "audio-setapi 1",
+                              "compatibility 0.47"};
     int n = 0;
     for (const char* message : messages) {
         const std::string file = "fence" + std::to_string(n++) + ".pd";
@@ -1939,6 +1940,10 @@ void testAPatchCannotQuitOrReconfigurePd() {
               "[; pd " + std::string(message) + "] refused by name\n          console: " + console);
     }
     check(true, "and the process is still here after `quit 7` and `exit 7`");
+    // `compatibility` sets one process-wide level that every Pd instance in the
+    // session reads: one patch must not change how all the others behave.
+    check(pd_compatibilitylevel == 100000, "Pd's process-wide compatibility level is unchanged: " +
+                                               std::to_string(pd_compatibilitylevel));
 }
 
 // DF-E36: four holes the review of 19 November found in the DEV-09 fence, and

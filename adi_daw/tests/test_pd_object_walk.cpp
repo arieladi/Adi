@@ -110,6 +110,28 @@ void testAbstractionsAreWalkedOnce() {
           "[clone 4 nothere] is refused, naming 'nothere'");
 }
 
+void testAClassNamedByAPathIsRefused() {
+    section("PD4 -- a class named by an absolute or parent path is refused by name");
+    for (const char* name : {"/tmp/evil", "../evil", "a/../../evil", "C:/x/evil", "c:\\x\\evil", "\\\\server\\evil"}) {
+        const std::string p = std::string(kHeader) + "#X obj 10 10 osc~;\n#X obj 10 40 " + name + ";\n";
+        const PdAbstractions stored{{name, std::string(kHeader) + "#X obj 1 1 inlet~;\n"}};
+        const auto w = walkPdObjects(p, stored, small());
+        check(!w.allowed() && w.refused.size() == 1 && w.refused[0].reason == PdObjectRefusal::PathNamed &&
+                  w.refused[0].box == 2,
+              std::string("[") + name + "] is refused as path-named, even with an abstraction stored by that name");
+        const auto lines = w.describe();
+        check(!lines.empty() && lines[0].find("named by a path") != std::string::npos,
+              "described as: " + (lines.empty() ? std::string("-") : lines[0]));
+    }
+    // [/] is division, a class this build makes, not a path.
+    PdVocabulary withDivide({"osc~", "/"});
+    check(walkPdObjects(std::string(kHeader) + "#X obj 10 10 / 2;\n", {}, withDivide).allowed(), "[/ 2] (division) is allowed");
+    // A plain subfolder name stays an ordinary name, resolved against what is stored.
+    const PdAbstractions lib{{"mylib/voice", std::string(kHeader) + "#X obj 1 1 inlet~;\n"}};
+    check(walkPdObjects(std::string(kHeader) + "#X obj 10 10 mylib/voice;\n", lib, small()).allowed(),
+          "[mylib/voice] with that abstraction stored is allowed");
+}
+
 void testWhatCannotBeKnownStatically() {
     section("PD4 -- recursion, run-time class names and broken canvases are refused");
     const PdAbstractions loop{{"a", std::string(kHeader) + "#X obj 1 1 b;\n"},
@@ -209,6 +231,7 @@ int main() {
     testAnUnknownObjectIsNamedWhereItIs();
     testAbstractionsAreWalkedOnce();
     testWhatCannotBeKnownStatically();
+    testAClassNamedByAPathIsRefused();
     testTheTokeniserIsShared();
 #if defined(ADI_WITH_PD)
     testTheRunningBuildsVocabulary();
