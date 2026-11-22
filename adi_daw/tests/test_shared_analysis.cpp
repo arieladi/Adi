@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/shared_analysis.hpp"
 #include "adi/ui/focus_match.hpp"
+#include "adi/ui/focus_lag.hpp"
 #include "adi/ui/focus_scope.hpp"
 #include "adi/dsp/spectrum_average.hpp"
 #include "adi/engine/transport.hpp"
@@ -1070,6 +1071,418 @@ void focusMatchWindows() {
           "same-source, unequal calibrated data, or sanitised input cannot be captured as a Match");
     std::fill(b.binsDbfs.begin(), b.binsDbfs.end(), adi::dsp::kDbFloor);
     check(!focusReadMatch(a, b), "no measurable overlap leaves Match empty");
+}
+void focusLagPreviewRequests() {
+    using namespace adi::ui;
+    static constexpr std::uint64_t revision = 19;
+    SharedAnalysis::Result main, target;
+    main.request.track = 81;
+    main.generation = 42;
+    main.firstStamp = 14000;
+    main.firstSequence = 9000;
+    main.sampleRate = 48000.;
+    main.windowSerial = 5;
+    main.transportRevision = revision;
+    main.advancing = true;
+    target = main;
+    target.request.track = 82;
+    target.generation = 43;
+    target.firstStamp = 14256;
+    target.firstSequence = 6256;
+    const std::array heads{SharedAnalysis::Lease::SourcePosition{42, 11200},
+                           SharedAnalysis::Lease::SourcePosition{43, 9120}};
+    const auto plan = [&](const SharedAnalysis::Result *a, const SharedAnalysis::Result *b,
+                          std::int64_t heard = 15400, std::uint64_t settled = revision) {
+        return focusLagPreviewRequest({a, b}, heads, settled, heard);
+    };
+
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    const auto request = plan(&main, &target);
+    observeAllocationSizes = false;
+    check(request && request->sources[0] == FocusScopeBarSource{main.request.source(), 42} &&
+              request->sources[1] == FocusScopeBarSource{target.request.source(), 43} &&
+              request->transportRevision == revision && request->firstStamp == 15024 - 4096 &&
+              request->heardEnd == 15400 && request->maxLagSamples == 960 && allocationSizeCount == 0,
+          "Align plans from the earlier published end and existing source identities without allocating");
+    check(request && request->firstStamp < main.firstStamp && request->firstStamp < target.firstStamp,
+          "the two preview publications may be shorter than the worker's independently verified raw interval");
+    const auto heldBack = plan(&main, &target, 14800);
+    check(heldBack && heldBack->firstStamp == 14800 - 4096 && heldBack->heardEnd == 14800,
+          "the heard frontier clamps the request before either publication end");
+    check(!plan(&main, &target, target.firstStamp) && !plan(&main, &target, 4095) &&
+              !plan(&main, &target, -1),
+          "entirely future publications, an incomplete interval, and a negative frontier are refused");
+    auto recentMain = main, recentTarget = target;
+    recentMain.firstStamp = 3600;
+    recentTarget.firstStamp = 3072;
+    const auto boundary = plan(&recentMain, &recentTarget, 4200);
+    check(boundary && boundary->firstStamp == 0,
+          "the earlier target end can select the first complete timeline window");
+
+    check(!plan(nullptr, &target) && !plan(&main, nullptr) &&
+              !plan(&main, &target, 15400, 0) && !plan(&main, &target, 15400, revision + 1),
+          "both live publications and the settled matching transport revision are required");
+    auto invalid = target;
+    invalid.transportRevision -= 1;
+    check(!plan(&main, &invalid), "a retained target from another transport revision cannot launch a preview");
+    invalid = target;
+    invalid.advancing = false;
+    check(!plan(&main, &invalid), "parked audio cannot launch a timing preview");
+    invalid = target;
+    invalid.discontinuity = true;
+    check(!plan(&main, &invalid), "a publication marked discontinuous cannot witness the new raw interval");
+    invalid = target;
+    invalid.windowSerial = 0;
+    check(!plan(&main, &invalid), "the source needs a completed analysis window");
+    invalid = target;
+    invalid.generation += 1;
+    auto retiredHeads = heads;
+    retiredHeads[0].generation = 0;
+    check(!plan(&main, &invalid) && !focusLagPreviewRequest({&main, &target}, retiredHeads, revision, 15400),
+          "a replaced or detached tap cannot keep the old source identity eligible");
+    invalid = target;
+    invalid.request.track = main.request.track;
+    check(!plan(&main, &invalid), "a track never compares to itself");
+    invalid = target;
+    invalid.request.point = ScopePoint::PreFader;
+    check(!plan(&main, &invalid), "only the channel post-fader signal is eligible");
+    invalid = target;
+    invalid.request.device = 703;
+    check(!plan(&main, &invalid), "a bound device is not a channel post-fader source");
+    invalid = target;
+    invalid.firstSequence = heads[1].written - target.request.fftSize + 1;
+    check(!plan(&main, &invalid), "a completed analysis window cannot be ahead of its current tap head");
+    auto insufficientHeads = heads;
+    insufficientHeads[1].written = 4095;
+    invalid.firstSequence = 1000;
+    check(!focusLagPreviewRequest({&main, &invalid}, insufficientHeads, revision, 15400),
+          "the live tap must have produced enough samples for a full worker window");
+    invalid = target;
+    invalid.firstStamp = std::numeric_limits<std::int64_t>::max() - 4;
+    check(!plan(&main, &invalid, std::numeric_limits<std::int64_t>::max()),
+          "the publication end cannot overflow the sample timeline");
+    invalid = target;
+    invalid.request.fftSize = 0;
+    check(!plan(&main, &invalid), "a zero-length publication cannot witness a raw interval");
+    invalid = target;
+    invalid.sampleRate = 44100.;
+    check(!plan(&main, &invalid), "different device rates are refused");
+
+    for (const auto pair : {std::pair{44100., 882}, std::pair{96000., 1920}, std::pair{192000., 2016}}) {
+        auto fastMain = main, fastTarget = target;
+        fastMain.sampleRate = fastTarget.sampleRate = pair.first;
+        const auto faster = plan(&fastMain, &fastTarget);
+        check(faster && faster->maxLagSamples == pair.second,
+              "the 20 ms search is rounded in device samples and capped by the worker's fixed support");
+    }
+    for (const auto rate : {0., 1., std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::quiet_NaN()}) {
+        auto invalidMain = main, invalidTarget = target;
+        invalidMain.sampleRate = invalidTarget.sampleRate = rate;
+        check(!plan(&invalidMain, &invalidTarget), "a non-finite or unusable search radius is refused");
+    }
+}
+void focusLagPreviewCases() {
+    using namespace adi::ui;
+    constexpr auto size = FocusLagRequest::kFrames;
+    constexpr std::int64_t start = 12345;
+    FocusLagRequest request;
+    request.sources = {FocusScopeBarSource{{1}, 10}, FocusScopeBarSource{{2}, 11}};
+    request.transportRevision = 9;
+    request.firstStamp = start;
+    request.heardEnd = start + static_cast<std::int64_t>(size);
+    request.maxLagSamples = 960;
+    const auto publication = [&](std::size_t side) {
+        const auto &identity = request.sources[side];
+        SharedAnalysis::Result result;
+        result.request.track = identity.source.track;
+        result.request.fftSize = static_cast<std::int32_t>(size);
+        result.request.outputs = SharedAnalysis::Scope;
+        result.outputs = SharedAnalysis::Scope;
+        result.generation = identity.generation;
+        result.windowSerial = 1;
+        result.firstStamp = start;
+        result.transportRevision = request.transportRevision;
+        result.sampleRate = 48000.;
+        result.advancing = true;
+        result.scopeLeft.resize(size);
+        result.scopeRight.resize(size);
+        return result;
+    };
+    auto a = publication(0), b = publication(1);
+    std::array<float, size> noise{};
+    const auto broadband = [](auto &samples, std::uint32_t seed) {
+        for (auto &sample : samples) {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            sample = static_cast<float>(seed & 0xffffu) / 32768.f - 1.f;
+        }
+    };
+    broadband(noise, 0x12345678u);
+    const auto delay = [&](std::int32_t lag, float polarity) {
+        for (std::size_t i = 0; i < size; ++i) {
+            const auto n = static_cast<std::int32_t>(i) - lag;
+            const float aValue = noise[i] * .4f;
+            const float bValue = n >= 0 && static_cast<std::size_t>(n) < size
+                ? polarity * noise[static_cast<std::size_t>(n)] * .4f : 0.f;
+            a.scopeLeft[i] = a.scopeRight[i] = aValue;
+            b.scopeLeft[i] = b.scopeRight[i] = bValue;
+        }
+    };
+    delay(137, 1.f);
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    const auto late = focusFindLag(request, a, b);
+    observeAllocationSizes = false;
+    check(late && late->lagSamples == 137 && near(late->correlation, 1., 1e-12) &&
+              near(1000. * late->lagSamples / a.sampleRate, 2.85416666666667, 1e-12) && allocationSizeCount == 0,
+          "a stamped broadband copy 137 samples late suggests an advance of 2.8541667 ms without allocations");
+    // Use raw moments as an independent check of the zero-lag Pearson correlation.
+    const auto currentCorrelation = [&] {
+        double sx = 0., sy = 0., sxx = 0., syy = 0., sxy = 0.;
+        const auto margin = static_cast<std::size_t>(request.maxLagSamples);
+        for (auto i = margin; i < size - margin; ++i) {
+            const double x = a.scopeLeft[i], y = b.scopeLeft[i];
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            syy += y * y;
+            sxy += x * y;
+        }
+        const auto count = static_cast<double>(size - 2 * margin);
+        return (sxy - sx * sy / count) / std::sqrt((sxx - sx * sx / count) * (syy - sy * sy / count));
+    };
+    check(late && std::abs(late->unalignedCorrelation) < .2 &&
+              near(late->unalignedCorrelation, currentCorrelation(), 1e-12),
+          "the Align rail describes current correlation separately from the suggested correction");
+    delay(137, -1.f);
+    const auto inverted = focusFindLag(request, a, b);
+    check(inverted && inverted->lagSamples == 137 && near(inverted->correlation, -1., 1e-12),
+          "inverting the target retains its timing and reports a separately signed correlation");
+    check(inverted && late && near(inverted->unalignedCorrelation, -late->unalignedCorrelation, 1e-12),
+          "the current correlation rail also retains the measured polarity");
+    delay(0, 1.f);
+    const auto alreadyAligned = focusFindLag(request, a, b);
+    check(alreadyAligned && alreadyAligned->lagSamples == 0 && near(alreadyAligned->unalignedCorrelation, 1., 1e-12),
+          "an already aligned pair measures full current correlation and zero timing offset");
+    delay(-137, 1.f);
+    const auto early = focusFindLag(request, a, b);
+    check(early && early->lagSamples == -137 && near(early->correlation, 1., 1e-12),
+          "a negative lag correctly identifies an early target");
+
+    delay(960, 1.f);
+    check(!focusFindLag(request, a, b), "a true peak at the positive search boundary remains ineligible");
+    delay(-960, 1.f);
+    check(!focusFindLag(request, a, b), "a true peak at the negative search boundary remains ineligible");
+    for (std::size_t i = 0; i < size; ++i) {
+        const auto phase = 2. * std::numbers::pi * static_cast<double>(i % 800) / 800.;
+        const auto value = .4f * static_cast<float>(std::sin(phase));
+        a.scopeLeft[i] = a.scopeRight[i] = b.scopeLeft[i] = b.scopeRight[i] = value;
+    }
+    check(!focusFindLag(request, a, b), "periodic aliases at -800, 0 and +800 cannot produce a timing suggestion");
+    delay(137, 1.f);
+    for (std::size_t i = 0; i + 271 < size; ++i) {
+        b.scopeLeft[i] += .384f * noise[i + 271];
+        b.scopeRight[i] = b.scopeLeft[i];
+    }
+    request.maxLagSamples = 200;
+    const auto onlyLatePeak = focusFindLag(request, a, b);
+    check(onlyLatePeak && onlyLatePeak->lagSamples == 137 && onlyLatePeak->correlation > .70,
+          "the two-echo fixture has a strong first timing peak inside the narrower search");
+    request.maxLagSamples = 960;
+    check(!focusFindLag(request, a, b), "a second distinct nearby-strength peak makes the wider search ambiguous");
+    delay(137, 1.f);
+    broadband(b.scopeLeft, 0x31a59e7bu);
+    b.scopeRight = b.scopeLeft;
+    check(!focusFindLag(request, a, b), "unrelated broadband windows have no sufficiently correlated candidate");
+    delay(137, 1.f);
+    std::fill(b.scopeLeft.begin(), b.scopeLeft.end(), 0.f);
+    b.scopeRight = b.scopeLeft;
+    check(!focusFindLag(request, a, b), "silence has no timing peak");
+    std::fill(b.scopeLeft.begin(), b.scopeLeft.end(), .625f);
+    b.scopeRight = b.scopeLeft;
+    check(!focusFindLag(request, a, b), "DC has no timing peak after centering");
+    delay(137, 1.f);
+    for (auto &sample : b.scopeLeft) sample *= 1e-8f;
+    b.scopeRight = b.scopeLeft;
+    check(!focusFindLag(request, a, b), "a perfectly correlated signal below the AC level floor is declined");
+    delay(137, 1.f);
+    for (std::size_t i = 0; i < size; ++i) b.scopeRight[i] = -b.scopeLeft[i];
+    check(!focusFindLag(request, a, b), "opposed channels give an undefined mid timing suggestion");
+
+    delay(137, 1.f);
+    --b.transportRevision;
+    check(!focusFindLag(request, a, b), "different transport revisions cannot be compared despite equal timestamps");
+    a.transportRevision = b.transportRevision;
+    check(!focusFindLag(request, a, b), "matching old revisions are refused against the current transport witness");
+    a.transportRevision = b.transportRevision = request.transportRevision;
+    --b.generation;
+    check(!focusFindLag(request, a, b), "a reused channel ID cannot disguise an obsolete tap generation");
+    b.generation = request.sources[1].generation;
+    --a.firstStamp; --b.firstStamp;
+    check(!focusFindLag(request, a, b), "a prior same-revision window does not cover the exact requested stamp range");
+    a.firstStamp = b.firstStamp = request.firstStamp;
+    --request.heardEnd;
+    check(!focusFindLag(request, a, b), "the requested range cannot contain a future or unplayed sample");
+    ++request.heardEnd;
+    b.sampleRate = 44100.;
+    check(!focusFindLag(request, a, b), "a mixed sample-rate pair cannot produce a sample offset");
+    b.sampleRate = a.sampleRate;
+    request.maxLagSamples = 961;
+    check(!focusFindLag(request, a, b), "the explicit search radius may not exceed 20 ms at 48 kHz");
+    request.maxLagSamples = 960;
+    b.scopeRight.back() = std::numeric_limits<float>::quiet_NaN();
+    check(!focusFindLag(request, a, b), "non-finite raw input invalidates the whole requested interval");
+}
+void focusLagWorkerJob(adi::ui::FocusLagRequest request, const std::shared_ptr<ScopeTap> &a,
+                       const std::shared_ptr<ScopeTap> &b) {
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::FocusLagStatus;
+    const auto provider = [&](Source source, double) -> std::shared_ptr<const ScopeTap> { return source.track == 1 ? a : b; };
+    unsigned acquired = 0, released = 0;
+    SharedAnalysis broker([&](Source source, double seconds) { ++acquired; return provider(source, seconds); },
+                          [&](Source) { ++released; }, SharedAnalysis::Mode::Manual);
+    check(!broker.requestFocusLag(request) && !acquired, "Align does not attach a tap to make an explicit request eligible");
+    SharedAnalysis reference(provider, [](Source) {}, SharedAnalysis::Mode::Manual);
+    auto fft = broker.acquire({1});
+    auto referenceFft = reference.acquire({1});
+    auto scopeRequest = SharedAnalysis::Request{2};
+    scopeRequest.outputs = SharedAnalysis::Scope;
+    auto scope = broker.acquire(scopeRequest);
+    auto referenceScope = reference.acquire(scopeRequest);
+    check(fft.available() && referenceFft.available() && scope.available() && referenceScope.available(),
+          "both brokers have matching ordinary visual subscriptions");
+    std::array<float, 1024> extraAudio;
+    extraAudio.fill(.125f);
+    a->write(extraAudio.data(), nullptr, static_cast<std::int32_t>(extraAudio.size()), request.heardEnd, true,
+             request.transportRevision);
+
+    auto lease = broker.requestFocusLag(request);
+    check(lease && lease.status() == Status::Pending && !lease.read() && !broker.requestFocusLag(request),
+          "one explicit Align task is queued and a duplicate does not schedule a second job");
+    const auto referenceTransforms = reference.pump();
+    const auto companionTransforms = broker.pump();
+    const auto result = lease.read();
+    check(lease.status() == Status::Ready && result && result->lagSamples == 137 && near(result->correlation, 1., 1e-12),
+          "one explicit Align task publishes the result after ordinary spectral work");
+    check(referenceTransforms == 1 && companionTransforms == referenceTransforms,
+          "the Align task leaves the ordinary spectrum FFT count unchanged");
+    check(acquired == 2 && released == 0, "the Align task borrows both ordinary sources without adding subscriptions");
+    reference.pump();
+    broker.pump();
+    const auto idle = broker.stats();
+    broker.pump();
+    check(lease.read() == result && idle.workerPasses == broker.stats().workerPasses &&
+              reference.stats().transforms == idle.transforms,
+          "a completed Align task stays immutable and performs no work on idle frames");
+
+    auto cancelled = broker.requestFocusLag(request);
+    check(cancelled && cancelled.status() == Status::Pending, "a fresh explicit request can be cancelled before the worker runs");
+    cancelled.reset();
+    broker.pump();
+    check(!cancelled && broker.stats().workerPasses == idle.workerPasses && released == 0,
+          "closing Align cancels the pending task while other visual demand remains attached");
+
+    auto stale = broker.requestFocusLag(request);
+    broker.refreshSources(true);
+    broker.pump();
+    check(stale && stale.status() == Status::Refused && !stale.read() && lease.status() == Status::Refused && !lease.read() &&
+              result && result->lagSamples == 137,
+          "a source binding epoch invalidates queued and completed leases without mutating an already held result");
+    auto wrongGeneration = request;
+    ++wrongGeneration.sources[1].generation;
+    check(!broker.requestFocusLag(wrongGeneration), "a request for an obsolete tap generation is refused before scheduling");
+    auto shortHistory = request;
+    shortHistory.firstStamp += 20000;
+    shortHistory.heardEnd += 20000;
+    auto refused = broker.requestFocusLag(shortHistory);
+    broker.pump();
+    check(refused && refused.status() == Status::Refused && !refused.read(),
+          "an accepted task with insufficient stamped history returns a clean refusal");
+
+    auto rebound = broker.requestFocusLag(request);
+    scope.reset();
+    check(!broker.requestFocusLag(request) && acquired >= 2 && released == 1,
+          "Align needs both existing source demands and never revives a released tap");
+    scope = broker.acquire(scopeRequest);
+    broker.pump();
+    check(scope.available() && rebound && rebound.status() == Status::Refused && !rebound.read(),
+          "reattachment of the same physical tap cannot revive a request from the former binding");
+    auto beforeSeek = broker.requestFocusLag(request);
+    b->write(static_cast<const float *>(nullptr), nullptr, 1,
+             request.firstStamp + static_cast<std::int64_t>(adi::ui::FocusLagRequest::kFrames), true,
+             request.transportRevision + 1);
+    broker.pump();
+    check(beforeSeek && beforeSeek.status() == Status::Refused && !beforeSeek.read(),
+          "an actual seek in the same bound tap invalidates the queued preview");
+}
+void focusLagTapReads() {
+    using namespace adi::ui;
+    constexpr auto frames = FocusLagRequest::kFrames;
+    constexpr auto frameCount = static_cast<std::int32_t>(frames);
+    constexpr std::int64_t first = 25000, end = first + frameCount;
+    constexpr std::int32_t delay = 137;
+    constexpr std::uint64_t revision = 9;
+    std::array<float, frames> main, target{};
+    std::uint32_t bits = 0xdeadbeefu;
+    for (std::size_t i = 0; i < frames; ++i) {
+        bits = bits * 1664525u + 1013904223u;
+        main[i] = static_cast<float>(bits >> 16) / 65536.f - .5f;
+        if (i >= static_cast<std::size_t>(delay)) target[i] = main[i - static_cast<std::size_t>(delay)];
+    }
+    auto a = std::make_shared<ScopeTap>(48000., .25);
+    auto b = std::make_shared<ScopeTap>(48000., .25);
+    a->write(main.data(), nullptr, frameCount, first, true, revision);
+    a->write(static_cast<const float *>(nullptr), nullptr, 64, end, true, revision);
+    constexpr std::int32_t split = 1536;
+    b->write(target.data(), nullptr, split, first, true, revision);
+    b->write(target.data() + split, nullptr, frameCount - split, first + split, true, revision);
+    FocusLagRequest request{{FocusScopeBarSource{{1}, a->generation()}, FocusScopeBarSource{{2}, b->generation()}},
+                            revision, first, end + 64, 960};
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    const auto measured = focusFindLagOnTaps(request, {a, b});
+    observeAllocationSizes = false;
+    check(measured && measured->lagSamples == delay && near(measured->correlation, 1., 1e-12) &&
+              allocationSizeCount == 0 && a->written() == frameCount + 64 && b->written() == frameCount,
+          "unequal physical heads resolve the same exact heard interval without allocation or tap mutation");
+    request.heardEnd = end - 1;
+    check(!focusFindLagOnTaps(request, {a, b}), "Align declines a requested interval beyond the heard position");
+    request.heardEnd = end;
+    const auto ahead = focusFindLagOnTaps(request, {a, b});
+    check(ahead && ahead->lagSamples == delay,
+          "a later same-revision head can locate the exact already-heard interval");
+    request.heardEnd = end + 768;
+
+    const auto alternate = [&](double rate = 48000., double seconds = .25) {
+        auto tap = std::make_shared<ScopeTap>(rate, seconds);
+        request.sources[1].generation = tap->generation();
+        return tap;
+    };
+    auto other = alternate();
+    other->write(target.data(), nullptr, frameCount - 1, first, true, revision);
+    check(!focusFindLagOnTaps(request, {a, other}), "one absent sample makes the requested history incomplete");
+    check(!focusFindLagOnTaps(request, {a, b}), "the old tap cannot stand in for its new generation");
+    other = alternate();
+    other->write(target.data(), nullptr, split, first, true, revision - 1);
+    other->write(target.data() + split, nullptr, frameCount - split, first + split, true, revision);
+    check(!focusFindLagOnTaps(request, {a, other}), "a matching final stamp cannot hide a prior transport boundary");
+    other = alternate();
+    other->write(target.data(), nullptr, frameCount, first, false, revision);
+    check(!focusFindLagOnTaps(request, {a, other}), "parked audio does not identify a heard interval");
+    other = alternate(44100.);
+    other->write(target.data(), nullptr, frameCount, first, true, revision);
+    check(!focusFindLagOnTaps(request, {a, other}), "mixed sample rates cannot share a lag sample grid");
+    other = alternate(48000., .1);
+    other->write(target.data(), nullptr, frameCount, first, true, revision);
+    other->write(static_cast<const float *>(nullptr), nullptr, 768, end, true, revision);
+    check(other->oldest() > 0 && !focusFindLagOnTaps(request, {a, other}),
+          "a ring that has overwritten the first sample refuses the exact wanted interval");
+    request.sources[1].generation = b->generation();
+    request.heardEnd = end + 64;
+    focusLagWorkerJob(request, a, b);
 }
 void parkedSilence() {
     Fixture f;
@@ -2489,7 +2902,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

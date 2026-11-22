@@ -16,6 +16,8 @@
 namespace adi::ui {
 struct FocusScopeRange;
 class FocusScopeBarProjection;
+struct FocusLagRequest;
+struct FocusLagPreview;
 // Owner-thread demand, immutable worker publications. No audio processor, callback lock,
 // repaint timer or independent analysis clock: visible windows request a bounded pass on
 // their frame clock. All documents share one process worker. Compatible output modes use
@@ -26,6 +28,7 @@ class SharedAnalysis final {
     struct CumulativeHistory;
     struct CaptureDomain;
     struct BarScopeDomain;
+    struct FocusLagJob;
     struct Scheduler;
   public:
     static constexpr double kTapSeconds = 10.0; // legacy adapter's history contract
@@ -223,6 +226,25 @@ class SharedAnalysis final {
         std::shared_ptr<BarScopeDomain> domain_;
         friend class SharedAnalysis;
     };
+    enum class FocusLagStatus { Idle, Pending, Ready, Refused };
+    class FocusLagLease {
+      public:
+        FocusLagLease() = default;
+        ~FocusLagLease();
+        FocusLagLease(FocusLagLease &&) noexcept;
+        FocusLagLease &operator=(FocusLagLease &&) noexcept;
+        FocusLagLease(const FocusLagLease &) = delete;
+        FocusLagLease &operator=(const FocusLagLease &) = delete;
+        explicit operator bool() const noexcept;
+        FocusLagStatus status() const noexcept;
+        std::shared_ptr<const FocusLagPreview> read() const noexcept;
+        void reset() noexcept;
+      private:
+        FocusLagLease(std::weak_ptr<State>, std::shared_ptr<FocusLagJob>);
+        std::weak_ptr<State> state_;
+        std::shared_ptr<FocusLagJob> job_;
+        friend class SharedAnalysis;
+    };
     using AcquireSourceTap = std::function<std::shared_ptr<const engine::ScopeTap>(engine::ScopeSource, double)>;
     // Acquire can establish a pending lease whose tap is currently null. Last demand calls
     // Release once whenever Acquire was invoked, so unavailable sources cannot leak demand.
@@ -240,6 +262,9 @@ class SharedAnalysis final {
     Lease acquireStereoMeter(std::int64_t track, StereoMeterProfile);
     CaptureLease acquireCapture(const CaptureRequest &);
     BarScopeLease acquireBarScope(std::span<const engine::ScopeSource>, std::size_t columns);
+    // One owner-requested calculation on existing source demand. An empty
+    // lease means the broker is busy or the requested bindings are unavailable.
+    FocusLagLease requestFocusLag(const FocusLagRequest &);
     void shutdown() noexcept;
     // Owner-only lifecycle query, including consumers which released all leases
     // to hold local pictures. False after explicit shutdown.
