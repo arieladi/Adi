@@ -36,6 +36,16 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — TM-TT-01 play authored tempo ramps
+
+**PR requested.** `engine/tm-tt01-tempo-ramps` at `8f0705dbec7a88eebef470946854eda25afb071d`, based on main `87ea349c`. Title **Play authored tempo ramps on the shared project clock**.
+
+The outgoing tempo point gives the shape. Linear and Bézier ramps use analytic integrals, with the existing quadratic Bézier tension law. Musical audio and MIDI placement, automation and clip envelopes, recording and Capture, clip and warp edits, freeze, and both transport quantizers read the effective time conversion. Warp keeps its authored points and adds sample-rounded anchors through the ramp. The native Play-Q helper keeps its upward sample rounding and forgiveness. The metronome checks integrated beat boundaries and resets its cached beat across a seek, loop wrap or meter change.
+
+Link takeover retains the original curve on the part that already played. Resuming the authored clock inside a ramp restores its original phase at the new physical origin. The span information lives in the private performed model. SQL, project format and history stay authored. TM-SV-01 can land beside this branch. The trial merge has one additive conflict at the MIDI test dispatch, where both the tempo-ramp and quantized-locate selectors are needed.
+
+GCC and Clang both passed all 15 strict suites. Independent 60-digit references anchored 44.1, 48 and 96 kHz midpoint tests. Native MIDI had 522 checks, Session 224 and Warp Playback 146 per compiler. The tests cover integrated automation and envelopes, sounding warped PCM to the rounded boundary, metronome timing, Link-style takeover and resume, and a clean decode after reclaiming scratch disk headroom. OPS validation, `git diff --check` and Win's five 20 November portability patterns were checked. Linux fixtures ran with independent `ADI_HOME` paths. The remaining app control bindings and director-side Live parity go with their PLAN rows.
+
 ## 2026-11-22 — MX-23 preview signed Track Delay
 
 **PR requested.** `engine/mx23-track-delay-preview` at `b33398f683d4a2fe2bc7ce859c436a54dc9f6300`, based on main `87ea349c`. Title **Preview signed Track Delay through mixer gestures**. This is the Engine producer requested by window-fn. Use `ScalarKind::TrackDelay` and `Strategy::Structural` with the existing single or relative producer, passing an absolute coordinate in signed project samples.
