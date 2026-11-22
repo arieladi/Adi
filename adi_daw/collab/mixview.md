@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — DF-M60(d) publication gate and after-3-December Scope branches
+
+**PR requested.** `mixview/df-m60d-panel-publication-20261122` at `ed76e96e` adds deterministic coverage for the companion processing-status publication carried by the width fix. Status alone publishes a new snapshot, repeated status keeps it, and recovery clears it without disturbing the held snapshot or key width. Removing the status from the comparator failed exactly two new assertions. The actual Release comparator passed all 36 checks and no hidden parameter reads.
+
+**PR requested, lands after 3 December.** `mixview/focus-scope-preview-lands-after-2026-12-03` at `ac054b10` adds selected-layer polarity, positive and negative sample offsets, coarse/fine steps and milliseconds readout. Both short and grouped-bar projections adjust aligned samples before combining them. Edges outside the captured interval contribute zero. Broker 631 checks passed.
+
+**PR requested, lands after 3 December.** `mixview/focus-scope-phase-lands-after-2026-12-03` at `7531cc42` follows the preview slice. Layers and Stack compare the first two Mid signals. Overlay and Sum read the signed sum's left/right correlation. Difference does not demand phase. Broker 635 checks passed.
+
+**PR requested, lands after 3 December.** `mixview/focus-scope-delta-spectrum-lands-after-2026-12-03` at `f6b5137a` follows phase. The optional difference spectrum transforms the latest aligned raw window in the grouped bar. Identical operands yield an empty spectrum without an FFT. It retains the existing taps and worker. Broker 649 checks passed. All three slices compiled their changed UI and broker units with /WX. The matching full UI Release gate remains separate from these broker checks.
+
 ## 2026-11-22 — DF-M35 and DF-M3, native Clean audio verification
 
 The exact cumulative Release at `88bab8b9` passed nine saved A/B pairs through the ordinary native compressor loader. All 18 output arrays matched the direct-core replays byte for byte across 4,049,152 stereo frames. The measured programme residual stayed below 2.99e-8 peak and 1.31e-9 RMS. The playback replay includes recorded automation events, retargets, reset/wake and reprepare. The test matched the reported zero latency.
