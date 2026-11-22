@@ -252,7 +252,7 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
         // fade ends, and moves to the low-passed copy (or off it) when the
         // ratio crosses 1, in the same fade (a splice due before such a fade
         // ends is made with it). At a ratio of exactly 1, what is left of a
-        // period is glided away at 0.5 % speed.
+        // period is glided away at 0.1 % speed (1.7 cents, under hearing).
         if (fade_ == 0) {
             speed_ = ratio_;
             const double p = period_, delay = static_cast<double>(clock_) - tap_;
@@ -272,7 +272,7 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
                 if (std::abs(off) < 1e-6) {
                     tap_ = static_cast<double>(clock_) - centre;
                 } else {
-                    speed_ = 1 + std::clamp(off, -0.005, 0.005);
+                    speed_ = 1 + std::clamp(off, -0.001, 0.001);
                 }
             }
             if (by != 0 || switching) {
