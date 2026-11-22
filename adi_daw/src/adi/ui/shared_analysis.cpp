@@ -112,11 +112,13 @@ struct SharedAnalysis::CumulativeHistory {
     std::atomic<std::shared_ptr<const MaximumResult>> publication;
     std::int64_t afterSequence = 0;
     std::uint64_t lastWindow = 0;
+    bool binsChanged = false;
 
     explicit CumulativeHistory(std::int32_t fftSize) : bins(static_cast<std::size_t>(fftSize / 2 + 1)) {}
     void clear() noexcept {
         std::fill(bins.begin(), bins.end(), 0.f);
         lastWindow = 0;
+        binsChanged = false;
         publication.store({});
     }
 };
@@ -585,8 +587,14 @@ struct SharedAnalysis::Domain {
                         continue;
                     }
                     if (nonzero) {
-                        for (std::size_t i = 0; i < linear.size(); ++i)
-                            history->bins[i] = std::max(history->bins[i], linear[i]);
+                        bool changed = history->binsChanged;
+                        for (std::size_t i = 0; i < linear.size(); ++i) {
+                            const auto held = history->bins[i];
+                            const auto peak = std::max(held, linear[i]);
+                            history->bins[i] = peak;
+                            changed = peak > held || changed;
+                        }
+                        history->binsChanged = changed;
                     }
                     history->lastWindow = windowSerial;
                 }
@@ -642,14 +650,15 @@ struct SharedAnalysis::Domain {
         for (const auto &history : cumulativeHistories) {
             if (!history->lastWindow) continue;
             const auto previous = history->publication.load();
-            if (previous && previous->window->windowSerial == history->lastWindow &&
-                previous->window->outputs == window->outputs) continue;
+            if (previous && !history->binsChanged && previous->window->outputs == window->outputs)
+                continue;
             try {
                 auto publication = std::make_shared<MaximumResult>();
                 publication->window = window;
                 publication->binsDbfs.resize(history->bins.size());
                 std::transform(history->bins.begin(), history->bins.end(), publication->binsDbfs.begin(), dsp::toDbfs);
                 history->publication.store(std::move(publication));
+                history->binsChanged = false;
             } catch (...) { /* The previous immutable picture remains available. */ }
         }
     }

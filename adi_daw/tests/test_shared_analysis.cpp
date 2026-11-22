@@ -380,6 +380,8 @@ void cumulativeMaximumSpectrum() {
     check(held && decayed && exactBins(held->binsDbfs, peak->binsDbfs) &&
               decayed->binsDbfs[16] + 20.f < held->binsDbfs[16] && f.broker.stats().transforms == 3,
           "cumulative bins stay identical through quiet hops while realtime maximum decays");
+    check(held == peak && raw.read() != rawDc,
+          "an unchanged cumulative picture is reused while the shared realtime trace continues publishing");
     if (!held) return;
 
     const auto siblingHeld = sibling.readMaximum();
