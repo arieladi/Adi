@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Free-input filter response for the Hold follower
+
+With the full-stage detector selected, each stereo channel is filtered before rectification and the louder channel drives the envelope. Fifteen exponential gain readings at each of three rates identified two equal bilinear poles at each active edge. At normalized control 0.25, 0.5 and 0.75 the measured cutoff frequencies were 116.541, 659.255 and 3,729.310 Hz. The frequency is 20.6017 Hz times 2 raised to ten times the normalized control. The twelve signed stereo cross-checks gave 0.00000077–0.00000232 RMS. Taking magnitudes before filtering gave 0.0286–0.0898 RMS instead.
+
+The high-pass control has priority. Its effective range is zero to 95%. The low-pass control is raised to at least five percentage points above it. The high-pass zero endpoint and low-pass 100% endpoint bypass their respective filters. Active frequencies near Nyquist are limited to 0.4999 times sample rate. At 8, 16 and 22.05 kHz the saturated low-pass cutoffs measured 3,999.19995, 7,998.40019 and 11,022.79537 Hz. In linked-band mode both stored filter settings are dormant.
+
+The clones seat reserves IDs 907–909 for each band's high-pass cutoff and 910–912 for its low-pass cutoff on the existing Hold detector branch. Defaults are zero and 100%. Tests cover signed stereo input, both slopes, colliding cutoff settings, near-Nyquist behavior, neutral-edge recall and live changes. The full-input tap was first isolated on Width using an upstream quarter-gain stage. The registered Hold comparison additionally checks the stage order in the original before scoring its full-input route. **Lands after 3 December.**
+
 ## 22 November 2026 — Resolve constant-curve precision and the remaining measured order fallbacks
 
 Of 3,716 historical curves, 408 in 275 programs had a single free point plus eight identical scalar heights that represent the original value more accurately. Recalling the scalars reduced the median point error from 0.00000419 to zero. Exactly 301 heights then matched. The largest remaining height error was 0.000000119. All 598 ineligible saved files remained byte-identical. At the same decoded height, the point and scalar forms produced byte-identical full streams in all 550 controls across both clocks.
