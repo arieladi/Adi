@@ -47,6 +47,12 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — items 3 and 5 run again on full builds
+
+Rebuilt with `ninja -k 0`, so every target but main's broken acceptance target was built. On `window-fn/saveas-guard`
+`55bdf56e` and on `window-fn/dfe44-discard` `90595272`, the 27 window and mix suites pass, and the shell suite passes
+from a scratch directory (2954 checks, 0 failures). The two "PR requested" entries below stand as written.
+
 ## 2026-11-22, window-fn — queue item 8, DF-W28 (rest): a Duplicate or Paste onto clips removes what it covers (PR requested, drop half parked)
 
 - **Duplicate and Paste already do this.** Both go through the engine's placement planner
