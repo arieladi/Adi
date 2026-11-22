@@ -12323,7 +12323,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         mode.shape = adi::panel::Shape::Menu;
         mode.stepCount = 5;
         mode.choiceLabels = {"Clean", "Warm", "Tape", "Tube", "Fuzz"};
-        mode.playing = mode.stored = 0;
+        // From the last item, so every pick of the walk differs from the value playing: a pick of the
+        // value already playing is no gesture (main's guard).
+        mode.playing = mode.stored = 1.0;
         menuDevice.records = {mode};
         DevicePanelView menuPanel(gateway, menuDevice);
         std::vector<std::pair<engine::ParamEventKind, double>> sent;
