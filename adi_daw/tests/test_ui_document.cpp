@@ -18,6 +18,10 @@
 #include <cstdlib>
 #include <optional>
 #include <thread>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #if defined(_MSC_VER) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
@@ -650,6 +654,52 @@ void importWithChoices(const std::filesystem::path &dir) {
 // input through the document's callback; stopped, the take lands on the timer as one undo step, its
 // samples the input's, and Undo takes it back. Nothing armed, only MIDI armed and a device with no
 // inputs are refused with a reason.
+// DF-E44: a take that is not kept goes with its files; a folder the system would not remove stays, and the
+// Status Bar says so. POSIX only: a read-only work folder refuses the removal of its entries, except to root.
+void discardRefusalSaid(const std::filesystem::path &dir) {
+#if defined(_WIN32)
+    (void)dir;
+#else
+    if (::geteuid() == 0) {
+        std::printf("skip: a discard refusal needs a non-root user (root removes from a read-only folder)\n");
+        return;
+    }
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "refused.adi", true, {}, error);
+    check(doc != nullptr, "a project to record into");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "3 Audio armed");
+    const auto work = media::projectFolder(doc->store());
+    const auto entries = [&] {
+        std::size_t n = 0;
+        for ([[maybe_unused]] const auto &entry : std::filesystem::directory_iterator(work))
+            ++n;
+        return n;
+    };
+    const auto before = entries();
+    check(doc->startRecording(0, 1, false) && entries() == before + 1, "Record makes the take's private folder");
+    // Nothing recorded: the take is not kept, and its folder cannot be removed.
+    check(::chmod(work.c_str(), 0555) == 0, "the work folder made read-only");
+    doc->stopRecording();
+    doc->release();
+    doc->settleRecording();
+    const bool landed = !doc->landingTake();
+    const auto said = doc->takeLanded();
+    (void)::chmod(work.c_str(), 0755);
+    check(landed && said && !said->ok && said->message.find("The take was not kept") != std::string::npos &&
+              said->message.find("could not be removed") != std::string::npos &&
+              said->message.find("in the project's folder") != std::string::npos,
+          "the Status Bar says the take's files stay, and where");
+    if (said)
+        std::printf("discard refused: %s\n", said->message.c_str());
+    check(entries() == before + 1, "the folder stays for the next attempt");
+#endif
+}
 void arrangementRecord(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
@@ -905,6 +955,8 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());
+        test::TempDirectory refusedDir("ui_document", "refused");
+        discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
         mixerDragHeard(dragDir.path());
     }

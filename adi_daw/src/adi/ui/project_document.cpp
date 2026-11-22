@@ -1142,11 +1142,12 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     }
     if (!playing && !mailbox_.post(TransportMailbox::Command::Record, insertTick)) {
         session_.recording().stop(true);
+        std::string kept;
         if (auto dropped = session_.recording().poll())
-            dropped->discard();
+            kept = discardTake(*dropped);
         else
             landing_ = true; // the cancelled capture is collected and dropped on the timer
-        error_ = "Transport command queue is full";
+        error_ = "Transport command queue is full" + (kept.empty() ? std::string() : "." + kept);
         return false;
     }
     recording_ = true;
@@ -1183,12 +1184,20 @@ std::string recordingFailure(const engine::AudioRecordingResult &r) {
     return r.error;
 }
 } // namespace
+// A take that is not kept goes with its private files (DF-E44): a folder the system would not remove stays
+// in the project's folder, and the Status Bar says so, with the system's words, rather than nothing.
+std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
+    const auto refused = result.discard();
+    if (!refused)
+        return {};
+    return " Its recorded files could not be removed (" + refused.message() + "); they stay in " +
+           media::pathUtf8(result.directory().filename()) + " in the project's folder.";
+}
 void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     TakeLanded outcome;
     const auto interruption = recordingFailure(result);
     if (!result.hasAttachableAudio()) {
-        outcome.message = "The take was not kept: " + interruption + ".";
-        result.discard();
+        outcome.message = "The take was not kept: " + interruption + "." + discardTake(result);
         landed_ = std::move(outcome);
         return;
     }
@@ -1207,8 +1216,7 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     auto edit = recording::prepareCommit(*store_, result, ids);
     if (!edit.ok) {
         outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + edit.error + ".";
-        result.discard();
+        outcome.message = "The take was recorded but could not be added: " + edit.error + "." + discardTake(result);
         landed_ = std::move(outcome);
         return;
     }
