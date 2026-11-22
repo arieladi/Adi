@@ -370,6 +370,10 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= HoldFollowerSourceLow) {
+        holdUsesFullInput_[static_cast<std::size_t>(id - HoldFollowerSourceLow)] = value >= .5f;
+        return;
+    }
     if (id >= HoldFollowerLow) {
         const auto local = id - HoldFollowerLow;
         auto& follower = holdFollowers_[static_cast<std::size_t>(local / HoldFollowerCount)];
@@ -477,9 +481,12 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             } else if constexpr (kind == Stage::Sweep) {
                 sweeps_[index].processStereo(l, r, primary, band.secondary.at(p));
             } else {
-                const float baseHeight = band.secondary.at(p);
+                float holdHeight = band.secondary.at(p);
                 auto& follower = holdFollowers_[index];
-                const float holdHeight = follower.enabled() ? follower.apply(l, r, baseHeight) : baseHeight;
+                if (follower.enabled()) {
+                    if (holdUsesFullInput_[index]) holdHeight = follower.apply(inL[i], inR[i], holdHeight);
+                    else holdHeight = follower.apply(l, r, holdHeight);
+                }
                 crush_[index].processStereo(l, r, primary, holdHeight);
             }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }

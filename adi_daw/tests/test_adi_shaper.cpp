@@ -24,7 +24,9 @@ static_assert(Shaper::CrushOn == 340 && Shaper::LegacyCount == 415);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::LegacyCount);
 static_assert(Shaper::holdFollowerParam(Band::Low, Control::On) == 876);
-static_assert(Shaper::holdFollowerParam(Band::High, Control::Release) + 1 == Shaper::Count && Shaper::Count == 903);
+static_assert(Shaper::holdFollowerParam(Band::High, Control::Release) + 1 == Shaper::HoldFollowerSourceLow);
+static_assert(Shaper::holdFollowerSourceParam(Band::Low) == 903 && Shaper::holdFollowerSourceParam(Band::High) + 1 == 906);
+static_assert(Shaper::Count == 906);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -773,22 +775,28 @@ void driveAndCrush() {
 
 // A unity-amount detector supplies the time trajectory. Apply the measured
 // signed mapping separately, then give that height to a standalone Crush.
-void holdFollowerOracle(bool split, bool on, bool fullBase) {
+enum class DetectorTap { Selected, AlwaysLinked, RawDeviceInput };
+void holdFollowerOracle(bool split, bool on, bool fullBase, unsigned sourceMask = 0,
+                        DetectorTap tap = DetectorTap::Selected) {
     Shaper rack;
     rack.prepare(48000);
+    if (sourceMask != 0) flat(rack, Stage::Volume, Band::Mid, 50);
     rack.set(Shaper::CrushOn, 1);
     rack.set(static_cast<Shaper::Param>(Shaper::CrushOn + 1), split ? 3.f : 0.f);
     rack.set(static_cast<Shaper::Param>(Shaper::CrushOn + 2), 320);
     rack.set(static_cast<Shaper::Param>(Shaper::CrushOn + 3), 3200);
     constexpr std::array amounts{.75f, .25f, .625f};
     constexpr std::array offsets{.125f, -.125f, .25f};
-    constexpr std::array thresholds{.125f, .25f, .0625f};
+    const std::array thresholds = sourceMask ? std::array{.0625f, .125f, .03125f}
+                                             : std::array{.125f, .25f, .0625f};
     constexpr std::array depths{2.f, 4.f, 8.f};
     constexpr std::array heights{.25f, .75f, .5f, .875f, .375f, .625f, .125f, .5f};
     std::array<Follower, 3> meters;
     std::array<adi::dsp::AdiShaperCrush, 3> crush;
     for (std::size_t b = 0; b < 3; ++b) {
         const auto band = static_cast<Band>(b);
+        if (sourceMask != 0)
+            rack.set(Shaper::holdFollowerSourceParam(band), (sourceMask & (1U << b)) != 0 ? 1.f : 0.f);
         auto send = [&](Control control, float value) { rack.set(Shaper::holdFollowerParam(band, control), value); };
         send(Control::On, on ? 1.f : 0.f);
         send(Control::Mode, b == 2 ? 1.f : 0.f);
@@ -835,10 +843,12 @@ void holdFollowerOracle(bool split, bool on, bool fullBase) {
         const float base = fullBase ? 1.f : heights[first] +
             .25f * static_cast<float>(cell % 4) * (heights[(first + 1) % 8] - heights[first]);
         const float gain = i % 613 < 317 ? .875f : .0625f;
-        const std::array<float, 2> dry{
+        const std::array<float, 2> input{
             gain * static_cast<float>(.34 * std::sin(.021 * i) + .29 * std::sin(.46 * i)),
             gain * static_cast<float>(.46 * std::cos(.009 * i) - .22 * std::cos(1.94 * i))};
-        const auto actual = one(rack, dry[0], dry[1]);
+        const auto actual = one(rack, input[0], input[1]);
+        const float volume = sourceMask != 0 ? .5f : 1.f;
+        const std::array dry{input[0] * volume, input[1] * volume};
         std::array<std::array<float, 2>, 3> bands{};
         bands[1] = dry;
         if (split) {
@@ -853,7 +863,10 @@ void holdFollowerOracle(bool split, bool on, bool fullBase) {
         for (std::size_t b : {0U, 2U, 1U}) {
             if (!split && b != 1) continue;
             auto wet = bands[b];
-            const float peak = std::max(std::abs(wet[0]), std::abs(wet[1]));
+            const bool selected = (sourceMask & (1U << b)) != 0;
+            const auto& detector = !selected || tap == DetectorTap::AlwaysLinked ? bands[b]
+                                 : tap == DetectorTap::RawDeviceInput ? input : dry;
+            const float peak = std::max(std::abs(detector[0]), std::abs(detector[1]));
             const float gated = peak >= thresholds[b] ? peak : 0.f;
             const float env = meters[b].apply(gated, 0, 0);
             const float scale = depths[b] * (b == 2 ? amounts[b] : 2.f * amounts[b] - 1.f);
@@ -870,7 +883,15 @@ void holdFollowerOracle(bool split, bool on, bool fullBase) {
             for (std::size_t ch = 0; ch < 2; ++ch)
                 worst = std::max(worst, static_cast<double>(std::abs(actual[ch] - (dry[ch] + deltas[ch]))));
     }
-    check(worst <= (split ? 1.e-6 : 0.), "signed Hold follower drives the current stereo band's Crush clock sample by sample");
+    if (tap == DetectorTap::RawDeviceInput) {
+        check(worst > .01, "stage-input detector differs audibly from the unattenuated device input");
+        return;
+    }
+    if (tap == DetectorTap::AlwaysLinked) {
+        check(worst > .01, "each selectable full-stage input differs from its own linked crossover band");
+        return;
+    }
+    check(worst <= (split ? 1.e-6 : 0.), "each Hold clock follows its selected stereo input after upstream Volume");
     if (on) {
         check(excursion[1] > .1, "active Hold follower moves a falling or full-height base");
         if (split) check(excursion[0] > .1 && excursion[2] > .1, "low Add and high Multiply both move the split fixture");
@@ -898,6 +919,11 @@ int main() {
     holdFollowerOracle(false, false, false);
     holdFollowerOracle(false, true, true);
     holdFollowerOracle(true, true, false);
+    for (const unsigned mask : {1U, 2U, 4U}) {
+        holdFollowerOracle(true, true, false, mask);
+        holdFollowerOracle(true, true, false, mask, DetectorTap::AlwaysLinked);
+        holdFollowerOracle(true, true, false, mask, DetectorTap::RawDeviceInput);
+    }
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

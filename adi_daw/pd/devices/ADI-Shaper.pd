@@ -892,6 +892,12 @@
 #X msg 7210 1647 p 901 \$1;
 #X obj 7210 1684 adi.param \$0 903 0 100 20 % lin Crush_Hold_High_Follower_Release;
 #X msg 7210 1711 p 902 \$1;
+#X obj 7470 20 adi.param \$0 904 0 1 0 - menu Crush_Hold_Low_Follower_Source Band Full;
+#X msg 7470 47 p 903 \$1;
+#X obj 7470 84 adi.param \$0 905 0 1 0 - menu Crush_Hold_Mid_Follower_Source Band Full;
+#X msg 7470 111 p 904 \$1;
+#X obj 7470 148 adi.param \$0 906 0 1 0 - menu Crush_Hold_High_Follower_Source Band Full;
+#X msg 7470 175 p 905 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -1786,3 +1792,9 @@
 #X connect 890 0 1 0;
 #X connect 891 0 892 0;
 #X connect 892 0 1 0;
+#X connect 893 0 894 0;
+#X connect 894 0 1 0;
+#X connect 895 0 896 0;
+#X connect 896 0 1 0;
+#X connect 897 0 898 0;
+#X connect 898 0 1 0;

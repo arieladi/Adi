@@ -31,12 +31,16 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  LegacyCount = CrushOn + modStageParameterCount,
-                 HoldFollowerLow = 876, Count = HoldFollowerLow + 3 * HoldFollowerCount };
+                 HoldFollowerLow = 876, HoldFollowerSourceLow = HoldFollowerLow + 3 * HoldFollowerCount,
+                 Count = HoldFollowerSourceLow + 3 };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
     static constexpr Param holdFollowerParam(Band band, AdiShaperFollower::Control control) noexcept {
         return static_cast<Param>(HoldFollowerLow + HoldFollowerCount * static_cast<int>(band)
                                  + static_cast<int>(control));
+    }
+    static constexpr Param holdFollowerSourceParam(Band band) noexcept {
+        return static_cast<Param>(HoldFollowerSourceLow + static_cast<int>(band));
     }
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
@@ -138,6 +142,7 @@ class AdiShaper {
     std::array<AdiShaperDrive, 3> drives_;
     std::array<AdiShaperCrush, 3> crush_;
     std::array<AdiShaperFollower, 3> holdFollowers_;
+    std::array<bool, 3> holdUsesFullInput_{};
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;
