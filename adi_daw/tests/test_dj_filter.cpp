@@ -182,7 +182,43 @@ void robustness() {
 
 }  // namespace
 
+/// Leaving the centre, either way, and sweeping across it make no click
+/// (the review of 729bc803: the SVF's state froze at the centre, and leaving
+/// it gave a 0.49 step on a 0.5 sine). The output's largest step from the
+/// input over the 50 ms after the move is compared with a fresh instance's.
+void noClick() {
+    const auto tone = [](std::size_t frames) {
+        std::vector<float> x(frames);
+        for (std::size_t i = 0; i < frames; ++i) {
+            x[i] = static_cast<float>(0.5 * std::sin(2 * std::numbers::pi * 200 * static_cast<double>(i) / kRate));
+        }
+        return x;
+    };
+    const auto x = tone(48000 * 3);
+    struct Move {
+        std::vector<double> path;   ///< a Filter value for each second
+        const char* what;
+    };
+    for (const Move& m : {Move{{-30, 0, 2}, "rested at 0 after -30, then +2"}, Move{{30, 0, -2}, "rested at 0 after +30, then -2"},
+                          Move{{-30, 0, -2}, "rested at 0 after -30, then -2"}, Move{{-5, 5, 5}, "swept from -5 straight across to +5"}}) {
+        D dj;
+        dj.prepare(kRate);
+        std::vector<float> l(x.size()), r(x.size());
+        for (std::size_t second = 0; second < 3; ++second) {
+            dj.set(D::Filter, m.path[second]);
+            dj.process(x.data() + 48000 * second, x.data() + 48000 * second, l.data() + 48000 * second, r.data() + 48000 * second, 48000);
+        }
+        const std::size_t at = m.path[1] == m.path[2] ? 48000 : 96000;
+        double worst = 0;
+        for (std::size_t i = at; i < at + 2400; ++i) {
+            worst = std::max(worst, std::abs(static_cast<double>(l[i]) - x[i]));
+        }
+        check(worst < 0.2, std::string("DJ Filter ") + m.what + ": no click (" + std::to_string(worst) + " off the input)");
+    }
+}
+
 int main() {
+    noClick();
     againstAutoFilter();
     knob();
     robustness();

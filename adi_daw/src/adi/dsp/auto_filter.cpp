@@ -129,7 +129,18 @@ double AutoFilter::filter(Lane &s, double x, double freq) noexcept {
                  drive = p_[Drive] / 100;
     if (type == DJ) {
         const double control = p_[Control] / 100;
-        if (std::abs(control) < 1e-8)
+        // One SVF serves both sides, and at the centre it is bypassed. On a
+        // change of side (leaving the centre, or crossing it) its state is
+        // the new side's own at rest: a low pass already tracking the input,
+        // a high pass from silence. Both pass the signal at the centre's
+        // edge, so the output does not click (DjFilter's review).
+        const int side = std::abs(control) < 1e-8 ? 0 : control < 0 ? -1 : 1;
+        if (side != s.djSide) {
+            s.svf[0].i1 = 0;
+            s.svf[0].i2 = side < 0 ? x : 0;
+            s.djSide = side;
+        }
+        if (side == 0)
             return x;
         freq = control < 0 ? 20000 * std::pow(.001, -control) : 20 * std::pow(1000., control);
         const auto out = s.svf[0].process(x, freq, .25 + std::abs(control) * .65, rate_);
