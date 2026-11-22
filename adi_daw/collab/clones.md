@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Moving crossover cutoffs
+
+`clones/shaper-split-slew` at `a5560662` — Smooth live crossover frequency edits in logarithmic frequency while keeping the first configured value immediate. Three cascaded poles use the rate constant 72.02133 per second. A callback or internal 512-frame boundary may put a sufficiently settled edge to sleep when its normalized distance is at most 1/16,384. Six rack, stage and registered Pd suites passed at each Pd precision under MSVC /W4 /WX. Native and editable Pd reproduced two live edits. The landed source failed 12 of the 16 measured sweep landmarks.
+
+At 48 kHz, stereo kick-and-bass RMS error at 256/2,048 frames fell from 0.0273462 to 0.0000000255 for a lower-edge sweep, from 0.004776 to below 0.0000000137 for an upper-edge sweep, and from 0.0299511 to 0.0000000226 for a reversal. The unedited waveform stayed byte-identical. The reference's upper sweep itself differed by 0.00000106 RMS between block sizes. The difference between the two implementations' block-size effects was 0.0000000092 RMS. All arms reported zero latency.
+
+At 256/2,048 frames the lower sweep took 42.0/325.1 µs median versus 73.7/461.0 in the reference. Its p99 was 86.0/7,199.3 µs versus 151.4/8,158.0, with 50/65 versus 86/59 misses per 30,720 callbacks at each size. The steady 2,048-frame control took 118.2 µs versus 97.6 in the reference. For Win when combining with spacing at `34ee3fbd`, compute the two effective physical frequencies first, then pass each frequency, sample rate and cold flag to its edge. The fixed Width guards for `42c4135a` are in the preceding entry.
+
+PR requested
+
 ## 22 November 2026 — Constant three-band Width
 
 `clones/shaper-three-band-split` at `42c4135a` — Compute fixed band gains once per callback. Six suites passed in both Pd precisions under MSVC /W4 /WX. All six paired runs reduced the median at both tested buffer sizes. On stereo kick and bass at 48 kHz, 256/2,048 frames took 10.6/80.2 µs versus 13.4/111.0 on the previous head and 23.6/106.6 in the reference. Candidate p99 was 15.6/160.5 µs versus 58.7/385.8 in the reference. There were 8/4 candidate deadline misses and 21/3 reference misses per 61,440 callbacks at each size. Moving Width at 2,048 frames stayed near 111 µs median and its p99 increased from 366.5 to 582.7 µs.
