@@ -2862,20 +2862,26 @@ void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget
     say("Automation Mode shows " + (target.device == "Mixer" ? std::string() : target.device + ": ") + target.paramName + ".");
     arrangement.repaint();
 }
-bool AdiRootComponent::showDeviceAutomation(std::int64_t device, const std::string &parameter) {
+std::optional<std::pair<std::int64_t, AutomationTarget>> AdiRootComponent::deviceAutomationTarget(
+    std::int64_t device, const std::string &parameter) const {
     const auto published = devices.publication ? devices.publication() : nullptr;
     if (!published)
-        return fail("That device's parameters are not known yet.");
+        return std::nullopt;
     for (const auto &d : *published)
         if (d.id == device) {
             const auto ref = engine::automationParamRef(d.format, parameter);
             for (const auto &t : automationChoices(d.track))
-                if (t.ownerKind == "device" && t.ownerId == device && ref && t.paramRef == *ref) {
-                    showAutomation(d.track, t);
-                    return true;
-                }
+                if (t.ownerKind == "device" && t.ownerId == device && ref && t.paramRef == *ref)
+                    return std::pair{d.track, t};
         }
-    return fail("That parameter cannot be automated.");
+    return std::nullopt;
+}
+bool AdiRootComponent::showDeviceAutomation(std::int64_t device, const std::string &parameter) {
+    const auto found = deviceAutomationTarget(device, parameter);
+    if (!found)
+        return fail("That parameter cannot be automated.");
+    showAutomation(found->first, found->second);
+    return true;
 }
 double AdiRootComponent::automationCurrent(const AutomationTarget &target) const {
     const auto current = view_.current();
@@ -2891,13 +2897,18 @@ double AdiRootComponent::automationCurrent(const AutomationTarget &target) const
                 return s->gainDb;
         return target.minimum;
     }
-    // A device parameter: where its control plays now, as the feed reads it.
+    // A device parameter: where its control plays now, as the feed reads it; one the panel does not
+    // show has no record there, and reads as the plug-in's declared default.
     if (const auto published = devices.publication ? devices.publication() : nullptr)
         for (const auto &d : *published)
-            if (d.id == target.ownerId)
+            if (d.id == target.ownerId) {
                 for (const auto &r : d.parameters())
                     if (const auto ref = engine::automationParamRef(d.format, r.id); ref && *ref == target.paramRef)
                         return r.playing;
+                for (const auto &[id, value] : d.defaultValues())
+                    if (const auto ref = engine::automationParamRef(d.format, id); ref && *ref == target.paramRef)
+                        return value;
+            }
     return target.minimum;
 }
 bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value) {

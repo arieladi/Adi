@@ -622,6 +622,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void showAutomation(std::int64_t track, const AutomationTarget &target);
     // A device parameter's Show Automation, from its control's menu: false when it has no lane to show.
     bool showDeviceAutomation(std::int64_t device, const std::string &parameter);
+    // The track and target a device parameter's Show Automation would show; none for one the engine
+    // would not play.
+    std::optional<std::pair<std::int64_t, AutomationTarget>> deviceAutomationTarget(std::int64_t device,
+                                                                                   const std::string &parameter) const;
     // The target's value now, where its control stands: the line drawn while its lane has no point.
     double automationCurrent(const AutomationTarget &target) const;
     // The feed publishes a device's parameters only to a surface that demands it: while Automation

@@ -135,7 +135,7 @@ void ParameterControl::showMenu() {
         return;
     juce::PopupMenu m;
     // Live's Show Automation (manual 25.2; DF-W37): the track's lane shows this parameter's envelope.
-    if (!record || !record->missing)
+    if ((!record || !record->missing) && strip.root.deviceAutomationTarget(device, parameter))
         m.addItem("Show Automation", [safe = SafePointer<ParameterControl>(this)] {
             if (safe)
                 safe->strip.root.showDeviceAutomation(safe->device, safe->parameter);

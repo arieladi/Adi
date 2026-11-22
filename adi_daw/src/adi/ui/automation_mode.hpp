@@ -147,6 +147,14 @@ struct TrackEnvelope {
 inline TrackEnvelope envelopeOf(const engine::Snapshot &snapshot, const AutomationTarget &target) {
     TrackEnvelope out;
     out.lane = laneOf(snapshot, target.ownerKind, target.ownerId, target.paramRef);
+    // A disabled lane of the target is still its lane: shown and edited, never doubled by a new one.
+    if (out.lane == nullptr)
+        for (const auto &lane : snapshot.automationLanes)
+            if (lane && lane->ownerKind == target.ownerKind && lane->ownerId == target.ownerId &&
+                lane->paramRef == target.paramRef && lane->valueDomain == target.valueDomain) {
+                out.lane = lane.get();
+                break;
+            }
     if (out.lane != nullptr)
         for (const auto &data : out.lane->envelopes)
             if (data && !data->clipId)
