@@ -995,6 +995,106 @@ void testEventOverflowIsCountedNotTruncated() {
 
 // --- the whole pipeline, through the real scheduler --------------------------
 
+void testSavedExpressionBurstThroughClap() {
+    section("MI-08 -- five dimensions at the CLAP segment boundary");
+    constexpr std::int32_t block = 4096, frames = 43, voices = 16;
+    constexpr std::array dimensions{ExpressionDim::Pitch, ExpressionDim::Pressure,
+                                    ExpressionDim::Timbre, ExpressionDim::Gain, ExpressionDim::Pan};
+    const auto authored = [](std::int32_t update) {
+        const double position = static_cast<double>(update) / frames;
+        return std::array{12.0 * position, position, position, -12.0 * (1.0 - position), position - 0.5};
+    };
+    struct Log final : Fake {
+        std::vector<std::pair<std::int64_t, clap_event_note_expression_t>> expression;
+        std::vector<std::int32_t> onset, release;
+        Log() {
+            declareNotePorts = true;
+            expression.reserve(3440);
+            onset.reserve(16);
+            release.reserve(16);
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
+                auto& log = static_cast<Log&>(Fake::self(p));
+                const auto* events = pd->in_events;
+                for (std::uint32_t i = 0; i < events->size(events); ++i) {
+                    const auto* header = events->get(events, i);
+                    if (header->type == CLAP_EVENT_NOTE_EXPRESSION) {
+                        const auto* value = reinterpret_cast<const clap_event_note_expression_t*>(header);
+                        log.expression.emplace_back(pd->steady_time + header->time, *value);
+                    } else if (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF) {
+                        const auto* note = reinterpret_cast<const clap_event_note_t*>(header);
+                        auto& logNotes = header->type == CLAP_EVENT_NOTE_ON ? log.onset : log.release;
+                        logNotes.push_back(note->note_id);
+                    }
+                }
+                return CLAP_PROCESS_CONTINUE;
+            };
+        }
+    };
+    for (std::int32_t spacing : {96, 1}) {
+        Log log;
+        DeviceIdentity identity;
+        identity.format = "clap";
+        ClapDevice device(&log.plugin, identity);
+        DeviceNode node(device);
+        engine::Graph graph;
+        const auto receiver = graph.addNode(node);
+        graph.setOutput(receiver);
+        graph.prepare(48000.0, block);
+
+        bool queued = true;
+        for (std::int32_t voice = 1; voice <= voices; ++voice)
+            queued = graph.pushInputEvent(receiver, noteOn(static_cast<std::uint64_t>(voice), 47 + voice, .75)) && queued;
+        for (std::int32_t update = 0; update < frames; ++update) {
+            const auto values = authored(update);
+            for (std::int32_t voice = 1; voice <= voices; ++voice) {
+                for (std::size_t dimension = 0; dimension < dimensions.size(); ++dimension) {
+                    auto event = expr(static_cast<std::uint64_t>(voice), dimensions[dimension], values[dimension]);
+                    event.frame = update * spacing;
+                    event.paramId = engine::kNativeNoteExpressionUnits;
+                    queued = graph.pushInputEvent(receiver, event) && queued;
+                }
+            }
+        }
+        for (std::int32_t voice = 1; voice <= voices; ++voice) {
+            auto event = noteOn(static_cast<std::uint64_t>(voice), 47 + voice, .5, (frames - 1) * spacing + 1);
+            event.type = engine::EventType::NoteOff;
+            queued = graph.pushInputEvent(receiver, event) && queued;
+        }
+        std::array<float, block> left{}, right{};
+        float* output[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = output;
+        io.numOut = 2;
+        io.frames = block;
+        graph.process(io);
+
+        constexpr auto expected = frames * voices * dimensions.size();
+        bool exact = log.expression.size() == expected;
+        std::size_t index = 0;
+        for (std::int32_t update = 0; exact && update < frames; ++update) {
+            auto values = authored(update);
+            values[3] = std::pow(10.0, values[3] / 20.0);
+            values[4] = (values[4] + 1) / 2;
+            for (std::int32_t voice = 1; voice <= voices; ++voice) {
+                for (std::size_t dimension = 0; dimension < dimensions.size(); ++dimension) {
+                    const auto& [time, expression] = log.expression[index++];
+                    exact = exact && time == update * spacing && expression.note_id == voice &&
+                        expression.key == 47 + voice && expression.expression_id == clapExprFor(dimensions[dimension]) &&
+                        std::abs(expression.value - values[dimension]) < 1e-12;
+                }
+            }
+        }
+        check(queued && graph.stats().eventsDropped == 0, "the outer graph admits every event");
+        check(graph.stats().segments == (spacing == 1 ? 1 : 43),
+              "dense authored points share one segment while grid points split");
+        std::printf("  spacing %d: %zu/%zu expressions, %zu/%d releases, %lld reported host drops\n",
+                    spacing, log.expression.size(), expected, log.release.size(), voices,
+                    static_cast<long long>(device.eventsDropped()));
+        check(exact, "every tagged expression reaches the CLAP processor at its exact time");
+        check(log.onset.size() == voices && log.release == log.onset, "every sounding note receives its release");
+    }
+}
+
 void testMpePlusReachesThePluginThroughTheGraph() {
     section("ADR-0054/0075 -- 500 Hz MPE+ through the real split path, no quantisation");
 
@@ -1540,6 +1640,166 @@ void testDialectsThroughTheDevice() {
         check(f.seenEvents.size() == 2 && f.seenEvents[0].type == CLAP_EVENT_PARAM_VALUE &&
                   f.seenEvents[0].time == 0 && f.seenEvents[1].time == 100,
               "the queued parameter at 0, then the note at 100 -- it used to arrive after it");
+    }
+}
+
+struct DialectNote {
+    ClapDialect wire;
+    bool on;
+    int key, channel, id;
+    std::uint32_t frame;
+};
+
+std::vector<DialectNote> dialectNotes(const Fake& f) {
+    std::vector<DialectNote> notes;
+    std::size_t midi = 0, native = 0;
+    // The fake keeps each wire payload separately. Walk the common header
+    // sequence so a release sent after an attack at the same frame still fails.
+    for (const auto& event : f.seenEvents) {
+        if (event.type == CLAP_EVENT_MIDI) {
+            const auto& message = f.seenMidi[midi++];
+            const int status = message.data[0] & 0xf0;
+            if (status == 0x80 || status == 0x90)
+                notes.push_back({ClapDialect::MidiMpe, status == 0x90, message.data[1],
+                                 message.data[0] & 0x0f, -1, event.time});
+        } else if (event.type == CLAP_EVENT_NOTE_ON || event.type == CLAP_EVENT_NOTE_OFF) {
+            const auto& note = f.seenNotes[native++];
+            notes.push_back({ClapDialect::Clap, event.type == CLAP_EVENT_NOTE_ON, note.key,
+                             note.channel, note.note_id, event.time});
+        }
+    }
+    return notes;
+}
+
+bool releasesOnOriginalWire(const DialectNote& attack, const DialectNote& release) {
+    return !release.on && release.wire == attack.wire && release.channel == attack.channel &&
+           release.key == attack.key && release.id == attack.id && release.frame == 0;
+}
+
+void testFullClapDialectSwitch() {
+    section("DF-E56 -- a full router switches CLAP and MPE MIDI in both directions");
+    constexpr std::int32_t frames = 16;
+    constexpr int voices = engine::MpeRouter::kMaxNotes;
+    constexpr int newVoices = 16;
+    for (const bool nativeFirst : {false, true}) {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI_MPE;
+        DeviceIdentity id;
+        id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::Clap : ClapDialectChoice::MidiMpe);
+        d.prepare(48000.0, frames);
+        const auto oldWire = nativeFirst ? ClapDialect::Clap : ClapDialect::MidiMpe;
+        const auto newWire = nativeFirst ? ClapDialect::MidiMpe : ClapDialect::Clap;
+
+        std::array<float, frames> left{}, right{};
+        float* out[]{left.data(), right.data()};
+        engine::NodeIo io;
+        io.out = out;
+        io.channels = 2;
+        io.frames = frames;
+        std::vector<DialectNote> held;
+        bool accepted = true;
+        for (int key = 0; key < voices; ++key) {
+            accepted = d.pushEvent(noteOn(static_cast<std::uint64_t>(key + 1), key, .75)) && accepted;
+            if ((key + 1) % 4 == 0) {
+                d.process(io);
+                const auto batch = dialectNotes(f);
+                held.insert(held.end(), batch.begin(), batch.end());
+            }
+        }
+        check(accepted && held.size() == voices && d.noteRouter().liveNotes() == voices &&
+                  d.noteDialect() == oldWire && std::all_of(held.begin(), held.end(),
+                      [oldWire](const auto& note) { return note.on && note.wire == oldWire; }),
+              "all 128 voices are sounding on the original wire");
+
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::MidiMpe : ClapDialectChoice::Clap);
+        for (int key = 0; key < newVoices; ++key)
+            accepted = d.pushEvent(noteOn(static_cast<std::uint64_t>(1001 + key), key, .75)) && accepted;
+        d.process(io);
+        const auto switched = dialectNotes(f);
+        bool ordered = held.size() == voices && switched.size() == voices + newVoices;
+        if (ordered) {
+            for (std::size_t i = 0; i < held.size(); ++i)
+                ordered = releasesOnOriginalWire(held[i], switched[i]) && ordered;
+            for (int key = 0; key < newVoices; ++key) {
+                const auto& attack = switched[static_cast<std::size_t>(voices + key)];
+                ordered = attack.on && attack.wire == newWire && attack.key == key && attack.frame == 0 &&
+                          (newWire != ClapDialect::Clap || attack.id == 1001 + key) && ordered;
+            }
+        }
+        check(accepted && ordered, "the switch sends all 128 original releases before all 16 new-wire attacks");
+        check(d.noteRouter().pendingNoteOffs() == 0 && d.eventsDropped() == 0 &&
+                  d.eventsOutOfRange() == 0 && d.noteDialect() == newWire,
+              "a full switch finishes without pending releases or host drops");
+        d.process(io);
+        check(dialectNotes(f).empty(), "the next callback does not duplicate any note");
+    }
+}
+
+void testPendingClapDialectRelease() {
+    section("DF-E56 -- switching drains an already pending release on its original wire");
+    constexpr std::int32_t frames = 16;
+    for (const bool nativeFirst : {false, true}) {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI_MPE;
+        DeviceIdentity id;
+        id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::Clap : ClapDialectChoice::MidiMpe);
+        d.prepare(48000.0, frames);
+        const auto oldWire = nativeFirst ? ClapDialect::Clap : ClapDialect::MidiMpe;
+        const auto newWire = nativeFirst ? ClapDialect::MidiMpe : ClapDialect::Clap;
+
+        std::array<float, frames> left{}, right{};
+        float* out[]{left.data(), right.data()};
+        engine::NodeIo io;
+        io.out = out;
+        io.channels = 2;
+        io.frames = frames;
+        const bool accepted = d.pushEvent(noteOn(77, 60, .75));
+        d.process(io);
+        const auto held = dialectNotes(f);
+        check(accepted && held.size() == 1 && held.front().on && held.front().wire == oldWire,
+              "one note starts before the deliberately oversized segment");
+
+        // At 16 frames the graph budget is 256 and the router has 72 more
+        // slots. Use the graph-facing span to deliberately fill all 328,
+        // beyond pushEvent's input budget, then ask it to release the note.
+        engine::Event controller;
+        controller.type = engine::EventType::Controller;
+        controller.paramId = 1;
+        controller.value = .5;
+        std::array<engine::Event, 329> oversized{};
+        oversized.fill(controller);
+        oversized.back() = noteOn(77, 60, .5, frames - 1);
+        oversized.back().type = engine::EventType::NoteOff;
+        io.events = {oversized.data(), static_cast<std::int32_t>(oversized.size())};
+        d.process(io);
+        const auto earlierDrops = d.eventsDropped();
+        check(d.noteRouter().pendingNoteOffs() == 1 && dialectNotes(f).empty(),
+              "the oversized segment leaves just the release pending");
+
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::MidiMpe : ClapDialectChoice::Clap);
+        io.blockOffset = 7;
+        io.frames = frames - io.blockOffset;
+        const auto fresh = noteOn(99, 64, .75, io.blockOffset);
+        io.events = {&fresh, 1};
+        d.process(io);
+        const auto switched = dialectNotes(f);
+        check(held.size() == 1 && switched.size() == 2 &&
+                  releasesOnOriginalWire(held.front(), switched[0]) &&
+                  switched[1].on && switched[1].wire == newWire && switched[1].key == 64 &&
+                  switched[1].frame == 0 && (newWire != ClapDialect::Clap || switched[1].id == 99),
+              "the next segment first sends the pending release on its original wire, then the new attack");
+        check(d.noteRouter().pendingNoteOffs() == 0 && d.eventsDropped() == earlierDrops &&
+                  d.eventsOutOfRange() == 0 && d.noteDialect() == newWire,
+              "the next segment clears the pending release with no added drops or range errors");
+        io.events = {};
+        d.process(io);
+        check(dialectNotes(f).empty(), "a retried release is not duplicated");
     }
 }
 
@@ -3720,6 +3980,7 @@ int main() {
     testClapProcessHonoursTheSegmentOffset();
     testProcessErrorSilencesRatherThanLeaking();
     testEventOverflowIsCountedNotTruncated();
+    testSavedExpressionBurstThroughClap();
     testMpePlusReachesThePluginThroughTheGraph();
     testTheSegmentBoundItself();
     testRestartCausesAreDistinguished();
@@ -3728,6 +3989,8 @@ int main() {
     testDialectEncodings();
     testTheListIsSortedByTime();
     testDialectsThroughTheDevice();
+    testFullClapDialectSwitch();
+    testPendingClapDialectRelease();
     testOrdinaryControllerPorts();
     testTheHostSaysWhichDialectsItSpeaks();
     testBundleSearchIsRecursive();
