@@ -21,7 +21,7 @@ Time. Beat Repeat and External Audio Effect are left out of the count; they are 
   - This seat starts Amp now, on its own branch, and stops there if the answer is no.
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 40 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 41 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -194,6 +194,9 @@ method); Live's files and renders stay in the director's research.
     range and default, Frequency's, Random Pitch's and Spray's ranges). An impulse at its defaults with
     Pitch 0 and Spray 0: the echo times. A 440 Hz sine with Pitch +12 and −12 at Frequency 20 Hz: the
     spectrum.
+41. **Pedal (built after 3 December).** A fresh Pedal, every control as shown. A 220 Hz sine at
+    −10 dBFS for each Type at Gain 0, 50 and 100 %: the first nine harmonics, and the output level. A
+    −60 dBFS sweep from 30 Hz to 10 kHz with Sub off and on: the response.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -208,6 +211,24 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Pedal — lands after 3 December
+
+**PR requested:** head `devices/live-pedal` (998ee01f), base `main`, after `devices/grain-delay`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - Three voices: Overdrive, Distortion and Fuzz.
+  - The drive is f(g x + b) − f(b) with the DC blocked, so it gets louder with Gain, as a pedal does.
+  - Sub, then the tone section: Bass, Mid at three frequencies, and Treble.
+  - Output and Dry/Wet.
+- **Tests:**
+  - `adi_live_pedal_tests` 15. At −140 dBFS, four settings follow the documented chain within
+    0.05 dB, with the drive's slope taken numerically.
+  - Gain raises the distortion; Overdrive's bias makes a second harmonic; Fuzz distorts most.
+  - Sub keeps 50 Hz, and the output stays bounded. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 43 built-ins.
+- **Reading 41, added to the ONE list.**
 
 ## 2026-11-22 — DEV-22, the chapter's next missing effect: Grain Delay — lands after 3 December
 
