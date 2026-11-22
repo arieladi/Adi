@@ -1164,6 +1164,7 @@ void focusScopeLayerPreview() {
           "short Sum, Difference and readouts operate on shifted signed samples without allocation");
 }
 void focusScopePhaseOperands() {
+    using namespace adi::ui;
     constexpr std::int64_t stamp = 64;
     constexpr double rate = 48000.;
     constexpr std::uint64_t revision = 7;
