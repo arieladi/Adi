@@ -216,6 +216,37 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the glide sweep, the earlier branches; an Auto Shift jump found and fixed
+
+The same glide and the same test, on the earlier post-3-December cores. `dsp/glide.hpp` is added on
+`devices/auto-pan-tremolo` for them; it is identical to the one on `devices/live-amp`, so the merges
+are clean. Every branch above is merged up to the top, `devices/roar` (e94e310a). There, the touched
+suites, the catalogue and parity all pass (744/744).
+
+**PR requested** (the same branches; new heads):
+
+- **`devices/auto-pan-tremolo` (54eab5aa).** Amount had stepped 0.20 in a sample.
+- **`devices/channel-eq` (e5141d7b).** Output had stepped 0.70.
+- **`devices/eq-three` (c97c2582).** Each band's gain and its kill (a kill now fades). They had stepped
+  0.10 and 0.045.
+- **`devices/vinyl-distortion` (32a47da6).** The tracing's amount, the pinch's drive and switch, and the
+  crackle volume. They had stepped 0.25 and 0.42. The no-thump check now averages over 20 ms.
+- **`devices/filter-delay` (6594e91d).** Dry, each line's Volume and Pan, Feedback and On. They had
+  stepped from 0.04 to 0.59.
+- **`devices/auto-shift` (53080074).**
+  - **Dry/Wet** is now Auto Shift's own glided mix. It was the Shifter's Mix, which stepped.
+  - **A jump on a steady tone.** A held 220 Hz tone shifted +7 jumped 0.59 in a sample, repeatedly.
+    220 Hz is 5.5 periods in 25 ms, so the window's count flipped with the reading's last decimals.
+    Each flip moved the Shifter's taps by a whole period. The count now holds until the reading is
+    more than three quarters of a period from it. A plant without the hold jumps 0.59.
+  - Each check fails on the old core or on a plant.
+
+Erosion already glided its Amount. Not swept: Align Delay's times (a delay jump is its own question,
+a reading), and the Compressor stack (its own smoothing).
+
+**CTest:** `devices/roar` at 46f2a71e passed 293/293 at PD_FLOATSIZE 32. The 64 run, and a run on the
+new top, follow.
+
 ## 2026-11-22 — the glide sweep: the newest cores' gain controls no longer step
 
 Pedal's review found gain controls applied as instant steps. Amp, Cabinet, Corpus, Drum Buss,
