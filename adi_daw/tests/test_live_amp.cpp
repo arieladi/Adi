@@ -271,7 +271,41 @@ void dualAgain() {
     check(peak < 1e-3, "Dual off then on over silence: no thump on the right (" + std::to_string(peak) + ")");
 }
 
+/// Gain, Volume, Output and Dry/Wet moved under a tone glide: the largest
+/// step while they move stays within the signal's own, before or after.
+void glides() {
+    struct Move {
+        A::Param param;
+        double from, to;
+        const char* what;
+    };
+    for (const Move m : {Move{A::Gain, 0, 10, "Gain"}, Move{A::Volume, 0, 10, "Volume"}, Move{A::Output, -36, 12, "Output"}, Move{A::DryWet, 0, 100, "Dry/Wet"}}) {
+        A a;
+        a.set(m.param, m.from);
+        a.prepare(kRate);
+        const auto x = sine(110, 96000, 0.05);
+        std::vector<float> l(x.size()), r(x.size());
+        a.process(x.data(), x.data(), l.data(), r.data(), 48000);
+        a.set(m.param, m.to);
+        a.process(x.data() + 48000, x.data() + 48000, l.data() + 48000, r.data() + 48000, 48000);
+        double moving = 0, settled = 0;
+        for (std::size_t i = 48000; i < 48000 + 4800; ++i) {
+            moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        // The signal's own largest step, before the move and after it.
+        for (std::size_t i = 24000; i < 48000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 72000; i < 96000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        check(moving <= 1.5 * std::max(settled, 1e-9), std::string(m.what) + " glides: no step past the signal's own (" + std::to_string(moving) +
+                                                           " against " + std::to_string(settled) + ")");
+    }
+}
+
 int main() {
+    glides();
     dualAgain();
     quiet();
     driven();
