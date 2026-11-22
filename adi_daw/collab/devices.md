@@ -233,6 +233,79 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the seventh review: Auto Shift rebuilt again and the audit fixes; 17 findings, all fixed
+
+The review covered the spliced Auto Shift (b50591ad) and translator steps 9 and 10. Two finders worked on
+each, and three skeptics checked every finding. Seventeen were confirmed, some by two lenses; one was
+refuted.
+- **The detector (`devices/tuner`, 743f1e40).**
+  - The cut-off this lane added for the onset stall (a period more than 1.5 samples from the coarse
+    dip) threw away most readings of a moving pitch. 110 Hz with ±50 cents of vibrato read 26 of 137
+    hops at 48 kHz, and none at 96 kHz. That hit the Tuner and Auto Shift alike.
+  - The cut-off is now "a period walked out of the range read". That still ends the stall within its
+    bound.
+  - `adi_tuner_tests` 43. Vibrato and glides at 82.4 and 110 Hz, at 48 and 96 kHz, read 137 of 137
+    hops. The old cut-off reads 0 to 93 of them.
+- **Auto Shift (`devices/auto-shift`, 9aaf8b10).**
+  - **Low voices.** Periods were capped at 60 Hz's, so 40 Hz at +7 came out at 70 Hz, and a noisy
+    220 Hz read at its 7th subharmonic lost its shift. Every period the detector reads, down to
+    28.5 Hz, now splices whole.
+  - **The return to Shift 0.** After a shift, a ratio back at exactly 1 left the tap off-centre and
+    Dry/Wet combed, down to −131 dB. The tap now returns to the centre by whole periods, glides the
+    rest away at 0.5 % speed, and then stays there.
+  - **Aliasing.** Shifting up aliased: a sawtooth at +24 folded its 50th harmonic down to 4 kHz.
+    Shifting up now reads a copy low-passed by an eighth-order Butterworth, and the aliases measure
+    −51.5 and −96.3 dB.
+  - **The latency budget.** The taps strayed past the stated budget. The ratio is now held through
+    each crossfade, crossfades are a quarter period, and a splice that falls due during a filter
+    switch is made inside it. The budget is checked with the Shift jumping across its range for
+    20 s. The latency is now 5,371 samples at 48 kHz.
+  - **Cost at high rates.** Above 48 kHz the detector reads the input averaged down to 48 kHz or less.
+    A rate above 800 kHz leaves the device inert.
+  - `adi_auto_shift_tests` 112. Five plants each fail. Of the 48 jump checks, the worst uses 0.79 of
+    its allowance.
+  - Merged up the stack to `devices/spectral-resonator` (16f9631d).
+- **The translator (`devices/amxd-audit`, 097e29a7).**
+  - Stored `$` arguments: a symbol-led list keeps its `$1`, and symbols are stored.
+  - A number box's `set` is truncated and limited.
+  - A bang into a message box's right inlet sets it to "bang".
+  - `[gate]`'s `next` is refused.
+  - `live.thisdevice` re-fires only on a bang or "loadbang", so `[setwidth 300(` fed back into it no
+    longer loops.
+  - The biquad~ stability test is now Pd's own.
+  - `adi_pd_amxd_tests` 132. Six plants each fail.
+- **CTest:** the earlier tops, `devices/spectral-resonator` at a478fe52 and
+  `devices/amxd-modulo-biquad` at 22fd659f, passed 295/295 and 270/270 at PD_FLOATSIZE 32 and 64. That
+  includes the OneShot checks that failed before main was merged in. Both new tops are running.
+
+**PR heads in place of those named below:**
+
+| Branch | Head |
+|---|---|
+| `devices/tuner` | 743f1e40 |
+| `devices/erosion` | 908ac9e5 |
+| `devices/vinyl-distortion` | 09d4bc23 |
+| `devices/filter-delay` | d62f8cb5 |
+| `devices/dj-filter` | 8382342a |
+| `devices/auto-shift` | 9aaf8b10 |
+| `devices/spectrum-device` | 9600e519 |
+| `devices/live-amp` | 9d7c8d7b |
+| `devices/live-cabinet` | 230c2de4 |
+| `devices/corpus` | 1efa044c |
+| `devices/drum-buss` | ed09e822 |
+| `devices/dynamic-tube` | 274372f5 |
+| `devices/grain-delay` | ce77b777 |
+| `devices/live-pedal` | 2f13b2a4 |
+| `devices/roar` | c2c29384 |
+| `devices/spectral-time` | 0b4e3921 |
+| `devices/spectral-resonator` | 16f9631d |
+| `devices/amxd-translator` | 74aefaff |
+| `devices/amxd-bpatcher` | 97037b35 |
+| `devices/amxd-cycle-phase` | 0b89f7b2 |
+| `devices/amxd-line-ends` | 539cce65 |
+| `devices/amxd-modulo-biquad` | 22fd659f |
+| `devices/amxd-audit` | 097e29a7 |
+
 ## 2026-11-22 — DEV-16, steps 9 and 10: the translation table audited against Max's reference pages (P2)
 
 **PR requested:** head `devices/amxd-audit` (6049ee08), base `main`, after
