@@ -43,22 +43,27 @@ public:
     void release() override{gain_.release();}
     void process(const NodeIo& io) noexcept override {
         SnapshotPublisher<Publication>::AudioRead publication(parameters_);
-        const auto* parameters=publication.valid()?publication->parameters.get():nullptr;
-        if(const auto* value=published_.load(std::memory_order_acquire))gain_.applyPublishedControls(*value);
-        else gain_.usePublishedLanes(parameters && parameters->bound?&parameters->lanes:nullptr);
+        apply(publication.valid()?publication->parameters.get():nullptr);
         gain_.process(io);
     }
     void silenceTaps(const NodeIo& io) noexcept override {
         SnapshotPublisher<Publication>::AudioRead publication(parameters_);
-        const auto* parameters=publication.valid()?publication->parameters.get():nullptr;
-        if(const auto* value=published_.load(std::memory_order_acquire))gain_.applyPublishedControls(*value);
-        else gain_.usePublishedLanes(parameters && parameters->bound?&parameters->lanes:nullptr);
+        apply(publication.valid()?publication->parameters.get():nullptr);
         gain_.silenceTaps(io);
     }
     bool processesDouble() const noexcept override{return true;}
     std::int32_t latencySamples() const noexcept override{return gain_.latencySamples();}
     std::int64_t tailSamples() const noexcept override{return 0;}
     EventFlow eventFlow() const noexcept override{return EventFlow::Stop;}
+private:
+    void apply(const Parameters* parameters) noexcept {
+        if (const auto* value=published_.load(std::memory_order_acquire)) {
+            gain_.applyPublishedControls(*value);
+            gain_.usePublishedLanes(value->config.lanes);
+        } else {
+            gain_.usePublishedLanes(parameters && parameters->bound?&parameters->lanes:nullptr);
+        }
+    }
 };
 class CueSink final:public Node {
     MixNode copy_;

@@ -625,10 +625,13 @@ void testAgainstAFakePlugin() {
         // inside get() when a host does it.
         d.prepare(48000.0, 512);
 
-        // THE MAPPING THE PLANTED DEFECT SLIPPED THROUGH. CLAP spells an
-        // unbounded tail UINT32_MAX; ours is INT64_MAX. A plain cast makes
-        // "never suspend" into 4294967295 samples -- about twenty-four hours,
-        // which is wrong in a way nobody would ever notice.
+        constexpr auto infinite = static_cast<std::uint32_t>(INT32_MAX);
+        f.tailValue = infinite - 1;
+        check(d.tailSamples() == INT32_MAX - 1, "INT32_MAX minus one is still a finite tail");
+        f.tailValue = infinite;
+        check(d.tailSamples() == engine::kInfiniteTail, "INT32_MAX is an unbounded tail");
+        f.tailValue = infinite + 1;
+        check(d.tailSamples() == engine::kInfiniteTail, "INT32_MAX plus one is an unbounded tail");
         f.tailValue = UINT32_MAX;
         check(d.tailSamples() == engine::kInfiniteTail,
               "UINT32_MAX is MAPPED to kInfiniteTail, not cast");
@@ -3197,6 +3200,121 @@ void testTransportAtDeviceInput() {
     }
 }
 
+void testHostedWorkers() {
+    section("DF-E23 -- hosted CLAP on graph workers");
+    struct WorkerProbe : Fake {
+        float gain = 1.0f;
+        std::atomic<int> active{0}, overlapping{0}, workerCalls{0}, badThread{0};
+        std::atomic<int> badClock{0};
+        WorkerProbe() {
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
+                auto& probe = static_cast<WorkerProbe&>(self(p));
+                if (probe.active.fetch_add(1) != 0) ++probe.overlapping;
+                const auto* threads = static_cast<const clap_host_thread_check_t*>(
+                    probe.host->get_extension(probe.host, CLAP_EXT_THREAD_CHECK));
+                if (!threads || !threads->is_audio_thread(probe.host)) ++probe.badThread;
+                if (threads && !threads->is_main_thread(probe.host)) ++probe.workerCalls;
+                if (!pd->transport || pd->transport->tempo != 120.0 ||
+                    std::llround(static_cast<double>(pd->transport->song_pos_seconds) *
+                                 48000.0 / static_cast<double>(CLAP_SECTIME_FACTOR)) != 4096)
+                    ++probe.badClock;
+                const auto& input = pd->audio_inputs[0];
+                const auto& output = pd->audio_outputs[0];
+                for (std::uint32_t c = 0; c < output.channel_count; ++c)
+                    for (std::uint32_t i = 0; i < pd->frames_count; ++i)
+                        output.data32[c][i] = input.data32[c][i] * probe.gain;
+                probe.active.fetch_sub(1);
+                return CLAP_PROCESS_CONTINUE;
+            };
+        }
+    };
+    class PatternSource final : public engine::Node {
+    public:
+        void process(const engine::NodeIo& io) noexcept override {
+            for (int c = 0; c < io.channels; ++c)
+                for (int i = io.blockOffset; i < io.blockOffset + io.frames; ++i)
+                    io.out[c][i] = static_cast<float>((i * 17 + c * 13) % 101 - 50) / 64.0f;
+        }
+    };
+    constexpr int frames = 256;
+    using Audio = std::array<std::array<float, frames>, 2>;
+    auto run = [&](bool parallel, bool cancel) {
+        std::array<WorkerProbe, 4> probes;
+        std::array<std::unique_ptr<ClapDevice>, 4> devices;
+        std::array<std::unique_ptr<DeviceNode>, 4> nodes;
+        PatternSource pattern;
+        engine::SumNode sink;
+        engine::Graph graph;
+        graph.setChannels(2);
+        const auto source = graph.addNode(pattern);
+        const auto output = graph.addNode(sink);
+        graph.setOutput(output);
+        for (std::size_t i = 0; i < probes.size(); ++i) {
+            auto glue = std::make_unique<ClapHostGlue>();
+            probes[i].host = glue->host();
+            DeviceIdentity identity;
+            identity.format = "clap";
+            probes[i].gain = cancel ? (i % 2 == 0 ? 1.0f : -1.0f) : 0.25f;
+            devices[i] = std::make_unique<ClapDevice>(&probes[i].plugin, identity);
+            const auto* threadCheck = static_cast<const clap_host_thread_check_t*>(
+                probes[i].host->get_extension(probes[i].host, CLAP_EXT_THREAD_CHECK));
+            check(threadCheck && threadCheck->is_main_thread(probes[i].host) &&
+                  !threadCheck->is_audio_thread(probes[i].host) &&
+                  probes[i].host->get_extension(probes[i].host, CLAP_EXT_THREAD_POOL) == nullptr,
+                  "the owner is main, and the host does not advertise a nested thread pool");
+            devices[i]->adoptGlue(std::move(glue));
+            nodes[i] = std::make_unique<DeviceNode>(*devices[i]);
+            const auto node = graph.addNode(*nodes[i]);
+            graph.connect(source, node);
+            graph.connect(node, output);
+        }
+        // Two different adapters for one device may not run concurrently.
+        DeviceNode alias(*devices[0]);
+        const auto aliased = graph.addNode(alias);
+        graph.connect(source, aliased);
+        if (!cancel) graph.connect(aliased, output);
+        if (parallel) check(graph.setParallelRendering(2, 1, 2), "enable two graph workers");
+        graph.prepare(48000, frames);
+        Audio audio{};
+        float* channels[]{audio[0].data(), audio[1].data()};
+        engine::Transport transport;
+        transport.locate(4096);
+        transport.play();
+        engine::TransportInfo block;
+        block.playing = true;
+        block.timelineSample = 4096;
+        block.deviceClock = &transport;
+        block.devicePosition = [](const void*, std::int64_t sample) noexcept {
+            engine::DeviceTransport clock;
+            clock.sample = sample;
+            clock.playing = true;
+            return clock;
+        };
+        engine::AudioIo io;
+        io.out = channels;
+        io.numOut = 2;
+        io.frames = frames;
+        io.transport = &block;
+        graph.process(io);
+        const bool valid = std::all_of(probes.begin(), probes.end(), [](const auto& probe) {
+            return probe.badThread == 0 && probe.overlapping == 0 && probe.badClock == 0;
+        });
+        check(valid && probes[0].workerCalls == 0, "every call sees the audio clock and the aliased plug-in stays serial");
+        if (parallel)
+            check(graph.stats().workerNodeBlocks > 0 &&
+                  std::any_of(probes.begin() + 1, probes.end(), [](const auto& probe) {
+                      return probe.workerCalls > 0;
+                  }), "a real hosted plug-in processed on a graph worker");
+        return audio;
+    };
+    const auto dense = run(false, false);
+    check(dense == run(true, false) && dense[0][0] != 0,
+          "dense serial and parallel hosted audio match sample for sample");
+    const auto null = run(false, true);
+    check(null == Audio{} && null == run(true, true),
+          "the hosted plug-in cancellation null is exact in both execution modes");
+}
+
 void testThePortsAreReadOnlyWhileDeactivated() {
     section("audio-ports.h / ADR-0123 item 6 -- the layout, 64-bit flags and all, is read deactivated");
 
@@ -3620,6 +3738,7 @@ int main() {
     testAt64AFloatOnlyPluginIsConverted();
     testAt64TheSegmentAndTheErrorAreHonoured();
     testTransportAtDeviceInput();
+    testHostedWorkers();
     testThePortsAreReadOnlyWhileDeactivated();
     testTheAnswerIsReadAgainAtEachActivation();
     testAReactivationWaitsForTheCallInFlight();

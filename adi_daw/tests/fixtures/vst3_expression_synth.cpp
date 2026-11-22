@@ -127,6 +127,7 @@ std::atomic<int> g_liveSynths{0};
 std::atomic<int> g_overlaps{0};
 /// Process calls inside a plugin now, across every plugin object.
 std::atomic<int> g_inProcess{0};
+std::atomic<int> g_workerProcessCalls{0};
 // Owned headless auxiliary-bus observations; never contribute to the output.
 std::atomic<double> g_keyFirst{0}, g_keyLast{0};
 std::atomic<int> g_keyChannels{0},g_mainInPlace{0};
@@ -304,6 +305,7 @@ public:
     uint32 PLUGIN_API getTailSamples() override { return 0; }
 
     tresult PLUGIN_API process(ProcessData& data) override {
+        if (std::this_thread::get_id() != ownerThread_) ++g_workerProcessCalls;
         struct Inside {
             std::atomic<bool>& flag;
             explicit Inside(std::atomic<bool>& f) : flag(f) { flag = true; g_inProcess.fetch_add(1); }
@@ -665,6 +667,7 @@ private:
     }
 
     Variant variant_;
+    const std::thread::id ownerThread_ = std::this_thread::get_id();
     std::atomic<uint32> refs_{1};
     IComponentHandler* handler_ = nullptr;   ///< the host's, held with a reference
     double drive_ = kDriveDefault;
@@ -778,6 +781,7 @@ extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureLiveSynths() { return g_liveSynths.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureOverlaps() { return g_overlaps.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureInProcess() { return g_inProcess.load(); }
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureWorkerProcessCalls() { return g_workerProcessCalls.load(); }
 extern "C" SMTG_EXPORT_SYMBOL std::uint64_t adiFixtureCompletedProcessCalls() {
     return g_completedProcessCalls.load(std::memory_order_relaxed);
 }

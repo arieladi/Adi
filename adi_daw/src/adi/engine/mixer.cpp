@@ -400,7 +400,7 @@ Hearing hearing(const rows::Model& model, const GraphPlan& plan, const HearingFl
         const auto row = sendRow.find(e.routingId);
         const bool carries = row != sendRow.end() && row->second->enabled &&
                              row->second->gainDb > kSilenceDb;   // false for NaN too
-        sends.push_back({e.routingId, e.from, e.to, e.tap == Tap::PostFx, carries});
+        sends.push_back({e.routingId, e.from, e.to, e.tap != Tap::PostFader, carries});
     }
 
     std::vector<bool> muted(n, false), soloed(n, false), defeat(n, false);
@@ -608,7 +608,6 @@ StripControlImage StripNode::captureControls() const {
 void StripNode::applyPublishedControls(const StripControlImage& value) noexcept {
     setStatic(value.config.volumeDb,value.config.pan,value.config.law,value.audible);
     setPanMode(value.config.panMode,value.config.panLeft,value.config.panRight);
-    usePublishedLanes(value.config.lanes);
 }
 void MixerControlBatch::captureLanes(StripLaneBindings& captured) const {
     for(const auto& value:strips_)captured.add(*value.node,value.image.config.lanes,value.image.config.keepAlive);
@@ -771,13 +770,10 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         strip->setLanes(nullptr, {});
     }
 
-    // Each send's level, pan and switch, its row's. Both kinds leave after
-    // the effects. A Post send plays its source's strip there -- fader, pan,
-    // mute, lanes, track delay, set above -- and a Pre send only the
-    // source's mute and mute lane (the sends plan's preMute, on until Live
-    // is measured). Solo is each send's own switch, from `hearing`: a track
-    // soloed away is silent in its sends, except those that reach a soloed
-    // track, which hears what is sent to it. A departed send stays, off.
+    // Each send plays its own level, pan and switch. Post Mixer takes the
+    // source strip configured above. Post FX takes the source mute and its
+    // automation. Pre FX takes a neutral source before the strip. The
+    // send's solo gate comes from hearing().
     std::set<std::int64_t> live;
     for (const rows::Routing& r : model.routing) {
         if (r.kind != "send" || !tapOf.count(r.id)) continue;
@@ -797,7 +793,13 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
             problems_.push_back(who + ": the send's pan is not finite; centre is used");
             pan = 0.0;
         }
-        if (tapOf[r.id] == Tap::PostFx) {
+        if (tapOf[r.id] == Tap::PreFx) {
+            // Reused send nodes must lose their previous tap's controls.
+            // Reference tracks remain excluded from Main and sends.
+            StripConfig pre;
+            pre.unmuted = r.srcId != flags.referenceTrack;
+            send.setSource(pre, transport);
+        } else if (tapOf[r.id] == Tap::PostFx) {
             StripConfig pre;
             pre.unmuted = unmuted[r.srcId];
             const AutomationLaneProgram* lane = nullptr;
