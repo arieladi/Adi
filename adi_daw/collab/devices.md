@@ -8,7 +8,7 @@ device PRs do not conflict on one shared log file.
 ## FOR THE DIRECTOR
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 25 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 27 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -132,6 +132,10 @@ method); Live's files and renders stay in the director's research.
     - Pink noise with each band killed in turn, at 24 and at 48 dB/oct: the response, to settle the
       crossover family.
     - The gain law near its low end.
+27. **Tuner (built after 3 December).** A fresh Tuner, every control as shown (the Reference range
+    and default, the display modes' names).
+    - A 440 Hz sine, then 442 Hz: the note and cents shown.
+    - After the sine stops: how long the reading is held, and what it shows then.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -146,6 +150,27 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — standing queue item 19: Tuner, core, shared pitch detector and device — lands after 3 December
+
+**PR requested:** head `devices/tuner` (eb460dc3), base `main`, after item 18 (stacked for the catalogue).
+- **What it is.**
+  - `dsp::PitchDetector`, for Auto Shift to share later. YIN's normalised difference, from an FFT
+    autocorrelation, picks the lag. The exact difference at 1, 4, 16 … times the period, walked to
+    its dip and interpolated there, refines it. The window holds two 30 Hz periods: 4,096 samples at
+    44.1/48 kHz, 8,192 at 96 kHz. It estimates every quarter window, and `push()` allocates nothing.
+  - `dsp::Tuner`: the signal passes untouched; the mono sum's pitch, note and cents against
+    Reference are published through atomics for the UI.
+- **Tests:**
+  - `adi_tuner_tests` 26: 75 sines from 40 Hz to 4 kHz, at 44.1, 48 and 96 kHz, from one window and
+    through the Tuner, all within 1 cent (worst 0.005 cents). The design's own 0.05 cent check fails
+    with the multiple refinement removed (worst 0.72). A sawtooth and a weak fundamental under its
+    octave read the fundamental. Silence and white noise read nothing. No allocation; aliased planes.
+  - parity max error 0;
+  - the catalogue holds 30 built-ins.
+- **Needs the engine (not this seat's path):** a way for a native device to publish a reading to the
+  UI (here: hz, note, cents, clarity). The Pd external passes audio only until then.
+- **Reading 27, added to the ONE list:** a fresh Tuner as shown; 440 and 442 Hz; the hold after a note.
 
 ## 2026-11-22 — standing queue item 18: EQ Three, core and device — lands after 3 December
 
