@@ -36,6 +36,18 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PLAN AU-02, guarded Arrangement Insert Shape
+
+**PR requested** after the 3 December gate for `engine/au02-guarded-insert-shape` at `8e44fe5281b68e0c8b5014b548fd1b156e581f4a`, based on `87ea349c`. Arrangement Insert Shape uses the shared envelope splice with both guard points and native sliced curves. The shape plays from the selection start up to its end. The old curve plays again at the end. The requested automation data ID is retained, and the committed edit is one sealed Undo step named Insert Automation Shape. A caller can pass its session rate; the project rate is the default. The separately addressed clip point path and recording producer keep their established contracts.
+
+Strict GCC 14 and Clang 19 each passed five suites and 1,693 checks. The real compiled lanes matched every exterior sample within 1e-9 for all six curve kinds, across both nanosecond and tick clocks with tempo steps. One Undo and Redo restored exact data and range rows. The prior delete/write path failed all twelve exterior comparisons when substituted for the guarded path; the restored exact tree passed again. The head, lane and stream remain captured in one read revision.
+
+Clip-local guard ranges wait on the clip playback clock integration. Window-fn owns the menu and selection wiring. Lower-row ramp and ADSR anchoring waits on L-AUTO-8.
+
+### FOR THE DIRECTOR
+
+- AU-02 lower-row shapes. Recommend using the existing curve at the two selection boundaries as the ramp and ADSR anchors, with the old curve preserved outside `[start,end)`. The Live reading should confirm which ends each menu variant joins.
+
 ## 2026-11-22 — PLAN EX-02, native Via Main isolation
 
 **PR requested** after the 3 December gate for `engine/ex02-via-main-routing` at `99c36e2e2d882bd225340d1a1d4b2ead445cf6ba`, based on `87ea349c`. The private offline Session takes `SessionSpec::viaMainTrack` on a read-only Store without performance controls. The planner keeps the selected source, the group's children that actually route into it, its path to Main and enabled returns that reach Main. Gates silence ordinary audio and notes from outside that mix while leaving the timing topology, device keys and track sidechains connected. The selection ignores stored solo, including the controls applied when the graph publishes.
