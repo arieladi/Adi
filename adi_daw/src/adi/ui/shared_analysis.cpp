@@ -775,10 +775,7 @@ struct SharedAnalysis::BarScopeDomain {
     }
 
     void setMidRequested(bool enabled) noexcept {
-        std::lock_guard lock(mutex);
-        if (includeMid == enabled) return;
-        includeMid = enabled;
-        if (!enabled && projection) projection->discardMid();
+        includeMid.store(enabled, std::memory_order_relaxed);
     }
 
     // On the owner this runs under State::mutex, which also protects tap rebinding.
@@ -835,10 +832,17 @@ struct SharedAnalysis::BarScopeDomain {
                     if (!prepareLane(i, first, reads, readLimit, samples)) return false;
                     finish = std::min(finish, lanes[i].chunkEnd);
                 }
+                const bool wantsMid = includeMid.load(std::memory_order_relaxed);
                 if (!projection) {
-                    for (std::size_t i = 0; i < lanes.size(); ++i) identities[i] = {lanes[i].source, lanes[i].tap->generation()};
+                    for (std::size_t i = 0; i < lanes.size(); ++i)
+                        identities[i] = {lanes[i].source, lanes[i].tap->generation()};
                     projection = std::make_shared<FocusScopeBarProjection>();
-                    if (!projection->prepare(range, identities, columns, revision, includeMid)) { invalidate(); return false; }
+                    if (!projection->prepare(range, identities, columns, revision, wantsMid)) {
+                        invalidate();
+                        return false;
+                    }
+                } else if (!wantsMid) {
+                    projection->discardMid();
                 }
                 const auto count = static_cast<std::size_t>(finish - first);
                 for (std::size_t i = 0; i < lanes.size(); ++i) {
@@ -875,7 +879,7 @@ struct SharedAnalysis::BarScopeDomain {
     FocusScopeRange range;
     std::uint64_t expectedRevision = 0, revision = 0;
     std::int64_t end = 0;
-    bool includeMid = false;
+    std::atomic<bool> includeMid{false};
     std::shared_ptr<FocusScopeBarProjection> projection;
 };
 
