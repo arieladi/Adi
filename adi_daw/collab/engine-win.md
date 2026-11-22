@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, EX-04 mono delivery
+
+**PR requested** — `engine-win/export-mono-fold` `71f1650c` on main `87ea349c`, after 3 December. Adds an explicit arithmetic stereo average after the source tap and graph latency. Normalization and quantization see the one-channel delivery. Existing ordinary stereo and multichannel jobs retain their channel count. Strict MSVC passed 435 render, 143 WAV and 85 NI Stems checks (native AAC unavailable). Tests verified correlated, anti-phase and one-sided input against a 29-sample delayed stereo effect, and verified the final PCM duration and the folded normalization peak.
+
+**FOR THE DIRECTOR — EX-04:** Live 12's Rendering Options manual confirms mono delivery and gives no coefficients. Recommendation: verify by exporting in-phase, opposite-polarity and one-sided signals with peak normalization disabled before mapping Live's checkbox to the explicit average. The branch supplies that law as a named choice and makes no Live parity claim. Source: https://www.ableton.com/en/live-manual/12/managing-files-and-sets/#rendering-options
+
 ## 2026-11-22, EX-02 direct-stem batch expansion
 
 **PR requested** — `engine-win/export-stem-batch` `e44cc77e`, stacked on `a4112b4a` for after 3 December. One current project read previews cardinality, names and source taps. The whole literal list enqueues atomically after validation. Render still samples each job's revision at start. Preview includes existing and batch-reserved names. A later rename cannot cause a batch replacement to overwrite an earlier successful delivery. Strict MSVC passed 463 render and 85 NI Stems checks (native AAC unavailable), including equivalent Main aliases, no partial enqueue, numbering, and last-moment replacement protection.
