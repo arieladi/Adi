@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-30 banded Phase wake
+
+The previous Phase wake proof covered the plain output. The Phase page and its tile request per-band stereo correlation too. That combination now preserves the original hop across certified stopped silence, so the vector and band rail wake together after a tap wrap.
+
+Two assertions failed first on the displayed mode's exact request. All 891 broker checks now pass, including unchanged parked counters, both matching stereo lanes, exact signed band values and a single stereo FFT pair at the first audible hop. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed both changed units and Clang passed the implementation.
+
+Release ZIP SHA-256 `53e005a4663ea929e5b84c84b5c3e4d8ca4501619cebcc72421a491111929762`. EXE SHA-256 `5706ee6108a1dbeaa26052bdf717ad9d5af68dd4f771bef44b28e26295924e23`. The brief covers the expanded Phase view and its tile. Timed CPU and live comparison remain pending.
+
+PR requested — `mixview/mx30-parked-phase-bands-lands-after-2026-12-03` at `5881791263734bb2aa9f46a348ffeb2efedcb05e`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 opt-in True Peak in Spectrum
 
 The expanded Spectrum has a TP toggle that starts off. It switches the held peak readout to per-channel ADI dBTP. Sample Clips continues to report samples above full scale. True Peak uses the existing meter on the primary Spectrum worker lease. Its interval starts at the current writer and ends when disabled, compact, hidden or frozen. A frozen picture retains its readings.
