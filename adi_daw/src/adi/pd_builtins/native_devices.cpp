@@ -16,6 +16,7 @@
 #include "adi/dsp/overdrive.hpp"
 #include "adi/dsp/phaser_flanger.hpp"
 #include "adi/dsp/live_compressor.hpp"
+#include "adi/dsp/filter_delay.hpp"
 #include "adi/dsp/vinyl_distortion.hpp"
 #include "adi/dsp/erosion.hpp"
 #include "adi/dsp/tuner.hpp"
@@ -570,6 +571,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::tuner)) return create<dsp::Tuner>(patchText, 2);
         if (sameCanvas(patchText, canonical::erosion)) return create<dsp::Erosion>(patchText, 2);
         if (sameCanvas(patchText, canonical::vinylDistortion)) return create<dsp::VinylDistortion>(patchText, 2);
+        if (sameCanvas(patchText, canonical::filterDelay)) return create<dsp::FilterDelay>(patchText, 2);
     }
     return nullptr;
 }
