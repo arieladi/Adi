@@ -170,12 +170,19 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
     // period. A pitch moving inside the window (vibrato, a glide) may put the
     // fine dip a few samples from the coarse one; that reading stands.
     const std::size_t length = size_ - half - 2;
-    // A window whose halves differ in energy by more than half again holds a
-    // note starting or stopping: there the fine difference slopes with the
-    // energy and pulls the walk, so its period must stay within 1.5 samples
-    // of the coarse dip. A steady level (a vibrato, a glide) keeps the walk.
-    const double first = energy_[half], second = energy_[size_] - energy_[half];
-    const bool onset = std::max(first, second) > 1.5 * std::min(first, second);
+    // A window with a quarter all but silent (under 1 % of the loudest
+    // quarter's energy) holds a note starting or stopping: there the fine
+    // difference slopes with the energy and pulls the walk, so its period
+    // must stay within 1.5 samples of the coarse dip. A sung vibrato's
+    // tremolo (+-50 % amplitude keeps every quarter above 13 %), a glide or
+    // a steady level keeps the walk.
+    double quietest = energy_[size_], loudest = 0;
+    for (std::size_t k = 0; k < 4; ++k) {
+        const double q = energy_[(k + 1) * size_ / 4] - energy_[k * size_ / 4];
+        quietest = std::min(quietest, q);
+        loudest = std::max(loudest, q);
+    }
+    const bool onset = quietest < 0.01 * loudest;
     const auto diff = [&](std::size_t lag) {
         ++work_;
         return difference(window, lag, length);
