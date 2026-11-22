@@ -22,6 +22,7 @@
 #pragma once
 
 #include "adi/dsp/biquad.hpp"
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cstddef>
@@ -57,7 +58,8 @@ private:
     std::array<double, Count> p_{};
     std::array<Biquad, Bands> band_{};
     std::array<std::array<State, Bands>, 2> state_{};
-    double rate_ = 48000, output_ = 1;
+    double rate_ = 48000;
+    Glide output_;   ///< Output glides over about 10 ms once audio runs (dsp/glide.hpp)
 };
 
 }  // namespace adi::dsp
