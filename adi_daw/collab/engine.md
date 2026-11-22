@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+### 2026-11-22 — DF-E63 native clip tick readers
+
+**PR requested** for `engine/df-e63-native-tick-readers` at `c37e20e0395ac3783e46c30f48f1583086cb025d`. Title **DF-E63 recover stored clip ticks across native readers**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8`, including #696's Clip Playback correction. Clip Fade validation, Clip Details End and inherited meter, and MIDI Clips origin/window now use the Tempo Map's existing stored-nanosecond integer recovery. MIDI sample placement still uses the exact session seconds. A native nonintegral split exercises all three, and a separate one-tick tail checks Note On and Note Off across the block.
+
+Exact GCC 14 and Clang 19 Debug with warnings as errors, eight suites each (Clip Details, Clip Edit, Clip Playback, Edit Plan, Warp Playback, MIDI Clips, MIDI Capture and Engine). The planted native fixture failed 5/10 against main and passed 10/10 with the fix. In the fixture a real split MIDI attack moves from sample 8 to 9, the one-tick tail becomes audible, Clip Details recovers End and the inherited meter, and the fade accepts the full split span.
+
 ## 2026-11-22 — N67 new input tracks monitor on Auto
 
 **PR requested** · `engine/n67-auto-monitor-default` · `f2802a0030d9e9ad0a02d4404276cf1ccf140422`
