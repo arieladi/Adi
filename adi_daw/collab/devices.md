@@ -8,7 +8,7 @@ device PRs do not conflict on one shared log file.
 ## FOR THE DIRECTOR
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 27 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 30 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -136,6 +136,18 @@ method); Live's files and renders stay in the director's research.
     and default, the display modes' names).
     - A 440 Hz sine, then 442 Hz: the note and cents shown.
     - After the sine stops: how long the reading is held, and what it shows then.
+28. **Erosion (built after 3 December).** A fresh Erosion, every control as shown.
+    - Sine mode, Frequency 5 kHz, Amount at its top, a 1 kHz sine: the levels at 1, 4 and 6 kHz,
+      to settle the depth law.
+    - Noise and Wide Noise on a 1 kHz sine: the spectrum, and whether the channels differ.
+29. **Vinyl Distortion (built after 3 December).** A fresh Vinyl Distortion, every control as shown.
+    - A 1 kHz sine at −8 dBFS with Tracing at three drives: the second and third harmonics.
+    - Pinch, Soft and Hard, Stereo and Mono: the 3rd and 5th harmonics, and the mid and side.
+    - Crackle at full volume: the clicks' count in 10 s, their peak and decay, and their image.
+30. **Filter Delay (built after 3 December).** A fresh Filter Delay, every control as shown (each
+    line's Freq, Width, time and pan).
+    - An impulse through one line, its band off, then on: the echo times and the band's shape.
+    - Where the band sits (on the input or in the loop); a time change: a glide or a jump.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -150,6 +162,56 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — standing queue item 20: Erosion, Vinyl Distortion and Filter Delay, cores and devices — land after 3 December
+
+Three branches, stacked for the catalogue. Each is built, not verified.
+
+**PR requested:** head `devices/erosion` (a1f60f9b), base `main`, after item 19.
+- **What it is.** A very short delay, D (1 + m), read by four-point Lagrange interpolation. Its
+  modulator is a sine (Sine), or white noise through a band pass at Frequency, Q = 1/Width (Noise: one
+  modulator; Wide Noise: one for each channel). At Amount 100 % the delay swings over 0.2 ms.
+- **Tests:**
+  - `adi_erosion_tests` 21: Sine mode's carrier and first sidebands equal J0 and J1 of β = 2π f D
+    within 0.05 dB, at three amounts. Noise peaks at the tone ± Frequency, and a narrow Width gathers
+    it. Noise is alike in both channels and Wide Noise is not. Amount 0 is the input itself. Block
+    sizes, NaN, no allocation, aliased planes.
+  - parity max error 0;
+  - the catalogue holds 31 built-ins.
+
+**PR requested:** head `devices/vinyl-distortion` (6f75c80a), base `main`, after `devices/erosion`.
+- **What it is.**
+  - Tracing: its band b adds 2 Drive b² with the DC blocked, an even distortion.
+  - Pinch: its own band adds f(g b)/g − b, with f tanh (Soft) or a hard clip (Hard). Stereo adds it to
+    the left and takes it from the right, so the mid stays clean.
+  - Crackle: decaying clicks at Density a second, up to Volume.
+- **Tests:**
+  - `adi_vinyl_distortion_tests` 34: the tracing's second harmonic is Drive A² within 0.05 dB, with
+    nothing odd. The pinch's 3rd and 5th harmonics match a numerical Fourier sum of its curve within
+    0.05 dB, Soft and Hard. Below the clip, Hard adds nothing. Stereo's mid is clean. Crackle count,
+    volume and off. Both Drives at 0 give the input itself.
+  - parity max error 0;
+  - the catalogue holds 32 built-ins.
+- **Not oversampled:** a hard pinch on a high tone aliases. Whether Live oversamples is in reading 29.
+
+**PR requested:** head `devices/filter-delay` (6d8614fe), base `main`, after `devices/vinyl-distortion`.
+- **What it is.** Three lines, fed from L, the mono sum and R. Each stores BP(in + Feedback y), so
+  every repeat passes its band (Width octaves at Freq). Its time is Sixteenths at the song's tempo, or
+  ms. A time change glides over 50 ms to a whole sample. Equal-power Pan, Volume, and a Dry for the
+  whole.
+- **The canvas** takes the tempo from `adi.transport`, as the Delay's does.
+- **Tests:**
+  - `adi_filter_delay_tests` 20: echoes at exactly Time, each Feedback times the last. Each line's
+    feed. Equal-power pan. On off lets the echoes ring out. Synced times at 120 and 90 BPM, arriving
+    at a whole sample. The band peaks at 0 dB at Freq and is 3 dB down at its edges. Feedback 95 %
+    stays bounded. Dry with the lines silent is the input itself.
+  - parity max error 0;
+  - the catalogue holds 33 built-ins.
+
+**CTest (`ctest -LE acceptance`):** `devices/channel-eq` 277/277 at PD_FLOATSIZE 32 and 64. The other
+tips are queued.
+
+**Readings 28, 29 and 30, added to the ONE list.**
 
 ## 2026-11-22 — standing queue item 19: Tuner, core, shared pitch detector and device — lands after 3 December
 
