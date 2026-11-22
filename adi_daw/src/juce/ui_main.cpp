@@ -1071,8 +1071,18 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_ || !root_ || !window_)
             return;
         const auto before = document_->deviceCopyIdentity();
-        if (!document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()))) {
-            root_->say(document_->error());
+        const bool saved = document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()));
+        // A take landed before the switch (PD06-SAVEAS-GUARD) is told here with Save As's own words, so the
+        // timer finds nothing to say over them; a kept take is chosen, as when it lands on its own.
+        std::string landedFirst;
+        if (auto landed = document_->takeLanded()) {
+            if (!landed->ok)
+                landedFirst = landed->message + " ";
+            else if (!landed->clips.empty())
+                root_->selectClip(landed->clips.front());
+        }
+        if (!saved) {
+            root_->say(landedFirst + document_->error());
             return;
         }
         // The same project under a new file: a copy held from it still pastes into it.
@@ -1080,7 +1090,7 @@ class AdiApplication final : public juce::JUCEApplication,
             deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
         commands_->clipClipboard().rebase(before, document_->deviceCopyIdentity());
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
-        root_->say(document_->warning());
+        root_->say(landedFirst + document_->warning());
     }
     // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
     // else in the window changes.

@@ -164,7 +164,8 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         return false;
     }
     warning_ = result.warning;
-    if (wasRecording)
+    // Said only of a take that landed; one that was not kept says so itself (`takeLanded`).
+    if (wasRecording && landed_ && landed_->ok)
         warning_ = std::string("Recording stopped, its take kept, before Save As.") + (warning_.empty() ? "" : " ") + warning_;
     {
         std::lock_guard lock(waveformSource_->mutex);

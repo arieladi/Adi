@@ -945,6 +945,17 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
     check(again && again->ok && again->clips.size() == 1 && doc->ops().nextUndo() &&
               doc->ops().nextUndo()->label == "Record Audio",
           "as one undo step");
+    // 3. Save As during a Record that recorded nothing (the device gone before a block): no take is kept, and
+    // Save As does not say one was.
+    doc->prepare(48000, 64);
+    check(doc->startRecording(0, 1, false), "Record once more");
+    doc->release();
+    const auto third = dir / "nothing-as.adi";
+    const bool savedThird = doc->saveAs(third);
+    const auto dropped = doc->takeLanded();
+    check(savedThird && dropped && !dropped->ok && dropped->message.find("not kept") != std::string::npos &&
+              doc->warning().find("its take kept") == std::string::npos && clipsIn(third) == clipsBefore + 1,
+          "Save As after a Record with nothing recorded: the take is not kept, says so, and Save As does not claim it");
 }
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
