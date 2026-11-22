@@ -33,7 +33,10 @@ std::int64_t clock() noexcept{return 123;}
 bool validate(const std::vector<Plugin>&,const std::string&,void*,std::string&){return true;}
 std::string packet(const std::string& format,const std::string& path,const std::string& version) {
     Plugin plugin;plugin.id="org.adi.catalogue";plugin.name="Catalogue fixture";plugin.version=version;
-    if(format=="vst3")plugin.data="<PLUGIN fixture='stored XML for the host validator'/>";
+    if(format=="vst3") {
+        plugin.data="<PLUGIN fixture='stored XML for the host validator'/>";
+        plugin.classId="00112233445566778899aabbccddeeff";
+    }
     std::string error;auto result=encodeMetadata(format,path,{plugin},error);
     if(!result)throw std::runtime_error(error);
     return *result;
@@ -76,8 +79,9 @@ void snapshotWithoutHelper(const fs::path& self) {
     if(!catalogue)return;
     const auto* found=catalogue->find("vst3",utf8(v));
     check(found && found->canonicalPath==utf8(v) && found->stamp.size()==64 && found->updatedUtc==123 &&
-        found->plugins.size()==1 && found->plugins.front().data=="<PLUGIN fixture='stored XML for the host validator'/>",
-        "snapshot retains canonical identity, opaque build stamp and VST3 XML for later host validation/rebinding");
+        found->plugins.size()==1 && found->plugins.front().data=="<PLUGIN fixture='stored XML for the host validator'/>" &&
+        found->plugins.front().classId=="00112233445566778899aabbccddeeff",
+        "snapshot retains canonical identity, build stamp, VST3 XML and class ID with no helper");
     check(!catalogue->find("clap",utf8(v)) && !catalogue->find("clap",utf8(a)+"missing"),
         "snapshot key lookup is exact and format-scoped");
     check(launches(a)==1 && launches(b)==1 && launches(v)==1 && f.registry->scanBlocks(f.error)->empty() &&
