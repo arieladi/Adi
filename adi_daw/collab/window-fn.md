@@ -46,6 +46,70 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — queue item 4, OWNER-REVIEW-1122: the window's sites in N62, N66, DF-E64 and the loans (for win)
+
+**Tree reviewed:** main `87ea349c` with `engine-win/export-host-owner` `6b78d94c` (N62), then
+`engine-win/recording-failed-prefix` `0900deeb` (N66, which contains DF-E44 `0ed2c355`), then
+`engine-win/play-first-block` `01b1e723` (DF-E64), merged in that order. N62 and N66 merge cleanly. DF-E64
+conflicts with #710 (below).
+
+**WTS-01** (JUCE on, Pd on, `-DADI_ACCEPTANCE=ON`, GCC 13 Debug, warnings as errors): **2b PASS with DF-E64**
+("0 of 384000 frames differ … held 1 callbacks before the first song frame"; on main alone it FAILs). **7d PASS with
+N62** ("worker export completed, 192000 frames, audible saved note"), 7e PASS. Session 0 FAIL, VST3 part 0 FAIL.
+The window-state suite (135 checks) and the document suite (319) pass on the merged tree.
+
+**DF-E64 (`play-first-block`)**
+- **Conflict with #710** in `TransportMailbox::drain` (`src/adi/ui/window_state.hpp`): #710 stores the Locate's
+  revision (`locateRevision_`, read by the Mix View's `settledLocateRevision`), and DF-E64 rewrites the same branches
+  for the held Play. The resolution keeps both. The Locate branch stores `locateRevision_` after `transport.locate`.
+  The Record, Stop and Play branches are DF-E64's: Record and Stop clear `pending`, and a Play while stopped sets it.
+  With that resolution the suites and 2b pass as above.
+- **Finding (important): the held Play has no bound.** `drain` starts the transport only once
+  `sourcesReadyAt(position, frames, true)` is true. A page that never comes (slots exhausted, a progressive source
+  still pending while its import runs, a reader that stalls) leaves Play lit (`willPlay()` is true) and the song
+  silent and still, with nothing in the Status Bar. Suggest a bound: after about 250 ms of callbacks, start anyway
+  and count the underrun as before, or have the window say "Waiting for audio files to load".
+- Nit: while stopped, each callback asks every clip for read-ahead at the playhead (`clip_playback.cpp`, `play`).
+  That costs O(clips) per block on a large set that is stopped. It is bounded, but it could run once per locate.
+
+**N62 (`export-host-owner`), its window site in `ui_main.cpp`**
+- Sound: `HostDispatch` carries an action's exception back to the worker (`packaged_task`). `stopRender` services
+  the mailbox until the worker has finished, so a cancelled render's Session and plug-ins are destroyed on the
+  message thread. `install` and Quit both call `stopRender` before the document goes. The old window refusal and the
+  harness's `exportLoader` are gone, as they should be.
+- Finding (performance, plausible): `service()` puts `session.tick` and `serviceHost` on the message thread every
+  block, a round trip per block through `callAsync`. An export's speed is now bounded by the window's message loop,
+  and it slows while the window paints or a menu is open. Suggest servicing the host on a timer (every 10 ms or so,
+  as the live session's tick does) rather than every block.
+- Note: `Session::load` for the render now runs on the message thread, so a project with heavy plug-ins freezes the
+  window for the load's length. It is acceptable (plug-ins need it), but worth a progress line on the Export page.
+
+**N66 (`recording-failed-prefix`), its window site in `project_document.cpp`**
+- Sound: `landTake` keeps an attachable prefix as one undo step and names the interruption.
+- The three `discard()` calls ignore the `std::error_code` DF-E44 now returns. That is queue item 5,
+  `window-fn/dfe44-discard`, stacked on this branch.
+- Order note: `landTake`'s ids are still `MAX(id)+1`. `window-fn/row-ids` (queue item 2) changes those lines, so
+  whichever lands second takes a small textual conflict there. RowIds' version is the one to keep.
+
+**Mix View loans (on main since #710)**
+- `pasteDevice`: the id comes from `RowIds`, past the retained device ids and the copy's own id, and is read in one
+  transaction. That is consistent with DF-E16. No finding.
+- The `synchronise` retiree loop (`entryFor(deviceId) == &entry`): correct. A retiree that shares its id with a newer
+  instance no longer detaches the newer one's parameter ops.
+- `settledLocateRevision`: the ordering holds (the revision is stored before `read_`'s release store, and read
+  after its acquire). No finding beyond the DF-E64 conflict above.
+
+**Clones loans (#705, on the held ADI-Shaper panel stack, top `clones/shaper-trim` `69422cef`)**: the editor factory in
+`ui_main.cpp` and the wrench checks in `ui_devices.cpp`.
+- Sound: the panel view opens through the plug-in window host, and `floating_` is reset before the document goes,
+  in `install` and at Quit, so the view's `ProjectDocument&` does not outlive it.
+- Nits: the uid `org.adidaw.builtin.adi-shaper` is spelled at three sites (two in `ui_devices.cpp`, one in
+  `ui_main.cpp`); one predicate ("has a window of its own") would keep them together. The refusals on that path
+  still say "plug-in" for a built-in ("The plug-in is not loaded, so it has no window."). Only the two loaned sites
+  were reviewed. The rest of the stack waits on ADR-0248 d11 as #708 says.
+
+No PR: review only.
+
 ## 2026-11-22, window-fn — queue item 3, PD06-SAVEAS-GUARD: a take lands in its own file before Save As, Open or New (PR requested)
 
 **Window lane, read first:** this item touches `src/adi/ui/project_document.*` (`saveAs`, a new
