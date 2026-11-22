@@ -54,6 +54,12 @@ Parked AU-08 Cut and range Delete pending the removed-span playback rule, the se
 
 - AU-08 Cut and Delete. I recommend the same half-open interval and exterior curve guards as Paste. Check Live with a selection starting inside a nonlinear ramp and ending just after a step to choose the value heard in the emptied range. I recommend carrying the left value through the range if Live leaves a gap with no interpolation.
 
+### 22 November — MI-06 Fit to Scale, native note operation
+
+**PR requested** for `engine/mi06-fit-to-scale` at `e6d0c93c0fa880ed6c165ecaff0a2070f6f1c104` from main. The pure utility snaps explicitly selected note pitches using ScaleContext, picks the lower degree on a tie and prepares one existing note.applyDiff when pitches change. The owner adapter captures the clip's local or inherited scale and notes in one SQLite snapshot. An implicit twelve-tone scale uses the clip root. Custom tuning takes an explicit absolute tonic. Unchanged pitches, note IDs, forward record tails, opaque expression and all nonpitch fields survive.
+
+GCC 14 and Clang 19 strict builds each passed 1,168 checks across four suites. Tests cover a non-octave tuning, a lower tie, a local override, empty and invalid selections, idempotence with float cents, and byte-exact Undo/Redo. Window wiring and the Live preset census remain parked with their owners.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
