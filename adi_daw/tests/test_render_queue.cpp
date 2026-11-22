@@ -150,6 +150,13 @@ std::vector<float> read(const Result& result, std::uint64_t frames, std::uint32_
     check(wave.read(samples.data(),static_cast<std::uint32_t>(frames))==frames,"published samples decode");
     return samples;
 }
+bool hasStereoSpeakerMask(const fs::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    std::string header(80, '\0');
+    file.read(header.data(), static_cast<std::streamsize>(header.size()));
+    const auto fmt = header.find("fmt ");
+    return file && fmt != std::string::npos && header.compare(fmt + 28, 4, "\x03\0\0\0", 4) == 0;
+}
 bool matches(const std::vector<float>& samples, std::int64_t begin, double gain = 1, std::int64_t delay = 0) {
     if (samples.empty()) return false;
     for (std::size_t i = 0; i < samples.size()/2; ++i) for (int c = 0; c < 2; ++c) {
@@ -369,11 +376,7 @@ void gaplessCycleRenders() {
                   *one.deliveryBlake3 == media::blake3File(one.output).hex &&
                   *two.deliveryBlake3 == media::blake3File(two.output).hex,
                   "cycle receipts retain the original graph clock and final file digests");
-            std::ifstream file(two.output, std::ios::binary);
-            file.seekg(40);
-            std::array<unsigned char, 4> mask{};
-            file.read(reinterpret_cast<char*>(mask.data()), static_cast<std::streamsize>(mask.size()));
-            check(file.good() && mask == std::array<unsigned char, 4>{3, 0, 0, 0},
+            check(hasStereoSpeakerMask(two.output),
                   "cycle output preserves the speaker mask after slicing");
         }
     }
@@ -1368,12 +1371,7 @@ void waveSpeakerMask() {
         job.normalization.mode = mode;
         job.nameTemplate = mode == NormalizeMode::Off ? "speaker-mask" : "speaker-mask-normalized";
         const auto rendered = renderWav(job, {});
-        std::ifstream file(rendered.output, std::ios::binary);
-        std::string header(80, '\0');
-        file.read(header.data(), static_cast<std::streamsize>(header.size()));
-        const auto fmt = header.find("fmt ");
-        check(rendered.state == JobState::Completed && fmt != std::string::npos &&
-              header.compare(fmt + 28, 4, "\x03\0\0\0", 4) == 0,
+        check(rendered.state == JobState::Completed && hasStereoSpeakerMask(rendered.output),
               "rendered WAV retains the mask through ordinary and normalized encoding");
     }
     job.nameTemplate = "speaker-mask-invalid";
