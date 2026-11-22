@@ -176,12 +176,14 @@ GraphPlan planGraph(const rows::Model& m) {
             continue;
         }
 
-        PlannedEdge e;
-        e.from = from->second;
-        e.to = to->second;
-        e.bus = (r->kind == "sidechain") ? Bus::Sidechain : Bus::Main;
-        e.kind = r->kind;
-        plan.edges.push_back(e);
+        const auto group = tracks[from->second]->parentId;
+        if (r->kind == "main" && plan.nodes[from->second].kind == PlannedKind::Return && group &&
+            byId.contains(*group) && plan.nodes[byId.at(*group)].kind == PlannedKind::Group &&
+            r->dstId != *group) {
+            plan.problems.push_back("routing#" + std::to_string(r->id) +
+                                    ": a grouped return's main output goes to its group");
+            continue;
+        }
 
         if (r->kind == "main") {
             // ADR-0065: a 'user' row is the user's own routing and a 'auto' row
@@ -190,13 +192,19 @@ GraphPlan planGraph(const rows::Model& m) {
             // track would double it into its destination.
             const auto how = (r->origin == "auto") ? PlannedNode::Route::Auto
                                                    : PlannedNode::Route::User;
-            const auto seen = mainDecided.find(r->srcId);
-            if (seen != mainDecided.end())
+            if (!mainDecided.emplace(r->srcId, how).second) {
                 plan.problems.push_back("tracks#" + std::to_string(r->srcId) +
                                         " has more than one main output");
-            mainDecided[r->srcId] = how;
+                continue;
+            }
             plan.nodes[from->second].route = how;
         }
+        PlannedEdge e;
+        e.from = from->second;
+        e.to = to->second;
+        e.bus = (r->kind == "sidechain") ? Bus::Sidechain : Bus::Main;
+        e.kind = r->kind;
+        plan.edges.push_back(e);
     }
 
     // --- the default, for every track that did not decide ------------------
@@ -257,6 +265,25 @@ GraphPlan planGraph(const rows::Model& m) {
             continue;
         }
         const PlannedKind src = plan.nodes[from->second].kind, dst = plan.nodes[to->second].kind;
+        const auto groupId = tracks[to->second]->parentId;
+        if (dst == PlannedKind::Return && groupId && byId.contains(*groupId) &&
+            plan.nodes[byId.at(*groupId)].kind == PlannedKind::Group) {
+            bool inside = false;
+            auto ancestor = tracks[from->second]->parentId;
+            for (std::size_t depth = 0; ancestor && depth < tracks.size(); ++depth) {
+                if (*ancestor == *groupId) {
+                    inside = true;
+                    break;
+                }
+                const auto parent = byId.find(*ancestor);
+                if (parent == byId.end()) break;
+                ancestor = tracks[parent->second]->parentId;
+            }
+            if (!inside) {
+                plan.problems.push_back(ref + ": a grouped return accepts sends only from inside its group");
+                continue;
+            }
+        }
         if (src == PlannedKind::Vca || dst == PlannedKind::Vca) {
             plan.problems.push_back(ref + ": a VCA carries no audio, so it neither sends nor takes one");
             continue;
@@ -321,6 +348,9 @@ GraphPlan planGraph(const rows::Model& m) {
         // Pre leaves after the effects and before the strip: the source's
         // fader, pan and track delay do not reach it (ADR-0203 d3).
         e.tap = r->preFader ? Tap::PostFx : Tap::PostFader;
+        if (r->sendTap == IndividualSendTap::PreFx) e.tap = Tap::PreFx;
+        if (r->sendTap == IndividualSendTap::PostFx) e.tap = Tap::PostFx;
+        if (r->sendTap == IndividualSendTap::PostMixer) e.tap = Tap::PostFader;
         e.feedback = feedback;
         plan.edges.push_back(e);
     }

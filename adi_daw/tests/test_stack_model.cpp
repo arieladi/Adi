@@ -305,6 +305,66 @@ std::array<KindScope, 4> fourScope(bool q, bool duck, bool clip, bool l) {
 
 // --- the laws -------------------------------------------------------------------------------------------
 
+void continuousChannelLens() {
+    auto f = uniform(12);
+    f.item(5, 15, ItemClass::Dynamics, "Gate");
+    auto m = model(f, 1100, 700, mixChannelGeometry());
+    check(m.windowView().channelScope == ChannelScope::AllChannels, "fresh Mix channel scope is All");
+    m.setChannelScope(ChannelScope::WithTools, 2);
+    auto reopened = model(f, 1100, 700, mixChannelGeometry());
+    reopened.applyViewState(m.viewState(), 3);
+    check(reopened.windowView().channelScope == ChannelScope::WithTools, "saved With tools restores");
+    m.setChannelScope(ChannelScope::AllChannels, 4);
+    const auto center = m.row(4);
+    m.pointerMove(50, center.top + center.height / 2, false, 1000);
+    m.advance(1300);
+    check(m.row(4).height == 250 && m.row(3).height == 122 && m.row(2).height == 82 && m.row(1).height == 56,
+          "Mix lens: centred row and neighbours use the four intended heights");
+    auto r = m.row(4);
+    m.pointerMove(50, r.top + .75 * r.height, false, 1310);
+    m.advance(1600);
+    check(m.row(4).height > 122 && m.row(4).height < 250 && m.row(5).height > 122 &&
+          m.row(3).height < 122, "Mix lens: moving within the same row shifts weight to the approaching channel");
+    const auto drag = m.beginCapture(CaptureKind::Drag, m.chainRef(5, 15), 1610);
+    const auto held = m.row(4);
+    m.pointerMove(180, 10, true, 1640);
+    m.advance(1900);
+    check(drag.ref.token != 0 && m.row(4).height == held.height && m.row(4).top == held.top,
+          "Mix lens: captured gesture holds the displayed row");
+    if (drag.ref.token != 0) m.endCapture(drag.ref, 1910);
+    m.pointerExit(1950); m.advance(2600);
+    check(m.row(4).height == 56 && m.row(5).height == 56, "Mix lens: outside returns every row to rest");
+    const auto open = mixChannelGeometry(DensityId::Open);
+    check(open.baseDefault == densityFor(DensityId::Open).mixStackRow &&
+          fisheyeHeight(open.baseDefault, 0, 700, open) == densityFor(DensityId::Open).mixStackFocusedRow,
+          "Mix lens reads the Open geometry from the shared density table");
+}
+
+void explicitDeviceFold() {
+    auto f = uniform(2);
+    f.item(1, 15, ItemClass::View, "Meter");
+    f.item(1, 16, ItemClass::View, "Effect");
+    auto m = model(f, 1100, 700, mixChannelGeometry());
+    const auto ref = m.chainRef(1, 15);
+    const auto obtain = [&](DeviceId id) {
+        std::optional<ItemGeo> result;
+        m.forEachChainItem(0, [&](const auto& item) { if (item.ref.device == id) result = item; });
+        return result;
+    };
+    const auto card = obtain(15);
+    check(card && !card->pill, "an unfolded insert uses the ordinary card");
+    f.chains[0][0].folded = true;
+    m.setRows(f.input(), 10);
+    const auto folded = obtain(15);
+    check(m.chainRef(1, 15) == ref && folded && folded->pill && folded->width == m.constants().pill &&
+          obtain(16).has_value(),
+          "explicit fold uses only pill width and keeps device and neighbour identities");
+    f.chains[0][0].folded = false;
+    m.setRows(f.input(), 12);
+    const auto restored = obtain(15);
+    check(m.chainRef(1, 15) == ref && restored && !restored->pill, "unfold returns the same device to its card");
+}
+
 void fisheyeAtBase100() {
     section("T1 the fisheye at base 100");
     Fixture f = uniform(20);
@@ -2623,17 +2683,8 @@ void viewStateRoundTrip() {
           "m14: an offset inside an enlarged row is kept to the row at rest");
 }
 
-class V1Provider final : public MixViewProvider {
+class ReferenceProvider final : public MixViewProvider {
   public:
-    ChannelSlots slots(const adi::engine::TrackNode &t) const noexcept override {
-        ChannelSlots s;
-        s.eq = t.id == 1;
-        s.sidechain = t.id == 3 ? SidechainMode::Rmsc : SidechainMode::Off;
-        s.limiter = t.id == 5;
-        s.limiterFull = t.kind == "master";
-        return s;
-    }
-    bool live() const noexcept override { return true; }
     std::int64_t reference(const std::vector<std::shared_ptr<const adi::engine::TrackNode>> &) const noexcept override {
         return 6;
     }
@@ -2664,9 +2715,9 @@ void adapter() {
     rowsFromSnapshot(reader, rows);
     geometry.order.build(reader, rows);
     geometry.hidden = {4};
-    V1Provider provider;
+    ReferenceProvider provider;
     SnapshotRows out;
-    tracksFromSnapshot(reader, geometry, provider, out);
+    tracksFromSnapshot(reader, geometry, provider, {}, out);
     std::vector<TrackId> order;
     for (const auto &t : out.tracks)
         order.push_back(t.id);
@@ -2679,22 +2730,14 @@ void adapter() {
     };
     check(in(3).depth == 1 && in(3).parent == 2 && !in(4).inView && in(6).reference && in(2).group && in(5).main,
           "T45: depth, the project view, the Reference, groups and Main");
-    check(out.kinds.size() == 3 && out.kinds[0].key == 1 && out.kinds[1].key == 2 && out.kinds[2].key == 4,
-          "T45: today's provider reports ADI-Q, ducking and ADI-L");
-    const auto state = [&](TrackId id, std::size_t k) {
-        for (std::size_t i = 0; i < out.tracks.size(); ++i)
-            if (out.tracks[i].id == id)
-                return out.modules[i * 3 + k].state;
-        return ModuleState::Absent;
-    };
-    check(state(1, 0) == ModuleState::Engaged && state(3, 1) == ModuleState::Engaged && state(5, 2) == ModuleState::Engaged &&
-              state(5, 1) == ModuleState::Absent && state(1, 2) == ModuleState::Dormant && state(6, 0) == ModuleState::Absent,
-          "T45: the modules from v1, no ducking on Main");
+    const auto input = out.input(reader.seq());
+    check(out.items.empty() && input.kinds.empty() && input.modules.empty(),
+          "T45: a device-free snapshot has only channel rows");
     check(in(1).identity != 0 && in(1).identity == in(3).identity && in(1).identity != in(2).identity,
           "T45: the identity is the track kind");
     audit = true;
     allocations = 0;
-    tracksFromSnapshot(reader, geometry, provider, out);
+    tracksFromSnapshot(reader, geometry, provider, {}, out);
     audit = false;
     check(allocations == 0, "T45: a second call allocates nothing");
     StackModel m;
@@ -2721,7 +2764,7 @@ void actualChainAdapter() {
     std::vector<TrackRow> rows;
     rowsFromSnapshot(reader, rows);
     geometry.order.build(reader, rows);
-    StubMixViewProvider provider;
+    MixViewProvider provider;
     std::vector<ChainDeviceInput> devices{
         {2, 301, 4001, ItemClass::Plugin, "Same device"},
         {1, 105, 2005, ItemClass::Plugin, "Same device"},
@@ -2733,8 +2776,16 @@ void actualChainAdapter() {
     };
     SnapshotRows out;
     const auto refresh = [&] { tracksFromSnapshot(reader, geometry, provider, devices, out); };
+    out.tracks.reserve(snapshot->tracks.size());
+    out.items.reserve(devices.size());
+    out.chainOrder.reserve(devices.size());
+    allocations = 0;
+    audit = true;
     refresh();
-    check(out.kinds.empty() && out.modules.empty(), "actual chains reserve no module columns");
+    audit = false;
+    check(allocations == 0, "actual chain projection allocates no reserved module rows on its first refresh");
+    const auto published = out.input(reader.seq());
+    check(published.kinds.empty() && published.modules.empty(), "actual chains reserve no module columns");
     check(out.tracks.size() == 2 && out.items.size() == 4 && out.tracks[0].itemBegin == 0 &&
               out.tracks[0].itemCount == 3 && out.tracks[1].itemBegin == 3 && out.tracks[1].itemCount == 1,
           "actual chain adapter groups interleaved owners, omitting unknown owners and invalid ids");
@@ -2748,6 +2799,19 @@ void actualChainAdapter() {
     refresh();
     audit = false;
     check(allocations == 0, "actual chain adapter reuses all scratch capacities on steady input");
+
+    ViewState saved;
+    saved.window.channelScope = ChannelScope::AllChannels;
+    saved.window.moduleRange = {{1, 0, 105, DisplayRange::Db30}, {1, kDuck, 0, DisplayRange::Db12}};
+    saved.shared.pins = {1};
+    StackModel reopened;
+    reopened.setViewport(1800, 600, 0);
+    reopened.setRows(out.input(reader.seq(), 1), 0);
+    reopened.applyViewState(saved, 10);
+    const auto restored = reopened.viewState();
+    check(restored.window.moduleRange == saved.window.moduleRange && restored.shared.pins == saved.shared.pins &&
+              reopened.live(reopened.chainRef(1, 105)) && !reopened.live(reopened.moduleRef(1, kDuck)),
+          "older Stack view preferences reopen without recreating a reserved slot or changing a real device");
 
     StackModel model;
     model.setViewport(1800, 600, 0);
@@ -3154,6 +3218,33 @@ void channelShortcutScope() {
     m.endCapture(capture.ref, ++now);
     check(!m.shownIndex(2) && m.hiddenOnlyByToolScope(2),
           "the same ordinary row can request All channels once its retained edit ends");
+}
+
+void channelSubsetSnapshot() {
+    section("Channel subset snapshots and retained edits");
+    Fixture f;
+    f.kinds.clear();
+    f.add(2, "Previous");
+    f.add(4, "Refreshed");
+    f.add(6, "Excluded");
+    f.item(2, 21, ItemClass::Plugin, "Hold this edit");
+    auto m = model(f, 1600, 900);
+    TimeMs now = 0;
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    const auto accepted = m.setChannelSubset(std::vector<TrackId>{2, 2, 999}, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2} && !accepted.windowViewChanged,
+          "snapshot membership is exact, ignores duplicate or unknown ids and is transient view state");
+    const auto capture = m.beginCapture(CaptureKind::Menu, m.chainRef(2, 21), ++now);
+    m.setChannelSubset(std::vector<TrackId>{4}, ++now);
+    check(capture.refusal == CaptureRefusal::None && m.captureStatus(capture.ref) == CaptureStatus::Live &&
+              shownIds(m) == std::vector<TrackId>{2, 4},
+          "substituting the snapshot retains a still-live captured row");
+    m.endCapture(capture.ref, ++now);
+    check(shownIds(m) == std::vector<TrackId>{4}, "release applies the new snapshot without the previously captured row");
+    m.setChannelSubset(std::vector<TrackId>{}, ++now);
+    check(m.shownCount() == 0, "an empty snapshot remains an explicit filter");
+    m.setChannelSubset(std::nullopt, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2, 4, 6}, "clearing the snapshot restores unfiltered rows");
 }
 
 void channelScopeJumpPins() {
@@ -4169,6 +4260,8 @@ int main() {
     _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
+    continuousChannelLens();
+    explicitDeviceFold();
     fisheyeAtBase100();
     fisheyeAtEveryDetent();
     capsAndFloor();
@@ -4216,6 +4309,7 @@ int main() {
     actualChainAdapter();
     channelMembership();
     channelShortcutScope();
+    channelSubsetSnapshot();
     channelScopeJumpPins();
     jumpCapturePublicationChanges();
     determinism();

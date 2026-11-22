@@ -104,6 +104,73 @@ void aliases() {
     check(worst<.00012,"hard clipping rejects harmonics folded into the audible band");
 }
 
+void nearZeroContinuity() {
+    constexpr float firstStep = .0001f; // 0.01% in the rack
+    constexpr float firstKnot = 1.f / 32.f;
+    constexpr int section = 512;
+    constexpr std::array modes{Mode::Saturate, Mode::HardClip, Mode::Rectify};
+    constexpr std::array rates{44100, 48000, 96000};
+    constexpr std::array trims{std::array{.5f, .5f}, std::array{1.f, .25f}};
+    double worstNearZero = 0., worstAtKnot = 0.;
+    for (auto mode : modes) {
+        for (auto rate : rates) {
+            for (auto trim : trims) {
+                Drive zero, moving, between, belowKnot, atKnot;
+                for (auto* drive : {&zero, &moving, &between, &belowKnot, &atKnot}) {
+                    drive->prepare(rate);
+                    drive->setMode(mode);
+                    drive->setTrims(trim[0], trim[1]);
+                }
+                zero.setMode(Mode::HardClip); // already pinned by the zero-Drive impulse fixture
+                std::array<double, 2> peak{}, movingError{}, betweenError{}, knotError{};
+                bool initialZeroExact = true, finite = true;
+                for (int n = 0; n < 6 * section; ++n) {
+                    const auto phase = 2. * std::numbers::pi * n / rate;
+                    const std::array input{1.45f * static_cast<float>(std::sin(133. * phase)),
+                                           -1.25f * static_cast<float>(std::cos(211. * phase))};
+                    auto dry = input, live = input, mid = input, below = input, at = input;
+                    float amount = 0.f;
+                    if (n >= section && n < 2 * section) {
+                        amount = firstStep;
+                    } else if (n >= 3 * section && n < 5 * section) {
+                        const int distance = std::min(n - 3 * section, 5 * section - n);
+                        amount = firstStep * static_cast<float>(distance) / section;
+                    }
+                    zero.process(dry[0], dry[1], 0.f);
+                    moving.process(live[0], live[1], amount);
+                    between.process(mid[0], mid[1], firstKnot * .5f);
+                    belowKnot.process(below[0], below[1], std::nextafter(firstKnot, 0.f));
+                    atKnot.process(at[0], at[1], firstKnot);
+                    if (n < section) initialZeroExact = initialZeroExact && live == dry;
+                    for (std::size_t channel = 0; channel < peak.size(); ++channel) {
+                        const auto unshaped = static_cast<double>(dry[channel]);
+                        finite = finite && std::isfinite(unshaped) && std::isfinite(live[channel]) &&
+                                 std::isfinite(mid[channel]) && std::isfinite(below[channel]) &&
+                                 std::isfinite(at[channel]);
+                        peak[channel] = std::max(peak[channel], std::abs(unshaped));
+                        movingError[channel] = std::max(movingError[channel], std::abs(live[channel] - unshaped));
+                        betweenError[channel] = std::max(betweenError[channel], std::abs(mid[channel] - unshaped));
+                        knotError[channel] = std::max(knotError[channel],
+                            std::abs(static_cast<double>(at[channel]) - below[channel]));
+                    }
+                }
+                check(initialZeroExact && finite, "exact zero Drive keeps the pinned finite response in every mode");
+                for (std::size_t channel = 0; channel < peak.size(); ++channel) {
+                    const auto scale = std::max(1., peak[channel]);
+                    const auto nearZero = movingError[channel] / scale;
+                    const auto knot = knotError[channel] / scale;
+                    worstNearZero = std::max(worstNearZero, nearZero);
+                    worstAtKnot = std::max(worstAtKnot, knot);
+                    check(nearZero < .001, "entering and leaving 0.01% Drive stays close to zero without a jump");
+                    check(betweenError[channel] / scale > .005, "low Drive develops its effect below the first knot");
+                    check(knot < .000001, "Drive joins the existing transfer continuously at its first knot");
+                }
+            }
+        }
+    }
+    std::printf("Drive near-zero and first-knot normalized peak errors %.8g %.8g\n", worstNearZero, worstAtKnot);
+}
+
 void trimsAndReset() {
     Drive reference, trimmed;
     reference.setMode(Mode::Rectify);
@@ -130,6 +197,7 @@ int main() {
     impulses();
     harmonicTransfers();
     aliases();
+    nearZeroContinuity();
     trimsAndReset();
     return failures==0 ? 0 : 1;
 }

@@ -8,7 +8,6 @@
 #include <sqlite3.h>
 #include <algorithm>
 #include <array>
-#include <limits>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -99,7 +98,7 @@ const std::array<OpDescriptor,2> ops={{
 }
 std::span<const OpDescriptor> builtinReferenceOps(){return ops;}
 static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-    std::optional<std::int64_t> before,const PluginInsertOptions* plugin = nullptr) {
+    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,const PluginInsertOptions* plugin = nullptr) {
     PreparedBuiltinInsert result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
@@ -176,6 +175,7 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
             const auto index=static_cast<std::int64_t>(i+(i>=position?1u:0u));
             if(order[i].ord!=index)append("device.move",{{"id",order[i].id},{"chain",result.chainId},{"ord",index}},"device",order[i].id);
         }
+        ids.reserve("devices",retainedDeviceId);
         result.deviceId=ids.next("devices");
         append("device.insert",{{"id",result.deviceId},{"chain",result.chainId},{"ord",static_cast<std::int64_t>(position)},
             {"ref",result.referenceId},{"name",ref.name},{"enabled",true},{"rack",false}},"device",result.deviceId);
@@ -186,7 +186,8 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
     }catch(const std::exception& exception){result.error=exception.what();}
     return result;
 }
-PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before) {
+PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before,
+    std::int64_t retainedDeviceId) {
     const auto* info=findBuiltin(uid);
     if(!info || !info->available) {
         PreparedBuiltinInsert result;
@@ -196,10 +197,10 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
     rows::PluginRef ref;
     ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";
     ref.subtype=info->instrument?"instrument":"effect";
-    return prepareInsert(store,ref,track,before);
+    return prepareInsert(store,ref,track,before,retainedDeviceId);
 }
 PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-    std::optional<std::int64_t> before,const PluginInsertOptions& options) {
+    std::optional<std::int64_t> before,const PluginInsertOptions& options,std::int64_t retainedDeviceId) {
     if((ref.format!="vst3" && ref.format!="clap") || ref.uid.empty() || ref.name.empty()) {
         PreparedBuiltinInsert result;result.error="Select a VST3 or CLAP plug-in with a valid identity";return result;
     }
@@ -210,7 +211,7 @@ PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& re
         *engine::routeChoiceName(*options.expressionRoute) == '\0') {
         PreparedBuiltinInsert result;result.error="unknown plug-in expression route";return result;
     }
-    return prepareInsert(store,ref,track,before,&options);
+    return prepareInsert(store,ref,track,before,retainedDeviceId,&options);
 }
 CommitResult commitBuiltinInsert(Store& store,const PreparedBuiltinInsert& prepared,Actor actor) {
     CommitResult result;if(!prepared.ok){result.error=prepared.error;return result;}

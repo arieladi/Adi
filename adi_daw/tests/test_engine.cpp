@@ -11,6 +11,7 @@
 
 #include "adi/engine/process.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/history.hpp"
@@ -221,6 +222,61 @@ void testConcurrentHandoff() {
 }
 
 // --- structural sharing -----------------------------------------------------------------
+
+void testTakeLaneSnapshot() {
+    section("DF-E35 take lane snapshot admission");
+    Scratch scratch("take-snapshot");
+    if (!scratch.store) return;
+    auto& store = *scratch.store;
+    store.db().exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Comp',48000);"
+        "INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Vocal'),(22,'audio','Other');"
+        "INSERT INTO lanes(id,track_id,kind) VALUES(301,21,'take'),(302,21,'take');"
+        "INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) VALUES"
+        "(41,21,'audio','Main',11,80),(42,21,'audio','Take',11,80);");
+    const auto before = SnapshotBuilder::fromStore(store);
+    const auto* original = before->findTrack(21);
+    adi::ui::ArrangementGeometry geometry;
+    const auto* top = original ? geometry.hit(*original, 12) : nullptr;
+    check(original && original->clips.size() == 2 && original->takeClips.empty() && top && top->id == 42,
+          "normal overlapping clips retain the existing main-row hit precedence");
+    if (!original || original->clips.size() != 2) return;
+
+    OpRequest attach;
+    attach.opType = "clip.setLane";
+    attach.payload = {{"id", 42}, {"lane", 301}};
+    check(OpJournal(store).commit(attach).ok, "existing operation attaches the clip to take 301");
+    const auto first = SnapshotBuilder::fromStore(store, *before);
+    const auto* track = first->findTrack(21);
+    const auto* hit = track ? geometry.hit(*track, 12) : nullptr;
+    check(track && track->clips.size() == 1 && hit && hit->id == 41,
+          "main-row hit skips the overlapping take while retaining the main clip");
+    if (!track || track->takeClips.size() != 1 || track->clips.size() != 1) {
+        check(false, "take projection retains the attached clip on its named lane");
+        return;
+    }
+    const auto take = track->takeClips.front();
+    check(take->id == 42 && take->laneId == 301 && take != original->clips.back() &&
+          track->clips.front() == original->clips.front() &&
+          first->findTrack(22) == before->findTrack(22),
+          "lane change replaces only the affected node and shares the main clip and other track");
+
+    attach.payload["lane"] = 302;
+    check(OpJournal(store).commit(attach).ok, "existing operation moves the take to sibling lane 302");
+    const auto second = SnapshotBuilder::fromStore(store, *first);
+    const auto* moved = second->findTrack(21);
+    check(moved && moved->takeClips.size() == 1 && moved->takeClips.front()->laneId == 302 &&
+          moved->takeClips.front() != take, "lane identity participates in sample-independent snapshot equality");
+    const auto unchanged = SnapshotBuilder::fromStore(store, *second);
+    check(unchanged->findTrack(21) == moved &&
+          SnapshotBuilder::sharedNodeCount(*second, *unchanged) == 5,
+          "unchanged rebuild shares both clip nodes, both tracks and tempo");
+    check(History(store).undo().ok && History(store).undo().ok, "Undo restores the two original main placements");
+    const auto restored = SnapshotBuilder::fromStore(store, *unchanged);
+    const auto* restoredTrack = restored->findTrack(21);
+    const auto* restoredHit = restoredTrack ? geometry.hit(*restoredTrack, 12) : nullptr;
+    check(restoredTrack && restoredTrack->takeClips.empty() && restoredHit && restoredHit->id == 42,
+          "the projected lane move reverses through history");
+}
 
 void testStructuralSharing() {
     section("ADR-0019 structural sharing");
@@ -700,6 +756,7 @@ int main() {
         testStrictlyGreater();
         testConcurrentHandoff();
         testStructuralSharing();
+        testTakeLaneSnapshot();
         testWindowMetadata();
         testSendSnapshots();
         testTrackDelaySnapshot();

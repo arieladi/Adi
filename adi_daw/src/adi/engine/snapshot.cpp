@@ -7,6 +7,8 @@
 #include "adi/store.hpp"
 #include "adi/media/media_ops.hpp"
 #include "juce/builtin_samples.hpp"
+#include "juce/pd_declarations.hpp"
+#include "adi/builtin_catalog.hpp"
 #include <filesystem>
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -27,7 +29,8 @@ namespace {
 bool same(const SendRoute& a, const SendRoute& b) {
     return a.id==b.id && a.sourceKind==b.sourceKind && a.destinationKind==b.destinationKind &&
         a.sourceId==b.sourceId && a.destinationId==b.destinationId && a.order==b.order &&
-        a.gainDb==b.gainDb && a.pan==b.pan && a.preFader==b.preFader && a.enabled==b.enabled;
+        a.gainDb==b.gainDb && a.pan==b.pan && a.preFader==b.preFader && a.enabled==b.enabled &&
+        a.sendTap==b.sendTap;
 }
 
 constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
@@ -38,7 +41,7 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 /// the first time someone forgets to set it.
 bool same(const ClipNode& a, const ClipNode& b) {
     return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
-           a.timeBase==b.timeBase && a.posNs==b.posNs && a.lengthNs==b.lengthNs &&
+           a.timeBase==b.timeBase && a.posNs==b.posNs && a.lengthNs==b.lengthNs && a.laneId==b.laneId &&
            a.muted == b.muted && a.gainDb == b.gainDb && a.fadeInTicks==b.fadeInTicks &&
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
@@ -90,11 +93,9 @@ bool same(const TrackNode& a, const TrackNode& b) {
         a.kind != b.kind || a.role != b.role || a.recording != b.recording || a.returnSendTap != b.returnSendTap || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
         a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
-        a.clips.size() != b.clips.size() ||
+        a.clips != b.clips || a.takeClips != b.takeClips || // pointer identity: already shared
         a.frozen != b.frozen || a.frozenByGroup != b.frozenByGroup || a.freezeMediaId != b.freezeMediaId || a.freezeMode != b.freezeMode)
         return false;
-    for (std::size_t i = 0; i < a.clips.size(); ++i)
-        if (a.clips[i] != b.clips[i]) return false;   // pointer identity: already shared
     return true;
 }
 
@@ -228,6 +229,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     if(sqlite3_get_autocommit(db.getHandle())!=0)
         readSnapshot.emplace(db,SQLite::TransactionBehavior::DEFERRED);
     const auto returnTaps=readReturnSendTaps(store);
+    const auto individualTaps = readIndividualSendTaps(db);
     std::optional<SQLite::Transaction> transaction;
     if (sqlite3_get_autocommit(db.getHandle()) != 0)
         transaction.emplace(db, SQLite::TransactionBehavior::DEFERRED);
@@ -246,6 +248,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     for (const auto& t : previous.tracks) {
         prevTracks[t->id] = t;
         for (const auto& c : t->clips) prevClips[c->id] = c;
+        for (const auto& c : t->takeClips) prevClips[c->id] = c;
     }
 
     try {
@@ -363,12 +366,14 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     }catch(const std::exception&){}
 
     // --- clips, grouped by track -------------------------------------------------
-    std::map<std::int64_t, std::vector<std::shared_ptr<const ClipNode>>> clipsByTrack;
+    using ClipList = std::vector<std::shared_ptr<const ClipNode>>;
+    struct ClipRows { ClipList main, takes; };
+    std::map<std::int64_t, ClipRows> clipsByTrack;
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
             "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
-            "content_offset_ticks,time_base,pos_ns,length_ns "
+            "content_offset_ticks,time_base,pos_ns,length_ns,lane_id "
             "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
@@ -393,6 +398,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.timeBase=st.getColumn(12).getInt64();
             c.posNs=linear(13);
             c.lengthNs=linear(14);
+            c.laneId=linear(15);
             if(c.timeBase==1) {
                 c.posTicks=c.posNs?snap->tempo->storedNanosecondsToTicks(*c.posNs):0;
                 c.lengthTicks=0;
@@ -406,20 +412,23 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             if (const auto lanes = controllersByClip.find(c.id); lanes != controllersByClip.end())
                 c.controllers = lanes->second;
 
+            auto& rows = clipsByTrack[trackId];
+            auto& destination = c.laneId ? rows.takes : rows.main;
             const auto prev = prevClips.find(c.id);
             if (prev != prevClips.end() && same(*prev->second, c))
-                clipsByTrack[trackId].push_back(prev->second);        // shared
+                destination.push_back(prev->second);
             else
-                clipsByTrack[trackId].push_back(std::make_shared<const ClipNode>(c));
+                destination.push_back(std::make_shared<const ClipNode>(std::move(c)));
         }
     } catch (const std::exception&) {
     }
     const auto clipOrder=[](const auto& a,const auto& b) {
         return std::tie(a->posTicks,a->id)<std::tie(b->posTicks,b->id);
     };
-    for(auto& [track,clips]:clipsByTrack)
-        if(!std::is_sorted(clips.begin(),clips.end(),clipOrder))
-            std::sort(clips.begin(),clips.end(),clipOrder);
+    for (auto& [track, rows] : clipsByTrack)
+        for (auto* clips : {&rows.main, &rows.takes})
+            if (!std::is_sorted(clips->begin(), clips->end(), clipOrder))
+                std::sort(clips->begin(), clips->end(), clipOrder);
 
     struct PanSettings {std::string mode;double left=-1.0,right=1.0;};
     std::map<std::int64_t,PanSettings> panSettings;
@@ -485,8 +494,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 t.frozen = true;
                 t.freezeMode = "group-member";
             }
-            if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
-                t.clips = it->second;
+            if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end()) {
+                t.clips = std::move(it->second.main);
+                t.takeClips = std::move(it->second.takes);
+            }
 
             const auto prev = prevTracks.find(t.id);
             if (prev != prevTracks.end() && same(*prev->second, t))
@@ -517,6 +528,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             send.order=st.getColumn(5).getInt64();send.gainDb=st.getColumn(6).getDouble();
             send.pan=st.getColumn(7).getDouble();send.preFader=st.getColumn(8).getInt()!=0;
             send.enabled=st.getColumn(9).getInt()!=0;
+            if (const auto tap = individualTaps.find(send.id); tap != individualTaps.end())
+                send.sendTap = tap->second;
             if(send.destinationKind=="track")if(const auto tap=returnTaps.find(send.destinationId);tap!=returnTaps.end() && tap->second.explicitChoice)send.preFader=tap->second.preFader;
 
             const auto prior=prevSends.find(send.id);
@@ -593,13 +606,38 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     for(const auto& slot:previous.sampleSlots)previousSlots[{slot->deviceId,slot->slot}]=slot;
     SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid FROM plugin_state s "
         "JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
-        "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' ORDER BY s.device_id,s.stream_role");
+        "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' "
+        "ORDER BY s.device_id,CAST(substr(s.stream_role,8) AS INTEGER),s.stream_role");
+    // DEV-21: a slot is any one the device declares (the Sampler declares 32),
+    // named as it is declared. Parsed once per device kind per rebuild.
+    std::map<std::string,device::PdDeclarations> declared;
     while(slots.executeStep()) {
         SampleSlotNode node;node.deviceId=slots.getColumn(0).getInt64();node.stateHash=slots.getColumn(2).getString();
         try {
             const auto role=slots.getColumn(1).getString();
-            if(role!="sample:1")throw std::runtime_error("unknown built-in sample role");
-            node.slot=1;node.name="Impulse";const auto old=previousSlots.find({node.deviceId,node.slot});
+            const auto uid=slots.getColumn(3).getString();
+            auto found=declared.find(uid);
+            if(found==declared.end()) {
+                found=declared.emplace(uid,device::parsePdDeclarations(builtinDeclarations(uid))).first;
+            }
+            std::int32_t slot=0;
+            const auto digits=role.substr(7);
+            if(digits.empty() || digits.size()>9 || digits.front()=='0' ||
+               !std::all_of(digits.begin(),digits.end(),[](char c){return c>='0' && c<='9';})) {
+                throw std::runtime_error("unknown built-in sample role");
+            }
+            slot=static_cast<std::int32_t>(std::stol(digits));
+            const auto& samples=found->second.samples;
+            const auto declaration=std::find_if(samples.begin(),samples.end(),[&](const auto& d){return d.id==slot;});
+            if(declaration!=samples.end()) {
+                node.slot=slot;node.name=declaration->name;
+            } else if(samples.empty() && slot==1) {
+                // A build that cannot read the declarations keeps the one slot it always had.
+                node.slot=1;node.name="Impulse";
+            } else {
+                throw std::runtime_error("unknown built-in sample role");
+            }
+            const auto old=previousSlots.find({node.deviceId,node.slot});
             if(old!=previousSlots.end() && old->second->stateHash==node.stateHash && old->second->problem.empty())node=*old->second;
             else {
                 SQLite::Statement size(db,"SELECT length(data) FROM state_blobs WHERE hash_blake3=?");size.bind(1,node.stateHash);
@@ -646,13 +684,14 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
         for (const auto& tb : b.tracks) {
             if (ta == tb) { ++shared; break; }
         }
-        for (const auto& ca : ta->clips) {
-            for (const auto& tb : b.tracks)
-                if (std::find(tb->clips.begin(), tb->clips.end(), ca) != tb->clips.end()) {
-                    ++shared;
-                    break;
-                }
-        }
+        for (const auto* clips : {&ta->clips, &ta->takeClips})
+            for (const auto& ca : *clips)
+                for (const auto& tb : b.tracks)
+                    if (std::find(tb->clips.begin(), tb->clips.end(), ca) != tb->clips.end() ||
+                        std::find(tb->takeClips.begin(), tb->takeClips.end(), ca) != tb->takeClips.end()) {
+                        ++shared;
+                        break;
+                    }
     }
     for (const auto& sa : a.sends)
         if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;

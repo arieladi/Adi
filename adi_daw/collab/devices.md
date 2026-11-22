@@ -7,7 +7,8 @@ device PRs do not conflict on one shared log file.
 
 ## FOR THE DIRECTOR
 
-**The Live readings — the one list (ADR-0248 d8, d14).** For the director's own Claude session on
+**The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
+session; 19 to 21 (the post-3-December effects) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -66,22 +67,719 @@ method); Live's files and renders stay in the director's research.
     from -48 to 0 dBFS, 500 ms each, for the static curve; a 1 kHz sine at -6 dBFS switched on for
     300 ms after silence, then off, for attack and release; an impulse of 0.5 for the delay.
 18. **Beat Repeat (ADR-0249 d7; it is built after 3 December, its reading may come now).** A fresh
-    Beat Repeat at 48 kHz, every control as shown. Then feed it a click every 1/16 at a different
-    level each, so every frame can be told apart:
-    - the capture: which frames the first repeat holds, and whether the trigger frame is its first;
-    - a Grid change while repeating, at a marked time: the first slice it affects, and where
+    Beat Repeat at 48 kHz, every control as shown. Then feed it independently seeded, uncorrelated
+    left and right markers (noise, a different seed per channel), so that every frame of each
+    channel can be told apart (the clones seat's method; `pd/devices/Beat Repeat.md` holds the same
+    items):
+    - **capture direction:** the markers immediately before and after the capture point. Does the
+      slice start at the trigger frame or end there, and does the trigger frame belong to the slice?
+    - **a Grid change while repeating,** at a marked frame: the first slice it affects, and where
       playback resumes;
-    - at 117 BPM and Grid 1/16 (a slice of 6,153.846 samples): the first frame of each of 16
-      successive repeats, to tell a carried fractional phase from per-slice rounding;
-    - a slice that wraps across two marked levels: the length and weights of the join;
-    - a locate while it repeats, including one back to the same position: which earlier frames it
-      can still play;
-    - at 20 BPM with the longest Interval and Grid: the oldest input frame it plays, in samples, at
-      44.1, 48 and 96 kHz.
+    - **fractional phase:** at 117 BPM and Grid 1/16 (a slice of 6,153.846 samples), the first frame
+      of each of 16 successive wraps, to tell a carried fractional phase from per-slice rounding;
+    - **the join:** across a wrap between two marked levels, the transition's length and weights;
+    - **locate:** while it repeats, including a jump back to the same position: which pre-locate
+      frames it can still play;
+    - **the oldest frame:** at 20 BPM with the longest Interval and Grid, the oldest input frame it
+      plays, in frames and seconds, at 44.1, 48 and 96 kHz;
+    - **the meter:** in 7/4, does 1 Bar span seven quarter notes? And what does 4 Bars do at
+      20 BPM in a long meter (shortened, or played in full)?
+    - **a held Repeat:** held for a minute, does it keep playing the same slice?
+19. **Glue Compressor (ADR-0249 d7; built after 3 December).** A fresh Glue Compressor, every control
+    as shown: Threshold, Ratio, Attack, Release (and Auto), Makeup, Range, Dry/Wet, Soft Clip.
+    - At those defaults, a 1 kHz sine in 6 dB steps from −48 to 0 dBFS, 500 ms each, for the curve
+      and its knee.
+    - A −6 dBFS burst of 2 ms and one of 10 s, each followed by silence, at Release Auto: the
+      reduction over the 2 s after each, for Auto's law.
+    - Soft Clip on, a 1 kHz sine at +6 dBFS: the output's peak and its first five harmonics.
+20. **Gate (ADR-0249 d7; built after 3 December).** A fresh Gate, every control as shown: Threshold,
+    Return, Attack, Hold, Release, Floor, Flip, Lookahead.
+    - A 1 kHz sine stepping −50 → −30 → −42 → −50 dBFS, 500 ms each: when it opens and closes
+      (the hysteresis), and the gain's shape over Attack and Release.
+    - A 10 ms burst with Hold 100 ms: when Release starts.
+    - Flip on with Floor −20 dB: the gain open and closed.
+    - Lookahead 10 ms: the delay it reports.
+21. **Limiter (ADR-0249 d7; built after 3 December).** A fresh Limiter, every control as shown: Gain,
+    Ceiling, Release (and Auto), Lookahead, Stereo/L/R/M/S, the mode.
+    - The delay it reports at each Lookahead.
+    - +12 dB white noise: the output's sample peak and true peak in each mode.
+    - Soft Clip: a 1 kHz sine at −20 dBFS, then at +6 dBFS, the output's peak and its first five
+      harmonics.
+    - M/S with a hard-left signal over the ceiling: the peak on each channel.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
+
+**A question, not a reading: how fine should the export brickwall read? (EX4; see that entry.)**
+- The true-peak limiter holds BS.1770's 4x reading at the ceiling.
+- An interpolator that shares nothing with it reads the same output higher:
+  - +0.15 dB on a quarter-rate sine at 45°, which is 4x's own miss;
+  - +1.6 dB on +12 dB white noise.
+- The choice:
+  - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
+  - or have the export's brickwall read finer than the meter, at some CPU cost.
+- Nothing changes until you say.
+
+## 2026-11-22 — the post-3-December queue: Compressor, Glue Compressor, Gate, Limiter, and Beat Repeat's contract (all land after 3 December)
+
+These five branches are win's item 3 for this week, in ADR-0249 d7's order. **Each lands after
+3 December; none is asked to land before.** Each is built, not verified: its ranges, defaults and
+laws are ADI's until a Live 12.4 reading. The readings are on the ONE list above:
+- 17 for the Compressor;
+- 19–21, new, for the Glue Compressor, Gate and Limiter;
+- 18, revised to the clones seat's method, for Beat Repeat.
+
+No parity is claimed until a reading agrees.
+
+Four review rounds covered them, each with three skeptics per finding: the cores and the contract;
+then the device commit and the fixes; then the second fixes; then the brickwall's re-plan. Every
+confirmed finding is fixed on its branch, with a check that fails on the code before the fix. The
+last round confirmed one test gap, now closed, and nothing in the code.
+
+### Compressor, a loadable built-in — lands after 3 December
+
+**PR requested:** head `devices/compressor` (3ae7ab4c), base `main`, after `devices/sampler-loadable`
+lands: it is stacked on it, and takes `devices/compressor-core` in by merge (6777df67).
+- **The device.** The DEV-22 core (`dsp/live_compressor.*`: Peak, RMS and Expand; Lin and Log
+  envelopes; lookahead 0, 1 or 10 ms, reported) becomes a built-in:
+  - the `[adi.compressor~]` external;
+  - the canonical canvas `pd/devices/Compressor.pd`, 11 controls, ids 1–11;
+  - native dispatch in the built-in host;
+  - the catalogue entry `org.adidaw.builtin.compressor` (Audio Effects, Dynamics, stereo).
+  - The catalogue now holds 22 built-ins, with its canvases index-aligned.
+- **Fixed after review: the core's recursive states decayed into stuck denormals** after about 35 s
+  of silence. Nothing on a built-in's path sets flush-to-zero, and the Compressor is never
+  suspended. Each state now settles on exactly 0 once it is negligible; a check fails on the old
+  core in all four detector and envelope pairs.
+- **Tests:**
+  - native against Pd parity, max error 0 (adi_pd_native_devices_tests 300);
+  - adi_builtin_devices_tests 231;
+  - adi_live_compressor_tests 39;
+  - the object walk, 79.
+- CTest at PD_FLOATSIZE 32 and 64 (MSVC Debug, /W4 /WX): 268/268 at both; lint clean.
+
+### Glue Compressor, the core — lands after 3 December
+
+**PR requested:** head `devices/glue-compressor` (de5c6bd2, two commits on main), base `main`.
+- **What it is.** A stereo-linked bus compressor that works in dB, with zero latency and no
+  allocation:
+  - Ratio 2, 4 or 10:1;
+  - seven Attack choices, 0.01–30 ms;
+  - six Release choices, 0.1–1.2 s, or Auto (two stages: fast from a short peak, slow from a held
+    level);
+  - Makeup, Range, Dry/Wet, and Soft Clip toward −0.5 dBFS.
+- **Fixed after review:**
+  - switching to Auto mid-release stepped the reduction down about 3.1 dB; Auto now starts from
+    the reduction as it is;
+  - the states decayed into denormals under the threshold; they now settle on exactly 0.
+- adi_glue_compressor_tests 23; plants caught. No canvas or catalogue entry yet: that waits on
+  reading 19, as the Compressor's waited on 17. CTest 268/268 at PD_FLOATSIZE 32 and 64; lint clean.
+
+### Gate, the core — lands after 3 December
+
+**PR requested:** head `devices/live-gate` (18cf40a3, two commits on main), base `main`.
+- **What it is.** A gate linked on the louder channel:
+  - it opens at Threshold and closes below Threshold less Return (the hysteresis), after Hold;
+  - Attack and Release are one-poles;
+  - Floor's low end is silence;
+  - Flip;
+  - Lookahead (0, 1 or 10 ms, reported) delays the audio, never the detector.
+- **Fixed after review: Flip mixed the smoothed gain with an unsmoothed Floor.** Moving Floor gave
+  +6 dB, or silence for a whole Release. The one-pole now runs on the gate's opening (0 to 1), so
+  the gain never leaves Floor to unity, and the law at a fixed Floor is unchanged.
+- adi_live_gate_tests 49; plants caught. CTest 268/268 at PD_FLOATSIZE 32 and 268/268 at 64; lint
+  clean.
+
+### Limiter, Live's, and a change to the brickwall — lands after 3 December
+
+**PR requested:** head `devices/live-limiter` (3a3bce5f), base `main`, after
+`devices/limiter-offline` lands: it is stacked on it.
+- **What it is.** Live's Limiter on ADI's lookahead brickwall:
+  - Gain, Ceiling, Release;
+  - lookahead 1.5, 3 or 6 ms, reported, with 10 samples more in True Peak mode at 48 kHz;
+  - Link: Stereo, L/R or M/S;
+  - Mode: Standard, Soft Clip or True Peak.
+  - Under the ceiling, every mode and link passes the input delayed, bit for bit.
+- **Fixed after review:**
+  - **A Link change spliced in an idle brickwall's stale or empty delay.** Each link now has its
+    own brickwalls, mixed by weights that sum to one. A new path waits a latency while its delay
+    fills, then rises over at least another while the others give way. A change at any point of a
+    fade mixes on from wherever the output is: there is no step, and the ceiling holds.
+  - **A lowered Ceiling let the samples already in the delay leave above it.** A clamp overshoots
+    between the samples; a scale attenuates twice and then steps. So the fix is in the brickwall
+    (`dsp/limiter.*`, LookaheadLimiter), and **win, this touches the export's brickwall too**:
+    - the detector keeps each step's level, and the hold is the ceiling over the window's loudest;
+      it is the same value as before, and adi_dsp_tests' 433 checks pass unchanged;
+    - a lowered ceiling re-plans the gains already set, cutting each boxcar entry to the new
+      ceiling over the loudest sample it covers. The guarantee then holds exactly from the next
+      sample;
+    - quiet material is untouched, the cost is O(lookahead) once per lowering, and nothing is
+      allocated.
+  - **In M/S, a NaN on one channel silenced the other.** Each channel is now screened before the
+    encode.
+- adi_live_limiter_tests 58; each fix's checks fail on the code before it; plants caught. CTest 268/268
+  at PD_FLOATSIZE 32 and 64; lint clean.
+
+### Beat Repeat, the contract — lands after 3 December
+
+**PR requested:** head `devices/beat-repeat-contract` (e243ab13, three commits on main), base
+`main`. Documentation only: `pd/devices/Beat Repeat.md`.
+- **What it fixes:**
+  - the UID, and 17 control ids, for good (names, ranges and defaults come from reading 18);
+  - the core's design;
+  - the clones seat's Repeat Cell test method: per-frame markers and a frame oracle;
+  - ADR-0249 d7's tests;
+  - reading 18's items.
+- **After review:**
+  - the slice is copied at capture, so a repeat held by Repeat plays the same slice to the end;
+  - the input history holds one Grid at most;
+  - the reach is stated, since a bar follows the meter: 16 quarter notes at 20 BPM, 48 s, about
+    37 MB a buffer at 96 kHz. A longer Grid is shortened from the trigger until reading 18 says
+    otherwise.
+- **For the clones seat: one history kernel with ADI-Shaper's Time stage?** The answer turns on
+  reading 18's capture direction.
+  - **If the slice ends at the trigger, yes.** Beat Repeat keeps a backward ring of one Grid. One
+    kernel, with the capacity set by each caller, would share the ring's write, its valid count,
+    and a whole-frame read at an integer age (Beat Repeat's copy at capture).
+    - The fractional read is Time's own; Beat Repeat's read head reads its slice copy.
+    - Each caller keeps its oldest-frame rule, its locate policy and its slice storage.
+  - **If the slice starts at the trigger, no.** There is no input ring, so nothing to share.
+  - **Your three conditions are set aside on purpose; none of them decides it.**
+    - The oldest frame and the locate retention are each caller's own policy.
+    - The write source is already fixed: ADR-0249 d7 makes the history the input.
+  - The kernel would live in `dsp/` under this lane, with you reviewing the hunk Time takes.
+
+## 2026-11-22 — the 3 December performance pass: every built-in's callback at 64 and 128 frames; Hybrid Reverb no longer spikes
+
+**PR requested:** head `devices/perf-pass` (920fac00, two commits on 0ea10b8e), base `main`. It adds
+a new suite, `adi_builtin_realtime_tests`, which builds with `-DADI_ACCEPTANCE=ON` and runs under
+`ctest -L acceptance` or `-L performance`. It also changes one built-in, Hybrid Reverb.
+
+- **What the suite measures, at 64 and 128 frames.**
+  - **Each built-in alone, all 20.** Noise goes in, the first parameter moves every block, and an
+    instrument gets a note every 100 ms. Every declared sample slot is filled (Hybrid Reverb gets a
+    5 s impulse). ADI-Shaper runs working: every stage on, three bands, moving curves. At its
+    defaults it would only copy its input.
+  - **WTS-01's project.** It is built through the app's own document calls: OneShot with a sample on
+    an armed MIDI track, then Saturator, EQ Eight, Reverb, Delay and ADI-Shaper, worked through the
+    device strip's gestures. It plays from the start, with live notes and the app's timer.
+  - **A breakdown,** from an empty New project up the chain, one device at a time.
+  - **A contended pass.** The callback runs on its own thread, paced like a device, while the timer
+    and a control's gestures run on another, as in the app.
+- **What it checks.**
+  - **Allocation.** No allocation in any callback, from the first one: every `operator new` form,
+    plus the CRT hook (`malloc` too) in an MSVC debug build.
+  - **Stalls.** No callback over half the deadline that recurs block for block over two runs of
+    the same input. That is a device's own stall (a first touch, a page, a lock), not the
+    machine's preemption.
+  - **Cost.** The p99 of a built-in alone under 15 % of the deadline (Hybrid Reverb 25 %, stated
+    below), and the whole project's under 50 %.
+  - **Contention.** Under contention, every raw callback inside the deadline.
+  - Timings are judged in an optimised build only; Debug checks allocations.
+- **Measured** (RelWithDebInfo on this machine).
+  - **No built-in allocates, locks or stalls.** The built-ins' audio paths were also audited for
+    locks; the only mutex is pd_builtins' registration table.
+  - **Alone:**
+    - the heaviest by p99 are Saturator (7–10 %), Vocoder (7–9 %), Reverb (6–8 %), Multiband
+      Dynamics (5–6 %) and ADI-Shaper working (4 %);
+    - everything else is under 4 %.
+  - **The project:**
+    - p99 is 31–36 % of the deadline at both sizes, recurring worst 456–880 µs;
+    - an empty New project already takes 90–150 µs per 64-frame callback, 11–14 % of the deadline.
+      That is the engine's own share.
+  - **Contended:** the worst callback near a gesture's commit is no worse than one apart from it.
+    All four variants are alike, so no lock shows.
+- **Fixed: Hybrid Reverb spiked one callback in four.**
+  - **The cause.** Its uniformly partitioned convolution did the whole multiply-accumulate over
+    every partition at the 256-sample boundary. With a 5 s impulse (937 partitions), p99 was 634 µs
+    at 64 frames (48 % of the deadline), with a recurring worst of 838 µs.
+  - **The fix.** The next block's older partitions are now summed a share at a time over the 256
+    samples before it, on a schedule set by the sample position alone. The boundary keeps the
+    newest partition and the FFTs.
+  - **Now:** recurring worst 231 µs.
+  - Its tests are unchanged and pass: exact against direct convolution, bit-identical across block
+    sizes, Pd parity.
+- **Left, for win to place:**
+  - **Hybrid Reverb's steady cost.** With a 5 s impulse, p99 is still 17–20 % of the deadline at an
+    even load. Non-uniform partitioning would cut it; that is a convolution redesign, after
+    3 December.
+  - **For the engine seat:** an empty New project's 90–150 µs per 64-frame callback is the largest
+    share of the project's cost. It is worth profiling before 3 December if the session runs at
+    64 frames.
+- **Reviewed:** three dimensions with three skeptics per finding. Five confirmed gaps in the first
+  version of the suite are fixed in the second commit: ADI-Shaper timed as a copy, missing samples,
+  warm-up allocations uncounted, a project that never played, and contention untested.
+- CTest 267/267 (MSVC Debug, /W4 /WX); the suite passes in Debug (70 checks) and RelWithDebInfo
+  (156).
+
+## 2026-11-20, late — for win: the twelve requested branches together on main, and where the queue stands
+
+**Together.** On 9b35613a (after #697 and #699), all 12 open requests merge cleanly onto main and
+with one another, in this log's order:
+1. `sampler-loadable`
+2. `df-e57` (with DF-E61)
+3. `pd-exact-position`
+4. `dev09-gaps`
+5. `loudness-robust`
+6. `limiter-offline`
+7. `loudness-reference`
+8. `dsp-provenance`
+9. `loudness-bench`
+10. `pd-ar8`
+11. `pd-fuzz`
+12. `loudness-ffmpeg`
+
+The local union, built and never pushed, passes:
+- CTest 268/268 at PD_FLOATSIZE 32 and 64 (MSVC Debug, /W4 /WX);
+- under ASan: Pd engine 702, object walk 97, DSP 433, loudness 87, built-in devices 244.
+
+**The five cross-platform patterns** (win.md, 20 November). There is no GCC or Clang compiler on
+this machine, so every changed C++ file on all 12 branches went through Clang's own front end
+instead:
+- clang-tidy 19 at 64 bit, with `-Wmost -Wextra -Wconversion -Wsign-conversion -Wshadow
+  -Wmisleading-indentation -Wunused-function`;
+- plus a textual check for a second statement after an unbraced if/for body and for
+  `decltype(&fclose)`.
+All clean. The one textual hit was a single statement after a `for` header.
+
+**The queue (your order of 20 November).** Done, as far as this lane can take it before rulings or
+readings:
+- the Sampler (option 1);
+- DF-E57, with DF-E61;
+- the song-position field;
+- this lane's DEFERRED rows;
+- the non-new-effect rows of ADR-0248 d8:
+  - DEV-09: gaps, AR8, the PD2 fuzz;
+  - DEV-28: robustness, the Tech 3341 reference, the benchmark, provenance, LD6;
+  - EX4/LD5: the devices half.
+
+What waits:
+- **On win's rulings:**
+  - the AR8 cross-instance dropout, now measured at about 10 ms per large open;
+  - runaway loops;
+  - the definition of "LRA not yet stable";
+  - whether the export brickwall should read finer than 4x (also under FOR THE DIRECTOR).
+- **On win (.github):**
+  - an ASan leg;
+  - libebur128's pin and leg;
+  - an ffmpeg leg with `ADI_REQUIRE_ORACLES=1`.
+- **On engine-win:** the export half of EX4/LD5.
+- **On the director's session:**
+  - readings 1–18;
+  - the Release run of `adi_block_benchmark --loudness`.
+- **After 3 December:** the new effects (the Compressor core waits on its branch), Auto Shift after
+  Tuner, External Audio Effect, Spectrum, Auto Pan-Tremolo, and the LD5/DEV-22 Limiter link.
+
+## 2026-11-20 — DEV-28 / LD6: the one loudness meter against ffmpeg's ebur128 filter, the outside check on its 10 Hz range
+
+**PR requested:** head `devices/loudness-ffmpeg` (a718db94, two commits on d0af0e15), base `main`.
+It adds one test, `adi_loudness_ffmpeg_tests`, and its lines in `cmake/devices/loudness.cmake`.
+
+- **Why ffmpeg, beside libebur128.** libebur128 (LD3) hops the short-term window at 1 Hz, so its
+  loudness range is not Tech 3342's. ffmpeg's `ebur128` filter hops it at 10 Hz, as ADI's meter
+  does. It is the outside check on the 10 Hz LRA.
+- **How it measures.**
+  - Each signal is written as a 32-bit float WAV, with byte order fixed.
+  - The ffmpeg program on PATH runs `ebur128=metadata=1`. It is test-only; nothing of it is linked.
+  - ADI's I and LRA are held to the filter's last `lavfi.r128.I` and `.LRA`.
+  - Only at 48 kHz, because the filter resamples anything else.
+  - Signals: Tech 3342 cases 1–4, a speech-like noise programme with pauses, and a tone between
+    silences.
+- **Measured.** The range agrees to 0.001 LU on every case, and I to between 0.005 and 0.007 LU.
+  The suite holds them to 0.01 and 0.02 LU; the plan asks for 0.1.
+- **Plant:** a 94th percentile in ADI's range fails the speech-like case.
+- **Without ffmpeg.** The suite exits 77, which CTest reports as Skipped, not Passed.
+  `ADI_REQUIRE_ORACLES=1` turns that into a failure. Both paths were checked.
+- **Reviewed** on three dimensions with three skeptics per finding. One defect was confirmed: ffmpeg
+  ran without `-nostdin`. It is fixed in the second commit, along with the skip code, a guard
+  against a throw, and comments that no longer imply a CI leg exists.
+- CTest 268/268 at PD_FLOATSIZE 32 and 64. The new suite takes about 15 s.
+- **For win (.github):** no runner image ships ffmpeg, so today the check is skipped everywhere.
+  One Linux leg needs `apt-get install -y ffmpeg` and `ADI_REQUIRE_ORACLES=1` on its ctest step.
+
+## 2026-11-20 — DEV-09 PD2: a seeded patch-text fuzz, and the two Pd faults it and its review found
+
+**PR requested:** head `devices/pd-fuzz` (56148ce7, two commits), stacked on `devices/pd-ar8`, base
+`main`.
+
+- **The fuzz** (plugdata's PD2 scenarios), in `adi_pd_object_walk_tests`.
+  - Every shipped patch is mutated: bytes cut, hostile tokens put in, lines duplicated, swapped or
+    cut short.
+  - It uses a seeded generator of our own over a sorted, LF-normalised corpus, so the mutants are
+    the same on every platform.
+  - Each mutant goes through the walk, which must return and name every refusal by class and box.
+  - Each mutant the walk allows is opened in Pd, prepared and run for 16 blocks, as DEV-10's loader
+    would. It must run, or fail with a message; never crash or hang.
+- **Found by the fuzz: a crash.**
+  - The 12th mutant put `#X connect 8 0 1 0` on a canvas with no objects.
+  - Pd's `canvas_connect` walked off its empty object list (NULL `src->g_next`, in g_editor.c) and
+    took the process down.
+- **Found by the review: a hang.**
+  - A box that failed to create (`[osc~ foo]`) is given dummy ports up to a connection's port
+    number, and that number comes from the patch unbounded.
+  - `#X connect 0 100000000 1 0` made Pd build 1e8 outlets, walking the list for each one. That
+    hangs, and once memory runs out it writes through NULL.
+- **Both are now fenced** in the g_editor.c overlay, and fail as Pd's own bad connections do, by
+  name on the console:
+  - an empty canvas;
+  - a negative index;
+  - a port past 1024 on a box that failed to create.
+- **Tests:** `adi_pd_object_walk_tests` 97.
+  - The crash case fails before the fix (0xC0000005). The port case has a watchdog: with the bound
+    removed, the open hangs.
+  - The fuzz: 600 mutants walked, 150 opened. Everything is clean under ASan, here and on two more
+    seeds at 4000 mutants and 1500 opens each.
+  - CTest 267/267 at PD_FLOATSIZE 32 and 64.
+- **Reviewed** on three dimensions with three skeptics per finding. All four confirmed findings
+  are fixed in the second commit: the hang, the corpus order, line endings, and a check that could
+  not fail.
+- **For win.** The walk does not read `#X connect` records or object arguments. Both are Pd's to
+  survive, and the fuzz now holds Pd to that.
+- **Left on PD2:** the state round-trip scenario. It comes with DEV-10's user patches, which are
+  what would carry a patch's state.
+
+## 2026-11-20 — DEV-09 AR8: nothing made inside a tick waits on another Pd device; the cross-instance dropout measured
+
+**PR requested:** head `devices/pd-ar8` (bc48d53f, two commits), stacked on `devices/dev09-gaps`
+(which shares its overlay and test files), base `main`.
+
+- **The defect** (gap audit item 3). For an object Pd does not know, `new_anything` swaps the
+  tick's read lock for Pd's process-wide write lock (`pd_globallock`) and searches the disk for an
+  abstraction. Dynamic patching can do that inside a tick: a `[delay]` firing `[; pd-x.pd obj …(`, or
+  a parameter's message. Then the audio thread waits on every other Pd device's tick and on every
+  open editor.
+  - In the test before the fix, only 3 of 40 segments returned while another device's editor held
+    its instance. The rest waited out its 5 s hold.
+- **The fix.** `LibPdEngine::lockedTick` now marks its ticks, using a thread-local flag in the
+  m_class.c overlay. Inside a marked tick, these are refused by name ("ADI refused creating 'x'
+  while audio runs"):
+  - an unknown object (`new_anything`);
+  - an abstraction whose name is already registered (`do_create_abstraction`, in the s_loader.c
+    overlay), which would otherwise be read from disk on the audio thread. That includes a
+    `[clone]` resize.
+  - The box stays broken, as for any object Pd cannot create, and `pd_newest` is cleared so
+    nothing stale is taken for it.
+  - Opening a patch, abstractions included, and an editor's own changes are unchanged.
+- **The cross-instance dropout** (item 1), **measured for win's ruling.**
+  - Another device opened a 1000-object patch 20 times, about 30 ms an open.
+  - The longest unbroken run of skipped ticks on this device was 7–10 ms of wall time across two
+    runs. That is the write-locked part of the load (`libpd_openfile`).
+  - The test checks, without a clock, that this device's ticks are skipped and its segments
+    return while the other is still opening, and that nothing skips before or after.
+  - **So the ruling's question is concrete:** opening a large Pd patch silences every other Pd
+    device for roughly 10 ms. Either record that in the row, or fund an overlay that does not hold
+    the write lock across `glob_evalfile`.
+- **Tests:** `adi_pd_engine_tests` 676, written first (2 failures before).
+  - Plants, each caught: tick not marked (2 failures); abstraction fence removed (1).
+  - CTest 267/267 at PD_FLOATSIZE 32 and 64; the Pd engine tests also pass under ASan.
+- **Reviewed** on four dimensions with three skeptics per finding: Pd semantics, locking, tests,
+  portability. Every finding was refuted as a defect. Two fair points are fixed in the second
+  commit:
+  - the registered-abstraction path, so whether a creation is refused no longer depends on what
+    any device loaded before;
+  - an actual check of "never waits".
+- **Left on DEV-09 for this lane:** the PD2 fuzz, now done (the entry above); its round trip comes with DEV-10.
+- **Still awaiting win:** the runaway-loop ruling, and the ASan CI leg.
+
+## 2026-11-20 — DEV-28: the one loudness meter's cost per callback, measured by the block benchmark
+
+**PR requested:** head `devices/loudness-bench` (82397f06, two commits on f45c6f4a), base `main`.
+One file, `tools/benchmark_blocks.cpp`, which is built only with `ADI_BUILD_BENCHMARKS=ON`.
+
+- **What it adds.** `adi_block_benchmark --loudness` times the one meter, `dsp::LoudnessMeter`, at
+  steady state, per `process()` call:
+  - true peak on, at every block size from 32 to 4096, in stereo and in 5.1 with BS.1770's weights;
+  - p50, p99 and max, plus p99 as a percentage of the callback's deadline.
+  - It is the meter Main reads once N13 is rewired; until then Main runs its own.
+  - 3.1 s of tone run untimed first, so every window, the maxima and the range histogram are
+    already working.
+  - A row is published only if the tone reads as itself: momentary, short-term and true peak
+    correct, and the range histogram in use.
+  - It takes only `--iterations`.
+- **A local Debug reading, not the measurement.** p99 is about 3.5–5 % of the deadline in stereo and
+  10–12 % in 5.1.
+- **Reviewed** on two dimensions with three skeptics per finding. One defect was confirmed: the
+  first version timed a fresh meter, so the short-term window and LRA never ran in the small-block
+  rows. It is fixed in the second commit, along with two points from refuted findings: the meter's
+  name, and the option guard.
+- **For the director's session (an ADI reading, nothing of Live's).** In a Release build with
+  `-DADI_BUILD_BENCHMARKS=ON`, run `adi_block_benchmark --loudness` and bring back its CSV. That is
+  ADR-0203 d7's "measured" figure for the always-on meter.
+
+## 2026-11-20 — DEV-28 provenance: libebur128 credited for the K-weighting; what the meter was written from (LD1)
+
+**PR requested:** head `devices/dsp-provenance` (ba851798, one commit on f45c6f4a), base `main`.
+Comments only.
+
+- **libebur128.** `AutoGain::kShelf` and `kHighPass`, the meter's K-weighting, use libebur128's
+  analog prototypes, with no credit until now.
+  - All six constants match `ebur128.c`'s `ebur128_init_filter` at v1.2.6 (67b33abe): f0, G and
+    Q for each stage, and the shelf's Vb exponent.
+  - So do the bilinear-transform formulas.
+  - The source now credits it and carries libebur128's MIT notice, as its licence asks for a
+    substantial portion. The notice was checked word for word against its COPYING.
+- **LD1.** `loudness.hpp` now says the meter was written here from BS.1770-4 and Tech 3341/3342.
+  LD1 named FilmCraft's meter as the base, but its source was not on this machine and none of it is
+  in the meter, so no notice is carried for it.
+- **For win:**
+  - an EXTERNAL-CODE row for libebur128 (MIT), covering the formulas in `auto_gain.cpp` now, and
+    the test-only oracle when LD3's pin lands;
+  - whether PLAN's "Code taken: FilmCraft's loudness meter as the base (LD1)" should read
+    "written from the standards; FilmCraft's meter not used".
+- CTest 267/267 at PD_FLOATSIZE 32 and 64.
+
+## 2026-11-20 — DEV-28: Tech 3341's true-peak cases held to an independent reference, the maxima to the reference's 10 ms grid
+
+**PR requested:** head `devices/loudness-reference` (c011d274). It stands on `devices/loudness-robust`
+and merges `devices/limiter-offline` (6aede01d), so **win lands it after both of those**. Tests
+only; no product code changes.
+
+- **The problem.** This is the DEV-28 gap audit's third devices item. The meter passed Tech 3341 on
+  the EBU's tolerances alone: +0.2/−0.4 dB for true peak and ±0.1 for the maxima. That let a true
+  peak reading 0.15 dB low, or a maximum 0.05 LU high, pass.
+- **The shared reference.** The independent true peak moves into a shared test header,
+  `tests/true_peak_reference.hpp`, used by both suites. It now skips a channel shorter than its
+  kernel instead of reading out of bounds.
+- **Cases 15 to 23, true peak.**
+  - **The synthesis first.** The reference reads each synthesized signal's own crest:
+    - cases 15 to 19 come within 0.01 dB of the sine's crest;
+    - cases 20 to 23 read −0.077 dBTP. That is what the 511-tap low-pass leaves of the EBU's 0.0
+      design value.
+  - **Then the meter, held to that crest.** It may never read more than 0.01 dB above it, and may
+    read below it only by its own bound:
+    - **cases 15 to 19:** the 4x grid's miss at each sine's known crest phase. That is 0 for
+      case 15, whose crests fall on samples; 0.168 dB for 16 and 19; 0.075 for 17; and 0.042
+      for 18.
+    - **cases 20 to 23:** the measured miss, rounded up to 0.09 dB (measured 0.013, 0.052, 0.013
+      and 0.073). The joins at the burst's ends reach the low-pass's edge, where no sine's bound
+      applies.
+  - Measured: case 16 reads −6.188 against −6.021, and case 19 reads +2.817 against +2.984.
+- **Cases 10, 11, 13 and 14, the maxima.**
+  - The brute-force reference now keeps every 10 ms sub-block's M and S. Its window means come from
+    running sums, so the suite takes the same time as before (about 60 s in Debug).
+  - The meter's maxima, file-based and live, are held within 0.001 LU of the reference's largest.
+    Measured: 0.000000.
+- **Plants:**
+  - true peak 0.15 dB low: 9 failures, every one in the new checks;
+  - maxima updated only every 100 ms: 4;
+  - max S 0.05 LU high: 2, only in the new checks.
+- **Totals:** `adi_loudness_tests` 87, `adi_dsp_tests` 433. CTest 267/267 at PD_FLOATSIZE 32 and 64
+  (MSVC Debug, /W4 /WX).
+- **Reviewed** on four dimensions (math, test validity, portability, merge structure) with three
+  skeptics per finding. All five findings were refuted as defects. Three were fair points and are
+  fixed in the review commit:
+  - per-case bounds in place of the worst case;
+  - an honest, empirical bound for cases 20 to 23;
+  - the header's 0.007 dB.
+
+**DEV-28's devices items left:**
+- the "LRA not yet stable" flag. **For win:** its definition needs a ruling. One option is fewer
+  than N gated short-term values; another is less than T seconds since reset.
+- a loudness case in the block benchmark: done (the entry above);
+- the ffmpeg LRA oracle: done (LD6, the entry above);
+- the provenance comments: done (the entry above).
+
+## 2026-11-20 — DF-E61: a built-in's stored value that went A to B and back to A is heard over the lane
+
+**PR requested:** head `devices/df-e57` (25dbda75), now three commits on dccb6a55: DF-E57's, and
+then DF-E61's fix and review, as win asked ("with DF-E57"). It merges cleanly with
+`devices/sampler-loadable`.
+
+- **The defect** (from the outside review). `BuiltinDevice` re-sent a parameter only when its stored
+  target differed from the value it had last applied. Automation moves the value in force but not
+  that record. So if the stored value went A to B and back to A with no audio callback between,
+  the change was never applied, and the lane's value kept playing. Ways to do that: two clicks, an
+  Undo and a Redo, or a knob change followed by a state holding the old value. In the test: stored
+  +3 dB, heard +6 dB.
+- **The fix: each parameter counts its edits.**
+  - The message side exchanges the stored value, and counts a change only when the value really
+    changed.
+  - The audio thread applies any parameter whose count has moved since its last scan. It reads
+    the count before the value, so an edit landing in between is applied again on the next scan,
+    never lost.
+  - Writing the value already stored is no edit, and leaves the lane's value in force: a preset
+    reload, or a drag that ends where it began.
+  - A new format still restarts from the stored values.
+- **Not the DEFERRED row's alternative** of comparing with the value in force. That would snap every
+  automated parameter back to its stored value whenever any other parameter is edited. A plant of
+  it fails the "unchanged write" check.
+- **Tests** (written first; 2 failures before the fix). `adi_builtin_devices_tests` 183, on
+  Utility's Gain with a lane in force. The cases:
+  - A→B→A through setParam;
+  - setParam then loadState;
+  - two states alone;
+  - an unchanged write;
+  - a new sample rate.
+  - Plants, each caught: every write counted as an edit; prepare not forced; compare with the
+    value in force; loadState bypassing the count.
+  - CTest 267/267 at PD_FLOATSIZE 32 and 64.
+- **Reviewed** on four dimensions with three skeptics per finding: concurrency, semantics, tests and
+  portability. The one finding was refuted as a defect; its point, that the loadState half had no
+  case of its own, is fixed in the review commit.
+
+## 2026-11-20 — EX4: the brickwall as an offline stage; non-finite input is silence; the 4x gap measured
+
+**PR requested:** head `devices/limiter-offline` (11f539f7, two commits on 7510acd2), base `main`.
+This is the devices half of EX4/LD5 that the gap audit left open. With it, the DSP half is done.
+The export half is engine-win's (below).
+
+- **`LookaheadLimiter::processOffline()`** runs a whole programme.
+  - The latency is trimmed from the front and silence is pushed through the back, so the output
+    has the input's length and lines up with it, sample for sample.
+  - Below the ceiling the output is the input, bit for bit, in float and double. It is exactly
+    `process()` over the input followed by `latencySamples()` of silence, with the first
+    `latencySamples()` outputs dropped.
+  - It works in place, and each programme starts from silence.
+  - It allocates one block of scratch, so it is for the export worker, not the audio thread.
+- **Non-finite input.** A NaN or an infinity is now read as silence, by the detector and in the
+  delayed audio alike. It cannot leave as a non-finite sample or poison the gain, and the output is
+  exactly that of the same programme with zeros there. Finite input is unchanged, bit for bit.
+- **Tests** (`adi_dsp_tests` 433; the tests did not compile before the code existed):
+  - offline length and alignment at lookahead 0, 64 and 288 in both modes, bit for bit against
+    streaming, including an over on the very last sample, which is flushed rather than cut;
+  - true peak in float, and at 32 kHz (6x) and 22.05 kHz (8x);
+  - in place, mono, and six linked channels;
+  - blocks of NaN and ±inf.
+  - Plants, each caught: no trim (26 failures), no flush (26), no reset (1), NaN let through (8), NaN
+    caught in detection only (8).
+  - CTest 267/267 at PD_FLOATSIZE 32 and 64 (MSVC Debug, /W4 /WX).
+  - **Reviewed** on five dimensions with three skeptics per finding: offline correctness, the audio
+    path, test validity, portability, and the contract. Every finding was refuted as a defect. The
+    five that were fair points on wording or coverage are fixed in the second commit:
+    - the header's allocation claim;
+    - the true-peak residue paragraph, which now says its numbers are the Annex's readings;
+    - a stale comment;
+    - the noise figure, now called a lower bound;
+    - the reference, which now also reads 6x and 8x.
+- **The independent reference, and what it found (FOR THE DIRECTOR, via win).** The audit noted
+  that the ceiling tests read the output with the limiter's own interpolator. The new test reads it
+  with one that shares nothing: a Kaiser-windowed sinc, ±48 samples, read at 32 points per interval,
+  and checked first to within 0.01 dB on sines whose crest is known.
+  - On the Annex's 4x reading, the limiter holds the ceiling: +0.0002 dB at most.
+  - On the reference, the same output reads higher:
+    - **+0.15 dB** on the quarter-rate sine at 45°. Its crest falls midway between the 4x
+      interpolator's points (the odd eighths of each interval), which is 4x's own analytic miss,
+      cos(π/16) = 0.168 dB.
+    - **+1.6 dB** on +12 dB white noise, near the Nyquist frequency, where the 16 taps roll off.
+    - +0.14 dB on full-scale doublets, and nothing on a 0.23 fs tone.
+    - At 32 kHz (6x) and 22.05 kHz (8x) the read points are finer, so the quarter-rate figure
+      shrinks to +0.06 and +0.04 dB. Noise stays at +1.6 dB, and doublets read +0.24 and +0.11 dB.
+  - The reference rolls off near the Nyquist frequency too, so the noise figure is a lower bound.
+  - The test bounds each case at its measured value, so the gap cannot grow unseen.
+  - **The question:** should the export's brickwall detect finer than BS.1770's 4x, for example 8x,
+    or 4x with points at the samples and the halves? Then an ideal reconstruction would also stay
+    under the ceiling, at some CPU cost and a measurement that no longer matches the meter. Or does
+    the −1 dBTP ceiling's own margin cover it, as delivery specs assume? This lane will not change
+    the shared interpolator without a ruling.
+- **For engine-win (the export half, all after 3 December):**
+  - **The brickwall stage.** Add `Normalization.brickwall` (default off) and call
+    `processOffline()` inside `finish()` on the gained double capture, before dither and quantize.
+    The existing length check then holds with the brickwall on.
+  - **The Peak-mode guard.** In Peak mode the brickwall never acts.
+  - **The refine loop.** At most 4 trials, steps clamped to ±3 dB, and a stop when LUFS changes by
+    under 0.02 LU. The encoded TP check stays the final gate.
+  - **Measurement.** Measure on `dsp::LoudnessMeter`, with `finish()` replacing the 16-zero
+    padding.
+  - **Tests and merge order.** Write a byte-identical test of brickwall on against off for a signal
+    under the ceiling, and land after or with 7a9fe563.
+- **Left for this lane:** the LD5/DEV-22 link (the Limiter device exposing `setTruePeak`) comes when
+  the Limiter device is built, after 3 December.
+
+## 2026-11-20 — DEV-28: the loudness meter survives a NaN and reads the programme's last true peak
+
+**PR requested:** head `devices/loudness-robust` (cda11168, one commit on 7510acd2), base `main`.
+
+A gap audit of DEV-28 against main found that two things the row needs were missing. Both are
+needed before the one meter replaces Main's N13, which already guards the first.
+
+- **Non-finite input.**
+  - The problem: `LoudnessMeter::run()` had no guard. One NaN poisoned the K-weighting state, so M
+    and S read NaN, and I and LRA froze until `reset()`.
+  - The fix: a non-finite sample is now read as silence, and a finite one is held to ±10⁶
+    (+120 dBFS). The true-peak interpolator already guards its own input.
+  - Test: a block of NaN measures exactly like a block of zeros, for M, S, I and LRA. A block of
+    3·10³⁸ leaves every reading finite.
+- **The end of a programme.**
+  - The problem: the interpolator answers 8 samples late, so the last samples' overs between the
+    samples were never read. Feeding zeros through `process()` to reach them lets the padding
+    complete a sub-block and reach I, which the contract forbids.
+  - The fix: `finish()` runs the interpolator over its tail with silence and touches no loudness
+    state. It allocates nothing.
+  - Test: a pair of opposite full-scale steps in the last 4 samples reads +0.1 dB or more with
+    `finish()`, the same as padding gives. I, M and S are bit-identical with and without it.
+- **Tests:** `adi_loudness_tests` 67, two of them failing before the fix. CTest 267/267 (MSVC
+  Debug, /W4 /WX).
+
+**What the audit leaves open.** All of it is after 3 December; nothing in DEV-28 blocks that date,
+because `export.normalize` defaults to off.
+
+- **Devices (this lane, in order):**
+  - the "LRA not yet stable" flag in `Readings`, with its definition;
+  - Tech 3341 cases 20 to 23 held to an independent reference. The reference is now in
+    `test_dsp.cpp` (the EX4 entry above), and cases 13 and 14 can be tightened against it;
+  - a loudness case in `tools/benchmark_blocks.cpp`;
+  - the ffmpeg LRA oracle behind `ADI_REQUIRE_ORACLES`;
+  - provenance comments: libebur128's K-weighting constants in `auto_gain.cpp`, and a statement on
+    LD1.
+- **Engine seat:**
+  - rewire N13 (Main's meter) onto `dsp::LoudnessMeter`, with the LD7 snapshot and its validity
+    flags;
+  - rewire Auto Gain Stage's LUFS mode, and rule on what a selection under 400 ms reads.
+- **engine-win:** measure export normalization with `dsp::LoudnessMeter`, using `finish()` instead
+  of the 16-zero padding.
+- **win:**
+  - pin libebur128 v1.2.6 (67b33abe, test-only), with its EXTERNAL-CODE row, and turn on one CI
+    leg with `ADI_REQUIRE_LOUDNESS_ORACLE=ON`;
+  - strike the XC-46 loan lines in LANES.
+
+## 2026-11-20 — DEV-09: `[; pd compatibility(` is fenced, and the object walk refuses a class named by a path
+
+**PR requested:** head `devices/dev09-gaps` (43e372f8, one commit on 7510acd2), base `main`.
+
+A gap audit of DEV-09 against main found two holes that this lane could close.
+
+- **`compatibility` was not fenced.** It sets `pd_compatibilitylevel`, one process-wide integer
+  that every Pd instance reads, so one patch changed how all the others behave. In the test's
+  unfixed run the level was left at 47. The selector now joins the m_glob fence's refused
+  selectors, by name (`pd_loader_fix.cmake`).
+- **PD4's walk took a path as a class name.** Classes like `[/tmp/x]`, `[../x]`, `[C:/x]` and
+  `[\\server\x]` were taken as an ordinary unknown or, worse, as a stored abstraction of that
+  name.
+  - They are now refused as `pd.path_named_class`, named by box.
+  - A class the build makes is checked first, because `[/]` is division; the template suite
+    caught that.
+  - A plain subfolder name such as `[mylib/voice]` stays an ordinary name, resolved against what
+    is stored.
+- **Tests:** `adi_pd_engine_tests` 668 and `adi_pd_object_walk_tests` 92, written first; a plant
+  gave 12 failures. CTest 267/267.
+
+**What the audit leaves open.**
+
+- **For win, two rulings** (also under FOR THE DIRECTOR if win wants the director's word):
+  1. **The cross-instance dropout (AR8).**
+     - The libpd pin holds a global write lock while a patch opens or closes
+       (`z_libpd.c:141-149`, `s_inter.c:1980-2034`), so opening any Pd device silences every other
+       Pd device for that long.
+     - `new_anything` also takes a blocking write lock inside a tick when a patch creates an
+       unknown class at run time. That breaks "the audio thread never waits".
+     - The choice: record the dropout in the row, or open without holding the lock across
+       `glob_evalfile`, which needs a delicate overlay.
+     - Either way, this lane will write the AR8 test: A renders while B opens a 200-object patch,
+       and the test reports A's skipped ticks and the length of the silence.
+  2. **Runaway loops.** Does DEV-09's "a patch cannot stall ADI" cover an unbounded `[until]` on the
+     audio thread? If it does, this lane proposes an overlay that caps `[until]`'s unbounded mode
+     with a named refusal, or a per-tick watchdog that marks the device failed.
+- **win (.github):** an ASan leg (AR18) that runs at least `adi_pd_engine_tests`. This lane's
+  ASan build passes locally.
+- **Devices, after 3 December:**
+  - a seeded patch-text fuzz through `walkPdObjects` and `LibPdEngine::open`, and a state round
+    trip (PD2);
+  - wiring the walk into the user-patch loader when DEV-10 comes.
+- **win (docs):**
+  - DEV-09's "On main" line: AR7, AR17 and #173 are met; AR8 and AR18 are partial.
+  - Close DF-E36.
+  - Add DEFERRED rows for the AR8 test, the ASan leg, PD2 and the runaway-loop question.
 
 ## 2026-11-20 — [adi.transport] gives each Pd tick its exact position (the "editable Pd timing cases")
 
