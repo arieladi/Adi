@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/mcu_faders.hpp"
+#include "adi/engine/hui_wire.hpp"
 
 #include <cstdio>
 
 namespace {
+namespace hui = adi::engine::hui;
 using namespace adi::engine::mcu;
 using Kind = FaderEventKind;
 int checks = 0, failures = 0;
@@ -76,12 +78,78 @@ void separateStrips() {
     check(sent && !unit.receive(*encodeFader(3, 37)) && !unit.receive(*encodeFader(3, 39)) &&
               !unit.motor(3, 39), "bounded echo history keeps the newest targets under feedback pressure");
 }
+
+void huiFaders() {
+    using HuiKind = hui::FaderEventKind;
+    static_assert(hui::encodeFader(7, 0x237f) ==
+                  hui::FaderPackets{hui::MidiPacket{0xb0, 0x07, 0x46},
+                                    hui::MidiPacket{0xb0, 0x27, 0x7f}});
+    hui::FaderDecoder decoder;
+    bool exact = true;
+    for (std::size_t strip = 0; strip < hui::faderCount; ++strip) {
+        for (std::uint16_t value = 0; value <= hui::maximumFader; ++value) {
+            const auto wire = hui::encodeFader(strip, value);
+            exact = exact && wire && !decoder.receive((*wire)[0]) &&
+                    decoder.receive((*wire)[1]) == hui::FaderEvent{HuiKind::Move, strip, value};
+        }
+    }
+    check(exact, "all fourteen-bit positions round-trip across eight HUI strips");
+    check(!decoder.receive(hui::MidiPacket{0xb0, 0x20, 0x11}) &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x00, 0x03}) &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x06, 0x09}) &&
+              decoder.receive(hui::MidiPacket{0xb0, 0x20, 0x11}) ==
+                  hui::FaderEvent{HuiKind::Move, 0, 0x191} &&
+              decoder.receive(hui::MidiPacket{0xb0, 0x26, 0x04}) ==
+                  hui::FaderEvent{HuiKind::Move, 6, 0x484} &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x26, 0x04}),
+          "HUI interleaved fader pairs are isolated and unsolicited fine bytes are ignored");
+    check(!decoder.receive(hui::MidiPacket{0xb0, 0x2f, 0x40}) &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x0f, 6}) &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x2f, 0x41}) &&
+              decoder.receive(hui::MidiPacket{0xb0, 0x2f, 0x40}) ==
+                  hui::FaderEvent{HuiKind::Touch, 6} &&
+              decoder.receive(hui::MidiPacket{0xb0, 0x2f, 0}) ==
+                  hui::FaderEvent{HuiKind::Release, 6} &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x0f, 8}) &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x2f, 0x40}),
+          "only port zero of a HUI channel zone reports fader touch");
+    check(!hui::encodeFader(8, 0) && !hui::encodeFader(0, 16384) &&
+              !decoder.receive(std::array<std::uint8_t, 2>{0xb0, 0}) &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x80, 0}) &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0, 0x80}) &&
+              !decoder.receive(hui::MidiPacket{0xb1, 0, 3}) &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x20, 4}),
+          "HUI rejects invalid packets, extra strips and other MIDI channels");
+    const bool prepared = !decoder.receive(hui::MidiPacket{0xb0, 5, 4}) &&
+                          !decoder.receive(hui::MidiPacket{0xb0, 0x0f, 5});
+    decoder.reset();
+    check(prepared && !decoder.receive(hui::MidiPacket{0xb0, 0x25, 3}) &&
+              !decoder.receive(hui::MidiPacket{0xb0, 0x2f, 0x40}),
+          "reconnecting discards unfinished HUI faders and the previous button zone");
+}
+
+void huiHeartbeat() {
+    hui::Heartbeat heartbeat;
+    constexpr hui::MidiPacket ping{0x90, 0, 0};
+    check(heartbeat.poll(50) == ping && !heartbeat.poll(50) &&
+              !heartbeat.poll(1049) && heartbeat.poll(1050) == ping,
+          "HUI sends the initial host ping and waits one second between pings");
+    check(heartbeat.poll(7000) == ping && !heartbeat.poll(7000) &&
+              !heartbeat.poll(7999) && heartbeat.poll(8000) == ping &&
+              heartbeat.poll(12) == ping && !heartbeat.poll(12),
+          "late polls and clock resets recover with a single HUI host ping");
+    heartbeat.reset();
+    check(heartbeat.poll(13) == ping && !heartbeat.poll(13),
+          "a reconnected HUI port pings immediately");
+}
 } // namespace
 
 int main() {
     wireMessages();
     feedbackAndTouch();
     separateStrips();
+    huiFaders();
+    huiHeartbeat();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
