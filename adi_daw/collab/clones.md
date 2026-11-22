@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Correct the first-order three-band crossover
+
+`clones/shaper-three-band-split` at `802ac60f` — Correct the first-order three-band crossover paths. The two outer bands cascade their filters in opposite orders, and the middle is their complement. The existing seven-stage rack shares this split. Isolated impulse and frequency-response tests failed 26 checks on main. Both stereo channels, live retuning and irregular edited-Pd blocks are covered. All six rack, stage and registered Pd suites passed under MSVC /W4 /WX at both precisions.
+
+On 48 kHz kick and bass, low and middle band errors each fell from 0.002145 RMS to below 0.000000016. Three independent gains fell from 0.003218 to 0.000000021 and Width from 0.000212 to 0.000000043. Both block sizes produced the same audio. Unity, two-way and mixed-slope outputs matched main byte for byte. A separate clock measurement accounted for the remaining 0.000317 RMS on wet Crush.
+
+At 256/2,048 frames, independent gains took 13.9/108.8 µs median versus 22.3/108.9 µs in the reference. The corrected p99 was 25.8/204.1 µs versus 42.4/356.5 µs, with 0/0 versus 3/10 misses per 30,720 callbacks. Active Width took 19.9/116.1 µs versus 23.5/105.1 µs. Its 256-frame p99 was 127.3 versus 50.8 µs and misses were 9 versus zero. All paths reported zero latency.
+
+In the 873-program acoustic comparison, 207 saved programs selected this split and 176 used it in a represented stage. Seven additional programs crossed below 0.001 stereo RMS, with no losses at the threshold in either order. The fixed-order count rose from 40 to 47 and the measured-order count from 44 to 51. Among all 207, measured-order error decreased in 92, increased in 69 and changed by less than 0.000001 in 46. Restoring previously unmeasured signal orders accounted for none of these crossings.
+
+PR requested
+
 ## 22 November 2026 — For Win, integration check for the three Hold reviews
 
 Combine the Hold input at `cf693f3a`, fractional clock at `51901a1a` and full-rate capture at `761744fb`. The clock sources merge cleanly. On the rack call into Crush, qualify the constant-contour shortcut with the manual detector being disabled. A constant drawn height can still have a moving detector. A private registered Pd32 build exercised this combination through the actual device factory, external and embedded patch.
