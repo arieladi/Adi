@@ -3,6 +3,7 @@
 #include "adi/mix/limiter/BackgroundOwner.h"
 #include "adi/mix/limiter/ControlMapping.h"
 #include "adi/mix/limiter/LoudnessMeter.h"
+#include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/mix/limiter/Dsp/ChannelGroups.h"
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
@@ -11,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <thread>
 #include <chrono>
@@ -41,6 +43,8 @@ void exactAdapter() {
         check(adapter->setParam("1",device::ParamValue::fromNormalized(static_cast<double>(style)/7)),"style setter");
         adapter->setParam("0",device::ParamValue::fromNormalized(.4));
         adapter->prepare(rate,256);
+        auto observation = l::ReductionMailbox::observe(device::limiterReductionSource(*adapter));
+        check(observation && !observation.read(), "prepared adapter opens a fresh real reduction reader");
         l::EngineSettings s;s.styleIndex=style;s.inputGainDb=12;s.lookaheadMs=.18f;
         s.attackMs=static_cast<float>(l::attackFromNormalized(static_cast<float>(l::attackToNormalized(275))));
         s.releaseMs=static_cast<float>(l::releaseFromNormalized(static_cast<float>(l::releaseToNormalized(400))));
@@ -61,9 +65,13 @@ void exactAdapter() {
             std::array<float*,2> p{b[0].data(),b[1].data()};
             const auto context=direct.beginBlock(); direct.process(p.data(),nullptr,117,s,context);
             p={p[0]+117,p[1]+117};direct.process(p.data(),nullptr,139,s,context);
-            exact=exact&&a==b;
+            for (std::size_t channel = 0; channel < a.size(); ++channel)
+                exact = exact && std::memcmp(a[channel].data(), b[channel].data(), a[channel].size() * sizeof(float)) == 0;
         }
-        check(exact,"segmented adapter is bit-identical to shared core");
+        const auto displayed = observation.read();
+        check(displayed && displayed->renderBlock == 32 && displayed->observedFrames == 256 &&
+              displayed->reduction.available, "real adapter publishes the final split callback to its reader");
+        check(exact,"segmented adapter with a live reader is byte-identical to the unobserved core");
         adapter->release();
     }
 }
@@ -196,7 +204,10 @@ public:
     void prepare(double,std::int32_t,std::int32_t,const mix::limit_chain::Settings& s) override{last=s;++prepares;}
     void release() noexcept override{}
     void process(float* const*,const float* const*,std::int32_t,const mix::limit_chain::Settings& s,
-                 std::uint64_t,std::int32_t) noexcept override{last=s;++blocks;}
+                 std::uint64_t,std::int32_t,mix::limiter::BlockReduction* reduction) noexcept override{
+        if(reduction)*reduction={};
+        last=s;++blocks;
+    }
     void pumpMainThread(const mix::limit_chain::Settings& s) override{last=s;}
     std::int32_t advertisedLatency() const noexcept override{return 0;}
     bool configurationBusy() const noexcept override{return busy;}

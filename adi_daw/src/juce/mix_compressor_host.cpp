@@ -116,33 +116,36 @@ class CompressorDevice final : public DeviceInstance {
     bool loaded() const noexcept override { return true; }
     bool processesDouble() const noexcept override { return true; }
     void prepare(double rate, std::int32_t maximum) override {
-        const ReactivationGate::Hold hold(gate_);
         if (prepared_ && rate == rate_ && maximum == maximum_)
             return;
+        const ReactivationGate::Hold hold(gate_);
         if (core_.prepare({rate, maximum, channels_}, settings(read())) != c::Status::Ok)
             throw std::runtime_error("Clean compressor preparation failed");
         rate_ = rate;
         maximum_ = maximum;
+        const auto effectiveRate = std::max(rate, static_cast<double>(static_cast<float>(rate)));
+        tail_.store(static_cast<std::int64_t>(std::ceil(effectiveRate * c::Core::quietTailSeconds)),
+                    std::memory_order_release);
         prepared_ = true;
         controlsValid_ = false;
     }
     void release() override {
         const ReactivationGate::Hold hold(gate_);
         prepared_ = false;
+        tail_.store(engine::kInfiniteTail, std::memory_order_release);
     }
     std::int32_t latencySamples() const noexcept override { return 0; }
+    std::int64_t tailSamples() const noexcept override { return tail_.load(std::memory_order_acquire); }
+    void didSuspend() noexcept override { wakeReset_ = true; }
     void process(const engine::NodeIo &io) noexcept override {
         [[maybe_unused]] const ScopedFlushDenormals denormals;
         const ReactivationGate::Pass pass(gate_);
         if (io.frames <= 0 || io.blockOffset < 0)
             return;
-        if (!pass) {
-            passThrough(io);
+        // Only a live stream has a maximum. Out-of-stream calls still write the supplied span.
+        if (pass && prepared_ && (io.blockOffset > maximum_ || io.frames > maximum_ - io.blockOffset))
             return;
-        }
-        if (io.blockOffset > maximum_ || io.frames > maximum_ - io.blockOffset)
-            return;
-        if (!prepared_ || io.channels != channels_ || (io.events.count > 0 && !io.events.first)) {
+        if (!pass || !prepared_ || io.channels != channels_ || (io.events.count > 0 && !io.events.first)) {
             passThrough(io);
             return;
         }
@@ -290,6 +293,13 @@ class CompressorDevice final : public DeviceInstance {
                 if (in[other] && overlaps(out[ch] + io.blockOffset, in[other] + io.blockOffset) &&
                     !(ch == other && out[ch] == in[other]))
                     return;
+        if (wakeReset_) {
+            if (core_.reset(s) != c::Status::Ok) {
+                passThrough(io);
+                return;
+            }
+            wakeReset_ = false;
+        }
         std::array<T *, 2> main{};
         for (int ch = 0; ch < channels_; ++ch) {
             const auto cidx = static_cast<std::size_t>(ch);
@@ -303,12 +313,18 @@ class CompressorDevice final : public DeviceInstance {
         // latency-changing controls and beginBlock never resets its envelope;
         // each contiguous segment is a checked logical block of the same stream.
         const auto block = core_.beginBlock(io.frames);
-        static_cast<void>(core_.process(block, 0, io.frames, main.data(), nullptr, 0, s));
+        if (!block.valid() || core_.process(block, 0, io.frames, main.data(), nullptr, 0, s) != c::Status::Ok) {
+            // A refusal leaves the copied input in out. Retire the incomplete
+            // block so the next valid segment can start without a re-prepare.
+            core_.reset();
+        }
     }
     int channels_;
     double rate_ = 0;
     std::int32_t maximum_ = 0;
     bool prepared_ = false;
+    bool wakeReset_ = false; // only the audio owner, including graph suspension
+    std::atomic<std::int64_t> tail_{engine::kInfiniteTail};
     DeviceIdentity identity_;
     ReactivationGate gate_;
     c::Core core_;

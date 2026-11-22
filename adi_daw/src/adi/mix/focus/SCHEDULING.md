@@ -24,14 +24,20 @@ for a worker, allocates a bank, or drains a complete transform at once.
 
 Every FFT pack/recombination element, permutation scan, butterfly,
 normalization/unpack element, complex product, complex sum, overlap add and
-cursor transition is charged. For `L=log2(p)` and at most ten enabled nodes,
-arithmetic costs at most `[372+22L]*p+84` units per job. The conservative cursor
-and metadata allowance is 1280 units per job. Per-actual-sample quotas
-637/659/681 respectively cover all three prepared sizes and meet the next
-output deadline. First/last capture metadata is reserved from that sample's
-quota. Zero-frame calls grant no work, configured capacity grants no work,
-and unused quotas cannot accumulate into later bursts. These are operation
-bounds, not CPU timings or equal-duration operation estimates.
+cursor transition is charged. With `L=log2(p)`, a forward transform costs
+`3p + L(p/2) + L+5` units and an inverse costs a further `p` units.
+Every job visits four streams and all ten node slots. Only nodes present in
+the union of the current and previous capture masks add the per-node
+products, inverse and overlap work.
+
+The job accounts for both capture edges before dividing its exact work by
+`p`. Its quotient and remainder spread that work over the next `p` actual
+samples, including the two samples that also pay for capture metadata. A
+power-of-two remainder accumulator grants at most one additional unit on any
+sample without another divide. At full occupancy the maximum units per
+sample remain 637/659/681 at the three prepared sizes. Zero-frame calls and
+configured callback capacity grant no work. The counters count primitives
+whose CPU times vary by operation.
 
 Execution uses bounded contiguous chunks up to the remaining quota. Butterfly
 row/stage cursors retain midpoint and stride rather than dividing each element;

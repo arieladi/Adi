@@ -54,6 +54,14 @@ struct MeterSnapshot
     }
 };
 
+// Peak linear gain loss (1 minus gain) observed in a contiguous request.
+// A gap marks a block without a single valid reduction reading.
+struct BlockReduction
+{
+    float peakLoss = 0.0f;
+    bool available = false;
+};
+
 class DspEngine
 {
 public:
@@ -83,7 +91,7 @@ public:
     BlockContext beginBlock() const noexcept;
     void process(float* const* main, const float* const* sidechain, int frames, const EngineSettings& settings) noexcept;
     void process(float* const* main, const float* const* sidechain, int frames, const EngineSettings& settings,
-                 BlockContext blockContext) noexcept;
+                 BlockContext blockContext, BlockReduction* reduction = nullptr) noexcept;
     int latencySamples() const noexcept;
     LatencyChange pendingLatencyChange() const noexcept;
     void acknowledgeLatencyChange(std::uint64_t token) noexcept;

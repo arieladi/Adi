@@ -1,8 +1,8 @@
 # Continuous triggered-scope component
 
 `dsp::TriggeredScope` captures one selected, contiguous finite float lane. It is
-a numerical component, not the existing latest-window Scope mode, a source
-subscription or a shipped analyzer UI. Nothing is linked into the audio graph.
+a numerical component. A broker worker owns the continuous acquisition for
+Classic Scope using the existing audio tap.
 Its two prepared arrays hold ordered extrema and inclusive source-sample ranges;
 columns are acquisition units independent of viewport width.
 
@@ -27,8 +27,8 @@ on the next mutation. Previous may be partial. A progressive renderer can draw
 the previous trace first and overwrite its prefix with current, reproducing
 the original live-array presentation without an O(columns) trigger clear/copy.
 A synchronized renderer uses previous alone. Invalid remaining tails mean zero
-only in that projection, not actual captured silence. No pixels/artwork or
-cross-thread mutable arrays are copied from the original editor.
+only in that projection. The Classic view uses the original artwork and an
+immutable broker publication.
 
 Preparation accepts Fs8..384kHz,1..8192 columns, finite threshold[-1,1],
 gain[.001,1000], columns/sample[.0001,32], internal cycles/sample[0,1] and
@@ -54,6 +54,17 @@ Jong, modernized by Matthijs Hollemans, pinned at
 See `third_party_notices/smexoscope/NOTICE.md` and `LICENSE.txt` for attribution
 and license. No proprietary reference observation belongs in these sources.
 
-Generated tests and original-source numerical comparison do not establish live
-interaction, complete analyzer equivalence or a CPU percentage. Continuous shared
-tap acquisition and immutable full/Info publication require a later integration.
+The shared analysis broker can prepare a continuous capture on a demand lease.
+Identical profiles on one source share their two immutable sweeps, using the
+same physical tap as the spectrum or meters. A discontinuity or source change
+clears both sweeps. The broker's frame budget also bounds capture work.
+The Analysers page and the detached analyser use this publication in Classic
+Scope mode. Freeze, hide and close release their leases. Live views on the
+same source, lane and settings share the capture. The compact All and Info
+projections still show the existing latest-window Scope.
+
+While parked with an open scope, even certified zero-valued samples advance
+the numerical sweep. Free and Internal triggers, sample ranges and the DC
+transition still determine how the next monitored signal appears. Incoming
+captures repaint only when the displayed sweep's validity or integer extrema
+change.

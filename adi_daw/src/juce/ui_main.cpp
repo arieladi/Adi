@@ -642,6 +642,11 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->sharedAnalysis = document_->analysis();
         const auto meterOwner = juce::Component::SafePointer<AdiRootComponent>(root_);
+        root->mixViewPanel.stack.setLimiterObserver([this, meterOwner](const DevicePanelData &target) {
+            if (!meterOwner || !document_ || root_ != meterOwner.getComponent())
+                return mix::limiter::ReductionMailbox::Lease{};
+            return document_->observeLimiterReduction(target.id, target.runtime);
+        });
         const auto mainTrack = root->analysisTrack();
         mainMeterSource_ = std::make_shared<MainMeterSource>(MainMeterSource{
             mainTrack, [this, meterOwner, mainTrack]() -> std::optional<MainMeterSnapshot> {
@@ -653,7 +658,13 @@ class AdiApplication final : public juce::JUCEApplication,
                                              document_->session().spec().sampleRate);
             }});
         root->infoSpectrum.setMainMeterSource(mainMeterSource_);
-        root->mixViewPanel.analysis.view.setMainMeterSource(mainMeterSource_);
+        root->mixViewPanel.mainMeterSource = mainMeterSource_;
+        const auto *auditionDocument = document_.get();
+        root->mixViewPanel.mainMeter.setAuditionSink([this, meterOwner, auditionDocument](engine::MainAudition mode) {
+            if (meterOwner && root_ == meterOwner.getComponent() && document_.get() == auditionDocument)
+                document_->session().setMainAudition(mode);
+        });
+        root->mixViewPanel.analysis.setMainMeterSource(mainMeterSource_);
         root->mixViewPanel.analyzerDock.meters.setMainMeterSource(mainMeterSource_);
         root->devices.functionAvailability = device::mixFunctionAvailability;
         root->devices.addFunction = [this](mix::Function kind, std::int64_t track) {
@@ -679,6 +690,14 @@ class AdiApplication final : public juce::JUCEApplication,
                                              const engine::DeviceRuntimeToken &expected, std::uint64_t instance) {
             const bool ok = document_->parameterGestureExpected(id, param, kind, value, expected, instance);
             if (root_ && (!ok || kind == engine::ParamEventKind::Begin)) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
+        root->devices.guardedPairGesture = [this](std::int64_t id, const engine::ParameterPair &values,
+            engine::ParameterPairEvent event, const engine::DeviceRuntimeToken &expected, std::uint64_t instance,
+            std::shared_ptr<const gesture::OwnerToken> &owner) {
+            const bool ok = document_->parameterPairGestureExpected(id, values, event, expected, instance, owner);
+            if (root_ && (!ok || event == engine::ParameterPairEvent::Begin))
+                root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.targetCurrent = [this](std::int64_t id, const engine::DeviceRuntimeToken &expected,

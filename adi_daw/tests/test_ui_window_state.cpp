@@ -160,6 +160,35 @@ int main() {
     store->db().exec("INSERT INTO project(id,name) VALUES(1,'UI test')");
     ViewStateStore views(*store);
     std::string error;
+    {
+        WindowState stack;
+        stack.zoom = 1.5;
+        stack.mixStackSearch = "Bass";
+        stack.mixStackBaseHeight = 140;
+        check(views.save("stack", stack, error) && views.load("stack").mixStackSearch == "Bass" &&
+                  views.load("stack").mixStackBaseHeight == 140 && !views.load("other").mixStackBaseHeight,
+              "Stack search and row size persist per project window");
+        store->db().exec(R"(INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES('project',NULL,'shell.old-stack',
+            '{"version":1,"zoom":1.5,"deviceHeight":196,"docked":true,"panels":[{"id":0,"width":300,"collapsed":false},
+             {"id":1,"width":200,"collapsed":false}],"mixview.stack.baseHeight":18446744073709551615,
+             "mixview.stack.search":42}'))");
+        const auto old = views.load("old-stack");
+        check(old.zoom == 1.5 && old.mixStackSearch.empty() && !old.mixStackBaseHeight,
+              "invalid optional Stack fields keep the rest of the window geometry");
+        constexpr std::array<std::int64_t, 1> first{7}, second{99};
+        check(views.saveStackPins({}, first, error) && views.saveStackPins({}, second, error) &&
+                  views.stackPins().ids == std::vector<std::int64_t>{7, 99},
+              "additions from two stale window projections do not overwrite each other");
+        check(views.saveStackPins(first, {}, error), "remove one project's pin without changing the others");
+        const ViewStateStore reopened(*store);
+        check(reopened.stackPins().ids == std::vector<std::int64_t>{99},
+              "a fresh view owner reloads stable project pins from storage");
+        store->db().exec(R"(UPDATE ui_view SET value='[99,7,7,0,-1,"99",18446744073709551615]'
+                            WHERE key='mixview.stack.pins')");
+        const ViewStateStore legacyPins(*store);
+        check(legacyPins.stackPins().ids == std::vector<std::int64_t>{7, 99},
+              "pin decoding deduplicates positive track IDs and ignores invalid entries");
+    }
     WindowState state;
     check(!state.panels.setWidth(Panel::Browser, 333, 1400), "resize browser");
     check(!state.panels.swapSides(1400), "swap panel identities");

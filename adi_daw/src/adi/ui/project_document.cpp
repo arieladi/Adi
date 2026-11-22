@@ -77,7 +77,11 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
             if (!lifetime.expired()) analysisSources_.erase(source);
         });
 }
-ProjectDocument::~ProjectDocument() { analysis_->shutdown(); }
+ProjectDocument::~ProjectDocument() {
+    for (const auto& item : limiterReductionSources_)
+        if (const auto mailbox = item.second.mailbox.lock()) mailbox->revokeObservers();
+    analysis_->shutdown();
+}
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error, const RecordingDefaults *defaults) {
@@ -238,7 +242,9 @@ StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {
         const auto keyed = session_.refreshDeviceKeys(*store_, view_.committedImage());
-        if (!(keyed ? *keyed : session_.refresh(*store_))) {
+        const bool refreshed = keyed ? *keyed : session_.refresh(*store_);
+        refreshLimiterReductionSources();
+        if (!refreshed) {
             error_ = session_.error();
             return false;
         }
@@ -319,6 +325,9 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
+    if (!limiterReductionSources_.empty() &&
+        limiterReductionPublication_ != session_.graph().stats().published)
+        refreshLimiterReductionSources();
     // A take, once the driver has moved past it and its worker has finished: a stopped one, or one that
     // ended on its own while recording (a locate, an overflow, a device change), which lands at once and
     // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
@@ -389,6 +398,37 @@ void ProjectDocument::persistReportedLatencies() {
 void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
 }
+device::DeviceInstance* ProjectDocument::limiterReductionTarget(
+    std::int64_t id, const engine::DeviceRuntimeToken& expected) {
+    const auto* entry = session_.entryFor(id);
+    if (!entry || entry->retired || entry->parked || entry->placeholder ||
+        entry->resolvedUid != "org.adidaw.mix.limiter") return nullptr;
+    auto* instance = session_.resolveDevice(expected);
+    if (!instance || instance != session_.instanceFor(id) || !instance->loaded() ||
+        session_.devices().nodeAt(entry->hostIndex).bypassed()) return nullptr;
+    return instance;
+}
+void ProjectDocument::refreshLimiterReductionSources() {
+    limiterReductionPublication_ = session_.graph().stats().published;
+    std::erase_if(limiterReductionSources_, [this](const auto& item) {
+        const auto& [id, source] = item;
+        const auto mailbox = source.mailbox.lock();
+        if (!mailbox || !mailbox->observed()) return true;
+        if (limiterReductionTarget(id, source.expected)) return false;
+        mailbox->revokeObservers();
+        return true;
+    });
+}
+mix::limiter::ReductionMailbox::Lease ProjectDocument::observeLimiterReduction(
+    std::int64_t id, const engine::DeviceRuntimeToken& expected) {
+    refreshLimiterReductionSources();
+    auto* target = limiterReductionTarget(id, expected);
+    if (!target) return {};
+    auto mailbox = device::limiterReductionSource(*target);
+    auto lease = mix::limiter::ReductionMailbox::observe(mailbox);
+    if (lease) limiterReductionSources_.insert_or_assign(id, ReductionSource{expected, mailbox});
+    return lease;
+}
 bool ProjectDocument::autoGainStage(bool lufs) {
     engine::GainStageOptions options;
     options.measure =
@@ -434,12 +474,19 @@ bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
     error_.clear();
     return true;
 }
+std::int64_t ProjectDocument::retainedDeviceId() const noexcept {
+    // Removed instances stay alive for Undo, even after their store rows leave.
+    std::int64_t id = 0;
+    for (std::size_t i = 0; i < session_.entryCount(); ++i)
+        id = std::max(id, session_.entryAt(i).deviceId);
+    return id;
+}
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before));
+    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
 }
 bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
                                    std::optional<std::int64_t> before, const PluginInsertOptions& options) {
-    return finishInsert(preparePluginInsert(*store_, ref, track, before, options));
+    return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
 }
 bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     if (!prepared.ok) {
@@ -505,12 +552,7 @@ bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<s
 bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
     const auto available = device::mixFunctionAvailability(kind);
     if (!available.ready) { error_ = available.reason; return false; }
-    // Removed instances stay alive for Undo. A fresh authored row must not
-    // claim an ID that the current session still uses for one of those instances.
-    std::int64_t retainedDeviceId = 0;
-    for (std::size_t i = 0; i < session_.entryCount(); ++i)
-        retainedDeviceId = std::max(retainedDeviceId, session_.entryAt(i).deviceId);
-    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready, retainedDeviceId);
+    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready, retainedDeviceId());
     if (!prepared.ok) { error_ = prepared.error; return false; }
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
         return mix::commitFunctionEdit(s, p, a);
@@ -767,7 +809,7 @@ bool ProjectDocument::parameterGestureExpected(std::int64_t id, const std::strin
     const auto key = std::make_pair(id, param);
     if (kind == engine::ParamEventKind::Begin && !surfaceGestures_.contains(key)) {
         for (const auto &pending : parameterOps_.pendingGestures())
-            if (pending.deviceId == id && pending.parameterId == param) {
+            if (pending.deviceId == id && (pending.parameterId == param || pending.pairedParameterId == param)) {
                 error_ = "Another editor is still editing that parameter.";
                 return false;
             }
@@ -847,6 +889,63 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     error_.clear();
     return true;
 }
+bool ProjectDocument::parameterPairGestureExpected(std::int64_t id, const engine::ParameterPair &values,
+                                                   engine::ParameterPairEvent event,
+                                                   const engine::DeviceRuntimeToken &expected, std::uint64_t stamp,
+                                                   std::shared_ptr<const gesture::OwnerToken> &owner) {
+    using Event = engine::ParameterPairEvent;
+    std::vector<OpRequest> requests;
+    const auto now = captureNowMs();
+    const auto cancel = [&] {
+        return !owner || parameterOps_.uiParameterPairEvent(id, values, Event::Cancel, now, owner, requests);
+    };
+    if (event == Event::Cancel) {
+        const bool cancelled = cancel();
+        if (cancelled) {
+            feed_.publish(session_, realisedGeneration_);
+            error_.clear();
+        } else error_ = "The paired EQ edit is waiting to restore its values.";
+        return cancelled;
+    }
+    const auto published = feed_.current();
+    const bool available = std::any_of(published->begin(), published->end(), [&](const auto &device) {
+        return device.id == id && device.instance == stamp && device.available;
+    });
+    if (!available || !deviceTargetCurrent(id, expected, stamp) || !session_.resolveDevice(expected)) {
+        (void)cancel();
+        error_ = "That device changed while it was being edited. Start a new edit.";
+        return false;
+    }
+    const bool taken = parameterOps_.uiParameterPairEvent(id, values, event, now, owner, requests);
+    const bool committed = commitCaptured(requests);
+    followOverrides();
+    if (!committed || !taken) {
+        (void)cancel();
+        feed_.publish(session_, realisedGeneration_);
+        if (committed) error_ = "The plug-in did not take the paired EQ edit.";
+        return false;
+    }
+    if (event == Event::End) {
+        const auto result = ops_.commitPrepared([&](Store &, Actor) -> CommitResult {
+            auto outcome = parameterOps_.commitPending(*owner, now);
+            if (outcome.durable) return std::move(*outcome.durable);
+            CommitResult refused;
+            refused.error = std::move(outcome.status.message);
+            return refused;
+        });
+        if (!result.ok) {
+            (void)cancel();
+            feed_.publish(session_, realisedGeneration_);
+            error_ = result.error;
+            return false;
+        }
+        owner.reset();
+        if (!synchronise()) return false;
+        feed_.publish(session_, realisedGeneration_);
+    }
+    error_.clear();
+    return true;
+}
 std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &param) {
     // The producer says only no; the Status Bar says what was wrong, in the producer's order:
     // the device, then the parameter, then the value.
@@ -880,6 +979,7 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
     else
         session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
+    refreshLimiterReductionSources();
     analysis_->refreshSources(true);
 }
 void ProjectDocument::release() {

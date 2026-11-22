@@ -18,6 +18,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <initializer_list>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -68,9 +69,7 @@ void AppCommands::reload() {
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
     linkLoop_ = flag(settings_, "editing.linkLoopToSelection", false);
     splitAll_ = flag(settings_, "editing.splitAllWithNoSelection", true);
-    // The theme and the density (DF-W24): `lookfeel.theme` ("os" and anything unknown read as Dark,
-    // the default) and `lookfeel.density` (Compact until the registry has the key). A change
-    // repaints every window at once.
+    // Appearance is shared by the windows. Existing "os" profiles resolve to Dark.
     const auto word = [this](const char *key) {
         const auto v = settings_.get(key);
         return v.is_string() ? v.get<std::string>() : std::string{};
@@ -722,7 +721,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
             info.setTicked(notes.time.grid.fixed);
         }
     }
-    if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
+    if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus() ||
+                    active_->mixViewPanel.hasChannelControlFocus()) && deviceOrTrackEditCommand(id))
         info.setActive(false);
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
@@ -987,6 +987,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     frame();
 }
 AdiRootComponent::~AdiRootComponent() {
+    mixViewPanel.stack.persistWindowControls();
     commands_.detach(*this);
     setLookAndFeel(nullptr);
     undoHistory.setLookAndFeel(nullptr);
@@ -998,15 +999,27 @@ bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, 
         return fail("Devices load in the application.");
     if (track == 0 || reader().findTrack(track) == nullptr)
         return fail("Select a track to load " + name + " onto.");
+    const juce::Component::SafePointer<AdiRootComponent> alive(this);
     if (!loadBuiltin(uid, track, before))
         return false;
-    // The strip shows the new device on the next frame; the browser keeps the focus, as Live's.
-    devices.repaint();
+    if (alive) {
+        say({});
+        // The strip updates on the next frame and the browser keeps focus.
+        devices.repaint();
+    }
     return true;
 }
 std::string AdiRootComponent::pluginWindowKey(std::int64_t device) { return "plugin:" + std::to_string(device); }
 bool AdiRootComponent::pluginWindowOpen(std::int64_t device) const {
     return pluginHost != nullptr && pluginHost->contains(pluginWindowKey(device));
+}
+bool AdiRootComponent::openPluginWindow(std::int64_t device) {
+    if (!pluginWindowOpen(device)) return togglePluginWindow(device, false);
+    pluginWindowsShown_ = true;
+    commands_.manager.commandStatusChanged();
+    followPluginWindows();
+    if (auto *window = pluginHost->window(pluginWindowKey(device))) window->toFront(true);
+    return true;
 }
 bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
     if (pluginHost == nullptr || !pluginEditor)
@@ -1140,16 +1153,22 @@ void AdiRootComponent::frame() noexcept {
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
     infoSpectrum.setBounds(infoArea_.reduced(look::border));
     infoSpectrum.setVisible(infoShown_ && !infoArea_.isEmpty() && infoText_.isEmpty());
-    infoSpectrum.setMode(mixViewPanel.analysis.mode());
-    infoSpectrum.setSource(mixViewPanel.analysis.point());
-    infoSpectrum.setChannel(mixViewPanel.analysis.view.channel());
-    infoSpectrum.setPalette(mixViewPanel.analysis.view.palette(), mixViewPanel.analysis.view.paletteReversed());
-    infoSpectrum.setSpectrumSlope(mixViewPanel.analysis.view.spectrumSlope());
-    infoSpectrum.present(sharedAnalysis, analysisTrack(mixViewPanel.analysis.source() == AnalysisPane::Source::Selected));
-    infoSpectrum.frame();
+    if (infoSpectrum.isVisible()) {
+        const auto &analysis = mixViewPanel.analysis;
+        const auto &settings = analysis.detail;
+        using AnalysisMode = SharedSpectrumView::Mode;
+        infoSpectrum.setMode(settings.mode() == AnalysisMode::ClassicScope ? AnalysisMode::Scope : settings.mode());
+        infoSpectrum.setSource(settings.point());
+        infoSpectrum.setChannel(settings.view.channel());
+        infoSpectrum.setPalette(settings.view.palette(), settings.view.paletteReversed());
+        infoSpectrum.setSpectrumSlope(settings.view.spectrumSlope());
+        const auto &snapshot = reader();
+        infoSpectrum.present(sharedAnalysis, analysis.target(snapshot, analysisTrack(snapshot), analysisTrack(snapshot, true)));
+        infoSpectrum.frame();
+    }
     // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays,
     // unless an edit, a sideways scroll or a click on the ruler paused it.
-    if (state_.follow && playing_ && !arrangement.followPaused &&
+    if (arrangement.isVisible() && state_.follow && playing_ && !arrangement.followPaused &&
         arrangement.follow(timelineTick(), commands_.followByPage()))
         dirty_.mark(DirtySet::Content);
     lastDrain_ = dirty_.drain();
@@ -1244,6 +1263,31 @@ void AdiRootComponent::resized() {
     status.setBounds(0, h - look::statusBarHeight, w, look::statusBarHeight);
     const int top = look::controlBarHeight, bottom = h - look::statusBarHeight;
     const int body = std::max(0, bottom - top);
+    // The docked Mix View is a workspace switch. The Arrangement retains
+    // its geometry and panel preferences while the workspace is hidden.
+    mixViewDock_ = {0, top, w, body};
+    const bool fullMix = state_.mixView && !state_.mixViewDetached;
+    mixViewArea_ = fullMix ? mixViewDock_ : juce::Rectangle<int>{};
+    transport.mix.setToggleState(state_.mixView, juce::dontSendNotification);
+    transport.arrangementPage.setToggleState(!state_.mixView, juce::dontSendNotification);
+    if (fullMix) {
+        for (auto *child : std::initializer_list<juce::Component*>{
+                 &arrangement, &arrangement.overview, &namesBar, &mixer, &strip, &browser, &aiTab,
+                 &mixerView, &mixerViewResizer, &clipView, &clipResizer, &devices, &dockResizer, &infoSpectrum})
+            child->setVisible(false);
+        browserArea_ = chatArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
+        clipArea_ = deviceArea_ = infoArea_ = {};
+        if (mixViewPanel.getParentComponent() == this) {
+            mixViewPanel.setBounds(mixViewArea_);
+            if (!mixViewPanel.isVisible() && reader_) mixViewPanel.frame(reader());
+            mixViewPanel.setVisible(true);
+        }
+        dirty_.mark(DirtySet::All);
+        return;
+    }
+    if (mixViewPanel.getParentComponent() == this)
+        mixViewPanel.setVisible(false);
+    arrangement.setVisible(true);
     // The detail row: Live's Info View and Device View. The strip never goes below its
     // floor and grows upward only (ADR-0203 d7); it leaves the transport, the ruler and
     // a row when it can.
@@ -1385,34 +1429,13 @@ void AdiRootComponent::resized() {
         namesBar.setBounds(span.getStart(), barY, span.getLength(), ArrangementView::kRulerHeight - 3);
         strip.setHead(arrangement.overviewHeight() + ArrangementView::kRulerHeight);
     }
-    // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
-    // View and its track controls, which a lane-less view has no use for. The browser, the strip
-    // down the edge and the Detail View stay.
-    mixViewDock_ = juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_);
-    mixViewArea_ = state_.mixView && !state_.mixViewDetached ? mixViewDock_ : juce::Rectangle<int>();
-    const bool mixing = !mixViewArea_.isEmpty();
-    // In its own window the panel is the window's; docked, it is laid out here. Framed before it shows,
-    // so the switch never shows what it held when it was last open (the director's R3).
-    if (mixViewPanel.getParentComponent() == this) {
-        mixViewPanel.setBounds(mixViewArea_);
-        if (mixing && !mixViewPanel.isVisible() && reader_)
-            mixViewPanel.frame(reader());
-        mixViewPanel.setVisible(mixing);
-    }
-    arrangement.setVisible(!mixing);
-    namesBar.setVisible(!mixing && namesBar.getWidth() > 0);
-    if (mixing) {
-        mixer.setVisible(false);
-        mixerView.setVisible(false);
-        mixerViewResizer.setVisible(false);
-    }
-    transport.mix.setToggleState(state_.mixView, juce::dontSendNotification);
-    // The Overview runs over the lanes, as the Arrangement sheet draws it; H and W are the bar's.
+    namesBar.setVisible(namesBar.getWidth() > 0);
+    // The Overview runs from the lanes' left edge to Live's H and W buttons.
     const int overviewX = lanesX + ArrangementView::kLeftMargin;
     const int overviewRight = arrangement.getX() + arrangement.canvas.getRight() - 4;
     arrangement.overview.setBounds(overviewX, top + 4, std::max(0, overviewRight - overviewX),
                                    ArrangementView::kOverviewHeight - 4);
-    arrangement.overview.setVisible(state_.overview && !mixing);
+    arrangement.overview.setVisible(state_.overview);
     devices.setVisible(!deviceArea_.isEmpty());
     dockResizer.setVisible(!deviceArea_.isEmpty());
     devices.setBounds(deviceArea_.reduced(look::border));
@@ -1637,14 +1660,28 @@ std::int64_t AdiRootComponent::analysisTrack(const SnapshotReader &snapshot, boo
 }
 bool AdiRootComponent::setMixView(bool open, bool detached) {
     const bool wasOpen = state_.mixView, wasDetached = state_.mixViewDetached;
+    const int oldTab = state_.mixViewTab;
+    const auto focusMembers = open && !wasOpen ? MixFocus::soloedChannels(SnapshotReader(current()))
+                                               : std::vector<std::int64_t>{};
+    if (open && !wasOpen)
+        state_.mixViewTab = static_cast<int>(focusMembers.size() >= 2 ? MixViewPanel::Tab::Focus : MixViewPanel::Tab::Stack);
     state_.mixView = open;
     state_.mixViewDetached = detached;
     if (!persist()) {
         state_.mixView = wasOpen;
         state_.mixViewDetached = wasDetached;
+        state_.mixViewTab = oldTab;
         return fail(error_);
     }
-    if (!open || wasDetached != detached) {
+    const juce::Component::SafePointer<AdiRootComponent> alive(this);
+    if (open && !wasOpen) mixViewPanel.focusPage.setMembers(focusMembers);
+    if (!alive) return false;
+    mixViewPanel.focusPage.suspend(!open);
+    if (!alive) return false;
+    if (wasOpen != open) mixViewPanel.mainMeter.suspend(!open);
+    if (!alive) return false;
+    if (wasOpen != open || wasDetached != detached) {
+        mixViewPanel.song.cancelSeek();
         mixViewPanel.stack.cancelInteractions(); devices.cancelFunctionInteractions();
     }
     mixViewPanel.stack.suspendParameters(!open || (!detached && devices.parametersSuspended()));
@@ -1658,9 +1695,16 @@ bool AdiRootComponent::chooseMixViewTab(int tab) {
         state_.mixViewTab = was;
         return fail(error_);
     }
-    if (was == static_cast<int>(MixViewPanel::Tab::Stack) && state_.mixViewTab != was) {
+    const juce::Component::SafePointer<AdiRootComponent> alive(this);
+    if ((was == static_cast<int>(MixViewPanel::Tab::Stack) || was == static_cast<int>(MixViewPanel::Tab::Focus)) &&
+        state_.mixViewTab != was) {
         mixViewPanel.stack.cancelInteractions();
+        if (!alive) return false;
         devices.cancelFunctionInteractions();
+        if (!alive) return false;
+        if (was == static_cast<int>(MixViewPanel::Tab::Focus))
+            mixViewPanel.focusPage.setVisible(false);
+        if (!alive) return false;
     }
     dirty_.mark(DirtySet::Layout);
     return true;
@@ -2314,6 +2358,9 @@ bool AdiRootComponent::edited(const SubmitResult &result) {
 void AdiRootComponent::say(std::string message) {
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
+}
+void AdiRootComponent::sayStaleAddMenu() {
+    say("This Add menu is out of date. Reopen it and try again.");
 }
 juce::String AdiRootComponent::selectionText() const {
     // Live's Status Bar: the insert marker with its time, or the time selection.
@@ -3332,6 +3379,8 @@ bool AdiRootComponent::focusView(int id) {
         return true;
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
+        if (state_.mixView && !state_.mixViewDetached)
+            return mixViewPanel.focusChannelSearch();
         if (state_.panels.find(Panel::Browser)->collapsed && !command(AppCommands::ToggleBrowser))
             return false;
         if (id == AppCommands::FocusBrowser) {
@@ -3357,7 +3406,8 @@ bool AdiRootComponent::focusView(int id) {
     }
 }
 bool AdiRootComponent::command(int id) {
-    if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
+    if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus() ||
+         mixViewPanel.hasChannelControlFocus()) && deviceOrTrackEditCommand(id))
         return false;
     if (id == AppCommands::Undo || id == AppCommands::Redo) {
         mixViewPanel.stack.cancelInteractions();
@@ -3507,13 +3557,13 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::ShowChannelEq:
         // ADR-0204 d1's one window is the Mix View's STACK (ADR-0209 d11): opened there, wherever
         // it opens, on the selected track's row.
-        if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)))
-            return false;
         if (!state_.mixView) {
             if (state_.mixViewDetached ? !(applicationCommand && applicationCommand(AppCommands::ToggleMixView))
                                        : !setMixView(true, false))
                 return false;
         }
+        if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)))
+            return false;
         mixViewPanel.frame(reader());
         mixViewPanel.stack.focus(arrangement.geometry.selection.track);
         break;
@@ -3533,12 +3583,7 @@ bool AdiRootComponent::command(int id) {
             referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         return true;
     case AppCommands::ToggleMixView:
-        state_.mixView = !state_.mixView;
-        if (!persist()) {
-            state_.mixView = !state_.mixView;
-            return fail(error_);
-        }
-        break;
+        return setMixView(!state_.mixView, state_.mixViewDetached);
     case AppCommands::ToggleClipView:
         state_.clipView = !state_.clipView;
         if (!persist()) {

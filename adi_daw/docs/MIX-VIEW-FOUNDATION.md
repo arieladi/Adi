@@ -149,9 +149,30 @@ device-specific key routes. These are separate from visual demand.
 
 Actual devices continue through the established Session/Graph chain and shared parameter
 authority. Native EQ and independently enabled Clip-to-Limiter processing are wired through
-that same chain; device-area pages and Mix View rows address the same nodes. Unmasking,
-compressor, de-esser and gate native admission remain later slices, not substitute processing.
+that same chain, along with the native Clean compressor. Device-area pages and Mix View rows
+address the same nodes. Unmasking, de-esser and gate native admission remain later slices.
 ADI Still remains an ordinary plug-in. Analyzers stay outside the processing chain.
+
+### Native EQ serial provider
+
+The existing EQ function uses the shared serial processing adapter with EQ enabled and the
+downstream stages disabled. All 730 parameter IDs, saved-state values and common edit/undo paths
+remain the same. The adapter retains the authored EQ learning object across stopped reprepare.
+The native provider forces a stopped prepare when the engine switches between float and double,
+even at the same rate and buffer size. Same-format rebuilds retain the running state.
+When External Sidechain is on, the detector treats an absent bus as silence. Turning External
+Sidechain off selects the programme. A device sidechain route is still set separately.
+
+Scalar edits run without configuration-owner jobs. Prepared-plan changes use one demand-driven
+owner, a complete aggregate latency offer and physical-callback admission. Main relays published
+metadata; audio never starts or notifies the worker. Carve and Focus pages remain unavailable
+until their real controller and device-key routes are connected.
+Offline instances use a serialized owner that services the request before admitting the new
+physical block. Latency-neutral structure edits produce repeatable exports across render schedules.
+
+A parked configuration failure retains the last applied audio plan. The device header reports the
+issue and points to reopening the saved project through File > Open Project. The device remains
+available and its controls and active gestures stay usable. Ordinary pending work has no warning.
 
 ## Main meter readouts
 
