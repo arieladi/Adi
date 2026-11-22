@@ -60,6 +60,18 @@ Parked AU-08 Cut and range Delete pending the removed-span playback rule, the se
 
 GCC 14 and Clang 19 strict builds each passed 1,168 checks across four suites. Tests cover a non-octave tuning, a lower tie, a local override, empty and invalid selections, idempotence with float cents, and byte-exact Undo/Redo. Window wiring and the Live preset census remain parked with their owners.
 
+### 22 November — MI-04 native chromatic Pitch Invert
+
+**PR requested** for `engine/mi04-invert-selected-pitches` at `c7c7927a828b30edf5343a34d084d6de738b67fd`, stacked on MI-06 Fit to Scale at `e6d0c93c0fa880ed6c165ecaff0a2070f6f1c104`. The pure utility reflects explicitly selected note pitches across a caller-supplied absolute axis and reuses one existing note.applyDiff. It preserves the timing, IDs, expressions and future record tails. An unrepresentable target refuses the entire selection.
+
+GCC 14 and Clang 19 strict builds each passed 1,173 checks across four suites. Tests cover a fractional axis, negative starts, unchanged notes on the axis, whole-selection refusal, exact Undo/Redo and double reflection of physical pitch.
+
+Parked MI-04 Split, Chop and Join on the MI-08 expression write reservation and Live's expression carry rules. The window action's automatic axis awaits the Live reading. Native degree stepping is next.
+
+### FOR THE DIRECTOR
+
+- MI-04 automatic Invert axis. I recommend testing an asymmetric three-note selection and a single selected note in Live. Use the middle of the selected pitch extent if the outer notes swap and the single note stays put. The engine already accepts any explicit axis.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
