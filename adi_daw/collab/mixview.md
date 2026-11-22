@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — DF-M36, keep Clean active during a graph rebuild
+
+**PR requested.** `mixview/df-m36-compressor-noop-20261122` at `8b861a32` from current main. Same-format preparation returns before taking the reactivation hold. A private detail accessor lets the regression exercise the real gate without adding work to the audio path.
+
+The software graph test retains the native compressor in both the live and replacement graphs. Reversing the two production lines fails exactly the expected wet-segment assertion. The fixed cumulative Release gate passed 110 checks with zero callback allocations or frees. The same test body compiled with /W4 /WX from the standalone main-based branch. Win's built-in host needs its own gate review.
+
 ## 2026-11-22 — DF-M17, high-rate dynamics output verification
 
 The four reviewed dynamics components passed all 20 reducing comparisons at 48, 176.4, 192, 384 and 768 kHz. Each matched the reported zero latency and stayed below the existing peak and RMS limits without gain fit, time shift or trimming. The worst peak residual was 4.48e-8; request and segment variations were byte-identical where exercised. The 768 kHz headless probe first reproduced all four 48 kHz control arrays byte for byte.
