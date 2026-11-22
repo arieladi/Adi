@@ -32,6 +32,22 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-03 rack structure, lands after DEV-01 and 3 December
+
+Branch `engine/dev03-rack-structure` at `757d934ab821cac25756452010a679970cb853f7`, stacked on DEV-01 `cb8b4fb6`. Suggested PR title **Capture rack subtrees and paste them under fresh identities**. [Compare](https://github.com/arieladi/Adi/compare/engine/dev01-rack-playback...engine/dev03-rack-structure)
+
+The typed chain image carries descendants, params, panels, shared state references, macros, mappings and causal routes and bindings. Prospective edits refuse invalid parentage and self-nesting. Legacy recorded cascades and movements replay as logged. New typed Redo checks the recorded closure before deleting it. Group and unambiguous Ungroup each use one sealed transaction. Same-project rack paste remaps internal identities and routes, checks the captured targets and uses the shared allocator for descendants and the optional engine-allocated root. Orphaned remarks stay detached.
+
+GCC 14 and Clang 19 each passed eight suites with warnings as errors. Device Ops 176, Device Copy 105, Ops Schema 272, Catalog 111, Track Delete 38, History Stored 75, Return Send Tap 122 and Gesture Playback 569. The baseline chain and ancestry probe failed six targeted assertions. The current budget test hits 4 MiB minus one, exactly 4 MiB, and plus one. It also verifies whole-transaction rollback, an existing older oversized inverse, legacy malformed rack ownership, a huge cell plus many smaller rows and a large pooled state blob. OPS validator passed.
+
+| Seat | Needs |
+|---|---|
+| window-fn | Let `ProjectDocument::copyDevice` pass the stored nested image to the clipboard. Bind `prepareDevicePasteWithFreshId` and `prepareDevicePasteForTrackWithFreshId` so Cut and Duplicate share the same allocator for root and children. Wire the native Group/Ungroup calls in their command handlers. |
+| win and window-fn | Decide the confirmation and history navigation policy for a deliberately lossy edit. The engine returns structured `lossy_undo` before committing and leaves the complete edit eligible for retry. Existing large exact history is readable. |
+| win | Keep DEV-03 in the post–3 December window after the DEV-01/ADR-0060 amendment. Reserve the DEV-06 side tables and schema minor for saved rack selector, macro settings, mapping curves and target caps. |
+
+PR requested
+
 ## 2026-11-22 — DEV-01 rack playback, lands after 3 December
 
 Branch `engine/dev01-rack-playback` at `cb8b4fb645ba262bf57525642af0b8e5e19c6920`, from main `ac07be74`. Suggested PR title **Play nested device racks in the compensated track graph**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev01-rack-playback)
