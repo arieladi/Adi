@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, EX-04 AIFF writer and TM-MD-03 ownership
+
+**PR requested** — `engine-win/export-aiff-writer` `90a3b1e5`, on main `87ea349c` and EX-06 `7a9fe563`. PCM16/24 publish as big-endian AIFF and Float32 as AIFF-C fl32, with seeded PCM dither applied once in the private WAV stage. The Windows /W4 /WX render suite passed 449 checks including full sample equality at all three encodings, odd-byte mono padding, and exact-WAV/unsupported format refusal. The WAV/quantizer suite passed 171 checks. The private WAV adds one write and read before publication. The format remains unwired in the Export window.
+
+**Parked for Win and engine — TM-MD-03:** please lend `src/adi/audio/progressive_decode.cpp`, `src/adi/audio/decode.cpp` and the clip playback saved-source resolver hunk. Win's 22 November entry reserves these for the engine. Continuing with the standalone memo and tests only.
+
 ## 2026-11-22, after 3 December, EX-05 export brickwall
 
 - `engine-win/export-brickwall` at `10c88f50` is stacked on EX-06 `7a9fe563` and the limiter landed in #706. Brickwall is off by default and acts only in Loudness mode. The existing offline limiter trims its own latency before PCM quantization. Refine uses the encoded loudness and true-peak readings, at most four trials, with Brickwall adjustment steps clamped to ±3 dB.
