@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MI-08 hosted expression units refreshed
+
+**PR requested** for `engine/mi08-expression-units-current` at `0273aa6341b2dac44bb49345c88925f237757b23`. Title **MI-08 convert authored note gain and pan for hosted instruments**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. This supersedes `engine/mi08-expression-host-units` `0c3d63ea`. Tagged authored gain in dB and signed pan reach the VST3 normalized and CLAP native domains. The CLAP regression uses a fresh note and list so the newer overlapping live/clip identity fixture can run beside it.
+
+Exact GCC 14 and Clang 19 warnings-as-errors passed all six suites. CLAP 559, MPE Output 93, MPE Input 88, Graph 200, Device 52 and Engine 147 checks. Linking the previous MPE output source fails the authored unity and center assertion; linking the previous CLAP adapter fails the above-unity amplitude assertion. This changes expression units, separate from DF-E56's router state review.
+
 ## 2026-11-22 — MI-08 native expression reader refreshed
 
 **PR requested** for `engine/mi08-expression-read-current` at `db864e543d7c80de9020e5e16174ced4d42b5b99`, after DF-E63 `c37e20e0395ac3783e46c30f48f1583086cb025d`. Title **MI-08 read stored note expression on the current clip clock**. This supersedes `engine/mi08-note-expression-read` `e5b350cd`. The Clip View can ask for decoded curves and row-level diagnostics while ordinary property reads avoid that work. The refreshed branch keeps DF-E63's recovered stored clock and its exact linear End regression. It reads historical strides and unknown dimensions while preserving the original bytes.
