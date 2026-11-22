@@ -129,6 +129,7 @@ struct DeliveryResult {
     JobState state = JobState::Pending;
     std::optional<PublicationReport> publication{};
     std::string error;
+    std::optional<std::string> deliveryBlake3{};
 };
 struct Result {
     JobState state = JobState::Pending;
@@ -155,6 +156,7 @@ struct Result {
     // This is a run-local observation, not a reservation or reusable permission.
     std::optional<ReplacementBinding> replacement{};
     std::vector<DeliveryResult> deliveries{};
+    std::optional<std::string> deliveryBlake3{};
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct RunMember {
@@ -195,6 +197,7 @@ struct Control {
     std::function<void()> serviceHost;
     // Per-call, off-callback diagnostic hooks; only the final user output.
     media::PublishHooks publicationHooks{};
+    bool fingerprintDelivery = false; // requested for a later After Export action
 };
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,
