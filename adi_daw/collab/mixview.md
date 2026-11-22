@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Scheduled preview after Win's #710 landing
+- Pushed `972567ab33` on the after-3-December preview. It carries Win's exact landed device interface and both cold-export fixes. Focus Scope, Spectrum layouts, the Info preview and shared analyser producers remain available for scheduled review.
+- Windows x64 Release passed 24 named CTests (706 broker, 454 Spectrum component and 327 Mix Function component checks) and the 906 Mix View, 329 Arrangement and 7 Appearance software-peer checks. Live pictures and timing remain pending with win.
+- ADI.exe SHA-256 `c51ce11d8a3677d506ec390171aa511916e9c873921939aadae50462fa9de06c`. ZIP SHA-256 `b8a1082ab48a7ec9fb28e6d6b7a6913cc8c7836bd8a12601eec20b67a3415f62`.
+- PR requested — `mixview/review-scope-lands-after-2026-12-03`, exact head `972567ab33`; lands after 3 December.
+
 ## 2026-11-22 — Native EQ sound verification, Low Shelf
 - DF-M3 offline evidence. A frozen 12 dB/oct minimum-phase Low Shelf model passed all four independent 48 kHz / 256 captures and the complete stereo startup/tail comparison. The peak and RMS gates were (10^{-6}) and (10^{-7}). The private note records the exact settings, renders and hashes. Rates and slopes outside that set, automation and the product's native EQ response remain open. This check made no product DSP changes.
 
