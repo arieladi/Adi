@@ -1871,6 +1871,22 @@ void mixAnalyserPages() {
     pages.frame(f.broker, reader, main->id, first->id);
     check(loudnessReads > 0, "All reads Main loudness through the persistent measurement");
 
+    using SpectrumScale = SharedSpectrumView::SpectrumScale;
+    pages.setPage(Page::Spectrum);
+    pages.detail.scaleBox.setSelectedId(static_cast<int>(SpectrumScale::Extended) + 1, juce::sendNotificationSync);
+    pages.setPage(Page::All);
+    pages.frame(f.broker, reader, main->id, first->id);
+    const SharedSpectrumView *summarySpectrum = nullptr;
+    for (int child = 0; child < pages.getNumChildComponents(); ++child) {
+        const auto *tile = dynamic_cast<const SharedSpectrumView *>(pages.getChildComponent(child));
+        if (tile && tile->mode() == SharedSpectrumView::Mode::Spectrum) summarySpectrum = tile;
+    }
+    check(summarySpectrum && summarySpectrum->isShowing() &&
+              summarySpectrum->spectrumScale() == SpectrumScale::Extended &&
+              f.broker->stats().spectralPlans == 1 && f.broker->stats().taps == all.taps,
+          "the All spectrum tile uses the selected layout without another analysis plan");
+
+
     for (const auto &[page, mode] : std::array{
          std::pair{Page::Spectrogram, SharedSpectrumView::Mode::Spectrogram},
          std::pair{Page::Spectrum, SharedSpectrumView::Mode::Spectrum},
@@ -2066,7 +2082,16 @@ void compareAndAveragePages() {
             }
             return true;
         };
-        return hasSegment(pair.a.binsDbfs, look::value) && hasSegment(pair.b.binsDbfs, look::accent);
+        const auto sampleHz = 16 * 48000. / 1024.;
+        const auto sampleX = plot.getX() + (plot.getWidth() - inset) *
+            static_cast<float>(std::log(sampleHz / axis.lowHz) / std::log(axis.highHz / axis.lowHz));
+        // Below both traces, away from the horizontal divisions and the vertical decade marks.
+        const auto sampleY = plot.getY() + (plot.getHeight() - inset) *
+            ((axis.upper + 56.f) / (axis.upper - axis.lower));
+        const auto beneath = image.getPixelAt(juce::roundToInt(sampleX), juce::roundToInt(sampleY));
+        const bool filled = scaleId == 2 || scaleId == 3;
+        return hasSegment(pair.a.binsDbfs, look::value) && hasSegment(pair.b.binsDbfs, look::accent) &&
+               ((beneath != look::display) == filled);
     };
     check(pages.compareScale.isShowing() && pages.compareScale.getSelectedId() == 1 && displayShowsBothTraces(1),
           "Wide is the initial Compare projection and both paths draw adjacent measured bins");
