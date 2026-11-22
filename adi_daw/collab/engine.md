@@ -53,6 +53,12 @@ DF-E56 `gemini/df-e56-mpe-router-overflow` at `c798e2a47f8e070b111a088ecb2818289
 
 The two loaned branches were reviewed at their published heads.
 
+### 2026-11-22 — DF-E55(a), refuse new devices on a VCA
+
+**PR requested** for `engine/df-e55-vca-device-insert` at `b157aa00084a30ec39d6a81d7cf75e6a90a38438`. Title **DF-E55 refuse device insertion on a VCA track**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Built-in and hosted prepare refuse with a VCA reason before preparing edits. Fresh `device.insert` resolves the owning track through rack chains, including the actual restored root of captured inserts. Journal replay preserves saved devices and their complete state.
+
+Eight exact GCC 14 and Clang 19 Debug suites with warnings as errors (Device Ops, Built-in Devices, Device Copy, Device Key Routes, Ops, Replay, Ops Schema, UI Seams). The planted main run failed two prepare and four journal assertions. The candidate passes 183 Built-in Devices and 147 Device Ops checks, including legacy Undo/Redo and atomic refusal. The OPS validator passes. DF-E55(b) follows #677 as the register requires.
+
 ## 2026-11-22 — N67 new input tracks monitor on Auto
 
 **PR requested** · `engine/n67-auto-monitor-default` · `f2802a0030d9e9ad0a02d4404276cf1ccf140422`
