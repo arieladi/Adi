@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Order of the two outer three-band filters
+
+Two stereo cutoff steps distinguish filter arrangements that sound identical at fixed frequencies. Keep the opposite edge fixed and step each cutoff separately at frame 8,192 on sustained, independent left and right input. Read the instantaneous coefficients from separately rendered two-band outputs and use those measured coefficients in each candidate three-band reconstruction.
+
+The low band passes through the lower low-pass and then the upper low-pass. The high band passes through the upper high-pass and then the lower high-pass. Subtract these two from the stage input for the middle band. Over the first 512 frames of each transition, peak prediction errors were 0.00000247 and 0.00000152. Using a fixed-cutoff algebraic shortcut with the instantaneous coefficients gave 0.000235 and 0.000150. These readings identify the order independently of the cutoff smoothing time.
+
+Two separated cutoff pairs and all nine slope combinations at 44.1, 48 and 96 kHz provided 216 single-band and unity comparisons. Solo agreed sample-for-sample with muting the other two gain curves in every Volume case. The first-order prediction was within 0.000000075 peak; the other eight pairs followed the existing compensated serial split to within 0.00000143. The first-order path is also present underneath the active Filter, Sweep, Drive and Crush stages.
+
 ## 22 November 2026 — Attribute Hold detection in saved signal chains
 
 Nine saved settings use manual Hold detection supported by this comparison. Two select the full stage input and both leave its cutoffs open. Seven use their own split band. An additional seven automatic-release settings have a different response and remain outside this comparison.
