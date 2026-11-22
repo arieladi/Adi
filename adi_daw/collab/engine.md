@@ -36,6 +36,18 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — TM-FC-01 remove inserts after Bounce in Place — PR requested
+
+- Ready at `6689b97c4e02f18863061a5fe2b1b98756b9d3a9` on `engine/tm-fc01-remove-bounced-inserts`, for after 3 December.
+- The whole-track operation removes each baked insert, including existing disabled inserts, with the native device remover in the same transaction as the replacement clip and gain/arm changes. The native inverse captures saved parameter, state and rack contents. Rendering and device removal use the same expected head.
+- Both strict Linux compilers passed 949 checks across six suites. The changed fixture measures a real 17-sample delayed insert, source and replacement PCM alignment at both widths, the disabled insert's stored state on Undo, and a deferred device-removal fault with same-job retry and no second render. The original code failed six targeted controls. Checked Win's five portability patterns.
+- **Parked TM-FC-01 remainder** — rack capture waits for DEV-01/ADR-0060, frozen flattening has its separate verified-wet-file contract, and MIDI track-kind conversion needs the hybrid-track decision. The DF-E35(b) extent hunk stays untouched.
+- **Parked ED-06 audio Consolidate** — Q-H and the shared scope are pending. The audio Warp decision does not alter the Bounce in Place contract.
+
+#### FOR THE DIRECTOR — Q-H
+
+- Recommendation already given by PLAN is to keep Consolidate warped at the project tempo as in Live for loop reuse, while Bounce, Freeze and Flatten remain Warp off.
+
 ## 2026-11-22 — MX-33 seeded sync measurements — PR requested
 
 - Ready at `53fad1c3b1142d897877ea962c1b9472e88858cd` on `engine/mx33-sync-spikes`, stacked on `d8c0eeaa` for after 3 December.
