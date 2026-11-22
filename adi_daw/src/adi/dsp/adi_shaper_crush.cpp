@@ -7,22 +7,32 @@
 
 namespace adi::dsp {
 namespace {
-// The small offset above 3 kHz is audible on long fractional hold captures.
-constexpr double holdLow = 8.82;
-constexpr double holdMid = 3000.00500679;
-constexpr double holdHigh = 44100.0;
-constexpr double holdRatio = (holdHigh - holdMid) / (holdMid - holdLow);
-constexpr double holdScale = (holdMid - holdLow) / (holdRatio - 1.0);
 constexpr double totalLevelRange = 32767.0;
 constexpr double linearLevelRange = 14.0 * totalLevelRange / 32768.0;
-constexpr unsigned clockIntervals = 256;
-const std::array<double, clockIntervals + 1> exponent = [] {
-    std::array<double, clockIntervals + 1> table{};
-    for (unsigned i = 0; i <= clockIntervals; ++i)
-        table[i] = std::pow(holdRatio, 2.0 * i / clockIntervals);
+
+// Logarithmic endpoints at 8.82 and 44100 Hz with the measured 225.96 Hz offset.
+constexpr float logMinimum = 5.45864868f;
+constexpr float logSpan = 5.24067688f;
+constexpr float frequencyOffset = 225.96f;
+constexpr unsigned cellsPerUnit = 64;
+constexpr unsigned firstCell = static_cast<unsigned>(logMinimum * cellsPerUnit);
+constexpr unsigned lastCell = static_cast<unsigned>((logMinimum + logSpan) * cellsPerUnit);
+const auto exponent = [] {
+    std::array<double, lastCell - firstCell + 1> table{};
+    for (unsigned cell = firstCell; cell <= lastCell; ++cell)
+        table[cell - firstCell] = std::exp(static_cast<double>(cell) / cellsPerUnit);
     return table;
 }();
-const double logStep = 2 * std::log(holdRatio) / clockIntervals;
+
+float clockExponential(float logFrequency) noexcept {
+    const auto cell = static_cast<unsigned>(logFrequency * cellsPerUnit);
+    const double d = static_cast<double>(logFrequency) - static_cast<double>(cell) / cellsPerUnit;
+    // d is below 1/64. The fifth-order remainder gives the same rounded
+    // exponential throughout the float input range without an audio-rate exp.
+    const double tail = 1.0 / 6.0 + d * (1.0 / 24.0 + d / 120.0);
+    const double factor = 1.0 + d * (1.0 + d * (.5 + d * tail));
+    return static_cast<float>(exponent[cell - firstCell] * factor);
+}
 
 float sanitized(float height) noexcept {
     return std::isfinite(height) ? std::clamp(height, 0.f, 1.f) : 1.f;
@@ -58,18 +68,14 @@ void AdiShaperCrush::updateResolution(float height) noexcept {
 void AdiShaperCrush::updateClock(float height) noexcept {
     clock_ = height;
     if (height == 1.f) {
-        step_ = period_ = 1;
+        step_ = 1;
+        period_ = 1;
         return;
     }
-    const double index = static_cast<double>(height) * clockIntervals;
-    const auto slot = static_cast<unsigned>(index);
-    const double x = (index - slot) * logStep;
-    // A short residual polynomial keeps the fractional sample clock precise
-    // while a moving contour avoids a transcendental function at audio rate.
-    const double power = exponent[slot] * (1.0 + x * (1.0 + x * (.5 + x / 6.0)));
-    const double hz = holdLow + holdScale * (power - 1.0);
-    step_ = std::min(hz / rate_, 1.0);
-    period_ = 1.0 / step_;
+    const float scaled = logSpan * height;
+    const float hz = clockExponential(logMinimum + scaled) - frequencyOffset;
+    step_ = static_cast<float>(std::min(static_cast<double>(hz) / rate_, 1.0));
+    period_ = step_ > 0.f ? 1.0 / step_ : 0.0;
 }
 
 double AdiShaperCrush::noise() noexcept {
@@ -117,8 +123,10 @@ void AdiShaperCrush::hold(Stereo& sample) noexcept {
         return;
     }
     const auto input = sample;
-    const double next = phase_ + step_;
-    if (next < 1.0) {
+    // The sum rounds before the wrap. Higher precision changes the rate
+    // enough to capture different source frames during sustained playback.
+    const float next = phase_ + step_;
+    if (next < 1.f) {
         sample = held_;
         phase_ = next;
     } else {
@@ -129,7 +137,7 @@ void AdiShaperCrush::hold(Stereo& sample) noexcept {
             sample[ch] = held_[ch] + (1.0 - fraction) * (captured - held_[ch]);
             held_[ch] = captured;
         }
-        phase_ = next - 1.0;
+        phase_ = next - 1.f;
     }
     previousHoldInput_ = input;
 }
