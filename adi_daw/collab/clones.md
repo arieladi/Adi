@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Measured quantizer bias for Crush
+
+Of the 873 paired programs, 43 have a nonzero bias on an audible Crush band, including four of the 81 previous regressions. The control spans 0–100% and defaults to zero. With normalized bias b and bit-depth contour u below full resolution, the quantization threshold shifts by 0.499b of a code interval. The old output scale, expressed per code before division by the number of levels, is 1−0.25(1−u)³. Bias subtracts a further 0.25b³(1−u)⁹. The highest resolution bypasses the quantizer.
+
+We measured single threshold crossings and settled levels at seven bias settings and nine active resolutions, undoing the measured 10 Hz output filter in the recording. The recovered shift agreed within 0.000000162 of one code. We checked the resulting law on 21 separate stereo broadband captures including full-resolution bypass, at 44.1, 48 and 96 kHz. The largest RMS error was 0.000000102 and the largest sample error was 0.00000517.
+
+Clones takes the ADI-Shaper Crush kernel, parameter routing, canvas and tests for the three band bias controls. **Lands after 3 December.**
+
+PR requested
+
 ## 22 November 2026 — Measured Pan delay blend and existing review scope
 
 Two fresh reference instances stored a 50% Pan delay blend in each inactive band, both before and after processing. The saved neutral program stored 0%. The original hard-edge comparison also stored 50% with a 2 ms maximum delay. At a leftward or rightward half excursion, an isolated far-side marker arrived 21 frames late at 48 kHz for that setting. Zero blend was immediate. With blend h between 0 and 0.5, the immediate far-side fraction followed (1−2h)³ and the complementary fraction took the delayed path. From 0.5 to 1, both channel gains moved linearly from the chosen Pan law toward unity while the far side retained the delay.
