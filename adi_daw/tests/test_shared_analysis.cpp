@@ -3298,6 +3298,159 @@ void sharedAverage() {
     check(resumed.readAverage() && resumed.readAverage()->processedWindows==1 && raw.read()->columns.size()==4,
           "renewed average and still-live Raw history have independent lifetimes");
 }
+void parkedRealtimeAverage() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 4;
+    Fixture parked, reference;
+    parked.tap = std::make_shared<ScopeTap>(48000., .25);
+    reference.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1};
+    request.outputs = SharedAnalysis::Average1s;
+    request.fftSize = window;
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    auto average = parked.broker.acquire(request);
+    auto uninterrupted = reference.broker.acquire(request);
+    const float *silence = nullptr;
+    const std::array<float, window> zeros{};
+    const auto write = [](Fixture &fixture, const float *samples, int count, std::int64_t position,
+                          std::uint64_t transportRevision) {
+        fixture.tap->write(samples, samples, count, position, false, transportRevision);
+        fixture.broker.pump();
+    };
+    const auto atFloor = [](const auto &result) {
+        return result && result->binsDbfs && !result->binsDbfs->empty() &&
+            std::ranges::all_of(*result->binsDbfs, [](float db) { return db == adi::dsp::kDbFloor; });
+    };
+
+    write(parked, silence, window, stamp, revision);
+    write(reference, zeros.data(), window, stamp, revision);
+    const auto first = average.readAverage();
+    const auto settled = parked.broker.stats();
+    check(atFloor(first) && first->status == SharedAnalysis::AverageStatus::Ready &&
+              first->processedWindows == 1 && first->window && !first->window->advancing &&
+              settled.transforms == 0,
+          "a first certified quiet window publishes a ready realtime average at the floor");
+
+    for (int i = 0; i < blocks; ++i) {
+        write(parked, silence, block, stamp, revision);
+        // Actual zero-filled buffers cannot earn the producer's null-channel certificate.
+        write(reference, zeros.data(), block, stamp, revision);
+    }
+    const auto idle = parked.broker.stats();
+    const auto controlQuiet = uninterrupted.readAverage();
+    check(parked.tap->oldest() > window && atFloor(controlQuiet) &&
+              controlQuiet->processedWindows == 1 + quietFrames / hop && average.readAverage() == first &&
+              idle.workerPasses == settled.workerPasses && idle.cursorReads == settled.cursorReads &&
+              idle.analysisWindows == settled.analysisWindows && idle.transforms == settled.transforms &&
+              idle.publications == settled.publications,
+          "an exactly zero realtime average holds one ready publication through a certified parked ring wrap");
+
+    std::array<float, window> signal;
+    signal.fill(.5f);
+    write(parked, signal.data(), untilHop - 1, stamp, revision);
+    write(reference, signal.data(), untilHop - 1, stamp, revision);
+    check(average.readAverage() == first && uninterrupted.readAverage() == controlQuiet,
+          "same-stamp monitoring does not publish before the original partial hop completes");
+    write(parked, signal.data(), 1, stamp, revision);
+    write(reference, signal.data(), 1, stamp, revision);
+    const auto resumed = average.readAverage();
+    const auto control = uninterrupted.readAverage();
+    check(first && first->window && resumed && control && resumed->window && control->window &&
+              resumed->status == SharedAnalysis::AverageStatus::Ready && resumed->epoch == first->epoch &&
+              resumed->processedWindows == 2 + quietFrames / hop &&
+              resumed->processedWindows == control->processedWindows && resumed->windowSerial == control->windowSerial &&
+              resumed->window->firstSequence == quietFrames + untilHop &&
+              resumed->window->firstSequence == control->window->firstSequence && resumed->window->firstStamp == stamp &&
+              !resumed->window->advancing && resumed->window->sourceEpoch == first->window->sourceEpoch &&
+              resumed->window->overrunCount == first->window->overrunCount && resumed->binsDbfs && control->binsDbfs &&
+              !resumed->binsDbfs->empty() && exactBins(*resumed->binsDbfs, *control->binsDbfs) && resumed->binsDbfs->front() > adi::dsp::kDbFloor &&
+              parked.broker.stats().transforms == 1 && reference.broker.stats().transforms == 1,
+          "parked monitoring matches the uninterrupted hop count, clock and bins without a false overrun");
+
+    // A new transport revision clears the old state. This small but genuinely
+    // nonzero window produces a smoother state below the visible dB floor.
+    signal.fill(1.e-12f);
+    write(parked, signal.data(), window, stamp, revision + 1);
+    const auto tiny = average.readAverage();
+    write(parked, silence, window, stamp, revision + 1);
+    const auto fullyQuiet = average.readAverage();
+    const auto beforeDecay = parked.broker.stats();
+    write(parked, silence, hop, stamp, revision + 1);
+    const auto decay = average.readAverage();
+    const auto afterDecay = parked.broker.stats();
+    check(resumed && atFloor(tiny) && tiny->epoch > resumed->epoch && tiny->processedWindows == 1 &&
+              atFloor(fullyQuiet) && fullyQuiet->processedWindows == 3 && atFloor(decay) &&
+              decay != fullyQuiet && decay->epoch == tiny->epoch && decay->processedWindows == 4 &&
+              afterDecay.workerPasses == beforeDecay.workerPasses + 1 &&
+              afterDecay.analysisWindows == beforeDecay.analysisWindows + 1 &&
+              afterDecay.transforms == beforeDecay.transforms,
+          "a visible floor does not park a mathematically nonzero exponential average");
+}
+
+void parkedRealtimeAverageJoinsScope() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, monitor = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 4;
+    Fixture parked, reference;
+    parked.tap = std::make_shared<ScopeTap>(48000., .25);
+    reference.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1};
+    request.outputs = SharedAnalysis::Average1s;
+    request.fftSize = window;
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    auto average = parked.broker.acquire(request);
+    auto uninterrupted = reference.broker.acquire(request);
+    const float *silence = nullptr;
+    const std::array<float, window> zeros{};
+    const auto writePair = [&](const float *parkedInput, const float *referenceInput, int frames) {
+        parked.tap->write(parkedInput, parkedInput, frames, stamp, false, revision);
+        reference.tap->write(referenceInput, referenceInput, frames, stamp, false, revision);
+        parked.broker.pump();
+        reference.broker.pump();
+    };
+
+    writePair(silence, zeros.data(), window);
+    const auto first = average.readAverage();
+    for (int i = 0; i < blocks; ++i)
+        writePair(silence, zeros.data(), block);
+    check(first && average.readAverage() == first && parked.tap->oldest() > window,
+          "the realtime average is still parked when a second output joins its wrapped tap");
+
+    request.outputs = SharedAnalysis::Scope;
+    const auto scope = parked.broker.acquire(request), controlScope = reference.broker.acquire(request);
+    parked.broker.pump();
+    reference.broker.pump();
+    const auto joined = average.readAverage(), control = uninterrupted.readAverage();
+    const auto stable = parked.broker.stats();
+    check(first && first->window && joined && joined->window && control && control->window &&
+              joined->status == SharedAnalysis::AverageStatus::Ready && joined->epoch == first->epoch &&
+              joined->processedWindows == 1 + quietFrames / hop && joined->processedWindows == control->processedWindows &&
+              joined->windowSerial == control->windowSerial && joined->window == scope.read() &&
+              control->window == controlScope.read() && joined->window->overrunCount == first->window->overrunCount &&
+              joined->window->sourceEpoch == first->window->sourceEpoch &&
+              joined->window->firstSequence == control->window->firstSequence &&
+              exactBins(joined->window->scopeLeft, zeros) && exactBins(joined->window->scopeRight, zeros) &&
+              stable.taps == 1 && stable.domains == 1 && stable.spectralPlans == 1 && stable.transforms == 0,
+          "a same-domain Scope admission catches up certified hops while retaining the Average epoch and zero window");
+
+    std::array<float, monitor> signal;
+    signal.fill(.5f);
+    writePair(signal.data(), signal.data(), monitor);
+    const auto resumed = average.readAverage(), expected = uninterrupted.readAverage();
+    check(first && first->window && resumed && expected && resumed->window && expected->window &&
+              resumed->epoch == first->epoch && resumed->processedWindows == 2 + quietFrames / hop &&
+              resumed->windowSerial == expected->windowSerial && resumed->window->firstSequence == quietFrames + monitor &&
+              resumed->window->overrunCount == first->window->overrunCount && resumed->window == scope.read() &&
+              resumed->binsDbfs && expected->binsDbfs && exactBins(*resumed->binsDbfs, *expected->binsDbfs) &&
+              resumed->window->scopeLeft.size() == window && exactBins(resumed->window->scopeLeft, expected->window->scopeLeft),
+          "monitoring after a parked Scope join keeps exact average and scope alignment with uninterrupted processing");
+}
+
 void averageActivationAndOverflow() {
     Fixture f;
     SharedAnalysis::Request request{1};
@@ -4372,7 +4525,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

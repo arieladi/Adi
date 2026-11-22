@@ -579,6 +579,8 @@ struct SharedAnalysis::Domain {
     bool meterPrepared = false;
     std::atomic<bool> neutralMeter{false};
     bool averageConfigured = false;
+    bool averageExactlyZero = true;
+    std::atomic<bool> averageParkedReady{false};
     AverageStatus averageStatus = AverageStatus::Unavailable;
     std::uint64_t averageEpoch = 0, averageWindows = 0, averageWindow = 0, averageBinsWindow = 0;
     std::int64_t averageAfterSequence = 0;
@@ -716,11 +718,15 @@ struct SharedAnalysis::Domain {
         average->reset(); ++averageEpoch; averageWindows = 0;
         averageWindow = windowSerial; averageBinsWindow = 0;
         averageBins.reset(); averageStatus = AverageStatus::Waiting;
+        averageExactlyZero = true;
+        averageParkedReady.store(false, std::memory_order_release);
     }
     // Owner-only under the domain lock: no preparation/retry on the worker.
     void activateAverage(std::int64_t sequence) noexcept {
         if (!(outputs.load(std::memory_order_acquire) & Average1s)) return;
         averageConfigured = false; averageStatus = AverageStatus::Unavailable;
+        averageExactlyZero = true;
+        averageParkedReady.store(false, std::memory_order_release);
         averageAfterSequence = sequence; averageWindows = 0; averageWindow = windowSerial;
         averageBinsWindow = 0; averageBins.reset(); ++averageEpoch;
         try {
@@ -981,6 +987,7 @@ struct SharedAnalysis::Domain {
         if (!(bits & Average1s)) {
             average.reset(); averageBins.reset(); averageConfigured = false;
             averageStatus = AverageStatus::Unavailable;
+            averageParkedReady.store(false, std::memory_order_release);
             std::shared_ptr<const AverageResult> retired;
             { std::lock_guard lock(resultMutex); averageResult.swap(retired); }
         }
@@ -1016,6 +1023,11 @@ struct SharedAnalysis::Domain {
         }
         updateAvailability();
     }
+    bool canParkAverage(std::uint32_t bits) const noexcept {
+        // Other histories can require their own processing of the same quiet interval.
+        constexpr std::uint32_t sharedOutputs = Average1s | Spectrum;
+        return (bits & Average1s) && !(bits & ~sharedOutputs) && averageParkedReady.load(std::memory_order_acquire);
+    }
     bool parkedWindowSettled(engine::ScopeTap::ParkedSilence quiet, std::uint32_t bits) const noexcept {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
@@ -1023,7 +1035,7 @@ struct SharedAnalysis::Domain {
                (!(bits & Strip) || neutralStrip.load(std::memory_order_acquire)) &&
                (!(bits & DeviceBlockAverage) || blockAveragesQuiet.load(std::memory_order_acquire)) &&
                // Cumulative averaging counts silent hops even when its bins already sit at the floor.
-               !(bits & (Average1s | CumulativeAverage)) &&
+               !(bits & CumulativeAverage) && (!(bits & Average1s) || canParkAverage(bits)) &&
                (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire)) &&
                (!(bits & RealtimeSigma) || neutralSigma.load(std::memory_order_acquire));
     }
@@ -1034,11 +1046,34 @@ struct SharedAnalysis::Domain {
     }
     void skipCertifiedSilenceTo(std::int64_t next) noexcept {
         if (next <= cursor.next) return;
+        if (canParkAverage(outputs.load(std::memory_order_relaxed))) {
+            // The accepted linear history is exactly zero. An omitted zero hop
+            // cannot change it, but still belongs to the audible hop timeline.
+            const auto frames = next - cursor.next + static_cast<std::int64_t>(sinceWindow);
+            const auto omitted = static_cast<std::uint64_t>(frames / request.hopSize);
+            sinceWindow = static_cast<std::size_t>(frames % request.hopSize);
+            if (omitted > 0) {
+                const auto complete = next - static_cast<std::int64_t>(sinceWindow);
+                windowSerial += omitted;
+                averageWindows += omitted;
+                averageWindow = spectralWindow = windowSerial;
+                if (averageBins) averageBinsWindow = averageWindow;
+                firstSequence = complete - request.fftSize;
+                completedWindowEnd.store(complete, std::memory_order_release);
+            }
+        }
         cursor.next = next;
         // The existing FFT ring and the full balance history contain only zeros.
         // Preserve the partial-hop phase when the cursor moves over omitted silence.
         if (balanceHistory)
             balanceHistory->rebaseSilentWindow(next - static_cast<std::int64_t>(sinceWindow));
+    }
+    void catchUpParkedAverageBeforeAddingOutput() noexcept {
+        if (!tap || !canParkAverage(outputs.load(std::memory_order_relaxed))) return;
+        const auto quiet = tap->lastParkedSilence();
+        if (quiet.end <= cursor.next || !settledParkedSilence(quiet)) return;
+        skipCertifiedSilenceTo(quiet.end);
+        consumedSequence.store(cursor.next, std::memory_order_release);
     }
     void skipParkedBeforeCumulative(engine::ScopeTap::ParkedSilence quiet) noexcept {
         const auto bits = outputs.load(std::memory_order_acquire);
@@ -1247,12 +1282,21 @@ struct SharedAnalysis::Domain {
                 const bool clipped = (request.channel != Channel::Right && clippedLeft) ||
                                      (request.channel != Channel::Left && clippedRight);
                 averageWindow = windowSerial;
-                if (!clipped && average->processChecked(linear)) { ++averageWindows; averageStatus = AverageStatus::Ready; }
+                if (!clipped && average->processChecked(linear)) {
+                    if (averageExactlyZero && nonzero) {
+                        averageExactlyZero = false;
+                        averageParkedReady.store(false, std::memory_order_release);
+                    }
+                    ++averageWindows;
+                    averageStatus = AverageStatus::Ready;
+                }
                 else {
                     // Refuse broken spectral input; an explicit average-only
                     // gap clears once, and subsequent valid hops recover from zero.
                     if (averageStatus != AverageStatus::InvalidInput) {
                         average->reset(); averageWindows = 0; ++averageEpoch; averageBins.reset(); averageBinsWindow = 0;
+                        averageExactlyZero = true;
+                        averageParkedReady.store(false, std::memory_order_release);
                     }
                     averageStatus = AverageStatus::InvalidInput;
                 }
@@ -2284,6 +2328,8 @@ struct SharedAnalysis::State {
                     (windows == kMaxWindowsPerFrame || samples == kMaxSamplesPerFrame || reads == kMaxReadsPerFrame);
                 if (d.active.load(std::memory_order_acquire)) {
                     auto averagePublication = d.makeAverageResult(latest);
+                    const bool canPark = d.averageExactlyZero && averagePublication &&
+                        averagePublication->status == AverageStatus::Ready;
                     auto maximumPublication = d.makeMaximumResult(latest);
                     d.publishCumulative(latest);
                     if (latest->outputs & CumulativeAverage)
@@ -2292,6 +2338,7 @@ struct SharedAnalysis::State {
                     auto sigmaPublication = d.makeSigmaResult(latest);
                     d.publishResult(std::move(latest), std::move(averagePublication), std::move(maximumPublication),
                                     std::move(sigmaPublication));
+                    d.averageParkedReady.store(canPark, std::memory_order_release);
                     publications.fetch_add(1, std::memory_order_relaxed);
                 }
             }
@@ -2693,6 +2740,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint3
         if (cumulativeAverage) found->second->cumulativeAverages.reserve(found->second->cumulativeAverages.size() + 1);
         if (!found->second->ensureOutputPlans(request.outputs)) return {};
         const auto newlyRequested = request.outputs & ~found->second->outputs.load(std::memory_order_acquire);
+        if (newlyRequested) found->second->catchUpParkedAverageBeforeAddingOutput();
         const auto sequence = found->second->tap ? found->second->tap->written() : 0;
         auto blockAverage = found->second->admitBlockAverage(averageBlocks, sequence);
         found->second->addCumulative(cumulative, sequence);
