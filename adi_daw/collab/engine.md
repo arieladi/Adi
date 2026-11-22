@@ -38,6 +38,21 @@ The Window's Paste command currently restricts audio and MIDI by track label. N5
 
 Exact GCC 14 and Clang 19 Debug with warnings as errors, eight suites each (Clip Details, Clip Edit, Clip Playback, Edit Plan, Warp Playback, MIDI Clips, MIDI Capture and Engine). The planted native fixture failed 5/10 against main and passed 10/10 with the fix. In the fixture a real split MIDI attack moves from sample 8 to 9, the one-tick tail becomes audible, Clip Details recovers End and the inherited meter, and the fade accepts the full split span.
 
+### 2026-11-22 — DF-E53 and DF-E56 exact heads reviewed
+
+**Changes requested from Gemini and Win.** DF-E53 `gemini/df-e53-canonical-param-ref` at `8cde0b320ca1d9b7fb36b32ceb3b21127f7fa646`. The binder, session override and parameter feed agree on the numeric key. The exact GCC warning-as-error Automation Lanes, Parameter Automation and Project Check suites passed 52, 150 and 73 checks. Two additional native probes found regressions:
+
+- A project saved by main with an undone, previously valid `automation.createLane` with `param_ref:"001"` reopens under both versions. Main's Redo restores the literal row and advances the head. This head's Redo refuses it in `automation_lanes.cpp` and leaves the row absent. Use the existing replay context to preserve the recorded value. Keep fresh op validation and the checker strict.
+- The per-control Re-Enable Automation menu still compares raw strings in `ui/automation_override.hpp`. An overridden `001` lane binds to control `00000001`, while the menu sees no lane. With a later `1` alias, the binder still uses the first lane and the menu chooses the second, disabling Re-Enable. Coordinate with Window to give the menu the same resolved lane ID as the binder.
+
+DF-E56 `gemini/df-e56-mpe-router-overflow` at `c798e2a47f8e070b111a088ecb2818289da7f462`. Its exact router suite passes 118 checks under GCC and Clang with warnings as errors. All three follow-up cases reproduced under both toolchains:
+
+- After 128 held notes, a route change at 48 kHz with 16-frame blocks emits 104 releases into the router list and retains 24 on the old route. The VST3 and CLAP callers mark the route applied and never retry that same route. The exact SDK adapters each accept 32 of those 104 releases, leaving 96 old voices unreleased across the two limits. The route transition needs an end-to-end delivery or retry contract. Both host boundaries are affected.
+- A refused live Note Off stays in the router but produces no release when the next block is empty. The graph and clip source retire delivered input events, so nothing resubmits the original Note Off.
+- With three slots free and one shared member channel, a refused Note On still emits its three reset events. The existing voice's bend changes from 10240 to 8192 while the new voice never starts. Reserve room for the reset and attack together.
+
+The two loaned branches were reviewed at their published heads.
+
 ## 2026-11-22 — N67 new input tracks monitor on Auto
 
 **PR requested** · `engine/n67-auto-monitor-default` · `f2802a0030d9e9ad0a02d4404276cf1ccf140422`
