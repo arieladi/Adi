@@ -47,7 +47,9 @@ class SharedSpectrumView final : public juce::Component,
     SharedSpectrumView();
     ~SharedSpectrumView() override;
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
-    enum class Mode { Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope };
+    enum class Mode {
+        Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope, SpectrumMaximum
+    };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
     void setSource(engine::ScopePoint, std::int64_t device = 0);
@@ -111,7 +113,9 @@ class SharedSpectrumView final : public juce::Component,
     void updateRaster();
     void updateSpectrumProjection();
     void updateScaledSpectrum() noexcept;
-    bool spectrumMode() const noexcept { return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage; }
+    bool spectrumMode() const noexcept {
+        return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage || mode_ == Mode::SpectrumMaximum;
+    }
     Status pictureStatus() const noexcept;
     void resetPicture() noexcept;
     void paintChannelReadout(juce::Graphics &) const;
@@ -126,6 +130,7 @@ class SharedSpectrumView final : public juce::Component,
     bool captureFresh_ = false;
     std::shared_ptr<const SharedAnalysis::Result> shown_;
     std::shared_ptr<const std::vector<float>> averageBins_;
+    std::shared_ptr<const SharedAnalysis::MaximumResult> maximumShown_;
     SharedAnalysis::AverageStatus averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
     std::weak_ptr<const MainMeterSource> mainMeterSource_;
     std::optional<MainMeterSnapshot> mainMeter_;

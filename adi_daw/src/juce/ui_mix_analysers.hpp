@@ -27,7 +27,7 @@ class MixAnalysers final : public juce::Component {
     void resized() override;
 
     AnalysisPane detail;
-    juce::ComboBox pageBox, sourceBox;
+    juce::ComboBox pageBox, sourceBox, spectrumTraceBox;
     juce::ComboBox compareA, compareB, compareScale;
     juce::TextButton holdB{"Hold B"}, clearCompare{"Clear"};
 
