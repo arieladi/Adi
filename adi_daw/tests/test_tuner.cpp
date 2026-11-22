@@ -300,6 +300,41 @@ void bounded() {
     double hz = 0, clarity = 0;
     check(d.analyse(x.data(), hz, clarity) && std::abs(cents(hz, 440)) < 0.1 && d.lastWork() < 200,
           "a clean 440 Hz still reads within 0.1 cent (" + std::to_string(cents(hz, 440)) + "), in " + std::to_string(d.lastWork()) + " differences");
+    // A moving pitch still reads: 82.4 and 110 Hz (three harmonics) with
+    // vibrato of +-50 cents at 5.5 Hz, and a two-semitone glide, at 48 and
+    // 96 kHz: nearly every hop is clear and within 60 cents of the pitch at
+    // the window's middle. (A cut-off at 1.5 samples from the coarse dip
+    // read 0 of 137 hops at 96 kHz.)
+    for (const double rate : {48000.0, 96000.0}) {
+        for (const double base : {82.4, 110.0}) {
+            for (int motion = 0; motion < 2; ++motion) {
+                PitchDetector m;
+                m.prepare(rate);
+                const auto n = static_cast<std::size_t>(rate * 3);
+                std::vector<float> y(n);
+                std::vector<double> f(n);
+                double phase = 0;
+                for (std::size_t i = 0; i < n; ++i) {
+                    const double t = static_cast<double>(i) / rate;
+                    f[i] = motion == 0 ? base * std::exp2(0.5 / 12 * std::sin(2 * std::numbers::pi * 5.5 * t))
+                                       : base * std::exp2(std::clamp((t - 1.0) / 1.0, 0.0, 1.0) * 2 / 12);
+                    y[i] = static_cast<float>(0.2 * std::sin(phase) + 0.1 * std::sin(2 * phase) + 0.05 * std::sin(3 * phase));
+                    phase += 2 * std::numbers::pi * f[i] / rate;
+                }
+                int hops = 0, read = 0;
+                const std::size_t w = m.window();
+                for (std::size_t at = 0; at + w <= n; at += m.hop()) {
+                    double got = 0, clear = 0;
+                    ++hops;
+                    if (m.analyse(y.data() + at, got, clear) && clear >= Tuner::kClarity && std::abs(cents(got, f[at + w / 2])) < 60) {
+                        ++read;
+                    }
+                }
+                check(read >= hops * 9 / 10, std::to_string(base) + " Hz " + (motion == 0 ? "with vibrato" : "gliding") + " at " + std::to_string(rate) +
+                                                 ": " + std::to_string(read) + " of " + std::to_string(hops) + " hops read");
+            }
+        }
+    }
     for (const double rate : {1e20, 1e300}) {
         PitchDetector big;
         big.prepare(rate);
