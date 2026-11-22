@@ -313,6 +313,8 @@ void MixChannelBrowser::frame(const SnapshotReader &reader) {
     const auto &state = root_.state();
     preview.setPalette(state.analysisPalette, state.analysisPaletteReverse);
     preview.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
+    if (preview.mode() == SharedSpectrumView::Mode::Spectrum)
+        preview.setSpectrumScale(root_.mixViewPanel.analysis.detail.view.spectrumScale());
     preview.present(root_.sharedAnalysis, selected != 0 ? selected : main_);
     preview.frame();
 }
