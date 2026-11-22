@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, CT-03 MIDI loop materializer
+
+- `engine-win/midi-loop-takes` at `a889fa3e`, stacked on the engine's same-transaction note capture `254d7d1c`. Each pass creates a take lane and clip, then prepares its native note diff in the same transaction. The take closes a held note at the pass boundary. The main copy keeps the cumulative note image supplied by the recorder, including the carried hold and recorded IDs. Each pass has its own Undo and the explicit Record Quantize diff is a separate commit.
+- MSVC /WX passed recording commands 164/164, note diff 1,062/1,062, MIDI Capture 59/59 and History. The 3.5-pass test covers four take clips, one main clip, the partial last pass, note length and release at the wrap, one Undo per pass, separate quantize Undo, and literal Redo.
+- **Parked, input and policy wiring.** The materializer takes completed pass notes and a main note image. The live input caller and the existing-clip Arrangement Overdub cases still need the engine and Window handoff. The proof is from the native new-loop and journal fixtures.
+
+PR requested.
+
 ## 2026-11-22, CT-01 literal take-lane edits
 
 - `engine-win/take-lane-edit-scope` at `4c2b07f3` validates literal take-lane ownership and reads only the scoped track/lane pair. Move, Resize End, Trim and Delete preserve the take lane, the main lane's clips and track automation. Delete targets clip IDs, so an overlapping sibling on the same take lane survives. The same-track and cross-track refusals retain DF-E17's separate detach or lane-change contract.
