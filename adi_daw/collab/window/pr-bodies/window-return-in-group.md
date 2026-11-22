@@ -1,4 +1,4 @@
-The director can now put a return track inside a group, as the agreed sheet draws it (DF-W33, the window half; ADR-0247 d2; ADR-0245 d9, d10; WTS-01 step 5b). The return stands in its group after what the group holds, lettered with the group's initial ("DA"). Its send knob is on the group's tracks only, and A and B keep their letters everywhere. Stacked on #677 (`engine/df-e23-plugin-workers`, merged at its head `25e3dfe9`, which carries main), whose engine lets a return have a group, takes its sends only from inside it, and clicks a mixed return to Post; this PR's base is that branch until #677 lands.
+The director can now put a return track inside a group, as the agreed sheet draws it (DF-W33, the window half; ADR-0247 d2; ADR-0245 d9, d10; WTS-01 step 5b). The return stands in its group after what the group holds, lettered with the group's initial ("DA"). Its send knob is on the group's tracks only, and A and B keep their letters everywhere. One window-only commit on #677's head (`25e3dfe9`), whose engine lets a return have a group, takes its sends only from inside it, and clicks a mixed return to Post. #677 has landed on main (`cc74097c`), so this PR's base is main.
 
 ![The return-inside-a-group sheet beside the window as built, both 1920 x 1080](https://github.com/arieladi/Adi/blob/window/return-in-group/adi_daw/collab/window/pictures/2026-11-22-return-in-group.png?raw=true)
 
@@ -48,7 +48,7 @@ Not done
 - **The Pre FX tap's sound** is the engine's (#677); the window writes the op.
 
 Review
-An adversarial review (correctness, behaviour, tests, a skeptic per finding) confirmed five defects. All are fixed in the second commit (the third finding's fix is now the engine's reading, after the merge):
+An adversarial review (correctness, behaviour, tests, a skeptic per finding) confirmed five defects. All are fixed in this commit (the third finding's fix is now the engine's reading):
 - **Choosing the tap a send already takes** from its return's switch made an undo step and pinned the send against the switch.
 - **Letters went stale:** a send knob's letter, its title and Main's switch titles kept the old letter after the group was renamed or the return moved.
 - **A missed mixed state:** an older file's return whose sends disagree read Post, not mixed.
@@ -74,7 +74,7 @@ Tests
     - a return dragged into a group and out again, one step each;
     - a return with a track refused;
     - an older file's disagreeing sends read mixed, and the engine's click sets every send to Post.
-  - `tools/test_all.sh build-juce`: PASS, 63701 checks across 269 suites, validators clean, on this head (`6d1395f2`).
+  - `tools/test_all.sh build-juce`: PASS, 63701 checks across 269 suites, validators clean, on the tree this commit carries (`6d1395f2`, the same tree as `b882c743`).
 - Pd off, configured as `ui.yml` (`-DADI_WITH_PD=OFF -DADI_WERROR=ON`): `adi_app` and the six UI suites `ui.yml` runs build and pass.
 - The shadow and clang warning sweeps are clean on this PR's files (`ui_mixer.cpp`, `ui_arrangement.cpp`, `ui_shell.cpp`, `ui_look.cpp`, `tests/test_ui_seams.cpp`, and `tests/test_ui_shell.cpp`'s lines). In `tests/test_ui_shell.cpp` they flag main's own two lines, as on step 4.
 

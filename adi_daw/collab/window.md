@@ -27,6 +27,10 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 Questions only the director can answer. Each says what the window lane recommends and what it holds up; the lane works on meanwhile. Newest first.
 
+**WIN-09: which manual the Help menu opens** (22 November). Recommendation: Live 12's manual, which ADI's behaviour is written against (ADR-0203 d1), until ADI has a manual of its own; one constant (`AdiRootComponent::kManualAddress`) changes it. Holds up nothing: the entry is built.
+
+**WIN-01: the Mac's key-map golden.** The shell's new key-map check writes one golden per platform family; the Mac's (`keymap-<preset>-mac.txt`) is written on a Mac with `--write-references`. Until then the Mac runs the no-clash check alone.
+
 **Answered (ADR-0247, 19 November), struck:** ~~1. Take lanes and comping, proposal 1~~ agreed, with the switch in the track header, the Insert Take Lane button and Live's menu item both, seam crossfades off by default; ~~2. A return inside a group, proposal 1~~ agreed, every question as recommended; ~~3. Step 4's silences~~ answered as built (Live's widths, Set and the arrows where they are, the edge strip until the Control Bar's switch).
 
 **Four more proposal sheets are drawn** (19 November, before ADR-0248 d14 set one a week): [the Mixer and the track rows](https://github.com/arieladi/Adi/blob/window/proposals/adi_daw/collab/window/design/proposals/mixer-and-track-rows.png?raw=true), [the Browser](https://github.com/arieladi/Adi/blob/window/proposals/adi_daw/collab/window/design/proposals/browser.png?raw=true), [the Clip View](https://github.com/arieladi/Adi/blob/window/proposals/adi_daw/collab/window/design/proposals/clip-view.png?raw=true), and [menus, dialogs and Settings](https://github.com/arieladi/Adi/blob/window/proposals/adi_daw/collab/window/design/proposals/menus-dialogs-settings.png?raw=true), each 1920 x 1080 with its HTML source on `window/proposals`, each with its open questions on the sheet. Win takes them to the director one a week, in the order win chooses; nothing of their look is built before he agrees one.
@@ -96,6 +100,39 @@ Questions only the director can answer. Each says what the window lane recommend
 | N57 | An insert of a third-party plug-in (VST3, CLAP) onto a track, as one undo step: `preparePluginInsert`/`commitPluginInsert` beside `prepareBuiltinInsert`, with Live's placement (a new instrument replaces the track's; an audio effect never before the last instrument, a MIDI effect never after the first) (ADR-0248 d6: the engine's fifth item, from the Mix View's 668e05c9 core) | engine | DF-W9's purpose: a plug-in loaded from the Browser, so a MIDI clip sounds | the Browser lists the plug-ins (#676) and a load says it waits for N57 |
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
+
+## 2026-11-22, evening, window lane — queue items 2 and 6: DF-W33 rebuilt as one commit (PR requested); DF-W30 (PR requested)
+
+**Item 2, DF-W33. PR requested.** Branch `window/return-in-group`, now one window-only commit, `b882c743`.
+- **Base.** It sits on #677's head `25e3dfe9`, and #677 has landed on main (`cc74097c`), so the PR's base is main.
+- **Gate.** Its tree is byte-identical to the one gated as `6d1395f2`: `test_all` PASS (63701 checks across 269 suites), shell 2981, seams 560, Pd off green, sweeps clean on its lines.
+- **Body:** [`collab/window/pr-bodies/window-return-in-group.md`](window/pr-bodies/window-return-in-group.md), updated. Title as before. Lands with or after #677, now on main.
+- **The queue's conditions.**
+  - DF-E30 (c) (`0f2f33c4`, Pre FX takes a neutral source) is on that head, so the tap menu stays.
+  - The mixed switch's click is the engine's one op (`clickReturnSendTap`).
+  - The engine's item-1 hunks in `ui_mixer.cpp` (that click) are in the base this commit sits on. So this branch is the second to land, and it merged.
+- **For window-fn.** `track_edits.hpp`: this branch changes `groupable` (a return may be grouped), the Main refusal text and `moveTracks` (returns into a group). It touches no DF-E16 line. If DF-E16 lands first, the second branch merges main.
+
+**Item 6, DF-W30. PR requested.** Branch `window/grid-ticks`, head `f2bc7285`, merged with main. Title: **adi_daw: window: the grid in ticks; Save As, Collect All and Save and Auto Gain Stage refresh once with the overridden lanes; no empty fade step (DF-W30)**. Body: [`collab/window/pr-bodies/window-grid-ticks.md`](window/pr-bodies/window-grid-ticks.md).
+- **Review.** An adversarial review confirmed three defects, all fixed in `199b6c3a`:
+  - a fade with a pinned clock was refused as "already that long";
+  - a crossfade over an unchanged side was named Create Fade;
+  - `endMixerDrag` still refreshed without the overridden lanes.
+- **Tests.** Shell 2930, seams 558, document 314, all 0 failures; `test_all` PASS (64092 checks across 270 suites); Pd off green; sweeps clean on its lines.
+- **For window-fn.** `endMixerDrag` (MX-23) is yours: its refresh now passes `session_.overriddenLanes()`, as Save As does. One line.
+- **Carried.** It carries `window/browser-devices-test`'s commit until that lands.
+
+**Items 3, 4, 5 and 7** (input-clock, menu-parameters, undo-settles, held-peak) are merged with main, reviewed (five confirmed findings, all fixed), and pushed. Each is in its gate now; each gets its own "PR requested" when its gate is green.
+- **DF-W19.** main already carries an equivalent fix (`2b89c1db`, the Mix View seat's), so `window/menu-parameters` is now its test alone, guarding that fix.
+- **For the Mix View seat:** the fix lives in your `ui_devices.cpp` now; keep it through your rebuild.
+
+**Items 8 and 10** (WIN-01 `window/function-keys`, WIN-09 `window/help-menu`) are written, pushed and in the same gate chain.
+
+FOR THE DIRECTOR (also added at the top):
+- **WIN-09:** which manual Help opens. Recommendation: Live 12's (ADI follows it, ADR-0203 d1) until ADI has its own; one constant changes it.
+- **WIN-01:** the Mac's key-map golden (`references/keymap-<preset>-mac.txt`) is written on a Mac with `--write-references`, as only the PC family's can be written here.
+
+---
 
 ## 2026-11-22, later, window lane — LOG-1122: the queue of 22 November, the split with window-fn, items released
 
