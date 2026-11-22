@@ -13,6 +13,8 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 constexpr auto uid = "org.adidaw.builtin.adi-shaper";
@@ -261,14 +263,67 @@ void automationKeepsTheClock() {
     check(plain == automated, "lane events split the block without rewinding a synced curve");
 }
 
+void audioTriggerPd() {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    constexpr std::size_t length = 8192;
+    std::array<std::vector<float>, 2> native;
+    const auto declarations = adi::device::parsePdDeclarations(adi::builtinCanvas(uid));
+    for (auto execution : {Engine::Execution::Automatic, Engine::Execution::PureData}) {
+        adi::device::PdLatencyReceiver latency;
+        Engine path(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2, execution, Engine::BlockMode::WholeBlocks);
+        std::string error;
+        path.addSearchPath(ADI_PD_PATCH_DIR);
+        check(path.open(latency, error), "audio-trigger canvas opens");
+        check(path.isNative() == (execution == Engine::Execution::Automatic), "requested DSP route is active");
+        path.prepare(48000, 256);
+        path.bindParameters(declarations);
+        const auto write = [&](Shaper::Param control, float value) {
+            check(path.sendParameter(static_cast<int>(control) + 1, value), "trigger control accepts its declaration ID");
+        };
+        write(Shaper::TriggerMidMode, 2);
+        write(Shaper::TriggerMidEnd, 75);
+        write(Shaper::bandParam(Shaper::Stage::Volume, Shaper::Band::Mid, Shaper::Cycle), .5f);
+        write(Shaper::bandParam(Shaper::Stage::Volume, Shaper::Band::Mid, Shaper::Point1), 0);
+        std::array<std::vector<float>, 2> signal{std::vector<float>(length), std::vector<float>(length, .0125f)};
+        signal[0][1111] = .7f;
+        for (std::size_t frame = 0; frame < length; frame += 256) {
+            const float* in[]{signal[0].data() + frame, signal[1].data() + frame};
+            float* out[]{signal[0].data() + frame, signal[1].data() + frame};
+            adi::engine::NodeIo io;
+            io.in = in;
+            io.out = out;
+            io.frames = 256;
+            io.channels = 2;
+            path.process(io);
+        }
+        check(latency.latencySamples() == 672 && signal[1][1781] == .0125f && signal[1][1782] == 0.f &&
+              signal[1][3283] == .0125f, "reported delay and non-grid onset reach the shipped device");
+        if (path.isNative()) native = std::move(signal);
+        else check(signal == native, "editable Pd and registered native Volume retrigger match sample for sample");
+    }
+}
+
 } // namespace
 
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 426, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    for (int id = 754; id <= 764; ++id)
+        check(device->paramAt(415 + id - 754)->id == std::to_string(id), "new trigger controls have sparse stable IDs");
+    auto sparse = adi::Payload::from_cbor(device->saveState("state"));
+    for (int id = 754; id <= 764; ++id) {
+        sparse.at("params").erase(std::to_string(id));
+        sparse.at("real").erase(std::to_string(id));
+    }
+    set(*device, 755, 1);
+    check(device->getParam("755").real == 2, "running one-shot is enabled before recall");
+    check(device->loadState("state", adi::Payload::to_cbor(sparse)) &&
+          device->getParam("755").real == 0 && device->latencySamples() == 0,
+          "a sparse project resets detector delay and restores legacy transport sync");
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
@@ -375,6 +430,7 @@ int main() try {
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
+    audioTriggerPd();
     automationKeepsTheClock();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");
