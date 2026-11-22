@@ -221,8 +221,12 @@ AdiShaperPanel::Map AdiShaperPanel::mapping() const {
     }
     return m;
 }
+bool AdiShaperPanel::hasParameter(int id) const noexcept {
+    return (id > 0 && id <= binding_.parameterCount) ||
+           (binding_.hasBandTrim && id >= Core::VolumeLowTrim + 1 && id <= Core::WidthHighTrim + 1);
+}
 double AdiShaperPanel::read(int id) const {
-    if (!binding_.read || id <= 0 || id > binding_.parameterCount)
+    if (!binding_.read || !hasParameter(id))
         return 0;
     const double value = binding_.read(id);
     return std::isfinite(value) ? std::clamp(value, 0.0, 1.0) : 0.0;
@@ -1039,7 +1043,7 @@ bool AdiShaperPanel::send(Phase p, std::span<const Change> values) {
     return binding_.parameters && binding_.parameters(p, values);
 }
 void AdiShaperPanel::setOnce(int id, double v) {
-    if (id <= 0 || id > binding_.parameterCount)
+    if (!hasParameter(id))
         return;
     const std::array<Change, 1> before{{{id, read(id)}}}, after{{{id, std::clamp(v, 0.0, 1.0)}}};
     if (before[0].value == after[0].value || !send(Phase::Begin, before))
@@ -1051,7 +1055,7 @@ void AdiShaperPanel::setOnce(int id, double v) {
     refresh();
 }
 bool AdiShaperPanel::beginParam(int id) {
-    if (id <= 0 || id > binding_.parameterCount)
+    if (!hasParameter(id))
         return false;
     originalValue_ = read(id);
     originalParams_ = {{id, originalValue_}};
