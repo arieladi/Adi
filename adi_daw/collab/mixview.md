@@ -2,6 +2,17 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-22 — Focus Scope Difference, Left, Right and Side
+
+**PR requested.** `mixview/focus-scope-difference-20261122` at `d850105e`, after the Scope and Align slices in the joined review. Difference shows the starred Main minus the selected recipient from aligned raw samples. A sign fault triggered both null assertions. The Release passed 615 broker, 453 Spectrum and 301 function-component checks. The layout gate still exercises Overlay, Layers, Stack and Sum with Difference present.
+
+**PR requested.** `mixview/focus-scope-channels-20261122` at `950709f9`, after Difference. Left and Right select existing lanes. Side folds the signed samples before binning and shares Mid's optional storage. The selector is panel-wide. Neither selector creates a new tap or FFT. A Side sign fault triggered four projection assertions. The clean Release passed all 19 selected CTests, including 621 broker and 308 function-component checks. The shell component subsets passed 906 Mix View, 329 Arrangement and 7 Appearance checks.
+
+The latest cumulative Windows x64 Release is `950709f9f020fe0528f89320474a67d182fcaa1d` on main `0ea10b8e`. `mixview/review-cumulative-20261122` points to this tip. The latest ZIP is `ADI-MixView-Cumulative-1122-950709f9f0-win64-Release.zip` with brief `ADI-Q-MixView-Cumulative-1122-950709f9-CLAUDE-RETEST.txt`. Verified archive SHA-256 `de2016eadd5ee3b18384eb5d74da58f652746160756827350d8ca375be1ee4cc`, ADI.exe `377d44fce74d4c5deb10d23798c7fec86e1facaa29cd55c8b7e94ab28145d24c`, scanner `fd699cc00d01ad6b01ed81af6f8025b266e94766897a461d038c0563dbdebc85` and source archive `2eb7b6d916f7456236b736b976b4fc69877c670b9572a0c1f53cf20369974511`. The brief covers the approved identity and Locate fixes, analyzer modes and the remaining matched timing retest. Win owns live checks when the director is idle.
+
+Align Apply, Hear Removed and native Carve/Focus exposure still need the owner hooks described in the reconciliation entry. Matched callback timing and calibration of the remaining analyzer reference looks are pending.
+
+
 ## 2026-11-22 — Cumulative Windows Release for Win
 
 The exact x64 Release at `80eacfe89c83a064e7fec26cc0c0ffc972b4218b` builds against main `0ea10b8e`. The SSD build completed. The original scratch build tree remains available. Nineteen CTests passed, including 605 broker, 453 Spectrum, 291 function-component, 129 document identity, 114 owned VST3 and 463 Focus checks. The three component-only shell modes passed 906 Mix View, 329 Arrangement and 7 Appearance checks.
