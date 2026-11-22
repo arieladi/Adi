@@ -170,6 +170,14 @@ Strict GCC 14 and Clang 19 each passed 739 checks across six suites. The native 
 
 Parked the rack transform hookup and note-off ownership on the DEV-01/DEV-18 landing, and the default curve and controller filtering on the Live reading. DEV-04's native drum receive and play mapping is next. It needs no persisted pad settings yet.
 
+### 22 November — DEV-04 Drum Rack Receive and Play mapping
+
+**PR requested** for `engine/dev04-drum-pad-routing` at `b1b50df2eda0506ef28a170f669c1ca3cfc916f1`, stacked on rack-zone admission. The owner compiles one immutable 128-pad map. A played key reaches its Multi chains and All Notes chains in authored order, with literal chain IDs, explicit Play overrides and choke-group tags. A short output refuses the complete fan-out. The callback traverses only the selected pad and All Notes, with no heap work.
+
+Strict GCC 14 and Clang 19 each passed 751 checks across six suites. The test covers both MIDI endpoints, All Notes, multiple chains on one pad, a pad swap without changing the played note, the previous generation staying immutable, malformed notes and groups, and callback rejection for owner compilation.
+
+Parked persisted pad edits, returns and sends on their reservations and R0. Choke arbitration and release wait on A8D-004 and DEV-18's graph hook. Parked DEV-16 on the Pd/Max allowlist and DEV-10/07, and SRF-07 feed integration on CTL-06 and the shared playing-value source. SRF-08's native MCU fader wire codec and servo feedback can proceed while host/profile wiring waits.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
