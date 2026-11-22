@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Acceptance fixtures for the Crush Hold envelope follower
+
+Sixteen of the 873 historical programs enable the Hold follower in an audible band. Fifteen use Add and one uses Multiply. Fifteen changed when the follower alone was disabled in an isolated Crush replay. Changes on the second bar spanned 0.0000144–0.156404 stereo RMS. All eight eligible full-chain comparisons changed, with a maximum of 0.060494 RMS. Reopening the original positive state gave exactly the same audio on every trial. Seven states enable automatic release, and one stores a different detector filter setting.
+
+The Width and Hold reference controls can be compared without access to either detector's internals. Feed equal and opposite signed stereo markers with dyadic levels, read Width gain directly from the side output, halve it and use that value to drive the measured hold clock. All 24 tests selected the current-frame control at 44.1, 48 and 96 kHz, including Add and Multiply, two depths, and two sets of attack/hold/release controls. The worst reconstructed audio RMS was 0.000000442 in Add and 0.00001192 in Multiply. The active detector must continue operating on a flat full-height drawn curve.
+
+A quarter-scale plateau with minimum attack and release exposed a difference in the existing Width follower. The original cycles through 0.2489609, 0.2499838, 0.2499998 and 0.25 at 48 kHz. At 96 kHz the cycle takes seven frames. A constant-level estimate misses these variations. The measured baseline and held-out downward steps will govern a shared detector. The Hold port is parked on that common response and the Width front end. The seven automatic-release settings need their own readings.
+
 ## 22 November 2026 — Repair sustained fractional sample-and-hold timing
 
 `clones/shaper-crush-clock-precision` at `de769084` — Calibrate the sample-and-hold clock over sustained playback. Across 2,891,211 measured crossings in 129 rate/height cases, every case improved. On 39 blind cases median timing RMS fell from 0.0563432 to 0.00000117 sample and the worst case fell from 3.28477 to 0.00000484 sample. All 8,160,049 representable logarithmic arguments matched the correctly rounded exponential in an exhaustive check. The cache occupies 2,688 bytes. Main failed the sustained signed marker at 96 kHz. Rack, Crush and registered native/edited-Pd suites passed under MSVC /W4 /WX at both Pd precisions.
