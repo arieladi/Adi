@@ -412,6 +412,31 @@
       "path": "test_generated_assets.py",
       "bytes": 1351,
       "sha256": "f4289a36dfdac2d66fb1fcd7c6f0816bf12ddca964a2725625fcaff3ce06f518"
+    },
+    {
+      "path": "performance/WORKER-GATE.md",
+      "bytes": 3427,
+      "sha256": "bf62477f1444def2bbb8df0535b5e5747bc671732c59586464e63686a6306ae3"
+    },
+    {
+      "path": "performance/worker_fixtures.py",
+      "bytes": 5697,
+      "sha256": "107af0cccc1bfcfc49ccec552653e0c796068186c3c8fbab1f244368a3fdc2fa"
+    },
+    {
+      "path": "performance/worker_measure.py",
+      "bytes": 13056,
+      "sha256": "552181126ceced2c7dee6ccd29bc02dac2cf75cecf3def71221d9aae0fc7f785"
+    },
+    {
+      "path": "performance/worker_stats.py",
+      "bytes": 16341,
+      "sha256": "f6abe8d93b560b97be70e9e6ff5c668aab1a1844dc31b615ef9ebe952557a137"
+    },
+    {
+      "path": "performance/worker_verify.py",
+      "bytes": 3372,
+      "sha256": "610d9f8e8e0a2dfe6982da6b7f04b6e4904786022eef3640fa31845c41a143e7"
     }
   ]
 }
