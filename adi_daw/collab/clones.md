@@ -17,6 +17,21 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Three-run crossover comparison
+
+For Win, all eight 48 kHz stereo captures at `ef2ca023` matched `a5560662` byte-for-byte on the registered kick and bass. Each cell below uses 30,720 timed callbacks in three fresh processes per implementation with rotated run order. Both heads and the reference reported zero latency.
+
+| Case | Buffer in frames | Old head median µs | New head median µs | Reference median µs | New / reference p99 µs | New / reference misses |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Lower cutoff edit | 256 | 41.7 | 19.0 | 76.6 | 24.9 / 332.3 | 12 / 125 |
+| Lower cutoff edit | 2,048 | 327.7 | 147.8 | 465.5 | 363.4 / 4,295.6 | 7 / 25 |
+| Upper cutoff edit | 256 | 41.4 | 18.6 | 74.6 | 25.9 / 179.9 | 9 / 80 |
+| Upper cutoff edit | 2,048 | 321.9 | 142.8 | 455.3 | 418.7 / 2,832.4 | 30 / 18 |
+| Interrupted reversal | 256 | 41.7 | 19.1 | 75.7 | 37.4 / 114.4 | 48 / 24 |
+| Interrupted reversal | 2,048 | 325.6 | 145.6 | 460.7 | 229.2 / 1,529.6 | 17 / 15 |
+| Stationary | 256 | 15.7 | 9.8 | 29.0 | 16.8 / 53.5 | 17 / 6 |
+| Stationary | 2,048 | 118.8 | 71.9 | 100.2 | 377.7 / 141.2 | 19 / 6 |
+
 ## 22 November 2026 — Lower the cost of moving and stationary crossovers
 
 `clones/shaper-split-slew` at `ef2ca023` — Choose the stationary or moving renderer once per stage callback. While an edge moves, evaluate its frequency coefficient from one shared 18 KiB polynomial table. The cap and out-of-table frequencies use their analytic values. Cold setup and the transition to a settled frequency keep the original calculation.
