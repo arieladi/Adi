@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — #677 landed with DF-E30 and one-click Post
+
+Win landed #677 from `25e3dfe9f2c46773c6af6f9931df92410c066347` as `cc74097c862bd8dc3ccbde93e88983c2df137d17`. Main `ac07be74` includes that merge. Both `adi_daw` and Step 7 UI passed at the exact PR head, including the GCC, Clang, and macOS/Windows JUCE jobs. [PR checks](https://github.com/arieladi/Adi/pull/677/checks)
+
+The identical `engine/df-e23-followups` head is now in main. Win can close the companion request and the superseded staging branch. WTS-01 Step 5b still needs the window-fn grouping rule and Win's acceptance step. DF-E64 Step 2b and Gemini's DF-E56 refused attack remain with their respective owners. Their branch heads are still `c7f3d9cc` and `da6d1629`.
+
 ## 2026-11-22 — DF-E17 current-main rebase, lands after DF-E35(a)
 
 **PR requested, lands after DF-E35(a)**, for `engine/df-e17-edit-invariants-current` at `ab14b5ddfc54a4578abe9ceb83f2b5e47f9551b3`. Title **Preserve native clip placement and automation lane bounds**. Base main `9f2abf4a`. This replaces the older `engine/df-e17-edit-invariants` `0c30d4ce` without rewriting it. Main already contains DF-E47's projection, DF-E27(a)'s fade fix, checked freeze extents, and rack cascade Undo. The rebased branch retains their stronger regression controls and adds native placement and automation bounds.
