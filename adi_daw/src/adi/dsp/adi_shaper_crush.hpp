@@ -29,7 +29,7 @@ private:
     double rate_ = 0, highpassAmount_ = 0, highpassGain_ = 1;
     double levels_ = 1, quantizedGain_ = 1, step_ = 1, period_ = 1, phase_ = 0;
     float bits_ = -1, clock_ = -1;
-    Stereo previousQuantInput_{}, previousHoldInput_{}, held_{}, low_{};
+    Stereo previousQuantInput_{}, previousCode_{}, previousHoldInput_{}, held_{}, low_{};
     std::uint32_t seed_ = 0x297a04b3u;
     bool dither_ = false;
 };

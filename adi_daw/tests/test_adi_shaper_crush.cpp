@@ -207,6 +207,18 @@ void dither(Crush& band) {
 int main() try {
     Crush band;
     check(band.prepare(48000),"prepare band");
+    // Nonfinite controls select full height. Finite controls clamp to [0, 1].
+    Crush reference;
+    check(reference.prepare(48000), "prepare control comparison");
+    constexpr auto inf = std::numeric_limits<float>::infinity();
+    constexpr float heights[]{-inf, -1.f, .5f, 2.f, inf, std::numeric_limits<float>::quiet_NaN()};
+    constexpr float expected[]{1.f, 0.f, .5f, 1.f, 1.f, 1.f};
+    for (std::size_t i = 0; i < std::size(heights); ++i) {
+        const float s = (i % 2 == 0) ? .77f : -.43f;
+        near(mono(band, s, heights[i], heights[i]), mono(reference, s, expected[i], expected[i]),
+             0., "out-of-range control keeps the reference history");
+    }
+    band.reset();
     quantizer(band);movingResolution();clock(band);longClock(band);combined(band);dither(band);
     check(!band.prepare(std::numeric_limits<double>::infinity()),"invalid sample rate");
     near(mono(band,.321f,.1f,.1f),.321f,0,"invalid-rate dry signal");

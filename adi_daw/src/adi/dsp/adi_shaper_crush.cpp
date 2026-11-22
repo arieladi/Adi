@@ -25,6 +25,7 @@ const std::array<double, clockIntervals + 1> exponent = [] {
 const double logStep = 2 * std::log(holdRatio) / clockIntervals;
 
 float sanitized(float height) noexcept {
+    if (height >= 0.f && height <= 1.f) return height;
     return std::isfinite(height) ? std::clamp(height, 0.f, 1.f) : 1.f;
 }
 } // namespace
@@ -43,7 +44,7 @@ void AdiShaperCrush::reset() noexcept {
     bits_ = clock_ = -1;
     phase_ = 0;
     seed_ = 0x297a04b3u;
-    previousQuantInput_ = previousHoldInput_ = held_ = low_ = {};
+    previousQuantInput_ = previousCode_ = previousHoldInput_ = held_ = low_ = {};
 }
 
 void AdiShaperCrush::updateResolution(float height) noexcept {
@@ -95,7 +96,7 @@ void AdiShaperCrush::quantize(Stereo& sample, double previousLevels, double code
         const double value = sample[ch] + perturbation;
         const double before = previousQuantInput_[ch] * previousLevels;
         const double now = value * levels_;
-        const double priorCode = std::floor(before + .5);
+        const double priorCode = previousCode_[ch];
         const double code = std::floor(now + .5);
         if (code == priorCode) {
             sample[ch] = quantizedGain_ * code;
@@ -108,6 +109,7 @@ void AdiShaperCrush::quantize(Stereo& sample, double previousLevels, double code
             sample[ch] = quantizedGain_ * mean;
         }
         previousQuantInput_[ch] = value;
+        previousCode_[ch] = code;
     }
 }
 
@@ -142,6 +144,12 @@ void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
     const double previousLevels = levels_;
     double codeScale = 1.0;
     if (u != bits_) {
+        // Bypass records its input without quantizing. Recover that final
+        // sample's code only when leaving bypass.
+        if (bits_ == 1.f) {
+            for (unsigned ch = 0; ch < 2; ++ch)
+                previousCode_[ch] = std::floor(previousQuantInput_[ch] * previousLevels + .5);
+        }
         updateResolution(u);
         codeScale = levels_ / previousLevels;
     }
@@ -164,7 +172,7 @@ bool AdiShaperCrush::finishBlock() noexcept {
     for (std::size_t ch = 0; ch < low_.size(); ++ch) {
         if (!std::isfinite(low_[ch]) || !std::isfinite(held_[ch]) ||
             !std::isfinite(previousHoldInput_[ch]) || !std::isfinite(previousQuantInput_[ch])) {
-            low_[ch] = held_[ch] = previousHoldInput_[ch] = previousQuantInput_[ch] = 0.0;
+            low_[ch] = held_[ch] = previousHoldInput_[ch] = previousQuantInput_[ch] = previousCode_[ch] = 0.0;
             repaired = true;
         }
     }
