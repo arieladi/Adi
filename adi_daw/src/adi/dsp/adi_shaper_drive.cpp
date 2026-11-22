@@ -119,6 +119,11 @@ void AdiShaperDrive::tune(float amount) noexcept {
     const bool rect = mode_ == Mode::Rectify;
     pre_ = inputGain_ * (rect ? fourth : fourth*fourth);
     post_ = outputGain_ * compensation(rect ? rectGain : clipGain,amount);
+    // Bring in the nonlinear transfer below the first nonzero compensation
+    // knot. A smoothstep joins both existing paths with zero blend slope.
+    constexpr double firstKnot = 1.0 / 32.0;
+    const double x = std::min(1.0, static_cast<double>(amount) / firstKnot);
+    driveFade_ = x * x * (3.0 - 2.0 * x);
 }
 
 double AdiShaperDrive::transfer(double z) const noexcept {
@@ -177,13 +182,21 @@ void AdiShaperDrive::process(float& left, float& right, float driveNormalized) n
     const Stereo* in = input_.data()+inputHead_;
     const auto upsampled = factor_ == 4 ? interpolate<4>(in) : interpolate<2>(in);
     const auto factor = static_cast<std::size_t>(factor_), taps = static_cast<std::size_t>(taps_);
+    const bool fading = driveFade_ > 0.0 && driveFade_ < 1.0;
     StereoSum base{};
     for (std::size_t p=0; p<factor; ++p) {
         wetHead_ = wetHead_ == 0 ? taps_-1 : wetHead_-1;
         const auto wetHead = static_cast<std::size_t>(wetHead_);
         Stereo wet{};
-        for (std::size_t c=0; c<2; ++c)
-            wet[c] = static_cast<float>(shape(upsampled[p][c] * pre_, channels_[c]) * post_);
+        for (std::size_t c=0; c<2; ++c) {
+            const double input = upsampled[p][c];
+            double shaped = shape(input * pre_, channels_[c]) * post_;
+            if (fading) {
+                const double zeroDrive = (input * inputGain_) * outputGain_;
+                shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
+            }
+            wet[c] = static_cast<float>(shaped);
+        }
         wet_[wetHead] = wet_[wetHead+taps] = wet;
         if (p == 0) {
             const Stereo* history = wet_.data() + wetHead_;
