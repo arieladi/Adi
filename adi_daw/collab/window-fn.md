@@ -46,6 +46,32 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — queue item 5, DFE44-DISCARD: the Status Bar says when a dropped take's files stay (PR requested)
+
+**Window lane, read first:** this item touches `src/adi/ui/project_document.*` (a new `discardTake`).
+
+Since DF-E44, `AudioRecordingResult::discard()` returns the `std::error_code` of a folder the system would not remove
+and keeps the folder for a retry. The window ignored it. Each of the three discard sites now goes through
+`discardTake`, which adds the system's words and the folder's name to the Status Bar line:
+- a take with no attachable audio: "The take was not kept: …";
+- a take the project refused: "The take was recorded but could not be added: …";
+- a Record start whose command did not fit the transport queue.
+
+The added line reads: "Its recorded files could not be removed (Permission denied); they stay in
+.adi-record-… in the project's folder."
+
+**Test** (`tests/test_ui_document.cpp`, `discardRefusalSaid`): Record, then make the work folder read-only, then stop
+with nothing recorded and land. The Status Bar names the refusal and the folder, and the folder stays. POSIX only.
+Root removes entries from a read-only folder, so as root the case skips and says why. Here it ran as an
+unprivileged user (317 checks, 0 failures) and as root (it skips). CI's runners are not root.
+
+**Run:** JUCE on, Pd off, warnings as errors (GCC 13, Debug): the 27 window and mix suites pass, and the shell suite
+from a scratch directory passes (2954 checks, 0 failures).
+
+PR requested: `window-fn/dfe44-discard` → main, "Say in the Status Bar when a dropped take's files stay (DF-E44)".
+**Lands after DF-E44 and N66:** the branch is `engine-win/recording-failed-prefix` `0900deeb` (N66, which contains
+DF-E44 `0ed2c355`) plus one commit.
+
 ## 2026-11-22, window-fn — queue item 4, OWNER-REVIEW-1122: the window's sites in N62, N66, DF-E64 and the loans (for win)
 
 **Tree reviewed:** main `87ea349c` with `engine-win/export-host-owner` `6b78d94c` (N62), then
