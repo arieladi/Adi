@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Registered Crush verification and Volume retrigger cost
+
+For Win, `clones/shaper-crush-hold-grid` (`9925a705`) also passed the full rack, dedicated Crush and registered native/edited Pd suites in both signal precisions. This finding affects the existing stage on main. Win can schedule its review independently of the new stages.
+
+On `clones/shaper-audio-retrigger` (`e08b932f`), five alternating trials of 2,048 callbacks per setting used the registered device, stereo kick and bass and 48 kHz. Looping retrigger took 8.8 µs against 6.5 µs in sync at 256 frames, and 68.9 against 49.2 µs at 2,048. One-shot took 8.9 against 6.4 µs and 67.6 against 49.0 µs respectively. Median incremental cost was 0.043–0.047 percent of one callback deadline. No callback missed its deadline. Enabling either measured mode changed the device’s reported compensation from zero to 672 frames.
+
+PR requested
+
 ## 22 November 2026 — Stereo cutoff offset for all five calibrated Filter responses
 
 `clones/shaper-filter-stereo` at `830d3a12` — Add independent stereo cutoff offset to the three Filter bands. **Lands after 3 December.** IDs 850–852 control the low, middle and high bands. Existing response IDs and sparse projects retain centered stereo. For each of the five responses, 60 source impulse comparisons in total at three sample rates confirmed that each channel follows the same response with its own shifted cutoff.
@@ -80,7 +88,7 @@ PR requested
 
 ## 22 November 2026 — Keep the moving Crush hold clock continuous across blocks
 
-`clones/shaper-crush-hold-grid` at `9925a705` — Keep the moving Crush hold clock continuous across audio blocks. **Lands after 3 December.** The preset comparison found a dependence on callback size upstream of the room. An independent broadband test isolated the moving hold-rate control on Crush. The full-rate bypass resets the capture phase. At a contour boundary, the former evaluator could take that reset in one buffer partition and miss it in another.
+`clones/shaper-crush-hold-grid` at `9925a705` — Keep the moving Crush hold clock continuous across audio blocks. This fixes the existing stage on main. The preset comparison found a dependence on callback size upstream of the room. An independent broadband test isolated the moving hold-rate control on Crush. The full-rate bypass resets the capture phase. At a contour boundary, the former evaluator could take that reset in one buffer partition and miss it in another.
 
 Main failed 18 new partition checks. The repaired MSVC /W4 /WX rack suite passed for whole, 256, 2,048 and irregular blocks, including continuous and stepped curves, two start phases, full-rate bypass, a held nonzero rate and real transport jumps. On kick and bass, the full-chain 256-versus-2,048 RMS difference fell from 0.000120719 to 0.00000000326. Isolated Crush went from 0.000124318 to sample-identical. The stepped and linear broadband cases went from 0.0638735 and 0.000877294 to sample-identical. All twenty whole-block reference captures retained their previous samples. Latency remained zero.
 
