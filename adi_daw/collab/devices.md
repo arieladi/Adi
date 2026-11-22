@@ -8,7 +8,7 @@ device PRs do not conflict on one shared log file.
 ## FOR THE DIRECTOR
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 21 (the post-3-December effects) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 25 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -106,6 +106,28 @@ method); Live's files and renders stay in the director's research.
     - Soft Clip: a 1 kHz sine at −20 dBFS, then at +6 dBFS, the output's peak and its first five
       harmonics.
     - M/S with a hard-left signal over the ceiling: the peak on each channel.
+22. **LFO (DEV-07's device side; built after 3 December).** A fresh LFO, every control as shown
+    (its shapes, Rate and its synced choices, Phase, Offset, Depth, Jitter, Smooth, and any other).
+    - Mapped to a Utility Gain at 1 Hz: one cycle of each shape.
+    - Jitter at 50 % and Smooth at 50 % on the Square: two cycles each.
+    - Synced at 1/4, 120 BPM: a locate to bar 3 beat 2, the value at the locate and whether the
+      phase is the song's or restarts.
+23. **Align Delay (built after 3 December).** A fresh Align Delay, every control as shown.
+    - An impulse: where it comes out in Time 10 ms, Samples 123, and Distance 3.432 m at its default
+      temperature, at 48 kHz.
+    - Whether a fractional delay is interpolated or rounded to a sample.
+    - Whether Live reports the delay as latency.
+    - What a changed delay does to audio in the line.
+24. **Auto Pan-Tremolo (built after 3 December).** A fresh Auto Pan-Tremolo, every control as shown,
+    in both modes.
+    - A 1 kHz sine at 1 Hz, Amount 100 %: each channel's level over one cycle, at Phase 180 and 90,
+      in Pan and in Tremolo.
+    - Shape at 50 % and 100 %.
+    - The level at the crest (unity, or less).
+25. **Channel EQ (built after 3 December).** A fresh Channel EQ, every control as shown.
+    - Pink noise through each band at its extremes, and through the low cut: the response, to settle
+      the corners, slopes and the bell's Q.
+    - Whether the Mid band's Q changes with its gain.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -120,6 +142,197 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — standing queue items 11, 12, 15 and 16: the LFO and Shaper kernels, Align Delay, Auto Pan-Tremolo; item 10's review fixed — all land after 3 December
+
+### Item 10's review, fixed
+
+Item 10's review, three skeptics per finding, upheld three findings; all are fixed, each with a check
+that fails on the code before it.
+- **A Hybrid Reverb stage with no impulse** (a first load while audio runs, or a swap from an impulse
+  too short for that stage) skipped its next period, a block-long hole in the tail. It now sums an
+  arriving impulse from the whole history, as the head does. The check: a 30,000-tap impulse
+  arriving at sample 5,000 must match the full convolution from A + 3,072 on. The error is 2.1e-9
+  now, 0.0125 on the earlier code.
+- **Delay's parity fixture** had LeftSync switched off, which made LeftNotes and the tempo change
+  inert. Sync now stays on, and the slot moves the filter instead.
+- **Echo's Post reverb**: see the previous entry.
+
+### Item 11, lfo-kernel: Live's LFO modulator, the kernel
+
+**PR requested:** head `devices/lfo-kernel` (46e5b70e), base `main`.
+- **What it is.** DEV-07's device side (ADR-0249 d8): a modulation signal rendered sample by sample
+  for the engine's evaluator to route (ADR-0230).
+  - Shapes: Sine, Triangle, Saw Up, Saw Down, Square, Random, Wander.
+  - Rate in Hz, or synced to a Division of the song.
+  - Phase, Offset, Depth, Jitter, Smooth.
+- **The same bits at every block size:**
+  - free running, the phase advances by the same addition every sample;
+  - synced, it is read from the song's sample position within its tempo segment, so a locate lands
+    on the song's own phase;
+  - random values hash the cycle's index.
+- `adi_lfo_modulator_tests` 25; two plants caught. Reading 22, below.
+
+### Item 12, shaper-mod-kernel: Live's Shaper modulator, the kernel
+
+**PR requested:** head `devices/shaper-mod-kernel` (4c8ad6df), base `main`, after item 11 (stacked).
+- **What it is.**
+  - Up to 64 breakpoints, each with a curve (an exponential of 8 times the curve); the last segment
+    runs into the next cycle, and two points at one time make a step.
+  - `setPoints()` copies and sorts in a fixed array, so it allocates nothing.
+- **The clock is shared.** The phase logic and the cycle hash move to `modulator_clock.hpp`, shared
+  with the LFO. The LFO's output is unchanged, bit for bit: an FNV hash over every configuration is
+  identical before and after.
+- `adi_shaper_modulator_tests` 15; two plants caught. Its default shape is ADI's until reading 11.
+
+### Item 15, align-delay: Align Delay, core and device
+
+**PR requested:** head `devices/align-delay` (caadc5ef), base `main`, after item 9 (stacked).
+- **What it is.** Left and right delayed apart in Time (ms), Samples, or Distance (metres or feet,
+  at the speed of sound for the set temperature), with Link.
+  - The delay is exact: a whole number of samples.
+  - **It reports no latency.** The delay is the effect, and a host would compensate it away; whether
+    Live reports it is on reading 23.
+- **A real defect, found by parity.** The loop wrote the left output before reading the right
+  input, and Pd hands an output plane that is an input plane. Both inputs are now read first, and a
+  new check fails on the old loop.
+- **Tests:** `adi_align_delay_tests` 14; parity max error 0; the catalogue holds 26 built-ins.
+
+### Item 16, auto-pan-tremolo: Auto Pan-Tremolo, core and device
+
+**PR requested:** head `devices/auto-pan-tremolo` (7e3c1e92), base `main`, after item 15 and item 12
+(it takes both in by merge).
+- **What it is.**
+  - Pan: two LFOs Phase apart. Tremolo: one LFO for both channels.
+  - Gain 1 − Amount × (1 − (1 + w)/2).
+  - Wave Sine, Triangle, Saw Down or Random, with Shape and Invert.
+  - Rate in Hz, or synced at the host's tempo.
+- **Tests:** `adi_auto_pan_tests` 12; parity max error 0; the catalogue holds 27 built-ins.
+- **Need, for the engine:** song position reaches only ADI-Shaper's native path, so a synced Auto
+  Pan-Tremolo follows the tempo from its own start, not the bar line. The adapter's position path,
+  given to every native core that has a `sync()`, would lock it, and the LFO and Shaper kernels'
+  hosts too.
+
+### Item 17, channel-eq: Channel EQ, core and device
+
+**PR requested:** head `devices/channel-eq` (776ad5eb), base `main`, after item 16 (stacked).
+- **What it is.** An 80 Hz Butterworth low cut, a 100 Hz low shelf, a bell of Q 0.7 at Mid Freq, an
+  8 kHz high shelf and Output, as direct-form-I biquads in double.
+- **Tests:**
+  - each band's measured response is within a stated 0.01 dB of the design's analytic magnitude,
+    and meets its anchor;
+  - `adi_channel_eq_tests` 16;
+  - parity max error 0;
+  - the catalogue holds 28 built-ins.
+
+### Readings added to the ONE list
+
+22 (LFO), 23 (Align Delay), 24 (Auto Pan-Tremolo) and 25 (Channel EQ).
+
+## 2026-11-22 — standing queue items 3, 7, 8, 9 and 10: every core settles after silence; Glue, Gate and Limiter are devices; Hybrid Reverb under the common bound
+
+One review of items 1–3 and 7–9 ran with three skeptics per finding, and six findings were
+confirmed. All six are fixed on their branches and merged up each stack; each fix comes with a
+check that fails on the code before it. Item 10 had its own review, whose three confirmed findings are fixed too (next entry). CTest 268/268 at PD_FLOATSIZE 32 and 64
+on item 10's tip (items 1-3 and 10), 271/271 on the Limiter's (items 7-9); lint clean.
+
+### Item 3, denormal-tail: every built-in core's recursive states settle on exact 0 after silence
+
+**PR requested:** head `devices/denormal-tail` (a53b1e68), base `main`, after items 1 and 2 (it is
+stacked on them).
+- **The audit.** 119 recursive states in the 16 built-in cores outside ADI-Shaper. Two skeptics
+  confirmed each claimed gap, and 67 decayed into subnormals with nothing to stop them. Each now
+  settles, in the codebase's own styles:
+  - a 1e-30 floor;
+  - a snap within 1e-12 of a smoother's target;
+  - a snap before a float delay-line write;
+  - for states in vendored headers, which stay untouched, a settle on every 64th sample since
+    prepare: a grid of absolute positions, so where the host cuts its blocks never changes a
+    sample;
+  - the Vocoder's band envelopes at 1e-300, since a 1e-30 floor would be audible through
+    `pow(sqrt(env), Depth)`.
+- **The proof**, Part 3 of `adi_builtin_realtime_tests` (an optimised build):
+  - **Settling.** Every built-in, at 64 and 128 frames: 8 s of signal, then 60 s of silence. Over
+    the last second, with flush-to-zero off, no operation may read a subnormal. The check is x86's
+    denormal-operand flag in the SSE status word.
+  - **Cost.** Under the callback's own flush scope, the steady silence (the last 2 s of 30) costs no
+    more than the steady signal at p99, within 25 % and 5 µs.
+  - **Before the fixes**, 12 of the 21 built-ins read subnormals; after, none does. A plant dropping
+    Utility's DC floor alone fails Utility alone.
+  - **What the flag can see**, stated exactly in the test:
+    - every float-held state, and every double whose time constant is under about 85 ms (a double
+      turns subnormal only 708 time constants down);
+    - a slower double's floor (Echo's envelope, Resonators' combs at a 2 s decay) is held by the
+      audit and the code, not by this check.
+- **The review's findings, fixed:**
+  - **Echo's room**, the Reverb's float tank, was missed. A new check (Reverb 100 %, Feedback 0)
+    reads subnormals from 17 to 22 s into the silence on the earlier code, and none now.
+  - **Auto Filter's and Shifter's block-end flushes** made the tail depend on the host's blocks. They
+    now settle on the grid. New impulse-into-silence checks at 32, 100 and 4,096 frames: 14 and 2 of
+    them fail on the earlier code, none now.
+  - **Part 3 now builds off x86.** Its guard excludes ARM64EC, as `floating_point_control.hpp` does.
+  - **From item 1:** the measured-count check now takes the catalogue's count apart from the loop,
+    and counts the Sampler's 32 slots. Restoring the old canvas filter fails both checks (20 of 21).
+- **Found on the way, then fixed:** Echo with Reverb raised at the default Feedback ran away (about
+  +23 dB). The Post reverb was fed back into the delay line; it now colours only the output, and
+  only the Feedback location puts the room in the loop. A check fails on the earlier code.
+- The Debug run skips Part 3; the CTest TIMEOUT is now 1800 s for the optimised run's 6 min.
+
+### Items 7, 8 and 9: the Glue Compressor, Gate and Limiter as loadable built-ins — land after 3 December
+
+Each takes the one before it in by merge, so the catalogue keeps ADR-0249 d7's order: Compressor,
+Glue, Gate, Limiter. Each has the same parts:
+- an external that prepares its core only when the sample rate changes, so a DSP rebuild keeps the
+  core's state, and the Limiter's allocating `prepare()` runs once per rate;
+- a canonical canvas, with ids fixed now and ranges ADI's until its reading;
+- native dispatch;
+- a catalogue entry (Audio Effects, Dynamics, stereo).
+
+- **Item 7, Glue Compressor.** **PR requested:** head `devices/glue-compressor` (98e479db), base
+  `main`, after `devices/compressor`.
+  - 8 controls; reading 19.
+  - Parity max error 0.
+- **Item 8, Gate.** **PR requested:** head `devices/live-gate` (c76d2952), base `main`, after item 7.
+  - 8 controls; reading 20.
+  - It reports its Lookahead as latency: 10 ms is 480 samples at 48 kHz, kept while bypassed. A new
+    check; a plant expecting 479 fails it.
+- **Item 9, Limiter.** **PR requested:** head `devices/live-limiter` (ac6c8718), base `main`, after
+  item 8 and `devices/limiter-offline`.
+  - 6 controls; reading 21.
+  - **Latency:** every Lookahead in both detector modes reports 72, 144 or 288 samples at 48 kHz,
+    plus 10 in True Peak mode, kept while bypassed.
+  - **Ceiling:** a -1 dB ceiling holds on +12 dB noise in every link (in M/S, on mid and side).
+  - `adi_live_limiter_tests` 58 and `adi_dsp_tests` 433 unchanged.
+- **The review's finding, fixed:** the Glue fixture's Release change set its default (Auto), so
+  parity never left Auto.
+  - The parity harness now checks that every fixture change moves a control off its canvas default.
+    That found three older no-op changes, all toggles set to their default: Delay's LeftSync,
+    Reverb's SpinOn and Saturator's HiQuality.
+  - All four are fixed. Parity stays at max error 0 for every fixture: 427 checks on the Limiter's
+    tip.
+- The catalogue holds 25 built-ins on the Limiter's tip.
+
+### Item 10, hybrid-reverb-nupc: Hybrid Reverb in non-uniform partitions — lands after 3 December
+
+**PR requested:** head `devices/hybrid-reverb-nupc` (fb1c7e9a), base `main`, after item 3 (stacked
+on it).
+- **The stages:**
+  - **the head:** the impulse's first 2,048 samples in 256-sample partitions, the existing code, so
+    every impulse up to 2,048 samples renders exactly as before;
+  - **then blocks of 1,024** from 2,048;
+  - **then blocks of 4,096** from 8,192.
+- **Why no callback carries a spike:** a stage of block B starting at S ≥ 2B − 256 has a whole block
+  period to compute in. Its parts are summed by sample position, so every callback size renders the
+  same bits. A 5 s impulse costs about 71 multiply-adds a sample, against about 940; the latency
+  stays 256.
+- **Tests:** impulses of 2,049 to 60,000 samples with taps on every stage edge.
+  - They match a direct convolution: largest error 1.3e-8, against a budget of 1.5e-6 to 4.1e-6.
+  - They render the same bits at callback sizes 1 to 4,097.
+  - Cutting the impulse at either stage edge fails.
+  - `adi_hybrid_reverb_tests` 72 (21 new), Pd 11.
+- **Measured:** Hybrid Reverb's p99 is 12.6 % of the deadline at 64 frames and 11.3 % at 128 (it was
+  17–28 %). Its 25 % exception is removed, and the whole realtime suite passes: 252 checks, 0
+  failures.
 
 ## 2026-11-22 — standing queue items 1 and 2: the Sampler is timed and made cheap; the Debug run fits its timeout (#706's review)
 
