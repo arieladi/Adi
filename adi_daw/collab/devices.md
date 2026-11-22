@@ -213,7 +213,11 @@ method); Live's files and renders stay in the director's research.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first. A lone
     number into `[line~]` (a jump): does its right outlet bang, and when? A list cut short by a new
-    one: does the cut list bang? (The translator assumes no to both; DEV-16 step 7.)
+    one: does the cut list bang? (The translator assumes no to both; DEV-16 step 7.) `[biquad~]`'s
+    smooth attribute (on by default): how it smooths, over how long, and whether coefficients given as
+    arguments are smoothed in at load. `[slide~]` with a signal in its slide inlets: read per sample?
+    A slide below 1, 0 or negative: clamped to 1? `[%]`: is a float input truncated or rounded? The sign
+    of `-7 % 3`, and what `% 0` gives.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
@@ -226,6 +230,34 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-16, step 8: Max's `%` is an integer modulo; `biquad~`'s smoothing is not ignored (P2)
+
+**PR requested:** head `devices/amxd-modulo-biquad` (0a1ea57b), base `main`, after
+`devices/amxd-line-ends`. Body: the commit message. Both are corrections, read from Max's own
+reference.
+- **`[%]`.** The translator refused `[% 2.5]` as a float modulo that Pd could not do. Max's reference
+  says a float is "converted to int" and the argument is an int, so Max has no float modulo here.
+  `[% 2.5]` now takes the integer path: fed 7.3 it gives 7 % 2 = 1.
+- **`[biquad~]`.** Max smooths coefficient changes. Its `smooth` attribute is on by default, and the
+  reference does not say how. Step 4 changed coefficients at once, which a Max patch would not do with
+  smoothing on.
+  - Coefficients that change at run time now translate only with smoothing off: `@smooth 0` typed,
+    or the attribute saved with the box.
+  - Arguments alone still translate.
+- **Still refused**, because the reference does not say whether a signal in these inlets is read per
+  sample: `[slide~]`'s and `[biquad~]`'s signal-rate inlets.
+- **The open points** go to reading 14:
+  - `biquad~`'s smoothing;
+  - `slide~` with a signal, and below 1;
+  - `%` with a float input, a negative input, and 0.
+- **Tests:** `adi_pd_amxd_tests` 87.
+  - `[% 3]` fed 8.9 gives 2, and `[% 2.5]` fed 7.3 gives 1.
+  - The `biquad~` list case with `@smooth 0` still starts at 1 and settles at 2.
+  - The default is refused, naming the smoothing. A saved `smooth` 0 translates.
+  - Three plants each fail: the old `%` refusal, the smoothing check removed, `@smooth` not read.
+  - The first run of the last two plants hit MSVC's constant-condition warning (`if (false && ...)`)
+    and ran a stale binary. They were redone with conditions the compiler cannot fold, and both fail.
 
 ## 2026-11-22 — DEV-16, step 7: `[line~]`'s ramp time, end bang and initial value (P2)
 
