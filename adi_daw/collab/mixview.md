@@ -11,6 +11,17 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 retained Wide Spectrum path
+
+Wide now projects its line when a publication, slope or scale changes. Paint and resize use that retained geometry. The Wide ruler still follows a lower Nyquist edge and the primary retains its previous stroke. Freeze holds the raw frame while permitting display tilt.
+
+After correcting the test’s grid-line overlap and comparing the same Frozen title state, exactly the two cache assertions failed first. All 490 analyser assertions now pass, including calibrated Hann shoulders at 32 kHz, lower-Nyquist placement, Frozen tilt and resize, exact flat round-trip and cache release on hide. All 24 CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed both units and Clang passed the implementation.
+
+Review ZIP SHA-256 `c332db466761723fae7ef9546de460ae72da2551072641c7e2b893561c3328a1`; EXE SHA-256 `cc70fa4c379cc40901e3808013662e3dcba6acdb948eeae6d57b8a0f495d2ec0`. The accompanying brief covers Wide calibration, Freeze, slope and visibility. The fixed log-cell projection and timed paint budget are separate gates.
+
+PR requested — `mixview/mx21-wide-spectrum-cache-lands-after-2026-12-03` at `96b95c700e631a30cf0a52ef8c29f642377ed10e`, also on the joined scheduled preview. Lands after 3 December.
+
+
 ### 22 November — MX-21 pinned Spectrum stereo readouts
 
 The wide pinned Realtime Spectrum shows current-window RMS balance and signed left/right correlation from the existing primary publication. Freeze holds those values with the curve. Compact layout gives the height back to the plot. One-sided input names the active side and leaves correlation unavailable. Silence leaves both unavailable. Repeated unchanged frames add no formatting, analysis, plans or tap subscriptions.
