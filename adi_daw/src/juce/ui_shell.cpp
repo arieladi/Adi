@@ -59,6 +59,7 @@ void AppCommands::reload() {
     autoHidePluginWindows_ = flag(settings_, "plugins.autoHideWindows", true);
     pluginWindowsOnTop_ = flag(settings_, "plugins.editorsAlwaysOnTop", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
+    delayCompensation_ = flag(settings_, "audio.delayCompensation", true);
     wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
@@ -103,6 +104,12 @@ bool AppCommands::setTabMovesFocus(bool on, std::string &why) {
         return false;
     tabMovesFocus_ = on;
     return true;
+}
+bool AppCommands::setDelayCompensation(bool on, std::string &why) {
+    if (!settings_.set("audio.delayCompensation", on, {}, why))
+        return false;
+    delayCompensation_ = on; // in force from here, as every Settings change is
+    return settings_.save(why);
 }
 bool AppCommands::setWrapTabNavigation(bool on, std::string &why) {
     if (!settings_.set("lookfeel.wrapTabNavigation", on, {}, why) || !settings_.save(why))
@@ -211,7 +218,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
-                                  "Arrangement Record", "Export Audio/Video..."};
+                                  "Arrangement Record", "Export Audio/Video...", "Delay Compensation"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -657,6 +664,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ArrangementRecord: // manual 21.1 and §41.6: F9
         info.addDefaultKeypress(juce::KeyPress::F9Key, 0);
         info.setTicked(active_ != nullptr && active_->isRecording());
+        break;
+    case DelayCompensation: // manual 18.7: the Options menu's switch, ticked from the setting (MX-04)
+        info.setTicked(delayCompensation_);
         break;
     case ExportAudio: // manual 5.2.1 and §41.3: Ctrl/Cmd+Shift+R
         info.addDefaultKeypress('r', cmd | shift);
@@ -3750,6 +3760,20 @@ bool AdiRootComponent::command(int id) {
             return fail(why);
         break;
     }
+    case AppCommands::DelayCompensation: {
+        // Live's switch (manual 18.7): the setting, then the session; no undo step. The strips grey
+        // their Track Delay at the next frame.
+        // The setting is in force once set, whether or not its file could be written, as the Settings'
+        // rows are, so the session follows it either way; a session that refuses keeps its message in
+        // the Status Bar (the tail below would clear it), and a file not written is said.
+        std::string why;
+        const bool saved = commands_.setDelayCompensation(!commands_.delayCompensation(), why);
+        if (applyDelayCompensation && !applyDelayCompensation(commands_.delayCompensation()))
+            return true;
+        if (!saved)
+            return fail(why.empty() ? "Delay Compensation could not be changed." : why);
+        break;
+    }
     case AppCommands::WrapTabNavigation: {
         std::string why;
         if (!commands_.setWrapTabNavigation(!commands_.wrapTabNavigation(), why))
@@ -3986,15 +4010,17 @@ const std::vector<MenuEntries> &menuBar() {
         // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Solo in Place
         // (§18.6), in its own group after the grid's, as Live 12's menu places it (read on Live 12,
         // 5 November: Solo Switches, Cue Switches, Solo in Place, before Settings), and Settings on
-        // Windows (§2.3). Solo Switches and Cue Switches come with the cue path (B6).
+        // Windows (§2.3). Solo Switches and Cue Switches come with the cue path (B6). Delay
+        // Compensation (manual 18.7) stands in its own group before them; its place among Live's
+        // other Options entries is to be read on Live 12 (PROVISIONAL).
 #if JUCE_MAC
         {"Options",
          {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
-          C::SoloInPlace}},
+          C::DelayCompensation, 0, C::SoloInPlace}},
 #else
         {"Options",
          {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
-          C::SoloInPlace, 0, C::Settings}},
+          C::DelayCompensation, 0, C::SoloInPlace, 0, C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, the Groove Pool and the
         // Learn View come with those views; the Mixer with its keyboard.

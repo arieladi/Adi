@@ -237,7 +237,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     keepLatency.onClick = [this] { panel_.root.setKeepMonitoringLatency(track_, !keepLatency.getToggleState()); };
     addChildComponent(keepLatency);
     delay.setTitle("Track Delay");
-    delay.setTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
+    setDelayTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
     delay.setScrollWheelEnabled(false);
     delay.onDragStart = [this] { dragging_ = true; };
     delay.onDragEnd = [this] {
@@ -307,8 +307,23 @@ void MixerStrip::bind(std::int64_t id) {
     frame(true);
 }
 void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
+void MixerStrip::setDelayTooltip(const juce::String &tip) {
+    // The box's value label covers the slider and keeps the tooltip it had when it was made: both get it.
+    delay.setTooltip(tip);
+    for (auto *c : delay.getChildren())
+        if (auto *label = dynamic_cast<juce::Label *>(c))
+            label->setTooltip(tip);
+}
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
+    // Live makes Track Delay unavailable while Options > Delay Compensation is off (manual 18.7;
+    // MX-04); its value stays as stored, and comes back with the switch.
+    if (const bool compensated = panel_.root.commands().delayCompensation(); delay.isEnabled() != compensated) {
+        delay.setEnabled(compensated);
+        setDelayTooltip(compensated ? "Delays the track's output by this many milliseconds; a negative value pre-delays it."
+                                    : "Track Delay is unavailable while Options > Delay Compensation is off.");
+        repaint(); // its "ms" box and title follow
+    }
     // A device put on a MIDI track or taken off it may give it an audio mixer or take it away.
     const auto devices = panel_.root.devices.publication ? panel_.root.devices.publication() : nullptr;
     if (changed || devices.get() != devices_) {
@@ -648,7 +663,7 @@ void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).
     const auto b = delay.getBounds();
     const juce::Rectangle<float> r(static_cast<float>(b.getRight() + 2), static_cast<float>(b.getY()), 22.f, 13.f);
-    controls::button(g, r, controls::ButtonState::On, "ms");
+    controls::button(g, r, delay.isEnabled() ? controls::ButtonState::On : controls::ButtonState::DisabledOn, "ms");
 }
 void MixerStrip::commitDelay() {
     // From the CURRENT cell, as every action is (ADR-0201): ms into samples at the project's rate,

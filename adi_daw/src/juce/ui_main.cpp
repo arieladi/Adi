@@ -817,6 +817,20 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // Options > Delay Compensation (MX-04): the application's setting, which this project's session
+        // follows from its open and at each toggle.
+        root->applyDelayCompensation = [this](bool on) {
+            // The Settings window's row follows the menu's switch, so its next click is not wasted.
+            if (settingsWindow_)
+                settingsWindow_->panel().refreshValues();
+            if (!document_ || document_->setDelayCompensation(on))
+                return true;
+            if (root_)
+                root_->say(document_->error());
+            return false;
+        };
+        if (!document_->setDelayCompensation(commands_->delayCompensation()))
+            root->say(document_->error());
         root->reenableLane = [this](std::int64_t lane) {
             const bool ok = document_->reenableAutomation(lane);
             if (!ok && root_)
@@ -1242,6 +1256,9 @@ class AdiApplication final : public juce::JUCEApplication,
                     };
                 settingsWindow_->panel().onChange = [this] {
                     commands_->reload();
+                    // The Audio page's Delay Compensation row is the Options menu's switch.
+                    if (root_ && root_->applyDelayCompensation)
+                        root_->applyDelayCompensation(commands_->delayCompensation());
                     pluginSourcesChanged();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {

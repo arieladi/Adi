@@ -83,6 +83,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // the row after the sends in the track controls, and as the section under the mixer in the
     // Mixer View.
     juce::Slider delay;
+    void setDelayTooltip(const juce::String &tip);
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
     // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
     // track that records.
