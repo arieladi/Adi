@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Steep Filter, all 873 programs
+
+`clones/shaper-filter-steep` at `5fff5d0a` — Complete the reference comparison for the two 24 dB Filter responses. **Lands after 3 December.** With saved stage order, the number below 0.001 stereo RMS error rose from 53 to 60 of 873. With fixed order it rose from 49 to 54. Every previously passing program stayed below the threshold in its respective order.
+
+The changed response occurs on 101 bands in 100 programs. All 100 complete stereo streams changed. In saved order, 82 improved by more than 0.000001 RMS, 17 worsened and one stayed within that distance. Fixed order gave 74, 25 and one respectively. Of nine affected programs in the earlier 81, eight improved and one worsened in saved order. One crossed the threshold, from 0.00736285 to 0.000299543. The other 773 programs passed the checks in both orders.
+
+Four of the affected programs also use the peak Filter on a different band. Another uses the Hold follower; its running detector was included in both arms. Forty-nine historical saved-order baselines were freshly rendered. They changed no previous threshold decisions. One fixed-order score was recalculated after the entire audio stream matched its archived checksum. Both old and refreshed scores remained above the threshold.
+
+PR requested
+
 ## 22 November 2026 — Steep Filter responses in the registered device
 
 `clones/shaper-filter-steep` at `5fff5d0a` — Add 24 dB/octave low-pass and high-pass on independent bands. **Lands after 3 December.** All 415 existing normalized values passed sparse recall. Native and edited Pd passed live response changes in all three bands, including control writes during a ringing response. The rack, filter and registered suites passed at both Pd precisions under MSVC /W4 /WX. The kernel passed 1,370,196 signed comparisons against two existing sections in series. Its signed impulse test matched the original within 0.000000206 of a unit impulse. Reversing the two sections failed both moving-response checks.
