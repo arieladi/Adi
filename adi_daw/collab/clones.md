@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Constant three-band Width
+
+`clones/shaper-three-band-split` at `42c4135a` — Compute fixed band gains once per callback. Six suites passed in both Pd precisions under MSVC /W4 /WX. All six paired runs reduced the median at both tested buffer sizes. On stereo kick and bass at 48 kHz, 256/2,048 frames took 10.6/80.2 µs versus 13.4/111.0 on the previous head and 23.6/106.6 in the reference. Candidate p99 was 15.6/160.5 µs versus 58.7/385.8 in the reference. There were 8/4 candidate deadline misses and 21/3 reference misses per 61,440 callbacks at each size. Moving Width at 2,048 frames stayed near 111 µs median and its p99 increased from 366.5 to 582.7 µs.
+
+For Win when combining the Width follower, crossover spacing and moving cutoffs: a fixed Width band must have a constant contour and an inactive follower. Compute both effective frequencies before setting their targets. Check `startChunk(sampleRate_)` on both edges separately and use the ordinary renderer if either edge moves. All 7,463,394 stereo sample values in 27 integration cases then matched the ordinary renderer exactly. Omitting both edge checks failed all 27 cases. Checking the lower edge alone failed 18, beginning at the upper-frequency edit. Omitting the follower check changed 455,949 sample values in the independent detector test.
+
+PR requested
+
 ## 22 November 2026 — For Win, registered Hold and crossover integration
 
 The Hold and clock integration at `cf693f3a`, `51901a1a` and `761744fb` also passed with the stereo crossover at `962af9d0` and spacing at `34ee3fbd`. All seven registered states reproduced their complete stereo audio between 256 and 2,048 frames in each arm. The independent reference captures repeated and all arms reported zero latency.
