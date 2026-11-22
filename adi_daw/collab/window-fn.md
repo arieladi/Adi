@@ -45,6 +45,40 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — MX-08: Live's cueing, the window's half (PR requested)
+
+M1's MX-08 (the window worklist's B6), on the engine's `cue.*` ops, which were on main and had no caller
+(Live 12 manual 18.6).
+
+- **Solo Switches and Cue Switches** in the Options menu, before Solo in Place (Live 12's order), one ticked
+  from the project's cue mode (`cue.setMode`).
+- **The Cue button.** With Cue Switches, each track's Solo button is its Cue button. It sends the track to
+  Cue Out without soloing it (`cue.setTrack`) and is lit while the track is cued; S cues the selected track
+  the same way. It reads "C" until the window lane draws Live's headphones. A group's button is not half
+  coloured from its children's solos, which Cue mode does not play. A Cue button toggles its own track only;
+  whether Live's Cue is exclusive is to be read on Live 12 (PROVISIONAL).
+- **Cue Volume** on Main: a knob where a track has its Activator, in the Mixer View (placement the window
+  lane's), written at release or when typed (`cue.setVolume`), on the fader's -70..+6 dB with silence at
+  its foot.
+- **Cue Out** on Main, now live: a click on the chooser lists the device's open outputs in stereo pairs, up
+  to 63/64 as the op takes them, the one in use ticked (`cue.setOutput`).
+
+Every one is a transport op outside undo, saved with the project, the session re-reading the rows after it.
+Not here: the metronome on Cue Out and the preview on Cue Out (the engine's: `audio.metronomeOutput` and the
+browser's preview path).
+
+**Run.** The window's 27 suites (100%). `adi_ui_shell_tests` 2924 checks, 0 failures: Solo Switches by default;
+Cue Switches ticked with no undo step; the Cue button cueing without soloing, lit, and uncueing; S in Cue
+mode; Main's Cue Volume typed with no undo step; Cue Out 3/4 taken and an odd first channel refused; Solo
+Switches again. Review: two dimensions with a skeptic on each finding. Four were confirmed and fixed (the
+chooser on a right-click only, S writing an unheard solo, a group's half colour, pairs past 63/64); four
+were refuted.
+
+**PR requested** — `window-fn/cueing` at `c6a557e6`, on main `ce29e618`: "adi_daw: MX-08: Live's cueing: Solo/Cue
+Switches, Cue buttons, Cue Volume and Cue Out". It depends on nothing. It and `window-fn/delay-compensation`
+(MX-04) each append to `AppCommands::Id`'s tail and the names table; whichever lands second takes the other's
+ids first, a merge of three lines and the shell's tail check.
+
 ## 2026-11-22, window-fn — DF-W38: a device lane found by the parameter it names (PR requested)
 
 Win's entry of 22 November gave DF-W38 to this seat, after DF-E53. Its window half does not need to wait:
