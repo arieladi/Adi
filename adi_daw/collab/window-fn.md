@@ -45,6 +45,34 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — queue item 2, DF-E16's window half: one RowIds per prepared edit (PR requested)
+
+**Window lane, read first:** this item touches `src/adi/ui/track_edits.hpp` (`insertTrack` and `groupTracks`
+take an optional id) and `src/adi/ui/audio_drop.hpp` (`newClipId` skips remark-held ids; a new `newTrackId`).
+
+The window gave a new row the highest live id plus one, so a deleted track's or clip's id was given again while
+a remark still named the old row. Every allocation in the window now follows `RowIds`' rule: past every live
+row and every id a remark holds for the kind.
+- **The document's prepared edits** take one `RowIds` each: `prepareImport`'s media row (past what the drop's
+  earlier files took), the import job's clip and media, and a landed take's clips and media.
+- **The root's** Insert Audio/MIDI Track, Insert Return Track and Group Tracks, and a first automation point's
+  lane and data, take their ids from `RowIds`.
+- **The snapshot helpers** (`newClipId`, used by Split, Duplicate and the drops, and `newTrackId` for a dropped
+  file's track) apply the same rule over the snapshot's remarks.
+- `pasteDevice` already used `RowIds`. `ui_main.cpp`'s `loadPlugin` reads the newest device id after an insert
+  to find it: a read, left as it is, since the new id is the highest under the same rule.
+
+**Run.** The window's 27 suites (100%). `adi_ui_seams_tests` 566 checks: Kick and a clip deleted with their remarks
+kept; the next track is 5, not 4, and the next clip 8, not 1, from `RowIds` and from the snapshot alike; the new
+track lands as 5; Undo brings Kick back with its id, and Redo deletes it again. `adi_ui_shell_tests` 2954 checks,
+0 failures. **For win:** the shell run ends with JUCE's leak detector naming 50 `SoftwarePixelData` images. This
+branch touches no image, and main's shell suite gained 43 checks since this seat's last run. WTS-01 (Pd): 2a and
+6a PASS, as before; 6b waits on `window-fn/lane-chooser`, which is not on main. No review workflow ran.
+
+**PR requested** — `window-fn/row-ids` at `3ba97042`, on main `ac07be74`: "adi_daw: DF-E16's window half: one RowIds
+per prepared edit". It depends on nothing; it touches `ui_shell.cpp`'s `addAutomationPoint`, as
+`window-fn/lane-chooser` does (one hunk each).
+
 ## 2026-11-22, window-fn — queue item 1, SHELL-BROWSER-FIXTURE: browserDevices fixed (PR requested)
 
 Reproduced on main `ac07be74` with Pd on: Hybrid Reverb loads now (its native core is ready), so the check
