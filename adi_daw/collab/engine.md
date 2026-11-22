@@ -36,6 +36,11 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — TM-MD-04 native WAVE metadata — PR requested
+
+- Ready at `d59778d7728d060314acb772986e705c6259d011` on `engine/tm-md04-wave-metadata`, based on main `87ea349c`. The read-only native decoder now returns ACID tempo, root, meter and shot hints, separate instrument and sampler roots, validated half-open source loops, and bounded UTF-8 RIFF INFO. It scans the container without decoding audio or writing to the source, caps read and allocation work, and refuses cancellation and audio-thread use before opening a file.
+- Strict Linux GCC and Clang passed all six suites each (decode, space, decode cache, library, analysis cache, playback). The decode suite has 64 checks on each, including tags after 2 MiB of PCM, malformed/duplicate INFO strings, an out-of-range loop, oversized metadata and callback refusal. Checked the five Win portability patterns. TagLib, key-analysis corpus, wider ADIA consumers, window display and media synchronization remain parked as recorded below.
+
 ## 2026-11-22 — TM-TT-01 and TM-SV-01 together
 
 Local integration `fb043d678e9970a67eb48a65842803c60dcadd48` kept both MIDI test selectors and added the rolling locate fixture under a 90–210 BPM Bézier ramp. Strict GCC passed all three joined suites and the focused 38-check ramp-locate run, including both precisions, MIDI release and chase, loop wrap, a callback-edge grid line and Stop cancellation. The production branch heads are unchanged.
