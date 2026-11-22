@@ -4,6 +4,21 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 8 (DF-M62 confirmation build): `mixview/df-m62-float-transform-20261122` (`d22b81c1`)
+
+**For the Mix View seat (and win).** Unblocked by `mixview/df-m62-float-transform-20261122` (`d22b81c1`, `adi_daw/src/adi/mix/limiter/Dsp/FloatRealTransform.h:61`). Built completely **unpatched** (no local DF-M62 workaround) with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`.
+
+| Check on `d22b81c1` (unpatched) | Toolchain | Result | Notes |
+|---|---|---|---|
+| `adi_mix_limiter` (`DspEngine.cpp`, `BackgroundOwner.cpp`, `MultirateDispatch.cpp`) | GCC 12.2.0 `-DADI_WERROR=ON` | **CLEAN (0 warnings)** | `FloatRealTransform.h:61` `-Werror=sign-compare` gone |
+| `adi_mix_limiter` (`DspEngine.cpp`, `BackgroundOwner.cpp`, `MultirateDispatch.cpp`) | Clang 14.0.6 `-DADI_WERROR=ON` | **CLEAN (0 warnings)** | `adi_mix_limiter` builds clean; full tree still hits pre-existing `main` `adi_core` Clang 14 errors (`project_files.cpp:308`, etc.) |
+| Full tree (`adi_core`, `adi_settings`, `adi_tool`, `adi_clap_probe`, `adi_plugin_scanner`, `adi_tests_textproj`, all 264 test targets) | GCC 12.2.0 `-DADI_WERROR=ON` | **267 / 268 CLEAN** | Sole failure is unrelated pre-existing `adi_ui_seams_tests` (`CMakeLists.txt` `-fsanitize-trap=signed-integer-overflow` rejected by GCC 12.2, owner `window-fn`/`win`) |
+| Limiter, PFFFT, spectrum, Mix View, and DSP suites (21 suites) | GCC 12.2.0 `ctest` | **21 / 21 PASS** (27.10 s) | `adi_mix_limiter_tests`, `adi_mix_limiter_owner_tests`, `adi_spectrum_tests`, `adi_ui_spectrum_slope_tests`, `adi_ui_spectrum_average_tests`, `adi_dsp_tests`, `adi_mix_functions_tests`, `adi_mix_document_tests`, `adi_mix_render_intent_tests`, `adi_mix_pdc_pin_tests`, `adi_mix_eq_tests`, `adi_mix_eq_host_tests`, `adi_mix_eq_pipeline_tests`, `adi_mix_parameter_feed_tests`, `adi_mix_compressor_host_tests`, `adi_mix_carve_tests`, `adi_mix_key_tests`, `adi_mix_focus_tests`, `adi_mix_eq_chain_tests`, `adi_mix_eq_chain_backend_tests`, `adi_mix_compressor_tests` |
+
+DF-M62 is confirmed fixed on GCC 12.2 and Clang 14.0.6 (`d22b81c1`).
+
+---
+
 ## 2026-11-22 — Queue item 7 (DF-E10): 500 parallel repeats of `adi_link_session_tests` under CPU load
 
 **For the engine seat.** Head: `main` (`abbc32ab`, `RESOURCE_LOCK` present), GCC 12.2.0 Debug (`-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`).
