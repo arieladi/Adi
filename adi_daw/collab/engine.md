@@ -178,6 +178,14 @@ Strict GCC 14 and Clang 19 each passed 751 checks across six suites. The test co
 
 Parked persisted pad edits, returns and sends on their reservations and R0. Choke arbitration and release wait on A8D-004 and DEV-18's graph hook. Parked DEV-16 on the Pd/Max allowlist and DEV-10/07, and SRF-07 feed integration on CTL-06 and the shared playing-value source. SRF-08's native MCU fader wire codec and servo feedback can proceed while host/profile wiring waits.
 
+### 22 November — SRF-08 MCU fader wire and servo feedback
+
+**PR requested** for `engine/srf08-mcu-fader-feedback` at `52563508827f695c9125b856a6d01fc6cf5f76ca` from main. The native MCU codec handles the eight channel faders and Main at fourteen bits, plus touch and both release encodings. The per-port feedback state emits changed values, withholds motor packets while touched and filters exact servo acknowledgments from the most recent eight commands on that strip, including late earlier acknowledgments.
+
+Strict GCC 14 and Clang 19 each passed 11 checks, including all 147,456 possible strip-position packets. The fixture covers malformed wire data, physical movement at a previous motor position, current and late acknowledgments, touched fader protection, and independent strips. No MIDI device or Live instance was needed for the wire tests.
+
+Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU button meanings on SF-22a, and actual hardware service on the surface seat. HUI's independent wire heartbeat and fader messages are next.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
