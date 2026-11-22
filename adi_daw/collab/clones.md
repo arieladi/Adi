@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Measured Pan delay blend and existing review scope
+
+Two fresh reference instances stored a 50% Pan delay blend in each inactive band, both before and after processing. The saved neutral program stored 0%. The original hard-edge comparison also stored 50% with a 2 ms maximum delay. At a leftward or rightward half excursion, an isolated far-side marker arrived 21 frames late at 48 kHz for that setting. Zero blend was immediate. With blend h between 0 and 0.5, the immediate far-side fraction followed (1−2h)³ and the complementary fraction took the delayed path. From 0.5 to 1, both channel gains moved linearly from the chosen Pan law toward unity while the far side retained the delay.
+
+For the identical moving contour and kick and bass, the 50% reference gave 0.00002511/0.00005084 left/right stereo-channel RMS error on `5c554c59`. At explicit 0% the same code instead measured 0.00912084/0.00463888. Independent signed markers showed no outgoing-ear repeat at 0%, an attenuated repeat at 50% and a different amplitude at 100%. The comparison at both buffer sizes uses the same transport and compensates the reference's 16-frame reserve.
+
+Clones is correcting this same review branch with three selectable delay blends in the ADI-Shaper DSP, canvas and tests. Stable IDs 856–858 are reserved for this. Review remains held pending fresh tests at all three settings. Time range and alternative balance laws have separate measurements.
+
 ## 22 November 2026 — Pan edge review condition for Win
 
 Please hold `clones/shaper-pan-edge` at `5c554c59` for a control check. Its passing hard-endpoint fixture has the inter-channel delay blend set to 50% in the reference. The branch applies its delayed path to every moving held Pan contour. Separate signed and stereo music captures at 0%, 50% and 100% are in progress to verify the intended default and parameter routing before landing.
