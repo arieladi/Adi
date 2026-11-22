@@ -162,6 +162,51 @@ void discontinuityAndWriterFailures() {
     while(std::chrono::steady_clock::now()<deadline && !failed){failed=recorder.poll();input(recorder,transport,idle);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
     check(failed && failed->failure==RecordingFailure::Io && failed->error=="injected disk write failure" && !failed->hasAttachableAudio(),"worker I/O failures reach the owner with their reason after callback quiescence");if(failed)failed->discard();
 }
+class CloseFailingWaveSink final:public AudioRecordingSink {
+    audio::WavWriter writer_;
+    unsigned& closeAttempts_;
+    const bool fails_;
+public:
+    CloseFailingWaveSink(const std::filesystem::path& file,std::uint32_t rate,std::uint16_t channels,
+                         audio::WavFormat format,unsigned& closeAttempts,bool fails)
+        :writer_(file,rate,channels,format),closeAttempts_(closeAttempts),fails_(fails) {}
+    void write(std::span<const float> samples,std::uint32_t frames)override {
+        writer_.write(samples.data(),frames);
+    }
+    void close()override {
+        ++closeAttempts_;
+        writer_.close();
+        if(fails_)throw std::runtime_error("injected close failure after a locate");
+    }
+};
+void closeFailureAfterDiscontinuity() {
+    test::TempDirectory directory{"audio_recording","failed_close_after_seek"};
+    unsigned closeAttempts=0;
+    AudioInputRecorder recorder;
+    auto request=spec(directory.path());
+    request.targets={{21,{0}},{22,{0}}};
+    request.maxFrames=8;
+    std::string error;
+    if(!recorder.start(request,error,[&](const auto& file,auto rate,auto channels,auto format) {
+        return std::make_unique<CloseFailingWaveSink>(file,rate,channels,format,closeAttempts,file.filename()=="take-0.wav");
+    }))throw std::runtime_error(error);
+    const std::array<float,8> samples{0.25f,-0.5f,0.0f,0.5f,-0.125f,0.0f,0.0f,0.125f};
+    const float* channels[]={samples.data()};
+    AudioIo io;io.in=channels;io.numIn=1;io.frames=static_cast<int>(samples.size());
+    Transport transport;transport.play();
+    input(recorder,transport,io);
+    transport.locate(100);
+    io.streamTimeSamples=8;
+    input(recorder,transport,io);
+    recorder.stop();
+    AudioIo idle;input(recorder,transport,idle);
+    auto result=finish(recorder);
+    check(result.failure==RecordingFailure::Discontinuity && result.error=="injected close failure after a locate" &&
+          result.frames==samples.size() && !result.hasAttachableAudio(),
+          "a sink close failure prevents prefix attachment even when discontinuity was reported first");
+    check(closeAttempts==2 && !recorder.pending() && !result.discard(),
+          "both sinks were closed, and their temporary directory can be removed after the failed capture");
+}
 struct DiskFailure {
     std::atomic<unsigned> firstWrites{0};
     std::atomic<unsigned> closeAttempts{0};
@@ -449,7 +494,8 @@ void loopDiscontinuities() {
 int main() {
     try {
         actualFilesAndAcknowledgment();stopDrainsLastShortBlock();formatAndInputFailures();
-        boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();cancelAfterPartialDiskFailure();
+        boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();closeFailureAfterDiscontinuity();
+        cancelAfterPartialDiskFailure();
 #if defined(_WIN32)
         cancelReportsCleanupDenial();
 #endif

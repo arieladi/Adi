@@ -312,6 +312,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
     // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
     void landTake(engine::AudioRecordingResult &);
+    // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
+    std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
