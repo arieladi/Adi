@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -200,12 +201,27 @@ struct Control {
 [[nodiscard]] Result renderNiStems(Job, engine::DeviceLoader, Control = {},
                                     JobId = 0, std::uint64_t counter = 1);
 void validateNiStems(const Job&);
+
+struct GaplessResult {
+    JobState state = JobState::Pending;
+    std::string error;
+    std::vector<Result> regions; // chronological order; already published files retain their receipts
+    std::optional<NormalizationReport> normalization{}; // whole continuous program
+    std::optional<StageCleanupFailure> stageCleanup{};
+};
+/// Render adjacent cycle markers in one session and slice the quantized WAV.
+/// Files share one revision and continuous effect and dither state.
+[[nodiscard]] GaplessResult renderGaplessWav(Job, std::span<const std::int64_t> regionIds,
+    engine::DeviceLoader = {}, Control = {});
+
 namespace detail {
 struct Cancelled {};
 // NI binds its final delivery after Main metadata/name resolution, before any
 // Main audio is processed. Ordinary callers use renderWav without this hook.
+using PlanRange = std::function<void(Job&, const rows::Model&, const engine::TempoMap&,
+                                     const NameContext&, std::int64_t journalHead)>;
 Result renderWavPrepared(Job, engine::DeviceLoader, Control, JobId, std::uint64_t,
-                        const std::function<void(const Result&)>&);
+                        const std::function<void(const Result&)>&, const PlanRange& = {});
 void discardStage(std::filesystem::path&&, std::optional<StageCleanupFailure>&) noexcept;
 void retainIntermediateMedia(Result& delivery, Result& intermediate);
 void publishVerifiedOutput(const std::filesystem::path& stage, Result&, const Control&,

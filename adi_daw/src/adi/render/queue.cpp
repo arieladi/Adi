@@ -114,13 +114,14 @@ const char* tailModeName(TailMode mode) {
     }
     return "unknown";
 }
-void validateTail(const Job& job) {
+void validateTail(const Job& job, bool plannedRange) {
     const auto& tail = job.tail;
     const bool hasTail = tail.mode != TailMode::Off;
     if (job.gaplessBatch) {
         if (hasTail || job.renderAsLoop)
             throw std::invalid_argument("gapless batches cannot render independent tails or loops");
-        throw std::invalid_argument("the continuous gapless batch renderer is not available");
+        if (!plannedRange)
+            throw std::invalid_argument("gapless render requires a continuous region plan");
     }
     if ((hasTail && job.renderAsLoop) || (job.niStems && (hasTail || job.renderAsLoop)))
         throw std::invalid_argument("tail extension and Render as Loop require separate ordinary renders");
@@ -133,7 +134,7 @@ void validateTail(const Job& job) {
         throw std::invalid_argument("invalid export tail silence threshold or hold");
 }
 
-void validate(const Job& j) {
+void validate(const Job& j, bool plannedRange = false) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
     if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
         throw std::invalid_argument("unsupported export collision policy");
@@ -152,7 +153,7 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export WAV encoding");
     if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
         throw std::invalid_argument("unsupported export dither");
-    validateTail(j);
+    validateTail(j, plannedRange);
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
     if (j.exactWavFilename) {
@@ -470,11 +471,12 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
     return detail::renderWavPrepared(std::move(job),std::move(loader),std::move(control),id,counter,{});
 }
 Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control control,
-                       JobId id, std::uint64_t counter,const std::function<void(const Result&)>& prepared) {
+                       JobId id, std::uint64_t counter,const std::function<void(const Result&)>& prepared,
+                       const detail::PlanRange& planRange) {
     Result result;
     try {
         cancellation(control);
-        validate(job);
+        validate(job, static_cast<bool>(planRange));
         if (job.niStems) throw std::invalid_argument("renderWav requires a WAV job; use renderNiStems for NI Stems");
         StoreError error = StoreError::Ok;
         auto store = Store::open(job.project, error, true);
@@ -521,6 +523,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 parent = std::find_if(tracks.begin(), tracks.end(), [idOfParent](const auto& t) {return t.id==idOfParent;});
             }
             const auto snap = engine::SnapshotBuilder::fromStore(*store);
+            if (planRange) planRange(job, session.model(), *snap->tempo, names, journalHead);
             if (job.regionId) resolveRegion(job, session.model(), *snap->tempo, names);
             names.bpm = textproj::renderF64(snap->tempo->bpmAt(snap->tempo->secondsToTicks(
                 static_cast<double>(job.beginSample) / job.session.sampleRate)));
@@ -682,6 +685,136 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         result.state = JobState::Failed; result.error = "unknown exception during export";
     }
     return result;
+}
+
+namespace {
+void planCycleRegions(const Job& base, Job& capture, std::span<const std::int64_t> ids,
+                      const rows::Model& rows, const engine::TempoMap& tempo, NameContext names,
+                      std::int64_t head, std::vector<Result>& outputs) {
+    std::vector<RenderSnapshot> plan;
+    plan.reserve(ids.size());
+    for (const auto id : ids) {
+        auto region = capture;
+        region.regionId = id;
+        resolveRegion(region, rows, tempo, names);
+        names.bpm = textproj::renderF64(tempo.bpmAt(tempo.secondsToTicks(
+            static_cast<double>(region.beginSample) / region.session.sampleRate)));
+        plan.push_back({head, capture.source, region.beginSample, region.endSample, region.session.sampleRate, id, names});
+    }
+    std::sort(plan.begin(), plan.end(), [](const auto& a, const auto& b) { return a.beginSample < b.beginSample; });
+    std::set<std::string> filenames;
+    std::vector<Result> prepared;
+    prepared.reserve(plan.size());
+    std::int64_t next = plan.front().beginSample;
+    std::uint64_t ordinal = 1;
+    for (auto& snapshot : plan) {
+        if (snapshot.beginSample != next)
+            throw std::invalid_argument("gapless cycle marker ranges must be exactly adjacent");
+        next = snapshot.endSample;
+        snapshot.names.counter = ordinal++;
+        Result result;
+        result.output = base.directory / media::pathFromUtf8(resolveName(base.nameTemplate, snapshot.names) + ".wav");
+        detail::prepareOutput(result, base.collision, ".wav", "gapless export destination already exists");
+        if (!filenames.insert(foldedFilename(result.output)).second)
+            throw std::invalid_argument("gapless cycle marker filenames must be distinct");
+        result.snapshot = std::move(snapshot);
+        prepared.push_back(std::move(result));
+    }
+    outputs = std::move(prepared);
+    capture.beginSample = outputs.front().snapshot->beginSample;
+    capture.endSample = next;
+}
+
+std::vector<fs::path> stageGaplessSlices(const fs::path& directory, const Result& continuous,
+                                        std::vector<Result>& regions, const Control& control) {
+    audio::WavReader input(continuous.output);
+    constexpr std::uint32_t block = 4096;
+    std::vector<float> pcm(static_cast<std::size_t>(input.channels()) * block);
+    std::vector<fs::path> stages;
+    stages.reserve(regions.size());
+    std::uint64_t sliced = 0;
+    for (auto& region : regions) {
+        const auto& snapshot = *region.snapshot;
+        const auto frames = static_cast<std::uint64_t>(snapshot.endSample - snapshot.beginSample);
+        auto target = directory / ("slice-" + std::to_string(stages.size()) + ".wav");
+        // The continuous capture has already applied its one dither stream.
+        // PCM16 and PCM24 decode exactly into Float32. An undithered wrapper
+        // round-trips those integer codes, and Float32 preserves its bits.
+        audio::WavWriter writer(target, input.sampleRate(), input.channels(), input.format());
+        for (std::uint64_t copied = 0; copied < frames;) {
+            cancellation(control);
+            if (control.serviceHost) control.serviceHost();
+            cancellation(control);
+            const auto count = static_cast<std::uint32_t>((std::min)(static_cast<std::uint64_t>(block), frames - copied));
+            if (input.read(pcm.data(), count) != count) throw std::runtime_error("Incomplete gapless PCM capture");
+            writer.write(pcm.data(), count);
+            copied += count;
+        }
+        writer.close();
+        stages.push_back(std::move(target));
+        region.framesWritten = frames;
+        sliced += frames;
+    }
+    if (sliced != input.frames() || sliced != continuous.framesWritten)
+        throw std::runtime_error("Gapless slices did not consume the continuous capture");
+    return stages;
+}
+} // namespace
+
+GaplessResult renderGaplessWav(Job job, std::span<const std::int64_t> regionIds,
+                               engine::DeviceLoader loader, Control control) {
+    GaplessResult batch;
+    Result stageOwner;
+    try {
+        cancellation(control);
+        if (regionIds.empty() || job.regionId || job.exactWavFilename || job.niStems)
+            throw std::invalid_argument("gapless export needs named cycle markers and a WAV template");
+        const std::vector<std::int64_t> ids(regionIds.begin(), regionIds.end());
+        // The captured revision owns the actual limits. The temporary range
+        // only admits the otherwise complete job into the shared runner.
+        job.beginSample = 0;
+        job.endSample = 1;
+        job.gaplessBatch = true;
+        validate(job, true);
+        Stage stage(job.directory, stageOwner);
+        auto capture = job;
+        capture.directory = stage.path;
+        capture.nameTemplate = "continuous";
+        capture.collision = Collision::Fail;
+        auto renderControl = control;
+        renderControl.publicationHooks = {};
+        auto continuous = detail::renderWavPrepared(std::move(capture), std::move(loader), renderControl, 0, 1, {},
+            [&](Job& captured, const rows::Model& rows, const engine::TempoMap& tempo,
+                const NameContext& names, std::int64_t head) {
+                planCycleRegions(job, captured, ids, rows, tempo, names, head, batch.regions);
+            });
+        if (continuous.state == JobState::Cancelled) throw Cancelled{};
+        if (continuous.state != JobState::Completed || !continuous.mediaVerification)
+            throw std::runtime_error(continuous.error.empty() ? "Cannot capture continuous PCM" : continuous.error);
+        const auto stages = stageGaplessSlices(stage.path, continuous, batch.regions, control);
+        verifyMedia(*continuous.mediaVerification, control);
+        batch.normalization = continuous.normalization;
+        for (std::size_t i = 0; i < stages.size(); ++i) {
+            cancellation(control);
+            auto& member = batch.regions[i];
+            member.mediaVerification = continuous.mediaVerification;
+            try {
+                detail::publishOutput(stages[i], member, control.publicationHooks, "gapless destination already exists");
+            } catch (const std::exception& error) {
+                member.state = JobState::Failed;
+                member.error = error.what();
+                throw;
+            }
+        }
+        batch.state = JobState::Completed;
+    } catch (const Cancelled&) {
+        batch.state = JobState::Cancelled;
+    } catch (const std::exception& error) {
+        batch.state = JobState::Failed;
+        batch.error = error.what();
+    }
+    batch.stageCleanup = std::move(stageOwner.stageCleanup);
+    return batch;
 }
 
 Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
