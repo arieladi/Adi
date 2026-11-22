@@ -186,7 +186,102 @@ void links() {
           "M/S: a mono signal is limited as its mid, left and right equal");
 }
 
+void changesWhileRunning() {
+    // Found defects: a changed link spliced in a stale or empty delay, and a
+    // lowered ceiling let the delayed samples leave above it.
+    Stereo x{std::vector<float>(14400), std::vector<float>(14400)};
+    for (std::size_t i = 0; i < x.l.size(); ++i) {
+        x.l[i] = static_cast<float>(0.25 * std::sin(2 * kPi * 440 * static_cast<double>(i) / 48000));
+        x.r[i] = static_cast<float>(0.2 * std::sin(2 * kPi * 997 * static_cast<double>(i) / 48000));
+    }
+    for (int mode : {L::Standard, L::TruePeak}) {
+      for (std::size_t every : {1u, 2u, 3u, 7u}) {
+        auto lim = made(-1, mode);
+        Stereo y{std::vector<float>(x.l.size()), std::vector<float>(x.r.size())};
+        const int order[] = {L::LeftRight, L::MidSide, L::Stereo, L::MidSide, L::LeftRight, L::LeftRight,
+                             L::Stereo,    L::MidSide, L::Stereo};
+        int next = 0;
+        for (std::size_t at = 0; at < x.l.size(); at += 97) {
+            if (at > 0 && at % (97 * every) == 0) {
+                // Every 97 to 679 samples: mid-hold, mid-fade, back to the
+                // path fading out, and after the fade.
+                lim.set(L::Link, order[next++ % 9]);
+            }
+            const auto n = std::min<std::size_t>(97, x.l.size() - at);
+            lim.process(x.l.data() + at, x.r.data() + at, y.l.data() + at, y.r.data() + at, n);
+        }
+        const auto d = static_cast<std::size_t>(lim.latency());
+        double worst = 0;
+        for (std::size_t i = d; i < x.l.size(); ++i) {
+            worst = std::max({worst, static_cast<double>(std::abs(y.l[i] - x.l[i - d])),
+                              static_cast<double>(std::abs(y.r[i] - x.r[i - d]))});
+        }
+        check(worst <= 1e-7, "mode " + std::to_string(mode) + ", a link change every " + std::to_string(97 * every) +
+                                 " samples under the ceiling leaves the input, delayed (largest change " +
+                                 std::to_string(worst) + ")");
+      }
+    }
+    // At the ceiling, on a correlated (mono) programme, through every change.
+    const auto loud = noise(24000, 4.0);
+    const Stereo mono{loud.l, loud.l};
+    for (int mode : {L::Standard, L::SoftClip}) {
+        auto lim = made(-1, mode, L::Stereo);
+        Stereo y{std::vector<float>(mono.l.size()), std::vector<float>(mono.r.size())};
+        for (std::size_t at = 0; at < mono.l.size(); at += 97) {
+            if (at == 97 * 50) {
+                lim.set(L::Link, L::LeftRight);
+            } else if (at == 97 * 100) {
+                lim.set(L::Link, L::MidSide);
+            } else if (at == 97 * 150) {
+                lim.set(L::Link, L::Stereo);
+            }
+            const auto n = std::min<std::size_t>(97, mono.l.size() - at);
+            lim.process(mono.l.data() + at, mono.r.data() + at, y.l.data() + at, y.r.data() + at, n);
+        }
+        check(std::max(peakOf(y.l), peakOf(y.r)) <= fromDb(-1) * (1 + 1e-6),
+              "mode " + std::to_string(mode) + ": Stereo to L/R to M/S to Stereo at the ceiling, every sample under it");
+    }
+    // The ceiling lowered from 0 to -36 dB on a full-scale programme: every
+    // sample after the change under the new one.
+    for (int link : {L::Stereo, L::LeftRight}) {
+        for (int mode : {L::Standard, L::SoftClip}) {
+            auto lim = made(0, mode, link, 2);
+            const auto full = noise(9600, 1.0);
+            Stereo y{std::vector<float>(full.l.size()), std::vector<float>(full.r.size())};
+            const std::size_t change = 97 * 49;
+            for (std::size_t at = 0; at < full.l.size(); at += 97) {
+                if (at == change) {
+                    lim.set(L::Ceiling, -36);
+                }
+                const auto n = std::min<std::size_t>(97, full.l.size() - at);
+                lim.process(full.l.data() + at, full.r.data() + at, y.l.data() + at, y.r.data() + at, n);
+            }
+            double after = 0;
+            for (std::size_t i = change; i < y.l.size(); ++i) {
+                after = std::max({after, static_cast<double>(std::abs(y.l[i])), static_cast<double>(std::abs(y.r[i]))});
+            }
+            check(after <= fromDb(-36) * (1 + 1e-6), "link " + std::to_string(link) + ", mode " +
+                                                         std::to_string(mode) +
+                                                         ": a ceiling lowered to -36 dB holds from the next sample (" +
+                                                         std::to_string(20 * std::log10(after)) + " dB)");
+        }
+    }
+}
+
 void robustness() {
+    // A non-finite sample on one channel only: the other channel is that of
+    // the same programme with silence there, on every link.
+    for (int link : {L::Stereo, L::LeftRight, L::MidSide}) {
+        auto a = made(-1, L::Standard, link), b = made(-1, L::Standard, link);
+        auto withNaN = noise(9600, 2.0), withZero = withNaN;
+        for (std::size_t i = 3000; i < 3300; ++i) {
+            withNaN.l[i] = i % 2 ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
+            withZero.l[i] = 0.f;
+        }
+        const auto ya = run(a, withNaN), yb = run(b, withZero);
+        check(ya.l == yb.l && ya.r == yb.r,
+              "link " + std::to_string(link) + ": a non-finite left reads as silence there, the right untouched");
+    }
     auto a = made(-1), b = made(-1);
     auto withNaN = noise(9600, 2.0), withZero = withNaN;
     for (std::size_t i = 3000; i < 3300; ++i) {
@@ -219,6 +314,7 @@ int main() {
     belowTheCeiling();
     theCeiling();
     links();
+    changesWhileRunning();
     robustness();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;

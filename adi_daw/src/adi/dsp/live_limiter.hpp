@@ -5,13 +5,20 @@
 // peak detector it inherits).
 //
 //   Gain      dB before the limiter.
-//   Ceiling   the level nothing leaves above, dBFS.
+//   Ceiling   the level nothing leaves above, dBFS. Lowered while running,
+//             the samples already in the delay (limited to the old ceiling)
+//             are clamped to the new one for one latency; every later sample
+//             meets it through the brickwall.
 //   Release   ms, the limiter's recovery.
 //   Lookahead 1.5, 3 or 6 ms, in whole samples: the reported latency, plus
 //             the true-peak detector's delay in True Peak mode.
 //   Link      Stereo (one gain for both), L/R (each channel its own), or M/S
 //             (mid and side limited apart; the ceiling then holds for mid and
 //             side, as a mid-side limiter's does, not for left and right).
+//             Each link has its own brickwalls. A changed link starts its own
+//             from silence and is held on the old one for a latency, then
+//             crossfaded in over at least another, so no stale delay or
+//             dropout leaves and the ceiling holds through the change.
 //   Mode      Standard (sample peak), Soft Clip (sample peak, then tanh inside
 //             the ceiling: a quiet signal passes as itself, a loud one is
 //             rounded off below the ceiling rather than squared off at it),
@@ -23,7 +30,8 @@
 // devices log's ONE list). Until then this core claims no parity.
 //
 // prepare() allocates; process() and set() do not. A non-finite sample reads
-// as silence (the brickwall's own rule).
+// as silence, channel by channel before the M/S encode, so the output is that
+// of the same programme with silence there on that channel alone.
 
 #pragma once
 
@@ -56,13 +64,25 @@ public:
     void process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept;
 
 private:
+    static constexpr std::size_t kBlock = 256;
+    using Block = std::array<std::array<double, kBlock>, 2>;
     void update() noexcept;
+    /// One link's path over n samples of gained input: encoded, limited,
+    /// clamped for the first `clamp` samples, decoded.
+    void runPath(int link, const Block& x, Block& y, std::size_t n, std::size_t clamp) noexcept;
+    /// A link change's crossfade: its length, and the new path's weight k
+    /// samples after the change.
+    [[nodiscard]] std::size_t fadeLength() const noexcept;
+    [[nodiscard]] double weight(std::size_t k) const noexcept;
     std::array<double, Count> p_{};
-    // [0] links both channels (Stereo); [1] and [2] are one channel each
-    // (left and right, or mid and side).
-    std::array<LookaheadLimiter, 3> limiter_;
+    // [0] links both channels (Stereo); [1] and [2] are left and right (L/R);
+    // [3] and [4] mid and side (M/S).
+    std::array<LookaheadLimiter, 5> limiter_;
     double rate_ = 48000, gain_ = 1, ceiling_ = 1;
     int link_ = Stereo, kind_ = Standard;
+    int from_ = -1;              // the link fading out, or -1
+    std::size_t faded_ = 0;      // samples since the link changed
+    std::size_t clampLeft_ = 0;  // samples still clamped to a lowered ceiling
 };
 
 }  // namespace adi::dsp
