@@ -13,6 +13,28 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Volume Trim and Width Gain per band
+
+**PR requested** · `clones/shaper-trim` · **Add per-band Volume Trim and Width Gain to ADI-Shaper** · `69422cef`
+
+For Win. This tip contains the rack opener, clock/grid and band faders in order for one landing. Window reviews the opener loan. The Release application linked under MSVC with warnings as errors. All ten device suites passed in each Pd precision. All six ADI-Shaper suites in the final application configuration passed.
+
+Volume Trim spans −24 to 24 dB. Width Gain spans −12 to 12 dB. Both start at 0.00 dB, act on the selected band before its dry/wet mix and double amplitude for each 6.00 dB shown. The six host parameters follow the existing curve storage. Earlier sessions and presets recall unity at all six controls. The fader previews each change during a drag and records one project edit on release.
+
+On the final tip the registered rack replay passed 64 Trim checks and 46 clock and window checks. Dragging Volume Trim raised measured stereo gain from 0.250004 to 1.00002 while the mouse was down. One undo restored the original audio and fader pixels in the open window. Redo restored both boosted values. The second device remained independent and subsequently recalled the same persisted parameters from a private preset. The paired full-HD images show 25% Volume, 12.0 dB Trim, a quarter-note cycle and full wet mix.
+
+The source measurement fed different steady levels to the left and right channels. We held its Volume contour at 25% and its Width contour at mono, and varied gain, band mix and master mix independently. Applying gain to the wet band predicted every sample in the final 1,024 stereo frames of all 36 renders. The Width measurement includes the gain of the center signal.
+
+On stereo kick and bass at 48 kHz and 120 BPM, +12.0 dB with a constant quarter-height Volume curve took 5.4 µs median and 7.9 µs at the 99th percentile for 256 frames. The reference took 15.4 and 29.4 µs. At 2,048 frames ADI took 21.3 and 57.1 µs and the reference took 58.4 and 125.2 µs. Each boosted condition timed 20,480 callbacks under shared load. ADI missed zero deadlines. Both processors produced the same samples at the two block sizes. The peak difference between them was 0.0000117, accounted for by the saved curve height's quantization. At unity trim the prior and current device rendered identical stereo samples.
+
+The private preset check found 315 affected settings in 267 programs. All 534 stored states recalled across the two curve encodings on the registered device. Using the editable curves, we rendered four bars at 256 frames and compared the second bar with the source after compensating for reported latency. Enabling the measured settings lowered the stereo RMS error in 186 programs and raised it in 81. Median error fell from 0.105869 to 0.094737. No program changed latency. Other missing stage behavior still affects these comparisons.
+
+The two programs containing only Volume or Width processing both improved. All 81 larger errors occurred in chains with additional active processing. We retested the two worst cases' gain settings in isolation. Width matched the source sample for sample. Volume differed by at most 0.00000018. Attributing an individual chain's error would require measuring the other stages separately.
+
+For the window lane. The broader shell test crashes in `test_ui_shell.cpp`, in `browserDevices`. In a fresh profile Hybrid Reverb is available and inserts successfully on track 4, contrary to that test's expectation. Its plug-in subcase then clears the selected track. Auto Filter and Utility are both present, and insertion requires a selected track. The test continues after the failed insertion and dereferences the empty strip. The browser and this test match the main branch at the loan. Please update the Hybrid Reverb assertion, isolate its insertion in the history, restore track 4 before testing the next device and guard the strip access. The failure reproduces without opening ADI-Shaper.
+
+With those fixture corrections applied privately, the full shell suite passed 2,925 checks with zero failures on both the rack opener and the final stack, each in a fresh profile. The published shell suite still contains the original fixture.
+
 ## 22 November 2026 — Step through the sync divisions and read the curve grid
 
 **PR requested** · `clones/shaper-clock-grid` · **Step ADI-Shaper's synced curve by one division** · `80e2ad08`
