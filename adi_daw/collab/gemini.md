@@ -4,6 +4,25 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 1 (DF-E56-ATTACK): refused MpeMidi attack leaves sounding voice untouched
+
+**Changed:**
+- `adi_daw/src/adi/engine/mpe_output.hpp`: added `MpeOutList::capacity()`, `MpeOutList::remaining()`, and `MpeOutList::drop(std::int32_t)` (non-throwing, bounds-safe for null storage or negative capacity).
+- `adi_daw/src/adi/engine/mpe_output.cpp`: in `MpeRouter::noteOn` (`ExpressionRoute::MpeMidi`), check `if (out.remaining() < 4) { out.drop(4); return; }` before calling `allocate()` or emitting any reset control, so a refused attack never emits orphan pitch-bend/timbre/pressure resets onto a shared member channel while preserving total dropped-message accounting.
+- `adi_daw/tests/test_mpe_output.cpp`: reproduced the engine follow-up review's exact refused-attack probe (single member channel, first note bent +12 semitones to word `10240`, second note into 1, 2, or 3 free slots emits zero resets with `dropped == 4` and leaves `liveNotes`, `channelOf`, and `sharedChannels` unchanged; retrying with 4 free slots succeeds), and updated the dense bounded-list block test (`Out(16)`) to verify zero orphan resets.
+
+**What ran and results:**
+- Pre-fix verification against `da6d1629`: failed 5 of 130 checks in `adi_mpe_output_tests` (all 3 refused-attack slot counts and the 2 no-orphan-reset bounded-list assertions).
+- GCC 12.2.0 full CMake + Ninja Debug (`-DADI_WERROR=ON -D_GLIBCXX_ASSERTIONS`, with DF-M62 `FloatRealTransform.h:61` transiently patched locally and reverted before commit): `adi_core` + `adi_mpe_output_tests` built with zero warnings; `adi_mpe_output_tests` PASS — 130 checks, 0 failures. Related suites (`adi_mpe_output_tests`, `adi_mpe_tests`, `adi_pd_engine_tests`, `adi_delay_compensation_tests`, `adi_midi_controllers_tests`, `adi_midi_capture_input_tests`): 6/6 PASS.
+- Clang 14.0.6 (`-std=c++20 -D_GLIBCXX_ASSERTIONS -Wall -Wextra -Wpedantic -Wcast-align -Wconversion -Wsign-conversion -Wno-unused-parameter -Werror`):
+  - Standalone compile, link, and run of `mpe_output.cpp` + `mpe_input.cpp` + `test_mpe_output.cpp`: zero warnings, PASS — 130 checks, 0 failures.
+  - Note on full CMake `adi_core` under Clang 14.0.6 (older-toolchain finding for `engine`): `adi_daw/src/adi/project_files.cpp:308:47` fails to compile under Clang 14 (`error: reference to local binding 'hash' declared in enclosing function 'adi::Store::collectAllAndSave'`, C++20 lambda capture of structured binding `for (const auto& [hash, rows] : candidates)` at line 298, unsupported in Clang < 16). Owner: `engine` (`src/adi/project_files.cpp`).
+- Checked new C++ against all five patterns in `collab/win.md` (20 November) and MSVC `/W4 /WX` rules; `git diff --check` clean.
+
+PR requested: gemini/df-e56-mpe-router-overflow at 0b539fb2b5c98bdec2b3cf6f149dd6945c577470
+
+---
+
 ## 2026-11-22 — DF-E56 review fixes: immediate switchTo and pending NoteOff queue
 
 **Changed:**
