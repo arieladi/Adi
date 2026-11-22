@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Crossover spacing and the two end positions
+
+With the ten-octave reference control, the upper cutoff stays at least five percentage points above the lower one. This is half an octave, or a frequency ratio of √2. The lower control has priority up to 95%, about 14,917.24 Hz. At the other end the lowest upper cutoff is about 29.1352 Hz. Independent signed stereo impulses covered 24 pairs at each of 44.1, 48 and 96 kHz. At 48/48% and 48/48.001% the effective controls were 48/53%. Separate two-band recordings reproduced these results across all nine slope pairs.
+
+Both controls at zero give a middle and high band split at 29.1352 Hz. Both at full give a low and middle band split at 14,917.24 Hz. Reloading actual saved settings at the two reachable boundaries confirmed these equivalent endpoint pairs at 256 and 2,048 frames. Removing the surviving middle band changed the full stereo signal by 0.16514 RMS in the low-edge Drive case.
+
+ADI stores the enabled bands separately from cutoff frequency. An endpoint pair therefore maps to its two surviving bands and their measured cutoff. Of 873 saved programs, none stores the raw coincident endpoints. One saved steep split is a float step inside the minimum gap. Two Sweep settings request 20,377.55 Hz, beyond ADI's present 20 kHz control. Reducing only that edge changes their isolated stage but gives identical complete racks on this fixture. A higher Pitch edge changes its full rack by 0.0000254 RMS.
+
 ## 22 November 2026 — Correct the first-order three-band crossover
 
 `clones/shaper-three-band-split` at `802ac60f` — Correct the first-order three-band crossover paths. The two outer bands cascade their filters in opposite orders, and the middle is their complement. The existing seven-stage rack shares this split. Isolated impulse and frequency-response tests failed 26 checks on main. Both stereo channels, live retuning and irregular edited-Pd blocks are covered. All six rack, stage and registered Pd suites passed under MSVC /W4 /WX at both precisions.
