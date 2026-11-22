@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — N67 new input tracks monitor on Auto
+
+**PR requested** · `engine/n67-auto-monitor-default` · `f2802a0030d9e9ad0a02d4404276cf1ccf140422`
+**Title** — Default new input tracks to Auto monitoring.
+
+New sets Auto for its four audio and MIDI tracks. Ordinary `track.create` also sets Auto for audio, MIDI and instrument kinds. The create's Undo capture records the new default for Redo. An older create without that capture still replays Off. Existing rows and the raw schema default retain their stored behavior.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors with Pd. All seven suites passed: project bootstrap, Ops, History, track recording, Session, Applied Batches and UI Seams. Previous main compiled against the updated bootstrap test failed all three new Auto assertions. The updated JUCE shell test compiled with GCC 14 warnings as errors. WTS-01 step 2a recorded 384,000 exact samples with Auto. Its playback fixture explicitly selects Off before Play and still shows the one existing DF-E64 failure, the 256-sample underrun, with no additional failed steps. `git diff --check` passes.
+
+**Dependency** — Current main `0ea10b8e`. The WTS fixture selects Off only for its controlled playback comparison and can merge alongside the DF-E64 loan.
+
 ## 2026-11-22 — N63 ordered note batches write the stream once
 
 **PR requested** · `engine/n63-ordered-note-batch` · `c97f2a961c4623b1fa0ffe0e0cbbeef09b68ddad`
