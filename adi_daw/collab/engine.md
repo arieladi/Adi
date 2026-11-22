@@ -132,6 +132,14 @@ Parked device DSP switches with the devices seat and the Live policy for overlap
 
 GCC 14 and Clang 19 strict builds each passed 246 checks across three suites. A controlled driver fixture measures 50%, 150% and 100%, exercises a sample-rate change and an oversized refusal, and verifies the callback's allocation and floating-point control contracts. Window meter controls and Live's overload presentation await the owning seat. Per-track node timing is next.
 
+### 22 November — DEV-24 / MX-28 track processing time per driver callback
+
+**PR requested** for `engine/dev24-track-processing-time` at `a16019c01f949be92209b4125effe893d5e170b2`, stacked on the graph's track association from DEV-19. The owner can enable profiling and read sorted per-track processing nanoseconds plus the physical frame count. Prepared slots accumulate across logical slices and workers, then publish once at physical callback completion. Timing covers scheduled slot processing and its input mixing. Shared graph work such as event forwarding remains visible in the separate driver load metric.
+
+Strict GCC 14 and Clang 19 each passed 815 checks across six suites. A controlled clock gives exact 200 ns and 400 ns totals for different tracks across two slices, and the worker fixture checks aggregation after the render barrier. GraphHost preserves PCM, publishes both hosted slices together, and leaves callback allocation, reclamation and file-I/O counts at zero. The six-rectangle thresholds and presentation remain with window and the Live reading.
+
+Parked DEV-10/11/12/14/15 on Q-K and the user Pd safety, editor and voice contracts. DEV-13's native delay is already requested. Parked DEV-27 on the native protocol choices and repeatable AudioGridder server measurements. Parked TM-SV-02 on the scene/slot/launch reservations and CT-01's shared clip accessor. TM-SV-03's transient gesture admission and pure launch edge policy can proceed without storage changes.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
