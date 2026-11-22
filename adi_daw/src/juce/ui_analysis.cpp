@@ -601,9 +601,13 @@ void SharedSpectrumView::setMainMeterSource(const std::shared_ptr<const MainMete
 }
 juce::String SharedSpectrumView::mainMeterText() const {
     if (!mainMeter_) return {};
+    const auto peak = mainMeter_->truePeakDb;
+    const auto integrated = mainMeter_->integratedLufs;
+    const auto plr = std::isfinite(peak) && std::isfinite(integrated)
+                         ? meterNumber(peak - integrated) : juce::String("--");
     return "Main aggregate programme / pre-cue\nM " + meterNumber(mainMeter_->momentaryLufs) +
-           "  S " + meterNumber(mainMeter_->shortTermLufs) + "  I " + meterNumber(mainMeter_->integratedLufs) +
-           " LUFS\nTP (held) " + meterNumber(mainMeter_->truePeakDb) + " dBTP";
+           "  S " + meterNumber(mainMeter_->shortTermLufs) + "  I " + meterNumber(integrated) +
+           " LUFS\nTP (held) " + meterNumber(peak) + " dBTP  PLR " + plr + " dB";
 }
 void SharedSpectrumView::setClassicControls(const ClassicScopeControls &controls) {
     if (controls == classicControls_) return;

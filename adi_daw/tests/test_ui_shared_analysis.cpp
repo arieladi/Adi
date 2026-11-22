@@ -384,6 +384,7 @@ void mainMetersSharedPresentation() {
     check(text.contains("Main aggregate programme / pre-cue") && text.contains("M -14.2") &&
           text.contains("S -15.3") && text.contains("I -16.4 LUFS") && text.contains("TP (held) -0.7 dBTP"),
           "Main text names aggregate pre-cue programme, independent LUFS windows and held dBTP at one decimal");
+    check(text.contains("PLR 15.7 dB"), "Main PLR uses held true peak minus integrated loudness");
     (void)paint(full); (void)paint(info); (void)paint(window);
     const int minimisedReads = reads; root.fake->minimized = true; floating.fake->minimized = true;
     full.frame(); info.frame(); window.frame();
@@ -396,6 +397,8 @@ void mainMetersSharedPresentation() {
     full.frame(); check(reads == frozenReads && full.mainMeterSnapshot() == beforeFreeze,
                         "Freeze keeps only a local Main picture without polling or pausing the shared service");
     info.frame(); check(info.mainMeterSnapshot() == values, "another live view keeps reading while its peer is frozen");
+    check(full.mainMeterText().contains("PLR 15.7 dB") && info.mainMeterText().contains("PLR 11.8 dB"),
+          "PLR follows each view's held or current Main readout");
     const auto peer = info.mainMeterSnapshot(); full.clear(); full.frame();
     check(!full.mainMeterSnapshot() && info.mainMeterSnapshot() == peer,
           "Reset clears one frozen presentation without altering another view or Main values");
@@ -428,6 +431,7 @@ void mainMetersSharedPresentation() {
     check(full.mainMeterText().contains("M --") && full.mainMeterText().contains("TP (held) -- dBTP") &&
           !full.mainMeterText().containsIgnoreCase("warming"),
           "negative infinity is shown honestly without claiming silence is necessarily an unwarmed window");
+    check(full.mainMeterText().contains("PLR --"), "missing integrated loudness or true peak makes PLR unavailable");
     values.truePeakDb = std::numeric_limits<float>::quiet_NaN(); full.frame();
     check(!full.mainMeterSnapshot(), "invalid readout numbers never leak into the display");
     values.truePeakDb = -.5f; full.frame(); full.freeze(true);
