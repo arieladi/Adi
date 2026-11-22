@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, EX-03 Render as Loop and export tails
+
+**PR requested** — `engine-win/export-loop-tails` `d84677d2` on main `87ea349c`. Uses the same graph for the unwritten loop lap and latency-compensated written lap. Fixed and Until Silent tails stop new timeline input at the authored range end and keep processing the graph. Until Silent counts consecutive quiet frames across the output channels, including the hold, up to the specified maximum. Independent tails/loops are refused for gapless and NI Stems jobs. Native Windows /W4 /WX passed 460 render checks and 85 NI Stems checks (native AAC unavailable). A 17-sample delayed feedback effect verified continuous equivalence, immunity to a later arrangement impulse, exact hold and maximum, and a sample-for-sample second lap with wrapped decay.
+
+**FOR THE DIRECTOR — EX-03:** Live's non-zero-range first-pass start remains unmeasured. Recommendation: keep ADI's existing zero-based preroll into the first lap by default unless a Live null test finds it starts cold at the range. This branch uses the zero-based preroll so the engine path can be reviewed now. The defined tail case puts the private transport into Stop, so hosted plug-ins that reset on Stop still need a targeted probe. Continuous gapless rendering stays EX-12.
+
 ## 2026-11-22, TM-MD-03 source hash memo
 
 **PR requested** — `engine-win/source-hash-memo` `03c440ab` on `87ea349c`. The standalone off-callback memo admits only measured digests, keys by native identity with size and mtime, and detects changes while hashing. The Windows /W4 /WX standalone test passed 59 checks, including 50 warm metadata hits, changed same-size content with a newer mtime, mismatch persistence after a private WAV deletion, and same-size/same-mtime native replacement. The existing progressive-decoder suite passed 100 checks. Native AAC was unavailable. The standalone tests use byte fixtures, not compressed-source Session playback.
