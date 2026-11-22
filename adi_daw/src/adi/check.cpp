@@ -3,6 +3,7 @@
 #include "adi/check.hpp"
 
 #include "adi/blob.hpp"
+#include "adi/device_param_ref.hpp"
 #include "adi/history_compaction.hpp"
 #include "adi/history_roots.hpp"
 #include "adi/media/media_ops.hpp"
@@ -605,6 +606,31 @@ void checkSendScopes(Ctx& c) {
     }
 }
 
+void checkAutomationLanes(Ctx& c) {
+    c.ran();
+    try {
+        SQLite::Statement st(
+            c.db,
+            "SELECT id, param_ref FROM automation_lanes WHERE owner_kind = 'device' ORDER BY id");
+        while (st.executeStep()) {
+            const auto id = st.getColumn(0).getInt64();
+            const auto ref = st.getColumn(1).getString();
+            std::uint32_t paramId = 0;
+            bool canonical = false;
+            const bool parsed = parseDeviceParamRef(ref, paramId, &canonical);
+            if (parsed && canonical) continue;
+            const std::string detail = parsed
+                ? "device param_ref '" + ref + "' is not canonical decimal (SPEC 6.3.3); played as parameter " +
+                      std::to_string(paramId)
+                : "device param_ref '" + ref + "' is not a canonical decimal parameter id (SPEC 6.3.3); not played";
+            c.add(Severity::Warning, "automation.paramRef",
+                  "automation_lanes#" + std::to_string(id) + ".param_ref", detail);
+        }
+    } catch (const std::exception& e) {
+        c.add(Severity::Error, "automation.checkFailed", "automation_lanes", e.what());
+    }
+}
+
 }  // namespace
 
 CheckReport checkProject(const Store& s, bool verifyMediaFiles) {
@@ -613,6 +639,7 @@ CheckReport checkProject(const Store& s, bool verifyMediaFiles) {
     checkSqlite(c);
     checkPolyRefs(c);
     checkSendScopes(c);
+    checkAutomationLanes(c);
     checkBlobs(c);
     checkNoteExpressionTargets(c);
     checkHistory(c);
