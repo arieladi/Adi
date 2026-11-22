@@ -26,9 +26,13 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/store_rows.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -552,6 +556,70 @@ void testThePanel() {
     check(readPanel(*s, 11) == std::optional<std::vector<std::string>>({"x", "y"}), "arrives configured");
 }
 
+void testChainZones() {
+    section("DEV-02 -- exact chain zone bytes and admission");
+    using namespace adi::rack;
+    const std::array<std::byte, 4> code{std::byte{1}, std::byte{9}, std::byte{5}, std::byte{7}};
+    const auto decoded = decodeZone(code);
+    check(decoded == Zone{1, 9, 5, 7} && !decodeZone(std::span(code).first(3)),
+          "zone decode preserves all four integers and rejects an unknown extent");
+    const std::array gain{0.0, 0.25, 0.5, 0.75, 1.0};
+    bool bothLaws = true;
+    for (std::size_t i = 0; i < gain.size(); ++i) {
+        const auto key = static_cast<int>(i) + 1;
+        const auto linear = zoneWeight(decoded, key, FadeLaw::Gain);
+        const auto power = zoneWeight(decoded, key, FadeLaw::Power);
+        bothLaws = bothLaws && linear == gain[i] && power &&
+                   std::abs(*power - std::sqrt(gain[i])) < 1e-12;
+    }
+    check(bothLaws && zoneWeight(decoded, 8, FadeLaw::Gain) == 0.5 &&
+              zoneWeight(decoded, 9, FadeLaw::Power) == 0.0 &&
+              !zoneWeight(decoded, 0, FadeLaw::Gain) && !zoneWeight(decoded, 10, FadeLaw::Gain),
+          "integer gains and power law match both fade edges and do not admit outside notes");
+    check(zoneWeight(Zone{64, 64, 64, 64}, 64, FadeLaw::Power) == 1.0,
+          "equal bounds give one admitted key with zero fade width");
+
+    Scratch scratch("rack-zones");
+    auto store = project(scratch / "zones.adi");
+    if (!store || !seedChainAndDevice(*store)) {
+        check(false, "create native zone fixture");
+        return;
+    }
+    store->db().exec(
+        "UPDATE device_chains SET key_zone=X'01090507',chain_zone=X'00320028' WHERE id=5;"
+        "INSERT INTO device_chains(id,track_id,ord,key_zone,vel_zone,chain_zone) "
+        "VALUES(6,1,1,X'06640350',X'00800080',X'00140014');");
+    const auto model = rows::readModel(*store);
+    const auto id = [&](std::int64_t which) {
+        return std::find_if(model.deviceChains.begin(), model.deviceChains.end(),
+                            [&](const auto &chain) { return chain.id == which; });
+    };
+    const auto valid = id(5), malformed = id(6);
+    check(valid != model.deviceChains.end() && malformed != model.deviceChains.end(),
+          "a malformed rack chain does not truncate its neighbors in the model");
+    if (valid == model.deviceChains.end() || malformed == model.deviceChains.end())
+        return;
+    check(valid->zones.key == decoded && valid->zones.velocity == Zone{} &&
+              valid->zones.selector == Zone{0, 50, 0, 40},
+          "stored SQL NULL means a full velocity range alongside both authored zones");
+    const auto ordinary = evaluateZones(valid->zones, RackKind::Instrument, 3, 127, 45, FadeLaw::Gain);
+    const auto midi = evaluateZones(valid->zones, RackKind::MidiEffect, 3, 127, 45, FadeLaw::Power);
+    check(ordinary && ordinary->key == 0.5 && ordinary->velocity == 1 &&
+              ordinary->selector == 0.5 && ordinary->combined() == 0.25 &&
+              midi && std::abs(midi->combined() - 0.5) < 1e-12,
+          "instrument and MIDI effect racks require all three applicable factors");
+    check(!malformed->zones.key && !malformed->zones.velocity &&
+              !evaluateZones(malformed->zones, RackKind::Instrument, 4, 5, 6, FadeLaw::Gain) &&
+              std::any_of(model.problems.begin(), model.problems.end(), [](const auto &s) {
+                  return s == "device_chains#6: invalid key zone";
+              }),
+          "malformed rows are diagnosed and block applicable note admission");
+    const auto audio = evaluateZones(malformed->zones, RackKind::AudioEffect, -1, -1, 10, FadeLaw::Gain);
+    const auto drum = evaluateZones(malformed->zones, RackKind::Drum, -1, -1, -1, FadeLaw::Gain);
+    check(audio && audio->combined() == 1.0 && drum && drum->combined() == 1.0,
+          "audio racks only consult selector and drum admission uses its separate pad mapping");
+}
+
 // --- main ---------------------------------------------------------------------
 
 int main() {
@@ -574,6 +642,7 @@ int main() {
     testChainPair();
     testTheExpressionRoute();
     testThePanel();
+    testChainZones();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
