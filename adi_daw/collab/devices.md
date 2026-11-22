@@ -8,7 +8,7 @@ device PRs do not conflict on one shared log file.
 ## FOR THE DIRECTOR
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 31 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 32 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -151,6 +151,8 @@ method); Live's files and renders stay in the director's research.
 31. **External Audio Effect (the engine's build, after 3 December).** A fresh External Audio Effect, as
     shown: Gain's range and default, Hardware Latency's range and steps, the Audio To and Audio From
     lists. With a loop-back cable and Dry/Wet 50 %: does the dry meet the return, or arrive early?
+32. **DJ Filter (built after 3 December).** The DJ Filter as Live 12.4 shows it: its controls and
+    ranges, and whether it has a resonance of its own. Pink noise at Filter −50 and +50: the response.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -165,6 +167,24 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — standing queue item 22: the DJ Filter on Auto Filter's cores — lands after 3 December
+
+**PR requested:** head `devices/dj-filter` (729bc803), base `main`, after `devices/filter-delay`.
+- **What it is.** `dsp::DjFilter` holds an `AutoFilter` at its DJ type. Filter drives Control, Output
+  drives Output, and Dry/Wet drives Mix. Its response is Auto Filter's by construction, so a fix to one
+  is a fix to both.
+- **Tests:**
+  - `adi_dj_filter_tests` 17: the output equals Auto Filter's (Type DJ, the same three controls) bit
+    for bit, at seven Filter values and under automation across the centre, at block sizes 1, 64, 333
+    and 4096. Another Auto Filter type does not (plant). 0 passes the signal, and each side filters.
+  - parity max error 0;
+  - the catalogue holds 34 built-ins.
+- **Reading 32, added to the ONE list.**
+
+**The standing queue is worked through.** Items 4, 5, 6, 13 and 14 stay parked on the lines logged
+earlier. Next: the lane's unbuilt PLAN rows (DEV-22's Auto Shift on the Tuner's pitch detector, then
+the Spectrum device's canvas).
 
 ## 2026-11-22 — standing queue item 21: External Audio Effect's canvas and panel contract — lands after 3 December
 
