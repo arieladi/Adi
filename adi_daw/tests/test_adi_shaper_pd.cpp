@@ -101,7 +101,7 @@ void cachedPdTransport(const std::string& directory, bool native) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false) {
+                  bool crushOn = false, bool trimmed = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
@@ -126,6 +126,12 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         if (onlyVolume) {
             for (int j = 0; j < 8; ++j)
                 send(Shaper::bandParam(Stage::Volume, mid, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 50);
+        }
+        if (trimmed) {
+            send(Shaper::VolumeMidTrim,-6.f);
+            send(Shaper::WidthMidTrim,6.f);
+            for (int j=0;j<8;++j)
+                send(Shaper::bandParam(Stage::Width,mid,static_cast<Shaper::BandControl>(Shaper::Point1+j)),0);
         }
         send(Shaper::FilterOn, filterOn ? 1.0f : 0.0f);
         send(Shaper::SweepOn, sweepOn ? 1.0f : 0.0f);
@@ -196,9 +202,14 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
             const auto index = i - 64;
             check(std::isfinite(crossed[i]) && std::isfinite(direct[ch][index]), "finite modulation output");
             errorPeak = std::max(errorPeak, static_cast<double>(std::abs(crossed[i] - direct[ch][index])));
-            if (onlyVolume)
-                check(crossed[i] == 0.5f * input[ch][index] && direct[ch][index] == crossed[i],
+            if (onlyVolume && trimmed) {
+                const float expected = .25f * (input[0][index] + input[1][index]);
+                check(std::abs(crossed[i] - expected) < 1.e-7f && direct[ch][index] == crossed[i],
+                      "both stereo paths follow the band controls and trims");
+            } else if (onlyVolume) {
+                check(crossed[i] == .5f * input[ch][index] && direct[ch][index] == crossed[i],
                       "half gain is sample-exact through native and edited stereo signal paths");
+            }
             const float alignedDry = !driveOn ? input[ch][index] : index >= 16 ? input[ch][index - 16] : 0.0f;
             effectPeak = std::max(effectPeak, static_cast<double>(std::abs(alignedDry - direct[ch][index])));
         }
@@ -343,9 +354,29 @@ int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
     constexpr int count = adi::dsp::AdiShaper::BaseCount;
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == count + 2 * adi::dsp::AdiShaperWaveBank::slots, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == count + 2 * adi::dsp::AdiShaperWaveBank::slots + 6, "device registration");
     for (int id = 1; id <= count; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    auto beforeTrim=adi::Payload::from_cbor(device->saveState("state"));
+    for (int id=3073;id<=3078;++id) {
+        const auto name=std::to_string(id);
+        const auto* desc=device->paramAt(device->paramCount()-6+id-3073);
+        constexpr std::array names{"Volume Low Trim","Volume Mid Trim","Volume High Trim",
+                                   "Width Low Gain","Width Mid Gain","Width High Gain"};
+        const double limit = id < 3076 ? 24.0 : 12.0;
+        check(desc && desc->id == name && desc->name == names[static_cast<std::size_t>(id-3073)] &&
+              desc->unit == "dB" && desc->defaultValue.normalized == .5 &&
+              desc->minReal == -limit && desc->maxReal == limit, "trim descriptor and unity default");
+        beforeTrim.at("params").erase(name);
+        beforeTrim.at("real").erase(name);
+        set(*device,id,.75);
+    }
+    const auto custom=device->saveState("state");
+    check(device->loadState("state",adi::Payload::to_cbor(beforeTrim)), "recall state without trim parameters");
+    for (int id=3073;id<=3078;++id) check(device->getParam(std::to_string(id)).real==0, "old state resets trims");
+    check(device->loadState("state",custom), "recall edited trims");
+    for (int id=3073;id<=3078;++id) check(device->getParam(std::to_string(id)).normalized==.75, "trim state round trip");
+    device=open();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
@@ -484,6 +515,7 @@ int main() try {
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);
+    modulationPd(editedDir, false, false, false, false, true);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
     modulationPd(editedDir, true, true);

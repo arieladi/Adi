@@ -34,9 +34,17 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  TimeOn = CrushOn + modStageParameterCount,
-                 BaseCount = TimeOn + modHeaderSize + 3 * timeBandParameterCount, Count = AdiShaperWaveBank::lastId };
+                 BaseCount = TimeOn + modHeaderSize + 3 * timeBandParameterCount,
+                 VolumeLowTrim = AdiShaperWaveBank::lastId, VolumeMidTrim, VolumeHighTrim,
+                 WidthLowTrim, WidthMidTrim, WidthHighTrim, Count };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush, Time };
     enum class Band { Low, Mid, High };
+    static constexpr double trimLimitDb(Stage stage) noexcept {
+        return stage == Stage::Width ? 12.0 : 24.0;
+    }
+    static constexpr Param trimParam(Stage stage, Band band) noexcept {
+        return static_cast<Param>((stage == Stage::Width ? WidthLowTrim : VolumeLowTrim) + static_cast<int>(band));
+    }
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
     static constexpr Param bandParam(Stage stage, Band band, BandControl control) noexcept {
@@ -93,7 +101,7 @@ class AdiShaper {
         Contour primary, secondary;
         std::uint64_t phase = 0, step = 0;
         double beats = 4.0, hz = 1.0;
-        float mix = 1.0f, blend = 1.0f;
+        float mix = 1.0f, blend = 1.0f, trim = 1.0f, wetGain = 1.0f, midGain = 1.0f;
         int type = 0;
         bool hertz = false, active = false;
         std::array<Gain, 8> heldGains{};
@@ -129,7 +137,7 @@ class AdiShaper {
         std::size_t index = 0;
         void advance(float& l, float& r) noexcept;
     };
-    static Gain gain(Stage kind, float amount, float mix) noexcept;
+    static Gain gain(Stage kind, float amount, const CurveBand& band) noexcept;
     void updateBand(Stage kind, CurveBand& band) const noexcept;
     void updateActivity(StageData& stage) noexcept;
     void updateStage(Stage kind) noexcept;
