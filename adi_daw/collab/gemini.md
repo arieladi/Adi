@@ -4,6 +4,80 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 2 (PR-BUILDS, Round 1): all unmerged PR-requested heads on GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`
+
+**Scope and environment:**
+- Collected every unmerged `2026-11-21`+ `PR requested` branch across all 7 seat logs (`engine/log`, `engine-win/log`, `devices/log`, `window/log`, `window-fn/log`, `mixview/log`, `clones/log`) plus the sole unmerged `land/*` stack (`land/engine-win-1122b`): **46 stack tops / standalone branches** covering all **83** unmerged `2026-11-21`+ PR-requested heads (`engine/df-e23-followups-staged` is noted superseded by `#677` on `main`, per `engine.md`; `mixview/review-scope-lands-after-2026-12-03` shares exact SHA `ffeebdcb` with `mixview/df-m55-info-spectrum-scale-lands-after-2026-12-03`).
+- Built with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DCMAKE_BUILD_TYPE=Debug` on GCC 12.2.0 and Clang 14.0.6 (libstdc++ 12).
+- **Local DF-M62 patch:** transiently patched `src/adi/mix/limiter/Dsp/FloatRealTransform.h:61` ONLY on branches that do not carry `mixview/df-m62-float-transform-20261122` (`d22b81c1`); **all 3 `mixview/*` branches were built completely unpatched** and compiled `FloatRealTransform.h` cleanly.
+- **Pre-existing `main` (`73f13028`) older-toolchain blockers (reported here for `win` / owners; separated from new branch errors below):**
+  1. **GCC 12.2 (`CMakeLists.txt:2083-2084`, owner `window-fn` / `win`)**: `adi_ui_seams_tests` passes `-fsanitize-trap=signed-integer-overflow` under `if(NOT MSVC)`, which GCC 12.2 rejects (`unrecognized command-line option`; GCC added `-fsanitize-trap=` in GCC 13; GCC 12 uses `-fsanitize-undefined-trap-on-error`). Repro: `cmake -S adi_daw -B build -DCMAKE_CXX_COMPILER=g++ && cmake --build build --target adi_ui_seams_tests`.
+  2. **Clang 14.0.6 + libstdc++ 12 (`src/adi/engine/timeline_clips.hpp:13:24`, owner `engine` / `engine-win`)**: `model.clips | std::views::filter(...)` fails Clang 14 concept check against libstdc++ 12 (`bits/ranges_util.h:133,139`), blocking 8 TUs (`freeze_capture.cpp`, `freeze_commands.cpp`, `gain_stage.cpp`, `clip_playback.cpp`, `midi_clips.cpp`, `midi_controllers.cpp`, `automation_clips.cpp`, `tests/test_take_lane_ops.cpp`).
+  3. **Clang 14.0.6 C++20 DR2313/P1091 structured-binding lambda capture (owner `engine`)**: unsupported before Clang 16 in `src/adi/project_files.cpp:308:47` (`hash`), `src/adi/engine/param_ops.cpp:339:133` (`role`), `:347:142` (`id`), `:1995:146` (`id`), `:2008:146` (`id`), `src/adi/engine/midi_clips.cpp:659:111,137` (`source`), and `tests/test_gain_stage.cpp:138:38` (`track`). Because (2) and (3) block linking `libadi_core.a` under Clang 14 unmodified, the Clang 14 column compiles every headless `.cpp` object touched/added by each branch with `-DADI_WERROR=ON`.
+
+**New pre-landing findings caught in Round 1 (before win's landing windows):**
+- **`clones/shaper-trim` (`69422cef`, owner `clones`) — FAILS GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`**: 19 `-Werror=sign-conversion` errors in `src/adi/dsp/adi_shaper_wave.hpp` (lines 48, 121, 136, 138, 145, 148, 149, 150, 151, ...: `int` index into `std::array<..., N>`). Repro: checkout `69422cef`, configure with `-DADI_WERROR=ON`, build `adi_core`.
+- **`mixview/review-cumulative-20261122` (`cafd7fde`) and `mixview/df-m55-info-spectrum-scale-lands-after-2026-12-03` (`ffeebdcb`, owner `mixview`) — FAIL GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`** (note: DF-M62 `FloatRealTransform.h:61` IS fixed and clean here):
+  - `tests/test_shared_analysis.cpp:1249:79` (`cafd7fde`) / `:1773:79` (`ffeebdcb`): GCC 12 hard error `local variable 'revision' may not appear in this context`.
+  - `tests/test_shared_analysis.cpp:1326:21` (`cafd7fde`) / `:1850:21` (`ffeebdcb`): GCC 12 + Clang 14 `-Werror=range-loop-construct` (`loop variable 'pair' creates a copy from type 'const std::pair<double, int>'`).
+  - `src/adi/ui/shared_analysis.cpp:904:81` (`cafd7fde`) / `:1260:81` (`ffeebdcb`): Clang 14 `-Werror=float-conversion` (`implicit conversion turns floating-point number into integer: 'double' to 'bool'`).
+  - `src/adi/ui/window_state.cpp:25:29`: Clang 14 hard error `no matching member function for call to 'emplace'` (C++20 parenthesized aggregate init).
+- **`engine/n67-auto-monitor-default` (`f2802a00`, owner `engine`) — FAILS `adi_textproj_store_tests` (2 of 245 checks failed)**: `FAIL the whole projection of a real project, byte for byte` and `FAIL the agent's remark projected, byte for byte` (golden projections in `tests/test_textproj_store.cpp` still expect default monitor `off` instead of `auto`). Repro: checkout `f2802a00`, build & run `adi_textproj_store_tests`.
+
+**Result table (Round 1):**
+
+| Branch | SHA | GCC 12.2 `-Werror` | Clang 14.0.6 `-Werror` (changed objs) | Warnings / Errors (`file:line`) | CTest (GCC 12.2) | Owner |
+|---|---|---|---|---|---|---|
+| `land/engine-win-1122b` | `a031b8e7` | PASS-BUILD (DF-M62 patched) | PASS (17 obj) | none | 8/8 unit PASS (WTS-01 2b known DF-E64) | win/engine-win |
+| `engine/dev06-rack-macros` | `0a2e3eb9` | PASS-BUILD (DF-M62 patched) | PASS (39 obj) | none | 18/18 PASS | engine |
+| `engine/dev18-event-transforms` | `4e749553` | PASS-BUILD (DF-M62 patched) | PREEXISTING-ONLY (17 obj) | preexisting Clang 14 `main` blockers only | 9/9 PASS | engine |
+| `engine/dev25-plugin-readiness` | `d8995f97` | PASS-BUILD (DF-M62 patched) | PASS (4 obj) | none | 2/2 PASS | engine |
+| `engine/df-e10-link-stop-diagnostic` | `b29455f4` | PASS-BUILD (DF-M62 patched) | PASS (1 obj) | none | 1/1 PASS | engine |
+| `engine/df-e17-edit-invariants-current` | `ab14b5dd` | PASS-BUILD (DF-M62 patched) | PASS (6 obj) | none | 4/4 PASS | engine |
+| `engine/df-e24-vst3-aux-sinks` | `2705f6d2` | NO-HEADLESS-TGT | NO-HEADLESS-OBJ | none | 0 headless tests matched | engine |
+| `engine/df-e27-finite-open-payloads` | `d0cf6d3c` | PASS-BUILD (DF-M62 patched) | PASS (2 obj) | none | 1/1 PASS | engine |
+| `engine/df-e27-host-telemetry` | `0d14bd14` | PASS-BUILD (DF-M62 patched) | PASS (2 obj) | none | 4/4 PASS | engine |
+| `engine/df-e55-vca-device-insert` | `b157aa00` | PASS-BUILD (DF-M62 patched) | PASS (5 obj) | none | 2/2 PASS | engine |
+| `engine/empty-project-cost` | `899a3a26` | PASS-BUILD (DF-M62 patched) | PASS (2 obj: main_loudness + test_main_loudness) | none | 1/1 PASS (adi_main_loudness_tests 57/57; adi_builtin_realtime_tests timed out in Debug without perf-debug-timeout) | engine |
+| `engine/mi08-expression-playback-current` | `e105cf3e` | PASS-BUILD (DF-M62 patched) | PREEXISTING-ONLY (15 obj) | preexisting Clang 14 `main` blockers only | 10/10 PASS | engine |
+| `engine/n63-ordered-note-batch` | `c97f2a96` | PASS-BUILD (DF-M62 patched) | PASS (4 obj) | none | 2/2 PASS | engine |
+| `engine/n64-recording-snapshot` | `8a32d9e3` | PASS-BUILD (DF-M62 patched) | PASS (8 obj) | none | 6/6 PASS | engine |
+| `engine/n67-auto-monitor-default` | `f2802a00` | PASS-BUILD (DF-M62 patched) | PASS (5 obj) | none | **5/6 unit FAIL** (`adi_textproj_store_tests` 2/245 fail; + WTS-01 2b DF-E64) | engine |
+| `engine/param-replacement-receipt` | `4a1b47e7` | PASS-BUILD (DF-M62 patched) | PREEXISTING-ONLY (2 obj) | preexisting Clang 14 `main` blockers only | 2/2 PASS | engine |
+| `engine/pd03-snapshot-all` | `67515e1c` | PASS-BUILD (DF-M62 patched) | PREEXISTING-ONLY (param_ops.cpp structured bindings) | preexisting Clang 14 `main` blockers only | 1/1 PASS | engine |
+| `engine-win/export-host-owner` | `6b78d94c` | PASS-BUILD (DF-M62 patched) | PASS (5 obj) | none | 1/1 unit PASS (WTS-01 2b known DF-E64) | engine-win |
+| `engine-win/play-first-block` | `01b1e723` | PASS-BUILD (DF-M62 patched) | PREEXISTING-ONLY (clip_playback/timeline_clips) | preexisting Clang 14 `main` blockers only | 6/6 PASS | engine-win |
+| `engine-win/project-plugin-saved-path` | `43787b7b` | NO-HEADLESS-TGT | NO-HEADLESS-OBJ | none | 0 headless tests matched | engine-win |
+| `engine-win/recording-failed-prefix` | `0900deeb` | PASS-BUILD (DF-M62 patched) | PASS (5 obj) | none | 3/3 PASS | engine-win |
+| `engine-win/recording-placement-offset` | `01abcaa3` | PASS-BUILD (DF-M62 patched) | PASS (2 obj) | none | 1/1 PASS | engine-win |
+| `engine-win/scanner-cache-paths` | `1d6dd030` | PASS-BUILD (DF-M62 patched) | PASS (7 obj) | none | 4/4 PASS | engine-win |
+| `devices/beat-repeat-contract` | `e243ab13` | DOCS-ONLY | DOCS-ONLY | none | - | devices |
+| `devices/hybrid-reverb-nupc` | `fb1c7e9a` | PASS-BUILD (DF-M62 patched) | PASS (29 obj) | none | 30/30 PASS | devices |
+| `devices/perf-debug-timeout` | `a4146193` | PASS-BUILD (DF-M62 patched) | PASS (6 obj) | none | 4/4 PASS | devices |
+| `devices/tuner` | `eb460dc3` | PASS-BUILD (DF-M62 patched) | PASS (38 obj) | none | 15/15 PASS | devices |
+| `window/browser-devices-test` | `88649293` | NO-HEADLESS-TGT | NO-HEADLESS-OBJ | none | 0 headless tests matched | window |
+| `window/grid-ticks` | `199b6c3a` | PASS-BUILD (seams flag err) (DF-M62 patched) | PASS (3 obj) | `CMakeLists.txt:2084` (preexisting GCC 12 `-fsanitize-trap=signed-integer-overflow` on `adi_ui_seams_tests`) | 1/1 PASS | window |
+| `window/held-peak` | `80e9557c` | PASS-BUILD (DF-M62 patched) | PASS (1 obj) | none | 1/1 PASS | window |
+| `window/input-clock` | `aaaea9db` | NO-HEADLESS-TGT | NO-HEADLESS-OBJ | none | 0 headless tests matched | window |
+| `window/menu-parameters` | `ab91e9f7` | NO-HEADLESS-TGT | NO-HEADLESS-OBJ | none | 0 headless tests matched | window |
+| `window/return-in-group` | `b882c743` | PASS-BUILD (seams flag err) (DF-M62 patched) | PASS (1 obj) | `CMakeLists.txt:2084` (preexisting GCC 12 `-fsanitize-trap=signed-integer-overflow` on `adi_ui_seams_tests`) | 0 headless tests matched | window |
+| `window/undo-settles` | `01ef073b` | PASS-BUILD (DF-M62 patched) | PASS (2 obj) | none | 1/1 PASS | window |
+| `window-fn/cueing` | `c6a557e6` | PASS-BUILD (DF-M62 patched) | NO-HEADLESS-OBJ | none | 0 headless tests matched | window-fn |
+| `window-fn/delay-compensation` | `ea67a671` | PASS-BUILD (DF-M62 patched) | PASS (1 obj) | none | 0 headless tests matched | window-fn |
+| `window-fn/lane-chooser` | `305e9b3a` | PASS-BUILD (DF-M62 patched) | PASS (1 obj) | none | WTS-01 only: 2b known DF-E64 | window-fn |
+| `window-fn/lane-ref-canonical` | `996d5b1f` | PASS-BUILD (seams flag err) (DF-M62 patched) | PASS (1 obj) | `CMakeLists.txt:2084` (preexisting GCC 12 `-fsanitize-trap=signed-integer-overflow` on `adi_ui_seams_tests`) | 0 headless tests matched | window-fn |
+| `window-fn/midi-live` | `fe24a5b0` | PASS-BUILD (DF-M62 patched) | PASS (1 obj) | none | WTS-01 only: 2b known DF-E64 | window-fn |
+| `window-fn/monitor-auto` | `5ac33b36` | PASS-BUILD (seams flag err) (DF-M62 patched) | PASS (3 obj) | `CMakeLists.txt:2084` (preexisting GCC 12 `-fsanitize-trap=signed-integer-overflow` on `adi_ui_seams_tests`) | WTS-01 only: 2b known DF-E64 | window-fn |
+| `window-fn/split-pan` | `1d8030a5` | NO-HEADLESS-TGT | NO-HEADLESS-OBJ | none | 0 headless tests matched | window-fn |
+| `mixview/df-m55-info-spectrum-scale-lands-after-2026-12-03` | `ffeebdcb` | FAIL-BUILD (unpatched) | FAIL (3 new err) | `tests/test_shared_analysis.cpp:1773,1850`; `src/adi/ui/shared_analysis.cpp:1260`; `src/adi/ui/window_state.cpp:25` | - | mixview |
+| `mixview/df-m62-float-transform-20261122` | `d22b81c1` | PASS-BUILD (unpatched) | NO-HEADLESS-OBJ | none | 0 headless tests matched | mixview |
+| `mixview/review-cumulative-20261122` | `cafd7fde` | FAIL-BUILD (unpatched) | FAIL (3 new err) | `tests/test_shared_analysis.cpp:1249,1326`; `src/adi/ui/shared_analysis.cpp:904`; `src/adi/ui/window_state.cpp:25` | - | mixview |
+| `clones/shaper-trim` | `69422cef` | FAIL-BUILD (DF-M62 patched) | FAIL (19 new err) | `src/adi/dsp/adi_shaper_wave.hpp:48,121,136,138,145,148-151,...` (`-Werror=sign-conversion`, 19 errs) | - | clones |
+| `clones/two-head-reader` | `9b7cd7ca` | PASS-BUILD (DF-M62 patched) | PASS (1 obj) | none | 7/7 PASS | clones |
+| `engine/df-e23-followups-staged` | `72dfdc77` | skipped (superseded by `#677` on `main`, per `engine.md`) | — | — | — | engine |
+
+---
+
 ## 2026-11-22 — Queue item 1 (DF-E56-ATTACK): refused MpeMidi attack leaves sounding voice untouched
 
 **Changed:**
