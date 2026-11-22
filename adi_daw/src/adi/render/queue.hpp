@@ -27,6 +27,12 @@ enum class Collision { Fail, Increment, Replace };
 struct Source {
     std::int64_t trackId = 0; // zero selects the project's master at render start
     engine::OfflineTap tap = engine::OfflineTap::PostFader;
+    // The legacy PreFader spelling is the wet PostFx tap. Existing jobs can
+    // keep that field; explicit EX-02 jobs choose the actual signal point.
+    std::optional<engine::Tap> signalTap{};
+    [[nodiscard]] engine::Tap resolvedTap() const noexcept {
+        return signalTap.value_or(tap == engine::OfflineTap::PreFader ? engine::Tap::PostFx : engine::Tap::PostFader);
+    }
 };
 enum class ExportContainer { Wav, Flac, Aiff, Mp3, OggVorbis, OggOpus };
 enum class ChannelFold { Preserve, StereoAverage };
@@ -182,7 +188,18 @@ struct Result {
     std::uint64_t framesAnalyzed = 0;
     std::optional<ExportStatistics> analysis{};
 };
-struct Entry { JobId id = 0; Job job; Result result; };
+struct Entry { JobId id = 0; Job job; Result result; JobId stemBatch = 0; };
+struct RenderCell {
+    Source source;
+    std::optional<std::int64_t> regionId{}; // null uses the job's literal range
+};
+struct StemPreview {
+    JobId ordinal = 0;
+    Source source;
+    std::filesystem::path output;
+    std::optional<std::int64_t> regionId{};
+    std::int64_t beginSample = 0, endSample = 0;
+};
 struct RunMember {
     JobId id = 0;
     bool started = false;
@@ -283,6 +300,15 @@ void publishOutput(const std::filesystem::path& stage, Result&, media::PublishHo
 class Queue {
 public:
     JobId add(Job);
+    // Preview an explicit list against the current project and destination.
+    // Each actual render still resolves its own revision and names at start.
+    [[nodiscard]] std::vector<StemPreview> previewStemBatch(const Job&, std::span<const Source>) const;
+    // Revalidate before adding the entire list. Refusal adds no queue entries.
+    std::vector<JobId> addStemBatch(const Job&, std::span<const Source>);
+    // Sparse matrix in caller order. Every selected track/tap and cycle
+    // marker becomes an ordinary job under the same batch collision rules.
+    [[nodiscard]] std::vector<StemPreview> previewRenderMatrix(const Job&, std::span<const RenderCell>) const;
+    std::vector<JobId> addRenderMatrix(const Job&, std::span<const RenderCell>);
     bool update(JobId, Job);
     bool remove(JobId);
     bool retry(JobId); // only Failed/Cancelled, never silently rerender completed files

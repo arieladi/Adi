@@ -699,6 +699,156 @@ void directStems() {
         check(matches(read(renderWav(j,{}),270),31),"pre-fader endpoint excludes the strip's track delay");
     }
 }
+void explicitDirectTaps() {
+    Fixture f;
+    f.effect();
+    f.parallel();
+    f.store->db().exec("UPDATE tracks SET soloed=1 WHERE id=2");
+    auto job = f.job("direct-dry");
+    job.source.trackId = 1;
+    const DeviceLoader loader = [](const DeviceRequest&, std::string&) {
+        auto device = std::make_unique<Delay>();
+        device->delay = 23;
+        device->gain = 2;
+        return device;
+    };
+    job.source.signalTap = Tap::PreFx;
+    check(matches(read(renderWav(job, loader), 866), 137),
+          "explicit PreFx excludes source effects and the solo gate");
+    job.nameTemplate = "direct-post-fx";
+    job.source.signalTap = Tap::PostFx;
+    check(matches(read(renderWav(job, loader), 866), 137, 2),
+          "explicit PostFx includes the compensated effect before the strip");
+    job.nameTemplate = "direct-post-fader";
+    job.source.signalTap = Tap::PostFader;
+    const auto soloedOut = read(renderWav(job, loader), 866);
+    check(!soloedOut.empty() && std::all_of(soloedOut.begin(), soloedOut.end(), [](float value) { return value == 0; }),
+          "engine's current PostFader strip is silent when another track is soloed");
+    f.store->db().exec("UPDATE tracks SET soloed=0 WHERE id=2");
+    job.nameTemplate = "direct-post-fader-alone";
+    check(matches(read(renderWav(job, loader), 866), 137, 2), "PostFader includes the effect on an audible track");
+    f.store->db().exec("UPDATE tracks SET soloed=1 WHERE id=2");
+    job.nameTemplate = "direct-post-mixer";
+    job.source.signalTap = Tap::PostMixer;
+    Queue queue;
+    queue.add(job);
+    queue.run(loader);
+    const auto pcm = read(queue.snapshot()[0].result, 866);
+    check(!pcm.empty() && std::all_of(pcm.begin(), pcm.end(), [](float value) { return value == 0; }),
+          "explicit PostMixer follows the actual solo gate");
+    const auto manifest = nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["job"]["source"]["signal_tap"] == "post_mixer" &&
+          manifest["members"][0]["result"]["resolved_snapshot"]["source"]["signal_tap"] == "post_mixer",
+          "manifest states the actual requested and captured signal point");
+    job.nameTemplate = "invalid-tail";
+    job.source.signalTap = Tap::Tail;
+    check(renderWav(job, loader).state == JobState::Failed && f.noStage(),
+          "internal Tail is not a public EX-02 tap");
+}
+void directStemBatch() {
+    Fixture f;
+    f.parallel();
+    Queue queue;
+    auto job = f.job("{track}-{counter}");
+    const std::array sources{Source{1, OfflineTap::PostFader}, Source{2, OfflineTap::PreFader}};
+    const auto preview = queue.previewStemBatch(job, sources);
+    check(preview.size() == 2 && preview[0].ordinal == 1 && preview[0].output.filename() == "Audio-1.wav" &&
+          preview[1].ordinal == 2 && preview[1].output.filename() == "Parallel-2.wav" &&
+          preview[1].source.resolvedTap() == Tap::PostFx && queue.snapshot().empty(),
+          "preview resolves each requested stem and reports cardinality without enqueuing");
+    const auto ids = queue.addStemBatch(job, sources);
+    check(ids == std::vector<JobId>{1, 2}, "batch enqueue uses the preview's stable ordinals");
+    f.store->db().exec("UPDATE tracks SET name='Later' WHERE id=2");
+    queue.run();
+    const auto entries = queue.snapshot();
+    check(entries.size() == 2 && entries[0].result.state == JobState::Completed &&
+          entries[0].result.output.filename() == "Audio-1.wav" && entries[1].result.state == JobState::Completed &&
+          entries[1].result.output.filename() == "Later-2.wav",
+          "names resolve again at the ordinary job-start revision");
+
+    const std::array duplicateMain{Source{}, Source{9}};
+    bool duplicateRefused = false;
+    try { (void)queue.addStemBatch(job, duplicateMain); }
+    catch (const std::invalid_argument&) { duplicateRefused = true; }
+    check(duplicateRefused && queue.snapshot().size() == 2,
+          "main alias and explicit main ID cannot duplicate the same signal");
+    job.nameTemplate = "shared";
+    bool namesRefused = false;
+    try { (void)queue.addStemBatch(job, sources); }
+    catch (const std::runtime_error&) { namesRefused = true; }
+    check(namesRefused && queue.snapshot().size() == 2 && f.noStage(),
+          "Fail refuses a colliding template without partially enqueueing or staging");
+    job.collision = Collision::Increment;
+    const auto numbered = queue.previewStemBatch(job, sources);
+    check(numbered.size() == 2 && numbered[0].ordinal == 3 &&
+          numbered[0].output.filename() == "shared.wav" && numbered[1].output.filename() == "shared (2).wav",
+          "Increment preview reserves preceding names and failed additions consume no ordinals");
+    const auto numberedIds = queue.addStemBatch(job, sources);
+    queue.run();
+    const auto afterIncrement = queue.snapshot();
+    check(numberedIds == std::vector<JobId>{3, 4} && afterIncrement.size() == 4 &&
+          afterIncrement[2].result.state == JobState::Completed && afterIncrement[3].result.state == JobState::Completed &&
+          fs::equivalent(afterIncrement[2].result.output, numbered[0].output) &&
+          fs::equivalent(afterIncrement[3].result.output, numbered[1].output),
+          "incremented batch delivers distinct previewed names");
+
+    job.nameTemplate = "{track}-replace";
+    job.collision = Collision::Replace;
+    const auto replacements = queue.addStemBatch(job, sources);
+    f.store->db().exec("UPDATE tracks SET name='Audio' WHERE id=2");
+    queue.run();
+    const auto afterReplace = queue.snapshot();
+    check(replacements == std::vector<JobId>{5, 6} && afterReplace.size() == 6 &&
+          afterReplace[4].result.state == JobState::Completed &&
+          afterReplace[5].result.state == JobState::Failed &&
+          afterReplace[5].result.error.find("earlier delivery") != std::string::npos &&
+          matches(read(afterReplace[4].result, 866), 137) && f.noStage(),
+          "a later naming change cannot let one batch member replace its predecessor");
+}
+void sparseRenderMatrix() {
+    Fixture f;
+    f.parallel();
+    f.store->db().exec("INSERT INTO markers(id,time_base,pos_ns,length_ns,name,kind) VALUES"
+        "(11,1,2000000,8000000,'One','cycle'),(12,1,10000000,4000000,'Two','cycle'),"
+        "(13,1,1000000,NULL,'Point','position')");
+    Queue queue;
+    auto job = f.job("{region}-{track}-{counter}");
+    const std::array cells{RenderCell{Source{2}, 12}, RenderCell{Source{1}, 11}, RenderCell{Source{1}, 12}};
+    const auto preview = queue.previewRenderMatrix(job, cells);
+    check(preview.size() == 3 && preview[0].ordinal == 1 && preview[0].regionId == 12 &&
+          preview[0].beginSample == 480 && preview[0].endSample == 672 &&
+          preview[0].output.filename() == "Two-Parallel-1.wav" &&
+          preview[1].output.filename() == "One-Audio-2.wav" &&
+          preview[2].output.filename() == "Two-Audio-3.wav",
+          "sparse matrix previews only individually selected cells and exact marker bounds");
+
+    const std::array repeated{cells[0], cells[0]};
+    bool repeatedRefused = false;
+    try { (void)queue.addRenderMatrix(job, repeated); }
+    catch (const std::invalid_argument&) { repeatedRefused = true; }
+    auto badCell = cells;
+    badCell[2].regionId = 13;
+    bool badMarkerRefused = false;
+    try { (void)queue.addRenderMatrix(job, badCell); }
+    catch (const std::invalid_argument&) { badMarkerRefused = true; }
+    check(repeatedRefused && badMarkerRefused && queue.snapshot().empty(),
+          "a repeated cell or a point marker leaves the matrix queue unchanged");
+
+    const auto ids = queue.addRenderMatrix(job, cells);
+    f.store->db().exec("UPDATE markers SET name='Updated' WHERE id=12");
+    queue.run();
+    const auto results = queue.snapshot();
+    check(ids == std::vector<JobId>{1, 2, 3} && results.size() == 3 &&
+          results[0].result.output.filename() == "Updated-Parallel-1.wav" &&
+          results[1].result.output.filename() == "One-Audio-2.wav" &&
+          results[2].result.output.filename() == "Updated-Audio-3.wav",
+          "selected matrix cells become ordinary jobs with job-start marker names and original order");
+    if (results.size() != 3) return;
+    check(matches(read(results[0].result, 192), 480) &&
+          matches(read(results[1].result, 384), 96) &&
+          matches(read(results[2].result, 192), 480) && f.noStage(),
+          "each selected matrix cell renders its own source and sample-exact region");
+}
 void groupStems() {
     Fixture f;f.effect();f.parallel();
     f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(5,'group','Drums',3);"
@@ -2615,7 +2765,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); loopAndTailRenders(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); brickwallNormalization(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); loopAndTailRenders(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); sparseRenderMatrix(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); brickwallNormalization(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
