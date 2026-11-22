@@ -218,6 +218,73 @@ void legacyDisconnectReplay() {
           "historic row-only disconnect replays its original effects and inverse");
 }
 
+void inaudibleSendSources() {
+    Project project;
+    auto& store = *project.store;
+    auto& db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,parent_id) VALUES (30,'group',NULL),(32,'vca',30);"
+            "UPDATE tracks SET parent_id=30 WHERE id=10;"
+            "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind)"
+            " VALUES (43,'track',32,'track',10,'send');");
+    const auto captured = adi::detail::captureRow(db, "routing", "id", 43);
+    if (!captured) throw std::runtime_error("seed captured VCA send");
+    db.exec("DELETE FROM routing WHERE id=43");
+
+    auto main = connect(41, 11);
+    main.payload["src"] = 20;
+    auto vca = connect(42);
+    vca.payload["src"] = 32;
+    auto capturedVca = vca;
+    capturedVca.payload["id"] = 43;
+    capturedVca.payload["row"] = *captured;
+
+    const auto before = digestProject(store).text;
+    OpJournal journal(store);
+    const auto head = journal.headSeq();
+    const auto preparedMain = prepareSendToReturn(store, 41, 20, 11);
+    const auto preparedVca = prepareSendToReturn(store, 42, 32, 10);
+    check(!preparedMain.ok && preparedMain.error.find("Main") != std::string::npos &&
+              preparedMain.requests.empty(),
+          "send preparation refuses Main for a top-level return");
+    check(!preparedVca.ok && preparedVca.error.find("VCA") != std::string::npos &&
+              preparedVca.requests.empty(),
+          "send preparation refuses a VCA inside the return's group");
+    const auto rawMain = journal.commit(main);
+    const auto rawVca = journal.commit(vca);
+    const auto rowVca = journal.commit(capturedVca);
+    check(!rawMain.ok && rawMain.error.find("Main") != std::string::npos,
+          "the raw routing op refuses Main as a send source");
+    check(!rawVca.ok && rawVca.error.find("VCA") != std::string::npos,
+          "the raw routing op refuses VCA as a send source");
+    check(!rowVca.ok && rowVca.error.find("VCA") != std::string::npos,
+          "a fresh captured send row is subject to the same VCA source check");
+    check(journal.headSeq() == head && digestProject(store).text == before,
+          "refused sends leave routing and the journal unchanged");
+
+    Project legacy;
+    auto& older = *legacy.store;
+    auto historical = connect(44, 11);
+    historical.payload["src"] = 2;
+    if (!OpJournal(older).commit(historical).ok || !History(older).undo().ok)
+        throw std::runtime_error("seed a previously accepted send");
+    // Model a stored send that the older journal accepted from a VCA.
+    older.db().exec("UPDATE tracks SET kind='vca' WHERE id=2");
+    const auto path = older.path();
+    legacy.store.reset();
+    StoreError error{};
+    legacy.store = Store::open(path, error);
+    if (!legacy.store) throw std::runtime_error(toString(error));
+    auto& reopened = *legacy.store;
+    check(History(reopened).redo().ok &&
+              legacy.scalar("SELECT src_id FROM routing WHERE id=44") == 2,
+          "a saved historical VCA send still replays its forward connect");
+    const auto row = adi::detail::captureRow(reopened.db(), "routing", "id", 44);
+    check(row && OpJournal(reopened).commit(op("routing.disconnect", {{"id",44}})).ok &&
+              History(reopened).undo().ok &&
+              adi::detail::captureRow(reopened.db(), "routing", "id", 44) == row,
+          "undoing a disconnect still restores the exact historical VCA send row");
+}
+
 void groupedReturns() {
     Project project;
     auto& store = *project.store;
@@ -578,4 +645,4 @@ void legacyMigration() {
     check(OpJournal(*upgraded).commit(tap(10,true)).ok && History(*upgraded).undo().ok && readReturnSendTaps(*upgraded).at(10).legacyMixed,"first migrated choice undoes to original legacy mixed state");
 }
 }
-int main(){try{choiceAndHistory();mixedClickAndHistory();emptyAndProducer();metadataAndGuards();disconnectAndProjection();routingDependants();legacyDisconnectReplay();groupedReturns();ungroupKeepsSendsAgainstFinalForest();compensatedGroupNull();audible();switchingPreFxClearsSource();replay();legacyMigration();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{choiceAndHistory();mixedClickAndHistory();emptyAndProducer();metadataAndGuards();disconnectAndProjection();routingDependants();legacyDisconnectReplay();inaudibleSendSources();groupedReturns();ungroupKeepsSendsAgainstFinalForest();compensatedGroupNull();audible();switchingPreFxClearsSource();replay();legacyMigration();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

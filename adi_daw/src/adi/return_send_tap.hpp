@@ -8,6 +8,7 @@ enum class IndividualSendTap { PreFx, PostFx, PostMixer };
 
 std::map<std::int64_t, IndividualSendTap> readIndividualSendTaps(const SQLite::Database&);
 std::string_view individualSendTapName(IndividualSendTap) noexcept;
+void requireNewSendSourceTrack(const SQLite::Database&, std::int64_t source);
 bool allowedSendToGroupedReturn(const SQLite::Database&, std::int64_t source, std::int64_t destination,
                                 std::optional<std::int64_t> movedTrack = {},
                                 std::optional<std::int64_t> newParent = {});
