@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — DF-M34 owner boundary and completed Stack coverage
+
+**Needs Engine for DF-M34.** Graph already sends the exact frame count to `Node::silenceTaps` each time it omits a callback. The device backend receives only a one-time `didSuspend`. Request one device hook forwarding each skipped segment's exact length. Limiter's 128-sample convolution and audio-delay phases, and EQ's zero-phase FIR and spectral overlap/hop phases, depend on it. Resetting at wake or estimating from callback index would change future audio after an odd-length sleep. The neutral EQ and Clean suspension slice remains the independent completed part. Stateful sleep stays open and current audio behaviour is preserved.
+
+DF-M51 and DF-M52 are present in the joined branch. The picker test covers existing-function disabled state, device/catalogue ordering and dismissal. The fake-peer Stack test opens the plug-in editor from one chip click without an edit and keeps Mix View on close. The Sounding now tests prove the selected set remains fixed as signals and layout change, and that Refresh resamples it. These gates were among the previously published Release checks. No duplicate product slice is needed.
+
+**Needs win for DF-M36:** the `builtin_host.cpp` part is in win's path. The Mix View compressor's deterministic gate proof is being prepared in the owned host and test.
+
 ## 2026-11-22 — DF-M13, external-key Focus FIR
 
 **PR requested.** `mixview/focus-fir-external-dfm13-20261122` at `c3f0abb0`, after `fe18068e`. Packing writes directly into bit-reversed FFT slots, and inverse normalization runs while unpacking the samples. The red test exceeded 306,000 work units. The Release now passes all 455 checks. At 192 kHz / 512 and ten nodes with a distinct stereo key, the worst callback fell from 348,196 to 305,185 counted work units (12.35%). Eight float/double, one/ten-node, internal/external-key comparisons were byte-identical across 3,145,728 samples. Latency stayed 49,152 samples, with no missed deadlines and no callback allocations or frees.
