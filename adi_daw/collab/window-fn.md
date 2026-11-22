@@ -39,10 +39,69 @@ until then a need is named by its item.
 | Reserve: one N row. The snapshot's track fields for recording: `TrackNode::recordArmed`, `monitorMode` and `inputRef`, from `tracks.record_armed`, `monitor_mode` and `input_ref` | engine (`src/adi/engine/snapshot.*`) | MX-09: the strips' Arm and the monitoring switch read the frame's snapshot as every other control does (ADR-0201) | the application hands the window the session's rows (`Session::model()`) once a frame, and an action reads them fresh |
 | Reserve: one N row. The input-monitor node of MX-09: a live input per monitored track, from its input (channels 1/2 until `input_ref` has its grammar, MX-25), heard per `monitor_mode` (In always; Auto while armed and no clip plays; Off never) | engine (ADR-0248 d6, item 4) | MX-09: the director hears what he records | Arm and the switch store their choice; nothing is heard of the input; Record records |
 | Reserve: one N row. A failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today: `recording::prepareCommit` takes only a clean result) | engine (`src/adi/recording_commands.*`) | MX-09: a take is not lost to one click on the timeline | the take is dropped and the Status Bar says why, at once |
-| Reserve: one N row. Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | win (AWAITING 20) and the engine | MX-09: a new audio track should monitor as Live's does once the input-monitor node exists | the switch shows Off on New's tracks, as stored |
+| Reserve: one N row. Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | win (ruled: Auto, N67) and the engine (`track.create`'s default) | MX-09: a new audio track should monitor as Live's does once the input-monitor node exists | New's tracks and the window's new tracks are written Auto (`window-fn/monitor-auto`); a bare `track.create` stores Off |
+| Reserve: one N row. A device parameter whose lane goes (its last point deleted, the lane deleted or disabled) should return to its stored value, as a mixer control does. Today the plug-in keeps the last automated value until it is touched or re-resolved | engine (`Session::rebuild`, `bindDeviceAutomation`) | DF-W37: deleting a device lane's last point in Automation Mode leaves the device playing the envelope's last value | nothing; the window deletes the lane as it does a track's |
 | Reserve: one N row. After a discovery job, an ordinary project open should still probe a plug-in's saved path when the catalogue lacks it, as it does before any job. Today `managedDiscovery_` is set by the first `startDiscovery` and never cleared, so `makeVst3` and `makeClap` answer "needs discovery" for every miss for the rest of the run (and `hydrateCatalogue` returns at once). A proposal: suppress the hint only while a job is in flight (`discoveryJob_`) | engine-win (`src/juce/juce_device_loader.cpp`, N58) | DF-W34: a project that names a plug-in installed since the last scan loads it on open, as before the window started discovery at launch | an open while a job runs waits for its adoption (engine-win's handoff); an open with no job running loads catalogue hits only |
 
 ---
+
+## 2026-11-22, window-fn — N67 and N65's window halves: Auto monitoring, the inputs heard (PR requested)
+
+Win's third item.
+
+- **N67** (ruled by win under ADR-0203 d1). New's audio and MIDI tracks monitor on Auto, as Live's: set
+  right after the store's seed, as part of the new file, with no op and no undo step. WTS-01 step 1 still
+  reads 0 ops. The window's own new tracks (Insert Audio/MIDI Track, a file dropped below the tracks) carry
+  `track.setMonitorMode` Auto in their creating batch, the same undo step. A bare `track.create` still
+  stores Off until the engine's default changes.
+- **N65.** Nothing called `Session::setAudioMonitorInputs`. The document now tells the session which
+  inputs feed each audio track: 1/2, or 1 alone on a one-input device, as recording takes them, until a
+  track's input has its grammar (MX-25). It does so whenever the tracks or the device's open inputs change;
+  the application gives the input count when audio attaches and when the device changes. The session then
+  hears each track as its Arm and monitoring say.
+
+**Run.** The window's 27 suites (100%); `adi_ui_shell_tests` 2911 checks and `adi_ui_seams_tests` 553, both
+0 failures, with the default checks moved from Off to Auto. WTS-01 with Pd: every step as before. 2a
+records with monitoring Auto, and 2b still fails only on the engine's read-ahead at Play. Its check now
+reads "not In", since Auto keeps the input out while the take plays. The harness gives the document the
+device's two inputs as the app does. A probe (not committed) set track 4 to In: the fed input was heard at
+its peak (0.4000), and with no inputs given there was silence. No review workflow ran.
+
+**PR requested** — `window-fn/monitor-auto` at `5ac33b36`, on main `0ea10b8e`: "adi_daw: N67 and N65's window
+halves: new tracks monitor on Auto; the session hears the inputs". It depends on nothing; it touches WTS-01's
+harness and step 2 (win's).
+
+## 2026-11-22, window-fn — DF-W37: Live's automation lane chooser (PR requested)
+
+Win's second item: WTS-01's 6b.
+
+- **The chooser.** The track header's menu gains Show Automation (Live 12 manual 25.2). It lists the
+  Mixer's Volume, Pan and each send that has its row, then each device on the track with its automatable
+  parameters. A device knob's menu gains Show Automation too, which shows that parameter and turns
+  Automation Mode on. A track's lane shows its chosen target, its Volume until another is chosen; a choice
+  whose device or send is gone reads as Volume again.
+- **Editing.** Breakpoints are added, moved and deleted on the chosen target's lane as on Volume's, each
+  one undo step. A first point makes the lane: a track's in real units, a send's on its routing row, a
+  device parameter's normalized and named as the engine binds it (`engine::automationParamRef`). Only refs
+  the engine plays are offered. A disabled lane of the target is shown and edited, never doubled. While
+  Automation Mode is on, the window demands every device's parameters from the feed, so any track's chooser
+  lists them; with the mode off, it keeps no demand. A parameter the panel does not show reads as the
+  plug-in's declared default.
+- **Look.** The menus use JUCE's popup, as the header's other items do; Live's two choosers in the track
+  header are the window lane's when their sheet comes.
+
+**Run.** The window's 27 suites (100%). `adi_ui_shell_tests` 2919 checks, 0 failures: the chooser's list, Show
+Automation from a knob, and add, move (held to 0 to 1) and delete on a device parameter's existing lane,
+then Volume again. **WTS-01 6b PASS** (with Pd): Utility's Gain offered in the chooser and its envelope drawn
+point by point with the window's calls; the gain x1.995262 then x1.000000, max |d| 2.2e-08. Review: two
+dimensions with a skeptic each. Confirmed and fixed: the default for a parameter off the panel, a demand
+left after the header menu, a duplicate lane beside a disabled one, and Show Automation offered where it
+fails. Six were refuted; one belongs to the engine (the needs table: a device lane that goes leaves its last
+value).
+
+**PR requested** — `window-fn/lane-chooser` at `305e9b3a`, on main `0ea10b8e`: "adi_daw: DF-W37: Live's
+automation lane chooser: the track's mixer and every device's parameters". It depends on nothing; it
+touches WTS-01's step 6 (win's).
 
 ## 2026-11-22, window-fn — N60's window half: the keyboard into the session (PR requested)
 
