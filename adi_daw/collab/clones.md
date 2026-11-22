@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Keep the moving Crush hold clock continuous across blocks
+
+`clones/shaper-crush-hold-grid` at `9925a705` — Keep the moving Crush hold clock continuous across audio blocks. **Lands after 3 December.** The preset comparison found a dependence on callback size upstream of the room. An independent broadband test isolated the moving hold-rate control on Crush. The full-rate bypass resets the capture phase. At a contour boundary, the former evaluator could take that reset in one buffer partition and miss it in another.
+
+Main failed 18 new partition checks. The repaired MSVC /W4 /WX rack suite passed for whole, 256, 2,048 and irregular blocks, including continuous and stepped curves, two start phases, full-rate bypass, a held nonzero rate and real transport jumps. On kick and bass, the full-chain 256-versus-2,048 RMS difference fell from 0.000120719 to 0.00000000326. Isolated Crush went from 0.000124318 to sample-identical. The stepped and linear broadband cases went from 0.0638735 and 0.000877294 to sample-identical. All twenty whole-block reference captures retained their previous samples. Latency remained zero.
+
+PR requested
+
 ## 22 November 2026 — ADI’s room response and controls for Reverb
 
 `clones/shaper-reverb-port` at `df9f2778` — Port the measured Reverb controls and ADI’s own room response. **Lands after 3 December.** Stable IDs 626–715 add the three bands. Earlier project states restore the same stereo sound with the room disabled. The dedicated control-law suite covers send, return, width, gating, decay, size and predelay. The rack, room and registered native/edited Pd suites passed at both signal precisions under MSVC /W4 /WX.
