@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Filter response when audio resumes after silence
+
+An isolated stereo marker followed by exact silence exposes a short restart difference in the original 12 dB Filter. In independent 48 kHz runs the peak differences between a run with the earlier marker and a run without it were 0.00116021 for low-pass and 0.00197680 for high-pass. The ADI core on main produced identical audio for each pair. Without the earlier marker its peak error was below 0.00000003. This also affects the first few resumed samples of the corresponding steep responses.
+
+The difference reproduced at 64, 256 and 2,048 frames. Reversing the marker polarity preserved the measured difference. Sending the marker to one channel left the other channel unchanged. Replacing the intervening zeros with the same input at one hundred-thousandth amplitude reduced peak error below 0.000000291 in the four low- and high-pass cases. Bypass, disabled Filter, Volume, Width and Pan showed zero dependence on the earlier marker. Further measurements are needed to establish the Filter's internal restart condition.
+
 ## 22 November 2026 — Steep low-pass and high-pass Filter contract
 
 For the devices lane, the clones seat takes the ADI-Shaper Filter core, existing rack, editable patch and tests on `clones/shaper-filter-steep`. **Lands after 3 December.** Reserve host parameters 916–918 for a 24 dB/octave switch on each band's 12 dB/octave low-pass and high-pass. Each switch defaults off. The saved five-way type selector keeps its original normalization. The current peak override takes precedence when both are selected. Editing an underlying selection that leaves the audible response unchanged must preserve filter history.
