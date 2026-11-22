@@ -7,9 +7,11 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <stdexcept>
 #if defined(_WIN32)
@@ -142,6 +144,31 @@ void transactionalRecheck() {
           "a module reappearing after preflight is statted again and retains its success row");
 }
 std::string bytes(const fs::path& path){std::ifstream in(path,std::ios::binary);return {std::istreambuf_iterator<char>(in),{}};}
+void waitsForRegistryReader() {
+    using namespace std::chrono_literals;
+    Fixture f;
+    const auto stale=f.clap/"stale.clap";
+    f.success("clap",stale);
+    f.registry.reset();
+    auto request=f.request();
+    SQLite::Database competing(utf8(f.file),SQLite::OPEN_READWRITE);
+    if(competing.execAndGet("PRAGMA journal_mode=DELETE").getString()!="delete")
+        throw std::runtime_error("fixture could not enable the rollback journal");
+    SQLite::Transaction locked(competing,SQLite::TransactionBehavior::EXCLUSIVE);
+    std::promise<void> reached;
+    auto ready=reached.get_future();
+    request.context=&reached;
+    request.checkpoint=[](ScanPrunePhase phase,const fs::path&,void* context) {
+        if(phase==ScanPrunePhase::AfterWalk)static_cast<std::promise<void>*>(context)->set_value();
+    };
+    auto result=std::async(std::launch::async,[&] {return pruneMissingScans(f.file,request);});
+    const bool walked=ready.wait_for(1s)==std::future_status::ready;
+    const bool waited=result.wait_for(150ms)==std::future_status::timeout;
+    locked.commit();
+    const auto pruned=result.get();
+    check(walked && waited && pruned && pruned.cacheRowsRemoved==1 && !f.cached("clap",stale),
+          "prune waits for an exclusive registry writer, then inspects and deletes the stale row");
+}
 void legacyNoMigration() {
     Fixture f;
     for(const int version:{1,2}) {
@@ -230,7 +257,7 @@ void rootRebind() {
 }
 #endif
 } // namespace
-int main(){try{staleAndProtected();noWriteAndPartial();transactionalRecheck();legacyNoMigration();
+int main(){try{staleAndProtected();noWriteAndPartial();transactionalRecheck();waitsForRegistryReader();legacyNoMigration();
 #if defined(_WIN32)
 movedAliasParent();danglingAlias();rootRebind();
 #endif

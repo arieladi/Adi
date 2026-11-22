@@ -199,6 +199,7 @@ ScanPruneResult pruneMissingScans(const std::filesystem::path& registryPath,cons
         std::vector<Key> candidates;
         {
             SQLite::Database reader(utf8(registryPath),SQLite::OPEN_READONLY);
+            reader.setBusyTimeout(2000);
             if(!schema(reader)){result.legacySkipped=true;result.status=ScanPruneStatus::Complete;return result;}
             SQLite::Statement rows(reader,"SELECT format,path,length(CAST(path AS BLOB)) FROM ("
                 "SELECT format,path FROM plugin_scan_cache UNION SELECT format,path FROM plugin_scan_failures)");

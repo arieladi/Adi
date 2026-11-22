@@ -278,7 +278,8 @@ bool PluginRegistry::finishScan(const ScanTicket& ticket, ScanDisposition dispos
     try {
         require(ticket.owner_.lock()==scanOwner_ && ticket.id_>0,"foreign or expired scan ticket");
         require(nowUtc>=0,"invalid scan completion time");
-        require(disposition==ScanDisposition::Succeeded || disposition==ScanDisposition::Abandoned ||
+        const bool unstampedSuccess=disposition==ScanDisposition::UnstampedSuccess;
+        require(disposition==ScanDisposition::Succeeded || unstampedSuccess || disposition==ScanDisposition::Abandoned ||
                 disposition==ScanDisposition::Failed || disposition==ScanDisposition::Rejected,"invalid scan disposition");
         const bool failed=disposition==ScanDisposition::Failed;
         require(failed ? text(reason,4096) : reason.empty(),"invalid scan diagnostic");
@@ -291,9 +292,9 @@ bool PluginRegistry::finishScan(const ScanTicket& ticket, ScanDisposition dispos
         if(failed) {finish.bind(parameter++,reason);finish.bind(parameter++,nowUtc);}
         finish.bind(parameter++,ticket.id_);finish.bind(parameter++,ticket.format_);finish.bind(parameter,ticket.path_);
         require(finish.exec()==1,"scan ticket is no longer pending");
-        if(disposition==ScanDisposition::Succeeded || disposition==ScanDisposition::Rejected)
+        if(disposition==ScanDisposition::Succeeded || unstampedSuccess || disposition==ScanDisposition::Rejected)
             removeFailure(*db_,ticket.format_,ticket.path_);
-        if(failed || disposition==ScanDisposition::Rejected) {
+        if(failed || unstampedSuccess || disposition==ScanDisposition::Rejected) {
             SQLite::Statement remove(*db_,"DELETE FROM plugin_scan_cache WHERE format=? AND path=?");
             remove.bind(1,ticket.format_);remove.bind(2,ticket.path_);remove.exec();
         }
