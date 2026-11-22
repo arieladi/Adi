@@ -73,6 +73,14 @@ struct MixFocusTestAccess {
                    return std::ranges::all_of(member.scopePaths, oneSegment);
                });
     }
+    static juce::Image scopePicture(MixFocus &focus) {
+        const auto plot = focus.plot_.toNearestInt();
+        juce::Image image(juce::Image::RGB, plot.getWidth(), plot.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics g(image);
+        g.setOrigin(-plot.getX(), -plot.getY());
+        focus.paint(g);
+        return image;
+    }
     static bool sumStrokeAt(MixFocus &focus, float value) {
         const auto plot = focus.plot_;
         if (plot.isEmpty()) return false;
@@ -1498,6 +1506,69 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
               broker->stats().consumers == afterSum.consumers && broker->stats().taps == afterSum.taps,
           "the over-range title clears on cancellation without another analysis consumer or tap");
 
+    const auto checkScopeDisplays = [&] {
+        juce::ComboBox *layout = nullptr;
+        for (auto *child : focus.getChildren()) {
+            auto *combo = dynamic_cast<juce::ComboBox *>(child);
+            if (combo && combo->getTitle() == "Focus Scope display") layout = combo;
+        }
+        check(layout && layout->isShowing(), "Focus Scope offers its own display selector");
+        if (!layout || !layout->isShowing()) return;
+        check(layout->getNumItems() == 4 && layout->getText() == "Overlay" &&
+                  layout->getItemText(1) == "Layers" && layout->getItemText(2) == "Stack" &&
+                  layout->getItemText(3) == "Sum",
+              "the scope selector keeps Overlay as the default and offers Layers, Stack and Sum");
+        if (layout->getNumItems() != 4) return;
+
+        writeSum(.25f, .25f, -.125f, -.125f);
+        const auto before = broker->stats();
+        const auto openedBefore = opened.size(), closedBefore = closed.size();
+        const auto overlay = MixFocusTestAccess::scopePicture(focus);
+        const auto plotCentre = static_cast<float>(overlay.getHeight()) * .5f;
+        const auto sharedRow = [plotCentre](float level) { return plotCentre * (1.f - level); };
+        const auto traceAt = [](const juce::Image &image, float row) {
+            constexpr std::array positions{.2f, .4f, .6f, .8f};
+            const auto y = juce::roundToInt(row);
+            return std::ranges::all_of(positions, [&](float position) {
+                const auto x = juce::roundToInt(position * static_cast<float>(image.getWidth()));
+                return image.getPixelAt(x, y - 1) != look::frame || image.getPixelAt(x, y) != look::frame ||
+                       image.getPixelAt(x, y + 1) != look::frame;
+            });
+        };
+        const auto select = [&](int index) {
+            layout->setSelectedItemIndex(index, juce::sendNotificationSync);
+            return MixFocusTestAccess::scopePicture(focus);
+        };
+        check(traceAt(overlay, sharedRow(.25f)) && traceAt(overlay, sharedRow(-.125f)) &&
+                  traceAt(overlay, sharedRow(.125f)),
+              "the original Overlay contains both members and their signed sum");
+        const auto layers = select(1);
+        check(traceAt(layers, sharedRow(.25f)) && traceAt(layers, sharedRow(-.125f)) &&
+                  !traceAt(layers, sharedRow(.125f)),
+              "Layers shows both members around one baseline without a sum trace");
+        const auto stack = select(2);
+        check(traceAt(stack, sharedRow(.25f) * .5f) &&
+                  traceAt(stack, plotCentre + sharedRow(-.125f) * .5f) &&
+                  !traceAt(stack, sharedRow(.25f)) && !traceAt(stack, sharedRow(-.125f)),
+              "Stack moves each member to its own baseline");
+        const auto sum = select(3);
+        check(traceAt(sum, sharedRow(.125f)) && !traceAt(sum, sharedRow(.25f)) &&
+                  !traceAt(sum, sharedRow(-.125f)),
+              "Sum displays the signed combination without the member traces");
+        const auto restored = select(0);
+        bool equal = true;
+        for (int y = 0; equal && y < overlay.getHeight(); ++y)
+            for (int x = 0; equal && x < overlay.getWidth(); ++x)
+                equal = overlay.getPixelAt(x, y) == restored.getPixelAt(x, y);
+        check(equal, "returning to Overlay restores the existing plot exactly");
+        root.frame();
+        const auto after = broker->stats();
+        check(after.consumers == before.consumers && after.taps == before.taps &&
+                  after.publications == before.publications && after.cursorReads == before.cursorReads &&
+                  opened.size() == openedBefore && closed.size() == closedBefore,
+              "scope display choices do not acquire, release or reprocess audio sources");
+    };
+    checkScopeDisplays();
     focus.scope.setToggleState(false, juce::dontSendNotification);
     root.frame();
     std::array<float, 1024> reference{}, target{};
