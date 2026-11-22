@@ -11,6 +11,17 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — DF-M55 Main Loudness PLR
+
+Main Loudness and its All tile show held dBTP minus integrated LUFS from the same snapshot. PLR is unavailable while either source value is unavailable. Freeze keeps each view’s PLR with that view’s readout. No new service read, interval or audio work.
+
+The three new component assertions failed first and passed in the exact Release (476/476). All 24 named CTests and the 906 / 329 / 7 software-peer shell checks passed. MSVC /W4 /WX passed both units and Clang passed the implementation. The Release ZIP SHA-256 is `7867299b7a2c0c0550c7b4727794b3032791c0be905abe3d04d9125ea0b4f88d` and EXE SHA-256 is `28e1863b1c507e679cb03c5d0ebd9ef25845ddfe89771e0636fc6b19dd9b4710`. The Claude brief covers held, live, empty and compact readouts.
+
+Needs Engine — a canonical Main loudness-range value and heard-time stamps for the momentary and short-term history. The approved Main sheet’s LRA and traces need those readings. The PLR uses the existing independent M/S/I and TP values.
+
+PR requested — `mixview/df-m55-main-plr-lands-after-2026-12-03` at `ad7cd6b84ecf6e627d4670a6d87df2d9808ecdd7`, also on the joined scheduled preview. Lands after 3 December.
+
+
 ### 22 November — MX-21 scheduled pinned Spectrum
 
 PR requested — `mixview/mx21-pinned-spectrum-lands-after-2026-12-03` at `03d3bdaa35aa03a185998f9f566520037b90dc63`, also on `mixview/review-scope-lands-after-2026-12-03`. Lands after 3 December.
