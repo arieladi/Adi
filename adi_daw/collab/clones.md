@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Keep the calibrated clock rounding on fused targets
+
+`clones/shaper-crush-clock-precision` at `ca4ee5fa` — Keep the two measured clock operations separately rounded. This updates the timing repair at `de769084`. Five of 43 measured heights gave a different logarithmic argument if the compiler fused the height multiply and offset addition. At height 0.38999999 and 48 kHz, a late signed left marker measured +0.00388830. Fused arithmetic produced −0.01766950. A local rounded intermediate and five new signed source markers protect the result. Optimized assembly confirms distinct multiply and add operations. The numerical counterexample uses an explicitly fused calculation.
+
+All three rack, Crush and registered suites passed under MSVC /W4 /WX at both Pd precisions. The guarded calculation also passed the five new readings and both previous extreme-rate cases. The full-height and constant-control paths keep their previous behavior. In seventeen paired moving-control checks the median guarded/prior ratios were 1.044 and 1.002 at 256 and 2,048 frames, and both interquartile ranges included one.
+
+PR requested
+
 ## 22 November 2026 — Acceptance fixtures for the Crush Hold envelope follower
 
 Sixteen of the 873 historical programs enable the Hold follower in an audible band. Fifteen use Add and one uses Multiply. Fifteen changed when the follower alone was disabled in an isolated Crush replay. Changes on the second bar spanned 0.0000144–0.156404 stereo RMS. All eight eligible full-chain comparisons changed, with a maximum of 0.060494 RMS. Reopening the original positive state gave exactly the same audio on every trial. Seven states enable automatic release, and one stores a different detector filter setting.
