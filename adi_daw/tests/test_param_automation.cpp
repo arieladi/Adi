@@ -478,8 +478,7 @@ void testNamedAndPlaceholders() {
     Project p("named", 48000.0, 512);
     p.lane(1, {{0, 0.5}}, "7", "real");
     p.lane(2, {{0, 0.5}}, "cutoff");
-    // A device inside a rack's chain is not realised yet (ADR-0060), so it is
-    // in no chain the graph plays.
+    // Device 1 is an ordinary effect. A child chain needs a rack owner.
     p.store->db().exec("INSERT INTO device_chains(id,parent_device_id) VALUES(2,1);"
                        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(5,2,0,1,'Nested')");
     p.lane(3, {{0, 0.5}}, "9", "normalized", 5);
@@ -487,6 +486,24 @@ void testNamedAndPlaceholders() {
     check(p.mentions("automation_lanes#1: a device lane must be normalized"), "a real lane is named");
     check(p.mentions("automation_lanes#2: param_ref 'cutoff'"), "a non-numeric parameter is named");
     check(p.mentions("devices#5: has automation but is in no chain"), "a device in no chain is named");
+}
+
+void testNestedRackAutomation() {
+    section("DEV-01 -- a hosted device inside nested racks hears its own automation");
+    Project p("nested", 48000.0, 64);
+    p.store->db().exec(
+        "INSERT INTO devices(id,chain_id,ord,name,is_rack,rack_kind) VALUES(20,1,1,'Outer',1,'audio_effect');"
+        "INSERT INTO device_chains(id,parent_device_id) VALUES(21,20);"
+        "INSERT INTO devices(id,chain_id,ord,name,is_rack,rack_kind) VALUES(30,21,0,'Inner',1,'audio_effect');"
+        "INSERT INTO device_chains(id,parent_device_id) VALUES(31,30);"
+        "UPDATE devices SET chain_id=31 WHERE id=1");
+    p.lane(1, {{0, 0.125}, {512, 0.625}});
+    p.load();
+    p.play(512);
+    check(p.rec && p.session.instanceFor(1) == p.rec && !p.rec->seen.empty() &&
+              p.rec->seen.front().paramId == 7 && p.rec->seen.front().value == 0.125 &&
+              p.rec->seen.back().value > 0.5 && !p.mentions("in no chain"),
+          "nested leaf receives its stored addressed lane at the native process entry point");
 }
 
 void testRepublishedUnderTheCallback() {
@@ -532,7 +549,8 @@ int main() {
         testBinding();
         testThroughTheGraph();
         testOverrideAndReenable();
-        testNamedAndPlaceholders();
+    testNamedAndPlaceholders();
+    testNestedRackAutomation();
         testRepublishedUnderTheCallback();
     } catch (const std::exception& e) {
         check(false, std::string("exception: ") + e.what());

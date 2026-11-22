@@ -979,10 +979,15 @@ std::int64_t ClapDevice::tailSamples() const noexcept {
 }
 
 std::int32_t ClapDevice::latencySamples() const noexcept {
-    // See tailSamples(): a non-null extension struct may still have a null
-    // function pointer.
-    if (plugin_ == nullptr || latencyExt_ == nullptr || latencyExt_->get == nullptr)
-        return 0;
+    return latencyReport().samples;
+}
+
+engine::LatencyReport ClapDevice::latencyReport() const noexcept {
+    if (plugin_ == nullptr) return {0, false};
+    // The extension is optional. A malformed advertised extension cannot
+    // supply its declaration, while no extension declares no added delay.
+    if (latencyExt_ == nullptr) return {0, true};
+    if (latencyExt_->get == nullptr) return {0, false};
 
     // NOT BEFORE ACTIVATE, and this was found by a real plugin telling us
     // off. Surge XT 1.3.4 prints, from inside clap_plugin_latency.get:
@@ -999,13 +1004,10 @@ std::int32_t ClapDevice::latencySamples() const noexcept {
     //
     // 0 is the right answer, and it is ADR-0058's default for the same
     // reason: a latency we cannot ask about must not move audio.
-    if (!activated_) return 0;
+    if (!activated_) return {0, false};
     const std::uint32_t l = latencyExt_->get(plugin_);
-    // Clamped into int32. A plugin reporting a latency larger than that is
-    // reporting nonsense, and a negative compensation moves audio EARLIER
-    // than its source.
-    if (l > 0x7FFFFFFFu) return 0x7FFFFFFF;
-    return static_cast<std::int32_t>(l);
+    if (l > 0x7FFFFFFFu) return {0, false};
+    return {static_cast<std::int32_t>(l), true};
 }
 
 void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {

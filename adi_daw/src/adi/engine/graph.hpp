@@ -188,6 +188,16 @@ enum class EventFlow : std::uint8_t {
     Stop,
 };
 
+struct LatencyReport {
+    std::int32_t samples = 0;
+    bool known = true;
+};
+
+struct PathLatency {
+    std::int64_t samples = 0;
+    bool known = true;
+};
+
 /// Addressed events generated FOR a node, once per block (ADR-0165): the
 /// automation of a plug-in's parameters. Bound to a graph slot by the owner,
 /// called on the audio thread before forwarding and splitting, so each
@@ -334,6 +344,7 @@ public:
     /// copy. CLAP's `latency.get` is main-thread only, and a node may be a
     /// plugin.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
+    [[nodiscard]] virtual LatencyReport latencyReport() const noexcept { return {latencySamples(), true}; }
 
     /// One end of a feedback loop (ADR-0203 d3): the writer a return's send
     /// into itself ends in, a sink, or the reader that plays it back into the
@@ -1019,6 +1030,12 @@ public:
     [[nodiscard]] bool copyNodeOutput(NodeId, const AudioIo&) const noexcept;
     /// Cached arrival + node latency, at the same output point. No device call.
     [[nodiscard]] std::optional<std::int64_t> outputLatencyOf(NodeId) const noexcept;
+    /// Difference between two output points in one applied PDC generation.
+    /// An incomplete retap publication gives no reading for this query.
+    /// When supplied, `last` bounds the range of nodes whose declarations
+    /// must be known, starting at `from` and including `last`.
+    [[nodiscard]] std::optional<PathLatency> pathLatencyBetween(NodeId from, NodeId to,
+                                                                NodeId last = kInvalidNode) const noexcept;
 
     // --- what happened -----------------------------------------------------
 
@@ -1368,8 +1385,10 @@ private:
     std::vector<std::atomic<std::int32_t>> slotLatency_;
     /// Each slot's applied arrival, likewise.
     std::vector<std::atomic<std::int32_t>> slotArrival_;
+    std::vector<std::atomic<bool>> slotLatencyKnown_;
+    std::atomic<std::uint64_t> appliedLatencySequence_{0};
     // One owner writer publishes atomic scalar cells under an even/odd sequence.
-    // Layout: node latencies, arrivals, every main/side/dry target, graph latency.
+    // Layout: node latencies, arrivals, every main/side/dry target, declaration flags, graph latency.
     std::vector<std::atomic<std::int32_t>> pdcPending_;
     std::vector<std::int32_t> pdcOwner_,pdcCandidate_,pdcScratch_,pdcActiveLatency_,pdcActiveArrival_;
     std::vector<DelayLine*> pdcLines_;

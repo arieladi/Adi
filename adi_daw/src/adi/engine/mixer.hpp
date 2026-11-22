@@ -174,6 +174,10 @@ struct StripControlImage {
 
 class StripNode final : public Node {
 public:
+    StripNode() = default;
+    explicit StripNode(EventFlow flow) noexcept : eventFlow_(flow) {}
+    [[nodiscard]] EventFlow eventFlow() const noexcept override { return eventFlow_; }
+
     /// Message thread: the model's values. `audible` is mute and solo together.
     void setStatic(double volumeDb, double pan, PanLaw law, bool audible) noexcept;
     void setPanMode(PanMode mode, double left, double right) noexcept;
@@ -268,6 +272,7 @@ private:
     template <typename T>
     void writeMeter(const NodeIo& io, const T* const* audio) noexcept;
 
+    EventFlow eventFlow_ = EventFlow::Through;
     StripMeter meter_;
     // Audio thread only. Accumulate segments of one callback; offset zero
     // starts the next. Publication after each segment describes its prefix.

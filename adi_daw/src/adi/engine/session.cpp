@@ -149,6 +149,18 @@ struct Session::InputMonitors {
     std::map<std::int64_t, std::unique_ptr<Source>> tracks;
 };
 
+struct Session::RackNodes {
+    struct Branch {
+        MixNode gate;
+        StripNode strip{EventFlow::Stop};
+    };
+    MixNode router;
+    SumNode sum;
+    MixNode dryGate;
+    StripNode dry;
+    std::map<std::int64_t, Branch> branches;
+};
+
 struct Session::ScopeRuntime {
     struct Request { ScopeSource source; double seconds; std::shared_ptr<ScopeLease::State> state; };
     struct PortKey {
@@ -237,7 +249,7 @@ Session::Session()
 Session::~Session() {
     scopeRuntime_->revoke();
     endpoint_->owner_=nullptr;
-    endpoint_->keyRoutes_.reset();
+    endpoint_->engineEdits_.reset();
     lifetime_.reset();
     for(const auto& client:runtimeClients_)client->sessionEnded();
     runtimeClients_.clear();
@@ -308,12 +320,6 @@ const rows::PluginRef* Session::refFor(const rows::Device& row) const noexcept {
     return nullptr;
 }
 
-const rows::DeviceChain* Session::chainOf(std::int64_t chainId) const noexcept {
-    for (const rows::DeviceChain& c : model_.deviceChains)
-        if (c.id == chainId) return &c;
-    return nullptr;
-}
-
 const Session::Entry* Session::entryFor(std::int64_t deviceId) const noexcept {
     const auto it = byId_.find(deviceId);
     return it == byId_.end() ? nullptr : &entries_[it->second];
@@ -362,6 +368,92 @@ std::vector<device::DeviceNode*> Session::chainFor(std::int64_t trackId) {
             sessionProblems_.push_back(note);
     }
     return out;
+}
+
+std::vector<const rows::Device*> Session::trackDevices(std::int64_t track, const DeviceLayout& layout) const {
+    std::vector<const rows::Device*> stages;
+    if (frozenSources_.contains(track) || frozenGroupChildren_.contains(track)) return stages;
+    for (const auto* chain : layout.trackChains(track)) {
+        const auto devices = layout.devices(chain->id);
+        stages.insert(stages.end(), devices.begin(), devices.end());
+    }
+    return stages;
+}
+
+Node* Session::deviceStage(const rows::Device& row) {
+    if (!row.isRack) {
+        const auto* entry = entryFor(row.id);
+        return entry && !entry->retired ? &devices_.nodeAt(entry->hostIndex) : nullptr;
+    }
+    auto& rack = racks_[row.id];
+    if (!rack) {
+        rack = std::make_unique<RackNodes>();
+        rackIds_.emplace(&rack->sum, row.id);
+    }
+    return &rack->sum;
+}
+
+bool Session::instrumentStage(const rows::Device& row, const DeviceLayout& layout, const Node& stage) {
+    if (!row.isRack) return stage.eventFlow() == EventFlow::Consume;
+    if (!row.enabled) return false;
+    if (row.rackKind) return *row.rackKind == "instrument" || *row.rackKind == "drum";
+    // Earlier projects could save a rack with no kind. A placed instrument
+    // inside that rack determines its audio boundary.
+    for (const auto* branch : layout.rackChains(row.id)) {
+        for (const auto* child : layout.devices(branch->id)) {
+            if (auto* node = deviceStage(*child); node && instrumentStage(*child, layout, *node)) return true;
+        }
+    }
+    return false;
+}
+
+std::optional<RackPlacement> Session::rackPlacement(const Node& stage, const DeviceLayout& layout) {
+    const auto rackId = rackIds_.find(&stage);
+    if (rackId == rackIds_.end()) return std::nullopt;
+    const auto* row = layout.device(rackId->second);
+    if (!row || !row->isRack) return std::nullopt;
+    auto& rack = *racks_.at(row->id);
+    RackPlacement result;
+    result.deviceId = row->id;
+    result.router = &rack.router;
+    for (const auto* chain : layout.rackChains(row->id)) {
+        auto& nodes = rack.branches[chain->id];
+        auto& branch = result.branches.emplace_back();
+        branch.gate = &nodes.gate;
+        branch.strip = &nodes.strip;
+        for (const auto* device : layout.devices(chain->id)) {
+            if (auto* node = deviceStage(*device)) branch.devices.push_back(node);
+            if (!device->isRack) {
+                const auto* entry = entryFor(device->id);
+                if (!entry || entry->retired || entry->placeholder || !devices_.deviceAt(entry->hostIndex).loaded())
+                    result.latencyKnown = false;
+            }
+        }
+    }
+    // The dry leg provides one copy of incoming notes to the successor. It
+    // also carries audio at unity when bypassed or when the rack has no chains.
+    result.branches.push_back({&rack.dryGate, {}, &rack.dry});
+    return result;
+}
+
+std::vector<std::pair<StripNode*, StripControlImage>> Session::rackControls(const rows::Model& model) {
+    std::vector<std::pair<StripNode*, StripControlImage>> controls;
+    std::optional<DeviceLayout> candidate;
+    if (&model != &model_) candidate.emplace(model);
+    const auto& layout = candidate ? *candidate : *deviceLayout_;
+    for (const auto& row : model.devices) {
+        if (!row.isRack || !layout.trackOf(row.id)) continue;
+        (void)deviceStage(row);
+        auto& rack = *racks_.at(row.id);
+        const auto chains = layout.rackChains(row.id);
+        const bool solo = std::ranges::any_of(chains, [](const auto* chain) { return chain->soloed; });
+        for (const auto* chain : chains) {
+            const bool audible = row.enabled && !chain->muted && (!solo || chain->soloed);
+            controls.emplace_back(&rack.branches[chain->id].strip, StripControlImage{{}, audible});
+        }
+        controls.emplace_back(&rack.dry, StripControlImage{{}, !row.enabled || chains.empty()});
+    }
+    return controls;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,30 +549,16 @@ void Session::restoreState(const Store& store, const rows::Device& row,
 }
 
 void Session::resolveOne(const Store& store, const rows::Device& row) {
-    const rows::DeviceChain* chain = chainOf(row.chainId);
-    if (chain == nullptr) {
-        sessionProblems_.push_back(deviceRef(row) + ": its chain " +
-                                   std::to_string(row.chainId) +
-                                   " is not in the project; not realised");
-        ++stats_.skipped;
-        return;
-    }
-    // ADR-0060 makes a rack a node that owns a nested graph. That node is not
-    // built yet, so a rack and everything inside it stay out of the signal
-    // path -- named, counted, and never silently. An instrument rack skipped
-    // is a silent track, and the problem list is how the user learns why.
-    if (chain->parentDeviceId) {
-        sessionProblems_.push_back(deviceRef(row) +
-                                   ": inside a rack's chain; racks are not realised yet "
-                                   "(ADR-0060), so it is not in the signal path");
+    const auto track = deviceLayout_->trackOf(row.id);
+    if (!track) {
+        const auto note = deviceRef(row) + ": invalid chain ownership; not realised";
+        if (std::find(sessionProblems_.begin(), sessionProblems_.end(), note) == sessionProblems_.end())
+            sessionProblems_.push_back(note);
         ++stats_.skipped;
         return;
     }
     if (row.isRack) {
-        sessionProblems_.push_back(deviceRef(row) +
-                                   ": a rack; not realised yet (ADR-0060), so it is not "
-                                   "in the signal path");
-        ++stats_.skipped;
+        (void)deviceStage(row);
         return;
     }
 
@@ -490,7 +568,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
     e.runtimeIdentity=std::make_shared<const int>(0);
     e.resolvedPluginRef = row.pluginRefId;
     if(ref!=nullptr) {e.resolvedFormat=ref->format;e.resolvedUid=ref->uid;}
-    e.trackId = chain->trackId.value_or(0);
+    e.trackId = *track;
     e.name = !row.name.empty() ? row.name
            : (ref != nullptr && !ref->name.empty()) ? ref->name
            : "devices#" + std::to_string(row.id);
@@ -566,7 +644,9 @@ void Session::retireDepartedRows() {
         if (e.retired) continue;
         const bool present =
             std::any_of(model_.devices.begin(), model_.devices.end(),
-                        [&](const rows::Device &d) { return d.id == e.deviceId && !parkedDevice(d); });
+                        [&](const rows::Device &d) {
+                            return d.id == e.deviceId && !d.isRack && deviceLayout_->trackOf(d.id) && !parkedDevice(d);
+                        });
         if (present) continue;
         for (const auto &row : model_.devices)
             if (row.id == e.deviceId)
@@ -596,8 +676,7 @@ void Session::syncFlags() {
             const bool bypassed = e.placeholder || !d.enabled;
             if (node.bypassed() != bypassed) node.setBypassed(bypassed);
             if (node.alwaysProcess() != d.alwaysProcess) node.setAlwaysProcess(d.alwaysProcess);
-            if (const rows::DeviceChain* c = chainOf(d.chainId))
-                e.trackId = c->trackId.value_or(0);
+            e.trackId = deviceLayout_->trackOf(d.id).value_or(0);
             if (!e.placeholder) {
                 syncRoute(e, node.instance());
                 if(!node.instance().configureSidechain(keyed.contains(e.deviceId))) {
@@ -659,6 +738,7 @@ void Session::attach(std::shared_ptr<const TimingView> timing) {
     rs.sampleRate = spec_.sampleRate;
     rs.maxFrames = spec_.maxFrames;
     rs.devicesFor = [this](std::int64_t trackId) { return trackChain(trackId); };
+    rs.rackFor = [this](const Node& stage) { return rackPlacement(stage, *deviceLayout_); };
     rs.keyTapFor = [this](std::int64_t track,Tap tap)->std::optional<Node*> {
         if(tap==Tap::PreFx && frozenSources_.contains(track))return std::nullopt;
         return tapFor(track,tap);
@@ -708,16 +788,18 @@ void Session::attach(std::shared_ptr<const TimingView> timing) {
 
 bool Session::validateDeviceKey(const rows::Model& candidate,std::string& error) {
     RealizeOptions options;options.channels=spec_.channels;
-    options.devicesFor=[this](std::int64_t track){return trackChain(track);};
-    options.keyTapFor=[this](std::int64_t track,Tap tap)->std::optional<Node*> {
+    const DeviceLayout layout(candidate);
+    options.devicesFor=[this,&layout](std::int64_t track){return trackChain(track,layout);};
+    options.rackFor=[this,&layout](const Node& node){return rackPlacement(node,layout);};
+    options.keyTapFor=[this,&layout](std::int64_t track,Tap tap)->std::optional<Node*> {
         if(tap==Tap::PreFx && frozenSources_.contains(track))return std::nullopt;
-        return tapFor(track,tap);
+        return tapFor(track,tap,layout);
     };
     options.keyDeviceFor=[this](std::int64_t device)->Node* {
         const auto* e=entryFor(device);auto* i=instanceFor(device);
         return e && !e->retired && !e->parked && !e->placeholder && i && i->loaded() && i->sidechainInputChannels()>0?nodeFor(device):nullptr;
     };
-    options.tapFor=[this](std::int64_t track,Tap tap){return tapFor(track,tap==Tap::PostFader?Tap::PostFx:tap);};
+    options.tapFor=[this,&layout](std::int64_t track,Tap tap){return tapFor(track,tap==Tap::PostFader?Tap::PostFx:tap,layout);};
     options.sendFor=[this](std::int64_t id)->Node*{return strips_.sendFor(id);};
     options.sendTailFor=[this](std::int64_t id){return summing_.sendTailFor(id);};
     options.feedbackFor=[this](std::int64_t id){auto* loop=strips_.loopFor(id);return loop?FeedbackNodes{&loop->writer(),&loop->reader()}:FeedbackNodes{};};
@@ -760,6 +842,11 @@ void Session::prepareInputMonitors(TimingView& timing, const rows::Model& model,
 }
 
 std::vector<Node*> Session::trackChain(std::int64_t trackId) {
+    if (!deviceLayout_) return {};
+    return trackChain(trackId, *deviceLayout_);
+}
+
+std::vector<Node*> Session::trackChain(std::int64_t trackId, const DeviceLayout& layout) {
     std::vector<Node*> nodes;
     // ADR-0174: a summing group's buss half is first, right after its sum.
     if (!frozenSources_.contains(trackId))
@@ -774,10 +861,15 @@ std::vector<Node*> Session::trackChain(std::int64_t trackId) {
             nodes.push_back(channel);
         return nodes;
     }
-    const auto chain = chainFor(trackId);
+    std::vector<Node*> chain;
     std::size_t firstAudio = 0;
-    for (std::size_t i = 0; i < chain.size(); ++i)
-        if (chain[i]->eventFlow() == EventFlow::Consume) firstAudio = i + 1;
+    for (const auto* row : trackDevices(trackId, layout)) {
+        if (auto* stage = deviceStage(*row)) {
+            chain.push_back(stage);
+            if (instrumentStage(*row, layout, *stage))
+                firstAudio = chain.size();
+        }
+    }
     for (std::size_t i = 0; i <= chain.size(); ++i) {
         if (i == firstAudio) {
             const auto gain = inputGains_.find(trackId);
@@ -795,8 +887,12 @@ std::vector<Node*> Session::trackChain(std::int64_t trackId) {
 }
 
 Node* Session::tapFor(std::int64_t trackId, Tap tap) {
+    return deviceLayout_ ? tapFor(trackId, tap, *deviceLayout_) : nullptr;
+}
+
+Node* Session::tapFor(std::int64_t trackId, Tap tap, const DeviceLayout& layout) {
     StripNode* strip = strips_.stripFor(trackId);
-    const std::vector<Node*> nodes = trackChain(trackId);
+    const std::vector<Node*> nodes = trackChain(trackId, layout);
     std::size_t at = nodes.size();   // the strip's place
     for (std::size_t i = 0; i < nodes.size(); ++i)
         if (nodes[i] == strip) at = i;
@@ -815,8 +911,11 @@ Node* Session::tapFor(std::int64_t trackId, Tap tap) {
             // After the instrument, before the first audio effect: the last
             // node that plays the track's notes, or what comes before them.
             Node* last = summing_.headFor(trackId);
-            for (Node* n : chainFor(trackId))
-                if (n->eventFlow() == EventFlow::Consume) last = n;
+            for (const auto* row : trackDevices(trackId, layout)) {
+                auto* node = deviceStage(*row);
+                if (node && instrumentStage(*row, layout, *node))
+                    last = node;
+            }
             return last;
         }
     }
@@ -852,50 +951,89 @@ std::optional<OfflineOutput> Session::offlineTapOutput(std::int64_t trackId, Tap
 std::optional<OfflineSourceInfo> Session::offlineSourceInfo(std::int64_t trackId) {
     if (frozenSources_.contains(trackId) || !offlineTapOutput(trackId, Tap::PostFx))
         return std::nullopt;
-    const auto chain = chainFor(trackId);
+    const auto& layout = *deviceLayout_;
+    const auto chain = trackDevices(trackId, layout);
     std::size_t prefix = 0;
-    for (std::size_t i = 0; i < chain.size(); ++i)
-        if (chain[i]->eventFlow() == EventFlow::Consume)
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        const auto& row = *chain[i];
+        auto* stage = deviceStage(row);
+        if (stage && instrumentStage(row, layout, *stage))
             prefix = i + 1;
+    }
     OfflineSourceInfo info;
     info.track = trackId;
-    for (std::size_t i = 0; i < chain.size(); ++i)
-        for (const auto &entry : entries_) {
-            if (entry.retired || &devices_.nodeAt(entry.hostIndex) != chain[i])
-                continue;
-            if (entry.placeholder || !devices_.deviceAt(entry.hostIndex).loaded())
-                return std::nullopt;
-            info.devices.push_back({entry.deviceId, devices_.deviceAt(entry.hostIndex).identity()});
-            if (i < prefix)
-                info.prefixDevices.push_back(entry.deviceId);
-            break;
+    const auto collect = [&](auto&& self, const rows::Device& row, bool beforeFx) -> bool {
+        if (row.isRack) {
+            for (const auto* branch : layout.rackChains(row.id)) {
+                for (const auto* leaf : layout.devices(branch->id)) {
+                    if (!self(self, *leaf, beforeFx)) return false;
+                }
+            }
+            return true;
         }
+        const auto* entry = entryFor(row.id);
+        if (!entry || entry->retired || entry->placeholder) return false;
+        const auto& instance = devices_.deviceAt(entry->hostIndex);
+        if (!instance.loaded()) return false;
+        info.devices.push_back({row.id, instance.identity()});
+        if (beforeFx) info.prefixDevices.push_back(row.id);
+        return true;
+    };
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        if (!collect(collect, *chain[i], i < prefix)) return std::nullopt;
+    }
     return info;
 }
 
+std::pair<std::vector<Node*>, bool> Session::trackEventPath(std::int64_t track, const DeviceLayout& layout) {
+    std::vector<Node*> path;
+    const auto append = [&](auto&& self, Node& node) -> bool {
+        if (auto rack = rackPlacement(node, layout)) {
+            path.push_back(rack->router);
+            // Branch order changes the audio sum's summation order, but the
+            // same branches still own the same MIDI voices across a reorder.
+            std::ranges::sort(rack->branches, std::less<const Node*>{}, &RackBranch::gate);
+            for (const auto& branch : rack->branches) {
+                path.push_back(branch.gate);
+                for (auto* child : branch.devices) {
+                    if (!self(self, *child)) break;
+                }
+            }
+        }
+        path.push_back(&node);
+        return node.eventFlow() == EventFlow::Through;
+    };
+    for (const auto* row : trackDevices(track, layout)) {
+        if (auto* stage = deviceStage(*row); stage && !append(append, *stage)) return {std::move(path), false};
+    }
+    return {std::move(path), true};
+}
+
 DeviceChainFn Session::eventPathFor(const rows::Model& model) {
-    return [this, plan = std::make_shared<const GraphPlan>(planGraph(model))](std::int64_t track) {
+    const DeviceLayout layout(model);
+    auto plan = planGraph(model);
+    std::vector<std::pair<std::vector<Node*>, bool>> trackPaths;
+    trackPaths.reserve(plan.nodes.size());
+    for (const auto& track : plan.nodes) trackPaths.push_back(trackEventPath(track.trackId, layout));
+    return [plan = std::move(plan), trackPaths = std::move(trackPaths)](std::int64_t track) {
         std::vector<Node*> result;
-        const auto start = plan->indexOf(track);
+        const auto start = plan.indexOf(track);
         if (!start) return result;
-        std::vector<bool> visited(plan->nodes.size(), false);
+        std::vector<bool> visited(plan.nodes.size(), false);
         std::vector<std::size_t> pending{*start};
         for (std::size_t at = 0; at < pending.size(); ++at) {
             const auto index = pending[at];
             if (visited[index]) continue;
             visited[index] = true;
-            if (plan->nodes[index].kind == PlannedKind::Vca) continue;
-            bool through = true;
-            for (auto* node : chainFor(plan->nodes[index].trackId)) {
-                result.push_back(node);
-                if (node->eventFlow() != EventFlow::Through) { through = false; break; }
-            }
+            if (plan.nodes[index].kind == PlannedKind::Vca) continue;
+            const auto& [path, through] = trackPaths[index];
+            result.insert(result.end(), path.begin(), path.end());
             if (!through) continue;
             // Sends stop notes and sidechains carry only audio. An
             // unconsumed main path can reach more than one instrument;
             // retain every destination identity, never its later audio FX.
-            for (const auto& edge : plan->edges)
-                if (edge.from == index && edge.to < plan->nodes.size() &&
+            for (const auto& edge : plan.edges)
+                if (edge.from == index && edge.to < plan.nodes.size() &&
                     edge.bus == Bus::Main && edge.routingId == 0 && !edge.feedback)
                     pending.push_back(edge.to);
         }
@@ -905,17 +1043,15 @@ DeviceChainFn Session::eventPathFor(const rows::Model& model) {
 
 void Session::prepareMidiInput(TimingView& timing, const rows::Model& model) {
     if (!timing.spec.performanceState || timing.spec.exporting) return;
+    const DeviceLayout layout(model);
     std::map<const Node*, std::int64_t> armed;
     for (const auto& track : model.tracks) {
         if (!track.recordArmed ||
             (track.kind != "midi" && track.kind != "instrument" && track.kind != "audio"))
             continue;
-        for (const auto* node : chainFor(track.id)) {
-            if (node->eventFlow() == EventFlow::Consume) {
-                armed.emplace(node, track.id);
-                break;
-            }
-        }
+        const auto path = trackEventPath(track.id, layout);
+        for (const auto* node : path.first)
+            if (node->eventFlow() == EventFlow::Consume) armed.emplace(node, track.id);
     }
     for (const auto& entry : entries_) {
         if (entry.retired || entry.placeholder) {
@@ -1113,9 +1249,8 @@ void Session::refreshProblems() {
 }
 
 bool Session::parkedDevice(const rows::Device &device) const {
-    const auto *chain = chainOf(device.chainId);
-    return chain && chain->trackId &&
-           (frozenSources_.contains(*chain->trackId) || frozenGroupChildren_.contains(*chain->trackId));
+    const auto track = deviceLayout_->trackOf(device.id);
+    return track && (frozenSources_.contains(*track) || frozenGroupChildren_.contains(*track));
 }
 std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) const {
     if (performedTempo_.empty()) {
@@ -1261,32 +1396,44 @@ bool Session::readPlayback(const Store &store) {
     }
 }
 
-struct SessionEndpoint::KeyRoutes final : AppliedObserver {
+struct SessionEndpoint::EngineEdits final : AppliedObserver {
     AppliedSubscription subscription;
     std::uint64_t applied = 0;
+    std::uint64_t rackApplied = 0;
     std::shared_ptr<const std::vector<std::uint8_t>> image;
     std::shared_ptr<const AppliedBatch> latest;
+    std::shared_ptr<const AppliedBatch> rackSwitches;
     void committed(std::shared_ptr<const AppliedBatch> batch) override {
         latest.reset();
+        rackSwitches.reset();
         image.reset();
         if (batch->operations().empty()) return;
+        if (std::ranges::all_of(batch->operations(), [](const auto& op) {
+                return op.dispatchedType == "chain.setMute" || op.dispatchedType == "chain.setSolo";
+            })) {
+            rackSwitches = std::move(batch);
+            return;
+        }
         for (const auto& op : batch->operations())
             if (op.dispatchedType != "routing.setKeyTap" && op.dispatchedType != "routing.connect" &&
                 op.dispatchedType != "routing.disconnect") return;
         latest = std::move(batch);
     }
-    void sourceInvalidated(const AppliedSource&, AppliedSourceInvalidation) override { latest.reset(); }
+    void sourceInvalidated(const AppliedSource&, AppliedSourceInvalidation) override {
+        latest.reset();
+        rackSwitches.reset();
+    }
 };
 
-void Session::observeKeyRoutes() {
-    auto routes = std::make_shared<SessionEndpoint::KeyRoutes>();
-    auto observed = appliedSource_.observe(routes);
-    routes->subscription = std::move(observed.subscription);
-    endpoint_->keyRoutes_ = std::move(routes);
+void Session::observeEngineEdits() {
+    auto edits = std::make_shared<SessionEndpoint::EngineEdits>();
+    auto observed = appliedSource_.observe(edits);
+    edits->subscription = std::move(observed.subscription);
+    endpoint_->engineEdits_ = std::move(edits);
 }
 
 std::optional<bool> Session::refreshDeviceKeys(const Store& store, const std::shared_ptr<const std::vector<std::uint8_t>>& image) {
-    const auto& receipts = endpoint_->keyRoutes_;
+    const auto& receipts = endpoint_->engineEdits_;
     if (!live_ || !receipts || !receipts->latest ||
         gestureHoldsExternalTempo(gestureRuntime_)) return {};
     const auto& batch = *receipts->latest;
@@ -1331,6 +1478,43 @@ std::optional<bool> Session::refreshDeviceKeys(const Store& store, const std::sh
     return true;
 }
 
+bool Session::refreshRackControls(const Store& store) {
+    const auto& edits = endpoint_->engineEdits_;
+    if (!live_ || rackControlBasis_.empty() || !edits || !edits->rackSwitches || primeExternalAt_ ||
+        isGestureCommittedRefresh(gestureRuntime_) ||
+        !appliedSource_.sameConnection(adi::appliedSource(store)))
+        return false;
+    const auto& batch = *edits->rackSwitches;
+    if (batch.sequence() != appliedSource_.sequence()) return false;
+    const bool repeat = batch.sequence() == appliedSequence_ && batch.sequence() == edits->rackApplied;
+    if (!repeat && batch.sequence() != appliedSequence_ + 1) return false;
+    // Collect and other file operations can change material without a new
+    // journal sequence. Reuse the graph only for the same typed project image.
+    if (captureRackControlBasis(store) != rackControlBasis_) return false;
+    const auto next = rows::readModel(store);
+    if (!next.problems.empty() || next.deviceChains.size() != model_.deviceChains.size() ||
+        next.deviceChains.size() != playbackModel_.deviceChains.size()) return false;
+    for (std::size_t i = 0; i < next.deviceChains.size(); ++i) {
+        const auto& row = next.deviceChains[i];
+        const auto& current = model_.deviceChains[i];
+        if (row.id != current.id || row.parentDeviceId != current.parentDeviceId || row.trackId != current.trackId ||
+            row.id != playbackModel_.deviceChains[i].id) return false;
+        if (repeat && (row.muted != current.muted || row.soloed != current.soloed)) return false;
+    }
+    if (repeat) return true;
+    auto nextControls = rackControls(next);
+    gestureAudio_->publishRackControls(std::move(nextControls));
+    // The committed receipt contains only the chain switches. Keep the
+    // indexed rows at their stable addresses and update both model views.
+    for (std::size_t i = 0; i < next.deviceChains.size(); ++i) {
+        const auto& row = next.deviceChains[i];
+        model_.deviceChains[i].muted = playbackModel_.deviceChains[i].muted = row.muted;
+        model_.deviceChains[i].soloed = playbackModel_.deviceChains[i].soloed = row.soloed;
+    }
+    appliedSequence_ = edits->rackApplied = batch.sequence();
+    return true;
+}
+
 bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     if(audio::onAudioThread)return false;
     error_.clear();
@@ -1350,7 +1534,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     // Offline rendering loads a coherent read-only project. It retains its
     // source identity without entering the editable gesture domain.
     if(!store.readOnly()) {
-        observeKeyRoutes();
+        observeEngineEdits();
         const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);
         if(!registered.ok()) {error_=registered.message;return false;}
     }
@@ -1358,7 +1542,10 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
     graph_.setDelayCompensation(spec_.delayCompensation);
     stats_ = Stats{};
-    model_ = rows::readModel(store);
+    auto nextModel = rows::readModel(store);
+    DeviceLayout nextLayout(nextModel);
+    model_ = std::move(nextModel);
+    deviceLayout_.emplace(std::move(nextLayout));
     transportSettings_=readTransportSettings(store);
     SQLite::Statement recordingIdentity(store.db(),"PRAGMA database_list");
     while(recordingIdentity.executeStep())if(recordingIdentity.getColumn(1).getString()=="main")recordingProject_=recordingIdentity.getColumn(2).getString();
@@ -1367,8 +1554,12 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
         return false;
     loaded_ = true;
     resolveNewRows(store);
+    auto rackBasis = racks_.empty() ? std::vector<std::uint8_t>{} : captureRackControlBasis(store);
     const bool rebuilt = rebuild();
-    if (rebuilt) appliedSequence_ = appliedSource_.sequence();
+    if (rebuilt) {
+        appliedSequence_ = appliedSource_.sequence();
+        rackControlBasis_ = std::move(rackBasis);
+    }
     return rebuilt;
 }
 
@@ -1435,16 +1626,20 @@ bool Session::refresh(const Store& store) {
     const bool replaced = !appliedSource_.sameConnection(source);
     if (replaced) appliedSequence_ = 0;
     appliedSource_ = source;
-    if (replaced && !store.readOnly()) observeKeyRoutes();
+    if (replaced && !store.readOnly()) observeEngineEdits();
     if(!store.readOnly() && !isGestureCommittedRefresh(gestureRuntime_)) {
         const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);
         if(!registered.ok()) {error_=registered.message;return false;}
     }
+    if (refreshRackControls(store)) return true;
     const std::map<std::int64_t, StripValues> before = stripValues(model_);
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
     std::map<std::int64_t, double> sendsBefore;
     for (const auto& route : model_.routing) if (route.kind == "send") sendsBefore[route.id] = route.gainDb;
-    model_ = rows::readModel(store);
+    auto nextModel = rows::readModel(store);
+    DeviceLayout nextLayout(nextModel);
+    model_ = std::move(nextModel);
+    deviceLayout_.emplace(std::move(nextLayout));
     transportSettings_=readTransportSettings(store);
     cueSettings_=readCueSettings(store);
     // ADR-0162: an automated strip value that changed is overridden. Compared
@@ -1492,8 +1687,12 @@ bool Session::refresh(const Store& store) {
     resolveNewRows(store);
     retireDepartedRows();
     syncFlags();
+    auto rackBasis = racks_.empty() ? std::vector<std::uint8_t>{} : captureRackControlBasis(store);
     const bool rebuilt = rebuild();
-    if (rebuilt) appliedSequence_ = appliedSource_.sequence();
+    if (rebuilt) {
+        appliedSequence_ = appliedSource_.sequence();
+        rackControlBasis_ = std::move(rackBasis);
+    }
     return rebuilt;
 }
 

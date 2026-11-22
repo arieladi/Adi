@@ -472,7 +472,7 @@ public:
 
     /// A track's chain as the rows order it: every chain on the track by
     /// `ord`, every device in it by `ord`, skipping what was not resolved.
-    /// This is what `RealizeOptions::devicesFor` answers with.
+    /// The directly placed plug-in leaves, for flat callers.
     [[nodiscard]] std::vector<device::DeviceNode*> chainFor(std::int64_t trackId);
     /// Every node of a track's chain as the graph is given it: the buss half,
     /// the devices with the input gain after the instrument, the strip, the
@@ -496,6 +496,14 @@ private:
     [[nodiscard]] std::vector<rows::TempoEvent> playbackTempo(const rows::Model&) const;
     // Every node a track's events reach, which is MIDI's controller route identity.
     [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
+    [[nodiscard]] std::vector<Node*> trackChain(std::int64_t, const DeviceLayout&);
+    [[nodiscard]] Node* tapFor(std::int64_t, Tap, const DeviceLayout&);
+    [[nodiscard]] Node* deviceStage(const rows::Device&);
+    [[nodiscard]] bool instrumentStage(const rows::Device&, const DeviceLayout&, const Node&);
+    [[nodiscard]] std::optional<RackPlacement> rackPlacement(const Node&, const DeviceLayout&);
+    [[nodiscard]] std::vector<const rows::Device*> trackDevices(std::int64_t, const DeviceLayout&) const;
+    [[nodiscard]] std::pair<std::vector<Node*>, bool> trackEventPath(std::int64_t, const DeviceLayout&);
+    [[nodiscard]] std::vector<std::pair<StripNode*, StripControlImage>> rackControls(const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row);
@@ -503,7 +511,6 @@ private:
     void syncFlags();
     void syncRoute(Entry& e, device::DeviceInstance& inst);
     [[nodiscard]] const rows::PluginRef* refFor(const rows::Device& row) const noexcept;
-    [[nodiscard]] const rows::DeviceChain* chainOf(std::int64_t chainId) const noexcept;
     [[nodiscard]] std::unique_ptr<device::DeviceInstance> makePlaceholder(
         const Store& store, const rows::Device& row, const rows::PluginRef* ref);
     void restoreState(const Store& store, const rows::Device& row,
@@ -592,6 +599,11 @@ private:
     // ADR-0163: one strip per track, for the whole session. Declared before
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;
+    struct RackNodes;
+    std::map<std::int64_t, std::unique_ptr<RackNodes>> racks_;
+    std::map<const Node*, std::int64_t> rackIds_;
+    std::optional<DeviceLayout> deviceLayout_;
+    std::vector<std::uint8_t> rackControlBasis_;
     std::map<std::int64_t, std::unique_ptr<InputGainNode>> inputGains_;
     GroupSumming summing_;   ///< ADR-0174: native analog group summing
     struct ScopeRuntime;
@@ -615,7 +627,8 @@ private:
     GraphHost graph_;
     rows::Model model_;
     AppliedSource appliedSource_;
-    void observeKeyRoutes();
+    void observeEngineEdits();
+    [[nodiscard]] bool refreshRackControls(const Store&);
     void refreshProblems();
     std::uint64_t appliedSequence_ = 0;
     std::shared_ptr<const void> lifetime_ = std::make_shared<const int>(0);

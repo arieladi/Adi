@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 namespace adi::engine {
 class Session;
@@ -11,6 +12,8 @@ class ProjectView;
 class ClipPlayback;
 class MidiClips;
 class StripLaneBindings;
+class StripNode;
+struct StripControlImage;
 struct GestureRuntime;
 /// Owned raw-control images. Only the single audio owner calls apply; the
 /// publisher/generation keeps every lane and node owner alive through it.
@@ -34,10 +37,12 @@ public:
     virtual void collect()=0;
     virtual void reset()=0;
     virtual void stageReset(std::uint64_t generation)=0;
+    virtual void publishRackControls(std::vector<std::pair<StripNode*, StripControlImage>>)=0;
 };
 std::shared_ptr<GestureAudio> makeGestureAudio();
 std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
 std::vector<std::uint8_t> capturePresentationImage(const Store&);
+std::vector<std::uint8_t> captureRackControlBasis(const Store&);
 /// Existing refresh/tick integration. A handled refresh has adopted committed
 /// truth without overwriting a same-base preview; reapply uses the real tick.
 bool isGestureCommittedRefresh(const std::shared_ptr<GestureRuntime>&) noexcept;

@@ -79,6 +79,12 @@ struct Image {
     std::vector<std::uint8_t> bytes;
     std::shared_ptr<const std::vector<std::uint8_t>> viewBytes;
 };
+struct GenerationLayout {
+    explicit GenerationLayout(std::shared_ptr<const Image> source)
+        : image(std::move(source)), devices(image->model) {}
+    std::shared_ptr<const Image> image;
+    DeviceLayout devices;
+};
 std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::set<std::int64_t>& overridden,
                                const TempoFor& tempoFor) {
     std::optional<SQLite::Transaction> read;
@@ -97,7 +103,25 @@ std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::
     out->clips=readClipProject(store,playback);
     return out;
 }
+void stripChainSwitches(Tables& tables) {
+    const auto chains = tables.find("device_chains");
+    if (chains == tables.end()) return;
+    for (auto& row : chains->second) {
+        row.erase("muted");
+        row.erase("soloed");
+    }
+    std::sort(chains->second.begin(), chains->second.end(), [](const auto& a, const auto& b) {
+        return Payload::to_cbor(a) < Payload::to_cbor(b);
+    });
+}
+
+std::vector<std::uint8_t> rackControlBasis(Tables tables, const TransportSettings& transport, const CueSettings& cue) {
+    stripChainSwitches(tables);
+    return imageBytes(tables, transport, cue);
+}
+
 Tables topology(Tables value) {
+    stripChainSwitches(value);
     const std::map<std::string,std::set<std::string>> retained{
         {"project",{"sample_rate","ppq"}},
         {"tracks",{"id","parent_id","index_in_parent","kind","time_base","frozen","solo_defeat","freeze_media_id","role","input_ref","monitor_mode","record_armed"}},
@@ -129,7 +153,8 @@ Tables topology(Tables value) {
     return value;
 }
 const std::set<std::string> scalarOps{"mixer.setVolume","mixer.setPan","mixer.setPanLeft","mixer.setPanRight",
-    "mixer.setInputGain","routing.setGain","routing.setPan","group.setSummingDrive","track.setMute","track.setSolo"};
+    "mixer.setInputGain","routing.setGain","routing.setPan","group.setSummingDrive","track.setMute","track.setSolo",
+    "chain.setMute","chain.setSolo"};
 struct Patch {std::string operation;std::int64_t id;};
 std::vector<Patch> patches(std::span<const OpRequest> requests,gesture::Strategy strategy) {
     std::vector<Patch> result;
@@ -160,6 +185,12 @@ void applyPatch(rows::Model& target,const rows::Model& projected,const Patch& pa
         else if(name=="mixer.setPanLeft")to->panLeft=from->panLeft;
         else if(name=="mixer.setPanRight")to->panRight=from->panRight;
         else to->inputGainDb=from->inputGainDb;
+    } else if(name.starts_with("chain.")) {
+        auto key=[](const auto& row){return row.id;};
+        auto* to=findValue(target.deviceChains,patch.id,key);
+        const auto* from=findValue(projected.deviceChains,patch.id,key);
+        if(!to || !from)throw std::runtime_error("preview chain target disappeared");
+        if(name=="chain.setMute")to->muted=from->muted;else to->soloed=from->soloed;
     } else if(name.starts_with("track.")) {
         auto key=[](const auto& row){return row.id;};
         auto* to=findValue(target.tracks,patch.id,key);const auto* from=findValue(projected.tracks,patch.id,key);
@@ -232,6 +263,7 @@ struct Controls final:GestureControls {
     std::shared_ptr<const CueControlBatch> cue;
     std::vector<SummingControl> summing;
     std::vector<std::pair<InputGainNode*,double>> input;
+    std::vector<std::pair<StripNode*,StripControlImage>> racks;
     std::shared_ptr<const StripLaneBindings> lanes; // the lanes these controls leave running
     const StripLaneBindings* laneBindings() const noexcept override {return lanes.get();}
     void apply() const noexcept override {
@@ -239,6 +271,7 @@ struct Controls final:GestureControls {
         if(cue)cue->apply();
         for(const auto& value:summing)value.node->setGains(value.pre,value.post);
         for(const auto& [node,db]:input)node->setDb(db);
+        for (const auto& [node, image] : racks) node->applyPublishedControls(image);
     }
 };
 struct PublishedControls final:Sequenced {
@@ -279,6 +312,20 @@ struct Audio final:GestureAudio {
     void collect() override {publisher.collect();}
     void reset() override {stageReset(current);}
     void stageReset(std::uint64_t tag) override {auto value=std::make_unique<PublishedControls>();value->generation=tag;publish(value);}
+    void publishRackControls(std::vector<std::pair<StripNode*, StripControlImage>> racks) override {
+        auto value = std::make_unique<PublishedControls>();
+        auto controls = std::make_shared<Controls>();
+        if (const auto* old = publisher.peek()) {
+            const auto* existing = old->forGeneration(current);
+            if (existing) {
+                if (const auto* previous = dynamic_cast<const Controls*>(existing->get())) *controls = *previous;
+            }
+        }
+        controls->racks = std::move(racks);
+        value->value = std::move(controls);
+        value->generation = current;
+        publish(value);
+    }
     void publish(std::unique_ptr<PublishedControls>& value) {
         // A new graph can be ready while the previous one still renders. Keep
         // the control image for both the observed audio generation and the
@@ -357,6 +404,7 @@ std::shared_ptr<const GestureControls> nativeGestureControls(Session& owner) {
     hearing.referenceTrack=owner.cueSettings_.projectReferenceTrack;
     result->mixer=owner.strips_.prepareControls(owner.model_,&owner.transport_,owner.stripAutomation_,owner.spec_.delayCompensation,hearing);
     result->summing=owner.summing_.prepareControls(owner.model_);
+    result->racks = owner.rackControls(owner.model_);
     result->cue=owner.cueMonitor_.prepareControls(owner.model_,owner.cueSettings_,owner.stripAutomation_,owner.spec_.performanceState);
     for(const auto& [id,node]:owner.inputGains_) {
         const auto* strip=findValue(owner.model_.strips,id,[](const auto& row){return row.trackId;});
@@ -369,6 +417,12 @@ std::vector<std::uint8_t> capturePresentationImage(const Store& store){
     if(sqlite3_get_autocommit(store.db().getHandle())!=0)
         read.emplace(const_cast<SQLite::Database&>(store.db()),SQLite::TransactionBehavior::DEFERRED);
     return imageBytes(readTables(store),readTransportSettings(store),readCueSettings(store));
+}
+std::vector<std::uint8_t> captureRackControlBasis(const Store& store) {
+    std::optional<SQLite::Transaction> read;
+    if (sqlite3_get_autocommit(store.db().getHandle()) != 0)
+        read.emplace(const_cast<SQLite::Database&>(store.db()), SQLite::TransactionBehavior::DEFERRED);
+    return rackControlBasis(readTables(store), readTransportSettings(store), readCueSettings(store));
 }
 
 struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<GestureRuntime> {
@@ -392,6 +446,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         auto out=std::make_shared<Controls>();
         out->mixer=owner->strips_.prepareControls(model,&owner->transport_,bound,owner->spec_.delayCompensation,hearing);
         out->summing=owner->summing_.prepareControls(model);
+        out->racks = owner->rackControls(model);
         out->cue=owner->cueMonitor_.prepareControls(model,committed->cue,bound,owner->spec_.performanceState);
         for(const auto& strip:model.strips) {
             const auto gain=owner->inputGains_.find(strip.trackId);
@@ -472,12 +527,15 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->prepareDeviceClockChanges();
         out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;
-        options.devicesFor=[owner](std::int64_t id){return owner->trackChain(id);};
+        const auto layout = std::make_shared<const GenerationLayout>(image);
+        // RebuildSpec retains these callbacks and the candidate rows they name.
+        options.devicesFor = [owner, layout](std::int64_t id) { return owner->trackChain(id, layout->devices); };
+        options.rackFor = [owner, layout](const Node& stage) { return owner->rackPlacement(stage, layout->devices); };
         // The GUI publishes both preview and committed generations through here.
         // Keep auxiliary edges when an ordinary edit replaces the playing graph.
-        options.keyTapFor=[owner](std::int64_t track,Tap tap)->std::optional<Node*> {
+        options.keyTapFor=[owner, layout](std::int64_t track,Tap tap)->std::optional<Node*> {
             if(tap==Tap::PreFx && owner->frozenSources_.contains(track))return std::nullopt;
-            return owner->tapFor(track,tap);
+            return owner->tapFor(track,tap,layout->devices);
         };
         options.keyDeviceFor=[owner](std::int64_t device)->Node* {
             const auto* entry=owner->entryFor(device);auto* instance=owner->instanceFor(device);
@@ -485,7 +543,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                 instance && instance->loaded() && instance->sidechainInputChannels()>0
                 ? owner->nodeFor(device):nullptr;
         };
-        options.tapFor=[owner](std::int64_t id,Tap tap){return owner->tapFor(id,tap==Tap::PostFader?Tap::PostFx:tap);};
+        options.tapFor=[owner, layout](std::int64_t id,Tap tap){return owner->tapFor(id,tap==Tap::PostFader?Tap::PostFx:tap,layout->devices);};
         options.sendFor=[owner](std::int64_t id)->Node*{return owner->strips_.sendFor(id);};
         options.sendTailFor=[owner](std::int64_t id){return owner->summing_.sendTailFor(id);};
         options.feedbackFor=[owner](std::int64_t id){auto* loop=owner->strips_.loopFor(id);return loop?FeedbackNodes{&loop->writer(),&loop->reader()}:FeedbackNodes{};};
@@ -503,10 +561,11 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             }
             return std::nullopt;
         };
-        options.monitors=owner->cueMonitor_.points([owner](std::int64_t id,Tap tap){return owner->tapFor(id,tap);});
+        options.monitors=owner->cueMonitor_.points([owner, &layout](std::int64_t id,Tap tap){return owner->tapFor(id,tap,layout->devices);});
         out->rebuild.model=[image]{return &image->model;};
         out->rebuild.channels=owner->spec_.channels;out->rebuild.sampleRate=owner->spec_.sampleRate;out->rebuild.maxFrames=owner->spec_.maxFrames;
         out->rebuild.devicesFor=options.devicesFor;out->rebuild.sourcesFor=options.sourcesFor;
+        out->rebuild.rackFor=options.rackFor;
         out->rebuild.keyTapFor=options.keyTapFor;out->rebuild.keyDeviceFor=options.keyDeviceFor;
         out->rebuild.tapFor=options.tapFor;out->rebuild.sendFor=options.sendFor;out->rebuild.sendTailFor=options.sendTailFor;
         out->rebuild.feedbackFor=options.feedbackFor;out->rebuild.eventSourceFor=options.eventSourceFor;
@@ -541,6 +600,12 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             // The document and the coordinator can see the same key transaction
             // on different ticks. Publish it once, keeping the running readers.
             if (active.empty()) {
+                if (owner->refreshRackControls(store)) {
+                    committed = next;
+                    viewCommitted(next);
+                    return owner->presentationReady(base.source, base.sequence) ? PresentationStatus{} :
+                        PresentationStatus{PresentationState::Pending, "waiting for earlier device delivery", {}};
+                }
                 if (const auto keyed = owner->refreshDeviceKeys(store, next->viewBytes)) {
                     if (!*keyed) return refused(owner->error());
                     committed = next;
@@ -575,18 +640,32 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                 return {PresentationState::Current,"committed topology adopted; gesture targets require revalidation",{}};
             }
             if(!owner->presentationReady(base.source,base.sequence))return {PresentationState::Pending,"earlier device delivery or capture is pending",{}};
+            bool onlyChainSwitches = false;
+            if (committed && committed->bytes != next->bytes && committed->transport == next->transport &&
+                committed->cue == next->cue && std::none_of(active.begin(), active.end(), [](const auto& entry) {
+                    return entry->current && entry->strategy == gesture::Strategy::Structural;
+                })) {
+                auto before = committed->tables;
+                auto after = next->tables;
+                stripChainSwitches(before);
+                stripChainSwitches(after);
+                onlyChainSwitches = before == after;
+            }
             auto nextOverrides=manualOverrides(owner->model_,next->model,owner->overridden_,owner->writingAutomation_,owner->spec_.sampleRate);
             next->snapshot=annotateSnapshot(*next->snapshot,nextOverrides);next->overrides=nextOverrides;
             const auto old=committed;committed=next;
             std::shared_ptr<Generation> baseGeneration;
             std::unique_ptr<PublishedControls> baseControls;
             rows::Model nextModel=next->model,nextPlayback=next->model;
+            DeviceLayout nextLayout(nextModel);
+            auto rackBasis = owner->racks_.empty() ? std::vector<std::uint8_t>{} : rackControlBasis(next->tables, next->transport, next->cue);
             CueSettings nextCue=next->cue;
             nextPlayback.tempo=owner->playbackTempo(nextPlayback);
             // A foreign clip/tempo/automation edit also has to become audible
             // while a scalar gesture is suspended. Stage the full base once.
             try {
-                if(owner->frozenSources_.empty() && owner->frozenGroupChildren_.empty())baseGeneration=generation(next,&nextOverrides);
+                if(!onlyChainSwitches && owner->frozenSources_.empty() && owner->frozenGroupChildren_.empty())
+                    baseGeneration=generation(next,&nextOverrides);
                 baseControls=std::make_unique<PublishedControls>();
                 if(!baseGeneration) {baseControls->value=controls(next->model,nextOverrides);baseControls->generation=owner->gestureAudio_->currentGeneration();}
             } catch(...) {committed=old;throw;}
@@ -599,6 +678,8 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             if(baseGeneration) {owner->gestureAudio_->publishedGeneration(baseGeneration->tag);owner->stripAutomation_=baseGeneration->strips;owner->deviceAutomation_=baseGeneration->devices;owner->devices_.attachHost(owner->graph_,std::move(baseGeneration->rebuild));renderedGeneration=std::move(baseGeneration);}
             for(auto& entry:active){entry->current=false;entry->restoreGeneration.reset();}
             owner->model_=std::move(nextModel);owner->playbackModel_=std::move(nextPlayback);
+            owner->deviceLayout_.emplace(std::move(nextLayout));
+            owner->rackControlBasis_ = std::move(rackBasis);
             owner->overridden_=std::move(nextOverrides);
             owner->clipProject_=next->clips;owner->transportSettings_=next->transport;owner->cueSettings_=std::move(nextCue);
             owner->appliedSequence_=base.sequence;viewCommitted(next);
@@ -734,8 +815,12 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             auto nextOverrides=manualOverrides(owner->model_,actual->model,owner->overridden_,owner->writingAutomation_,owner->spec_.sampleRate);
             actual->snapshot=annotateSnapshot(*actual->snapshot,nextOverrides);actual->overrides=nextOverrides;
             rows::Model nextModel=actual->model,nextPlayback=actual->model;
+            DeviceLayout nextLayout(nextModel);
+            auto rackBasis = owner->racks_.empty() ? std::vector<std::uint8_t>{} : rackControlBasis(actual->tables, actual->transport, actual->cue);
             nextPlayback.tempo=owner->playbackTempo(nextPlayback);
             committed=actual;owner->model_=std::move(nextModel);owner->playbackModel_=std::move(nextPlayback);
+            owner->deviceLayout_.emplace(std::move(nextLayout));
+            owner->rackControlBasis_ = std::move(rackBasis);
             owner->overridden_=std::move(nextOverrides);
             owner->clipProject_=actual->clips;owner->appliedSequence_=base.sequence;
             // SQL's actual typed after-image matched the heard material. Keep

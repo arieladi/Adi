@@ -261,6 +261,7 @@ public:
     /// 0 by default, the OPPOSITE default from the tail. See
     /// `engine::Node::latencySamples`.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
+    [[nodiscard]] virtual engine::LatencyReport latencyReport() const noexcept;
     // Cached declaration, owner thread. Zero means no supported key input.
     // Level 1 routes one straight channel prefix into the first auxiliary bus.
     [[nodiscard]] virtual std::int32_t sidechainInputChannels() const noexcept { return 0; }
@@ -596,6 +597,7 @@ public:
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
+    [[nodiscard]] engine::LatencyReport latencyReport() const noexcept override;
     [[nodiscard]] bool alwaysProcess() const noexcept override { return always_.load(std::memory_order_relaxed); }
     [[nodiscard]] engine::EventFlow eventFlow() const noexcept override;
     /// The instance's answer. Bypass passes through at whichever width the

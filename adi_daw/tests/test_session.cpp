@@ -13,10 +13,14 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/audio/io_audit.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -296,15 +300,13 @@ void testAProjectLoadsAndPlays() {
     check(s.model().problems.empty(), "every table read cleanly");
 
     // --- what was resolved --------------------------------------------------
-    eqi(loader.calls, 3, "the loader was asked three times: Warm, Ghost, Off -- not the rack, not Nested");
-    eqi(s.stats().loaded, 2, "two instances");
+    eqi(loader.calls, 4, "the loader resolves Warm, Ghost, Off and Nested");
+    eqi(s.stats().loaded, 3, "three available plug-in instances");
     eqi(s.stats().placeholders, 1, "one placeholder");
-    eqi(s.stats().skipped, 2, "the rack and its nested device are skipped, and counted");
-    eqi(static_cast<long long>(s.entryCount()), 3, "three entries");
-    check(mentions(s.problems(), "devices#205 (Rack): a rack; not realised yet (ADR-0060)"),
-          "the rack is named as not realised");
-    check(mentions(s.problems(), "devices#300 (Nested): inside a rack's chain"),
-          "the nested device is named too");
+    eqi(s.stats().skipped, 0, "the rack and its child participate in playback");
+    eqi(static_cast<long long>(s.entryCount()), 4, "the four leaf device entries");
+    check(s.instanceFor(300) != nullptr && s.instanceFor(205) == nullptr,
+          "the rack is structural and its nested device loads normally");
     check(mentions(s.problems(), "devices#101 (Ghost): kept as a placeholder (ADR-0011): "
                                  "not installed on this machine"),
           "the placeholder says why");
@@ -343,7 +345,7 @@ void testAProjectLoadsAndPlays() {
     // --- the loaded ones ----------------------------------------------------
     check(s.nodeFor(200) != nullptr && s.nodeFor(200)->bypassed(), "Off is bypassed: enabled = 0");
     check(s.nodeFor(100) != nullptr && !s.nodeFor(100)->bypassed(), "Warm is not");
-    check(loader.made.size() == 2 && loader.made[0]->prepares == 1 &&
+    check(loader.made.size() == 3 && loader.made[0]->prepares == 1 &&
               loader.made[0]->lastRate == 48000.0 && loader.made[0]->lastFrames == 512,
           "Warm was prepared once, at the spec's format, by the first graph");
     eqi(s.stats().statesLoaded, 0, "no state stream loaded (Warm and Off have none)");
@@ -394,7 +396,7 @@ void testBlockSizeChangesWithoutReload() {
     s.prepare(48000.0, 2048);
     eqi(s.stats().formatChanges, 1, "one format change");
     eqi(s.graph().stats().published, 2, "a second graph was published");
-    eqi(loader.calls, 3, "the loader was NOT asked again");
+    eqi(loader.calls, 4, "the loader was NOT asked again");
     check(s.instanceFor(100) == warmInst, "the same instance is behind Warm");
     eqi(warm->prepares, 2, "prepared again");
     eqi(warm->lastFrames, 2048, "at the new size");
@@ -422,7 +424,7 @@ void testBlockSizeChangesWithoutReload() {
         eqi(warm->lastFrames, n, "Warm prepared at " + std::to_string(n));
     }
     eqi(s.graph().stats().published, published, "one graph per size");
-    eqi(loader.calls, 3, "still three loader calls after eight sizes");
+    eqi(loader.calls, 4, "the same four loader calls after eight sizes");
     eqi(s.stats().formatChanges, 9, "nine format changes");
 
     // Same format again: a restart the user did not ask to hear.
@@ -476,7 +478,7 @@ void testRefreshFollowsTheRows() {
     r.payload = {{"id", 201}, {"chain", 20}, {"ord", 1}, {"ref", 1}, {"name", "New"}};
     commits(j, r, "New on Bass at ord 1");
     check(s.refresh(*store), "refresh: " + s.error());
-    eqi(loader.calls, 4, "only the new row went through the loader");
+    eqi(loader.calls, 5, "only the new row went through the loader");
     check(s.instanceFor(200) == off && s.instanceFor(100) == warm,
           "the existing instances are the same objects");
     const auto bass = s.chainFor(2);
@@ -498,7 +500,7 @@ void testRefreshFollowsTheRows() {
     eqi(s.stats().retired, 1, "one retired");
     const Session::Entry* we = s.entryFor(100);
     check(we != nullptr && we->retired && we->trackId == 0, "Warm's entry says retired");
-    eqi(static_cast<long long>(s.devices().deviceCount()), 4, "the host still holds four instances");
+    eqi(static_cast<long long>(s.devices().deviceCount()), 5, "the host still holds five instances");
     const auto keys = s.chainFor(1);
     check(keys.size() == 1 && keys[0] == s.nodeFor(101), "Keys is Ghost alone");
     Out o(512);
@@ -512,7 +514,7 @@ void testRefreshFollowsTheRows() {
     commits(j, r, "Warm back");
     check(s.refresh(*store), "refresh: " + s.error());
     eqi(s.stats().retired, 0, "nothing retired now");
-    eqi(loader.calls, 4, "and the loader was not asked -- the instance was kept");
+    eqi(loader.calls, 5, "the loader reuses the retained instance");
     check(s.instanceFor(100) == warm, "the same Warm, state and all");
     Out o2(512);
     AudioIo io2 = makeIo(o2, 512);
@@ -557,10 +559,8 @@ void testStateAndTheMirror() {
     check(s.load(*store, loader.fn(), SessionSpec{}), "load: " + s.error());
     HalfDevice* warm = nullptr;
     HalfDevice* off = nullptr;
-    for (HalfDevice* d : loader.made) {
-        if (!d->statesSeen.empty()) warm = d;
-        else off = d;
-    }
+    warm = dynamic_cast<HalfDevice*>(s.instanceFor(100));
+    off = dynamic_cast<HalfDevice*>(s.instanceFor(200));
     check(warm != nullptr && off != nullptr, "both fakes were made");
     if (warm == nullptr || off == nullptr) return;
 
@@ -682,12 +682,284 @@ void testARouteADeviceCannotTake() {
     check(st.executeStep() && st.getColumn(0).getString() == "note_expression", "the row is kept");
 }
 
+namespace rack_fixture {
+constexpr std::int32_t delaySamples = 64;
+constexpr std::int32_t impulseSample = 11;
+constexpr std::int32_t blockFrames = 32;
+constexpr std::size_t horizon = 128;
+
+class StereoImpulse final : public Node {
+public:
+    explicit StereoImpulse(bool continuous = false) : continuous_(continuous) {}
+    bool processesDouble() const noexcept override { return true; }
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t channel=0; channel<io.channels; ++channel) {
+            for (std::int32_t i=0; i<io.frames; ++i) {
+                const double x=continuous_ || position_+i==impulseSample ? (channel==0 ? .25 : -.125) : 0;
+                const auto frame=io.blockOffset+i;
+                if (io.wide()) io.out64[channel][frame]=x;
+                else io.out[channel][frame]=static_cast<float>(x);
+            }
+        }
+        position_+=io.frames;
+    }
+private:
+    bool continuous_;
+    std::int64_t position_=0;
+};
+
+class Delay final : public device::DeviceInstance {
+public:
+    explicit Delay(const DeviceRequest& request, std::int32_t report = delaySamples) : report_(report) {
+        id_.format=request.ref->format;
+        id_.uid=request.ref->uid;
+        id_.name=request.ref->name;
+    }
+    const device::DeviceIdentity& identity() const noexcept override { return id_; }
+    bool loaded() const noexcept override { return true; }
+    bool processesDouble() const noexcept override { return true; }
+    std::int64_t tailSamples() const noexcept override { return delaySamples; }
+    std::int32_t latencySamples() const noexcept override { return report_; }
+    void process(const NodeIo& io) noexcept override {
+        if (report_ < 0) {
+            dry_.process(io);
+            return;
+        }
+        for (std::int32_t i=0; i<io.frames; ++i) {
+            const auto frame=io.blockOffset+i;
+            for (std::int32_t c=0; c<io.channels; ++c) {
+                auto& value=ring_[static_cast<std::size_t>(c)][head_];
+                const auto sample=io.wide() ? io.in64[c][frame] : static_cast<double>(io.in[c][frame]);
+                if (io.wide()) io.out64[c][frame]=value;
+                else io.out[c][frame]=static_cast<float>(value);
+                value=sample;
+            }
+            head_=(head_+1)%delaySamples;
+        }
+    }
+private:
+    std::int32_t report_;
+    device::DeviceIdentity id_;
+    MixNode dry_;
+    std::array<std::array<double,delaySamples>,2> ring_{};
+    std::size_t head_=0;
+};
+
+enum class Topology { Dry, Parallel, Nested, NestedMissing, NestedInvalid };
+const char* name(Topology topology) {
+    switch (topology) {
+        case Topology::Dry: return "dry";
+        case Topology::Parallel: return "parallel";
+        case Topology::Nested: return "nested";
+        case Topology::NestedMissing: return "nested-missing";
+        case Topology::NestedInvalid: return "nested-invalid";
+    }
+    return "unknown";
+}
+
+void commit(OpJournal& journal,std::string type,Payload payload) {
+    OpRequest op;
+    op.opType=std::move(type);
+    op.payload=std::move(payload);
+    const auto result=journal.commit(op);
+    if (!result.ok) throw std::runtime_error(op.opType+": "+result.error);
+}
+
+void seed(Store& store,Topology shape) {
+    OpJournal journal(store);
+    commit(journal,"track.create",{{"id",1},{"kind","audio"},{"name","Rack track"},{"index",0}});
+    commit(journal,"track.create",{{"id",9},{"kind","master"},{"name","Main"},{"index",1}});
+    store.db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) "
+                    "VALUES(1,'vst3','adi.test.fixed-delay-64','Owned Sample Delay','effect')");
+    commit(journal,"chain.create",{{"id",10},{"track",1}});
+    commit(journal,"device.insert",{{"id",20},{"chain",10},{"name","Rack"},{"rack",true},{"rackKind","audio_effect"}});
+    commit(journal,"chain.create",{{"id",21},{"device",20},{"ord",0},{"name","Direct, no devices"}});
+    if (shape==Topology::Dry) return;
+    commit(journal,"chain.create",{{"id",22},{"device",20},{"ord",1},{"name","Late"}});
+    const bool nested = shape != Topology::Parallel;
+    if (nested) {
+        commit(journal,"device.insert",{{"id",30},{"chain",22},{"ord",0},{"name","Nested rack"},{"rack",true},{"rackKind","audio_effect"}});
+        commit(journal,"chain.create",{{"id",31},{"device",30},{"ord",0},{"name","Nested dry"}});
+        commit(journal,"chain.create",{{"id",32},{"device",30},{"ord",1},{"name","Nested delay"}});
+    }
+    commit(journal,"device.insert",{{"id",40},{"chain",nested?32:22},{"ord",0},
+                                     {"ref",1},{"name","Fixed latency and real delay"}});
+    if (shape == Topology::NestedMissing || shape == Topology::NestedInvalid)
+        commit(journal,"device.insert",{{"id",41},{"chain",31},{"ord",0},{"ref",1},{"name","Unknown latency plug-in"}});
+}
+
+struct Observed {
+    std::array<std::array<double,horizon>,2> output{};
+    int loads=0;
+    std::int32_t latency=0;
+    std::optional<RackLatency> outer, inner;
+    std::int64_t skipped=0, swaps=0;
+    bool sameInstance=false;
+};
+
+Observed render(const std::filesystem::path& path,Topology shape,Precision width,bool swap) {
+    StoreError error{};
+    auto store=Store::createEmpty(path,error);
+    if (!store) throw std::runtime_error("cannot create rack fixture");
+    seed(*store,shape);
+    Observed result;
+    StereoImpulse source;
+    Session session;
+    session.graph().setFadeFrames(0);
+    session.setSourcesFor([&](std::int64_t track) {
+        return track==1 ? std::vector<Node*>{&source} : std::vector<Node*>{};
+    });
+    if (!session.load(*store,[&](const DeviceRequest& request,std::string& failure)->std::unique_ptr<device::DeviceInstance> {
+            ++result.loads;
+            if (request.device->id==40) return std::make_unique<Delay>(request);
+            if (request.device->id==41 && shape==Topology::NestedInvalid) return std::make_unique<Delay>(request, -1);
+            failure="only the owned delay fixture is loaded";
+            return {};
+        },SessionSpec{2,48000,blockFrames,width}))
+        throw std::runtime_error("rack Session load: "+session.error());
+    const auto* before=session.instanceFor(40);
+    for (std::size_t clock=0; clock<horizon; clock+=blockFrames) {
+        if (swap && clock==blockFrames) {
+            OpJournal journal(*store);
+            commit(journal,"track.create",{{"id",5},{"kind","audio"},{"name","New silent independent track"},{"index",0}});
+            if (!session.refresh(*store)) throw std::runtime_error("rack Session refresh: "+session.error());
+        }
+        std::array<float,blockFrames> left{},right{};
+        std::array<double,blockFrames> leftWide{},rightWide{};
+        float* out[]{left.data(),right.data()};
+        double* wide[]{leftWide.data(),rightWide.data()};
+        AudioIo io;
+        io.frames=blockFrames;
+        io.numOut=2;
+        io.streamTimeSamples=static_cast<std::int64_t>(clock);
+        if (width==Precision::Float64) io.out64=wide;
+        else io.out=out;
+        {
+            const audio::CallbackScope callback;
+            session.process(io);
+        }
+        for (std::size_t i=0;i<left.size();++i) {
+            result.output[0][clock+i]=width==Precision::Float64 ? leftWide[i] : left[i];
+            result.output[1][clock+i]=width==Precision::Float64 ? rightWide[i] : right[i];
+        }
+    }
+    result.latency=session.graph().renderedLatency();
+    const auto* current = session.graph().current();
+    result.outer = current->rackLatency(20);
+    result.inner = current->rackLatency(30);
+    result.skipped=session.stats().skipped;
+    result.swaps=session.graph().stats().swaps;
+    result.sameInstance=before!=nullptr && before==session.instanceFor(40);
+    return result;
+}
+
+bool exact(const Observed& heard,std::size_t expectedFrame,double left,double right) {
+    for (std::size_t i=0;i<horizon;++i) {
+        if (heard.output[0][i]!=(i==expectedFrame?left:0) ||
+            heard.output[1][i]!=(i==expectedFrame?right:0))
+            return false;
+    }
+    return true;
+}
+
+void testRackPlayback() {
+    section("DEV-01 -- serial and nested rack chains share one compensated graph");
+    const adi::test::TempDirectory scratch("session", "rack_playback");
+    try {
+        for (const auto width : {Precision::Float32, Precision::Float64}) {
+            for (const auto shape : {Topology::Dry, Topology::Parallel, Topology::Nested, Topology::NestedMissing, Topology::NestedInvalid}) {
+                const bool dry = shape == Topology::Dry;
+                const bool unknown = shape == Topology::NestedMissing || shape == Topology::NestedInvalid;
+                const bool nested = !dry && shape != Topology::Parallel;
+                const auto caseName = std::string(name(shape)) + (width == Precision::Float64 ? "-64" : "-32");
+                const auto heard = render(scratch.path() / (caseName + ".adi"), shape, width, nested);
+                const auto position = static_cast<std::size_t>(impulseSample + (dry ? 0 : delaySamples));
+                const auto voices = dry ? 1.0 : (nested ? 3.0 : 2.0);
+                check(exact(heard, position, .25 * voices, -.125 * voices), caseName + " aligns every dry and wet sample");
+                eqi(heard.latency, dry ? 0 : delaySamples, caseName + " reports the aligned graph latency");
+                check(heard.outer && heard.outer->samples == (dry ? 0 : delaySamples) && heard.outer->known == !unknown,
+                      caseName + " reports known zero separately from unavailable latency");
+                check(nested ? heard.inner && heard.inner->samples == delaySamples && heard.inner->known == !unknown : !heard.inner,
+                      caseName + " reports the nested rack's own applied latency");
+                eqi(heard.loads, dry ? 0 : unknown ? 2 : 1, caseName + " loads only the hosted leaves");
+                eqi(heard.skipped, 0, caseName + " realizes all stored rack chains");
+                if (nested)
+                    check(heard.swaps >= 2 && heard.sameInstance, caseName + " preserves the child across a graph swap");
+            }
+        }
+    } catch (const std::exception& error) {
+        check(false, error.what());
+    }
+}
+
+void testRackChainControls() {
+    section("DEV-01 -- chain mute and sibling solo use a five-millisecond ramp");
+    const adi::test::TempDirectory scratch("session", "rack_controls");
+    StoreError error{};
+    auto store = Store::createEmpty(scratch.path() / "project.adi", error);
+    check(store != nullptr, "create a project for chain controls");
+    if (!store) return;
+    seed(*store, Topology::Dry);
+    OpJournal journal(*store);
+    commit(journal, "chain.create", {{"id",22}, {"device",20}, {"ord",1}});
+    commit(journal, "device.insert", {{"id",30}, {"chain",22}, {"rack",true}, {"rackKind","audio_effect"}});
+    commit(journal, "chain.create", {{"id",31}, {"device",30}, {"ord",0}});
+    commit(journal, "chain.create", {{"id",32}, {"device",30}, {"ord",1}});
+
+    constexpr int frames = 256;
+    StereoImpulse source(true);
+    Session session;
+    session.setSourcesFor([&](std::int64_t track) {
+        return track == 1 ? std::vector<Node*>{&source} : std::vector<Node*>{};
+    });
+    check(session.load(*store, {}, SessionSpec{2, 48000, frames}), "load the nested rack controls fixture");
+    const auto published = session.graph().stats().published;
+    std::array<float, frames> left{}, right{};
+    float* output[]{left.data(), right.data()};
+    AudioIo io;
+    io.out = output;
+    io.numOut = 2;
+    io.frames = frames;
+    auto renderBlock = [&] {
+        const audio::CallbackScope callback;
+        session.process(io);
+        io.streamTimeSamples += frames;
+    };
+    renderBlock();
+    check(left[0] == .75f && right[0] == -.375f, "three child chains start at unity");
+    const auto* playing = session.graph().currentGraph();
+    commit(journal, "chain.setSolo", {{"id",31}, {"soloed",true}});
+    check(session.refresh(*store), "adopt nested solo");
+    renderBlock();
+    check(left[0] > .74f && left[100] > .55f && left[100] < .7f && left[239] == .5f && left.back() == .5f,
+          "inner solo ramps away one sibling in 240 samples and keeps the outer dry chain");
+    commit(journal, "chain.setMute", {{"id",21}, {"muted",true}});
+    check(session.refresh(*store), "adopt outer mute");
+    renderBlock();
+    check(left[0] > .49f && left[239] == .25f && left.back() == .25f, "outer mute ramps away only its own branch");
+    check(History(*store).undo().ok, "undo the outer mute");
+    check(session.refresh(*store), "adopt inverse chain mute");
+    renderBlock();
+    check(left[0] < .26f && left[239] == .5f && left.back() == .5f, "undo ramps the outer dry branch back");
+    check(session.graph().stats().published == published && session.graph().currentGraph() == playing,
+          "solo, mute and Undo retain the same graph");
+
+    store->db().exec("UPDATE tracks SET name='Changed without a new receipt' WHERE id=1");
+    check(session.refresh(*store) && session.graph().stats().published == published + 1 &&
+              std::ranges::any_of(session.model().tracks, [](const auto& track) {
+                  return track.id == 1 && track.name == "Changed without a new receipt";
+              }), "an already consumed mute receipt cannot hide later project material changes");
+}
+} // namespace rack_fixture
+
 }  // namespace
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_session_tests -- a project, live (ADR-0122)\n\n");
     testAProjectLoadsAndPlays();
+    rack_fixture::testRackPlayback();
+    rack_fixture::testRackChainControls();
     testBlockSizeChangesWithoutReload();
     testRefreshFollowsTheRows();
     testStateAndTheMirror();

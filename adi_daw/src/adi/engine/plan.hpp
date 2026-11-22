@@ -28,7 +28,9 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace adi::engine {
@@ -106,6 +108,23 @@ struct GraphPlan {
     std::vector<std::string> problems;
 
     [[nodiscard]] std::optional<std::size_t> indexOf(std::int64_t trackId) const;
+};
+
+/// Owner-side index of the persisted device hierarchy. The Model outlives it.
+class DeviceLayout {
+public:
+    explicit DeviceLayout(const rows::Model&);
+    [[nodiscard]] std::optional<std::int64_t> trackOf(std::int64_t device) const noexcept;
+    [[nodiscard]] const rows::Device* device(std::int64_t id) const noexcept;
+    [[nodiscard]] std::span<const rows::DeviceChain* const> trackChains(std::int64_t track) const noexcept;
+    [[nodiscard]] std::span<const rows::DeviceChain* const> rackChains(std::int64_t rack) const noexcept;
+    [[nodiscard]] std::span<const rows::Device* const> devices(std::int64_t chain) const noexcept;
+
+private:
+    std::unordered_map<std::int64_t, const rows::Device*> byDevice_;
+    std::unordered_map<std::int64_t, const rows::DeviceChain*> byChain_;
+    std::unordered_map<std::int64_t, std::vector<const rows::DeviceChain*>> trackChains_, rackChains_;
+    std::unordered_map<std::int64_t, std::vector<const rows::Device*>> devices_;
 };
 
 /// Derive the topology. Total: no input produces a failure to return, including

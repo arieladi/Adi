@@ -108,6 +108,15 @@ bool RealizedGraph::has(std::int64_t trackId) const noexcept {
     return chains_.find(trackId) != chains_.end();
 }
 
+std::optional<RackLatency> RealizedGraph::rackLatency(std::int64_t deviceId) const noexcept {
+    const auto found = racks_.find(deviceId);
+    if (found == racks_.end()) return std::nullopt;
+    const auto& rack = found->second;
+    auto report = graph_.pathLatencyBetween(rack.router, rack.sum, rack.last);
+    if (report) report->known = report->known && rack.known;
+    return report;
+}
+
 // ---------------------------------------------------------------------------
 // realize
 // ---------------------------------------------------------------------------
@@ -168,7 +177,6 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
         const NodeId head = add(*mix);
         r->owned_.push_back(std::move(mix));
 
-        NodeId tail = head;
         // Sources first, so a track's own audio is an edge into the junction
         // like every upstream track's (ADR-0044 sums them all there). Not
         // owned: the same rule as devices, for the same reason.
@@ -191,35 +199,70 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                                               id, head, Bus::Main});
             }
         }
-        const Node* prev = nullptr;   // the junction
         RealizedGraph::Chain built;
-        if (opts.devicesFor) {
-            const std::vector<Node*> chain = opts.devicesFor(pn.trackId);
-            for (Node* d : chain) {
-                if (d == nullptr) {
-                    // Named, not skipped silently. A null in a chain means the
-                    // caller lost a device between planning and realising, and
-                    // the signal path it produces is shorter than the project
-                    // says -- exactly what ADR-0011 has `MissingDevice` for.
-                    r->problems_.push_back(trackRef(pn.trackId) +
-                                           ": a null device in the chain was dropped");
-                    continue;
-                }
-                if (!placeOnce(d, trackRef(pn.trackId), "a chain node")) continue;
-                // ADR-0164: a chain node may hold data the audio thread reads
-                // -- a strip's automation lanes -- and this graph keeps it alive.
-                const NodeId id = add(*d);
-                if (r->graph_.connect(tail, id))
-                    r->chainEdges_.push_back({{pn.trackId, RealizedGraph::ChainKey::Leg::Next, prev, 0},
-                                              tail, id, Bus::Main});
-                tail = id;
-                prev = d;
-                built.nodes.emplace_back(d, id);
+        using Leg = RealizedGraph::ChainKey::Leg;
+        struct Endpoint {
+            NodeId id;
+            const Node* node;
+        };
+        const auto connect = [&](Endpoint from, NodeId to, Leg leg = Leg::Next) {
+            if (r->graph_.connect(from.id, to))
+                r->chainEdges_.push_back({{pn.trackId, leg, from.node, 0}, from.id, to, Bus::Main});
+        };
+        const auto place = [&](Node& node) {
+            const NodeId id = add(node);
+            built.nodes.emplace_back(&node, id);
+            return id;
+        };
+        const auto placeStage = [&](auto&& self, Node* node, Endpoint& before, bool& latencyKnown) -> void {
+            if (!node) {
+                r->problems_.push_back(trackRef(pn.trackId) + ": a null device in the chain was dropped");
+                return;
             }
+            if (!placeOnce(node, trackRef(pn.trackId), "a chain node")) return;
+            auto rack = opts.rackFor ? opts.rackFor(*node) : std::nullopt;
+            if (!rack) {
+                const NodeId id = place(*node);
+                connect(before, id);
+                before = {id, node};
+                return;
+            }
+
+            const NodeId router = place(*rack->router);
+            connect(before, router);
+            const NodeId sum = place(*node);
+            bool known = rack->latencyKnown;
+            const auto startBranch = [&](Node& gate) {
+                const auto id = place(gate);
+                if (r->graph_.connect(router, id))
+                    r->chainEdges_.push_back({{pn.trackId, Leg::Branch, &gate, 0}, router, id, Bus::Main});
+                return Endpoint{id, &gate};
+            };
+            for (auto& branch : rack->branches) {
+                auto branchTail = startBranch(*branch.gate);
+                for (auto* device : branch.devices) self(self, device, branchTail, known);
+                if (branch.strip) {
+                    const auto id = place(*branch.strip);
+                    connect(branchTail, id);
+                    branchTail = {id, branch.strip};
+                }
+                connect(branchTail, sum, Leg::Join);
+            }
+            // Expansion places every node from this rack in one contiguous
+            // range. Scan that range's applied latency flags for diagnostics.
+            const auto last = static_cast<NodeId>(r->graph_.nodeCount() - 1);
+            r->racks_.emplace(rack->deviceId, RealizedGraph::RackEndpoints{router, sum, last, known});
+            latencyKnown = latencyKnown && known;
+            before = {sum, node};
+        };
+        Endpoint previous{head, nullptr};
+        if (opts.devicesFor) {
+            bool latencyKnown = true;
+            for (auto* stage : opts.devicesFor(pn.trackId)) placeStage(placeStage, stage, previous, latencyKnown);
         }
         built.head = head;
-        built.tail = tail;
-        built.tailNode = prev;
+        built.tail = previous.id;
+        built.tailNode = previous.node;
         r->chains_[pn.trackId] = std::move(built);
     }
 
@@ -303,7 +346,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 continue;
             }
             const RealizedGraph::Chain& chain = r->chains_.at(srcId);
-            const Node* tapNode = chain.nodes.empty() ? nullptr : chain.nodes.back().first;
+            const Node* tapNode = chain.tailNode;
             NodeId at = chain.tail;
             if (e.tap != Tap::Tail && opts.tapFor) {
                 tapNode = opts.tapFor(srcId, e.tap);

@@ -644,6 +644,12 @@ void testAgainstAFakePlugin() {
         check(d.latencySamples() == 2048, "latency is reported verbatim");
         f.latencyValue = 0;
         check(d.latencySamples() == 0, "and zero stays zero");
+        const auto zero = d.latencyReport();
+        check(zero.samples == 0 && zero.known, "the SDK's explicit zero is known");
+        f.latencyValue = UINT32_MAX;
+        const auto invalid = d.latencyReport();
+        check(invalid.samples == 0 && !invalid.known, "an oversized SDK result uses zero without claiming it is known");
+        f.latencyValue = 0;
 
         // Parameters, and the panel's finding made concrete.
         check(d.paramCount() == 1, "one parameter");
@@ -716,6 +722,7 @@ void testNothingIsQueriedBeforeActivate() {
     check(d.latencySamples() == 0,
           "before activate the latency reads 0 -- a latency we cannot ask "
           "about must not move audio (ADR-0058's default, for its reason)");
+    check(!d.latencyReport().known, "the unactivated device has no usable latency report");
     check(d.tailSamples() == engine::kInfiniteTail,
           "and the tail reads infinite -- never suspend something we cannot "
           "ask about (ADR-0055's default, for its reason)");
@@ -1754,6 +1761,7 @@ void testAnExtensionWithNullMembers() {
     check(d.tailSamples() == engine::kInfiniteTail,
           "a null tail->get reads as INFINITE -- never suspend what we cannot ask");
     check(d.latencySamples() == 0, "a null latency->get reads as 0 -- never shift it either");
+    check(!d.latencyReport().known, "a malformed latency extension cannot report a known zero");
     check(d.stateRoles().empty(), "a state extension with null save/load offers no roles");
     check(d.saveState("chunk").empty(), "and saving yields nothing rather than crashing");
     check(!d.loadState("chunk", {1, 2, 3}), "and loading is refused");

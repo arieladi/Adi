@@ -110,6 +110,11 @@ constexpr ScalarSpec kScalars[] = {
     {"track.reorder", "Move a track within its parent", "tracks", "id",
      "index_in_parent", "index", FieldType::Int, EngineImpact::Snapshot, false},
 
+    // --- rack chains ----------------------------------------------------
+    {"chain.setMute", "Mute or unmute a rack chain", "device_chains", "id", "muted", "muted",
+     FieldType::Bool, EngineImpact::Snapshot, false},
+    {"chain.setSolo", "Solo or unsolo a rack chain", "device_chains", "id", "soloed", "soloed",
+     FieldType::Bool, EngineImpact::Snapshot, false},
     // --- clips ----------------------------------------------------------
     // --- devices (OPS.md 9.7) -------------------------------------------
     // The three that ARE a single column. The other six are hand-written

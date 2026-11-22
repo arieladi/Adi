@@ -270,6 +270,7 @@ public:
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
+    [[nodiscard]] engine::LatencyReport latencyReport() const noexcept override;
 
     [[nodiscard]] std::int32_t paramCount() const noexcept override {
         return static_cast<std::int32_t>(params_.size());
