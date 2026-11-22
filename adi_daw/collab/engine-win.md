@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, CT-01 literal take-lane edits
+
+- `engine-win/take-lane-edit-scope` at `4c2b07f3` validates literal take-lane ownership and reads only the scoped track/lane pair. Move, Resize End, Trim and Delete preserve the take lane, the main lane's clips and track automation. Delete targets clip IDs, so an overlapping sibling on the same take lane survives. The same-track and cross-track refusals retain DF-E17's separate detach or lane-change contract.
+- MSVC /WX passed five suites. Edit Plan 680/680, Clip Edit 420/420 and Take Lane Ops 74/74, plus Ops and History. Ops and schema validators passed. The new take checks cover each edit and a single Undo, overlapping main and other take lanes, and mis-scoped Delete.
+- Engine review requested for the lent EditScope changes. Window-fn can pass the selected take lane when it wires the take controls.
+
+PR requested.
+
 ## 2026-11-22, MX-09 audio take placement offset
 
 - `engine-win/recording-placement-offset` at `01abcaa3` adds a signed, explicit sample offset to linear take placement. Capture timing, file bytes and Undo grouping retain their existing values. An offset of zero keeps existing callers' behavior. An excessive positive offset puts the first captured sample at song zero. Overflows are refused before staging.
