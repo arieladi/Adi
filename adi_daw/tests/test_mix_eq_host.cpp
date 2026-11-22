@@ -486,10 +486,24 @@ template <class Sample> void neutralSilenceCanBeOmitted() {
           "returning a used nonneutral EQ to default does not certify its old history");
 }
 
-void neutralEqGraphSuspension() {
+void neutralEqGraphSuspension(bool recallContractedDefault) {
     auto eq = make(q::makeBackend());
     check(eq != nullptr, "graph suspension fixture creates the real native EQ");
     if (!eq) return;
+
+    if (recallContractedDefault) {
+        // Reproduce the contracted ARM64 default even on a compiler that
+        // rounds the multiply and addition separately.
+        const float scale = std::fma(300.f, 2.f / 3.f, -100.f);
+        check(scale == std::nextafter(100.f, 200.f), "fused Gain Scale is one float step above 100%");
+        auto state = Payload::from_cbor(eq->saveState("state"));
+        state["params"]["4"] = scale;
+        const auto bytes = Payload::to_cbor(state);
+        const bool restored = eq->loadState("state", bytes);
+        check(restored && eq->getParam("4").real == scale && eq->saveState("state") == bytes,
+              "the contracted Gain Scale survives native state recall exactly");
+        if (!restored) return;
+    }
 
     struct Programme final : engine::Node {
         float level = .25f;
@@ -561,7 +575,9 @@ int main() {
     check(d&&!d->processesDouble(),"narrow-only provider does not claim native double");
     publishedDesignPreview();metadataAndMapping();strictState();pairPublication();offsetsAndEvents<float>();offsetsAndEvents<double>();
     prepareLifecycle();duplicatePrepareKeepsProcessing();continuousPrepare<float>();continuousPrepare<double>();
-    neutralSilenceCanBeOmitted<float>();neutralSilenceCanBeOmitted<double>();neutralEqGraphSuspension();
+    neutralSilenceCanBeOmitted<float>();neutralSilenceCanBeOmitted<double>();
+    neutralEqGraphSuspension(false);
+    neutralEqGraphSuspension(true);
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}
     check(allocations==0&&deallocations==0,"native controller and direct core allocate/free nothing during callbacks");
     std::printf("Mix EQ host: %d checks, %d failures\n",checks,failures);return failures?1:0;
