@@ -4,6 +4,11 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, project saved plug-ins and the #642 gate
+
+- **PR requested** — N68, `engine-win/project-plugin-saved-path` at `43787b7b`. After an adopted Incremental or Refresh job, a project can probe an installed VST3 or CLAP named by its saved absolute path. The request uses the isolated helper and respects quarantine. Explicit CacheOnly and in-flight jobs suppress new probes. A miss without a saved path keeps the adopted Browser catalogue and starts no scan. In the Windows JUCE `adi_play_render_tests` suite, real VST3 and CLAP fixtures outside the search roots loaded after adoption. The CLAP quarantine and missing-hint controls passed. The Windows desktop application built with N62 and N68 together.
+- **PR requested, existing #642** — `68c92bbc` already removes `rankable()`. All eight statistics self-checks and 14 performance unittests passed. A dry merge with `0ea10b8e` succeeded. The GitHub macOS GUI-shell job is recorded as cancelled. The other published checks passed.
+
 ## 2026-11-22, VST3 export and the Browser's scan cache
 
 - **PR requested** — N62, `engine-win/export-host-owner` at `6b78d94c`. The render session creates, prepares, restores, services and destroys plug-ins on the host owner. The worker renders blocks and writes the file. Quit and Cancel can service pending owner calls through teardown. WTS-01 7d in the JUCE acceptance build rendered 192,000 frames including the saved note from a real VST3 fixture, and 7e passed. The render queue passed 437 checks, including state, thread affinity and cancellation.
