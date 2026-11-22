@@ -144,6 +144,11 @@ void validateEncoding(const Job& j, const Encoding& encoding, int channels) {
     if (!audio::validDither(encoding.dither))
         throw std::invalid_argument("unsupported export dither");
     (void)containerName(encoding.container);
+    if (encoding.speakerMask != 0 &&
+        (encoding.container != ExportContainer::Wav || j.niStems ||
+         !audio::validWavSpeakerMask(static_cast<std::uint16_t>(channels), encoding.speakerMask))) {
+        throw std::invalid_argument("An explicit WAV speaker mask must match the ordinary delivery's channels");
+    }
     if (encoding.container == ExportContainer::Aiff && (j.niStems || j.exactWavFilename))
         throw std::invalid_argument("AIFF export requires a template filename and an ordinary render source");
     if (encoding.container == ExportContainer::Flac) {
@@ -310,7 +315,7 @@ public:
                                                   total, encoding_.opusBitRate);
         } else if (job.normalization.mode == NormalizeMode::Off) {
             wav_ = std::make_unique<audio::WavWriter>(pcm_, rate, static_cast<std::uint16_t>(channels),
-                encoding_.format, nullptr, std::uint64_t{1} << 32, encoding_.dither, seed_);
+                encoding_.format, nullptr, std::uint64_t{1} << 32, encoding_.dither, seed_, encoding_.speakerMask);
         } else {
             normalization_ = std::make_unique<NormalizationCapture>(folder / (stem + ".f64"),
                 rate, channels, job.normalization);
@@ -335,7 +340,7 @@ public:
         else if (vorbis_) vorbis_->finish(service);
         else if (opus_) opus_->finish(service);
         else if (normalization_) report = normalization_->finish(pcm_, encoding_.format,
-                                                                   encoding_.dither, seed_, service);
+                                                                   encoding_.dither, seed_, service, encoding_.speakerMask);
         else wav_->close();
         if (encoding_.container == ExportContainer::Aiff) encodeStagedAiff(pcm_, output_, service);
         if (encoding_.container == ExportContainer::Flac) encodeStagedFlac(pcm_, output_, service);
@@ -1037,6 +1042,7 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"dither", audio::ditherName(job.encoding.dither)},
                 {"effective_dither", audio::ditherName(effectiveDither)},
                 {"dither_seed", job.encoding.ditherSeed},
+                {"wave_speaker_mask", job.encoding.speakerMask},
                 {"normalization", {{"mode", job.normalization.mode == NormalizeMode::Off ? "off" :
                     (job.normalization.mode == NormalizeMode::Peak ? "peak" : "loudness")},
                     {"target_lufs", job.normalization.targetLufs},
@@ -1060,6 +1066,7 @@ std::string serializeRunManifest(const RunReport& run) {
             if (!job.deliveries.empty()) {
                 profile["container"] = "multiple";
                 profile.erase("wav_encoding");
+                profile.erase("wave_speaker_mask");
                 profile.erase("dither");
                 profile.erase("dither_seed");
                 profile.erase("effective_dither");
@@ -1097,6 +1104,7 @@ std::string serializeRunManifest(const RunReport& run) {
                         spec["dither"] = encoding.format == audio::WavFormat::Float32 ? "none" :
                             audio::ditherName(encoding.dither);
                         spec["dither_seed"] = encoding.ditherSeed;
+                        if (encoding.container == ExportContainer::Wav) spec["wave_speaker_mask"] = encoding.speakerMask;
                     }
                     specs.push_back(std::move(spec));
                 }

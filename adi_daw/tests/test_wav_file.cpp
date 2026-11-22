@@ -252,6 +252,48 @@ void shapedDither(const std::filesystem::path& file) {
           std::bit_cast<std::array<std::uint32_t,3>>(input)==std::bit_cast<std::array<std::uint32_t,3>>(output),
           "requested shaped Float32 export preserves all source bits");
 }
+void speakerMask(const std::filesystem::path& path) {
+    constexpr auto threshold = std::uint64_t{1} << 32;
+    constexpr std::uint32_t front = 0x0003; // FL, FR
+    constexpr std::uint32_t surround = 0x060f; // FL, FR, FC, LFE, SL, SR
+    const std::array<float, 6> channels{0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f};
+    {
+        WavWriter output(path, 48000, 6, WavFormat::Pcm24, nullptr, threshold,
+                         WavDither::None, 0, surround);
+        output.write(channels.data(), 1);
+        output.close();
+    }
+    const auto surroundFile = load(path);
+    const auto fmt = chunk(surroundFile, "fmt ");
+    check(le(surroundFile, fmt + 8, 2) == 0xfffe && le(surroundFile, fmt + 28, 4) == surround,
+          "explicit surround positions are stored in the extensible fmt chunk");
+    {
+        WavReader input(path);
+        std::array<float, 6> readBack{};
+        check(input.read(readBack.data(), 1) == 1 && readBack == channels,
+              "setting speaker positions preserves the original interleaved samples");
+    }
+    {
+        WavWriter output(path, 48000, 2, WavFormat::Float32, nullptr, threshold,
+                         WavDither::None, 0, front);
+        output.write(channels.data(), 1);
+        output.close();
+    }
+    const auto stereo = load(path);
+    const auto stereoFmt = chunk(stereo, "fmt ");
+    check(le(stereo, stereoFmt + 8, 2) == 0xfffe && le(stereo, stereoFmt + 28, 4) == front,
+          "explicit stereo also writes the extensible mask");
+    for (const auto mask : {std::uint32_t{1}, std::uint32_t{0x80000001}}) {
+        bool rejected = false;
+        try {
+            WavWriter invalid(path, 48000, 2, WavFormat::Pcm16, nullptr, threshold,
+                              WavDither::None, 0, mask);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        check(rejected && load(path) == stereo, "invalid mask refuses before truncating the destination");
+    }
+}
 void big(const std::filesystem::path& p) {
  if(!envVar("ADI_WAV_BIG") || std::strcmp(envVar("ADI_WAV_BIG"),"1")!=0){std::puts("SKIP real >4GiB test (set ADI_WAV_BIG=1)");return;}
  constexpr std::uint32_t block=262144; constexpr std::uint64_t frames=(std::uint64_t{1}<<30)+block;
@@ -261,7 +303,7 @@ void big(const std::filesystem::path& p) {
 }
 }
 int main() {
- try {adi::test::TempDirectory tmp("wav_file","suite");auto p=tmp.path()/"test.wav";roundTrips(p);auto b=promotion(p);corrupt(p,b);shortSizes(p,b);metadata(p);doubleQuantization(p);dither(p);shapedDither(p);big(p);}
+ try {adi::test::TempDirectory tmp("wav_file","suite");auto p=tmp.path()/"test.wav";roundTrips(p);auto b=promotion(p);corrupt(p,b);shortSizes(p,b);metadata(p);doubleQuantization(p);dither(p);shapedDither(p);speakerMask(p);big(p);}
  catch(const std::exception& e){check(false,e.what());}
  std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

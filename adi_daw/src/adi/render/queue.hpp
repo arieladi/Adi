@@ -39,6 +39,7 @@ struct Encoding {
     float vorbisQuality = 0.5f;
     ChannelFold channelFold = ChannelFold::Preserve;
     std::uint32_t opusBitRate = 160000;
+    std::uint32_t speakerMask = 0; // WAV order, after channel folding
 };
 struct DeliverySpec {
     Encoding encoding;

@@ -83,12 +83,15 @@ void NormalizationCapture::append(std::span<const double> values,std::uint32_t f
     state.input.process(values,frames);state.frames+=frames;
 }
 NormalizationReport NormalizationCapture::finish(const std::filesystem::path& output,audio::WavFormat format,audio::WavDither dither,
-                                                 std::uint64_t seed,const std::function<void()>& callback) {
+                                                 std::uint64_t seed,const std::function<void()>& callback, std::uint32_t speakerMask) {
     worker();auto& state=*impl_;
     if(state.finished || state.frames==0)throw std::runtime_error("Normalization capture is empty or already finalized");
     if((format!=audio::WavFormat::Float32 && format!=audio::WavFormat::Pcm16 && format!=audio::WavFormat::Pcm24) ||
        !audio::validDither(dither))
         throw std::runtime_error("Unsupported normalization output encoding or dither");
+    if (!audio::validWavSpeakerMask(static_cast<std::uint16_t>(state.channels), speakerMask)) {
+        throw std::invalid_argument("WAV speaker mask needs one defined speaker per interleaved channel");
+    }
     if(output==state.spool)throw std::runtime_error("Normalization output must differ from its capture");
     state.finished=true;state.raw.close();if(state.raw.fail())throw std::runtime_error("Cannot finalize normalization capture");
     service(callback);NormalizationReport report;const auto source=state.input.finish();
@@ -110,7 +113,7 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
         double quantizationGain=1.0;
         {
             std::ifstream sourceFile(state.spool,std::ios::binary);if(!sourceFile)throw std::runtime_error("Cannot reopen normalization capture");
-            audio::WavWriter writer(output,state.rate,static_cast<std::uint16_t>(state.channels),format,nullptr,std::uint64_t{1}<<32,dither,seed);
+            audio::WavWriter writer(output,state.rate,static_cast<std::uint16_t>(state.channels),format,nullptr,std::uint64_t{1}<<32,dither,seed,speakerMask);
             quantizationGain=writer.quantizationGain();
             const double gain=state.options.mode==NormalizeMode::Loudness?std::pow(10,gainDb/20):1;
             for(std::uint64_t first=0;first<state.frames;) {

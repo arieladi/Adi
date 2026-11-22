@@ -284,6 +284,7 @@ void projectRateDelivery() {
     }
     job.nameTemplate = "soxr-mono-delivery-group";
     for (auto& delivery : job.deliveries) delivery.encoding.channelFold = ChannelFold::StereoAverage;
+    job.deliveries.front().encoding.speakerMask = 4; // front centre on the mono WAV
     const auto mono = renderWav(job, capture);
     check(mono.state == JobState::Completed && mono.deliveries.size() == 2 && mono.framesWritten == 2301,
           "one mono fold follows shared SoXR conversion for every requested format");
@@ -296,6 +297,20 @@ void projectRateDelivery() {
         check(same, "post-SRC mono keeps the exact equal-channel reference");
     }
     job.deliveries.clear();
+    if (opusExportAvailable()) {
+        f.store->db().exec("UPDATE project SET sample_rate=96000");
+        job.nameTemplate = "soxr-into-opus";
+        job.session.sampleRate = 48000;
+        auto opus = job.encoding;
+        opus.container = ExportContainer::OggOpus;
+        job.deliveries = {{job.encoding, ""}, {opus, ""}};
+        const auto throughOpus = renderWav(job, capture);
+        check(throughOpus.state == JobState::Completed && throughOpus.deliveries.size() == 2 &&
+              throughOpus.framesWritten == 2301 && preparedAt == 96000 && throughOpus.snapshot &&
+              throughOpus.snapshot->sampleRate == 48000,
+              throughOpus.error.empty() ? "Opus and WAV share one 96-to-48 kHz delivery clock" : throughOpus.error.c_str());
+        job.deliveries.clear();
+    }
     job.nameTemplate = "higher-direct";
     job.session.sampleRate = 96000;
     const auto higher = renderWav(job, capture);
@@ -958,6 +973,27 @@ void stereoFoldDelivery() {
     job.session.channels = 6;
     check(renderWav(job, observer).state == JobState::Failed && f.noStage(),
           "an ambiguous multichannel fold is refused before staging");
+}
+void waveSpeakerMask() {
+    Fixture f;
+    auto job = f.job("speaker-mask");
+    job.encoding.speakerMask = 3;
+    for (const auto mode : {NormalizeMode::Off, NormalizeMode::Peak}) {
+        job.normalization.mode = mode;
+        job.nameTemplate = mode == NormalizeMode::Off ? "speaker-mask" : "speaker-mask-normalized";
+        const auto rendered = renderWav(job, {});
+        std::ifstream file(rendered.output, std::ios::binary);
+        std::string header(80, '\0');
+        file.read(header.data(), static_cast<std::streamsize>(header.size()));
+        const auto fmt = header.find("fmt ");
+        check(rendered.state == JobState::Completed && fmt != std::string::npos &&
+              header.compare(fmt + 28, 4, "\x03\0\0\0", 4) == 0,
+              "rendered WAV retains the mask through ordinary and normalized encoding");
+    }
+    job.nameTemplate = "speaker-mask-invalid";
+    job.encoding.speakerMask = 1;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "invalid render channel-mask pair fails before staging");
 }
 void regionStems() {
     Fixture f;
@@ -2074,7 +2110,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

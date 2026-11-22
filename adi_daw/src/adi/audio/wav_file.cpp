@@ -40,11 +40,19 @@ std::uint16_t sampleBytes(WavFormat f) {
     throw std::invalid_argument("WAV format");
 }
 }
+bool validWavSpeakerMask(std::uint16_t channels, std::uint32_t mask) noexcept {
+    constexpr std::uint32_t definedSpeakers = 0x0003ffff;
+    return mask == 0 || ((mask & ~definedSpeakers) == 0 && std::popcount(mask) == channels);
+}
+
 WavWriter::WavWriter(const std::filesystem::path& path, std::uint32_t rate,
                      std::uint16_t channels, WavFormat format, const WavMetadata* metadata,
-                     std::uint64_t threshold, WavDither dither, std::uint64_t seed)
+                     std::uint64_t threshold, WavDither dither, std::uint64_t seed, std::uint32_t speakerMask)
     : format_(format), channels_(channels), bytes_(sampleBytes(format)), threshold_(threshold) {
     require(validDither(dither));
+    if (!validWavSpeakerMask(channels, speakerMask)) {
+        throw std::invalid_argument("WAV speaker mask needs one defined speaker per interleaved channel");
+    }
     const auto align=static_cast<std::uint32_t>(channels)*bytes_;
     require(channels && rate && align<=65535 && static_cast<std::uint64_t>(align)*rate<=sentinel);
     require(!metadata || metadata->ixml.size()<sentinel);
@@ -53,14 +61,14 @@ WavWriter::WavWriter(const std::filesystem::path& path, std::uint32_t rate,
     file_.open(path,std::ios::binary|std::ios::in|std::ios::out|std::ios::trunc);
     tag(file_,"RIFF"); put(file_,0,4); tag(file_,"WAVE");
     tag(file_,"JUNK"); put(file_,28,4); zeros(file_,28);
-    const bool extensible=channels>2;
+    const bool extensible=channels>2 || speakerMask!=0;
     const unsigned fmtSize=extensible?40U:(format==WavFormat::Float32?18U:16U);
     tag(file_,"fmt "); put(file_,fmtSize,4);
     const unsigned encoding=format==WavFormat::Float32?3U:1U;
     put(file_,extensible?0xfffeU:encoding,2); put(file_,channels,2); put(file_,rate,4);
     put(file_,static_cast<std::uint64_t>(rate)*align,4); put(file_,align,2); put(file_,bytes_*8U,2);
     if(extensible) {
-        put(file_,22,2); put(file_,bytes_*8U,2); put(file_,0,4); // unspecified speaker mask
+        put(file_,22,2); put(file_,bytes_*8U,2); put(file_,speakerMask,4);
         put(file_,encoding,4);
         for(auto c:guidTail) file_.put(static_cast<char>(c));
     } else if(format==WavFormat::Float32) put(file_,0,2); // WAVEFORMATEX cbSize
