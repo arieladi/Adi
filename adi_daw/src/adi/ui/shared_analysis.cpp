@@ -361,14 +361,29 @@ struct SharedAnalysis::Domain {
         }
         updateAvailability();
     }
-    bool settledParkedSilence(engine::ScopeTap::ParkedSilence quiet) const noexcept {
-        // Raw readings settle after a quiet window. The temporal modes may
-        // still have a sample-clock decay to run.
+    bool parkedWindowSettled(engine::ScopeTap::ParkedSilence quiet, std::uint32_t bits) const noexcept {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
-        const auto bits = outputs.load(std::memory_order_acquire);
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
-               !(bits & Average1s) && (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire)) &&
+               !(bits & Average1s) && (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire));
+    }
+    bool settledParkedSilence(engine::ScopeTap::ParkedSilence quiet) const noexcept {
+        const auto bits = outputs.load(std::memory_order_acquire);
+        return parkedWindowSettled(quiet, bits) &&
                (!(bits & CumulativeMaximum) || cumulativeReady.load(std::memory_order_acquire));
+    }
+    void skipParkedBeforeCumulative(engine::ScopeTap::ParkedSilence quiet) noexcept {
+        const auto bits = outputs.load(std::memory_order_acquire);
+        if (!(bits & CumulativeMaximum) || cumulativeReady.load(std::memory_order_acquire) ||
+            cursor.next >= quiet.end || !parkedWindowSettled(quiet, bits)) return;
+        // The retained window and skipped range are both certified silent.
+        // A reset or new view needs post-admission audio, not earlier zeros.
+        auto first = quiet.end;
+        for (const auto &history : cumulativeHistories)
+            if (!history->lastWindow) first = std::min(first, history->afterSequence);
+        // If that boundary has itself rolled out, only certified zero
+        // samples may be omitted. A later nonquiet span uses the normal cursor.
+        const auto next = std::min(quiet.end, std::max(first, tap->oldest()));
+        cursor.next = std::max(cursor.next, next);
     }
     std::size_t historyColumnBytes() const noexcept {
         return (static_cast<std::size_t>(request.fftSize) / 2 + 1) * sizeof(float);
@@ -1179,6 +1194,7 @@ struct SharedAnalysis::State {
             const auto n = d.left.size(), hop = static_cast<std::size_t>(d.request.hopSize);
             const auto end = d.tap->written();
             const auto quiet = d.tap->lastParkedSilence();
+            d.skipParkedBeforeCumulative(quiet);
             // Resume at the end of a previously parked range. Its omitted samples
             // are identical to those in the retained window. The regular cursor
             // still detects a seek, playback start, or another stamp at the join.

@@ -428,6 +428,65 @@ void cumulativeMaximumSpectrum() {
           "hiding the final cumulative view frees analysis work");
 }
 
+void cumulativeMaximumParkedRollover() {
+    constexpr int window = 1024;
+    constexpr auto revision = std::uint64_t{19};
+    constexpr auto stamp = std::int64_t{400};
+    std::array<float, window> loud{};
+    loud.fill(.75f);
+    const float *quiet = nullptr;
+
+    for (const bool restart : {false, true}) {
+        Fixture f;
+        f.tap = std::make_shared<ScopeTap>(48000., .25);
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.outputs = SharedAnalysis::CumulativeMaximum;
+        auto retained = f.broker.acquire(request);
+        auto second = restart ? f.broker.acquire(request) : SharedAnalysis::Lease{};
+        f.tap->write(loud.data(), loud.data(), window, stamp, false, revision);
+        f.broker.pump();
+        f.tap->write(quiet, quiet, window, stamp, false, revision);
+        f.broker.pump();
+        const auto held = retained.readMaximum();
+        check(held && held->binsDbfs[0] > -10.f, "the parked source has a cumulative peak worth retaining");
+        if (!held) continue;
+
+        const auto settled = f.broker.stats();
+        const auto beyondRing = static_cast<int>(f.tap->capacity()) + window;
+        f.tap->write(quiet, quiet, beyondRing, stamp, false, revision);
+        f.broker.pump();
+        check(settled.cursorReads == f.broker.stats().cursorReads && retained.readMaximum() == held,
+              "cumulative silence stays parked after the physical ring rolls over");
+
+        const auto admission = f.tap->written();
+        if (restart)
+            check(second.restartCumulativeMaximum(), "Reset accepts a parked cumulative observer");
+        else
+            second = f.broker.acquire(request);
+        check(!second.readMaximum(), "a new cumulative interval starts without stale parked peaks");
+        f.tap->write(quiet, quiet, window, stamp, false, revision);
+        f.broker.pump();
+        const auto fresh = second.readMaximum();
+        const auto continuing = retained.readMaximum();
+        const auto after = f.broker.stats();
+        check(fresh && fresh->window->firstSequence >= admission && fresh->binsDbfs[0] == adi::dsp::kDbFloor,
+              "a full new quiet window appears after a parked observer joins or resets");
+        check(continuing && exactBins(continuing->binsDbfs, held->binsDbfs) &&
+                  continuing->window->sourceEpoch == held->window->sourceEpoch &&
+                  continuing->window->overrunCount == held->window->overrunCount &&
+                  after.cursorReads - settled.cursorReads <= 1 + window / (window / 4) &&
+                  after.transforms == settled.transforms,
+              "rejoining a parked tap skips certified quiet without treating rollover as a sibling gap");
+
+        f.tap->write(loud.data(), loud.data(), window, stamp + 17, true, revision + 1);
+        f.broker.pump();
+        const auto resumed = retained.readMaximum();
+        check(resumed && resumed->window->transportRevision == revision + 1 &&
+                  resumed->window->sourceEpoch > held->window->sourceEpoch &&
+                  resumed->window->overrunCount == held->window->overrunCount,
+              "skipping parked silence still detects authentic transport changes on resume");
+    }
+}
 void focusScopeBarTiming() {
     constexpr auto quarter = adi::textproj::kPPQ;
     const adi::engine::TempoMap constant{{{0, 120., 0}}};
@@ -2431,7 +2490,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
