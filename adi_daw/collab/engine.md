@@ -36,6 +36,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MX-33 measurement fixtures and track render — PR requested
+
+- Ready at `d8c0eeaa4d001de455f79c05dc1292d2ad9d5480` on `engine/mx33-fixture-render`, stacked on `5e192277` for after 3 December.
+- `adi_measure build` uses ordinary project, track and material journal operations in a private fixture, then publishes through Save a Copy. The final project resolves the input WAV after the fixture stage is removed. `adi_measure render` runs the existing export queue for a literal track or Main over an explicit sample range, with Float32 delivery, no dither, and selected 32- or 64-bit graph processing. The JSON receipt identifies the actual captured head and track.
+- Both strict Linux compilers passed 563 checks across five suites and 12 command checks against actual WAVs per compiler. The independently sliced PCM matched the track and Main exactly at blocks 64, 511 and 4096, with both graph widths. Tests also verify journal contents, source resolution, no-clobber project/output publication, missing track and bad range. Checked the five portability patterns.
+
 ## 2026-11-22 — MX-33 offline measurement commands — PR requested
 
 - Ready at `5e192277e77c96df351a2f4b1e5541bb1581954a` on `engine/mx33-offline-measure`, stacked on native loopback `63cad539`, for after 3 December.
