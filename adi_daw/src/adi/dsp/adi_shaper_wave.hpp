@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <tuple>
@@ -45,7 +46,7 @@ public:
             ++block;
             if (!changed) return;
             for (auto& page : pages) {
-                if (page.key >= 0 && (*changed)[page.key]) {
+                if (page.key >= 0 && (*changed)[static_cast<std::size_t>(page.key)]) {
                     page.stale = true;
                     page.changedAt = block;
                 }
@@ -118,7 +119,7 @@ public:
         const auto addressSlot = static_cast<std::size_t>((hostId-firstId) & ~1);
         auto changed = [&](int word) {
             const int k = curveOf(word);
-            if (k >= 0 && k < curves) changed_[k] = true;
+            if (k >= 0 && k < curves) changed_[static_cast<std::size_t>(k)] = true;
         };
         changed(words_[addressSlot]);
         dest = next;
@@ -133,27 +134,27 @@ public:
         starts_.fill(0);
         std::size_t count = 0;
         for (int i = 0; i < slots; ++i) {
-            const int a = words_[2 * i], k = curveOf(a);
+            const int a = words_[static_cast<std::size_t>(2 * i)], k = curveOf(a);
             if (k < 0 || k >= curves) continue;
-            const auto p = unpack(a, words_[2 * i + 1]);
+            const auto p = unpack(a, words_[static_cast<std::size_t>(2 * i + 1)]);
             nodes_[count++] = {k, i, a & 8191, p.y, p.bend, p.shape};
             ++starts_[static_cast<std::size_t>(k + 1)];
         }
-        std::sort(nodes_.begin(), nodes_.begin() + count, [](const Node& a, const Node& b) {
+        std::sort(nodes_.begin(), nodes_.begin() + static_cast<std::ptrdiff_t>(count), [](const Node& a, const Node& b) {
             return std::tuple(a.key, sortX(a), a.slot) < std::tuple(b.key, sortX(b), b.slot);
         });
-        for (int i = 1; i <= curves; ++i) starts_[i] += starts_[i - 1];
+        for (int i = 1; i <= curves; ++i) starts_[static_cast<std::size_t>(i)] += starts_[static_cast<std::size_t>(i - 1)];
         std::size_t used = 0, jumpCount = 0;
         for (int k = 0; k < curves; ++k) {
-            spanStarts_[k] = used;
-            jumpStarts_[k] = jumpCount;
-            const std::span<const Node> nodes(nodes_.data()+starts_[k], starts_[k+1]-starts_[k]);
-            constants_[k] = !nodes.empty() && std::all_of(nodes.begin(), nodes.end(), [&](const Node& n) {
+            spanStarts_[static_cast<std::size_t>(k)] = used;
+            jumpStarts_[static_cast<std::size_t>(k)] = jumpCount;
+            const std::span<const Node> nodes(nodes_.data()+starts_[static_cast<std::size_t>(k)], starts_[static_cast<std::size_t>(k+1)]-starts_[static_cast<std::size_t>(k)]);
+            constants_[static_cast<std::size_t>(k)] = !nodes.empty() && std::all_of(nodes.begin(), nodes.end(), [&](const Node& n) {
                 return n.y == nodes.front().y;
             });
-            onlyCorners_[k] = false;
-            if (!nodes.empty() && !constants_[k]) {
-                used += compileCorners(nodes, spans_.data()+used, onlyCorners_[k]);
+            onlyCorners_[static_cast<std::size_t>(k)] = false;
+            if (!nodes.empty() && !constants_[static_cast<std::size_t>(k)]) {
+                used += compileCorners(nodes, spans_.data()+used, onlyCorners_[static_cast<std::size_t>(k)]);
                 for (std::size_t i=1; i<nodes.size(); ++i) {
                     const auto& a = nodes[i-1];
                     const auto& b = nodes[i];
@@ -167,13 +168,13 @@ public:
         jumpStarts_[curves] = jumpCount;
     }
     View view(int k, AudioMemo* memo = nullptr) const noexcept {
-        View result{{nodes_.data() + starts_[k], starts_[k + 1] - starts_[k]},
-                {spans_.data() + spanStarts_[k], spanStarts_[k+1] - spanStarts_[k]},
-                {jumps_.data() + jumpStarts_[k], jumpStarts_[k+1] - jumpStarts_[k]}, onlyCorners_[k], constants_[k]};
+        View result{{nodes_.data() + starts_[static_cast<std::size_t>(k)], starts_[static_cast<std::size_t>(k + 1)] - starts_[static_cast<std::size_t>(k)]},
+                {spans_.data() + spanStarts_[static_cast<std::size_t>(k)], spanStarts_[static_cast<std::size_t>(k+1)] - spanStarts_[static_cast<std::size_t>(k)]},
+                {jumps_.data() + jumpStarts_[static_cast<std::size_t>(k)], jumpStarts_[static_cast<std::size_t>(k+1)] - jumpStarts_[static_cast<std::size_t>(k)]}, onlyCorners_[static_cast<std::size_t>(k)], constants_[static_cast<std::size_t>(k)]};
         result.memo = memo;
         return result;
     }
-    bool hasStage(int stage) const noexcept { return starts_[6 * stage] != starts_[6 * stage + 6]; }
+    bool hasStage(int stage) const noexcept { return starts_[static_cast<std::size_t>(6 * stage)] != starts_[static_cast<std::size_t>(6 * stage + 6)]; }
     static float at(const View& curve, std::uint64_t phase, bool* moving = nullptr) noexcept {
         const auto nodes = curve.nodes;
         if (nodes.empty()) {
@@ -254,7 +255,7 @@ private:
                 if (!curve.page) return geometry(curve,xIndex);
                 auto& valid = curve.page->valid[static_cast<unsigned>(xIndex) >> 6];
                 const std::uint64_t mask = std::uint64_t{1} << (xIndex & 63);
-                auto& gain = curve.page->heights[xIndex];
+                auto& gain = curve.page->heights[static_cast<std::size_t>(xIndex)];
                 if (!(valid & mask)) {
                     gain = geometry(curve,xIndex);
                     valid |= mask;
@@ -266,11 +267,11 @@ private:
                 heights[0] = heights[1]; heights[1] = heights[2]; heights[2] = heights[3];
                 heights[3] = read((cell+2)&8191);
             } else {
-                for (int i=0; i<4; ++i) heights[i] = read((cell+i-1)&8191);
+                for (int i=0; i<4; ++i) heights[static_cast<std::size_t>(i)] = read((cell+i-1)&8191);
             }
             const auto limits = tapLimits(curve,cell);
             const int low = limits & 3, high = limits >> 2;
-            const double a = heights[low], b = heights[1], c = heights[std::min(2,high)], d = heights[high];
+            const double a = heights[static_cast<std::size_t>(low)], b = heights[1], c = heights[static_cast<std::size_t>(std::min(2,high))], d = heights[static_cast<std::size_t>(high)];
             const double first = .5*(c-a), second = .5*(d-b);
             curve.coefficients = {b,first,3*(c-b)-2*first-second,2*(b-c)+first+second};
             curve.varying = a != b || b != c || c != d;
@@ -307,13 +308,13 @@ private:
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             const auto& n = nodes[i];
             const int repeats = n.shape != Shape::SourceCorner || n.bend < -.5f ? 3 : n.bend > .5f ? 1 : 2;
-            for (int j = 0; j < repeats; ++j) sequence[count++] = static_cast<std::uint16_t>(i);
+            for (int j = 0; j < repeats; ++j) sequence[static_cast<std::size_t>(count++)] = static_cast<std::uint16_t>(i);
         }
         // Four local indices and their wrap describe a span. Cache its cubic
         // coefficients in the per-reader cursor only when playback reaches it.
         auto id = [&](int i) {
             const int cycle = i < 0 ? -1 : i/count;
-            return static_cast<std::uint16_t>(sequence[i-cycle*count] + slots*(cycle+1));
+            return static_cast<std::uint16_t>(sequence[static_cast<std::size_t>(i-cycle*count)] + slots*(cycle+1));
         };
         auto x = [&](std::uint16_t encoded) {
             return cornerX(nodes[encoded % slots]) + (static_cast<int>(encoded)/slots-1)*8192.;

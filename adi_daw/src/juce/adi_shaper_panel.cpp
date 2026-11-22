@@ -90,11 +90,11 @@ constexpr float clamp01(float v) { return std::clamp(v, 0.f, 1.f); }
 bool inside(Rect r, Pos p) { return r.contains(p); }
 Rect button(int i) {
     if (i == 3 || i == 4)
-        return {5.f + (i - 3) * 22.f, 451.f, 21.f, 23.f};
+        return {5.f + static_cast<float>(i - 3) * 22.f, 451.f, 21.f, 23.f};
     const int row = i < 3 ? i : i - 2;
-    return {10.f, 238.f + 33.f * row, 31.f, 27.f};
+    return {10.f, 238.f + 33.f * static_cast<float>(row), 31.f, 27.f};
 }
-Rect palette(int i) { return {10.f + i * 76.f, 549.f, 70.f, 22.f}; }
+Rect palette(int i) { return {10.f + static_cast<float>(i) * 76.f, 549.f, 70.f, 22.f}; }
 } // namespace
 
 AdiShaperPanel::AdiShaperPanel() {
@@ -246,7 +246,7 @@ const std::vector<Panel::Point> &AdiShaperPanel::points() const {
         const auto m = mapping();
         const auto shape = read(m.interpolation) < .5 ? Shape::Hold : Shape::Line;
         for (int i = 0; i < 8; ++i)
-            cachedPoints_.push_back({i / 8.f, static_cast<float>(read(m.points + i)), 0.f, shape});
+            cachedPoints_.push_back({static_cast<float>(i) / 8.f, static_cast<float>(read(m.points + i)), 0.f, shape});
     }
     return cachedPoints_;
 }
@@ -285,10 +285,10 @@ float AdiShaperPanel::average(const std::vector<Point> &points) {
 AdiShaperPanel::Rect AdiShaperPanel::graph() const { return {52, 217, 935, 262}; }
 AdiShaperPanel::Rect AdiShaperPanel::curveBounds() const {
     return graph().transformedBy(
-        juce::AffineTransform::scale(getWidth() / designWidth, getHeight() / designHeight));
+        juce::AffineTransform::scale(static_cast<float>(getWidth()) / designWidth, static_cast<float>(getHeight()) / designHeight));
 }
 AdiShaperPanel::Pos AdiShaperPanel::logical(Pos p) const {
-    return {p.x * designWidth / std::max(1, getWidth()), p.y * designHeight / std::max(1, getHeight())};
+    return {p.x * designWidth / static_cast<float>(std::max(1, getWidth())), p.y * designHeight / static_cast<float>(std::max(1, getHeight()))};
 }
 AdiShaperPanel::Pos AdiShaperPanel::toPlot(Pos p) const {
     const auto r = graph();
@@ -389,8 +389,8 @@ juce::String db(float gain) {
 void lfoIcon(juce::Graphics &g, Rect r, int stage, juce::Colour c) {
     juce::Path p;
     for (int i = 0; i <= 28; ++i) {
-        const float t = i / 28.f;
-        const float v = std::sin((1.0f + .12f * stage) * std::numbers::pi_v<float> * 2 * t + .6f);
+        const float t = static_cast<float>(i) / 28.f;
+        const float v = std::sin((1.0f + .12f * static_cast<float>(stage)) * std::numbers::pi_v<float> * 2 * t + .6f);
         const Pos pos{r.getX() + t * r.getWidth(), r.getCentreY() + r.getHeight() * .38f * v};
         if (!i)
             p.startNewSubPath(pos);
@@ -419,15 +419,15 @@ void AdiShaperPanel::paint(juce::Graphics &g) {
     g.drawImage(background_, getLocalBounds().toFloat());
     {
         juce::Graphics::ScopedSaveState save(g);
-        g.addTransform(juce::AffineTransform::scale(getWidth() / designWidth, getHeight() / designHeight));
+        g.addTransform(juce::AffineTransform::scale(static_cast<float>(getWidth()) / designWidth, static_cast<float>(getHeight()) / designHeight));
         drawLive(g);
     }
     const auto toPanel =
-        juce::AffineTransform::scale(static_cast<float>(getWidth()) / background_.getWidth(),
-                                     static_cast<float>(getHeight()) / background_.getHeight());
+        juce::AffineTransform::scale(static_cast<float>(getWidth()) / static_cast<float>(background_.getWidth()),
+                                     static_cast<float>(getHeight()) / static_cast<float>(background_.getHeight()));
     g.drawImage(contour_, contourPixels_.toFloat().transformedBy(toPanel));
     if (drag_ == Drag::Marquee || !group_.empty() || !penPreview_.isEmpty()) {
-        g.addTransform(juce::AffineTransform::scale(getWidth() / designWidth, getHeight() / designHeight));
+        g.addTransform(juce::AffineTransform::scale(static_cast<float>(getWidth()) / designWidth, static_cast<float>(getHeight()) / designHeight));
         drawSelection(g);
         if (!penPreview_.isEmpty()) {
             g.setColour(juce::Colours::white.withAlpha(.87f));
@@ -475,7 +475,7 @@ void AdiShaperPanel::selectInMarquee() {
 
 namespace {
 Pos groupHandle(Rect box, int x, int y) {
-    return {box.getCentreX() + .5f * x * box.getWidth(), box.getCentreY() + .5f * y * box.getHeight()};
+    return {box.getCentreX() + .5f * static_cast<float>(x) * box.getWidth(), box.getCentreY() + .5f * static_cast<float>(y) * box.getHeight()};
 }
 void shearSelection(std::vector<Panel::Point> &nodes, std::span<const std::size_t> indices, bool horizontal,
                     float anchor, float edge, float travel) {
@@ -629,9 +629,9 @@ void AdiShaperPanel::transformGroup(Pos p, juce::ModifierKeys mods) {
     updateNodes(std::move(v));
 }
 void AdiShaperPanel::prepareDrawing(float density) {
-    const int w = std::max(1, juce::roundToInt(getWidth() * density));
-    const int h = std::max(1, juce::roundToInt(getHeight() * density));
-    const auto transform = juce::AffineTransform::scale(w / designWidth, h / designHeight);
+    const int w = std::max(1, juce::roundToInt(static_cast<float>(getWidth()) * density));
+    const int h = std::max(1, juce::roundToInt(static_cast<float>(getHeight()) * density));
+    const auto transform = juce::AffineTransform::scale(static_cast<float>(w) / designWidth, static_cast<float>(h) / designHeight);
     if (background_.getWidth() != w || background_.getHeight() != h || density != density_) {
         density_ = density;
         background_ = juce::Image(juce::Image::RGB, w, h, false);
@@ -737,7 +737,7 @@ void AdiShaperPanel::drawLive(juce::Graphics &g) {
     }
     const float meterX = outputMeterLeft();
     for (int i = 0; i < 2; ++i) {
-        const float v = peaks_[static_cast<std::size_t>(i)], y = 129.f + i * 20;
+        const float v = peaks_[static_cast<std::size_t>(i)], y = 129.f + static_cast<float>(i * 20);
 
         g.setColour(v > 1 ? juce::Colours::orangered : accent);
         g.fillRect(meterX + 19, y, 45.f * clamp01((v > 0 ? 20.f * std::log10(v) + 60.f : 0.f) / 60.f), 3.f);
@@ -844,7 +844,7 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
     box(g, {meterX, 96, 115, 96}, plate);
     label(g, "Output", {meterX + 4, 98, 107, 21}, 12, dim);
     for (int i = 0; i < 2; ++i) {
-        const float y = 129.f + i * 20;
+        const float y = 129.f + static_cast<float>(i * 20);
         label(g, i ? "R" : "L", {meterX + 3, y - 8, 12, 16}, 10, dim);
         g.setColour(rail);
         g.fillRect(meterX + 19, y, 45.f, 3.f);
@@ -854,7 +854,7 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
                                                  : key_.stage == 4 ? std::array{"Center", "Feedback"}
                                                                    : std::array{"Bits", "Rate"};
         for (int i = 0; i < 2; ++i) {
-            const Rect r(570.f + 73.f * i, 149, 69, 31);
+            const Rect r(570.f + 73.f * static_cast<float>(i), 149, 69, 31);
             box(g, r, plate);
             label(g, text[static_cast<std::size_t>(i)], r, 12, i == key_.lane ? accent : dim);
         }
@@ -863,7 +863,7 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
     g.setColour(juce::Colour(0xff111114));
     g.fillRect(Rect(0, 202, 1000, 320));
     for (int i = 0; i <= 64; ++i) {
-        const float x = plot.getX() + plot.getWidth() * i / 64.f;
+        const float x = plot.getX() + plot.getWidth() * static_cast<float>(i) / 64.f;
         g.setColour(juce::Colour(i % 16 == 0 ? 0xff3e3e43 : (i % 4 == 0 ? 0xff29292e : 0xff1b1b1e)));
         g.drawVerticalLine(juce::roundToInt(x), plot.getY(), plot.getBottom());
         if (i % 16 == 0) {
@@ -885,7 +885,7 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
         }
     }
     for (int i = 0; i <= 16; ++i) {
-        const float y = plot.getY() + i * plot.getHeight() / 16;
+        const float y = plot.getY() + static_cast<float>(i) * plot.getHeight() / 16;
         g.setColour(juce::Colour(i % 8 == 0 ? 0xff3d3d43 : (i % 4 == 0 ? 0xff333339 : 0xff1c1c20)));
         g.drawHorizontalLine(juce::roundToInt(y), plot.getX(), plot.getRight());
     }
@@ -973,7 +973,7 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
             const float y = c.r.getCentreY();
             g.setColour(dim);
             for (int row = -1; row <= 1; ++row)
-                g.drawLine(c.r.getX() + 7, y + 3.f * row, c.r.getX() + 15, y + 3.f * row);
+                g.drawLine(c.r.getX() + 7, y + 3.f * static_cast<float>(row), c.r.getX() + 15, y + 3.f * static_cast<float>(row));
             label(g, c.text, c.r.withTrimmedLeft(29).withTrimmedRight(32), 13, ink,
                   juce::Justification::centredLeft);
             const double value = read(m.cycle);
@@ -981,7 +981,7 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
                 const auto arrow = divisionStepBounds(c.r, direction).getCentre();
                 const bool available = direction < 0 ? value > divisionTolerance : value < 1. - divisionTolerance;
                 g.setColour(available ? ink : dim.withAlpha(.35f));
-                const float offset = 1.6f * direction;
+                const float offset = 1.6f * static_cast<float>(direction);
                 juce::Path chevron;
                 chevron.startNewSubPath(arrow.x - offset, arrow.y - 3.5f);
                 chevron.lineTo(arrow.x + offset, arrow.y);
@@ -1000,7 +1000,7 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
         const auto &active =
             nodes[static_cast<std::size_t>(std::clamp(selected_, 0, static_cast<int>(nodes.size()) - 1))];
         for (int i = 0; i < 3; ++i) {
-            const Rect r(455.f + 70.f * i, 491, 66, 27);
+            const Rect r(455.f + 70.f * static_cast<float>(i), 491, 66, 27);
             const bool on = active.shape == Shape::SourceCorner && juce::roundToInt(active.bend) == i - 1;
             box(g, r, plate);
             label(g, std::array{"Hard", "Medium", "Soft"}[static_cast<std::size_t>(i)], r, 12,
@@ -1013,7 +1013,7 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
         box(g, r, plate);
         juce::Path p;
         for (int j = 0; j < 36; ++j) {
-            const float x = j / 35.f;
+            const float x = static_cast<float>(j) / 35.f;
             const float h = i == 0   ? .9f
                             : i == 1 ? (x < .5f ? .1f : .9f)
                             : i == 2 ? x
@@ -1295,10 +1295,10 @@ void AdiShaperPanel::previewPen(Pos p, juce::ModifierKeys mods) {
     const int columns = juce::roundToInt(plot.getWidth());
     const auto preview = sampleCorners(proposed, columns);
     const float end = origin.x + extent.x;
-    const int first = juce::roundToInt(clamp01(std::min(origin.x, end)) * columns);
-    const int last = juce::roundToInt(clamp01(std::max(origin.x, end)) * columns);
+    const int first = juce::roundToInt(clamp01(std::min(origin.x, end)) * static_cast<float>(columns));
+    const int last = juce::roundToInt(clamp01(std::max(origin.x, end)) * static_cast<float>(columns));
     for (int i = first; i <= last; ++i) {
-        const Pos point{plot.getX() + i, plot.getBottom() - preview[static_cast<std::size_t>(i)] * plot.getHeight()};
+        const Pos point{plot.getX() + static_cast<float>(i), plot.getBottom() - preview[static_cast<std::size_t>(i)] * plot.getHeight()};
         if (i == first) penPreview_.startNewSubPath(point);
         else penPreview_.lineTo(point);
     }
@@ -1334,7 +1334,7 @@ void AdiShaperPanel::stroke(Pos p) {
         const auto index = [](float x) { return std::clamp(juce::roundToInt(x * 8), 0, 7); };
         const int lo = std::min(index(a.x), index(b.x)), hi = std::max(index(a.x), index(b.x));
         for (int i = lo; i <= hi; ++i) {
-            const float t = a.x == b.x ? 1.f : clamp01((i / 8.f - a.x) / (b.x - a.x));
+            const float t = a.x == b.x ? 1.f : clamp01((static_cast<float>(i) / 8.f - a.x) / (b.x - a.x));
             v[static_cast<std::size_t>(i)].y = a.y + t * (b.y - a.y);
         }
         v[static_cast<std::size_t>(index(b.x))].y = b.y;
@@ -1591,7 +1591,7 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
     }
     if (freeCurve()) {
         for (int i = 0; i < 3; ++i) {
-            if (inside({455.f + 70.f * i, 491, 66, 27}, p)) {
+            if (inside({455.f + 70.f * static_cast<float>(i), 491, 66, 27}, p)) {
                 chooseShape(Shape::SourceCorner, static_cast<float>(i - 1));
                 return;
             }

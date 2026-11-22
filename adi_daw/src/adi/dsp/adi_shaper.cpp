@@ -553,8 +553,8 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     constexpr int stageIndex = static_cast<int>(kind);
     std::array<AdiShaperWaveBank::View, 3> primaryWaves, secondaryWaves;
     for (int b = 0; b < 3; ++b) {
-        primaryWaves[b] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 0), audioWaveMemo_.get());
-        secondaryWaves[b] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 1), audioWaveMemo_.get());
+        primaryWaves[static_cast<std::size_t>(b)] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 0), audioWaveMemo_.get());
+        secondaryWaves[static_cast<std::size_t>(b)] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 1), audioWaveMemo_.get());
     }
     [[maybe_unused]] auto timeDistance = [&](std::size_t bandIndex, float height) {
         const double framesBack = (1.0 - static_cast<double>(height)) * timeSpans_[bandIndex];
@@ -689,7 +689,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
     const int key = scope->selection();
     const bool capture = key >= 0 && static_cast<std::size_t>(key / 3) < stages_.size();
     if (capture) {
-        const auto& band = stages_[key / 3].bands[key % 3];
+        const auto& band = stages_[static_cast<std::size_t>(key / 3)].bands[static_cast<std::size_t>(key % 3)];
         scope->begin(key, outL, outR, frames, band.phase, band.step, sampleRate_);
     }
     freeWaves_.prepareBlock(audioWaveMemo_.get());

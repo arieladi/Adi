@@ -78,7 +78,7 @@ void sourceCorners() {
     constexpr std::array xValues{0,1811,1811,4869,6911}, copies{1,3,2,1,2};
     constexpr std::array levels{.1f,.7f,.25f,.51f,.98f};
     for (int i=0; i<5; ++i) {
-        const Bank::Point pt{xValues[i]/8192.f,levels[i],static_cast<float>(2-copies[i]),Bank::Shape::SourceCorner};
+        const Bank::Point pt{xValues[static_cast<std::size_t>(i)]/8192.f,levels[static_cast<std::size_t>(i)],static_cast<float>(2-copies[static_cast<std::size_t>(i)]),Bank::Shape::SourceCorner};
         edge.set(Bank::firstId+2*i, static_cast<float>(Bank::address(0,pt)));
         edge.set(Bank::firstId+2*i+1, static_cast<float>(Bank::value(pt)));
     }
@@ -91,7 +91,7 @@ void sourceCorners() {
                 "grid interpolation preserves the measured overshoot at a coincident hard and medium point");
     }
     for (int i=0; i<5; ++i) {
-        const Bank::Point pt{xValues[i]/8192.f,levels[i],-1.f,Bank::Shape::SourceCorner};
+        const Bank::Point pt{xValues[static_cast<std::size_t>(i)]/8192.f,levels[static_cast<std::size_t>(i)],-1.f,Bank::Shape::SourceCorner};
         edge.set(Bank::firstId+2*i+1, static_cast<float>(Bank::value(pt)));
     }
     edge.prepareBlock();
@@ -201,13 +201,13 @@ void timeUsesFreeContour() {
     core.sync(4.0 * .319, false);
     std::array<float, 512> l{}, r{};
     for (int i = 0; i < 512; ++i) {
-        l[i] = static_cast<float>(i) / 1024.f;
-        r[i] = -.25f * l[i];
+        l[static_cast<std::size_t>(i)] = static_cast<float>(i) / 1024.f;
+        r[static_cast<std::size_t>(i)] = -.25f * l[static_cast<std::size_t>(i)];
     }
     core.process(l.data(), r.data(), l.data(), r.data(), l.size());
     for (int i = 240; i < 512; ++i) {
         const float expected = static_cast<float>((i - ((1.0 - .319) * 240.0 - 1.0)) / 1024.0);
-        require(std::abs(l[i] - expected) < 2e-6f && std::abs(r[i] + .25f * expected) < 2e-6f,
+        require(std::abs(l[static_cast<std::size_t>(i)] - expected) < 2e-6f && std::abs(r[static_cast<std::size_t>(i)] + .25f * expected) < 2e-6f,
                 "Time's free line overrides constant legacy heights and interpolates the history read");
     }
 }
