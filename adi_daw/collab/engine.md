@@ -59,6 +59,14 @@ The two loaned branches were reviewed at their published heads.
 
 Eight exact GCC 14 and Clang 19 Debug suites with warnings as errors (Device Ops, Built-in Devices, Device Copy, Device Key Routes, Ops, Replay, Ops Schema, UI Seams). The planted main run failed two prepare and four journal assertions. The candidate passes 183 Built-in Devices and 147 Device Ops checks, including legacy Undo/Redo and atomic refusal. The OPS validator passes. DF-E55(b) follows #677 as the register requires.
 
+### 2026-11-22 — DF-E55(b) gated for #677
+
+DF-E55(b) is committed locally at `096edc93f972392b966fff5dbc5006976e0d1512`, after the prepared DF-E30 and one-click Post commit `167d863e6af3008d477b45803f90e478c6e251f4`. Title **DF-E55 refuse new sends from Main or a VCA**. The shared source-role guard covers prepare and fresh `routing.connect` including captured rows. Grouped-return ancestry and saved history replay retain their rules.
+
+Exact exposed-branch native archive plus local overlays, GCC 14 warning-as-error Return Send Tap 121, UI Seams 533, Track Delete 38, Plan 75, Replay 69 and Ops Schema 267 checks. Changed units and the 121-check suite also pass with Clang 19 warnings as errors. The same fixture on the previous local commit fails six assertions. An old executable saved an undone real Main send, and the candidate passed 5/5 after reopen, including Redo and exact disconnect Undo with a Pre FX tap.
+
+**PR requested with #677 after Win's real merge is published and the combined head is green.** Remote #677 still advertises `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`. The three follow-ups are on the local stack pending that prerequisite. Window can also hide the VCA send knob under its existing mixer role check.
+
 ## 2026-11-22 — N67 new input tracks monitor on Auto
 
 **PR requested** · `engine/n67-auto-monitor-default` · `f2802a0030d9e9ad0a02d4404276cf1ccf140422`
