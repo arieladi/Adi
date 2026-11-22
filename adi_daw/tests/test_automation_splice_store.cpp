@@ -534,6 +534,114 @@ void layouts(const std::filesystem::path &directory) {
               "future malformed or conflicting AAUT layout refuses unchanged");
     }
 }
+void simplifiedEnvelopes(const std::filesystem::path &directory) {
+    constexpr double rate = 48000.0;
+    constexpr double tolerance = 1e-5;
+    const auto ns = [](std::int64_t sample) {
+        return static_cast<std::int64_t>(std::llround(static_cast<double>(sample) * 1e9 / rate));
+    };
+    for (const bool exterior : {false, true}) {
+        auto store = project(directory / (exterior ? "simplify-partial.adi" : "simplify-full.adi"), 1);
+        const std::int64_t begin = exterior ? 200 : 0;
+        const std::int64_t end = begin + 1000;
+        std::vector<NativeSpliceKnot> sampled;
+        if (exterior)
+            sampled.push_back(point(0, 0.125, 5, 7000));
+        for (std::int64_t i = 0; i <= 1000; ++i) {
+            const auto value = engine::curveValue(0.2, 0.8, static_cast<double>(i) / 1000.0, 2, 0.625);
+            sampled.push_back(point(ns(begin + i), value, 1, static_cast<std::uint64_t>(100 + i)));
+        }
+        if (exterior) {
+            sampled.back().point.curve = 4;
+            sampled.push_back(point(ns(end + 200), 0.9, 1, 8000));
+        }
+        stream(*store, sampled, 1, 4, false, true);
+        const auto before = rows(*store);
+        const auto original = engine::compileAutomation(rows::readModel(*store), rate);
+        const auto *old = original->lane(2);
+        if (!old)
+            throw std::runtime_error("cannot compile the sampled exponential");
+        auto prepared = prepareSimplifyEnvelope(*store, 2, ns(begin), ns(end), rate, tolerance);
+        check(prepared.ok && prepared.requests.size() == 1 &&
+                  prepared.requests.front().label == "Simplify Envelope" &&
+                  detail::sameSqlValue(rows(*store), before),
+              "Simplify prepares one sealed edit over the sampled selection");
+        if (!prepared.ok || prepared.requests.empty() || !OpJournal(*store).commit(prepared.requests).ok)
+            throw std::runtime_error("the sampled exponential did not simplify: " + prepared.error);
+        const auto after = rows(*store);
+        const auto reduced = engine::compileAutomation(rows::readModel(*store), rate);
+        const auto *fit = reduced->lane(2);
+        if (!fit)
+            throw std::runtime_error("cannot compile the fitted envelope");
+        const auto count = exterior ? 4u : 2u;
+        const auto fitIndex = exterior ? 1u : 0u;
+        const auto retained = decoded(*store, 1);
+        check(fit->points.size() == count && retained.at(fitIndex).point.point_id == 100 &&
+                  retained.at(fitIndex + 1).point.point_id == 1100 &&
+                  retained.at(fitIndex).point.curve == 2,
+              "1,001 samples reduce to two original endpoint identities with an exponential curve");
+        double maxError = 0.0, outsideError = 0.0;
+        for (std::int64_t sample = 0; sample <= end + 220; ++sample) {
+            const auto error = std::abs(engine::valueAt(*old, sample) - engine::valueAt(*fit, sample));
+            maxError = std::max(maxError, error);
+            if (sample < begin || sample >= end)
+                outsideError = std::max(outsideError, error);
+        }
+        check(maxError <= tolerance && outsideError < 1e-9,
+              "every playback sample stays within tolerance and the exterior curves stay exact");
+        History history(*store);
+        check(history.undo().ok && detail::sameSqlValue(rows(*store), before) &&
+                  history.redo().ok && detail::sameSqlValue(rows(*store), after),
+              "Simplify Undo and Redo restore all original and fitted stored bytes");
+        prepared = prepareSimplifyEnvelope(*store, 2, ns(begin), ns(end), rate, tolerance);
+        check(prepared.ok && prepared.requests.empty(), "the already reduced selection is a no-op");
+    }
+    auto joined = project(directory / "simplify-joined-curves.adi", 1);
+    std::vector<NativeSpliceKnot> joinedPoints;
+    for (std::int64_t i = 0; i <= 1000; ++i) {
+        const double value = i <= 500
+            ? 0.125 + static_cast<double>(i) / 1000.0
+            : engine::curveValue(0.625, 0.25, static_cast<double>(i - 500) / 500.0, 2, -0.375);
+        joinedPoints.push_back(point(ns(i), value, 1, static_cast<std::uint64_t>(i + 1)));
+    }
+    stream(*joined, joinedPoints, 1);
+    const auto joinedOriginal = engine::compileAutomation(rows::readModel(*joined), rate);
+    const auto joinedEdit = prepareSimplifyEnvelope(*joined, 2, 0, ns(1000), rate, tolerance);
+    if (!joinedEdit.ok || joinedEdit.requests.empty() || !OpJournal(*joined).commit(joinedEdit.requests).ok)
+        throw std::runtime_error("the joined curves did not simplify");
+    const auto joinedReduced = engine::compileAutomation(rows::readModel(*joined), rate);
+    const auto *beforeJoin = joinedOriginal->lane(2), *afterJoin = joinedReduced->lane(2);
+    if (!beforeJoin || !afterJoin)
+        throw std::runtime_error("cannot compile the joined curves");
+    double joinedError = 0;
+    for (std::int64_t i = 0; i <= 1000; ++i)
+        joinedError = std::max(joinedError,
+                               std::abs(engine::valueAt(*beforeJoin, i) - engine::valueAt(*afterJoin, i)));
+    const auto middle = decoded(*joined, 1);
+    check(afterJoin->points.size() == 3 && joinedError <= tolerance &&
+              middle.at(1).point.point_id == 501 && middle.at(1).point.curve == 2,
+          "a join between linear and exponential runs keeps its native pivot and bounded playback");
+
+    auto sparse = project(directory / "simplify-interior-bound.adi", 1);
+    std::vector<NativeSpliceKnot> source;
+    for (std::int64_t i = 0; i <= 10; ++i) {
+        source.push_back(point(ns(i * 100),
+                               engine::curveValue(0.2, 0.8, static_cast<double>(i) / 10.0, 2, 0.625),
+                               1, static_cast<std::uint64_t>(i + 1)));
+    }
+    stream(*sparse, source, 1);
+    const auto tooTight = prepareSimplifyEnvelope(*sparse, 2, 0, ns(1000), rate, tolerance);
+    check(tooTight.ok && tooTight.requests.empty(),
+          "matching all authored knots still refuses a fit that would change intervening samples");
+    auto held = project(directory / "simplify-hold.adi", 1);
+    source[4].point.curve = 0;
+    stream(*held, source, 1);
+    const auto hold = prepareSimplifyEnvelope(*held, 2, 0, ns(1000), rate, tolerance);
+    check(!hold.ok && hold.requests.empty(), "Simplify refuses a selected Hold segment");
+    sparse->db().exec("UPDATE automation_lanes SET value_domain='enum' WHERE id=2;");
+    const auto enums = prepareSimplifyEnvelope(*sparse, 2, 0, ns(1000), rate, tolerance);
+    check(!enums.ok && enums.requests.empty(), "Simplify refuses enum automation");
+}
 } // namespace
 int main() {
     try {
@@ -545,6 +653,7 @@ int main() {
         layouts(temp.path());
         additionalAdmission(temp.path());
         identities(temp.path());
+        simplifiedEnvelopes(temp.path());
     } catch (const std::exception &error) {
         ++failures;
         std::printf("EXCEPTION %s\n", error.what());

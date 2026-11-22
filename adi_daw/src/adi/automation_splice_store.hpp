@@ -36,4 +36,11 @@ struct EnvelopeSpliceRequest {
 prepareEnvelopeSplice(Store &, std::int64_t laneId, std::int64_t begin, std::int64_t end,
                       std::span<const NativeSpliceKnot> replacement, double sampleRate,
                       std::size_t pointBudget = kSplicePointBudget, EnvelopeSpliceRequest = {});
+// Fit an Arrangement envelope's selected sampled line to linear or
+// exponential segments. An already sparse or unfit selection is a no-op.
+// Hold and enum lanes are refused. The old curve outside the fitted interval
+// stays in place, and the reduced segment is bounded in the playback clock.
+[[nodiscard]] PreparedEnvelopeSplice
+prepareSimplifyEnvelope(Store &, std::int64_t laneId, std::int64_t begin,
+                        std::int64_t end, double sampleRate, double maxValueError);
 } // namespace adi::automation
