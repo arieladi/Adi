@@ -302,6 +302,47 @@ void testBinding() {
         check(b->byDevice.empty() && b->laneFor.count({1, "7"}) == 1,
               "an overridden lane is known, so an edit can be matched, and not bound");
     }
+    {
+        // DF-E53: laneFor is keyed on the parsed canonical id so "001" is found by "1".
+        Transport t;
+        const auto p = compileAutomation(laneModel({{0, 0.5}}, 48000.0, "001"), 48000.0);
+        const auto b = bindDeviceAutomation(p, {}, t, 48000.0);
+        check(b->problems.empty() && b->byDevice.count(1) == 1 && b->byDevice.at(1)->laneCount() == 1,
+              "a legacy non-canonical '001' lane still binds");
+        check(b->laneFor.count({1, "1"}) == 1 && b->laneFor.at({1, "1"}) == 1 &&
+                  b->laneFor.count({1, "001"}) == 0,
+              "laneFor keys a legacy '001' lane under canonical '1'");
+    }
+    {
+        // DF-E53: two lanes "001" and "1" collide on the same parsed parameter id.
+        for (const bool leadingFirst : {true, false}) {
+            rows::Model m;
+            for (int idx = 0; idx < 2; ++idx) {
+                rows::AutomationLane l;
+                l.id = idx + 1;
+                l.ownerKind = "device";
+                l.ownerId = 1;
+                l.paramRef = (idx == 0) == leadingFirst ? "001" : "1";
+                l.timeBase = 1;
+                l.valueDomain = "normalized";
+                m.automationLanes.push_back(l);
+                rows::AutomationData d;
+                d.laneId = l.id;
+                d.blob = aaut({{0, idx == 0 ? 0.2 : 0.8}}, 48000.0);
+                m.automationData.push_back(d);
+            }
+            Transport t;
+            const auto p = compileAutomation(m, 48000.0);
+            const auto b = bindDeviceAutomation(p, {}, t, 48000.0);
+            check(b->byDevice.count(1) == 1 && b->byDevice.at(1)->laneCount() == 1,
+                  "two lanes ('001' and '1') bind only once, never fighting");
+            check(b->laneFor.size() == 1 && b->laneFor.count({1, "1"}) == 1 && b->laneFor.at({1, "1"}) == 1,
+                  "laneFor retains the first lane under canonical '1'");
+            check(b->problems.size() == 1 &&
+                      b->problems[0].find("automation_lanes#2: a second lane") != std::string::npos,
+                  "and the second lane is reported in problems");
+        }
+    }
 }
 
 // --- through the graph ------------------------------------------------------
@@ -516,6 +557,47 @@ void testRepublishedUnderTheCallback() {
     check(p.rec->seen.size() > n, "and the lane, enabled again, still plays");
 }
 
+void testNonCanonicalLegacyOverrideAndDuplicate() {
+    section("DF-E53 -- a legacy '001' lane is overridden by '1' and never fights a '1' lane");
+    {
+        Project p("legacy_override", 48000.0, 512);
+        p.lane(3, {{0, 0.0}, {48000, 1.0}}, "001");
+        p.load();
+        p.play(4800);
+        check(!p.rec->seen.empty() && p.rec->seen.front().paramId == 1 && !p.session.automationOverridden(),
+              "legacy '001' lane plays on parameter id 1");
+
+        // An edit stored under canonical '1' overrides the legacy '001' lane.
+        p.store->db().exec(
+            "INSERT INTO plugin_params(device_id, param_id, name, normalized_value) VALUES (1, '1', 'P', 0.3)");
+        p.refresh();
+        check(p.session.automationOverridden() && p.session.overriddenLanes().count(3) == 1,
+              "stored edit on canonical '1' overrides legacy '001' lane");
+        const std::size_t atOverride = p.rec->seen.size();
+        p.play(4800);
+        check(p.rec->seen.size() == atOverride, "overridden legacy '001' lane stops emitting");
+
+        check(p.session.reenableAutomation(3) && !p.session.automationOverridden(),
+              "re-enabling legacy '001' lane clears override");
+        check(p.session.overrideDeviceAutomation(1, "1") && p.session.overriddenLanes().count(3) == 1,
+              "direct overrideDeviceAutomation(1, '1') also finds the legacy '001' lane");
+    }
+    {
+        Project p("legacy_dup", 48000.0, 512);
+        p.lane(1, {{0, 0.2}}, "001");
+        p.lane(2, {{0, 0.8}}, "1");
+        p.load();
+        p.play(2048);
+        check(p.mentions("automation_lanes#2: a second lane for devices#1 parameter 1"),
+              "session reports '1' after '001' as a second lane for parameter 1");
+        bool onlyFirst = !p.rec->seen.empty();
+        for (const auto& s : p.rec->seen) {
+            if (s.paramId != 1 || s.value != 0.2) onlyFirst = false;
+        }
+        check(onlyFirst, "only the first lane (0.2) plays; the duplicate never fights it");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -534,6 +616,7 @@ int main() {
         testOverrideAndReenable();
         testNamedAndPlaceholders();
         testRepublishedUnderTheCallback();
+        testNonCanonicalLegacyOverrideAndDuplicate();
     } catch (const std::exception& e) {
         check(false, std::string("exception: ") + e.what());
     }

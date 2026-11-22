@@ -7,16 +7,29 @@
 #include <array>
 #include <cmath>
 #include <climits>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace adi::automation {
 namespace {
 constexpr std::array columns{"id", "owner_kind", "owner_id", "param_ref", "param_name", "time_base",
     "value_domain", "unit", "default_value", "min_value", "max_value", "enabled", "visible", "height"};
+bool isCanonicalDeviceParamRef(std::string_view text) noexcept {
+    if (text.empty() || text.size() > 10) return false;
+    if (text.size() > 1 && text[0] == '0') return false;
+    std::uint64_t value = 0;
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') return false;
+        value = value * 10 + static_cast<std::uint64_t>(ch - '0');
+    }
+    return value <= std::numeric_limits<std::uint32_t>::max();
+}
 std::int64_t number(const Payload& p) {
     if (!p.is_number_integer() || (p.is_number_unsigned() && p.get<std::uint64_t>() > INT64_MAX))
         throw std::runtime_error("automation: expected int64");
@@ -37,9 +50,12 @@ void validateRow(OpContext& c, const Payload& row) {
     if (number(row.at("id"))<=0 || number(row.at("owner_id"))<=0 ||
         (number(row.at("time_base"))!=0 && number(row.at("time_base"))!=1) ||
         number(row.at("height"))<0) throw std::runtime_error("automation: invalid lane IDs, unit or height");
-    for (const auto* col:{"param_ref","param_name","unit","value_domain"})
+    for (const auto* col:{"owner_kind","param_ref","param_name","unit","value_domain"})
         if (!row.at(col).is_string()) throw std::runtime_error("automation: lane text required");
-    if (row.at("param_ref").get_ref<const std::string&>().empty()) throw std::runtime_error("automation: empty parameter");
+    const auto& paramRef=row.at("param_ref").get_ref<const std::string&>();
+    if (paramRef.empty()) throw std::runtime_error("automation: empty parameter");
+    if (row.at("owner_kind").get_ref<const std::string&>()=="device" && !isCanonicalDeviceParamRef(paramRef))
+        throw std::runtime_error("automation: device param_ref must be a canonical decimal parameter id");
     const auto& domain=row.at("value_domain").get_ref<const std::string&>();
     if (domain!="normalized" && domain!="real" && domain!="enum") throw std::runtime_error("automation: unknown value domain");
     for (const auto* col:{"enabled","visible"})

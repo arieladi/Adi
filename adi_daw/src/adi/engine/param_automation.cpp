@@ -123,10 +123,11 @@ std::shared_ptr<DeviceAutomationBinding> bindDeviceAutomation(std::shared_ptr<co
             continue;
         }
         if (!lane.enabled) continue;
-        const auto key = std::make_pair(lane.ownerId, lane.paramRef);
+        const std::string canonical = std::to_string(paramId);
+        const auto key = std::make_pair(lane.ownerId, canonical);
         if (out->laneFor.count(key)) {
             out->problems.push_back(who + ": a second lane for devices#" + std::to_string(lane.ownerId) +
-                                    " parameter " + lane.paramRef + "; the first is played");
+                                    " parameter " + canonical + "; the first is played");
             continue;
         }
         out->laneFor[key] = lane.laneId;

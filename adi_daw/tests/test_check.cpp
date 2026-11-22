@@ -452,6 +452,44 @@ void testRemarkTargets() {
           "a file without the table (1.0, 1.1) checks clean: " + describe(rep3));
 }
 
+void testDeviceAutomationParamRef() {
+    section("DF-E53 -- device automation param_ref must be a canonical decimal uint32");
+    Fixture f("device_param_ref");
+    if (!f.store) return;
+
+    f.db().exec(
+        "INSERT INTO plugin_refs(id, format, uid, name, subtype) VALUES (1, 'vst3', 'test.dev', 'Dev', 'effect');"
+        "INSERT INTO device_chains(id, track_id) VALUES (1, 1);"
+        "INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name) VALUES (1, 1, 0, 1, 'Dev');"
+        "INSERT INTO automation_lanes(id, owner_kind, owner_id, param_ref, value_domain) VALUES "
+        "  (1, 'track', 1, 'volume', 'real'),"
+        "  (2, 'device', 1, '0', 'normalized'),"
+        "  (3, 'device', 1, '1', 'normalized'),"
+        "  (4, 'device', 1, '4294967295', 'normalized')");
+    const auto cleanRep = checkProject(*f.store);
+    check(!has(cleanRep, "automation.paramRef") && cleanRep.clean(),
+          "canonical device param_refs and non-device lanes check clean: " + describe(cleanRep));
+
+    for (const char* bad : {"001", "00", "07", "+1", "-1", " 1", "4294967296", "cutoff", ""}) {
+        SQLite::Statement ins(
+            f.db(),
+            "INSERT OR REPLACE INTO automation_lanes(id, owner_kind, owner_id, param_ref, value_domain) "
+            "VALUES (20, 'device', 1, ?, 'normalized')");
+        ins.bind(1, bad);
+        ins.exec();
+        const auto rep = checkProject(*f.store);
+        const bool caught = std::any_of(rep.findings.begin(), rep.findings.end(), [](const Finding& finding) {
+            return finding.severity == Severity::Error && finding.code == "automation.paramRef" &&
+                   finding.where == "automation_lanes#20.param_ref";
+        });
+        check(caught && !rep.clean(),
+              std::string("rejects non-canonical or invalid device param_ref '") + bad + "': " + describe(rep));
+    }
+
+    f.db().exec("DELETE FROM automation_lanes WHERE id = 20");
+    check(checkProject(*f.store).clean(), "clean again once the offending lane is removed");
+}
+
 }  // namespace
 
 int main() {
@@ -478,6 +516,7 @@ int main() {
         testNoInitialTempo();
         testMediaEmbedding();
         testRemarkTargets();
+        testDeviceAutomationParamRef();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;

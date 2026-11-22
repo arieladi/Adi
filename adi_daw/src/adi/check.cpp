@@ -11,9 +11,11 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -588,6 +590,38 @@ void checkRemarks(Ctx& c) {
     }
 }
 
+bool isCanonicalDeviceParamRef(std::string_view text) noexcept {
+    if (text.empty() || text.size() > 10) return false;
+    if (text.size() > 1 && text[0] == '0') return false;
+    std::uint64_t value = 0;
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') return false;
+        value = value * 10 + static_cast<std::uint64_t>(ch - '0');
+    }
+    return value <= std::numeric_limits<std::uint32_t>::max();
+}
+
+void checkAutomationLanes(Ctx& c) {
+    c.ran();
+    try {
+        SQLite::Statement st(
+            c.db,
+            "SELECT id, param_ref FROM automation_lanes WHERE owner_kind = 'device' ORDER BY id");
+        while (st.executeStep()) {
+            const auto id = st.getColumn(0).getInt64();
+            const auto ref = st.getColumn(1).getString();
+            if (!isCanonicalDeviceParamRef(ref)) {
+                c.add(Severity::Error, "automation.paramRef",
+                      "automation_lanes#" + std::to_string(id) + ".param_ref",
+                      "device param_ref '" + ref +
+                          "' is not a canonical decimal parameter id (SPEC 6.3.3)");
+            }
+        }
+    } catch (const std::exception& e) {
+        c.add(Severity::Error, "automation.checkFailed", "automation_lanes", e.what());
+    }
+}
+
 }  // namespace
 
 CheckReport checkProject(const Store& s, bool verifyMediaFiles) {
@@ -595,6 +629,7 @@ CheckReport checkProject(const Store& s, bool verifyMediaFiles) {
     Ctx c{const_cast<SQLite::Database&>(s.db()), r};
     checkSqlite(c);
     checkPolyRefs(c);
+    checkAutomationLanes(c);
     checkBlobs(c);
     checkNoteExpressionTargets(c);
     checkHistory(c);
