@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, TM-MD-03 source hash memo
+
+**PR requested** — `engine-win/source-hash-memo` `03c440ab` on `87ea349c`. The standalone off-callback memo admits only measured digests, keys by native identity with size and mtime, and detects changes while hashing. The Windows /W4 /WX standalone test passed 59 checks, including 50 warm metadata hits, changed same-size content with a newer mtime, mismatch persistence after a private WAV deletion, and same-size/same-mtime native replacement. The existing progressive-decoder suite passed 100 checks. Native AAC was unavailable. The standalone tests use byte fixtures, not compressed-source Session playback.
+
+**Parked:** the audio-path loan above still gates connecting the memo to the producer, plain and warped playback, and the native same-shape re-encode/eviction acceptance. Recommendation: one memo shared by the decode cache and source resolver, retained independently of WAV eviction. Retain a fresh final digest for each actual decode. This in-memory patch requires one verification of the source per process lifecycle and makes no promise for a same-inode rewrite with a deliberately restored mtime.
+
 ## 2026-11-22, EX-04 FLAC writer
 
 **PR requested** — `engine-win/export-flac-writer` `d54c75a8`, on main `87ea349c` and EX-06 `7a9fe563`. Pins libFLAC 1.5.0 to `1507800de4b70e21be71f38caa0d9079d0bc6e45` (BSD-3-Clause). The local strict x64 MSVC build passed 444 render checks and 171 WAV/quantizer checks. The stock libFLAC decoder verified samples and MD5 for 4201-frame PCM16 and PCM24 against matching dithered WAV renders. The last partial block and suffix-preserving collision handling passed. Float32 is refused. Private WAV repacking adds one streaming write and read and applies no second quantization.
