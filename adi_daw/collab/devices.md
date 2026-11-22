@@ -21,7 +21,7 @@ Time. Beat Repeat and External Audio Effect are left out of the count; they are 
   - This seat starts Amp now, on its own branch, and stops there if the answer is no.
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 34 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 35 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -173,6 +173,9 @@ method); Live's files and renders stay in the director's research.
 34. **Spectrum (the device's controls, after 3 December).** A fresh Spectrum, every control as shown
     (Block's default, Refresh's and Avg's ranges, the Graph and Scale choices). Avg 4 on a tone that
     starts: how the reading rises over the first analyses. How long Max holds a peak.
+35. **Amp (built after 3 December).** A fresh Amp, every control as shown: the Amp Type list, the
+    knobs' ranges, Dual's default. Per type, a 220 Hz sine at −6 dBFS at Gain 0, 5 and 10: the first
+    nine harmonics. A −60 dBFS sine swept from 50 Hz to 10 kHz at the defaults: the response.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -187,6 +190,27 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-22, the chapter's first missing effect: Amp — lands after 3 December
+
+**PR requested:** head `devices/live-amp` (17130593), base `main`, after `devices/spectrum-device`.
+It stops at this branch if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - Seven voices, each with an input high pass and a mid bell, a preamp gain and bias, and a power
+    drive.
+  - The preamp is tanh(g x + b) − tanh(b), with the DC blocked.
+  - The tone controls: Bass, Middle and Treble.
+  - The power stage is tanh(d y)/d, driven by Volume.
+  - Then Presence, Output, Dry/Wet, and Mono or Dual.
+- **Tests:**
+  - `adi_live_amp_tests` 17. At −100 dBFS, five settings follow the documented chain within 0.05 dB.
+    The chain is computed apart from the signal path, from the filters' designs and the preamp's slope.
+  - Gain raises the distortion, and the bias makes a second harmonic.
+  - A huge input stays bounded. Mono and Dual. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 37 built-ins.
+- **Not oversampled:** a high voice driven hard aliases.
+- **Reading 35, added to the ONE list.**
 
 ## 2026-11-22 — PLAN DEV-22: Spectrum as a track device, the lane's side — lands after 3 December
 
