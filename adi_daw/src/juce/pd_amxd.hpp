@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The `.amxd` translator, steps 1 to 9 -- DEV-16 (ADR-0203 d8: an addition at P2).
+// The `.amxd` translator, steps 1 to 10 -- DEV-16 (ADR-0203 d8: an addition at P2).
 //
 // A Max for Live device file is a small chunked container -- `ampf` with the
 // device kind, `meta`, then `ptch` holding the Max patcher as JSON -- and the
@@ -51,6 +51,17 @@
 //     inlets of a box feeds the right one first. Refused: quoted symbols in
 //     messages, a signal into [phasor~]'s right inlet (hard sync), unstable
 //     biquad~ arguments, live.* Steps and their outlets past the first.
+//   * Step 10, the audit's messages: an int operator's left inlet takes a
+//     list (both operands) and "set"; int division by 0 divides by 1;
+//     [i]/[f] take "set"; [prepend]/[append] take "set" and turn a bang
+//     into the word "bang"; [cycle~]/[phasor~] take "reset"; biquad~ takes
+//     "clear"; [pack] takes a list and a bang with its int slots truncated
+//     on the way out; a message box keeps its $ arguments for a later bang.
+//     Not made explicit, and said so: Pd's [t s] turns a number into the
+//     symbol "float" where Max's gives "", and a selector message into
+//     [t i]/[t f] gives Max 0 and Pd an error; a float division by 0 gives
+//     Pd 0 (Max: -2^31, by its reference; reading 14). Refused: slide~'s
+//     reset.
 //   * BPATCHERS (step 5). One whose patcher is embedded becomes a [pd name]
 //     as a [p] does; Max replaces #1 to #9 in its boxes by its arguments and
 //     #0 by a name unique to the instance, and so does the translation (#0

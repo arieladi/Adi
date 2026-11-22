@@ -959,6 +959,85 @@ void testStepNine() {
     }
 }
 
+/// loadbang -> two messages, the right-hand one first (Max's order) -> a box
+/// (the right message into `rightInlet`) -> [print X].
+std::string twoMessages(const std::string& first, int firstInlet, const std::string& second, const std::string& text,
+                        const std::string& maxclass = "newobj", const std::string& extra = "") {
+    return patcher({box("obj-1", "loadbang", 100, 10, R"("bang")"), box("obj-2", first, 200, 40, R"("")", "message"),
+                    box("obj-3", second, 10, 40, R"("")", "message"), box("obj-4", text, 10, 80, R"("")", maxclass, extra),
+                    box("obj-5", "print X", 10, 140, "")},
+                   {line("obj-1", 0, "obj-2", 0), line("obj-1", 0, "obj-3", 0), line("obj-2", 0, "obj-4", firstInlet),
+                    line("obj-3", 0, "obj-4", 0), line("obj-4", 0, "obj-5", 0)});
+}
+
+void testStepTen() {
+    section("DEV-16 step 10 -- the audit's messages: lists, set, reset, clear, bang, stored arguments");
+    struct Case {
+        const char* what;
+        std::string json;
+        std::vector<std::string> expect;
+    };
+    const std::vector<Case> cases{
+        {"[+] fed the list 3 4 gives 7", probe("3 4", "+", R"("int")"), {"X: 7"}},
+        {"[* 2] fed the list 3 5 gives 15", probe("3 5", "* 2", R"("int")"), {"X: 15"}},
+        {"[/] fed 7 gives 7 (int division by 0 divides by 1)", probe("7", "/", R"("int")"), {"X: 7"}},
+        {"[/ 4] with 0 in its right inlet, fed 100, gives 100", twoMessages("0", 1, "100", "/ 4"), {"X: 100"}},
+        {"[pack] fed the list 3 4 gives 3 4", probe("3 4", "pack", R"("")"), {"X: 3 4"}},
+        {"[pack 0. 0] fed 1.5 2.7 gives 1.5 2", probe("1.5 2.7", "pack 0. 0", R"("")"), {"X: 1.5 2"}},
+        {"[pack 5 0] banged gives 5 0", probe("bang", "pack 5 0", R"("")"), {"X: 5 0"}},
+        {"[!- 10.] fed 3 4 and then 1 gives 7 and 9", twoMessages("3 4", 0, "1", "!- 10."), {"X: 7", "X: 9"}},
+        {"[i] set to 5, then banged, gives 5", twoMessages("set 5", 0, "bang", "i"), {"X: 5"}},
+        {"[+ 1] set to 5, then banged, gives 6", twoMessages("set 5", 0, "bang", "+ 1"), {"X: 6"}},
+        {"[prepend 1] set to 2, then fed 64, gives 2 64", twoMessages("set 2", 0, "64", "prepend 1"), {"X: 2 64"}},
+        {"[prepend foo] banged gives foo bang", probe("bang", "prepend foo", R"("")"), {"X: foo bang"}},
+        {"[$1 100( fed 5, then banged, sends 5 100 twice", twoMessages("5", 0, "bang", "$1 100", "message"), {"X: 5 100", "X: 5 100"}},
+    };
+    for (const auto& c : cases) {
+        const auto got = sortedPrints(c.json);
+        check(got == c.expect, std::string(c.what) + ": " + shownAll(got));
+    }
+    // A number box set to 64 and then banged sends 64.
+    {
+        std::string json = twoMessages("set 64", 0, "bang", "");
+        const std::string from = R"("id":"obj-4","maxclass":"newobj","text":"")";
+        json.replace(json.find(from), from.size(), R"("id":"obj-4","maxclass":"number","text":"")");
+        const auto got = sortedPrints(json);
+        check(got == std::vector<std::string>{"X: 64"}, "a number box set to 64, then banged, sends 64: " + shownAll(got));
+    }
+    // [reset( into [cycle~ 375] at 100 ms (half way through a period): the
+    // phase starts again at 0 there.
+    {
+        const std::string json = patcher(
+            {box("obj-1", "loadbang", 200, 10, R"("bang")"), box("obj-2", "delay 100", 200, 30, R"("bang")"),
+             box("obj-3", "reset", 200, 50, R"("")", "message"), box("obj-4", "cycle~ 375", 20, 80, kSig),
+             box("obj-5", "plugout~", 20, 140, "")},
+            {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0), line("obj-3", 0, "obj-4", 0), line("obj-4", 0, "obj-5", 0),
+             line("obj-4", 0, "obj-5", 1)});
+        const auto t = translateMaxPatcher(json, AmxdKind::AudioEffect);
+        int latency = 0;
+        std::string error;
+        const auto out = t.ok() ? renderOut(t.pdPatch, 6144, latency, error) : std::vector<float>{};
+        double worst = out.empty() ? 1 : 0;
+        for (std::size_t n = 4700; n < 4900 && static_cast<std::size_t>(latency) + n < out.size(); ++n) {
+            const double phase = 375.0 * static_cast<double>(n < 4800 ? n : n - 4800) / 48000.0;
+            worst = std::max(worst, std::fabs(out[static_cast<std::size_t>(latency) + n] - std::cos(2 * 3.141592653589793 * phase)));
+        }
+        check(t.ok() && worst < 1e-4, "[reset( into [cycle~ 375] at 100 ms restarts its phase (worst " + std::to_string(worst) + ")" + error);
+    }
+    {
+        const auto t = translateMaxPatcher(
+            patcher({box("obj-1", "clear", 10, 10, R"("")", "message"), box("obj-2", "biquad~ @smooth 0", 10, 50, kSig)},
+                    {line("obj-1", 0, "obj-2", 0)}),
+            AmxdKind::AudioEffect);
+        check(t.ok() && t.pdPatch.find("set 0 0") != std::string::npos && t.pdPatch.find("route clear") != std::string::npos,
+              "[clear( into biquad~ reaches Pd's biquad~ as set 0 0");
+    }
+    check(refusedFor(patcher({box("obj-1", "reset", 10, 10, R"("")", "message"), box("obj-2", "slide~ 10 10", 10, 50, kSig)},
+                             {line("obj-1", 0, "obj-2", 0)}),
+                     "reset"),
+          "[reset( into slide~ is refused");
+}
+
 void testTheOrderIsHeard() {
     section("DEV-16 -- and the right-to-left order is what Pd does");
     const auto t = translateMaxPatcher(
@@ -1003,6 +1082,7 @@ int main() {
     testCyclePhaseIsAnOffset();
     testLineEnds();
     testStepNine();
+    testStepTen();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;

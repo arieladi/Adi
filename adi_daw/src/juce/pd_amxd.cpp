@@ -363,13 +363,19 @@ private:
 
     /// A Max integer box: each listed inlet goes through [i] first; with
     /// `truncateOut`, the result through [i] too (integer division).
-    void integer(const Box& b, const std::string& pdText, int inlets, bool truncateOut) {
+    ///
+    /// The left inlet takes what Max's does: a list sets both operands
+    /// (first left, second right) and computes; "set n" stores n without
+    /// output (into the [i]'s cold inlet, which a later bang sends on).
+    /// With `divides`, a divisor of 0 divides by 1, as Max's int division
+    /// does.
+    void integer(const Box& b, const std::string& pdText, int inlets, bool truncateOut, bool divides = false) {
         Fragment f;
         for (int k = 0; k < inlets; ++k) f.records.push_back("#X obj " + at(b.x + 40.0 * k, b.y - 20) + " i");
         const int op = inlets;
         f.records.push_back("#X obj " + at(b.x, b.y) + " " + pdText);
         for (int k = 0; k < inlets; ++k) {
-            f.internal.push_back({k, 0, op, k});
+            if (!(divides && k == 1)) f.internal.push_back({k, 0, op, k});
             f.inlets.emplace_back(k, 0);
         }
         f.outlets = {{op, 0}};
@@ -378,6 +384,28 @@ private:
             f.internal.push_back({op, 0, op + 1, 0});
             f.outlets = {{op + 1, 0}};
         }
+        if (divides && inlets == 2) {   // [i] -> [sel 0]: 0 becomes 1, anything else passes
+            const int sel = static_cast<int>(f.records.size());
+            f.records.push_back("#X obj " + at(b.x + 40, b.y - 10) + " sel 0");
+            f.records.push_back("#X msg " + at(b.x + 40, b.y - 5) + " 1");
+            f.internal.push_back({1, 0, sel, 0});
+            f.internal.push_back({sel, 0, sel + 1, 0});
+            f.internal.push_back({sel + 1, 0, op, 1});
+            f.internal.push_back({sel, 1, op, 1});
+        }
+        const int route = static_cast<int>(f.records.size());
+        f.records.push_back("#X obj " + at(b.x, b.y - 60) + " route set list");
+        f.internal.push_back({route, 0, 0, 1});     // set: stored, no output
+        f.internal.push_back({route, 2, 0, 0});     // a number or a bang
+        if (inlets == 2) {
+            f.records.push_back("#X obj " + at(b.x + 60, b.y - 40) + " unpack f f");
+            f.internal.push_back({route, 1, route + 1, 0});
+            f.internal.push_back({route + 1, 1, 1, 0});   // unpack fires right to left: the right operand first
+            f.internal.push_back({route + 1, 0, 0, 0});
+        } else {
+            f.internal.push_back({route, 1, 0, 0});
+        }
+        f.inlets[0] = {route, 0};
         frags_[b.id] = std::move(f);
     }
 
@@ -428,7 +456,19 @@ private:
             if (cls == "cycle~" && connected(b, false, 1)) return cyclePhase(b, args);
             if (cls == "phasor~" && fedSignal(b, 1))
                 return refuse(b, cls, "a signal into its right inlet resets the phase in Max (hard sync); Pd's is a float inlet");
-            return obj(b, (cls == "cycle~" ? std::string("osc~") : cls) + (args.empty() ? "" : " " + args[0]));
+            const std::string text = (cls == "cycle~" ? std::string("osc~") : cls) + (args.empty() ? "" : " " + args[0]);
+            if (cls == "sig~" || !controlInto(b, 0)) return obj(b, text);
+            // "reset" (cycle~: to a phase 0 to 1; phasor~: to 0) goes to the
+            // phase inlet, which in Pd's [osc~] and [phasor~] sets the phase.
+            Fragment f;
+            f.records = {"#X obj " + at(b.x, b.y) + " " + text, "#X obj " + at(b.x + 60, b.y - 60) + " route reset",
+                         "#X obj " + at(b.x + 60, b.y - 40) + " route bang", "#X msg " + at(b.x + 60, b.y - 20) + " 0"};
+            f.internal = {{1, 0, 2, 0}, {2, 0, 3, 0}, {3, 0, 0, 1}, {2, 1, 0, 1}, {1, 1, 0, 0}};
+            f.inlets = {{0, 0}, {0, 1}};
+            f.controlInlets[0] = {1, 0};
+            f.outlets = {{0, 0}};
+            frags_[b.id] = std::move(f);
+            return;
         }
         if (cls == "plugin~" || cls == "plugout~") {
             if (depth_ > 0) return refuse(b, cls, "audio ports belong in the device's own patcher");
@@ -459,16 +499,29 @@ private:
             std::string what;
             for (const auto& a : args) what += " " + a;
             // Max outputs a message whose selector is the first word; Pd's
-            // [list prepend] gives a list, which [list trim] turns into that message.
-            return chain(b, {"list " + cls + what, "list trim"});
+            // [list prepend] gives a list, which [list trim] turns into that
+            // message. "set ..." replaces what is added, without output; a
+            // bang is the word "bang" (both as Max's reference says).
+            Fragment f;
+            f.records = {"#X obj " + at(b.x, b.y - 20) + " route set bang", "#X obj " + at(b.x, b.y) + " list " + cls + what,
+                         "#X obj " + at(b.x, b.y + 20) + " list trim", "#X msg " + at(b.x + 80, b.y - 10) + " list bang"};
+            f.internal = {{0, 0, 1, 1}, {0, 1, 3, 0}, {3, 0, 1, 0}, {0, 2, 1, 0}, {1, 0, 2, 0}};
+            f.inlets = {{0, 0}};
+            f.outlets = {{2, 0}};
+            frags_[b.id] = std::move(f);
+            return;
         }
-        if (cls == "f" || cls == "float") {
+        if (cls == "f" || cls == "float" || cls == "i" || cls == "int") {
             if (args.size() > 1 || !allNumbers) return refuse(b, cls, "one number at most");
-            return obj(b, "f" + (args.empty() ? std::string() : " " + args[0]));
-        }
-        if (cls == "i" || cls == "int") {
-            if (args.size() > 1 || !allNumbers) return refuse(b, cls, "one number at most");
-            return obj(b, "i" + (args.empty() ? std::string() : " " + args[0]));
+            // "set n" stores n without output, as in Max: into the cold inlet.
+            Fragment f;
+            f.records = {"#X obj " + at(b.x, b.y - 20) + " route set",
+                         "#X obj " + at(b.x, b.y) + " " + cls.substr(0, 1) + (args.empty() ? std::string() : " " + args[0])};
+            f.internal = {{0, 0, 1, 1}, {0, 1, 1, 0}};
+            f.inlets = {{0, 0}, {1, 1}};
+            f.outlets = {{1, 0}};
+            frags_[b.id] = std::move(f);
+            return;
         }
         if (cls == "delay" || cls == "del") {
             if (args.size() > 1 || !allNumbers) return refuse(b, cls, "only a time in ms is translated");
@@ -493,8 +546,9 @@ private:
             const bool isFloat = !args.empty() && isFloatLiteral(args[0]) && cls != "%";
             if (isFloat) return obj(b, b.text);
             // Max's integer form: inputs truncated; '/' truncates its result too.
-            const std::string pdText = cls + (args.empty() || cls == "abs" ? "" : " " + args[0]);
-            return integer(b, pdText, cls == "abs" ? 1 : 2, cls == "/");
+            std::string pdText = cls + (args.empty() || cls == "abs" ? "" : " " + args[0]);
+            if (cls == "/" && (args.empty() || std::atoi(args[0].c_str()) == 0)) pdText = "/ 1";   // Max: "/ 0" divides by 1
+            return integer(b, pdText, cls == "abs" ? 1 : 2, cls == "/", cls == "/");
         }
         if (cls == "s" || cls == "send" || cls == "r" || cls == "receive") {
             if (args.size() != 1 || isNumber(args[0])) return refuse(b, cls, "one name");
@@ -598,11 +652,29 @@ private:
         Fragment f;
         f.records = {"#X obj " + at(b.x, b.y) + " phasor~" + (args.empty() ? std::string() : " " + args[0]),
                      "#X obj " + at(b.x, b.y + 20) + (fedSignal(b, 1) ? " +~" : " +~ 0"),
-                     "#X obj " + at(b.x, b.y + 40) + " cos~"};
-        f.internal = {{0, 0, 1, 0}, {1, 0, 2, 0}};
+                     "#X obj " + at(b.x, b.y + 40) + " cos~", "#X obj " + at(b.x + 60, b.y - 60) + " route reset",
+                     "#X obj " + at(b.x + 60, b.y - 40) + " route bang", "#X msg " + at(b.x + 60, b.y - 20) + " 0"};
+        // "reset" sets the running phase (the offset still adds to it).
+        f.internal = {{0, 0, 1, 0}, {1, 0, 2, 0}, {3, 0, 4, 0}, {4, 0, 5, 0}, {5, 0, 0, 1}, {4, 1, 0, 1}, {3, 1, 0, 0}};
         f.inlets = {{0, 0}, {1, 1}};
+        f.controlInlets[0] = {3, 0};
         f.outlets = {{2, 0}};
         frags_[b.id] = std::move(f);
+    }
+
+    /// Whether a control (not a signal) source feeds this inlet.
+    bool controlInto(const Box& b, int inlet) const {
+        return std::any_of(lines_.begin(), lines_.end(), [&](const Line& l) { return l.dst == b.id && l.inlet == inlet && !isSignalSource(l); });
+    }
+
+    /// Whether a message box whose first word is `word` feeds this inlet.
+    bool messageInto(const Box& b, int inlet, const std::string& word) const {
+        return std::any_of(lines_.begin(), lines_.end(), [&](const Line& l) {
+            if (l.dst != b.id || l.inlet != inlet) return false;
+            const Box& s = boxes_[index_.at(l.src)];
+            const auto w = words(s.text);
+            return s.maxClass == "message" && !w.empty() && w[0] == word;
+        });
     }
 
     void chain(const Box& b, const std::vector<std::string>& texts) {
@@ -622,18 +694,18 @@ private:
         const bool isFloat = !args.empty() && isFloatLiteral(args[0]);
         const std::string n = args.empty() ? "0" : args[0];
         Fragment f;
-        if (!isFloat) f.records.push_back("#X obj " + at(b.x, b.y - 20) + " i");
+        f.records.push_back("#X obj " + at(b.x, b.y - 20) + (isFloat ? " f" : " i"));   // a list never reaches [* -1]
         const int neg = static_cast<int>(f.records.size());
         f.records.push_back("#X obj " + at(b.x, b.y) + " * -1");
         const int add = neg + 1;
         f.records.push_back("#X obj " + at(b.x, b.y + 20) + " + " + n);
+        f.internal.push_back({0, 0, neg, 0});
         if (!isFloat) {
             f.records.push_back("#X obj " + at(b.x + 40, b.y - 20) + " i");
-            f.internal.push_back({0, 0, neg, 0});
             f.internal.push_back({add + 1, 0, add, 1});
             f.inlets = {{0, 0}, {add + 1, 0}};
         } else {
-            f.inlets = {{neg, 0}, {add, 1}};
+            f.inlets = {{0, 0}, {add, 1}};
         }
         f.internal.push_back({neg, 0, add, 0});
         f.outlets = {{add, 0}};
@@ -710,15 +782,21 @@ private:
                 if (w[j].find("---") != std::string::npos)
                     return refuse(b, "message", "a device-local (---) name inside a message is not translated");
         }
+        const bool dollars = b.text.find('$') != std::string::npos;
         if (!local) {
             const std::string record = "#X msg " + at(b.x, b.y) + " " + pdEscape(b.text);
-            if (!connected(b, false, 1)) return single(b, record);
+            if (!connected(b, false, 1) && !dollars) return single(b, record);
             Fragment f;
-            f.records = {record, "#X obj " + at(b.x + 60, b.y - 40) + " list prepend set",
-                         "#X obj " + at(b.x + 60, b.y - 20) + " list trim"};
-            f.internal = {{1, 0, 2, 0}, {2, 0, 0, 0}};
-            f.inlets = {{0, 0}, {1, 0}};
+            f.records = {record};
+            f.inlets = {{0, 0}};
             f.outlets = {{0, 0}};
+            if (connected(b, false, 1)) {
+                f.records.push_back("#X obj " + at(b.x + 60, b.y - 40) + " list prepend set");
+                f.records.push_back("#X obj " + at(b.x + 60, b.y - 20) + " list trim");
+                f.internal = {{1, 0, 2, 0}, {2, 0, 0, 0}};
+                f.inlets.emplace_back(1, 0);
+            }
+            if (dollars) keepArguments(b, f, 0);
             frags_[b.id] = std::move(f);
             return;
         }
@@ -743,7 +821,27 @@ private:
         }
         f.inlets = {{0, 0}};
         f.outlets = {{1, 0}};
+        if (dollars) keepArguments(b, f, 0);
         frags_[b.id] = std::move(f);
+    }
+
+    /// A Max message box keeps what its $ arguments last took: a bang sends
+    /// them again. A Pd message box keeps nothing. So a number or list on
+    /// its way in is also stored in a [list], which a bang sends instead.
+    void keepArguments(const Box& b, Fragment& f, int target) {
+        const int route = static_cast<int>(f.records.size());
+        f.records.push_back("#X obj " + at(b.x - 60, b.y - 80) + " route bang list float");
+        f.records.push_back("#X obj " + at(b.x - 60, b.y - 40) + " list");
+        f.records.push_back("#X obj " + at(b.x, b.y - 60) + " t a a");
+        const int store = route + 1, both = route + 2;
+        f.internal.push_back({route, 0, store, 0});
+        f.internal.push_back({store, 0, target, 0});
+        f.internal.push_back({route, 1, both, 0});
+        f.internal.push_back({route, 2, both, 0});
+        f.internal.push_back({both, 1, store, 1});
+        f.internal.push_back({both, 0, target, 0});
+        f.internal.push_back({route, 3, target, 0});
+        f.inlets[0] = {route, 0};
     }
 
     /// Max's number box (an int unless its format is 6, Decimal
@@ -765,7 +863,16 @@ private:
         const int atom = static_cast<int>(f.records.size());
         f.records.push_back("#X floatatom " + at(b.x, b.y) + " 5 0 0 0 - - - 0");
         for (int k = 0; k < atom; ++k) f.internal.push_back({k, 0, k + 1, 0});
-        f.inlets = {{0, 0}};
+        // "set n" shows n without output, as in Max (the atom's own "set");
+        // a bang sends what it shows.
+        const int route = static_cast<int>(f.records.size());
+        f.records.push_back("#X obj " + at(b.x, b.y - 60) + " route set bang");
+        f.records.push_back("#X msg " + at(b.x + 60, b.y - 30) + " set \\$1");
+        f.internal.push_back({route, 0, route + 1, 0});
+        f.internal.push_back({route + 1, 0, atom, 0});
+        f.internal.push_back({route, 1, atom, 0});
+        f.internal.push_back({route, 2, 0, 0});
+        f.inlets = {{route, 0}};
         f.outlets = {{atom, 0}};
         frags_[b.id] = std::move(f);
     }
@@ -808,6 +915,7 @@ private:
         if (args.size() > 2 || !std::all_of(args.begin(), args.end(), isNumber))
             return refuse(b, "slide~", "up and down as numbers");
         if (fedSignal(b, 1) || fedSignal(b, 2)) return refuse(b, "slide~", "signal-rate up and down are not translated yet");
+        if (messageInto(b, 0, "reset")) return refuse(b, "slide~", "its reset message (output to 0) is not translated yet");
         const std::string up = args.empty() ? "1" : args[0];
         const std::string down = args.size() > 1 ? args[1] : "1";
         Fragment f;
@@ -871,9 +979,13 @@ private:
                      "#X obj " + at(b.x + 80, b.y - 20) + " pack f f f f f"};
         // [expr] spreads a list over its inlets and fires right to left, so
         // the pack's hot inlet is filled last.
-        f.internal = {{1, 0, 2, 0}, {1, 1, 2, 1}, {1, 2, 2, 2}, {1, 3, 2, 3}, {1, 4, 2, 4}, {2, 0, 0, 0}};
+        // "clear" zeroes the filter's history, as Max's does (Pd's "set 0 0").
+        f.records.push_back("#X obj " + at(b.x + 80, b.y - 60) + " route clear");
+        f.records.push_back("#X msg " + at(b.x + 160, b.y - 40) + " set 0 0");
+        f.internal = {{1, 0, 2, 0}, {1, 1, 2, 1}, {1, 2, 2, 2}, {1, 3, 2, 3}, {1, 4, 2, 4}, {2, 0, 0, 0},
+                      {3, 0, 4, 0}, {4, 0, 0, 0}, {3, 1, 1, 0}};
         f.inlets = {{0, 0}};
-        f.controlInlets[0] = {1, 0};   // a coefficient list goes through the reorder
+        f.controlInlets[0] = {3, 0};   // a coefficient list goes through the reorder
         f.outlets = {{0, 0}};
         frags_[b.id] = std::move(f);
     }
@@ -914,7 +1026,38 @@ private:
             else if (a == "f" || a == "s") text += " " + a;
             else return refuse(b, cls, "only int, float and symbol slots are translated ('" + a + "')");
         }
-        if (cls == "pack") {
+        if (cls == "pack" && std::none_of(args.begin(), args.end(), [](const std::string& a) { return a == "s"; })) {
+            // Max's [pack] distributes a list into its left inlet and sends a
+            // bang's stored list, as Pd's does; it holds ints in its int
+            // slots. So the values go into Pd's [pack] as they come, and the
+            // int slots are truncated on the way out.
+            std::string raw = "pack", spread = "unpack", repack = "pack";
+            for (const auto& a : args) {
+                raw += " " + (a == "i" || a == "f" ? std::string("0") : a);
+                spread += " f";
+                repack += " f";
+            }
+            f.records.push_back("#X obj " + at(b.x, b.y) + " " + raw);
+            for (std::size_t k = 0; k < args.size(); ++k) f.inlets.emplace_back(0, static_cast<int>(k));
+            f.outlets = {{0, 0}};
+            if (!ints.empty()) {
+                f.records.push_back("#X obj " + at(b.x, b.y + 20) + " " + spread);
+                f.records.push_back("#X obj " + at(b.x, b.y + 60) + " " + repack);
+                f.internal.push_back({0, 0, 1, 0});
+                for (std::size_t k = 0; k < args.size(); ++k) {
+                    const auto slot = static_cast<int>(k);
+                    if (std::find(ints.begin(), ints.end(), slot) == ints.end()) {
+                        f.internal.push_back({1, slot, 2, slot});
+                        continue;
+                    }
+                    const int i = static_cast<int>(f.records.size());
+                    f.records.push_back("#X obj " + at(b.x + 30.0 * slot, b.y + 40) + " i");
+                    f.internal.push_back({1, slot, i, 0});
+                    f.internal.push_back({i, 0, 2, slot});
+                }
+                f.outlets = {{2, 0}};
+            }
+        } else if (cls == "pack") {
             for (const int k : ints) {
                 f.records.push_back("#X obj " + at(b.x + 30.0 * k, b.y - 20) + " i");
             }
