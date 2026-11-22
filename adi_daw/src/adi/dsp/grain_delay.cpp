@@ -46,6 +46,8 @@ void GrainDelay::prepare(double sampleRate) noexcept {
     countdown_ = 0;
     next_ = 0;
     lowest_ = 1e300;
+    feedback_.prepare(rate_);
+    wet_.prepare(rate_);
     update();
 }
 
@@ -75,8 +77,8 @@ void GrainDelay::update() noexcept {
     length_ = 2 * std::max<std::size_t>(1, static_cast<std::size_t>(std::lround(rate_ / p_[Frequency])));
     ratio_ = std::exp2(p_[Pitch] / 12);
     spray_ = p_[Spray] / 1000 * rate_;
-    feedback_ = p_[Feedback] / 100;
-    wet_ = p_[DryWet] / 100;
+    feedback_.set(p_[Feedback] / 100);
+    wet_.set(p_[DryWet] / 100);
 }
 
 double GrainDelay::random(Lane& lane) noexcept {
@@ -122,10 +124,11 @@ void GrainDelay::process(const float* inL, const float* inR, float* outL, float*
         // Both inputs are read before either output is written (a host may
         // hand an output plane that is an input plane).
         const double dry[2] = {inL && std::isfinite(inL[i]) ? inL[i] : 0.0, inR && std::isfinite(inR[i]) ? inR[i] : 0.0};
+        const double feedback = feedback_.next(), mix = wet_.next();
         if (size_ == 0) {
             for (std::size_t c = 0; c < 2; ++c) {
                 if (out[c]) {
-                    out[c][i] = static_cast<float>(dry[c] * (1 - wet_));
+                    out[c][i] = static_cast<float>(dry[c] * (1 - mix));
                 }
             }
             continue;
@@ -164,9 +167,9 @@ void GrainDelay::process(const float* inL, const float* inR, float* outL, float*
                 }
             }
             lane.last = std::abs(y) < 1e-30 ? 0 : y;
-            lane.ring[written_ % size_] = static_cast<float>(dry[c] + feedback_ * lane.last);
+            lane.ring[written_ % size_] = static_cast<float>(dry[c] + feedback * lane.last);
             if (out[c]) {
-                out[c][i] = static_cast<float>(dry[c] + (y - dry[c]) * wet_);
+                out[c][i] = static_cast<float>(dry[c] + (y - dry[c]) * mix);
             }
         }
         ++written_;
