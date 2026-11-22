@@ -18,10 +18,12 @@ Time. Beat Repeat and External Audio Effect are left out of the count; they are 
   first), each "built, not verified" with its reading on the ONE list.
   - Looper stays out until the engine's recording and transport rows: its core is the engine's, as
     External Audio Effect's routing is.
-  - This seat starts Amp now, on its own branch, and stops there if the answer is no.
+  - This seat built them in the manual's order, each on its own branch: Amp, Cabinet, Corpus, Drum
+    Buss, Dynamic Tube, Grain Delay, Pedal, Roar, Spectral Time and Spectral Resonator. If the answer
+    is no, they simply wait.
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 43 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 44 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -205,6 +207,9 @@ method); Live's files and renders stay in the director's research.
     resolution choices, the delay's and the freeze's sections). An impulse through the delay at Time
     250 ms, then with Tilt and Spray: when each band returns. A held chord frozen: its level and pitch
     a few seconds on. The reported latency.
+44. **Spectral Resonator (built after 3 December).** A fresh Spectral Resonator, every control as
+    shown (its modes, Shift, Unison, the modulation). A burst of noise at its defaults: the partials it
+    rings at and how long. A tone between two partials: is it heard?
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -219,6 +224,34 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-22, the chapter's last missing effect: Spectral Resonator — lands after 3 December
+
+**PR requested:** head `devices/spectral-resonator` (1802596d), base `main`, after
+`devices/spectral-time`. It stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - The input's spectrum rings at the partials of a pitch, set by Frequency, Harmonics, Stretch,
+    Decay, Brightness and Dry/Wet.
+  - Each partial owns the bins within one bin of it. While a partial rings, its bins advance at the
+    partial's own frequency, so the ring is a tone at the partial.
+  - The latency is one window, reported.
+- **Not built:** its MIDI and internal modes, Shift, Unison and modulation.
+- **Tests:**
+  - `adi_spectral_resonator_tests` 10. After a burst of noise the output rings at the first four
+    partials within 1 Hz. A first version, advancing each bin at its own measured frequency, missed by
+    36 Hz.
+  - The ring falls 30 dB in a second at Decay 2 s, within 15 %. A tone between partials is not heard.
+    Dry/Wet 0 is the input one window late. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 46 built-ins.
+- **Reading 44, added to the ONE list.**
+
+**The chapter is built, as far as this lane's part goes.** All of Live 12.4's audio effects are now
+in the catalogue except Looper, whose core is the engine's. External Audio Effect's routing is also the
+engine's; its contract is written. Beat Repeat waits on reading 18.
+
+**CTest:** `devices/roar` at 46f2a71e passed 293/293 at PD_FLOATSIZE 32 and 64. The new top,
+`devices/spectral-resonator`, is running.
 
 ## 2026-11-22 — DEV-22, the chapter's next missing effect: Spectral Time — lands after 3 December
 
