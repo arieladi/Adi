@@ -22,6 +22,7 @@
 #include <cstring>
 #include <new>
 #include <string>
+#include <thread>
 #include <vector>
 
 // --- allocation counter -----------------------------------------------------
@@ -171,6 +172,19 @@ void testSilenceBeforeAnythingIsPublished() {
           "callback that returns without writing hands the driver the previous "
           "block, repeated: got " + std::to_string(o.l[0]));
     eqi(host.stats().blocks, 1, "and the block still counted");
+}
+
+void testStatsAreValueSnapshots() {
+    section("retained host statistics remain a snapshot");
+
+    GraphHost host;
+    // This is also the CLI's binding form. The old accessor let the next
+    // callback mutate the referenced counters after the poll.
+    const GraphHost::Stats& before = host.stats();
+    Out out(8);
+    host.process(makeIo(out, 8));
+    eqi(before.blocks, 0, "a retained statistics observation is unchanged");
+    eqi(host.stats().blocks, 1, "a fresh observation counts the next callback");
 }
 
 void testAModelBecomesAudio() {
@@ -414,9 +428,10 @@ void testAFadeLongerThanTheBlockCarriesAcross() {
         Out o(32);
         AudioIo io = makeIo(o, 32);
         host.process(io);
+        if (b == 0) host.setFadeFrames(0);
         for (float v : o.l) { if (v < last) rising = false; last = v; }
     }
-    check(rising, "the ramp rises monotonically across all three blocks");
+    check(rising, "a new policy leaves the active ramp monotonic across all three blocks");
     check(last > 0.99f, "and reaches full level by the end: " + std::to_string(last));
 
     Out o(32);
@@ -424,6 +439,54 @@ void testAFadeLongerThanTheBlockCarriesAcross() {
     host.process(io);
     check(o.l[0] == o.l[31] && o.l[0] > 0.99f,
           "the fourth block is flat at full level");
+}
+
+void testHostPolicyAndStatsWhileRendering() {
+    section("owner stats and policies while another thread renders");
+
+    GraphHost host;
+    host.setLatencyHeadroom(0);
+    rows::Model model;
+    model.tracks.push_back(track(9, "master", "Master"));
+    constexpr int rebuilds = 96;
+    if (!host.rebuild(model, RealizeOptions{}, 48000.0, 16)) {
+        check(false, "build the concurrent statistics fixture");
+        return;
+    }
+    std::atomic<bool> started{false}, stop{false};
+    std::thread render([&] {
+        Out out(16);
+        const auto io = makeIo(out, 16);
+        host.process(io);
+        started.store(true, std::memory_order_release);
+        while (!stop.load(std::memory_order_acquire)) host.process(io);
+    });
+    while (!started.load(std::memory_order_acquire)) std::this_thread::yield();
+
+    auto previous = host.stats();
+    bool rebuilt = true, monotonic = true;
+    for (int i = 0; i < rebuilds; ++i) {
+        rebuilt = host.rebuild(model, RealizeOptions{}, 48000.0, 16) && rebuilt;
+        // These policies deliberately change after publication, potentially
+        // while the callback is adopting that graph.
+        host.setKeepHistory(i % 2 == 0);
+        host.setFadeFrames(i % 2 == 0 ? 32 : -1);
+        (void)host.collect();
+        const auto observed = host.stats();
+        monotonic = monotonic && observed.published >= previous.published &&
+            observed.refused >= previous.refused && observed.swaps >= previous.swaps &&
+            observed.reclaimed >= previous.reclaimed && observed.blocks >= previous.blocks &&
+            observed.historyCarried >= previous.historyCarried;
+        previous = observed;
+    }
+    stop.store(true, std::memory_order_release);
+    render.join();
+    const auto final = host.stats();
+    check(rebuilt && monotonic && final.published == rebuilds + 1 &&
+          final.swaps > 0 && final.swaps <= final.blocks && final.swaps <= final.published,
+          "concurrent telemetry stays monotonic and final callback counts reconcile");
+    check(!host.keepHistory() && host.fadeFrames() == 0,
+          "the last history policy and nonnegative fade setting remain readable");
 }
 
 void testTheAudioThreadAllocatesNothingAcrossASwap() {
@@ -1041,6 +1104,7 @@ int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_host_tests -- the rebuild path\n\n");
     testSilenceBeforeAnythingIsPublished();
+    testStatsAreValueSnapshots();
     testAModelBecomesAudio();
     testTheHeadroomIsATime();
     testARebuildReplacesTheGraphTheAudioThreadUses();
@@ -1048,6 +1112,7 @@ int main() {
     testAGraphThatCannotBePreparedIsNotPublished();
     testTheSwapIsFadedIn();
     testAFadeLongerThanTheBlockCarriesAcross();
+    testHostPolicyAndStatsWhileRendering();
     testTheAudioThreadAllocatesNothingAcrossASwap();
     testTheRetiredGraphIsFreedOnlyOnceTheReaderHasMovedPast();
     testTheCoalescerSurvivesARebuild();

@@ -34,6 +34,7 @@
 #include "adi/engine/realize.hpp"
 #include "adi/store_rows.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -215,8 +216,8 @@ public:
     /// old one's ring history, so a rebuild that changed nothing audible
     /// changes nothing audible. On by default; off reproduces ADR-0089's
     /// behaviour, which is what the seam test uses as its "before".
-    void setKeepHistory(bool v) noexcept { keepHistory_ = v; }
-    [[nodiscard]] bool keepHistory() const noexcept { return keepHistory_; }
+    void setKeepHistory(bool v) noexcept { keepHistory_.store(v, std::memory_order_relaxed); }
+    [[nodiscard]] bool keepHistory() const noexcept { return keepHistory_.load(std::memory_order_relaxed); }
 
     /// Samples the incoming graph is ramped up over.
     ///
@@ -229,11 +230,14 @@ public:
     ///
     /// Still here for the case it suits: a swap across a change of block size
     /// or rate, where plugins genuinely do re-prime.
-    void setFadeFrames(std::int32_t n) noexcept { fadeFrames_ = n > 0 ? n : 0; }
-    [[nodiscard]] std::int32_t fadeFrames() const noexcept { return fadeFrames_; }
+    void setFadeFrames(std::int32_t n) noexcept {
+        fadeFrames_.store(n > 0 ? n : 0, std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::int32_t fadeFrames() const noexcept { return fadeFrames_.load(std::memory_order_relaxed); }
 
     [[nodiscard]] const std::string& error() const noexcept { return error_; }
-    [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
+    /// Thread-safe observation. The counters are sampled independently.
+    [[nodiscard]] Stats stats() const noexcept;
 
     /// Problems carried out of the last realisation, so a caller can surface
     /// them without holding the graph.
@@ -294,18 +298,25 @@ private:
     std::uint64_t configuration_ = 0, formatEpoch_ = 0;
     double publishedSampleRate_ = 0.0;
     std::int32_t publishedMaxFrames_ = 0, publishedChannels_ = 0;
-    Stats stats_;
+    static_assert(std::atomic<std::int64_t>::is_always_lock_free);
+    static_assert(std::atomic<std::int32_t>::is_always_lock_free);
+    static_assert(std::atomic<bool>::is_always_lock_free);
+    struct StatsCounters {
+        // First three written by the owner, the last three by the audio reader.
+        std::atomic<std::int64_t> published{0}, refused{0}, reclaimed{0};
+        std::atomic<std::int64_t> swaps{0}, blocks{0}, historyCarried{0};
+    } stats_;
     std::string error_;
     std::vector<std::string> problems_;
     std::int32_t headroom_ = 8192;
-    std::int32_t fadeFrames_ = 0;
+    std::atomic<std::int32_t> fadeFrames_{0};
     Precision precision_ = Precision::Float32;
     bool delayCompensation_ = true;
     std::uint32_t renderWorkers_=0,parallelMinimumNodes_=4;
     std::int32_t parallelMinimumFrames_=256;
     RenderWorkers::Initializer workerInitializer_=nullptr;
     void* workerInitializationContext_=nullptr;
-    bool keepHistory_ = true;
+    std::atomic<bool> keepHistory_{true};
 
     // Audio thread only.
     std::uint64_t lastSeq_ = 0;
