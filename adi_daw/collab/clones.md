@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Sweep stereo offset across flanger and phaser bands
+
+Of the 873 paired programs, 116 use a noncentered offset in an audible flanger or phaser band, including eleven of the 81 earlier regressions. The control is bipolar, from −100% to +100% with a centered default. A signed setting x shifts the left band's center by 60x|x| semitones and the right band's center by the opposite interval. At +50% this is +15 semitones on the left and −15 on the right.
+
+We measured nine settings at three center frequencies and three sample rates, independently recovering the flanger's center from its first two delayed impulse taps and the four-stage phaser's center from its direct gain and following sample. The flanger stops at the ends of its ten-octave range. The phaser extends below the nominal minimum and above the nominal maximum. Its upper frequency stopped at 0.4999 times the sample rate at 44.1, 48 and 96 kHz. For 60 additional stereo impulses with both polarities, nonzero feedback and all five response types, the 9,216-sample channels matched separate centered captures at their predicted in-range positions sample for sample.
+
+For DEV-31, the clones lane takes the three appended Sweep parameters and its existing kernel, canvas and tests in the ADI-Shaper files. This work lands after 3 December.
+
+PR requested
+
 ## 22 November 2026 — Filter preset coverage and a missing resonant response
 
 On the 873-program bank, 359 had Filter inactive and 437 kept the cutoff centered. Fifty-six requested stereo spread only on response types outside the five landed equivalents. Twenty-one used a mapped response with nonzero spread. With the same seven-stage projection and other controls in each comparison, enabling the measured offsets on `830d3a12` improved two, worsened eleven and left eight within 0.000001 RMS. All 21 chains also depended on another absent stage. None crossed 0.001. Six of the original 81 Trim regressions requested stereo spread on an unsupported Filter response.
