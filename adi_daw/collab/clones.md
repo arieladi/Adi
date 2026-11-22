@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Measured Crush transitions between bit resolutions
+
+The current core evaluates the preceding sample on the new quantization grid. Signed stereo markers show that the reference retains each sample's own grid. At a change, take the fractional crossing weight in quantizer-code units, interpolate the two physical output levels on their respective grids, then apply the current gain compensation. Equal integer codes return the current physical level. Keep history when entering or leaving full resolution. The existing constant-resolution calculation can remain intact.
+
+Nine independently drawn three-height curves crossed the grid between stored points at 44.1, 48, 88.2 and 96 kHz. The reference was fed signed kick and bass and unrelated stereo markers, at four block sizes including 256 and 2,048 frames. In the transition windows the current rule missed by 0.008059–0.032832 RMS. The recovered rule missed by 0.000000169–0.00000166 RMS, with 0.0000305 worst peak. A separate dithered stereo fixture distinguished the grids over 1,000 moving-code edges and verified 167 equal-code transitions. The paired-channel RMS residual fell from 0.03364–0.05973 to 0.00000174–0.00000465. Another 938,918 fixed-height samples checked the unchanged behavior.
+
+The clones seat takes `adi_shaper_crush.cpp`, `adi_shaper_crush.hpp` and `test_adi_shaper_crush.cpp` for the current-stage timing repair on `clones/shaper-crush-resolution`. The per-band bias submission uses the same crossing calculation and will need both rules at integration.
+
 ## 22 November 2026 — Lower cost for steady white Noise
 
 `clones/shaper-noise-port` at `d9d0e19e` — Process steady white Noise in bounded blocks. **Lands after 3 December.** This updates the existing Noise review. The single full-range, fully wet white stage with a fixed level now generates exactly the stereo sample pairs required by its resampler and filters them in blocks of up to 64 frames. The scalar path remains available for other settings. Separate channel histories preserve continuity when switching between mono, stereo, pink and white.
