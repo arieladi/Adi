@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace adi::dsp {
 
@@ -70,6 +71,7 @@ class AdiShaper {
         bool linear = false, constant = true;
         void update() noexcept;
         [[nodiscard]] float at(std::uint64_t position) const noexcept;
+        [[nodiscard]] double heldPanAt(std::uint64_t position) const noexcept;
     };
     struct CurveBand {
         Contour primary, secondary;
@@ -111,6 +113,13 @@ class AdiShaper {
         std::size_t index = 0;
         void advance(float& l, float& r) noexcept;
     };
+    struct PanHistory {
+        std::vector<std::array<float, 2>> frames;
+        std::size_t head = 0, valid = 0;
+        void prepare(double rate) noexcept;
+        void process(double position, double rate, float& left, float& right) noexcept;
+    };
+    std::array<PanHistory, 3> panHistory_;
     static Gain gain(Stage kind, float amount, float mix) noexcept;
     void updateBand(Stage kind, CurveBand& band) const noexcept;
     void updateActivity(StageData& stage) noexcept;

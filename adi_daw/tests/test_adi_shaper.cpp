@@ -145,6 +145,80 @@ void beatGate() {
           "tempo doubles the gate rate on resume");
 }
 
+void heldPanEdges() {
+    constexpr int half = 48000;
+    constexpr int count = 3 * half;
+    const auto configure = [](Shaper& shaper) {
+        shaper.prepare(48000);
+        for (int i = 0; i < 8; ++i)
+            point(shaper, Stage::Pan, Band::Mid, i, i < 4 ? -100.f : 100.f);
+    };
+    // Captured gains on opposite-signed DC after compensation. The fading
+    // ear first switches delay taps, then plays the end of its old plateau.
+    constexpr std::array rising{.797651, 1.130023, 1.250605, 1.335287, 1.385908, 1.408957};
+    constexpr std::array falling{1.411764, 1.394800, 1.352765, 1.278064, 1.167472, 1.022765, 1.410795};
+    constexpr std::array tail{1.411767, 1.394824, 1.352824, 1.278169, 1.167628, 1.022968,
+                              .850699, .661167, .467283, .283179, .123020, .000172};
+    const auto expected = [&](int frame, int channel) {
+        const int edge = (frame + half / 2) / half;
+        const int offset = frame - edge * half;
+        const bool opens = edge % 2 != channel;
+        if (opens) {
+            if (offset < -6) return 0.;
+            if (offset < 0) return rising[static_cast<std::size_t>(offset + 6)];
+            return std::numbers::sqrt2;
+        }
+        if (offset >= -11 && offset <= -5) return falling[static_cast<std::size_t>(offset + 11)];
+        if (offset >= 85 && offset <= 96) return tail[static_cast<std::size_t>(offset - 85)];
+        return offset > 96 ? 0. : std::numbers::sqrt2;
+    };
+    std::vector<float> previousL, previousR;
+    for (const int block : {256, 2048}) {
+        Shaper shaper;
+        configure(shaper);
+        std::vector<float> l(count, .25f), r(count, -.125f);
+        for (int i = 0; i < count; i += block) {
+            shaper.sync(static_cast<double>(i) / 24000.);
+            shaper.process(l.data()+i, r.data()+i, l.data()+i, r.data()+i, std::min(block, count-i));
+        }
+        double squares = 0., peak = 0.;
+        for (int i = 256; i < count; ++i) {
+            const double dl = l[i] - .25 * expected(i, 0);
+            const double dr = r[i] + .125 * expected(i, 1);
+            squares += dl*dl + dr*dr;
+            peak = std::max({peak, std::abs(dl), std::abs(dr)});
+        }
+        check(std::sqrt(squares / (2. * (count-256))) < 1.e-4 && peak < 1.e-4,
+              "held Pan switches ears with the measured pre-edge and two-millisecond tail");
+        if (!previousL.empty()) check(l == previousL && r == previousR, "host block size preserves every Pan sample");
+        previousL.swap(l);
+        previousR.swap(r);
+    }
+
+    // A marker heard on the original tap must reappear on the delayed one.
+    Shaper marked;
+    configure(marked);
+    std::vector<float> l(half+160), r(l.size());
+    r[half-56] = -.5f;
+    marked.process(l.data(), r.data(), l.data(), r.data(), l.size());
+    check(std::abs(r[half+40] + .5 * std::numbers::sqrt2) < .002 && l[half+40] == 0.,
+          "the moving far ear reads its own audio history");
+
+    // A sparse state can contain a single edited point. Alternating dry and
+    // wet on that state must never replay audio collected before bypass.
+    Shaper sparse;
+    point(sparse, Stage::Pan, Band::Mid, 0, 100.f);
+    sparse.sync(2., false);
+    for (int i = 0; i < 192; ++i) (void)one(sparse, -.25f, .5f);
+    sparse.set(Shaper::MasterMix, 0.f);
+    check(one(sparse, -.5f, .25f) == std::array{-.5f, .25f}, "dry sparse Pan state passes both channels exactly");
+    sparse.sync(.0625, false);
+    sparse.set(Shaper::MasterMix, 100.f);
+    bool quiet = true;
+    for (int i = 0; i < 192; ++i) quiet &= one(sparse, 0.f, 0.f) == std::array{0.f, 0.f};
+    check(quiet && sparse.latency() == 0, "resuming sparse Pan clears stale audio and adds no rack latency");
+}
+
 void clocksAndLinearCurve() {
     Shaper shaper;
     shaper.prepare(48000);
@@ -771,6 +845,7 @@ void driveAndCrush() {
 int main() {
     endpoints();
     balanceSweep();
+    heldPanEdges();
     beatGate();
     clocksAndLinearCurve();
     splitBands();

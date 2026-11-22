@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/adi_shaper.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <new>
 #include <numbers>
 
 namespace adi::dsp {
@@ -64,6 +66,7 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     for (auto& filter : filters_) filter.prepare(sampleRate);
     for (auto& sweep : sweeps_) (void)sweep.prepare(sampleRate);
     for (auto& drive : drives_) drive.prepare(sampleRate);
+    for (auto& pan : panHistory_) pan.prepare(sampleRate);
     for (auto& crusher : crush_) (void)crusher.prepare(sampleRate);
     driveDry_ = {};
     driveSource_ = {};
@@ -278,6 +281,7 @@ void AdiShaper::restart(Stage kind) noexcept {
 }
 
 void AdiShaper::resetKernels(Stage kind) noexcept {
+    if (kind == Stage::Pan) for (auto& pan : panHistory_) pan.valid = 0;
     if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
     if (kind == Stage::Sweep) for (auto& sweep : sweeps_) sweep.reset();
     if (kind == Stage::Crush) for (auto& crusher : crush_) crusher.reset();
@@ -368,6 +372,7 @@ void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
+        if (masterMix_ == 0.f) resetKernels(Stage::Pan);
         for (std::size_t i = 0; i < stages_.size(); ++i) updateStage(static_cast<Stage>(i));
         return;
     }
@@ -387,19 +392,25 @@ void AdiShaper::set(Param id, float value) noexcept {
     const auto local = index % stageParameterCount;
     if (local < stageHeaderSize) {
         if (local == 0) {
-            layout(stage, static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f))));
+            const auto selected = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
+            if (kind == Stage::Pan && stage.layout != selected) resetKernels(kind);
+            layout(stage, selected);
             return;
         }
         else if (local == 1) stage.lowHz = std::clamp(value, 20.0f, 20000.0f);
         else stage.highHz = std::clamp(value, 20.0f, 20000.0f);
         updateSplits(stage);
     } else {
-        auto& band = stage.bands[(local - stageHeaderSize) / bandParameterCount];
+        const auto bandIndex = (local - stageHeaderSize) / bandParameterCount;
+        auto& band = stage.bands[bandIndex];
         const auto control = (local - stageHeaderSize) % bandParameterCount;
         switch (control) {
         case Mix: band.mix = std::clamp(value, 0.0f, 100.0f) * 0.01f; break;
         case Clock: case Cycle: case Rate: clock(band, static_cast<BandControl>(control), value); return;
-        case Curve: band.primary.linear = value >= 0.5f; return;
+        case Curve:
+            band.primary.linear = value >= 0.5f;
+            if (kind == Stage::Pan && band.primary.linear) panHistory_[bandIndex].valid = 0;
+            return;
         default: {
             const float lo = kind == Stage::Pan ? -100.0f : 0.0f;
             const float hi = kind == Stage::Width ? 200.0f : 100.0f;
@@ -408,6 +419,7 @@ void AdiShaper::set(Param id, float value) noexcept {
         }
         }
         updateBand(kind, band);
+        if (kind == Stage::Pan && (!band.active || band.primary.constant)) panHistory_[bandIndex].valid = 0;
     }
     updateActivity(stage);
 }
@@ -426,6 +438,57 @@ float AdiShaper::Contour::at(std::uint64_t position) const noexcept {
     if (!linear) return points[index];
     const float fraction = static_cast<float>((position >> 37) & 0xffffffU) * 0x1p-24f;
     return points[index] + fraction * differences[index];
+}
+
+double AdiShaper::Contour::heldPanAt(std::uint64_t position) const noexcept {
+    // A held segment occupies 1,024 of the 8,192 contour samples. Only the
+    // samples next to a step need the four-point interpolation.
+    // Round the sub-cell fraction before splitting it. A host beat restored
+    // at a block boundary and one reached by phase increments can differ by
+    // a few low bits at the very same knot.
+    const auto rounded = position + (std::uint64_t{1} << 26);
+    const auto cell = static_cast<unsigned>(rounded >> 51);
+    const auto within = cell & 1023u;
+    const double a = points[cell >> 10];
+    if (within > 0 && within < 1022) return a;
+    const auto point = [&](unsigned k) { return static_cast<double>(points[(k & 8191u) >> 10]); };
+    const double l = point(cell - 1), b = point(cell + 1), r = point(cell + 2);
+    const double t = static_cast<double>((rounded >> 27) & 0xffffffu) * 0x1p-24;
+    return a + .5 * t * (b - l + t * (2*l - 5*a + 4*b - r + t * (3*(a-b) + r-l)));
+}
+
+void AdiShaper::PanHistory::prepare(double rate) noexcept {
+    head = valid = 0;
+    if (rate > 1536000.) { frames.clear(); return; }
+    // The 2 ms far-ear delay reaches 2.87 ms while the contour overshoots.
+    const auto length = static_cast<std::size_t>(std::ceil(.003 * rate)) + 2;
+    try {
+        frames.resize(std::bit_ceil(length));
+    } catch (const std::bad_alloc&) {
+        frames.clear();
+    }
+}
+
+void AdiShaper::PanHistory::process(double position, double rate, float& left, float& right) noexcept {
+    const double height = std::clamp(.5 + .5 * position, 0., 1.);
+    left *= panGain(height);
+    right *= panGain(1. - height);
+    if (frames.empty()) return;
+    frames[head] = {finiteOrZero(left), finiteOrZero(right)};
+    valid = std::min(valid + 1, frames.size());
+    const auto mask = frames.size() - 1;
+    // Stereo pulses and noise at twelve balances measured this read position
+    // independently from gain. The cubic is in milliseconds at the default range.
+    const double far = std::abs(position);
+    const double ms = far * (.710640 + far * (-.505011 + far * 1.794401));
+    const double delay = ms * (.001 * rate);
+    const auto whole = static_cast<std::size_t>(delay);
+    const auto channel = position > 0. ? 1u : 0u;
+    const auto read = [&](std::size_t age) { return age < valid ? frames[(head-age) & mask][channel] : 0.f; };
+    const float a = read(whole), b = read(whole + 1);
+    auto& delayed = channel == 0 ? left : right;
+    delayed = static_cast<float>(a + (delay - static_cast<double>(whole)) * (static_cast<double>(b) - a));
+    head = (head + 1) & mask;
 }
 
 void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
@@ -474,6 +537,16 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 r = dryR + band.blend * (r - dryR);
             }
         } else {
+            if constexpr (kind == Stage::Pan) {
+                if (!band.primary.linear && !band.primary.constant) {
+                    panHistory_[index].process(band.primary.heldPanAt(p), sampleRate_, l, r);
+                    if (band.blend != 1.f) {
+                        l = dryL + band.blend * (l - dryL);
+                        r = dryR + band.blend * (r - dryR);
+                    }
+                    return;
+                }
+            }
             Gain g;
             if (band.primary.constant) g = band.heldGains[0];
             else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
