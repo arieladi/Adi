@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — ADI’s room response and controls for Reverb
+
+`clones/shaper-reverb-port` at `df9f2778` — Port the measured Reverb controls and ADI’s own room response. **Lands after 3 December.** Stable IDs 626–715 add the three bands. Earlier project states restore the same stereo sound with the room disabled. The dedicated control-law suite covers send, return, width, gating, decay, size and predelay. The rack, room and registered native/edited Pd suites passed at both signal precisions under MSVC /W4 /WX.
+
+The private preset replay exposed a missed clear when a return contour reached zero between samples. The old implementation differed across callback sizes by 0.00740 RMS on an authored 120 BPM fixture. The repair reduced that to 0.000000000101, cleared the intervening zero at 119.73 BPM and retained the tail when the contour remained positive. Eight independent contours stayed within 0.000000000118 RMS. The full failing preset fell from 0.000113 to 0.000000000748 RMS between 256 and 2,048 frames.
+
+On stereo kick and bass at 48 kHz, five alternating trials of 2,048 callbacks measured median/p99 85.1/189.6 µs with the room enabled at 256 frames and 765.9/1,493.9 µs at 2,048. With the room off, those timings were 5.2/7.7 and 39.1/54.2 µs. All 40,960 enabled and disabled callbacks met their deadlines. The registered device reported zero latency.
+
+PR requested
+
 ## 22 November 2026 — Audio retrigger for the Volume contour
 
 `clones/shaper-audio-retrigger` at `e08b932f` — Retrigger the Volume contour from the internal stereo detector. **Lands after 3 December.** IDs 754–764 select sync, looping retrigger or one-shot for each band, the held endpoint and detector controls. The original 415 controls keep their IDs. Loading an older state over an active detector restores sync and releases the added delay.
