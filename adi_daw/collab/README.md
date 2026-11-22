@@ -51,7 +51,7 @@ Freeze's extent loop (`src/adi/freeze_commands.cpp`) and Bounce in Place's exten
 `src/adi/check.cpp` for DF-E54 (a) (win, 20 November; withdrawn the same day, the engine had fixed them);
 for DF-E64 only, the engine lends engine-win `src/adi/engine/clip_playback.cpp`'s read-ahead and the hold on
 `RenderBlock::sourcesReadyAt` (win, 20 November); for its trial, the engine lends the gemini seat
-`src/adi/engine/param_automation.cpp` for DF-E53 and `src/adi/engine/mpe_output.cpp` for DF-E56 (win, 22 November);
+`src/adi/engine/param_automation.cpp` for DF-E53 and `src/adi/engine/mpe_output.cpp` for DF-E56 (win, 22 November), and for the fixes its review asked (win, 22 November): DF-E53's refusal in `src/adi/automation_lanes.cpp`, its check in `src/adi/check.cpp`, the canonical-form sentence in `docs/format/SPEC.md` §6.3.3, and DF-E56's `src/adi/engine/mpe_output.hpp`;
 for ADI-Shaper's own panel, the window lends the clones seat the device editor factory in `src/juce/ui_main.cpp`
 and the two wrench-visibility checks in `src/juce/ui_devices.cpp`, for its UID only (win, 22 November);
 each owner reviews its part.
