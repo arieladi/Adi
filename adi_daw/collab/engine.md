@@ -67,6 +67,12 @@ Exact exposed-branch native archive plus local overlays, GCC 14 warning-as-error
 
 **PR requested with #677 after Win's real merge is published and the combined head is green.** Remote #677 still advertises `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`. The three follow-ups are on the local stack pending that prerequisite. Window can also hide the VCA send knob under its existing mixer role check.
 
+### 2026-11-22 — Mix View handoff for same-ID replacement receipts
+
+**PR requested** for `engine/param-replacement-receipt` at `4a1b47e7aa5a5fa8bd263bd33a98f28350ced716`. Title **Preserve parameter receipts across same-ID device replacement**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Credit the reproduction `eb41c1210dc464de45fd62c1813fb58cc4c6879c`. The ParamOps side waits for the replacement's exact Session publication and attachment. It skips queued parameter and state work for the incompatible device superseded within the transaction, including the replacement's gain inverse ahead of restoring the original. Compatible retained devices still receive their numeric inverse. The distinct plug-in replacement after refresh follows Mix View's existing Session resolver on `3f6b08b7297842162c3d576a626e9d65b32a392b`. No changes to the loaned resolver.
+
+Exact GCC 14 and Clang 19 Debug warnings-as-errors passed all nine suites (Param Live Replay, Param Ops, Applied Batches, Gesture, Gesture Graph, Gesture Playback, Engine, Param Edits and Device Copy). Param Live Replay passes 985 checks. With main's old ParamOps the same suite fails its waiting and Undo assertions. The GCC join with the exact Mix View resolver and expanded fixture passes 991 checks, including delayed replacement attachment, a superseded state change, exact original and replacement instance reuse through Undo and Redo, and the compatible Undo's recorded gain.
+
 ## 2026-11-22 — N67 new input tracks monitor on Auto
 
 **PR requested** · `engine/n67-auto-monitor-default` · `f2802a0030d9e9ad0a02d4404276cf1ccf140422`
