@@ -114,6 +114,10 @@ struct PreparedDiff {
 /// owner's previously captured full creation row.
 [[nodiscard]] PreparedDiff prepareDiff(const Snapshot&, const Diff&);
 
+/// Apply a single clip's scalar note requests in their submitted order, with
+/// one final stream write and at most one journal operation.
+[[nodiscard]] PreparedDiff prepareBatch(const Snapshot&, std::span<const OpRequest>);
+
 /// Owner connection: check source-file identity, stamp actor, then commit via
 /// OpJournal with the captured expected head (including a real null head).
 [[nodiscard]] CommitResult commitDiff(Store&, const PreparedDiff&, Actor = Actor::User);

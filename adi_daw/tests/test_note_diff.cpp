@@ -475,6 +475,131 @@ void sameTransactionNewClips() {
           "the captured head prevents reusing a take batch after the journal moved");
 }
 
+OpRequest noteStep(const char* type,Payload payload) {
+    OpRequest request;
+    request.opType=type;
+    request.payload=std::move(payload);
+    return request;
+}
+void orderedNoteBatch() {
+    Fixture scalar("ordered-scalar"), batch("ordered-batch");
+    const auto a=rawRecord(native(41,0,8));
+    const auto b=rawRecord(native(42,0,7));
+    const auto c=rawRecord(native(43,1,11));
+    const auto before=envelope({a,b,c});
+    scalar.seed(1,before);
+    batch.seed(1,before);
+    auto first=noteStep("note.move",{{"clip",1},{"note",41},{"start",2},{"key",61}});
+    first.label="Move notes";
+    const std::array ops{
+        first,
+        noteStep("note.move",{{"clip",1},{"note",41},{"start",0},{"key",61}}),
+        noteStep("note.resize",{{"clip",1},{"note",43},{"dur",31}}),
+        noteStep("note.setVelocity",{{"clip",1},{"note",42},{"vel",93}}),
+        noteStep("note.setMute",{{"clip",1},{"note",42},{"muted",false}}),
+        noteStep("note.insert",{{"clip",1},{"note",wideId},{"start",1},{"dur",12},{"key",96}}),
+    };
+    require(OpJournal(*scalar.store).commit(ops).ok,"apply scalar note batch oracle");
+    const auto snapshot=notes::captureNotes(*batch.store,1);
+    notes::PreparedDiff prepared;
+    {
+        SqlCounter sql(*batch.store);
+        prepared=notes::prepareBatch(snapshot,ops);
+        check(sql.statements==0 && prepared.ok && prepared.requests.size()==1 &&
+              prepared.requests.front().opType=="note.applyDiff" &&
+              prepared.requests.front().label=="Move notes",
+              "ordered note preparation is pure and supplies one labeled native operation");
+    }
+    require(prepared.ok && !prepared.requests.empty(),"prepare ordered edit: "+prepared.error);
+    {
+        WriteCounter writes(*batch.store,101);
+        check(notes::commitDiff(*batch.store,prepared).ok && writes.targetWrites==1 &&
+              OpJournal(*batch.store).count()==1,
+              "the ordered request writes its canonical stream and history once");
+    }
+    require(batch.maybeBlob().has_value(),"ordered note stream still exists");
+    const auto after=batch.blob();
+    const auto actual=notes::captureNotes(*batch.store,1);
+    check(after==scalar.blob() && actual.records().size()==4 &&
+          readRecord(actual.records()[0]).note_id==42 && readRecord(actual.records()[1]).note_id==41,
+          "the batch matches scalar bytes including equal-start order after a round trip");
+    check(History(*batch.store).undo().ok && batch.blob()==before &&
+          History(*batch.store).redo().ok && batch.blob()==after,
+          "ordered note history restores original and final byte order");
+
+    auto malformed=ops;
+    malformed.back().payload["clip"]=2;
+    check(!notes::prepareBatch(actual,malformed).ok && batch.blob()==after,
+          "a mixed-clip batch is refused without native writes");
+}
+
+void orderedNoteMembership() {
+    Fixture f("ordered-membership");
+    auto journal=OpJournal(*f.store);
+    const auto insert=noteStep("note.insert",{{"clip",1},{"note",41},{"start",0},{"dur",8},{"key",56}});
+    const auto remove=noteStep("note.delete",{{"clip",1},{"note",41}});
+    require(journal.commit(insert).ok,"seed retained note");
+    f.store->db().exec("ALTER TABLE note_expression ADD COLUMN future BLOB DEFAULT X'1FFF'");
+    f.expression(1,41,701);
+    const auto before=f.blob();
+    const auto captured=notes::captureNotes(*f.store,1);
+    const std::array replacement{remove,insert};
+    const auto replace=notes::prepareBatch(captured,replacement);
+    require(replace.ok && replace.requests.size()==1,"prepare retained identity replacement");
+    f.store->db().exec("UPDATE note_expression SET future=X'FF'");
+    check(!notes::commitDiff(*f.store,replace).ok && f.blob()==before && journal.count()==1,
+          "a changed expression under a reused identity rejects the ordered batch");
+    f.store->db().exec("UPDATE note_expression SET future=X'1FFF'");
+    {
+        WriteCounter writes(*f.store,*captured.streamId());
+        check(notes::commitDiff(*f.store,replace).ok && f.blob()==before &&
+              f.expressionCount(1,41)==0 && writes.targetWrites==0,
+              "delete and reinsert erases owned expression without rewriting identical note bytes");
+    }
+    check(History(*f.store).undo().ok && f.blob()==before &&
+          f.store->db().execAndGet("SELECT count(*) FROM note_expression WHERE future=X'1FFF'").getInt()==1 &&
+          History(*f.store).redo().ok && f.expressionCount(1,41)==0,
+          "ordered undo restores exact retained-note expression rows and redo removes them");
+
+    Fixture absent("ordered-absent");
+    const auto empty=notes::captureNotes(*absent.store,1,-6);
+    const std::array createAndEmpty{insert,remove};
+    const auto emptied=notes::prepareBatch(empty,createAndEmpty);
+    require(emptied.ok && emptied.requests.size()==1,"prepare creation of an empty native stream");
+    check(notes::commitDiff(*absent.store,emptied).ok && absent.maybeBlob()==envelope({}) &&
+          notes::captureNotes(*absent.store,1).streamId()==-6,
+          "insert then delete leaves the same present empty stream as the scalar sequence");
+    check(History(*absent.store).undo().ok && !absent.maybeBlob() &&
+          History(*absent.store).redo().ok && absent.maybeBlob()==envelope({}),
+          "ordered Undo separates absent and present empty streams");
+}
+
+void largeOrderedNoteBatch() {
+    Fixture f("large-ordered-batch");
+    constexpr std::size_t count=10000;
+    std::vector<Record> records;
+    std::vector<OpRequest> operations;
+    records.reserve(count);
+    operations.reserve(count);
+    for (std::size_t index=0;index<count;++index) {
+        const auto id=static_cast<std::uint64_t>(index)+1;
+        records.push_back(rawRecord(native(id,static_cast<std::int64_t>(index),8)));
+        operations.push_back(noteStep("note.setVelocity",{{"clip",1},{"note",id},{"vel",111}}));
+    }
+    f.seed(1,envelope(records));
+    const auto prepared=notes::prepareBatch(notes::captureNotes(*f.store,1),operations);
+    require(prepared.ok && prepared.requests.size()==1,"prepare ten thousand ordered note edits");
+    WriteCounter writes(*f.store,101);
+    check(notes::commitDiff(*f.store,prepared).ok && writes.targetWrites==1 &&
+          OpJournal(*f.store).count()==1,
+          "ten thousand ordered note edits write the stream and journal once");
+    const auto after=notes::captureNotes(*f.store,1);
+    check(after.ok && after.records().size()==count &&
+          std::all_of(after.records().begin(),after.records().end(),[](const auto& record) {
+              return readRecord(record).vel_on==111;
+          }),"the single write contains every scalar velocity edit");
+}
+
 void numericAndMalformed() {
     notes::NoteValues good;
     good.start = -9; good.duration = 3; good.id = maximumId;
@@ -1023,13 +1148,16 @@ void lateFailures() {
 }
 } // namespace
 int main() {
-    const std::array<std::pair<const char*, void (*)()>, 11> cases = {{
+    const std::array<std::pair<const char*, void (*)()>, 14> cases = {{
         {"immutable and pure", immutableAndPure}, {"10,000 notes", tenThousandOneWrite},
         {"future and expressions", futureAndExpressions}, {"creation", creationAndSignedRows},
         {"numeric and malformed", numericAndMalformed}, {"stale guards", staleGuards},
         {"coherent capture", coherentOwnerCapture}, {"SQL storage classes", sqlStorageClassGuards},
         {"seeded commits", runNoteDiffSeeds},
         {"same-transaction new clips", sameTransactionNewClips},
+        {"ordered note batch", orderedNoteBatch},
+        {"ordered note membership", orderedNoteMembership},
+        {"large ordered note batch", largeOrderedNoteBatch},
         {"late failures", lateFailures}}};
     for (const auto& [name, run] : cases) {
         try { run(); }
