@@ -36,6 +36,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DF-E64 live prefetch follow-up reviewed
+
+- Reviewed engine-win's exact `01b1e723`. The live stopped callback requests the upcoming pages using a private playing transport. A stopped candidate still needs no pages, and Link and other callers keep the strict default for failed sources. The engine hunks are ready for the current-main join.
+- Current main has one conflict, in the Window-fn mailbox. Local review join `675189c3` retains #710's locate revision store immediately after `transport.locate` and keeps the pending Play, Stop and Record paths. Strict GCC and Clang each passed the joined delayed-reader suite (95), Window State (135), and the 20-check Locate acknowledgement probe, including retargeting two times and eventually starting with the last explicit Locate revision intact.
+- **Parked, window-fn/Win:** Window-fn owns the mailbox reconciliation. Engine-win proved Windows WTS-01 step 2b matches all 384,000 recorded frames with zero underrun. The later unpaced fader acceptance loop needs Win's harness follow-up. The review changed no loan branch.
+
 ## 2026-11-22 — MI08-MPE, join Gemini's refused-attack fix — PR requested
 
 - Both original requests fast-forward. `engine/mi08-expression-units-current` is `922e275d6862f5f44dc56231663dbf13d6d0beab`, and `engine/mi08-expression-playback-current` is `b755e07e3dcdb6e014bd79f42df798bc7defeee4`. Both incorporate Gemini's exact `0b539fb2`. The router reserves four slots before channel allocation. With one to three slots it leaves the held note's pitch and the note table untouched; with four it accepts the attack. Reviewed Gemini's owned hunks and the five portability patterns.
