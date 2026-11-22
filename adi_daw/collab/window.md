@@ -101,6 +101,16 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-22, night, window lane — queue item 3: DF-W18 (PR requested)
+
+**Item 3, DF-W18. PR requested.** Branch `window/input-clock`, head `b57b118e`. Title: **adi_daw: window: the window's time and keys read through one seam a test sets, InputClock (DF-W18, ADR-0231 d2)**. Body: [`collab/window/pr-bodies/window-input-clock.md`](window/pr-bodies/window-input-clock.md).
+- **Review:** [REF] bypassed the seam; fixed.
+- **Its Pd-off failure,** found and fixed (`b57b118e`): the new [REF] check left the Reference off for the checks after it.
+- **Tests:** shell 2928 (Pd on) and 2914 (Pd off), 0 failures; the `ui.yml` six green.
+- **Next on this lane's queue:** WTS-02 (item 11) stacks on this branch.
+
+---
+
 ## 2026-11-22, night, window lane — queue items 4, 5 and 7: DF-W19, DF-W29, DF-W32 (PR requested)
 
 Each branch is merged with main, reviewed (findings fixed), built, and run through the UI suites and the `ui.yml` Pd-off tree; the sweeps are clean on its lines. Each carries `window/browser-devices-test`'s commit, so main's Pd-on shell suite runs through. `test_all` was run once this session, on `window/grid-ticks`'s tree (main `ac07be74` plus window code only): PASS, 64092 checks across 270 suites.
