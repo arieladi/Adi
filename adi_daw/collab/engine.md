@@ -186,6 +186,12 @@ Strict GCC 14 and Clang 19 each passed 11 checks, including all 147,456 possible
 
 Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU button meanings on SF-22a, and actual hardware service on the surface seat. HUI's independent wire heartbeat and fader messages are next.
 
+### 22 November — SRF-08 HUI fader wire and heartbeat
+
+- PR requested for `engine/srf08-hui-wire` at `34db332338487fc22f0e248fa6c7c11e19407338`, stacked on the requested MCU wire/feedback branch `52563508827f695c9125b856a6d01fc6cf5f76ca`. Standard eight-strip HUI channel-1 fader pairs, zone/port touch and release, explicit reconnect resets and one-second host pings. The wire references are [DrivenByMoss](https://github.com/git-moss/DrivenByMoss/blob/824f8740ad01d468e6053ff58cc70170d9ef6308/src/main/java/de/mossgrabers/controller/mackie/hui/controller/HUIControlSurface.java) and [REAPER's Baby HUI](https://github.com/justinfrankel/reaper-sdk/blob/61cc0d4ada1e4d8438186ed8ba5e5f9d72b148b9/reaper-plugins/reaper_csurf/csurf_babyhui.cpp).
+- Strict Linux GCC 14 and Clang 19 both passed 19 checks, covering 131,072 HUI wire round trips, interleaved strips, touch and ping boundaries, and the existing 147,456 MCU wire round trips. Checked the Nov 20 patterns. Baseline logs are under `/workspace/adi-engine-validation/srf08-mcu-*-hui-*.log`.
+- Parked SRF-08 host slots, profiles, lock/pin, button parity and real feedback scheduling on the window-owned port host, CTL-06 and SF-22a. SRF-09/10 and SRF-13/14 host integration wait on the shared control feed and settings/permission wiring.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
