@@ -2686,6 +2686,85 @@ void parkedSilence() {
     check(view.read() && view.read()->advancing && view.read()->peak[0] == .5f,
           "playback resumes with the first complete window");
 }
+void parkedStereoBalance() {
+    constexpr int window = 480, historyFrames = 96000, historyBlocks = historyFrames / window;
+    constexpr std::int64_t stoppedStamp = 800;
+    constexpr std::uint64_t revision = 59;
+    Fixture f;
+    f.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = window;
+    auto spectrum = f.broker.acquire(request);
+    spectrum.setStereoBalanceEnabled(true);
+    std::array<float, window> left, right;
+    left.fill(.5f); right.fill(.25f);
+    f.tap->write(left.data(), right.data(), window, stoppedStamp, false, revision);
+    f.broker.pump();
+    const auto monitored = spectrum.read();
+    check(monitored && !monitored->advancing && monitored->balanceRms2s &&
+              (*monitored->balanceRms2s)[0] == .5f && (*monitored->balanceRms2s)[1] == .25f &&
+              f.broker.stats().taps == 1 && f.broker.stats().spectralPlans == 1,
+          "a visible pinned-spectrum balance starts on the same parked stereo trigger and Spectrum plan");
+
+    const auto writeQuiet = [&] {
+        const float *zero = nullptr;
+        f.tap->write(zero, zero, window, stoppedStamp, false, revision);
+    };
+    for (int block = 0; block < historyBlocks - 1; ++block) {
+        writeQuiet();
+        if (block % 4 == 3) f.broker.pump();
+    }
+    f.broker.pump();
+    const auto tail = spectrum.read();
+    const auto leftTailRms = .5 * std::sqrt(static_cast<double>(window) / historyFrames);
+    check(tail && tail->balanceRms2s && near((*tail->balanceRms2s)[0], leftTailRms, 1e-7) &&
+              near((*tail->balanceRms2s)[1], leftTailRms * .5, 1e-7),
+          "the last audible block remains in the balance history one block before two seconds of silence");
+    writeQuiet();
+    f.broker.pump();
+    const auto atZero = spectrum.read();
+    const auto settled = f.broker.stats();
+    check(atZero && atZero->balanceRms2s && *atZero->balanceRms2s == std::array{0.f, 0.f} &&
+              atZero->firstSequence == historyFrames && settled.transforms == 1,
+          "the visible balance first reaches exact zero at the complete two-second quiet boundary");
+
+    const auto beyondRing = f.tap->capacity() / window + 8;
+    for (std::int64_t block = 0; block < beyondRing; ++block) {
+        writeQuiet();
+        if (block % 4 == 3) f.broker.pump();
+    }
+    const float *zero = nullptr;
+    f.tap->write(zero, zero, window / 3, stoppedStamp, false, revision);
+    f.broker.pump();
+    const auto idle = f.broker.stats();
+    check(atZero && f.tap->oldest() > atZero->firstSequence && spectrum.read() == atZero &&
+              idle.workerPasses == settled.workerPasses && idle.cursorReads == settled.cursorReads &&
+              idle.analysisWindows == settled.analysisWindows && idle.transforms == settled.transforms &&
+              idle.publications == settled.publications,
+          "a visible zero balance stops work while certified parked silence rolls past the physical ring");
+
+    const auto monitorStart = f.tap->written();
+    f.tap->write(left.data(), right.data(), window, stoppedStamp, false, revision);
+    f.broker.pump();
+    const auto woke = spectrum.read();
+    check(atZero && woke && !woke->advancing && woke->transportRevision == revision &&
+              woke->firstSequence == monitorStart && woke->sourceEpoch == atZero->sourceEpoch &&
+              woke->overrunCount == atZero->overrunCount && woke->balanceRms2s &&
+              near((*woke->balanceRms2s)[0], leftTailRms, 1e-7) &&
+              near((*woke->balanceRms2s)[1], leftTailRms * .5, 1e-7) &&
+              f.broker.stats().transforms == settled.transforms + 1,
+          "same-stamp stopped monitoring wakes immediately with the full trailing denominator and no false overrun");
+
+    constexpr std::int64_t resumedStamp = 12000;
+    f.tap->write(left.data(), right.data(), window, resumedStamp, true, revision + 1);
+    f.broker.pump();
+    const auto resumed = spectrum.read();
+    check(woke && resumed && resumed->advancing && resumed->firstStamp == resumedStamp &&
+              resumed->transportRevision == revision + 1 && resumed->sourceEpoch > woke->sourceEpoch &&
+              resumed->balanceRms2s && (*resumed->balanceRms2s)[0] == .5f && (*resumed->balanceRms2s)[1] == .25f,
+          "advancing playback starts cleanly with its first complete stereo balance window");
+}
+
 void sharing() {
     Fixture f;
     f.broker.requestFrame();
@@ -4292,7 +4371,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
-          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

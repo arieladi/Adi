@@ -419,11 +419,16 @@ class StereoBalanceHistory {
     }
 
   public:
+    struct Reading {
+        std::array<float, 2> rms;
+        bool fullSilence;
+    };
     StereoBalanceHistory(std::size_t frames, std::size_t hop, std::int64_t admission)
         : hop_(hop), wholeHops_(frames / hop), tailFrames_(frames % hop),
           buckets_(wholeHops_ + static_cast<std::size_t>(tailFrames_ != 0)), admission_(admission) {}
     void reset() noexcept { nextBucket_ = used_ = 0; windowEnd_ = -1; }
     void startAt(std::int64_t admission) noexcept { admission_ = admission; reset(); }
+    void rebaseSilentWindow(std::int64_t end) noexcept { windowEnd_ = end; }
 
     // Each completed FFT window ends on the hop grid. Keep only its newly heard
     // samples, including a possibly partial first hop at this history's admission.
@@ -444,7 +449,7 @@ class StereoBalanceHistory {
         }
         windowEnd_ = end;
     }
-    std::optional<std::array<float, 2>> reading(std::int64_t end) const noexcept {
+    std::optional<Reading> reading(std::int64_t end) const noexcept {
         if (!used_ || end != windowEnd_) return {};
         Power sum{};
         std::size_t frames = 0, slot = nextBucket_;
@@ -460,7 +465,9 @@ class StereoBalanceHistory {
             frames += oldestTail ? std::min(tailFrames_, bucket.frames) : bucket.frames;
         }
         const auto count = static_cast<double>(frames);
-        return std::array{static_cast<float>(std::sqrt(sum[0] / count)), static_cast<float>(std::sqrt(sum[1] / count))};
+        const auto fullLength = wholeHops_ * hop_ + tailFrames_;
+        return Reading{{static_cast<float>(std::sqrt(sum[0] / count)), static_cast<float>(std::sqrt(sum[1] / count))},
+                       frames == fullLength && sum[0] == 0. && sum[1] == 0.};
     }
 };
 } // namespace
@@ -564,6 +571,7 @@ struct SharedAnalysis::Domain {
     std::vector<std::shared_ptr<CumulativeAverageHistory>> cumulativeAverages;
     std::unique_ptr<StereoBalanceHistory> balanceHistory;
     std::atomic<bool> balanceActive{false};
+    std::atomic<bool> balanceParkedSettled{true};
     std::size_t balanceUsers = 0;
     std::vector<std::shared_ptr<SpectrumBlockAverage>> blockAverages;
     std::atomic<bool> blockAveragesQuiet{true};
@@ -833,6 +841,7 @@ struct SharedAnalysis::Domain {
             } catch (...) { /* The Spectrum and current-window correlation can still publish. */ }
         }
         balanceActive.store(static_cast<bool>(balanceHistory), std::memory_order_release);
+        balanceParkedSettled.store(!balanceHistory, std::memory_order_release);
     }
     void changeBalanceDemand(bool enabled) noexcept {
         if (enabled) {
@@ -870,7 +879,10 @@ struct SharedAnalysis::Domain {
         columns.clear();
         if (epoch) {
             ++sourceEpoch;
-            if (balanceHistory) balanceHistory->reset();
+            if (balanceHistory) {
+                balanceHistory->reset();
+                balanceParkedSettled.store(false, std::memory_order_release);
+            }
             resetAverageForGap();
             // A discontinuity clears the history but cannot admit older
             // samples from the same tap. A replacement tap uses startAt().
@@ -910,7 +922,10 @@ struct SharedAnalysis::Domain {
             cursor.next = std::clamp(sequence, oldest, end);
         }
         consumedSequence.store(cursor.next, std::memory_order_release);
-        if (balanceHistory) balanceHistory->startAt(cursor.next);
+        if (balanceHistory) {
+            balanceHistory->startAt(cursor.next);
+            balanceParkedSettled.store(false, std::memory_order_release);
+        }
         activateAverage(sequence);
         activateMaximum(sequence);
         activateSigma(sequence);
@@ -956,6 +971,7 @@ struct SharedAnalysis::Domain {
         if (!bits && balanceHistory) {
             balanceHistory.reset();
             balanceActive.store(false, std::memory_order_release);
+            balanceParkedSettled.store(true, std::memory_order_release);
         }
         if (!(bits & PhaseBands)) phaseBandPlan.reset();
         if (!(bits & Strip) && strip) {
@@ -1003,7 +1019,7 @@ struct SharedAnalysis::Domain {
     bool parkedWindowSettled(engine::ScopeTap::ParkedSilence quiet, std::uint32_t bits) const noexcept {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
-               !balanceActive.load(std::memory_order_acquire) &&
+               balanceParkedSettled.load(std::memory_order_acquire) &&
                (!(bits & Strip) || neutralStrip.load(std::memory_order_acquire)) &&
                (!(bits & DeviceBlockAverage) || blockAveragesQuiet.load(std::memory_order_acquire)) &&
                // Cumulative averaging counts silent hops even when its bins already sit at the floor.
@@ -1015,6 +1031,14 @@ struct SharedAnalysis::Domain {
         const auto bits = outputs.load(std::memory_order_acquire);
         return parkedWindowSettled(quiet, bits) &&
                (!(bits & CumulativeMaximum) || cumulativeReady.load(std::memory_order_acquire));
+    }
+    void skipCertifiedSilenceTo(std::int64_t next) noexcept {
+        if (next <= cursor.next) return;
+        cursor.next = next;
+        // The existing FFT ring and the full balance history contain only zeros.
+        // Preserve the partial-hop phase when the cursor moves over omitted silence.
+        if (balanceHistory)
+            balanceHistory->rebaseSilentWindow(next - static_cast<std::int64_t>(sinceWindow));
     }
     void skipParkedBeforeCumulative(engine::ScopeTap::ParkedSilence quiet) noexcept {
         const auto bits = outputs.load(std::memory_order_acquire);
@@ -1028,7 +1052,7 @@ struct SharedAnalysis::Domain {
         // If that boundary has itself rolled out, only certified zero
         // samples may be omitted. A later nonquiet span uses the normal cursor.
         const auto next = std::min(quiet.end, std::max(first, tap->oldest()));
-        cursor.next = std::max(cursor.next, next);
+        skipCertifiedSilenceTo(next);
     }
     std::size_t historyColumnBytes() const noexcept {
         return (static_cast<std::size_t>(request.fftSize) / 2 + 1) * sizeof(float);
@@ -1159,7 +1183,10 @@ struct SharedAnalysis::Domain {
         latest->coherentGain = gain; latest->hopSize = request.hopSize;
         latest->firstSequence = firstSequence; latest->advancing = advancing; latest->firstStamp = firstStamp;
         latest->gapCount = gaps; latest->overrunCount = overruns; latest->discontinuity = discontinuous;
-        if (!newWindow) if (const auto previous = readResult()) latest->nonFiniteSamples = previous->nonFiniteSamples;
+        if (!newWindow) if (const auto previous = readResult()) {
+            latest->nonFiniteSamples = previous->nonFiniteSamples;
+            if (balanceHistory) latest->balanceRms2s = previous->balanceRms2s;
+        }
         double sumL = 0, sumR = 0, cross = 0;
         const bool needsMeters = (bits & Output::Meters) != 0;
         std::size_t clippedSamples = 0;
@@ -1194,9 +1221,11 @@ struct SharedAnalysis::Domain {
         latest->rms = {static_cast<float>(std::sqrt(sumL / static_cast<double>(n))),
                        static_cast<float>(std::sqrt(sumR / static_cast<double>(n)))};
         latest->correlation = sumL > 0 && sumR > 0 ? std::clamp(cross / std::sqrt(sumL * sumR), -1., 1.) : 0.;
-        if (balanceHistory) {
-            if (newWindow) balanceHistory->advance(firstSequence, left, right, sumL == 0. && sumR == 0.);
-            latest->balanceRms2s = balanceHistory->reading(windowEnd);
+        if (balanceHistory && newWindow) {
+            balanceHistory->advance(firstSequence, left, right, sumL == 0. && sumR == 0.);
+            const auto reading = balanceHistory->reading(windowEnd);
+            if (reading) latest->balanceRms2s = reading->rms;
+            balanceParkedSettled.store(reading && reading->fullSilence, std::memory_order_release);
         }
         if (needsSpectrum) {
             if (spectralWindow != windowSerial) {
@@ -2181,7 +2210,7 @@ struct SharedAnalysis::State {
             // are identical to those in the retained window. The regular cursor
             // still detects a seek, playback start, or another stamp at the join.
             if (quiet.end < end && quiet.end > d.cursor.next && d.settledParkedSilence(quiet))
-                d.cursor.next = quiet.end;
+                d.skipCertifiedSilenceTo(quiet.end);
             const auto readEnd = stripOnly ? d.stripReadEnd(end) : end;
             while (d.cursor.next < readEnd && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame) {
                 if (quiet.end >= end && d.settledParkedSilence(quiet)) break;
