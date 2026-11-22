@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, EX-04 MPEG-1 CBR MP3
+
+**PR requested** — `engine-win/export-mp3-cbr` `46d8c712` on main `87ea349c`, after 3 December. LAME 3.100 is archive-pinned to SHA-256 `ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e` (LGPL-2.0-or-later). LAME gets undithered interleaved doubles and emits MPEG-1 Layer III 320 CBR with an Info tag. Publication waits for all frames to pass header checks and a complete dr_mp3 read of the original length. The Win /W4 /WX build passed 436 render, 143 WAV and 85 NI Stems checks (native AAC unavailable). MP3 exercised 48 kHz stereo and 44.1 kHz mono, exact trimmed duration, and identical bytes after changing project block partition and PCM dither settings. An independent ffmpeg probe also decoded a 4201-frame direct LAME fixture to 4201 frames.
+
+**Needs Win:** fetch this pin in the packaging/CI workflow and combine the EX-04 container enums/selection hunks. The candidate permits MPEG-1 rates with Normalize Off. Resampling to supported MP3 rates and normalization against decoded lossy output remain follow-up delivery work. Live stereo mode and tag parity remain unmeasured.
+
 ## 2026-11-22, EX-04 mono delivery
 
 **PR requested** — `engine-win/export-mono-fold` `71f1650c` on main `87ea349c`, after 3 December. Adds an explicit arithmetic stereo average after the source tap and graph latency. Normalization and quantization see the one-channel delivery. Existing ordinary stereo and multichannel jobs retain their channel count. Strict MSVC passed 435 render, 143 WAV and 85 NI Stems checks (native AAC unavailable). Tests verified correlated, anti-phase and one-sided input against a 29-sample delayed stereo effect, and verified the final PCM duration and the folded normalization peak.
