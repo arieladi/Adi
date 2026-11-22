@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Two-head delay reader for devices review
+
+For devices and Win. `clones/two-head-reader` at `9b7cd7ca` — Share the two-head delay reader across pitch policies. **Lands after 3 December.** The reader accepts the caller’s interpolator and retains the phase precision, crossfade, wrap and unison behavior of each processor. The public unit test exercises read ages across the history boundary and the two weight and advance laws at 44.1, 48 and 96 kHz. The two shipping devices have no changes on this branch.
+
+Release MSVC /W4 /WX passed the committed test. For the cross-test we compiled both original ADI processors and both reader-backed processors under separate class names. The Shifter source at `7c5d8158` matches current main. Cyclic Pitch came from `380335a2`. Stereo impulses, independent deterministic noise and kick/bass covered the three rates, irregular blocks including 1, 256 and 2,048 frames, parameter changes, a return to unison and reset. All 3,127,711 comparisons of head ages and output samples were bit-identical.
+
+DEV-31-PITCH is parked for devices’ review of this header. Its Shifter adoption and our cyclic Pitch adoption follow that review.
+
+PR requested
+
 ## 22 November 2026 — Mix View contract for the layer scope 1.5.03
 
 For the Mix View seat, item 9, second reference in ADR-0247 d5. At 48 kHz, 120 BPM, 4/4, 256-frame blocks, a 1,200-pixel plot at its initial 1.00 scale covered one beat (24,000 frames). An 8 Hz tone filled four cycles. Pulses 2,400 frames apart started at x = 238 and 358 at y = 90. Use 20 frames per pixel in that view. At amplitudes 0.25 and 0.50, the trace spanned y = 78–132 and 52–158. Left-only and right-only 0.50 sines both drew at 0.25 in M. Equal channels drew at 0.50 and opposite channels cancelled. Project each source as (L + R)/2 before adding M traces.
