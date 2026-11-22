@@ -12471,6 +12471,70 @@ void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
     check(!undo.defaultKeypresses.isEmpty() && keysOf(AppCommands::Undo).size() == static_cast<std::size_t>(undo.defaultKeypresses.size()),
           "with no overrides Undo has the key map's keys again");
 }
+// WIN-06: the command palette (Ctrl/Cmd+P). "hsb" ranks Hide/Show Browser first; a command that cannot
+// run now is listed dimmed with why; Enter runs the chosen row; Esc dismisses; V/ lists ADI's devices
+// and Enter inserts one on the selected track as one undo step.
+void commandPalette(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "palette.adi", true, {}, error);
+    check(document != nullptr, "a project for the palette");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "palette");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.loadBuiltin = [&](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
+        const bool ok = document->insertBuiltin(uid, track, before);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    const juce::KeyPress palette('p', juce::ModifierKeys::commandModifier, 0);
+    check(root.keyPressed(palette) && root.palette() != nullptr && root.palette()->isVisible(),
+          "Ctrl/Cmd+P opens the palette over the window");
+    if (root.palette() == nullptr) {
+        commands.detach(root);
+        document->release();
+        return;
+    }
+    auto &p = *root.palette();
+    check(p.getX() == (root.getWidth() - p.getWidth()) / 2 && p.items().size() > 100,
+          "centred at the window's top, every command listed for an empty query");
+    p.setQuery("hsb");
+    check(!p.items().empty() && p.items()[0].label == "Hide/Show Browser", "\"hsb\" ranks Hide/Show Browser first");
+    check(!p.items().empty() && p.items()[0].marked == std::vector<std::size_t>{0, 5, 10}, "its matched letters are H, S and B");
+    p.setQuery("redo");
+    const auto redo = std::find_if(p.items().begin(), p.items().end(), [](const auto &i) { return i.command == AppCommands::Redo; });
+    check(redo != p.items().end() && !redo->enabled && !redo->reason.empty(), "a command that cannot run now is listed dimmed, with why");
+    const bool browserWas = root.browser.isVisible();
+    p.setQuery("hsb");
+    check(p.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && !p.isVisible() && root.browser.isVisible() != browserWas,
+          "Enter runs the first row and the palette goes");
+    root.command(AppCommands::ToggleBrowser);
+    root.openPalette();
+    check(p.isVisible() && p.field.getText().isEmpty() && p.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !p.isVisible(),
+          "opened again it is empty, and Esc dismisses it");
+    root.openPalette();
+    p.setQuery("V/");
+#if ADI_WITH_PD
+    root.arrangement.geometry.selection.track = 4;
+    p.setQuery("V/utility");
+    const auto before = root.undoTitle(false);
+    check(!p.items().empty() && !p.items()[0].device.empty() && p.items()[0].label == "Utility", "V/ lists ADI's devices by name");
+    check(p.run(0), ("Enter inserts it on the selected track: " + root.error()).c_str());
+    document->synchronise();
+    root.frame();
+    check(root.undoTitle(false) != before && root.command(AppCommands::Undo) && root.undoTitle(false) == before,
+          "as one undo step");
+#else
+    check(p.items().empty(), "with Pd off V/ lists nothing this build cannot load");
+#endif
+    commands.detach(root);
+    document->release();
+}
 void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
 #if JUCE_MAC
     const char *family = "mac";
@@ -15771,6 +15835,7 @@ int main(int argc, char **argv) {
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
+    trace("commandPalette", [&] { commandPalette(commands, temp.path()); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

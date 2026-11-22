@@ -162,7 +162,7 @@ struct StableEntry {
     const char *category;
 };
 const StableEntry *stableEntry(int id) noexcept {
-    static const std::array<StableEntry, 122> table{{
+    static const std::array<StableEntry, 123> table{{
         {"transport.play-stop", "Transport"}, // PlayStop
         {"transport.stop", "Transport"}, // Stop
         {"edit.undo", "Edit"}, // Undo
@@ -285,6 +285,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"edit.fit-to-time-range", "Edit"}, // FitToTimeRange
         {"transport.arrangement-record", "Transport"}, // ArrangementRecord
         {"file.export-audio", "File"}, // ExportAudio
+        {"view.command-palette", "View"}, // CommandPalette
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -502,7 +503,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
-                                  "Arrangement Record", "Export Audio/Video..."};
+                                  "Arrangement Record", "Export Audio/Video...",
+                                  "Command Palette..."};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -950,6 +952,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ExportAudio: // manual 5.2.1 and §41.3: Ctrl/Cmd+Shift+R
         info.addDefaultKeypress('r', cmd | shift);
         break;
+    case CommandPalette: // WIN-06: ADI's addition, Ctrl/Cmd+P
+        info.addDefaultKeypress('p', cmd);
+        break;
     case ExpandClipView: // manual 10.2; Live 12's View menu: Expand Clip View, Ctrl/Cmd+Alt+E
         info.addDefaultKeypress('e', cmd | alt);
         info.setTicked(active_ != nullptr && active_->clipViewFull());
@@ -1291,6 +1296,14 @@ bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, 
     // The strip shows the new device on the next frame; the browser keeps the focus, as Live's.
     devices.repaint();
     return true;
+}
+void AdiRootComponent::openPalette() {
+    if (!palette_) {
+        palette_ = std::make_unique<CommandPalette>(commands_, *this);
+        addChildComponent(*palette_);
+    }
+    palette_->open();
+    palette_->setTopLeftPosition((getWidth() - palette_->getWidth()) / 2, 48);
 }
 std::string AdiRootComponent::pluginWindowKey(std::int64_t device) { return "plugin:" + std::to_string(device); }
 bool AdiRootComponent::pluginWindowOpen(std::int64_t device) const {
@@ -3758,6 +3771,9 @@ bool AdiRootComponent::command(int id) {
         if (!exportAudio)
             return fail("Export runs in the application.");
         exportAudio(exportDefaults());
+        break;
+    case AppCommands::CommandPalette:
+        openPalette();
         break;
     case AppCommands::Undo:
     case AppCommands::Redo: {

@@ -5,6 +5,8 @@
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/theme.hpp"
 #include "adi/ui/window_state.hpp"
+#include "adi/ui/fuzzy_match.hpp"
+#include <cmath>
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <cstdio>
@@ -86,6 +88,70 @@ void themeAndDensityTables() {
     check(roomier, "Open is at least Compact in every measure");
 }
 
+// WIN-06: fzy's 24 tests (test/test_match.c), with its exact scores, on the UTF-32 port; then Hebrew,
+// which has no case, matching as it is, and Cyrillic in either case.
+void fzyCases() {
+    using namespace fuzzy;
+    const auto has = [](const char *n, const char *h) { return hasMatch(utf32(n), utf32(h)); };
+    const auto m = [](const char *n, const char *h) { return match(utf32(n), utf32(h)); };
+    const auto eq = [](Score a, Score b) { return a == b || std::abs(a - b) < 0.000001; };
+    const auto at = [](const char *n, const char *h) {
+        std::vector<std::size_t> p;
+        match(utf32(n), utf32(h), &p);
+        return p;
+    };
+    int passed = 0;
+    const auto t = [&](bool ok, const char *what) {
+        check(ok, what);
+        passed += ok ? 1 : 0;
+    };
+    t(has("a", "a"), "fzy exact_match_should_return_true");
+    t(has("a", "ab") && has("a", "ba"), "fzy partial_match_should_return_true");
+    t(has("", "") && has("", "a"), "fzy empty_query_should_always_match");
+    t(!has("a", "") && !has("a", "b") && !has("ass", "tags"), "fzy non_match_should_return_false");
+    t(has("abc", "a|b|c"), "fzy match_with_delimiters_in_between");
+    t(m("amor", "app/models/order") > m("amor", "app/models/zrder"), "fzy should_prefer_starts_of_words");
+    t(m("amo", "app/m/foo") < m("amo", "app/models/foo"), "fzy should_prefer_consecutive_letters");
+    t(m("gemfil", "Gemfile.lock") < m("gemfil", "Gemfile"), "fzy should_prefer_contiguous_over_letter_following_period");
+    t(m("abce", "abcdef") > m("abce", "abc de") && m("abc", "    a b c ") > m("abc", " a  b  c ") &&
+          m("abc", " a b c    ") > m("abc", " a  b  c "),
+      "fzy should_prefer_shorter_matches");
+    t(m("test", "tests") > m("test", "testing"), "fzy should_prefer_shorter_candidates");
+    t(m("test", "testing") > m("test", "/testing"), "fzy should_prefer_start_of_candidate");
+    t(m("abc", "abc") == kMax && m("aBc", "abC") == kMax, "fzy score_exact_match");
+    t(m("", "") == kMin && m("", "a") == kMin && m("", "bb") == kMin, "fzy score_empty_query");
+    t(eq(m("a", "*a"), kGapLeading) && eq(m("a", "*ba"), kGapLeading * 2) &&
+          eq(m("a", "**a*"), kGapLeading * 2 + kGapTrailing) && eq(m("a", "**a**"), kGapLeading * 2 + kGapTrailing * 2) &&
+          eq(m("aa", "**aa**"), kGapLeading * 2 + kMatchConsecutive + kGapTrailing * 2) &&
+          eq(m("aa", "**a*a**"), kGapLeading + kGapLeading + kGapInner + kGapTrailing + kGapTrailing),
+      "fzy score_gaps");
+    t(eq(m("aa", "*aa"), kGapLeading + kMatchConsecutive) && eq(m("aaa", "*aaa"), kGapLeading + kMatchConsecutive * 2) &&
+          eq(m("aaa", "*a*aa"), kGapLeading + kGapInner + kMatchConsecutive),
+      "fzy score_consecutive");
+    t(eq(m("a", "/a"), kGapLeading + kMatchSlash) && eq(m("a", "*/a"), kGapLeading * 2 + kMatchSlash) &&
+          eq(m("aa", "a/aa"), kGapLeading * 2 + kMatchSlash + kMatchConsecutive),
+      "fzy score_slash");
+    t(eq(m("a", "bA"), kGapLeading + kMatchCapital) && eq(m("a", "baA"), kGapLeading * 2 + kMatchCapital) &&
+          eq(m("aa", "baAa"), kGapLeading * 2 + kMatchCapital + kMatchConsecutive),
+      "fzy score_capital");
+    t(eq(m("a", ".a"), kGapLeading + kMatchDot) && eq(m("a", "*a.a"), kGapLeading * 3 + kMatchDot) &&
+          eq(m("a", "*a.a"), kGapLeading + kGapInner + kMatchDot),
+      "fzy score_dot");
+    const std::string longest(4095, 'a');
+    t(m("aa", longest.c_str()) == kMin && m(longest.c_str(), "aa") == kMin && m(longest.c_str(), longest.c_str()) == kMin,
+      "fzy score_long_string");
+    t(at("amo", "app/models/foo") == std::vector<std::size_t>{0, 4, 5}, "fzy positions_consecutive");
+    t(at("amor", "app/models/order") == std::vector<std::size_t>{0, 4, 11, 12}, "fzy positions_start_of_word");
+    t(at("as", "tags") == std::vector<std::size_t>{1, 3} && at("as", "examples.txt") == std::vector<std::size_t>{2, 7},
+      "fzy positions_no_bonuses");
+    t(at("abc", "a/a/b/c/c") == std::vector<std::size_t>{2, 4, 6}, "fzy positions_multiple_candidates_start_of_words");
+    t(at("foo", "foo") == std::vector<std::size_t>{0, 1, 2}, "fzy positions_exact_match");
+    check(passed == 24, "all 24 of fzy's tests pass");
+    check(hasMatch(utf32("\xd7\x9e\xd7\xa7"), utf32("\xd7\x9e\xd7\x99\xd7\xa7\xd7\xa1")) &&
+              match(utf32("\xd7\x9e\xd7\xa7"), utf32("\xd7\x9e\xd7\x99\xd7\xa7\xd7\xa1")) > kMin,
+          "a Hebrew query matches a Hebrew name as it is");
+    check(hasMatch(utf32("\xd0\x9c\xd0\x98"), utf32("\xd0\xbc\xd0\xb8\xd0\xba\xd1\x81")), "Cyrillic matches either case");
+}
 // SRF-05's JUCE-free half: a port's switches from the Settings' `midi.ports` record, the lock-free ring
 // a port's events go through, and a Universal MIDI Packet read as the MIDI 1.0 message it carries.
 void midiPortsCore() {
@@ -152,6 +218,7 @@ void midiPortsCore() {
 int main() {
     themeAndDensityTables();
     midiPortsCore();
+    fzyCases();
     test::TempDirectory temp("ui_state", "roundtrip");
     StoreError err{};
     auto store = Store::createEmpty(temp.path() / "p.adi", err);

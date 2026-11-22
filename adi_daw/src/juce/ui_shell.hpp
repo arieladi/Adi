@@ -21,6 +21,7 @@
 #include "ui_browser.hpp"
 #include "ui_controlbar.hpp"
 #include "ui_look.hpp"
+#include "ui_palette.hpp"
 #include "adi/clip_commands.hpp"
 #include "ui_devices.hpp"
 #include "ui_clipview.hpp"
@@ -159,7 +160,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
         ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
         ExportAudio,       // the File menu's Export Audio/Video (manual 5.2.1), Ctrl/Cmd+Shift+R
-        LastId = ExportAudio
+        CommandPalette,    // ADI's command palette (WIN-06; Live has none), Ctrl/Cmd+P
+        LastId = CommandPalette
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -517,6 +519,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // project already holds for the plug-in overrides. Unset outside the application.
     std::function<bool(rows::PluginRef, std::int64_t track, std::optional<std::int64_t> before, bool kindGuessed)> loadPlugin;
     bool insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    // WIN-06: the command palette over the window (Ctrl/Cmd+P); null until first opened.
+    void openPalette();
+    CommandPalette *palette() noexcept { return palette_.get(); }
     DeviceChainStrip devices;
     DockResizer dockResizer;
     // Live's Clip View, above the Device View in the detail row (STEP-7-PLAN 7.7).
@@ -788,6 +793,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::optional<SnapshotReader> reader_;
     std::uint64_t generation_ = 0;
     bool pluginWindowsShown_ = true;
+    std::unique_ptr<CommandPalette> palette_;
     unsigned lastDrain_ = 0;
     bool playing_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
