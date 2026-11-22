@@ -302,6 +302,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // of 500 ms or more goes back (Live 42.25).
     bool keyStateChanged(bool isKeyDown) override;
     bool command(int);
+    // Live's Insert Return Track (§18.4; Ctrl/Cmd+Alt+T): a return after the others, named by its
+    // letter, selected; the returns shown again if they were hidden. With `group`, Insert Return Track
+    // in Group (ADR-0247 d2): inside it, after what it holds, lettered with its initial ("DA").
+    bool insertReturnTrack(std::int64_t group = 0);
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
@@ -725,9 +729,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
 
   private:
     bool insertTrack(bool midi);
-    // Live's Insert Return Track (§18.4; Ctrl/Cmd+Alt+T): a return after the others, named by its
-    // letter, selected; the returns shown again if they were hidden.
-    bool insertReturnTrack();
     bool deleteTrack();
     // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
     bool groupTracks(bool ungroup);

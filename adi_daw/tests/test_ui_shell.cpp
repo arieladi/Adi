@@ -885,7 +885,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
               "Body comes back, by name, holding what it held");
         lanes.selection.track = 1;
         check(!enabled(AppCommands::GroupTracks) && !root.command(AppCommands::GroupTracks) &&
-                  root.error() == "Main and return tracks can't be grouped." && order() == tree,
+                  root.error() == "Main can't be grouped." && order() == tree,
               "Main can't be grouped, and the Status Bar says so");
         lanes.selection.track = 0;
         check(!root.command(AppCommands::UngroupTracks) && root.error() == "Select a group track to ungroup.",
@@ -2567,9 +2567,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     for (const auto &r : browser.rows()) {
         if (r.heading.isNotEmpty())
             folders.push_back(r.heading);
-        // Every entry loads but Hybrid Reverb with Pd on; none with it off.
+        // Every entry loads with Pd on, Hybrid Reverb too since DEV-22 built it; none with it off.
 #if ADI_WITH_PD
-        const bool expected = r.device == nullptr || r.device->name != "Hybrid Reverb";
+        const bool expected = true;
 #else
         const bool expected = r.device == nullptr;
 #endif
@@ -2581,8 +2581,14 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
               dimmedRight && find("Auto Filter") >= 0 && find("Chord Comb") < 0,
           "Audio Effects lists Live's seven folders with their effects, each dimmed when this build cannot load it");
     rowOf = find("Hybrid Reverb");
-    check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("not built in ADI yet") != std::string::npos,
-          "Hybrid Reverb is dimmed always, and a double-click says why");
+#if ADI_WITH_PD
+    // Not loaded here: track 4 stays empty for the loads below.
+    check(rowOf >= 0 && BrowserPanel::unavailable(*browser.rows()[static_cast<std::size_t>(rowOf)].device).empty(),
+          "Hybrid Reverb loads with Pd on, as the rest (DEV-22)");
+#else
+    check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("leaves out") != std::string::npos,
+          "with Pd off, Hybrid Reverb is dimmed with the Pd devices, and a double-click says why");
+#endif
     browser.choose(pdDevices);
     check(browser.rows().size() == 3 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr &&
               browser.rows()[2].device != nullptr,
@@ -3003,6 +3009,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         return document->store().db().execAndGet("SELECT count(*) FROM device_chains WHERE track_id = " +
                                                  std::to_string(track)).getInt();
     };
+    // The plug-in loads above ended with no track selected: 3 Audio, track 4, again.
+    root.arrangement.geometry.selection.track = 4;
+    refresh();
 #if ADI_WITH_PD
     check(browser.load(find("Auto Filter")), "a double-click on Auto Filter loads it");
     refresh();
@@ -3016,7 +3025,8 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     refresh();
     check(root.devices.panels.size() == 1, "the strip shows it");
     // In front of the device chosen in the strip, though the browser now has the focus.
-    root.devices.chose(root.devices.panels[0]->id);
+    if (!root.devices.panels.empty())
+        root.devices.chose(root.devices.panels[0]->id);
     check(browser.load(find("EQ Eight")), "EQ Eight with Utility chosen");
     refresh();
     check(chainOf(4) == std::vector<std::string>{"EQ Eight", "Utility"}, "goes in front of it");
@@ -8978,7 +8988,292 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
         }
         save(plugIns, "adi-plugins.png");
     }
+    // DF-W33 (ADR-0247 d2): a return inside Drums, "Drum Room", made by Insert Return Track in Group;
+    // Loops and Drum Loop send to it, Drum Loop's send after its effects (Post FX), so the return's
+    // Pre/Post switch is mixed. (Kit holds no instrument, so it has no sends.)
+    const bool roomMade = root.insertReturnTrack(30);
+    check(roomMade, "the showcase's return in Drums");
+    if (roomMade) {
+        document->synchronise();
+        root.frame();
+        std::int64_t room = 0;
+        for (const auto &t : root.reader().tracks())
+            if (t->kind == "return" && t->parent == 30)
+                room = t->id;
+        std::vector<OpRequest> rename;
+        OpRequest r;
+        r.opType = "track.rename";
+        r.payload = {{"id", room}, {"name", "Drum Room"}};
+        r.label = "Rename";
+        rename.push_back(std::move(r));
+        root.submitEdits(std::move(rename));
+        document->synchronise();
+        root.submitEdits(adi::ui::setSend(*root.current(), 31, room, -18).ops);
+        document->synchronise();
+        root.submitEdits(adi::ui::setSend(*root.current(), 4, room, -12).ops);
+        document->synchronise();
+        root.submitEdits(adi::ui::setSendTap(*root.current(), 4, room, IndividualSendTap::PostFx).ops);
+        document->synchronise();
+        root.frame();
+        root.command(AppCommands::OptimizeHeight);
+        sel.track = 4;
+        root.frame();
+        root.frame();
+        juce::Image inGroup(juce::Image::ARGB, 1920, 1080, true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(inGroup);
+            root.paintEntireComponent(g, true);
+        }
+        check(room != 0 && adi::ui::returnTapMixed(*root.current(), room), "the showcase's Drum Room, its switch mixed");
+        save(inGroup, "adi-return-in-group.png");
+    }
     commands.detach(root);
+    document->release();
+}
+// DF-W33 (ADR-0247 d2; ADR-0245 d9): a return inside a group. Insert Return Track in Group puts it in
+// the group, after what the group holds, lettered with the group's initial ("DA"); its send knob is
+// on the group's tracks only; A and B keep their letters; Group Tracks takes a return; one Undo each.
+void returnInGroup(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "return-in-group.adi", true, {}, error);
+    check(document != nullptr, "a new project for a return inside a group");
+    if (!document)
+        return;
+    std::vector<OpRequest> grouping;
+    const auto op = [&grouping](const char *type, Payload payload) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = "Group Tracks";
+        grouping.push_back(std::move(r));
+    };
+    // The default set's second MIDI track and first audio track into a group named Drums; the
+    // second audio track stays outside, to compare its knobs.
+    op("track.create", {{"id", 40}, {"kind", "group"}, {"name", "Drums"}, {"index", 0}});
+    op("track.setParent", {{"id", 3}, {"parent", 40}});
+    op("track.setParent", {{"id", 4}, {"parent", 40}});
+    check(document->ops().submit(std::move(grouping)).ok && document->synchronise(), "Drums holds two tracks");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "return-in-group");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 1600); // every row in sight, so every strip is realised
+    root.frame();
+    root.frame();
+    const auto returns = [&root](std::int64_t parent) {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->kind == "return" && t->parent == parent)
+                out.push_back(t->id);
+        return out;
+    };
+    const auto topBefore = returns(0);
+    check(topBefore.size() == 2 && returns(40).empty(), "the default set's two returns, A and B, at the top");
+    check(root.insertReturnTrack(40), "Insert Return Track in Group on Drums");
+    document->synchronise();
+    root.frame();
+    root.frame();
+    const auto grouped = returns(40);
+    const auto *made = grouped.size() == 1 ? root.reader().findTrack(grouped.front()) : nullptr;
+    check(made != nullptr && made->name == "DA Return" && returns(0) == topBefore &&
+              document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert Return Track in Group",
+          "a return inside Drums, named DA, the top-level returns untouched, one undo step");
+    // Its place: in Drums, after the group's tracks, not at the foot.
+    const auto rows = root.arrangement.geometry.rows(root.reader());
+    const auto at = made != nullptr ? rows.find(made->id) : rows.size();
+    const auto foot = root.arrangement.geometry.footStart(rows);
+    check(at < rows.size() && at < foot && rows[at].place.parent == 40 && at == rows.find(4) + 1 &&
+              rows.size() - foot == 3,
+          "drawn in its group after what it holds; the foot keeps A, B and Main");
+    // The knobs: A, B and DA on Drums' tracks; A and B on a track outside it.
+    const auto knobsOf = [&root](std::int64_t track) {
+        std::vector<std::pair<std::int64_t, juce::String>> out;
+        for (const auto &strip : root.mixer.strips())
+            if (strip->track() == track)
+                for (std::size_t i = 0; i < strip->sendKnobs().size(); ++i)
+                    out.emplace_back(strip->sendsTo(i), strip->sendKnobs()[i]->getTitle());
+        return out;
+    };
+    const auto inside = knobsOf(4), outside = knobsOf(5);
+    check(made != nullptr && inside.size() == 3 && inside[2].first == made->id && inside[2].second == "Send DA" &&
+              inside[0].second == "Send A" && inside[1].second == "Send B",
+          "a track in Drums has a knob for A, B and DA, each lettered as its return");
+    check(outside.size() == 2 && outside[0].second == "Send A" && outside[1].second == "Send B",
+          "a track outside Drums has no knob for DA; A and B keep their letters");
+    // DA's own strip: knobs for A and B, none for itself (the agreed sheet).
+    const auto own = made != nullptr ? knobsOf(made->id) : decltype(knobsOf(0)){};
+    check(own.size() == 2 && own[0].second == "Send A" && own[1].second == "Send B",
+          "DA's own strip has knobs for A and B, none for itself");
+    // The return's own activator says DA.
+    bool lettered = false;
+    for (const auto &strip : root.mixer.strips())
+        if (made != nullptr && strip->track() == made->id)
+            lettered = strip->active.getButtonText() == "DA";
+    check(lettered, "the return's activator shows DA");
+    // Numbers skip the returns, the grouped one too: 1 MIDI is 1, Drums 2, its tracks 3 and 4, then
+    // 2 Audio is 5, as F5 counts it, not 6.
+    const auto activatorOf = [&root](std::int64_t track) {
+        for (const auto &strip : root.mixer.strips())
+            if (strip->track() == track)
+                return strip->active.getButtonText();
+        return juce::String();
+    };
+    check(activatorOf(2) == "1" && activatorOf(40) == "2" && activatorOf(4) == "4" && activatorOf(5) == "5",
+          "the tracks after Drums keep their numbers: the return in it takes none");
+    // The Mixer View: every strip keeps a row per return, so the faders line up (DF-W33).
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.resizeMixerView(420);
+    root.mark(DirtySet::All);
+    root.frame();
+    {
+        const MixerStrip *in = nullptr, *out = nullptr;
+        for (const auto &strip : root.mixerView.strips()) {
+            if (strip->track() == 4)
+                in = strip.get();
+            if (strip->track() == 5)
+                out = strip.get();
+        }
+        check(in != nullptr && out != nullptr && in->sendKnobs().size() == 3 && out->sendKnobs().size() == 2 &&
+                  in->sendsShown() == out->sendsShown() && in->volume.getY() == out->volume.getY(),
+              "in the Mixer View a Drums track (A, B, DA) and one outside (A, B) keep their faders level");
+    }
+    check(root.command(AppCommands::ToggleMixerView), "and closes");
+    root.frame();
+    // A rename of the group re-letters its return everywhere: the knobs, the activator, Main's switch.
+    {
+        std::vector<OpRequest> rename;
+        OpRequest r;
+        r.opType = "track.rename";
+        r.payload = {{"id", 40}, {"name", "Kicks"}};
+        r.label = "Rename";
+        rename.push_back(std::move(r));
+        check(root.submitEdits(std::move(rename)), "Drums renamed Kicks");
+        document->synchronise();
+        root.frame();
+        const auto renamed = knobsOf(4);
+        bool reLettered = false;
+        for (const auto &strip : root.mixer.strips())
+            if (made != nullptr && strip->track() == made->id)
+                reLettered = strip->active.getButtonText() == "KA";
+        check(renamed.size() == 3 && renamed[2].second == "Send KA" && reLettered,
+              "its return is KA now, on its knobs and its activator");
+        check(root.command(AppCommands::Undo), "undo the rename");
+        document->synchronise();
+        root.frame();
+        check(knobsOf(4).size() == 3 && knobsOf(4)[2].second == "Send DA", "and DA again");
+    }
+    // A send's own tap (ADR-0245 d10): DA turned up on a Drums track, then Pre FX from its menu.
+    if (made != nullptr) {
+        check(root.submitEdits(adi::ui::setSend(*root.current(), 4, made->id, -12).ops), "DA turned up on a Drums track");
+        document->synchronise();
+        check(!root.submitEdits(adi::ui::setSend(*root.current(), 5, made->id, -12).ops) &&
+                  adi::ui::sendTap(*root.current(), 5, made->id) == std::nullopt,
+              "a track outside Drums can't send to DA: the engine refuses it");
+        document->synchronise();
+        check(adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PostMixer,
+              "a new send taps where its return's switch says: Post Mixer");
+        check(adi::ui::setSendTap(*root.current(), 4, made->id, IndividualSendTap::PostMixer).ops.empty(),
+              "choosing the tap it already takes from the switch makes no step and pins nothing");
+        check(root.submitEdits(adi::ui::setSendTap(*root.current(), 4, made->id, IndividualSendTap::PreFx).ops) &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->label == "Change Send Tap",
+              "Pre FX chosen: one undo step");
+        document->synchronise();
+        check(adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PreFx, "and the send taps before the effects");
+        {
+            const auto back = adi::ui::setSendTap(*root.current(), 4, made->id, IndividualSendTap::PostMixer);
+            check(back.ops.size() == 1 && back.ops[0].payload.find("tap") == back.ops[0].payload.end(),
+                  "choosing the switch's own tap again clears the send's own, so it follows the switch");
+        }
+        check(!adi::ui::setSendTap(*root.current(), 3, made->id, IndividualSendTap::PreFx).refusal.empty(),
+              "a send still fully down has no tap to choose, and says so");
+        root.frame();
+        juce::TextButton *returnSwitch = nullptr;
+        for (const auto &strip : root.mixer.strips())
+            if (strip->track() == made->id)
+                returnSwitch = &strip->prePost;
+        // One send with a tap of its own is no mixed switch: the sends don't differ (ADR-0247 d2); its
+        // knob carries no mark, its menu says it.
+        check(returnSwitch != nullptr && !adi::ui::returnTapMixed(*root.current(), made->id) &&
+                  returnSwitch->getButtonText() == "Post" && !static_cast<bool>(returnSwitch->getProperties()["live.mixed"]),
+              "one send tapping on its own leaves DA's switch at Post, unmixed");
+        // A second send, following the switch (Post Mixer): now DA's sends differ.
+        check(root.submitEdits(adi::ui::setSend(*root.current(), 3, made->id, -6).ops), "DA turned up on the other Drums track");
+        document->synchronise();
+        root.frame();
+        check(adi::ui::returnTapMixed(*root.current(), made->id) && returnSwitch != nullptr &&
+                  static_cast<bool>(returnSwitch->getProperties()["live.mixed"]) && !returnSwitch->getToggleState() &&
+                  returnSwitch->getButtonText() == juce::String(juce::CharPointer_UTF8("\xe2\x80\x93")),
+              "DA's sends differ, Pre FX and Post Mixer: its Pre/Post is mixed, a dash in an accent edge");
+        if (returnSwitch != nullptr && returnSwitch->onClick)
+            returnSwitch->onClick();
+        document->synchronise();
+        root.frame();
+        check(!adi::ui::returnTapMixed(*root.current(), made->id) &&
+                  adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PostMixer &&
+                  adi::ui::sendTap(*root.current(), 3, made->id) == IndividualSendTap::PostMixer &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->label == "Change Pre/Post" &&
+                  returnSwitch != nullptr && returnSwitch->getButtonText() == "Post" &&
+                  !static_cast<bool>(returnSwitch->getProperties()["live.mixed"]),
+              "a click on the mixed switch sets every send to Post, one undo step");
+        if (returnSwitch != nullptr && returnSwitch->onClick)
+            returnSwitch->onClick();
+        document->synchronise();
+        root.frame();
+        check(!adi::ui::returnTapMixed(*root.current(), made->id) && adi::ui::returnPre(root.reader().tracks(), made->id) &&
+                  adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PostFx &&
+                  adi::ui::sendTap(*root.current(), 3, made->id) == IndividualSendTap::PostFx &&
+                  returnSwitch != nullptr && returnSwitch->getButtonText() == "Pre",
+              "and the next click throws the switch to Pre");
+        check(root.command(AppCommands::Undo), "undo the second click");
+        document->synchronise();
+        check(root.command(AppCommands::Undo), "undo the click");
+        document->synchronise();
+        check(adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PreFx &&
+                  adi::ui::returnTapMixed(*root.current(), made->id),
+              "the send's own tap is back, and the switch mixed");
+        check(root.command(AppCommands::Undo), "undo the second send");
+        document->synchronise();
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos: the tap, the send");
+        document->synchronise();
+    }
+    check(root.command(AppCommands::Undo), "one undo");
+    document->synchronise();
+    root.frame();
+    check(returns(40).empty() && returns(0) == topBefore, "takes the grouped return back");
+    // The other way in (ADR-0247 d2): return A dragged by its title onto Drums' row goes into Drums.
+    {
+        auto &headers = root.arrangement.headers;
+        const auto rowAt = [&root](std::int64_t id, int down) {
+            return juce::Point<float>(60.f, static_cast<float>(root.arrangement.geometry.rowTop(root.reader(), id) + down));
+        };
+        const auto from = rowAt(topBefore.front(), 16), to = rowAt(40, 44);
+        headers.mouseDown(pressAt(headers, from));
+        headers.mouseDrag(dragAt(headers, from, to));
+        const auto shown = headers.drop();
+        check(shown && shown->into == 40 && shown->to.parent == 40, "over Drums' row, the drop outlines Drums");
+        headers.mouseUp(dragAt(headers, from, to));
+        document->synchronise();
+        root.frame();
+        const auto *dragged = root.reader().findTrack(topBefore.front());
+        check(dragged != nullptr && dragged->parent == 40 && returns(0).size() == 1 && document->ops().nextUndo() &&
+                  document->ops().nextUndo()->label == "Move Track",
+              "and on release, A is in Drums, one undo step; B stays at the foot");
+        check(root.command(AppCommands::Undo), "undo");
+        document->synchronise();
+        root.frame();
+        check(returns(40).empty() && returns(0) == topBefore, "A back at the foot");
+    }
+    // Group Tracks takes a return now; Main still can't be grouped.
+    root.arrangement.geometry.selection.track = topBefore.front();
+    root.arrangement.geometry.selection.picked.clear();
+    root.publishSelection();
+    check(root.command(AppCommands::GroupTracks), "Group Tracks on return A");
+    document->synchronise();
+    root.frame();
+    const auto *a = root.reader().findTrack(topBefore.front());
+    check(a != nullptr && a->parent != 0, "return A is inside a new group");
+    check(root.command(AppCommands::Undo), "and one undo puts it back");
+    document->synchronise();
+    root.frame();
     document->release();
 }
 void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
@@ -15552,6 +15847,7 @@ int main(int argc, char **argv) {
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
+    trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
     std::printf("%d checks, %d failures\n", checks, failures);

@@ -907,7 +907,7 @@ void StatusBar::paint(juce::Graphics &g) {
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {
         g.setFont(look::font(look::fontBody));
-        g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, i + 1).c_str()),
+        g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, rows[i].number()).c_str()),
                    track.reduced(6, 0).withWidth(44), juce::Justification::centredLeft);
     }
 }
@@ -2410,26 +2410,48 @@ bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, 
     publishSelection();
     return true;
 }
-bool AdiRootComponent::insertReturnTrack() {
+bool AdiRootComponent::insertReturnTrack(std::int64_t group) {
     // From the CURRENT cell (ADR-0201). The new return comes after the others, as every return
-    // stands after the tracks (TrackOrder), and takes the next letter, as Live names it.
+    // stands after the tracks (TrackOrder), and takes the next letter, as Live names it. Inside a
+    // group (Insert Return Track in Group, ADR-0247 d2), after what the group holds, and plays into
+    // it; its letter is the group's initial and its place among the group's returns ("DA").
     const auto current = view_.current();
     if (!current)
         return fail("Inserting a return needs an open project.");
     const auto &tracks = current->tracks;
-    std::int64_t id = 1, returns = 0;
+    const engine::TrackNode *into = nullptr;
+    for (const auto &t : tracks)
+        if (group != 0 && t->id == group && t->kind == "group")
+            into = t.get();
+    if (group != 0 && into == nullptr)
+        return fail("Choose a group to put the return in.");
+    std::int64_t id = 1, returns = 0, held = 0;
     for (const auto &t : tracks) {
         id = std::max(id, t->id + 1);
-        if (t->kind == "return")
+        if (t->kind == "return" && t->parent == group)
             ++returns;
+        if (t->parent == group)
+            ++held;
+    }
+    std::string letter(1, static_cast<char>('A' + returns % 26));
+    if (into != nullptr) {
+        char initial = 'G';
+        for (const char c : into->name)
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                initial = static_cast<char>(c >= 'a' ? c - 'a' + 'A' : c);
+                break;
+            }
+        letter.insert(letter.begin(), initial);
     }
     OpRequest request;
     request.opType = "track.create";
     request.payload = {{"id", id},
                        {"kind", "return"},
-                       {"name", std::string(1, static_cast<char>('A' + returns % 26)) + " Return"},
-                       {"index", static_cast<std::int64_t>(tracks.size())}};
-    request.label = "Insert Return Track";
+                       {"name", letter + " Return"},
+                       {"index", static_cast<std::int64_t>(into != nullptr ? held : static_cast<std::int64_t>(tracks.size()))}};
+    if (into != nullptr)
+        request.payload["parent"] = group;
+    request.label = into != nullptr ? "Insert Return Track in Group" : "Insert Return Track";
     request.selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(request));
     if (!result)
