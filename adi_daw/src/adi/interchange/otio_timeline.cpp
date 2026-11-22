@@ -167,6 +167,39 @@ std::variant<LinearTrack, TimelineError> readTrack(const Json &object, const std
     }
     return track;
 }
+
+Json composable(const char *type, const std::string &name, bool enabled) {
+    return Json{{"OTIO_SCHEMA", type}, {"name", name}, {"enabled", enabled},
+                {"metadata", Json::object()}, {"markers", Json::array()}, {"effects", Json::array()}};
+}
+
+std::variant<Json, TimelineError> writeItem(const LinearItem &item, const std::string &path) {
+    const auto range = writeRange(item.source);
+    if (!range)
+        return TimelineError{TimelineIssue::InvalidTime, path + "/source_range"};
+    if (item.kind == ItemKind::Gap) {
+        auto gap = composable("Gap.1", item.name, item.enabled);
+        gap["source_range"] = *range;
+        return gap;
+    }
+    auto clip = composable("Clip.2", item.name, item.enabled);
+    clip["source_range"] = *range;
+    Json reference{{"name", ""}, {"metadata", Json::object()}, {"available_range", nullptr}};
+    switch (item.media) {
+    case MediaKind::Missing:
+        reference["OTIO_SCHEMA"] = "MissingReference.1";
+        break;
+    case MediaKind::External:
+        reference["OTIO_SCHEMA"] = "ExternalReference.1";
+        reference["target_url"] = item.targetUrl;
+        break;
+    case MediaKind::Unsupported:
+        return TimelineError{TimelineIssue::UnsupportedMedia, path + "/media_references"};
+    }
+    clip["media_references"] = Json{{"DEFAULT_MEDIA", std::move(reference)}};
+    clip["active_media_reference_key"] = "DEFAULT_MEDIA";
+    return clip;
+}
 } // namespace
 
 std::variant<LinearTimeline, TimelineError> readLinearTimeline(const Json &document) {
@@ -203,6 +236,38 @@ std::variant<LinearTimeline, TimelineError> readLinearTimeline(const Json &docum
         result.tracks.push_back(std::move(parsed));
     }
     return result;
+}
+
+std::variant<Json, TimelineError> writeLinearTimeline(const LinearTimeline &timeline) {
+    Json document{{"OTIO_SCHEMA", "Timeline.1"}, {"name", timeline.name},
+                  {"metadata", Json::object()}, {"global_start_time", nullptr}};
+    if (timeline.globalStart) {
+        const auto start = writeTime(*timeline.globalStart);
+        if (!start)
+            return TimelineError{TimelineIssue::InvalidTime, "/global_start_time"};
+        document["global_start_time"] = *start;
+    }
+    auto stack = composable("Stack.1", "", true);
+    stack["source_range"] = nullptr;
+    auto tracks = Json::array();
+    for (const auto &track : timeline.tracks) {
+        const auto path = "/tracks/children/" + std::to_string(tracks.size());
+        auto wireTrack = composable("Track.1", track.name, track.enabled);
+        wireTrack["kind"] = track.kind == TrackKind::Audio ? "Audio" : "Video";
+        wireTrack["source_range"] = nullptr;
+        auto items = Json::array();
+        for (const auto &item : track.items) {
+            auto wireItem = writeItem(item, path + "/children/" + std::to_string(items.size()));
+            if (const auto *error = std::get_if<TimelineError>(&wireItem))
+                return *error;
+            items.push_back(std::get<Json>(std::move(wireItem)));
+        }
+        wireTrack["children"] = std::move(items);
+        tracks.push_back(std::move(wireTrack));
+    }
+    stack["children"] = std::move(tracks);
+    document["tracks"] = std::move(stack);
+    return document;
 }
 
 } // namespace adi::interchange::otio

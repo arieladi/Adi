@@ -37,7 +37,7 @@ struct LinearTimeline {
 
 enum class TimelineIssue {
     InvalidField, UnsupportedSchema, UnsupportedTrackKind, UnsupportedTrim,
-    UnsupportedEffects, InvalidTime, MissingSourceRange, MissingMediaReference
+    UnsupportedEffects, InvalidTime, MissingSourceRange, MissingMediaReference, UnsupportedMedia
 };
 
 struct TimelineError {
@@ -50,5 +50,9 @@ struct TimelineError {
 /// caller retains the original DOM for metadata, markers and inactive media
 /// references. A timing-affecting unsupported construct refuses the projection.
 [[nodiscard]] std::variant<LinearTimeline, TimelineError> readLinearTimeline(const nlohmann::json &);
+
+/// Serialize a freshly lowered linear timeline. The caller owns reattachment
+/// of any metadata, markers and alternate references captured on import.
+[[nodiscard]] std::variant<nlohmann::json, TimelineError> writeLinearTimeline(const LinearTimeline &);
 
 } // namespace adi::interchange::otio

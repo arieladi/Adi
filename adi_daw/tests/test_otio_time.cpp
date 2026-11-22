@@ -192,6 +192,50 @@ void unsupportedTimelines() {
     expectTimelineError(wire, TimelineIssue::InvalidTime, "/tracks/children/0/children/0/source_range",
                         "malformed exact time carries the clip or gap path");
 }
+
+void writeTimeline() {
+    const auto original = readLinearTimeline(linearDocument());
+    const auto *timeline = std::get_if<LinearTimeline>(&original);
+    check(timeline != nullptr, "prepare a native linear model for serialization");
+    if (!timeline)
+        return;
+    const auto written = writeLinearTimeline(*timeline);
+    const auto *wire = std::get_if<Json>(&written);
+    check(wire != nullptr, "serialize a native linear model as a canonical OTIO timeline");
+    if (!wire)
+        return;
+    const auto &tracks = wire->at("tracks").at("children");
+    const auto &items = tracks.at(0).at("children");
+    check(wire->at("OTIO_SCHEMA") == "Timeline.1" && tracks.at(0).at("kind") == "Audio" &&
+              items.at(0).at("OTIO_SCHEMA") == "Gap.1" && items.at(1).at("OTIO_SCHEMA") == "Clip.2" &&
+              items.at(1).at("media_references").at("DEFAULT_MEDIA").at("OTIO_SCHEMA") == "MissingReference.1" &&
+              items.at(2).at("active_media_reference_key") == "DEFAULT_MEDIA",
+          "canonical wire uses a modern clip with explicit active external or missing media references");
+    const auto decoded = readLinearTimeline(Json::parse(wire->dump()));
+    const auto *roundTrip = std::get_if<LinearTimeline>(&decoded);
+    check(roundTrip && roundTrip->tracks.size() == 2 && roundTrip->tracks[0].items.size() == 3 &&
+              !roundTrip->tracks[0].items[1].enabled &&
+              roundTrip->tracks[0].items[2].targetUrl == "file:///media/a%20b.wav" &&
+              roundTrip->tracks[0].items[2].source.duration.rate.denominator == 1001 &&
+              roundTrip->tracks[0].items[2].source.duration.valueNumerator == 1001 &&
+              roundTrip->globalStart && roundTrip->globalStart->valueNumerator == 86400,
+          "serialized linear structure round-trips exact times, ordering, track state and URL");
+
+    auto altered = *timeline;
+    altered.tracks[0].items[2].media = MediaKind::Unsupported;
+    auto refused = writeLinearTimeline(altered);
+    auto *error = std::get_if<TimelineError>(&refused);
+    check(error && error->issue == TimelineIssue::UnsupportedMedia &&
+              error->path == "/tracks/children/0/children/2/media_references",
+          "the writer reports unlowered media rather than serializing an empty placeholder");
+    altered = *timeline;
+    altered.tracks[0].items[0].source.duration = {1, 3, {24, 1}};
+    refused = writeLinearTimeline(altered);
+    error = std::get_if<TimelineError>(&refused);
+    check(error && error->issue == TimelineIssue::InvalidTime &&
+              error->path == "/tracks/children/0/children/0/source_range",
+          "an unrepresentable rational refuses the whole document with its source path");
+}
 } // namespace
 
 int main() {
@@ -200,6 +244,7 @@ int main() {
     ranges();
     linearTimeline();
     unsupportedTimelines();
+    writeTimeline();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
