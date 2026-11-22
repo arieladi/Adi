@@ -2286,6 +2286,55 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
             check(wroteQuieter && quietPicture && quietPicture->peak[0] == .125f && quietPicture->peak[1] == .25f &&
                       !clippedPeak.isEmpty() && samplePeak() == clippedPeak && sampleClips() == clippedCount,
                   "sample peaks and clip counts remain held after louder samples leave the Spectrum window");
+            {
+                auto rawSibling = broker->acquire({main, pages.detail.point(), overviewFft, pages.detail.view.channel()});
+                auto ordinary = broker->acquire({main, pages.detail.point(), normalFft, pages.detail.view.channel()});
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+                const auto siblingBefore = rawSibling.read();
+                const auto ordinaryBefore = ordinary.read();
+                const auto beforeReset = broker->stats();
+                const auto resetAttachments = attachments;
+                const auto resetHead = History(doc->store()).head();
+
+                // These overs arrived before Reset, but the shared worker has not read them yet.
+                tap->write(left.data(), right.data(), overviewFft, tap->written(), true, stereoRevision);
+                auto &reset = pages.detail.resetButton;
+                check(rawSibling && ordinary && siblingBefore == quietPicture && ordinaryBefore && reset.onClick &&
+                          beforeReset.spectrumLevelHistories == 1,
+                      "the Reset oracle has the held levels and two active raw observers");
+                if (reset.onClick) reset.onClick();
+                root.frame();
+
+                const auto afterReset = broker->stats();
+                check(!pages.detail.view.snapshot() && integratedRms().contains("--") && maxCrest().contains("--") &&
+                          samplePeak().contains("--") && sampleClips().contains("--"),
+                      "Reset clears the visible Spectrum interval before the next worker publication");
+                check(tapFor(main) == tap && attachments == resetAttachments && History(doc->store()).head() == resetHead &&
+                          afterReset.consumers == beforeReset.consumers && afterReset.taps == beforeReset.taps &&
+                          afterReset.domains == beforeReset.domains && afterReset.spectralPlans == beforeReset.spectralPlans &&
+                          afterReset.transforms == beforeReset.transforms && afterReset.spectrumLevelHistories == 1 &&
+                          rawSibling.read() == siblingBefore && ordinary.read() == ordinaryBefore,
+                      "Reset leaves the authored project, physical tap, FFT demand and other raw pictures intact");
+
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+                const auto bufferedSibling = rawSibling.read();
+                check(bufferedSibling && bufferedSibling != siblingBefore &&
+                          bufferedSibling->peak[0] == 1.5f && bufferedSibling->peak[1] == 2.f &&
+                          ordinary.read() && ordinary.read() != ordinaryBefore &&
+                          samplePeak().contains("--") && sampleClips().contains("--"),
+                      "raw observers receive the queued overs while the reset level interval waits for new audio");
+
+                const bool wroteFresh = sendLevels(.125f, .25f);
+                const auto fresh = pages.detail.view.snapshot();
+                const auto afterFresh = broker->stats();
+                check(wroteFresh && fresh && fresh == rawSibling.read() && fresh != bufferedSibling &&
+                          samplePeak() == "Sample peak  L -18.1  R -12.0 dBFS" && sampleClips() == "Sample clips  L 0  R 0" &&
+                          History(doc->store()).head() == resetHead && tapFor(main) == tap && attachments == resetAttachments &&
+                          afterFresh.domains == beforeReset.domains && afterFresh.spectralPlans == beforeReset.spectralPlans,
+                      "fresh quiet samples reset held levels and retain the original shared Spectrum plan");
+            }
             choose(false);
             check(samplePeak().isEmpty() && sampleClips().isEmpty() && broker->stats().spectrumLevelHistories == 0,
                   "turning off pinned Spectrum drops its held sample statistics");

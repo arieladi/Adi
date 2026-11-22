@@ -3509,6 +3509,131 @@ void spectrumSamplePeaksAndClips() {
           "a new statistics request after disable starts at its own writer fence");
 }
 
+void restartSpectrumLevels() {
+    constexpr int window = 480, hop = 240;
+    constexpr std::uint64_t revision = 55;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+    levels.setSpectrumLevelsEnabled(true);
+    std::array<float, window> left{}, right{};
+    std::int64_t stamp = 0;
+    const auto write = [&](int frames, float l, float r) {
+        left.fill(l); right.fill(r);
+        f.tap->write(left.data(), right.data(), frames, stamp, true, revision);
+        stamp += frames;
+    };
+    for (int block = 0; block < 25; ++block) {
+        write(window, .25f, .125f);
+        f.broker.pump();
+    }
+    write(window, 1.25f, -1.5f);
+    f.broker.pump();
+    const auto held = levels.read();
+    check(held && held == raw.read() && held->spectrumLevels &&
+              held->spectrumLevels->samplePeak == std::array{1.25f, 1.5f} &&
+              held->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{window, window} &&
+              held->spectrumLevels->maxCrestDb[0] > 0.,
+          "the clear fixture seeds held stereo statistics and a shared Raw publication");
+
+    auto sibling = f.broker.acquire(request);
+    sibling.setSpectrumLevelsEnabled(true);
+    check(!raw.restartSpectrumLevels() && !levels.restartSpectrumLevels() && !sibling.restartSpectrumLevels() &&
+              f.broker.stats().spectrumLevelHistories == 1 && levels.read() == held && sibling.read() == held,
+          "a non-owner or either of two opt-in owners cannot clear another view's statistics");
+    sibling.reset();
+
+    write(hop, .75f, -.625f); // buffered before Reset, but the worker has not read it
+    const auto fence = f.tap->written();
+    const auto before = f.broker.stats();
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    const bool restarted = levels.restartSpectrumLevels();
+    observeAllocationSizes = false;
+    const auto immediate = f.broker.stats();
+    check(restarted && allocationSizeCount == 0 && held == raw.read() &&
+              immediate.workerPasses == before.workerPasses && immediate.cursorReads == before.cursorReads &&
+              immediate.publications == before.publications && immediate.transforms == before.transforms &&
+              immediate.taps == before.taps && immediate.spectralPlans == before.spectralPlans &&
+              immediate.spectrumLevelHistories == 1,
+          "a sole owner's Reset changes no immutable Raw picture and schedules no work or allocation itself");
+
+    f.broker.pump();
+    const auto buffered = raw.read();
+    check(held && buffered && buffered != held && !buffered->spectrumLevels &&
+              buffered->generation == held->generation && buffered->sourceEpoch == held->sourceEpoch &&
+              buffered->windowSerial == held->windowSerial + 1 && buffered->firstSequence == fence - window &&
+              buffered->firstStamp == fence - window && buffered->peak == std::array{1.25f, 1.5f},
+          "Raw still publishes the pre-reset buffered audio without counting it in the restarted statistics");
+
+    write(hop, .125f, .25f);
+    f.broker.pump();
+    const auto fresh = levels.read();
+    const auto after = f.broker.stats();
+    check(held && held->spectrumLevels && fresh && fresh->spectrumLevels && fresh == raw.read() &&
+              fresh->peak == std::array{.75f, .625f} && fresh->spectrumLevels->samplePeak == std::array{.125f, .25f} &&
+              fresh->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{0, 0} &&
+              fresh->spectrumLevels->integratedRms == std::array{.125, .25} &&
+              fresh->spectrumLevels->maxCrestDb == std::array{0., 0.} &&
+              held->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{window, window} &&
+              fresh->windowSerial == held->windowSerial + 2 && fresh->sourceEpoch == held->sourceEpoch &&
+              fresh->overrunCount == held->overrunCount && after.transforms == before.transforms + 2 &&
+              after.taps == 1 && after.spectralPlans == 1 && f.acquireCalls == 1 && f.releaseCalls == 0,
+          "the first post-reset interval excludes earlier audio without resetting Raw, its FFT plan or continuity");
+}
+
+void restartParkedSpectrumLevels() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 58;
+    Fixture f;
+    f.tap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = hop;
+    auto raw = f.broker.acquire(request), levels = f.broker.acquire(request);
+    levels.setSpectrumLevelsEnabled(true);
+    const float *silence = nullptr;
+    const auto write = [&](int frames, const float *l, const float *r) {
+        f.tap->write(l, r, frames, stamp, false, revision);
+        f.broker.pump();
+    };
+    write(window, silence, silence);
+    const auto held = raw.read();
+    const auto settled = f.broker.stats();
+    for (int i = 0; i < blocks; ++i)
+        write(block, silence, silence);
+    check(held && held->spectrumLevels && raw.read() == held && f.tap->oldest() > window &&
+              f.broker.stats().workerPasses == settled.workerPasses,
+          "Reset can be reached after a long certified parked interval has wrapped the tap");
+
+    const bool restarted = levels.restartSpectrumLevels();
+    f.broker.pump();
+    const auto immediate = f.broker.stats();
+    check(restarted && raw.read() == held && immediate.workerPasses == settled.workerPasses &&
+              immediate.cursorReads == settled.cursorReads && immediate.publications == settled.publications &&
+              immediate.transforms == settled.transforms,
+          "Reset reconciles the parked cursor without demanding a read, FFT or publication");
+
+    std::array<float, hop> left{}, right{};
+    left.fill(.5f); right.fill(.25f);
+    write(untilHop - 1, left.data(), right.data());
+    check(raw.read() == held, "an incomplete monitoring hop cannot publish after a parked Reset");
+    write(1, left.data(), right.data());
+    const auto audible = raw.read();
+    check(held && audible && audible->spectrumLevels && audible != held &&
+              audible->spectrumLevels->integratedRms == std::array{.5, .25} &&
+              audible->spectrumLevels->samplePeak == std::array{.5f, .25f} &&
+              audible->spectrumLevels->sampleClips == std::array<std::uint64_t, 2>{0, 0} &&
+              audible->windowSerial == held->windowSerial + quietFrames / hop + 1 &&
+              audible->firstSequence == quietFrames + untilHop && audible->firstStamp == stamp &&
+              audible->sourceEpoch == held->sourceEpoch && audible->overrunCount == held->overrunCount &&
+              f.broker.stats().transforms == 1,
+          "first same-stamp monitoring after a parked Reset retains the original hop and a fresh statistics denominator");
+}
+
 void parkedSpectrumLevels() {
     constexpr int window = 480, hop = 240, block = 401, blocks = 33;
     constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
@@ -4843,7 +4968,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedWindowHopPhase(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); parkedSpectrumLevels(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); parkedSpectrumLevels(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

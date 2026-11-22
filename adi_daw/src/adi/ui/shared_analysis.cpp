@@ -2666,6 +2666,19 @@ void SharedAnalysis::Lease::setSpectrumLevelsEnabled(bool enabled) noexcept {
     domain_->changeSpectrumLevelDemand(enabled);
     spectrumLevelsEnabled_ = enabled;
 }
+bool SharedAnalysis::Lease::restartSpectrumLevels() noexcept {
+    const auto state = state_.lock();
+    if (!spectrumLevelsEnabled_ || !state || !available()) return false;
+    state->ownerOnly();
+    const std::lock_guard lock(domain_->mutex);
+    if (!domain_->tap || !domain_->spectrumLevelHistory || domain_->spectrumLevelUsers != 1) return false;
+    // The expanded Spectrum owns this interval. Keep any normal Spectrum
+    // readers and the last immutable window on the existing source timeline.
+    domain_->catchUpParkedSilence();
+    domain_->spectrumLevelHistory->startAt(domain_->tap->written());
+    domain_->spectrumLevelsParkedSettled.store(false, std::memory_order_release);
+    return true;
+}
 std::shared_ptr<const SharedAnalysis::StereoMeterResult> SharedAnalysis::Lease::readStereoMeter() const noexcept {
     return available() && domain_->meter ? domain_->readMeterResult() : nullptr;
 }

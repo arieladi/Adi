@@ -212,6 +212,7 @@ class SharedAnalysis final {
         std::shared_ptr<const RealtimeSigmaResult> readRealtimeSigma() const noexcept;
         void setStereoBalanceEnabled(bool) noexcept;
         void setSpectrumLevelsEnabled(bool) noexcept;
+        bool restartSpectrumLevels() noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
         std::shared_ptr<const StripResult> readStrip() const noexcept;
         bool restartStereoMeter() noexcept;

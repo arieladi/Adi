@@ -829,6 +829,7 @@ void SharedSpectrumView::clear() {
     } else {
         armFreshBoundary();
     }
+    if (spectrumLevelsEnabled_) lease_.restartSpectrumLevels();
     if (mode_ == Mode::Spectrogram) historyClearPosition_ = sourcePosition_;
     for (auto &overlay : spectrumOverlays_) {
         if (mode_ == Mode::SpectrumCumulativeAverage) overlay.lease.restartCumulativeAverage();
