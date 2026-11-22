@@ -22,8 +22,8 @@
 // repeat passes the band again. The delay moves to a new time by a one-pole
 // glide of about 50 ms, read by linear interpolation while it moves and at
 // a whole sample once it has arrived (the time is rounded to a sample), so a
-// still delay is exact. A synced time follows tempo(); the longest delay is
-// 6 s (sixteen sixteenths at 40 BPM).
+// still delay is exact. A synced time follows tempo() over its whole range,
+// 20 to 999 BPM: the longest delay is 12 s (sixteen sixteenths at 20 BPM).
 //
 // WHAT IS NOT LIVE'S YET, and says so: the defaults, the ranges, the band's
 // shape and place in the loop, the pan law and how a time change sounds wait
@@ -47,7 +47,7 @@ public:
     struct Range {
         double low, high, initial;
     };
-    static constexpr double kMaxSeconds = 6;
+    static constexpr double kMaxSeconds = 12;
     /// Line `line`'s control `field`, as a Param.
     [[nodiscard]] static constexpr Param param(std::size_t line, Field field) noexcept {
         return static_cast<Param>(line * Fields + static_cast<std::size_t>(field));

@@ -145,8 +145,28 @@ void sync() {
     const auto x = impulse(30000);
     std::vector<float> ol, orr;
     run(f, x, quiet, ol, orr);
-    check(std::abs(ol[24000] - 1.f) < 1e-7 && std::abs(ol[23999]) < 1e-7 && std::abs(ol[24001]) < 1e-7,
+    // Bit for bit (the review of 6d8614fe: within 1e-7 an interpolated tap
+    // 1e-12 short of the sample would pass too).
+    check(ol[24000] == 1.f && ol[23999] == 0.f && ol[24001] == 0.f,
           "a moved synced time arrives at a whole sample (an exact echo after the glide)");
+    // Every synced time is kept over tempo()'s whole range, 20 to 999 BPM.
+    F slow = alone(0);
+    slow.set(F::param(0, F::Sync), 1);
+    slow.set(F::param(0, F::Sixteenths), 16);
+    slow.prepare(kRate);
+    slow.tempo(30);
+    check(slow.target(0) == 384000, "16 sixteenths at 30 BPM: 8 s");
+    slow.tempo(20);
+    check(slow.target(0) == 576000, "16 sixteenths at 20 BPM: 12 s");
+    slow.set(F::param(0, F::Sixteenths), 9);
+    check(slow.target(0) == 324000, "9 sixteenths at 20 BPM: 6.75 s, not held at a shorter limit");
+    const auto far = impulse(600000);
+    const std::vector<float> none(600000, 0.f);
+    slow.set(F::param(0, F::Sixteenths), 16);
+    slow.prepare(kRate);
+    run(slow, far, none, ol, orr, 4096);
+    check(ol[576000] == 1.f && std::count_if(ol.begin(), ol.end(), [](float v) { return v != 0.f; }) == 1,
+          "at 20 BPM the 12 s echo arrives, alone and exact");
     f.set(F::param(0, F::Sync), 0);
     f.set(F::param(0, F::Time), 3000);
     check(f.target(0) == 144000, "Sync off: Time in ms");
