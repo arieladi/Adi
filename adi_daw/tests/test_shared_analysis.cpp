@@ -1986,6 +1986,68 @@ void focusLagPreviewCases() {
     check(early && early->lagSamples == -137 && near(early->correlation, 1., 1e-12),
           "a negative lag correctly identifies an early target");
 
+    bool gainInvariant = true;
+    for (const auto db : {-20.f, -10.f, 0.f, 10.f}) {
+        delay(137, 1.f);
+        const auto gain = std::pow(10.f, db / 20.f);
+        for (auto &sample : b.scopeLeft) sample *= gain;
+        b.scopeRight = b.scopeLeft;
+        const auto shifted = focusFindLag(request, a, b);
+        gainInvariant = gainInvariant && shifted && shifted->lagSamples == 137 &&
+            near(shifted->correlation, 1., 1e-10);
+    }
+    check(gainInvariant, "a -20 to +10 dB change does not move or weaken a clean lag");
+
+    const auto addEqualPowerNoise = [&](std::uint32_t seed) {
+        constexpr std::size_t lag = 137;
+        const auto radius = static_cast<std::size_t>(request.maxLagSamples);
+        const auto first = radius + lag, count = size - 2 * radius;
+        std::array<float, size> interference;
+        broadband(interference, seed);
+        // Normalize AC energy over the same matched interior where SNR is measured.
+        const auto power = [first, count](std::span<const float> samples) {
+            double sum = 0., squared = 0.;
+            for (const double sample : samples.subspan(first, count)) {
+                sum += sample;
+                squared += sample * sample;
+            }
+            return squared - sum * sum / static_cast<double>(count);
+        };
+        const auto scale = std::sqrt(power(b.scopeLeft) / power(interference));
+        for (std::size_t i = 0; i < size; ++i)
+            b.scopeLeft[i] += static_cast<float>(scale * interference[i]);
+        b.scopeRight = b.scopeLeft;
+    };
+    delay(137, 1.f);
+    addEqualPowerNoise(0x31a59e7bu);
+    const auto cleanPeak = focusFindLag(request, a, b);
+    check(cleanPeak && cleanPeak->lagSamples == 137 && cleanPeak->correlation >= .70,
+          "the first independent 0 dB SNR window retains its distinct timing peak");
+    delay(137, 1.f);
+    addEqualPowerNoise(0x31a59e86u);
+    const auto quieterPeak = focusFindLag(request, a, b);
+    check(quieterPeak && quieterPeak->lagSamples == 137 && near(quieterPeak->correlation, .68817616, 2e-6),
+          "a long 0 dB SNR window with a distinct peak may read just below .70");
+
+    request.maxLagSamples = 2016;
+    a.sampleRate = b.sampleRate = 192000.;
+    delay(137, 1.f);
+    addEqualPowerNoise(0x31a59e7bu);
+    check(!focusFindLag(request, a, b), "a 64-sample interior keeps the conservative correlation floor");
+    request.maxLagSamples = 960;
+    a.sampleRate = b.sampleRate = 48000.;
+
+    delay(137, 1.f);
+    std::array<float, size> interference;
+    broadband(interference, 0x31a59e7bu);
+    for (std::size_t i = 0; i < size; ++i) {
+        if (i + 271 < size) b.scopeLeft[i] += .32f * noise[i + 271];
+        b.scopeLeft[i] += .25f * interference[i];
+    }
+    b.scopeRight = b.scopeLeft;
+    check(!focusFindLag(request, a, b),
+          "a near-floor peak with a substantial competing echo still declines to suggest a lag");
+
     delay(960, 1.f);
     check(!focusFindLag(request, a, b), "a true peak at the positive search boundary remains ineligible");
     delay(-960, 1.f);

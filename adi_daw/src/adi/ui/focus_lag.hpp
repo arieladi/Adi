@@ -111,13 +111,18 @@ inline std::optional<FocusLagPreview> measure(const FocusLagRequest &request, Mi
             winner = offset;
         }
     }
-    if (best < minimumCorrelation || !winner || winner + 1 == candidates) return {};
+    if (!winner || winner + 1 == candidates) return {};
+    // Equal signal and noise power can pull a clearly isolated peak below .70.
+    // Admit that narrow band only with a long common window and stronger separation.
+    const bool nearFloor = best < minimumCorrelation;
+    if (nearFloor && (support < frames / 2 || best < .68)) return {};
+    const double separation = nearFloor ? .15 : peakSeparation;
 
     // The shoulders of the best lobe are not separate hypotheses. A competing
     // local maximum, including a tie or flat peak, makes the shift uncertain.
     for (std::size_t i = 0; i < candidates; ++i) {
         const auto magnitude = std::abs(scores[i]);
-        if (i == winner || best - magnitude >= peakSeparation) continue;
+        if (i == winner || best - magnitude >= separation) continue;
         if ((i == 0 || magnitude >= std::abs(scores[i - 1])) &&
             (i + 1 == candidates || magnitude >= std::abs(scores[i + 1]))) return {};
     }
