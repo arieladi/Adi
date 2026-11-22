@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-04 Ogg Vorbis output
+
+- EX-04 Ogg Vorbis — PR requested, `engine-win/export-ogg-vorbis` at `310a57a5` from `87ea349c`, after 3 December. Pinned BSD-3-Clause Xiph Vorbis v1.3.7 `0657aee69dec8508a0011f47f3b69d7538e9d262` and Ogg v1.3.6 `be05b13e98b048f0b5a0f5fa8ce514d56db5f822`. Uses fixed 1024-frame encoder feeds from the undithered graph stream and verifies the end granule and full decoded length before publication. Stereo 48 kHz 4201 frames and mono 44.1 kHz 719 frames passed. Output bytes stayed identical across graph block sizes and unused PCM dither values, and changed with the requested VBR quality. MSVC: render 437, PCM stream 50, NI Stems 85 (native AAC unavailable). Normalization of lossy output and an Opus encoder remain. The installed decoder verification is Vorbis only. Win owns CI fetch and the combined container landing. Source: https://xiph.org/vorbis/doc/libvorbis/overview.html
+
 ## 2026-11-22 — PD-08 explicit project backup
 
 - PD-08 dated backup worker — PR requested, `engine-win/project-cloud-backup` at `25bf2855` from `87ea349c`. Reuses Collect and Export's consistent snapshot, staged media and progress/cancel. Requires a caller-selected existing folder, names the ZIP from the project file stem and supplied local time, and refuses a same-second collision. MSVC 8 focused checks, including a Unicode name, leap-day timestamp, actual ZIP, and cancellation during archive writing. Window-fn owns the File command, per-run chooser, local clock, progress routing and final status. No sync service was connected.
