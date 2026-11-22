@@ -702,7 +702,7 @@ void contended(std::int32_t frames, double seconds, const std::vector<const char
 
 // --- Part 3: the tail after silence (item 3, denormal-tail) -----------------
 
-#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#if (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)) && !defined(_M_ARM64EC)
 /// The SSE status word's denormal-operand flag (DE, bit 1): set by any
 /// operation that READ a subnormal. Flush-to-zero and denormals-are-zero are
 /// cleared for the check, so a core's own state is seen as it decays.
@@ -721,21 +721,26 @@ private:
 #endif
 
 /// `info` given `signalSeconds` of noise (and notes, for an instrument), then
-/// `silenceSeconds` of digital silence with no events. Every recursive state
-/// must settle on exact 0 (or its target) rather than decay into subnormals:
-/// over the last second of silence no operation may read a subnormal (x86's
-/// denormal-operand flag, with flush-to-zero off: the core as run outside the
-/// callback's scope, in Pd or offline). Then, under the callback's own flush
-/// scope, the silence costs no more than the signal did.
-void tailAfterSilence(const BuiltinInfo& info, std::int32_t frames, double signalSeconds, double silenceSeconds,
-                      const std::filesystem::path& samples) {
+/// `silenceSeconds` of digital silence with no events. Over the last second of
+/// silence no operation may read a subnormal (x86's denormal-operand flag,
+/// with flush-to-zero off: the core as run outside the callback's scope, in
+/// Pd or offline). Then, under the callback's own flush scope, the silence
+/// costs no more than the signal did.
+///
+/// What the flag can see in 60 s: every float-held state (a float delay line
+/// turns subnormal some 760 dB down), and every double state whose time
+/// constant is under about 85 ms (a double turns subnormal only at 2.2e-308,
+/// 708 time constants down). A slower double state's floor (Echo's envelope,
+/// Resonators' combs at a 2 s decay, a low-cut biquad) is held by the audit
+/// and its floor in the code, not by this check.
+void tailAfterSilence(const BuiltinInfo& info, std::int32_t frames, double signalSeconds,
+                      [[maybe_unused]] double silenceSeconds, const std::filesystem::path& samples) {
     const std::string name(info.name);
     std::vector<std::vector<float>> in(2, std::vector<float>(static_cast<std::size_t>(frames)));
     std::vector<std::vector<float>> out(2, std::vector<float>(static_cast<std::size_t>(frames)));
     const float* inPointers[2] = {in[0].data(), in[1].data()};
     float* outPointers[2] = {out[0].data(), out[1].data()};
     const int signalBlocks = static_cast<int>(signalSeconds * kRate / frames);
-    const int silenceBlocks = static_cast<int>(silenceSeconds * kRate / frames);
     // One block: noise or silence in; while the signal plays, a note every
     // 100 ms held 50 ms for an instrument (its notes all end before the silence).
     std::array<engine::Event, 2> events{};
@@ -763,7 +768,7 @@ void tailAfterSilence(const BuiltinInfo& info, std::int32_t frames, double signa
         io.events = engine::EventSpan{events.data(), n};
         return timed([&] { d.process(io); });
     };
-#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#if (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)) && !defined(_M_ARM64EC)
     {
         noiseState = 20261122u;
         auto device = workingDevice(info, frames, samples);
@@ -771,6 +776,7 @@ void tailAfterSilence(const BuiltinInfo& info, std::int32_t frames, double signa
             return;
         }
         const DenormalWatch watch;
+        const int silenceBlocks = static_cast<int>(silenceSeconds * kRate / frames);
         const int lastSecond = static_cast<int>(kRate / frames);
         int touched = 0;
         for (int b = 0; b < signalBlocks + silenceBlocks; ++b) {
@@ -789,6 +795,9 @@ void tailAfterSilence(const BuiltinInfo& info, std::int32_t frames, double signa
                                 std::to_string(static_cast<int>(silenceSeconds)) +
                                 " s of silence its states have settled (no subnormal read in the last second)");
     }
+#else
+    std::printf("    [tail] %-22s %4d frames: the settling check reads x86's denormal-operand flag; not here%c",
+                name.c_str(), frames, 10);
 #endif
     {
         // The callback's own scope (DF-E11): in the steady state, the silence
