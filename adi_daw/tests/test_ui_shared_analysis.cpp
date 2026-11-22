@@ -956,6 +956,86 @@ void writeFrames(Fixture &fixture, int frames, bool parked = false) {
     fixture.tap->write(samples.data(), samples.data(), frames, parked ? 0 : start, !parked);
 }
 
+void clearSpectrogramWhileWorkerAhead() {
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int fft = 1024, hop = fft / 4, backlog = 4;
+    constexpr int left = 5, top = 21, width = 128, height = 256;
+    Fixture f;
+    Root root;
+    root.setSize(340, 340);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView cleared, sibling;
+    cleared.setBounds(0, 0, 156, 311);
+    sibling.setBounds(170, 0, 156, 311);
+    for (auto *view : {&cleared, &sibling}) {
+        view->setMode(Mode::Spectrogram);
+        root.addAndMakeVisible(*view);
+        view->present(f.broker, 1);
+        view->frame();
+    }
+    check(root.getPeer() && !root.getPeer()->getNativeHandle() && f.acquired == 1 &&
+              f.broker->stats().consumers == 2,
+          "both spectrograms use a single tap through a software peer");
+    writeFrames(f, fft);
+    f.broker->pump();
+    cleared.frame();
+    sibling.frame();
+    const auto displayed = cleared.snapshot();
+    check(displayed && displayed == sibling.snapshot() && displayed->columns.size() == 1,
+          "both spectrograms initially present one completed window");
+
+    writeFrames(f, backlog * hop);
+    f.broker->pump();
+    sibling.frame();
+    const auto ahead = sibling.snapshot();
+    check(displayed && ahead && cleared.snapshot() == displayed &&
+              ahead->historySerial == displayed->historySerial + backlog &&
+              ahead->columns.size() == 1 + backlog,
+          "four real hops are published ahead of the view about to Clear");
+
+    const auto fence = f.tap->written();
+    cleared.clear();
+    cleared.frame();
+    check(!cleared.snapshot() && sibling.snapshot() == ahead && f.broker->stats().consumers == 2,
+          "Clear waits for a post-fence input window while the other view keeps its publication");
+
+    writeFrames(f, hop);
+    f.broker->pump();
+    cleared.frame();
+    sibling.frame();
+    const auto complete = sibling.snapshot();
+    check(complete && ahead && complete->historySerial == ahead->historySerial + 1 &&
+              complete->columns.size() == 2 + backlog && originalRasterPixels(sibling, *complete),
+          "the sibling still renders all of the pre-Clear and fresh history");
+    if (!complete)
+        return;
+
+    auto visible = *complete;
+    std::erase_if(visible.columns, [fence](const auto &column) {
+        return column.firstSequence + fft <= fence;
+    });
+    check(visible.columns.size() == 1 && visible.columns.front().firstSequence + fft == fence + hop &&
+              visible.columns.front().firstSequence < fence,
+          "the writer fence admits just the one overlapping window completed after Clear");
+    check(cleared.snapshot() && originalRasterPixels(cleared, visible),
+          "the cleared Scroll raster shows the fresh column and none of the worker's pre-fence backlog");
+
+    const auto fullScroll = softwarePicture(sibling);
+    cleared.setHistoryMotion(Motion::Sweep);
+    const auto localSweep = softwarePicture(cleared);
+    bool freshAtOrigin = true, lit = false;
+    for (int y = 0; y < height; ++y) {
+        const auto expected = fullScroll.getPixelAt(left + width - 1, top + y);
+        lit = lit || expected != adi::ui::look::display;
+        freshAtOrigin = freshAtOrigin && localSweep.getPixelAt(left, top + y) == expected;
+        // The next write edge at x = 1 may have the sweep cursor painted on it.
+        for (int x = 2; x < width; ++x)
+            freshAtOrigin = freshAtOrigin && localSweep.getPixelAt(left + x, top + y) == adi::ui::look::display;
+    }
+    check(lit && freshAtOrigin, "Sweep restarts at the first column after the writer fence");
+}
 void freshActionsWithSharedConsumer() {
     for (const auto mode : {SharedSpectrumView::Mode::Spectrum, SharedSpectrumView::Mode::Scope,
                            SharedSpectrumView::Mode::Meters, SharedSpectrumView::Mode::Phase,
@@ -2190,7 +2270,7 @@ int main() {
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
+          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
           classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }

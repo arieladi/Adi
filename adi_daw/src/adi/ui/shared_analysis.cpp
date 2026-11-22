@@ -136,7 +136,7 @@ struct SharedAnalysis::Domain {
     bool advancing = false, hasWindow = false, discontinuous = false;
     struct PendingColumn {
         std::uint64_t serial;
-        std::int64_t stamp;
+        std::int64_t stamp, sequence;
         std::vector<float> bins;
     };
     std::deque<PendingColumn> pendingHistory;
@@ -304,7 +304,7 @@ struct SharedAnalysis::Domain {
         ++columnSerial;
         if (pendingHistory.empty())
             if (auto storage = historyBuffer(budget, bins)) {
-                appendHistory({columnSerial, firstStamp, std::move(storage)});
+                appendHistory({columnSerial, firstStamp, std::move(storage), firstSequence});
                 return;
             }
         // Stage up to a worker pass where practical, with a bounded scratch
@@ -316,10 +316,11 @@ struct SharedAnalysis::Domain {
             auto &oldest = pendingHistory.front();
             oldest.serial = columnSerial;
             oldest.stamp = firstStamp;
+            oldest.sequence = firstSequence;
             std::copy(bins.begin(), bins.end(), oldest.bins.begin());
             std::rotate(pendingHistory.begin(), pendingHistory.begin() + 1, pendingHistory.end());
             droppedHistory.fetch_add(1, std::memory_order_relaxed);
-        } else pendingHistory.push_back({columnSerial, firstStamp, bins});
+        } else pendingHistory.push_back({columnSerial, firstStamp, firstSequence, bins});
         historyBlocked.store(true, std::memory_order_release);
     }
     bool flushPendingHistory(const std::shared_ptr<HistoryBudget> &budget) {
@@ -329,7 +330,7 @@ struct SharedAnalysis::Domain {
             auto &column = pendingHistory.front();
             auto storage = historyBuffer(budget, std::move(column.bins));
             if (!storage) break;
-            appendHistory({column.serial, column.stamp, std::move(storage)});
+            appendHistory({column.serial, column.stamp, std::move(storage), column.sequence});
             pendingHistory.pop_front();
             if (retiredForPending) --retiredForPending;
             changed = true;

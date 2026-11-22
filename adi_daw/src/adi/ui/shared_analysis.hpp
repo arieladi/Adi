@@ -64,6 +64,7 @@ class SharedAnalysis final {
         std::uint64_t serial = 0;
         std::int64_t firstStamp = 0;
         std::shared_ptr<const std::vector<float>> binsDbfs;
+        std::int64_t firstSequence = 0;
     };
     struct Result {
         Request request;
