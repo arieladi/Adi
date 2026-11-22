@@ -1079,6 +1079,15 @@ void testStepTenReviewed() {
           "biquad~ 1 0 0 -2.5 1.55 (poles outside the unit circle, Pd's fb1 > 2) is refused");
     check(translateMaxPatcher(patcher({box("obj-1", "biquad~ 1. 0. 0. -1.8 0.81", 10, 10, kSig)}, {}), AmxdKind::AudioEffect).ok(),
           "a stable biquad~ (a double pole at 0.9) translates");
+    // The third review: a pole exactly on the unit circle is refused (Pd's
+    // float test decides it, and silences 1 0 0 -1.95 0.95); and a message
+    // led by a word sends the same when it arrives and when banged later.
+    check(refusedFor(patcher({box("obj-1", "biquad~ 1. 0. 0. -1.95 0.95", 10, 10, kSig)}, {}), "unit circle"),
+          "biquad~ 1 0 0 -1.95 0.95 (a pole at 1) is refused");
+    {
+        const auto got = sortedPrints(twoMessages("hello 3", 0, "bang", "$1 $2", "message"));
+        check(got == std::vector<std::string>{"X: hello 3", "X: hello 3"}, "[hello 3( into [$1 $2(, then a bang: hello 3 both times (" + shownAll(got) + ")");
+    }
 }
 
 void testTheOrderIsHeard() {

@@ -836,16 +836,20 @@ private:
     /// them again. A Pd message box keeps nothing. So a number or list on
     /// its way in is also stored in a [list], which a bang sends instead.
     void keepArguments(const Box& b, Fragment& f, int target) {
-        // Everything but a bang goes on as it came (a symbol-led list stays a
-        // list, so $1 is its symbol) and is stored, a symbol too.
+        // Everything but a bang is made a list ([list] keeps a message's
+        // first word as its first element, where Pd's message box would drop
+        // it), goes on, and is stored: the box sends the same now and when
+        // banged later, a symbol too.
         const int route = static_cast<int>(f.records.size());
         f.records.push_back("#X obj " + at(b.x - 60, b.y - 80) + " route bang");
         f.records.push_back("#X obj " + at(b.x - 60, b.y - 40) + " list");
         f.records.push_back("#X obj " + at(b.x, b.y - 60) + " t a a");
-        const int store = route + 1, both = route + 2;
+        f.records.push_back("#X obj " + at(b.x, b.y - 70) + " list");
+        const int store = route + 1, both = route + 2, asList = route + 3;
         f.internal.push_back({route, 0, store, 0});
         f.internal.push_back({store, 0, target, 0});
-        f.internal.push_back({route, 1, both, 0});
+        f.internal.push_back({route, 1, asList, 0});
+        f.internal.push_back({asList, 0, both, 0});
         f.internal.push_back({both, 1, store, 1});
         f.internal.push_back({both, 0, target, 0});
         f.inlets[0] = {route, 0};
@@ -990,6 +994,11 @@ private:
             const bool stable = fb1 * fb1 + 4 * fb2 < 0 ? fb2 >= -1
                                                         : (fb1 <= 2 && fb1 >= -2 && 1 - fb1 - fb2 >= 0 && 1 + fb1 - fb2 >= 0);
             if (!stable) return refuse(b, "biquad~", "unstable coefficients: Pd's biquad~ silences them, Max's runs away");
+            // On the edge (a pole on the unit circle, to 1e-6) Pd decides in
+            // its own float (32 or 64 bits) where this test runs in double:
+            // refused rather than guessed.
+            const double edge = std::min({std::abs(fb2 + 1), std::abs(1 - fb1 - fb2), std::abs(1 + fb1 - fb2), std::abs(std::abs(fb1) - 2)});
+            if (edge < 1e-6) return refuse(b, "biquad~", "a pole on the unit circle: Pd's float stability test may silence it");
         }
         const auto neg = [](const std::string& v) { return number(-std::strtod(v.c_str(), nullptr)); };
         const std::string init = args.empty() ? "" : " " + neg(args[3]) + " " + neg(args[4]) + " " + args[0] + " " +
