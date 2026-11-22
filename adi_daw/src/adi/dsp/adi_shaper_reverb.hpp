@@ -22,7 +22,7 @@ class AdiShaperReverb {
 
   private:
     using Frame = std::array<float, 2>;
-    struct Tap { std::size_t lag; float left, right; };
+    struct Tap { std::size_t lag; Frame gains; };
     struct Diffuser {
         std::vector<Frame> ring;
         std::array<Tap, 5> taps{};

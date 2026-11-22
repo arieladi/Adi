@@ -4,7 +4,11 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numbers>
+#if defined(_M_X64) || (defined(__x86_64__) && defined(__SSE2__))
+#include <emmintrin.h>
+#endif
 
 namespace adi::dsp {
 namespace {
@@ -12,7 +16,8 @@ float normalized(float u, float fallback) noexcept {
     return std::isfinite(u) ? std::clamp(u, 0.f, 1.f) : fallback;
 }
 float finiteSample(float x) noexcept {
-    return std::isfinite(x) ? x : 0.f;
+    static_assert(std::numeric_limits<float>::is_iec559 && sizeof(float) == sizeof(std::uint32_t));
+    return (std::bit_cast<std::uint32_t>(x) & 0x7f800000U) == 0x7f800000U ? 0.f : x;
 }
 // Reproducible positions and signed pressure coefficients for an original
 // stereo room. This sequence is evaluated only when rebuilding tap geometry.
@@ -42,8 +47,8 @@ AdiShaperReverb::Frame AdiShaperReverb::Diffuser::advance(Frame input) noexcept 
     for (const auto& t : taps) {
         if (t.lag >= valid) continue;
         const auto& past = ring[(write - t.lag) & mask];
-        sum[0] += t.left * past[0];
-        sum[1] += t.right * past[1];
+        sum[0] += t.gains[0] * past[0];
+        sum[1] += t.gains[1] * past[1];
     }
     write = (write + 1) & mask;
     return {finiteSample(sum[0]), finiteSample(sum[1])};
@@ -108,8 +113,8 @@ void AdiShaperReverb::shape() noexcept {
             const double magnitude = gain * (.65 + .35 * unit(rng));
             return static_cast<float>(unit(rng) > .5 ? magnitude : -magnitude);
         };
-        tap.left = reflection();
-        tap.right = reflection();
+        tap.gains[0] = reflection();
+        tap.gains[1] = reflection();
         tailLength_ = std::max(tailLength_, tap.lag);
     }
     for (std::size_t stage = 0; stage < diffusion_.size(); ++stage) {
@@ -119,8 +124,8 @@ void AdiShaperReverb::shape() noexcept {
             const double seconds = period * ((static_cast<double>(i) + .75 + .25 * unit(rng)) / 5.) * scale;
             t.lag = static_cast<std::size_t>(std::llround(rate_ * seconds));
             const double gain = .31 * envelope(seconds);
-            t.left = static_cast<float>(gain * (unit(rng) > .5 ? 1. : -1.));
-            t.right = static_cast<float>(gain * (unit(rng) > .5 ? 1. : -1.));
+            t.gains[0] = static_cast<float>(gain * (unit(rng) > .5 ? 1. : -1.));
+            t.gains[1] = static_cast<float>(gain * (unit(rng) > .5 ? 1. : -1.));
         }
         tailLength_ += diffusion_[stage].taps.back().lag;
     }
@@ -159,13 +164,33 @@ void AdiShaperReverb::processStereo(float& l, float& r, float send, float ret, b
     valid_ = std::min(valid_ + 1, history_.size());
     Frame wet{};
     if (remaining_ && ret != 0 && wetAudible) {
+#if defined(_M_X64) || (defined(__x86_64__) && defined(__SSE2__))
+        const auto base = write_ - predelayFrames_;
+        const auto available = valid_ > predelayFrames_ ? valid_ - predelayFrames_ : 0;
+        const auto* past = history_.data();
+        __m128 sum = _mm_setzero_ps();
+        // After a reset, only reflections with recorded input are available.
+        // Mature history can use every tap without inspecting their lags.
+        const auto end = taps_.back().lag < available ? taps_.end()
+            : std::lower_bound(taps_.begin(), taps_.end(), available,
+                  [](const Tap& tap, std::size_t count) { return tap.lag < count; });
+        for (auto tap = taps_.begin(); tap != end; ++tap) {
+            const auto samples = std::bit_cast<std::int64_t>(past[(base - tap->lag) & mask]);
+            const auto gains = std::bit_cast<std::int64_t>(tap->gains);
+            const auto x = _mm_castsi128_ps(_mm_cvtsi64_si128(samples));
+            const auto g = _mm_castsi128_ps(_mm_cvtsi64_si128(gains));
+            sum = _mm_add_ps(sum, _mm_mul_ps(x, g));
+        }
+        wet = std::bit_cast<Frame>(_mm_cvtsi128_si64(_mm_castps_si128(sum)));
+#else
         for (const auto& t : taps_) {
             const auto lag = t.lag + predelayFrames_;
             if (lag >= valid_) break;
             const auto& past = history_[(write_ - lag) & mask];
-            wet[0] += past[0] * t.left;
-            wet[1] += past[1] * t.right;
+            wet[0] += past[0] * t.gains[0];
+            wet[1] += past[1] * t.gains[1];
         }
+#endif
     }
     if (remaining_) --remaining_;
     write_ = (write_ + 1) & mask;

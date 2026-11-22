@@ -38,9 +38,57 @@ std::vector<Stereo> impulse(Room& room, float width, float delay = 0, double bpm
     }
     return result;
 }
+void checkStereoHistory() {
+    Room empty, primed;
+    check(empty.prepare(rate) && primed.prepare(rate), "prepare stereo reflection fixtures");
+    // The primed room has enough silent history for every reflection.
+    for (int n = 0; n < rate * 2; ++n) {
+        float l = 0.f, r = 0.f;
+        primed.processStereo(l, r, 1.f, 1.f);
+    }
+    bool identical = true;
+    bool firstReflection = false;
+    for (int n = 0; n < rate * 2; ++n) {
+        float l = n == 0 ? .5f : 0.f, r = n == 0 ? -.25f : 0.f;
+        float x = l, y = r;
+        empty.processStereo(l, r, 1.f, 1.f);
+        primed.processStereo(x, y, 1.f, 1.f);
+        identical &= l == x && r == y;
+        if (n == 1) {
+            // Signed pressure of the first authored reflection on each channel.
+            firstReflection = std::abs(l - .0243711823f) < 1e-7f
+                           && std::abs(r - .0132606060f) < 1e-7f;
+        }
+    }
+    check(identical && firstReflection, "partial and mature history preserve both reflection gains");
+
+    // Overwrite the complete ring at a low rate, then invalidate it without
+    // zeroing storage. A long predelay exceeds the current valid history.
+    Room dirty, clean;
+    check(dirty.prepare(1000) && clean.prepare(1000), "prepare predelay history fixtures");
+    for (int n = 0; n < 9000; ++n) {
+        float l = .375f, r = -.125f;
+        dirty.processStereo(l, r, 1.f, 1.f);
+    }
+    dirty.reset();
+    dirty.setPredelay(1.f, 20.);
+    clean.setPredelay(1.f, 20.);
+    bool matched = true, heard = false;
+    for (int n = 0; n < 5000; ++n) {
+        float l = n == 0 ? .5f : 0.f, r = n == 0 ? -.25f : 0.f;
+        float x = l, y = r;
+        dirty.processStereo(l, r, 1.f, 1.f);
+        clean.processStereo(x, y, 1.f, 1.f);
+        matched &= l == x && r == y;
+        if (n < 3000) matched &= l == 0.f && r == 0.f;
+        else heard |= l != 0.f && r != 0.f;
+    }
+    check(matched && heard, "predelay after reset ignores stale stereo history");
+}
 } // namespace
 
 int main() {
+    checkStereoHistory();
     Room room;
     float l = 1, r = 1;
     room.processStereo(l, r, 1, 1);
