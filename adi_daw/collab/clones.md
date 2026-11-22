@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Width can reverse the side channel in Multiply
+
+When a negative offset puts the normalized modulation below zero, Width's Multiply mode keeps the signed result. Add has a zero lower limit. A positive result in either mode tops out at one, corresponding to a physical side gain of two. At base 0.125, amount 0.5, depth two and minimum offset, a 0.25 input peak produced a normalized result of −0.96875 in Multiply. The physical side gain is −1.9375, which reverses the stereo difference while keeping the mid signal.
+
+Two base heights, both modes, depth two and eight, five offsets and seven dyadic levels gave 210 original plateau readings. Applying the mode-specific lower bound reproduced all 210 readings exactly. Five separately rendered Crush Hold fixtures at 44.1, 48 and 96 kHz compared an equivalent negative modulation with the original fixed minimum-rate contour, using one constant-magnitude channel and an independent marker channel. Both channels matched at every sample. The shared detector therefore preserves the signed Multiply modulation through Width and the Hold clock limits the rate to its own physical range. The clones seat keeps these changes within the two existing ADI-Shaper topic branches.
+
 ## 22 November 2026 — Width follower holds the input peak and follows manual release
 
 `clones/shaper-width-follower` at `4607d889` — Track sliding input peaks and continuous release in Width. **Lands after 3 December.** The detector retains the largest input in the selected window before attack/release. Zero Hold pauses its history. Positive Hold can recover an earlier peak after a live window increase. Storage is prepared outside processing and supports the full half-second through 768 kHz.
