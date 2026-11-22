@@ -31,7 +31,20 @@ void bind(SQLite::Statement& statement,int index,const Payload& value) {
         statement.bind(index,bytes.empty()?static_cast<const void*>(&empty):bytes.data(),static_cast<int>(bytes.size()));
     }else throw std::runtime_error("invalid captured SQLite cell");
 }
-Payload record(SQLite::Statement &query) {
+Payload record(SQLite::Statement& query, std::size_t inverseLimit = 0) {
+    // The raw TEXT/BLOB byte count is a lower bound on the inverse size.
+    // Reject an oversized cell before copying it into a Payload.
+    if (inverseLimit != 0) {
+        auto remaining = inverseLimit;
+        for (int i = 0; i < query.getColumnCount(); ++i) {
+            const auto column = query.getColumn(i);
+            const auto type = column.getType();
+            if (type != SQLITE_TEXT && type != SQLITE_BLOB) continue;
+            const auto bytes = static_cast<std::size_t>(column.getBytes());
+            if (bytes > remaining) throw std::length_error(std::string(kRackUndoLimitMessage));
+            remaining -= bytes;
+        }
+    }
     return captureQueryRow(query);
 }
 
@@ -90,17 +103,17 @@ std::string predicate(const Payload& key) {
 void bindKey(SQLite::Statement& query,const Payload& key,int index=0) {
     for(const auto& value:key)bind(query,++index,value);
 }
-Payload current(SQLite::Database& db,const Table& table,const Payload& key) {
+Payload current(SQLite::Database& db,const Table& table,const Payload& key,std::size_t inverseLimit=0) {
     SQLite::Statement query(db,"SELECT * FROM "+quoted(table.name)+" WHERE "+predicate(key));bindKey(query,key);
     if(!query.executeStep())return nullptr;
-    return record(query);
+    return record(query,inverseLimit);
 }
 using Identity=std::pair<std::string,std::string>;
 struct Row {std::string table;Payload key,before,after;};
 class Image {
 public:
-  Image(SQLite::Database &database, const Catalog &schema, bool source = false)
-      : db(database), catalog(schema), sourceRead(source) {}
+  Image(SQLite::Database &database, const Catalog &schema, bool source = false, std::size_t inverseLimit = 0)
+      : db(database), catalog(schema), sourceRead(source), inverseLimit_(inverseLimit), remaining_(inverseLimit) {}
   bool ignored(const std::string &name) const {
       return sourceRead && (name == "frozen_renders" || name == "frozen_groups" || name == "device_panels" ||
                             name == "device_panel_params" || name == "controller_maps");
@@ -119,12 +132,20 @@ public:
         if (sourceRead && rows.size() >= 100000 && !rows.contains(identity))
             throw std::runtime_error("freeze source row count exceeds limit");
         const auto found=rows.find(identity);
-        if(found==rows.end()){rows.emplace(identity,Row{lower(name),std::move(key),before,nullptr});pending.push_back(identity);}
+        if(found==rows.end()){
+            account(before);
+            rows.emplace(identity,Row{lower(name),std::move(key),before,nullptr});
+            pending.push_back(identity);
+        }
         else if(!found->second.after.is_null()){found->second.after=nullptr;pending.push_back(identity);}
     }
     void nullReferences(const ForeignKey& foreign,const Payload& before) {
         const auto& table=catalog.get(foreign.child);safeTable(table);auto key=keyOf(table,before);const Identity identity{foreign.child,key.dump()};
-        auto [found,inserted]=rows.try_emplace(identity,Row{foreign.child,key,before,before});(void)inserted;
+        auto found = rows.find(identity);
+        if (found == rows.end()) {
+            account(before);
+            found = rows.emplace(identity, Row{foreign.child,key,before,before}).first;
+        }
         if(found->second.after.is_null())return;
         for(const auto& column:foreign.from)found->second.after[column]=nullptr;
         if(keyOf(table,found->second.after)!=key)throw std::runtime_error("track delete changes a surviving primary key");
@@ -133,10 +154,10 @@ public:
         if(!catalog.tables.contains(name))return;
         SQLite::Statement query(db,"SELECT * FROM "+quoted(catalog.get(name).name)+" WHERE "+where);int index=0;
         for(const auto& value:values)bind(query,++index,value);
-        while(query.executeStep())remove(name,record(query));
+        while(query.executeStep())remove(name,record(query,inverseLimit_));
     }
     void collect(const std::string& table, std::int64_t root) {
-        const auto row=current(db,catalog.get(table),Payload{{"id",root}});
+        const auto row=current(db,catalog.get(table),Payload{{"id",root}},inverseLimit_);
         if(row.is_null())throw std::runtime_error("no matching root row in "+table);
         const auto first = pending.size();
         remove(table,row);
@@ -169,8 +190,8 @@ public:
                 for(const auto& value:values)bind(children,++index,value);
                 while(children.executeStep()) {
                     if (sourceRead || foreign.action == "CASCADE")
-                        remove(foreign.child, record(children));
-                    else if(foreign.action=="SET NULL")nullReferences(foreign,record(children));
+                        remove(foreign.child, record(children,inverseLimit_));
+                    else if(foreign.action=="SET NULL")nullReferences(foreign,record(children,inverseLimit_));
                     else throw std::runtime_error("track delete cannot safely capture SET DEFAULT");
                 }
             }
@@ -192,9 +213,17 @@ public:
         return result;
     }
 private:
+  void account(const Payload& row) {
+      if (inverseLimit_ == 0) return;
+      // Every distinct before row remains in the complete encoded inverse.
+      const auto bytes = Payload::to_cbor(row).size();
+      if (bytes > remaining_) throw std::length_error(std::string(kRackUndoLimitMessage));
+      remaining_ -= bytes;
+  }
   SQLite::Database &db;
   const Catalog &catalog;
   bool sourceRead = false;
+  std::size_t inverseLimit_, remaining_;
   std::vector<Identity> pending;
 };
 void fullRow(const Table& table,const Payload& row) {
@@ -323,19 +352,38 @@ void deleteRouting(SQLite::Database& db, std::span<const std::int64_t> ids) {
 void restoreRouting(SQLite::Database& db, const Payload& route, const Payload& packet) {
     restoreImage(db, "routing", signedInteger(route.at("id")), packet, &route);
 }
-Payload captureDevice(SQLite::Database& db,std::int64_t root) {
+Payload captureDevice(SQLite::Database& db,std::int64_t root,std::size_t inverseLimit) {
     const Catalog catalog(db);
-    Image image(db, catalog);
+    Image image(db, catalog, false, inverseLimit);
     image.collect("devices", root);
     return image.encode(root);
 }
-void deleteDevice(SQLite::Database& db,std::int64_t root) {
+void deleteDevice(SQLite::Database& db, std::int64_t root, const Payload* expected) {
     const Catalog catalog(db);
     Image image(db, catalog);
     image.collect("devices", root);
+    if (expected && Payload::to_cbor(image.encode(root)) != Payload::to_cbor(*expected))
+        throw std::runtime_error("device subtree changed since its recorded removal");
     removeImage(db, catalog, image);
 }
 void restoreDevice(SQLite::Database& db,std::int64_t root,const Payload& packet) {
     restoreImage(db, "devices", root, packet);
+}
+Payload captureChain(SQLite::Database& db, std::int64_t root, std::size_t inverseLimit) {
+    const Catalog catalog(db);
+    Image image(db, catalog, false, inverseLimit);
+    image.collect("device_chains", root);
+    return image.encode(root);
+}
+void deleteChain(SQLite::Database& db, std::int64_t root, const Payload* expected) {
+    const Catalog catalog(db);
+    Image image(db, catalog);
+    image.collect("device_chains", root);
+    if (expected && Payload::to_cbor(image.encode(root)) != Payload::to_cbor(*expected))
+        throw std::runtime_error("chain subtree changed since its recorded removal");
+    removeImage(db, catalog, image);
+}
+void restoreChain(SQLite::Database& db, std::int64_t root, const Payload& packet) {
+    restoreImage(db, "device_chains", root, packet);
 }
 } // namespace adi::detail

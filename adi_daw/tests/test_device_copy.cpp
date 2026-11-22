@@ -7,6 +7,7 @@
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
@@ -104,12 +105,7 @@ void refusals() {
     check(!stale.ok && stale.stale && db.execAndGet("SELECT count(*) FROM devices WHERE id=70").getInt()==0 &&
           db.execAndGet("SELECT ord FROM devices WHERE id=51").getInt64()==5,"stale paste refuses all order changes and insertion");
     Fixture other;check(!prepareDevicePaste(*other.store,copy,70,20).ok,"clipboard cannot confuse state pools or plug-in refs from another project");
-    db.exec("UPDATE devices SET is_rack=1,rack_kind='audio_effect',remote_host_id=NULL WHERE id=40");
-    db.exec("INSERT INTO device_chains(id,parent_device_id,name) VALUES(60,40,'Nested')");
-    const auto rack=readDeviceCopy(*f.store,40);
-    check(rack.ok && rack.hasNestedChains && rack.insert.at("rackKind")=="audio_effect" && rack.insert.at("remoteHost").is_null(),"reader exposes rack metadata and nested-chain limitation");
-    const auto refused=prepareDevicePaste(*f.store,rack,70,20);
-    check(!refused.ok && refused.error.find("nested chain image")!=std::string::npos,"nested rack copy refuses rather than dropping its contents");
+
 }
 void reusedReferenceIds() {
     Fixture f;auto& db=f.store->db();const auto copy=readDeviceCopy(*f.store,40);
@@ -377,6 +373,267 @@ void trackPasteAtomicRefusals() {
               "track paste keeps the same-project clipboard identity check");
     }
 }
+void seedRack(Fixture& f) {
+    auto& db=f.store->db();
+    db.exec("UPDATE devices SET is_rack=1,rack_kind='audio_effect',plugin_ref_id=NULL,remote_host_id=NULL WHERE id=40;"
+            "INSERT INTO device_chains(id,parent_device_id,ord,name,key_zone,muted) VALUES(21,40,2,'Nested',X'000102ff',1);"
+            "INSERT INTO devices(id,chain_id,name,is_rack,rack_kind) VALUES(2,21,'Inner',1,'audio_effect');"
+            "INSERT INTO device_chains(id,parent_device_id,ord,name,chain_zone,soloed) VALUES(22,2,3,'Leaf chain',X'',1);"
+            "INSERT INTO plugin_refs(id,format,uid,name) VALUES(31,'vst3','test.nested','Nested plugin');"
+            "INSERT INTO devices(id,chain_id,name,plugin_ref_id,remote_host_id) VALUES(42,22,'Leaf',31,50);"
+            "INSERT INTO plugin_params(device_id,param_id,name,normalized_value,display) VALUES(42,'gain','Gain',0.75,'3 dB');"
+            "INSERT INTO plugin_state SELECT 42,stream_role,state_hash,format_hint FROM plugin_state WHERE device_id=40;"
+            "INSERT INTO device_expression_routes(device_id,route) VALUES(42,'mpe_midi');"
+            "INSERT INTO device_panels(device_id) VALUES(42);"
+            "INSERT INTO device_panel_params(device_id,ord,param_id) VALUES(42,4,'gain');"
+            "INSERT INTO macros(id,device_id,ord,name) VALUES(9,40,0,'Outer'),(12,51,0,'Outside'),(99,2,0,'Inner');"
+            "INSERT INTO macro_mappings(id,macro_id,target_device_id,target_param_ref,inverted) VALUES"
+            "(65,9,42,'gain',1),(66,9,51,'gain',0),(67,12,42,'gain',0),(68,99,42,'gain',0);"
+            "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,channel_map) VALUES"
+            "(71,'track',2,'device',42,'sidechain',X''),(72,'device',2,'device',42,'sidechain',NULL);"
+            "INSERT INTO routing_key_taps(routing_id,tap) VALUES(71,'post_fx'),(72,'pre_fx');"
+            "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(81,'device',42,'gain');"
+            "INSERT INTO controller_maps(id,target_kind,target_id,target_param) VALUES(92,'device',42,'gain');");
+}
+
+std::int64_t scalar(Fixture& f,const char* sql) {
+    return f.store->db().execAndGet(sql).getInt64();
+}
+
+void rackPasteRoundTrip() {
+    Fixture f;
+    seedRack(f);
+    const auto origin=digestProject(*f.store).text;
+    const auto copy=readDeviceCopy(*f.store,40);
+    check(copy.ok && copy.hasNestedChains && copy.hasOriginalDeviceId(40) &&
+          copy.hasOriginalDeviceId(2) && copy.hasOriginalDeviceId(42) && !copy.hasOriginalDeviceId(51) &&
+          copy.insert.at("rackKind")=="audio_effect" && copy.insert.at("remoteHost").is_null() &&
+          digestProject(*f.store).text==origin && scalar(f,"SELECT count(*) FROM ops")==0,
+          "rack capture holds nested origin IDs and makes no writes");
+    if (!copy.ok) return;
+    f.store->db().exec("UPDATE plugin_params SET normalized_value=0.25 WHERE device_id=42");
+    const auto before=digestProject(*f.store).text;
+    const auto prepared=prepareDevicePaste(*f.store,copy,100,20,52);
+    check(prepared.ok && prepared.chainId==20 && prepared.requests.size()==4 &&
+          digestProject(*f.store).text==before,"rack paste prepares sealed placement without writes");
+    if (!prepared.ok) return;
+    auto altered=prepared;
+    altered.requests.back().payload["chain"]=10;
+    check(!commitDevicePaste(*f.store,altered).ok && digestProject(*f.store).text==before,
+          "tampering with a prepared rack destination refuses before touching existing order");
+    auto raw = prepared.requests.back();
+    raw.capturedTransaction.reset();
+    raw.payload["chain"] = 10;
+    check(!OpJournal(*f.store).commit(raw).ok && digestProject(*f.store).text == before,
+          "a direct typed insert also validates the rack image's destination");
+    const auto result=OpJournal(*f.store).commit(prepared.requests);
+    check(result.ok,"submit the intact sealed rack paste through the ordinary journal");
+    if (!result.ok) throw std::runtime_error(result.error);
+    const auto after=digestProject(*f.store).text;
+    check(scalar(f,"SELECT id FROM devices WHERE chain_id=20 AND ord=1")==100 &&
+          scalar(f,"SELECT count(*) FROM device_chains WHERE parent_device_id=100 AND id>22 AND muted "
+                   "AND key_zone=X'000102ff' AND ord=2")==1 &&
+          scalar(f,"SELECT count(*) FROM device_chains WHERE parent_device_id=54 AND id>22 AND soloed "
+                   "AND chain_zone=X'' AND ord=3")==1 &&
+          scalar(f,"SELECT count(*) FROM devices WHERE id=55 AND chain_id>22 AND plugin_ref_id=31 "
+                   "AND remote_host_id=50")==1,"clone rebinds both nested chain owners and device IDs exactly");
+    check(scalar(f,"SELECT count(*) FROM plugin_params WHERE device_id=55 AND normalized_value=0.75 "
+                   "AND display='3 dB'")==1 &&
+          scalar(f,"SELECT count(*) FROM plugin_state WHERE device_id=55 AND format_hint='opaque'")==1 &&
+          scalar(f,"SELECT count(*) FROM device_expression_routes WHERE device_id=55 AND route='mpe_midi'")==1 &&
+          scalar(f,"SELECT count(*) FROM device_panel_params WHERE device_id=55 AND ord=4 AND param_id='gain'")==1 &&
+          scalar(f,"SELECT count(*) FROM state_blobs")==1 && scalar(f,"SELECT count(*) FROM plugin_refs")==2,
+          "nested data is copied from the captured state and pooled references are shared");
+    check(scalar(f,"SELECT count(*) FROM macro_mappings WHERE id>68 AND target_device_id=55 "
+                   "AND macro_id IN (SELECT id FROM macros WHERE id>99 AND device_id IN (54,100))")==2 &&
+          scalar(f,"SELECT count(*) FROM macro_mappings WHERE id<=68")==4 &&
+          scalar(f,"SELECT count(*) FROM routing r JOIN routing_key_taps t ON r.id=t.routing_id "
+                   "WHERE r.id>72 AND r.src_kind='device' AND r.src_id=54 AND r.dst_id=55 "
+                   "AND r.channel_map IS NULL AND t.tap='pre_fx'")==1 &&
+          scalar(f,"SELECT count(*) FROM routing")==3 &&
+          scalar(f,"SELECT count(*) FROM automation_lanes")==1 && scalar(f,"SELECT count(*) FROM controller_maps")==1,
+          "internal mappings and taps get fresh IDs and external relationships stay on the source");
+    auto history=History(*f.store);
+    check(history.undo().ok && digestProject(*f.store).text==before &&
+          history.redo().ok && digestProject(*f.store).text==after &&
+          history.undo().ok && digestProject(*f.store).text==before &&
+          history.redo().ok && digestProject(*f.store).text==after,
+          "one Undo and Redo reproduce both exact nested rack placements repeatedly");
+}
+
+void rackPasteAfterCut() {
+    Fixture f;
+    seedRack(f);
+    emptyTrack(f);
+    f.store->db().exec("INSERT INTO devices(id,chain_id,name) VALUES(54,22,'Last descendant before Cut')");
+    const auto copy=readDeviceCopy(*f.store,40);
+    OpRequest remove;
+    remove.opType="device.remove";
+    remove.payload={{"id",40}};
+    check(OpJournal(*f.store).commit(remove).ok,"remove the original captured rack before pasting");
+    const auto before=digestProject(*f.store).text;
+    check(!prepareDevicePasteForTrack(*f.store,copy,40,3).ok &&
+          !prepareDevicePasteForTrack(*f.store,copy,42,3).ok &&
+          !prepareDevicePasteForTrack(*f.store,copy,2,3).ok,
+          "root paste cannot reuse any original device ID released by Cut");
+    const auto automatic = prepareDevicePasteForTrackWithFreshId(*f.store, copy, 3);
+    check(automatic.ok && automatic.requests.back().payload.at("id") == 55,
+          "engine root allocation skips the next live ID when it is a released descendant");
+    const auto prepared=prepareDevicePasteForTrack(*f.store,copy,std::numeric_limits<std::int64_t>::max(),3);
+    check(prepared.ok && prepared.chainId==23 && prepared.requests.size()==2,
+          "empty-track paste skips the cut rack's chain IDs, including the staged chain");
+    if (!prepared.ok) throw std::runtime_error(prepared.error);
+    const auto applied=commitDevicePaste(*f.store,prepared);
+    if (!applied.ok) throw std::runtime_error(applied.error);
+    const auto after=digestProject(*f.store).text;
+    check(scalar(f,"SELECT count(*) FROM devices WHERE id=9223372036854775807 AND chain_id=23")==1 &&
+          scalar(f,"SELECT count(*) FROM devices WHERE id IN (40,2,42,54)")==0 &&
+          scalar(f,"SELECT count(*) FROM device_chains WHERE id IN (21,22)")==0 &&
+          scalar(f,"SELECT count(*) FROM macros WHERE id IN (9,99)")==0 &&
+          scalar(f,"SELECT count(*) FROM macro_mappings WHERE id IN (65,68)")==0 &&
+          scalar(f,"SELECT count(*) FROM routing WHERE id IN (71,72)")==0,
+          "the full-width explicit root does not consume fresh IDs for the Cut descendants");
+    check(History(*f.store).undo().ok && digestProject(*f.store).text==before &&
+          History(*f.store).redo().ok && digestProject(*f.store).text==after,
+          "staged chain and nested paste are one exact Undo step after Cut");
+}
+
+void rackPasteGuards() {
+    {
+        Fixture f;
+        seedRack(f);
+        f.store->db().exec("INSERT INTO device_chains(id,parent_device_id) VALUES(150,51)");
+        const auto result = prepareDevicePasteWithFreshId(*f.store, readDeviceCopy(*f.store, 40), 150);
+        check(!result.ok && result.error.find("not a rack") != std::string::npos,
+              "a fresh rack cannot be pasted into an unreachable child chain under an ordinary device");
+    }
+    {
+        Fixture f;
+        seedRack(f);
+        const auto copy=readDeviceCopy(*f.store,40);
+        f.store->db().exec("UPDATE plugin_refs SET uid='different' WHERE id=31");
+        check(!prepareDevicePaste(*f.store,copy,70,20).ok,
+              "nested reference identity is checked against the original clipboard");
+        f.store->db().exec("UPDATE plugin_refs SET uid='test.nested',name='Relabelled' WHERE id=31");
+        const auto prepared=prepareDevicePaste(*f.store,copy,70,20);
+        check(prepared.ok,"nested reference relabelling before preparation retains its identity");
+        f.store->db().exec("UPDATE plugin_refs SET uid='same-head-change' WHERE id=31");
+        staleTrackPacket(f,prepared,"nested reference reuse after preparation stales a direct paste");
+    }
+    {
+        Fixture f;
+        seedRack(f);
+        const auto prepared=prepareDevicePaste(*f.store,readDeviceCopy(*f.store,40),70,20);
+        f.store->db().exec("INSERT INTO devices(id,chain_id,name) VALUES(54,10,'Same-head occupied descendant')");
+        staleTrackPacket(f,prepared,"same-head occupied descendant prevents any rack paste mutation");
+    }
+    {
+        Fixture f;
+        seedRack(f);
+        const auto copy=readDeviceCopy(*f.store,40);
+        f.store->db().exec("UPDATE remote_hosts SET host='changed-before-prepare' WHERE id=50");
+        check(!prepareDevicePaste(*f.store,copy,70,20).ok,"nested remote identity protects preparation");
+        f.store->db().exec("UPDATE remote_hosts SET host='localhost',name='Relabelled' WHERE id=50");
+        const auto prepared=prepareDevicePaste(*f.store,copy,70,20);
+        check(prepared.ok,"nested remote endpoint relabelling retains its captured identity");
+        f.store->db().exec("UPDATE remote_hosts SET host='same-head-change' WHERE id=50");
+        const auto before=digestProject(*f.store).text;
+        const auto refused=OpJournal(*f.store).commit(prepared.requests);
+        check(!refused.ok && refused.stale && before==digestProject(*f.store).text,
+              "plain journal submission also rejects a same-head changed nested remote endpoint");
+    }
+    for (const char* statement : {
+            "INSERT INTO macros(id,device_id,ord,name) VALUES(100,51,5,'Same-head occupied macro')",
+            "INSERT INTO macro_mappings(id,macro_id,target_device_id,target_param_ref) VALUES(69,12,51,'outside')"}) {
+        Fixture f;
+        seedRack(f);
+        const auto prepared=prepareDevicePaste(*f.store,readDeviceCopy(*f.store,40),70,20);
+        f.store->db().exec(statement);
+        staleTrackPacket(f,prepared,"same-head occupied macro or mapping rejects transaction admission");
+    }
+    {
+        Fixture f;
+        seedRack(f);
+        f.store->db().exec("UPDATE plugin_refs SET format='internal',uid='org.adidaw.mix.eq' WHERE id=31");
+        const auto copy=readDeviceCopy(*f.store,40);
+        const auto prepared=prepareDevicePaste(*f.store,copy,70,20);
+        check(prepared.ok,"a rack with one Mix View function prepares for an empty channel slot");
+        f.store->db().exec("INSERT INTO devices(id,chain_id,name,plugin_ref_id) VALUES(58,20,'EQ',31)");
+        staleTrackPacket(f,prepared,"a same-head Mix View function insertion invalidates rack duplication");
+        check(!prepareDevicePaste(*f.store,copy,70,20).ok,
+              "rack copy respects the channel's already occupied Mix View function");
+    }
+    {
+        Fixture f;
+        seedRack(f);
+        f.store->db().exec("INSERT INTO devices(id,chain_id,name) VALUES(9223372036854775807,20,'Full')");
+        const auto before=digestProject(*f.store).text;
+        const auto result=prepareDevicePaste(*f.store,readDeviceCopy(*f.store,40),70,20);
+        check(!result.ok && result.error.find("exhausted")!=std::string::npos && before==digestProject(*f.store).text,
+              "exhausted rack descendant IDs refuse without overflow or a partial order edit");
+    }
+}
+
+void rackPasteSkipsRemarks() {
+    Fixture f;
+    seedRack(f);
+    auto& db = f.store->db();
+    db.exec("INSERT INTO remarks(target_kind,target_id,author,text,created_utc) "
+            "VALUES('device',54,'user','Orphaned device remark',0)");
+    const auto copy = readDeviceCopy(*f.store, 40);
+    check(!prepareDevicePaste(*f.store, copy, 54, 20).ok, "rack paste does not occupy an explicitly requested orphan remark ID");
+    const auto stale = prepareDevicePaste(*f.store, copy, 70, 20);
+    check(stale.ok, "rack paste skips an existing remark when allocating children");
+    db.exec("INSERT INTO remarks(target_kind,target_id,author,text,created_utc) "
+            "VALUES('device',55,'user','Same-head orphan',0)");
+    const auto before = digestProject(*f.store).text;
+    check(!commitDevicePaste(*f.store, stale).ok && digestProject(*f.store).text == before,
+          "a same-head orphan claim on a staged descendant refuses the whole paste");
+    const auto current = prepareDevicePaste(*f.store, copy, 70, 20);
+    check(current.ok && commitDevicePaste(*f.store, current).ok &&
+              scalar(f, "SELECT count(*) FROM devices WHERE id IN (54,55)") == 0,
+          "fresh rack descendants use the shared allocator and leave orphan remarks detached");
+}
+
+void rackGroupAndUngroup() {
+    Fixture f;
+    const auto original = digestProject(*f.store).text;
+    const std::array<std::int64_t,2> split{51,53};
+    check(!groupDevicesInRack(*f.store, split, "audio_effect").ok && digestProject(*f.store).text == original,
+          "grouping refuses a split serial selection without moving anything");
+    const std::array<std::int64_t,2> selected{52,51};
+    const auto grouped = groupDevicesInRack(*f.store, selected, "audio_effect");
+    check(grouped.ok && scalar(f, "SELECT count(DISTINCT txn_id) FROM ops") == 1,
+          "grouping writes a rack, chain and moves in one transaction");
+    if (!grouped.ok) throw std::runtime_error(grouped.error);
+    const auto rack = scalar(f, "SELECT id FROM devices WHERE is_rack=1 AND chain_id=20");
+    check(scalar(f, "SELECT count(*) FROM devices WHERE id=51 AND ord=0 AND chain_id<>20") == 1 &&
+              scalar(f, "SELECT count(*) FROM devices WHERE id=52 AND ord=1 AND chain_id<>20") == 1 &&
+              scalar(f, "SELECT ord FROM devices WHERE id=53") == 1,
+          "grouping uses stored order for ties and retains the following device");
+    const auto groupImage = digestProject(*f.store).text;
+    History history(*f.store);
+    check(history.undo().ok && digestProject(*f.store).text == original && history.redo().ok &&
+              digestProject(*f.store).text == groupImage, "one Group Undo restores the original tied order and Redo restores both IDs");
+
+    auto& db = f.store->db();
+    SQLite::Statement add(db, "INSERT INTO device_chains(id,parent_device_id) VALUES(200,?)");
+    add.bind(1, rack);
+    add.exec();
+    const auto ambiguous = digestProject(*f.store).text;
+    check(!ungroupDeviceRack(*f.store, rack).ok && digestProject(*f.store).text == ambiguous,
+          "Ungroup refuses an ambiguous parallel rack without changing it");
+    db.exec("DELETE FROM device_chains WHERE id=200");
+    const auto ungrouped = ungroupDeviceRack(*f.store, rack);
+    check(ungrouped.ok && scalar(f, "SELECT count(DISTINCT txn_id) FROM ops") == 2 &&
+              db.execAndGet("SELECT group_concat(id,',') FROM (SELECT id FROM devices WHERE chain_id=20 ORDER BY ord,id)").getString() == "51,52,53",
+          "one Ungroup restores the serial relationships in the parent chain");
+    if (!ungrouped.ok) throw std::runtime_error(ungrouped.error);
+    const auto ungroupImage = digestProject(*f.store).text;
+    check(history.undo().ok && digestProject(*f.store).text == groupImage && history.redo().ok &&
+              digestProject(*f.store).text == ungroupImage, "one Ungroup Undo and Redo restore both exact layouts");
+}
+
 }
 int main() {
     try {
@@ -390,6 +647,11 @@ int main() {
         fullWidthTrackChainIdentity();
         trackPasteGuards();
         trackPasteAtomicRefusals();
+        rackPasteRoundTrip();
+        rackPasteAfterCut();
+        rackPasteGuards();
+        rackPasteSkipsRemarks();
+        rackGroupAndUngroup();
     } catch (const std::exception &e) {
         check(false, e.what());
     }

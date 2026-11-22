@@ -23,12 +23,16 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/digest.hpp"
 #include "adi/history.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/track_image.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <array>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -455,6 +459,338 @@ void testChainPair() {
           && st.getColumn(1).getString() == "FX", "owner and name restored");
 }
 
+void testChainSubtreeInverse() {
+    section("populated chain delete restores the complete causal image");
+    Scratch sc("chain_subtree");
+    auto s = project(sc / "p.adi");
+    if (!s || !seedChainAndDevice(*s)) { check(false, "seed chain subtree"); return; }
+    auto& db = s->db();
+    db.exec(
+        "UPDATE devices SET is_rack=1,rack_kind='audio_effect' WHERE id=9;"
+        "INSERT INTO device_chains(id,parent_device_id,ord,name,key_zone,muted) "
+        "VALUES(6,9,3,'Inner',X'00ff',1);"
+        "INSERT INTO devices(id,chain_id,name,is_rack) VALUES(10,6,'Nested rack',1);"
+        "INSERT INTO device_chains(id,parent_device_id,ord,name,vel_zone,soloed) "
+        "VALUES(7,10,5,'Leaf chain',X'',1);"
+        "INSERT INTO device_chains(id,track_id,name) VALUES(8,1,'Survivor');"
+        "INSERT INTO devices(id,chain_id,name) VALUES(11,7,'Doomed leaf'),(12,8,'Surviving leaf');"
+        "INSERT INTO plugin_params(device_id,param_id,display) VALUES(11,'gain','3 dB');"
+        "INSERT INTO device_expression_routes(device_id,route) VALUES(11,'mpe_midi');"
+        "INSERT INTO device_panels(device_id) VALUES(11);"
+        "INSERT INTO device_panel_params(device_id,ord,param_id) VALUES(11,4,'gain');"
+        "INSERT INTO macros(id,device_id,ord,name) VALUES(25,10,0,'Internal'),(26,9,0,'Outer');"
+        "INSERT INTO macro_mappings(id,macro_id,target_device_id,target_param_ref) "
+        "VALUES(35,25,11,'gain'),(36,26,11,'gain'),(37,25,12,'gain');"
+        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,channel_map) "
+        "VALUES(46,'track',1,'device',11,'sidechain',X''),"
+        "(47,'hw_in',11,'device',12,'sidechain',NULL);"
+        "INSERT INTO routing_key_taps(routing_id,tap) VALUES(46,'post_fx'),(47,'pre_fx');"
+        "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(55,'device',11,'gain');"
+        "INSERT INTO automation_data(id,lane_id,data) VALUES(56,55,X'0011');"
+        "INSERT INTO controller_maps(id,target_kind,target_id,target_param) VALUES(65,'device',11,'gain');"
+        "CREATE TABLE rack_watch(id INTEGER PRIMARY KEY, device_id INTEGER "
+        "REFERENCES devices(id) ON DELETE SET NULL, name TEXT NOT NULL) STRICT;"
+        "INSERT INTO rack_watch VALUES(66,11,'Watch');");
+    SQLite::Statement state(db, "INSERT INTO plugin_state(device_id,stream_role,state_hash) VALUES(11,'chunk',?)");
+    state.bind(1, kHash);
+    state.exec();
+
+    std::string ownerError;
+    check(!run(*s, "chain.create", {{"id", 90}, {"device", 12}}, &ownerError) &&
+              ownerError.find("rack device") != std::string::npos,
+          "an ordinary effect cannot own new rack chains");
+
+    const auto before = digestProject(*s).text;
+    if (!run(*s, "chain.delete", {{"id", 6}})) { check(false, "delete populated chain"); return; }
+    const auto after = digestProject(*s).text;
+    check(db.execAndGet("SELECT count(*) FROM devices WHERE id IN (10,11)").getInt() == 0 &&
+          db.execAndGet("SELECT count(*) FROM macro_mappings").getInt() == 0,
+          "nested devices and all causal macro links are removed");
+    check(db.execAndGet("SELECT count(*) FROM routing WHERE id=46").getInt() == 0 &&
+          db.execAndGet("SELECT count(*) FROM routing_key_taps WHERE routing_id=46").getInt() == 0 &&
+          db.execAndGet("SELECT count(*) FROM automation_lanes").getInt() == 0 &&
+          db.execAndGet("SELECT count(*) FROM controller_maps").getInt() == 0,
+          "polymorphic route, its tap, automation and controllers are removed");
+    check(db.execAndGet("SELECT count(*) FROM routing WHERE id=47").getInt() == 1 &&
+          db.execAndGet("SELECT count(*) FROM state_blobs").getInt() == 2 &&
+          db.execAndGet("SELECT device_id IS NULL FROM rack_watch WHERE id=66").getInt() == 1,
+          "unrelated hardware endpoint and pooled state survive while SET NULL is applied");
+
+    History history(*s);
+    db.exec("UPDATE rack_watch SET name='Changed' WHERE id=66");
+    const auto changed = digestProject(*s).text;
+    const auto rejected = history.undo();
+    check(!rejected.ok && digestProject(*s).text == changed &&
+          db.execAndGet("SELECT name FROM rack_watch WHERE id=66").getString() == "Changed" &&
+          db.execAndGet("SELECT count(*) FROM device_chains WHERE id=6").getInt() == 0,
+          "Undo refuses a changed surviving row atomically");
+    if (rejected.ok && !history.redo().ok) { check(false, "reset changed survivor fixture"); return; }
+    db.exec("UPDATE rack_watch SET name='Watch' WHERE id=66");
+    check(history.undo().ok && digestProject(*s).text == before &&
+          db.execAndGet("SELECT device_id FROM rack_watch WHERE id=66").getInt() == 11 &&
+          db.execAndGet("SELECT typeof(vel_zone)='blob' AND length(vel_zone)=0 FROM device_chains WHERE id=7").getInt() == 1,
+          "Undo restores the exact image, the surviving link and an empty BLOB");
+    db.exec("INSERT INTO devices(id,chain_id,name) VALUES(71,7,'Unlogged child')");
+    const auto amended = digestProject(*s).text;
+    const auto badRedo = history.redo();
+    check(!badRedo.ok && digestProject(*s).text == amended &&
+              db.execAndGet("SELECT count(*) FROM devices WHERE id=71").getInt() == 1,
+          "typed Redo refuses an added descendant before deleting it");
+    db.exec("DELETE FROM devices WHERE id=71");
+    check(history.redo().ok && digestProject(*s).text == after, "Redo restores the exact deletion");
+    SQLite::Statement foreignKeys(db, "PRAGMA foreign_key_check");
+    check(!foreignKeys.executeStep() && db.execAndGet("PRAGMA defer_foreign_keys").getInt() == 0,
+          "replay leaves valid foreign keys and restores the deferral flag");
+}
+
+void testRackInverseBudget() {
+    section("rack and chain inverses enforce the exact byte budget before applying");
+    Scratch sc("rack_budget");
+    auto s = project(sc / "p.adi");
+    if (!s || !seedChainAndDevice(*s)) { check(false, "seed rack budget"); return; }
+    auto& db = s->db();
+    db.exec("UPDATE devices SET is_rack=1 WHERE id=9;"
+            "INSERT INTO device_chains(id,parent_device_id) VALUES(6,9);"
+            "INSERT INTO devices(id,chain_id) VALUES(10,6);"
+            "CREATE TABLE rack_capture(id INTEGER PRIMARY KEY, device_id INTEGER NOT NULL "
+            "REFERENCES devices(id) ON DELETE CASCADE, data BLOB NOT NULL) STRICT;"
+            "INSERT INTO rack_capture VALUES(11,10,X'')");
+    const auto resize = [&](std::size_t size) {
+        SQLite::Statement update(db, "UPDATE rack_capture SET data=zeroblob(?) WHERE id=11");
+        update.bind(1, static_cast<std::int64_t>(size));
+        update.exec();
+    };
+    constexpr auto limit = detail::kRackUndoLimitBytes;
+    constexpr auto probeSize = limit - 8192;
+    const auto packet = [&] {
+        return encodePayload({{"id", 9}, {"chain", 5},
+                              {"contents", detail::captureDevice(db, 9)}});
+    };
+    resize(probeSize);
+    const auto overhead = packet().size() - probeSize;
+    check(overhead < 8192, "fixture calibrates a single large cell and its exact framing");
+    if (overhead >= 8192) return;
+    OpJournal journal(*s);
+    History history(*s);
+    OpRequest remove;
+    remove.opType = "device.remove";
+    remove.payload = {{"id", 9}};
+    std::int64_t lastRemoval = 0;
+    for (const auto expected : {limit - 1, limit}) {
+        const auto size = expected - overhead;
+        resize(size);
+        const auto before = digestProject(*s).text;
+        const auto result = journal.commit(remove);
+        check(result.ok && result.seqs.size() == 1, "an inverse within the byte limit commits");
+        if (!result.ok || result.seqs.size() != 1) return;
+        lastRemoval = result.seqs.front();
+        {
+            SQLite::Statement measure(db, "SELECT length(inverse),tags FROM ops WHERE seq=?");
+            measure.bind(1, lastRemoval);
+            check(measure.executeStep() && measure.getColumn(0).getInt64() == static_cast<std::int64_t>(expected) &&
+                      measure.getColumn(1).getString().empty(), "the journal stores the exact byte count as an ordinary Undo");
+        }
+        check(history.undo().ok && digestProject(*s).text == before &&
+                  db.execAndGet("SELECT length(data) FROM rack_capture").getInt64() == static_cast<std::int64_t>(size),
+              "a near-limit inverse restores the entire cell");
+    }
+
+    resize(limit + 1 - overhead);
+    const auto oversized = packet();
+    check(oversized.size() == limit + 1, "the refusal fixture is exactly one byte above the cap");
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 1}, {"name", "Must roll back"}};
+    const std::array requests{rename, remove};
+    const auto before = digestProject(*s).text;
+    const auto head = journal.headSeq();
+    const auto count = journal.count();
+    const auto refused = journal.commit(requests);
+    check(!refused.ok && refused.issues.size() == 1 && refused.issues.front().key == "lossy_undo" &&
+              journal.headSeq() == head && journal.count() == count && digestProject(*s).text == before,
+          "one byte over the cap reports lossy_undo and rolls back the whole edit");
+
+    SQLite::Statement legacy(db, "UPDATE ops SET inverse=? WHERE seq=?");
+    legacy.bind(1, oversized.data(), static_cast<int>(oversized.size()));
+    legacy.bind(2, lastRemoval);
+    legacy.exec();
+    check(history.redo().ok && history.undo().ok && digestProject(*s).text == before,
+          "an already recorded oversized inverse still replays exactly");
+
+    resize(limit + 512);
+    OpRequest chain;
+    chain.opType = "chain.delete";
+    chain.payload = {{"id", 6}};
+    const auto chainResult = journal.commit(chain);
+    check(!chainResult.ok && !chainResult.issues.empty() && chainResult.issues.front().key == "lossy_undo" &&
+              db.execAndGet("SELECT length(data) FROM rack_capture").getInt64() == static_cast<std::int64_t>(limit + 512),
+          "chain deletion refuses an oversized child cell before copying it into its inverse");
+    db.exec("UPDATE devices SET is_rack=0 WHERE id=9");
+    const auto legacyOwner = journal.commit(remove);
+    check(!legacyOwner.ok && !legacyOwner.issues.empty() && legacyOwner.issues.front().key == "lossy_undo",
+          "a legacy ordinary device owning a subtree uses the same bounded inverse");
+
+    resize(limit / 4);
+    db.exec("INSERT INTO rack_capture VALUES(12,10,zeroblob(1048576)),(13,10,zeroblob(1048576)),"
+            "(14,10,zeroblob(1048576)),(15,10,zeroblob(1048576))");
+    const auto cumulative = journal.commit(chain);
+    check(!cumulative.ok && !cumulative.issues.empty() && cumulative.issues.front().key == "lossy_undo" &&
+              db.execAndGet("SELECT count(*) FROM rack_capture").getInt() == 5,
+          "individually small captured rows also count toward the same inverse budget");
+
+    db.exec("DELETE FROM rack_capture");
+    const std::vector<std::byte> opaque(limit + 512, std::byte{0x47});
+    const auto hash = media::blake3Bytes(opaque).hex;
+    {
+        SQLite::Statement blob(db, "INSERT INTO state_blobs(hash_blake3,data,size_bytes) VALUES(?,?,?)");
+        blob.bind(1, hash);
+        blob.bindNoCopy(2, opaque.data(), static_cast<int>(opaque.size()));
+        blob.bind(3, static_cast<std::int64_t>(opaque.size()));
+        blob.exec();
+        SQLite::Statement state(db, "INSERT INTO plugin_state(device_id,stream_role,state_hash) VALUES(10,'chunk',?)");
+        state.bind(1, hash);
+        state.exec();
+    }
+    const auto removed = journal.commit(chain);
+    const auto pooled = s->getStateBlob(hash);
+    check(removed.ok && pooled && pooled->size() == opaque.size() && history.undo().ok &&
+              db.execAndGet("SELECT count(*) FROM plugin_state WHERE device_id=10").getInt() == 1,
+          "large shared plug-in state remains pooled and its reference fits the budget");
+}
+
+bool installLegacyRedo(Store& store, const char* op, const Payload& forward, const Payload& reverse) {
+    const auto forwardBytes = encodePayload(forward);
+    const auto reverseBytes = encodePayload(reverse);
+    SQLite::Statement replace(store.db(), "UPDATE ops SET op_type=?,payload=?,inverse=? "
+                                          "WHERE seq=(SELECT MAX(seq) FROM ops)");
+    replace.bind(1, op);
+    replace.bind(2, forwardBytes.data(), static_cast<int>(forwardBytes.size()));
+    replace.bind(3, reverseBytes.data(), static_cast<int>(reverseBytes.size()));
+    return replace.exec() == 1;
+}
+
+void testLegacyChainReplay() {
+    section("legacy chain delete replays its original direct cascade");
+    Scratch sc("legacy_chain");
+    auto s = project(sc / "p.adi");
+    if (!s || !seedChainAndDevice(*s)) { check(false, "seed legacy chain"); return; }
+    auto& db = s->db();
+    db.exec("INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind) "
+            "VALUES(19,'track',1,'device',9,'sidechain');"
+            "INSERT INTO routing_key_taps VALUES(19,'pre_fx');"
+            "UPDATE device_chains SET muted=1,key_zone=X'00' WHERE id=5;");
+    History history(*s);
+    if (!run(*s, "track.rename", {{"id", 1}, {"name", "Bass"}}) || !history.undo().ok) {
+        check(false, "seed legacy redo transaction");
+        return;
+    }
+
+    // Put recorded legacy CBOR on the redo branch without running today's
+    // chain.delete. The material still holds the child and its key route.
+    check(installLegacyRedo(*s, "chain.delete", {{"id", 5}},
+                            {{"id", 5}, {"track", 1}, {"device", nullptr}, {"ord", 0}, {"name", "FX"}}),
+          "install the literal legacy forward and inverse");
+    check(history.redo().ok &&
+          db.execAndGet("SELECT count(*) FROM devices WHERE id=9").getInt() == 0 &&
+          db.execAndGet("SELECT count(*) FROM routing_key_taps WHERE routing_id=19").getInt() == 1,
+          "legacy Redo deletes the device and historically retains the dangling tap");
+    const auto after = digestProject(*s).text;
+    check(history.undo().ok &&
+          db.execAndGet("SELECT muted=0 AND key_zone IS NULL FROM device_chains WHERE id=5").getInt() == 1 &&
+          db.execAndGet("SELECT count(*) FROM devices WHERE id=9").getInt() == 0,
+          "legacy Undo restores only the old flat chain with default fields");
+    check(history.redo().ok && digestProject(*s).text == after, "repeated legacy Redo stays exact");
+
+    if (!run(*s, "chain.create", {{"id", 21}, {"track", 1}})) {
+        check(false, "seed paired creation inverse");
+        return;
+    }
+    db.exec("INSERT INTO devices(id,chain_id) VALUES(22,21);"
+            "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind) "
+            "VALUES(23,'track',1,'device',22,'sidechain');");
+    check(history.undo().ok &&
+          db.execAndGet("SELECT count(*) FROM devices WHERE id=22").getInt() == 0 &&
+          db.execAndGet("SELECT count(*) FROM routing WHERE id=23").getInt() == 1,
+          "the recorded inverse of flat chain creation keeps its original cascade");
+}
+
+void testDeviceMoveAncestry() {
+    section("device.move refuses a cycle without publishing a partial edit");
+    Scratch sc("rack_cycle");
+    auto s = project(sc / "p.adi");
+    if (!s || !seedChainAndDevice(*s)) { check(false, "seed rack move"); return; }
+    auto& db = s->db();
+    db.exec(
+        "UPDATE devices SET is_rack=1,rack_kind='audio_effect' WHERE id=9;"
+        "INSERT INTO device_chains(id,parent_device_id) VALUES(6,9);"
+        "INSERT INTO devices(id,chain_id,is_rack) VALUES(10,6,1);"
+        "INSERT INTO device_chains(id,parent_device_id) VALUES(7,10);"
+        "INSERT INTO device_chains(id,track_id) VALUES(8,1);"
+        "INSERT INTO devices(id,chain_id,is_rack) VALUES(11,8,1);"
+        "INSERT INTO device_chains(id,parent_device_id) VALUES(12,11);"
+        "UPDATE devices SET chain_id=12 WHERE id=11;");
+    OpJournal journal(*s);
+    const auto before = digestProject(*s).text;
+    const auto head = journal.headSeq();
+    std::string error;
+    const bool directlyMoved = run(*s, "device.move", {{"id", 9}, {"chain", 6}, {"ord", 9}}, &error);
+    check(!directlyMoved && error.find("own rack") != std::string::npos, "direct self-nest refuses");
+    if (directlyMoved && !History(*s).undo().ok) { check(false, "reset direct move fixture"); return; }
+    const auto rows = db.execAndGet("SELECT count(*) FROM ops").getInt();
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 1}, {"name", "Partial edit"}};
+    OpRequest bad;
+    bad.opType = "device.move";
+    bad.payload = {{"id", 9}, {"chain", 7}, {"ord", 9}};
+    const std::vector<OpRequest> requests{rename,bad};
+    const auto batch = journal.commit(requests);
+    check(!batch.ok && journal.headSeq() == head &&
+          db.execAndGet("SELECT count(*) FROM ops").getInt() == rows && digestProject(*s).text == before,
+          "grandchild move rolls back the whole batch and its log");
+    if (batch.ok && !History(*s).undo().ok) { check(false, "reset grandchild move fixture"); return; }
+
+    const bool movedIntoCycle = run(*s, "device.move", {{"id", 9}, {"chain", 12}, {"ord", 9}}, &error);
+    check(!movedIntoCycle && error.find("cycle") != std::string::npos, "existing destination owner cycle refuses");
+    if (movedIntoCycle && !History(*s).undo().ok) { check(false, "reset ownership cycle fixture"); return; }
+    check(run(*s, "device.move", {{"id", 10}, {"chain", 8}, {"ord", 9}}, &error) &&
+          History(*s).undo().ok && digestProject(*s).text == before,
+          "moving a nested rack to an unrelated chain remains exactly undoable");
+}
+
+void testLegacyDeviceMoveReplay() {
+    section("old cyclic device moves remain replayable");
+    Scratch sc("legacy_device_move");
+    auto s = project(sc / "p.adi");
+    if (!s || !seedChainAndDevice(*s)) { check(false, "seed legacy rack move"); return; }
+    auto& db = s->db();
+    db.exec("UPDATE devices SET is_rack=1 WHERE id=9;"
+            "INSERT INTO device_chains(id,parent_device_id) VALUES(6,9);"
+            "INSERT INTO devices(id,chain_id,is_rack) VALUES(10,6,1);"
+            "INSERT INTO device_chains(id,parent_device_id) VALUES(7,10);");
+    History history(*s);
+    if (!run(*s, "track.rename", {{"id", 1}, {"name", "Bass"}}) || !history.undo().ok) {
+        check(false, "seed legacy move redo transaction");
+        return;
+    }
+    const auto before = digestProject(*s).text;
+    check(installLegacyRedo(*s, "device.move", {{"id", 9}, {"chain", 7}, {"ord", 9}},
+                            {{"id", 9}, {"chain", 5}, {"ord", 2}}),
+          "install the legacy self-nest move recorded by the old handler");
+    check(history.redo().ok &&
+          db.execAndGet("SELECT chain_id=7 AND ord=9 FROM devices WHERE id=9").getInt() == 1,
+          "legacy Redo recovers the recorded cyclic state");
+    const auto cyclic = digestProject(*s).text;
+
+    const auto fixed = run(*s, "device.move", {{"id", 9}, {"chain", 5}, {"ord", 2}});
+    check(fixed && digestProject(*s).text == before, "a new move can repair an old cycle");
+    if (!fixed) return;
+    check(history.undo().ok && digestProject(*s).text == cyclic,
+          "undoing the repair restores the exact previously recorded state");
+    check(history.undo().ok && digestProject(*s).text == before,
+          "undoing the historical move restores the original valid rack");
+}
+
 }  // namespace
 
 std::optional<std::string> readRoute(Store& s, std::int64_t dev) {
@@ -572,6 +908,11 @@ int main() {
     testMissingPluginSurvivesTheRoundTrip();
     testMoveAndScalars();
     testChainPair();
+    testChainSubtreeInverse();
+    testRackInverseBudget();
+    testLegacyChainReplay();
+    testDeviceMoveAncestry();
+    testLegacyDeviceMoveReplay();
     testTheExpressionRoute();
     testThePanel();
     std::printf("\n%s -- %d checks, %d failure(s)\n",

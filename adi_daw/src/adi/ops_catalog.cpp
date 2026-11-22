@@ -111,6 +111,10 @@ constexpr ScalarSpec kScalars[] = {
      "index_in_parent", "index", FieldType::Int, EngineImpact::Snapshot, false},
 
     // --- rack chains ----------------------------------------------------
+    {"chain.rename", "Rename a device chain", "device_chains", "id", "name", "name",
+     FieldType::Text, EngineImpact::None, false},
+    {"chain.reorder", "Move a chain among its siblings", "device_chains", "id", "ord", "ord",
+     FieldType::Int, EngineImpact::GraphRebuild, false},
     {"chain.setMute", "Mute or unmute a rack chain", "device_chains", "id", "muted", "muted",
      FieldType::Bool, EngineImpact::Snapshot, false},
     {"chain.setSolo", "Solo or unsolo a rack chain", "device_chains", "id", "soloed", "soloed",
@@ -1127,7 +1131,8 @@ constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"track", FieldType::Int, false},
                                    {"device", FieldType::Int, false},
                                    {"ord", FieldType::Int, false},
-                                   {"name", FieldType::Text, false}};
+                                   {"name", FieldType::Text, false},
+                                   {"contents", FieldType::Object, false, "captured chain subtree for Undo"}};
 constexpr Field kFDeviceInsert[] = {{"id", FieldType::Int, true},
                                     {"chain", FieldType::Int, true},
                                     {"ord", FieldType::Int, false},
@@ -1668,10 +1673,23 @@ void replayState(OpContext& c, std::int64_t deviceId, const Payload& arr) {
 
 bool chainCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const auto id = p.at("id").get<std::int64_t>();
+        if (p.contains("contents")) {
+            if (!c.replay || !c.replay->asInverse || c.replay->opType != "chain.delete")
+                throw std::runtime_error("chain contents require a delete inverse");
+            detail::restoreChain(c.db, id, p.at("contents"));
+            return true;
+        }
+        if (!c.replay && p.contains("device") && !p.at("device").is_null()) {
+            SQLite::Statement parent(c.db, "SELECT is_rack FROM devices WHERE id=?");
+            parent.bind(1, detail::signedInteger(p.at("device")));
+            if (!parent.executeStep() || parent.getColumn(0).getInt() == 0)
+                throw std::runtime_error("a child chain needs an existing rack device");
+        }
         SQLite::Statement st(c.db,
             "INSERT INTO device_chains(id, parent_device_id, track_id, ord, name) "
             "VALUES (?,?,?,?,?)");
-        st.bind(1, p.at("id").get<std::int64_t>());
+        st.bind(1, id);
         if (p.contains("device") && !p.at("device").is_null())
             st.bind(2, p.at("device").get<std::int64_t>());
         else
@@ -1694,11 +1712,27 @@ bool chainCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string&
     return true;   // paired: chain.delete
 }
 
+std::optional<Payload> recordedDeleteInverse(const OpContext& c, std::string_view op) {
+    if (!c.replay || c.replay->asInverse || c.replay->opType != op || !c.replay->hasInverse) return std::nullopt;
+    std::string error;
+    auto inverse = decodeFromLog(c.replay->inverse, error);
+    if (!inverse || !inverse->is_object())
+        throw std::runtime_error("invalid recorded delete inverse: " + error);
+    return inverse;
+}
+
 bool chainDeleteApply(OpContext& c, const Payload& p, std::string& err) {
     try {
-        SQLite::Statement st(c.db, "DELETE FROM device_chains WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such chain"; return false; }
+        const auto id = p.at("id").get<std::int64_t>();
+        const auto inverse = recordedDeleteInverse(c, "chain.delete");
+        const bool creation = c.replay && c.replay->asInverse && c.replay->opType == "chain.create";
+        if (creation || (inverse && !inverse->contains("contents"))) {
+            SQLite::Statement st(c.db, "DELETE FROM device_chains WHERE id = ?");
+            st.bind(1, id);
+            if (st.exec() == 0) throw std::runtime_error("no such chain");
+        } else {
+            detail::deleteChain(c.db, id, inverse ? &inverse->at("contents") : nullptr);
+        }
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1706,22 +1740,7 @@ bool chainDeleteApply(OpContext& c, const Payload& p, std::string& err) {
 bool chainDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
     try {
         const auto id = p.at("id").get<std::int64_t>();
-        SQLite::Statement st(c.db,
-            "SELECT parent_device_id, track_id, ord, name FROM device_chains WHERE id = ?");
-        st.bind(1, id);
-        if (!st.executeStep()) { err = "no such chain to capture"; return false; }
-        inv = Payload::object();
-        inv["id"] = id;
-        if (st.getColumn(0).isNull()) inv["device"] = nullptr;
-        else                          inv["device"] = st.getColumn(0).getInt64();
-        if (st.getColumn(1).isNull()) inv["track"] = nullptr;
-        else                          inv["track"] = st.getColumn(1).getInt64();
-        inv["ord"]  = st.getColumn(2).getInt64();
-        inv["name"] = st.getColumn(3).getString();
-        // Devices in the chain cascade away with it. They are NOT captured
-        // here: deleting a chain that still holds devices is a composite the
-        // UI does not offer, and a capture that silently restored them would
-        // make this look like an op it is not.
+        inv = {{"id", id}, {"contents", detail::captureChain(c.db, id, detail::kRackUndoLimitBytes)}};
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1767,10 +1786,26 @@ Payload capturePanel(OpContext& c, std::int64_t dev) {
 
 // --- device.insert / device.remove -----------------------------------------
 
+void requireDeviceMoveDestination(SQLite::Database&, std::int64_t, std::int64_t);
+
 bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         const auto id = deviceInteger(p,"id");
-        if(p.contains("contents")) {detail::restoreDevice(c.db,id,p.at("contents"));return true;}
+        if (p.contains("contents")) {
+            const auto& contents = p.at("contents");
+            if (!c.replay) {
+                const auto& rows = contents.at("rows");
+                const auto root = std::find_if(rows.begin(), rows.end(), [id](const auto& entry) {
+                    return entry.at("table") == "devices" && deviceInteger(entry.at("key"), "id") == id;
+                });
+                if (root == rows.end() || deviceInteger(root->at("before"), "chain_id") != deviceInteger(p, "chain") ||
+                    deviceInteger(root->at("before"), "ord") != deviceInteger(p, "ord"))
+                    throw std::runtime_error("device contents do not match the requested placement");
+                requireDeviceMoveDestination(c.db, id, deviceInteger(p, "chain"));
+            }
+            detail::restoreDevice(c.db, id, contents);
+            return true;
+        }
         SQLite::Statement st(c.db,
             "INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name, enabled, "
             "is_rack, preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id) "
@@ -1825,8 +1860,12 @@ bool deviceInsertInverse(OpContext&, const Payload& p, Payload& inv, std::string
 }
 
 bool deviceRemoveApply(OpContext& c, const Payload& p, std::string& err) {
-    try {detail::deleteDevice(c.db,p.at("id").get<std::int64_t>());return true;}
-    catch(const std::exception& e){err=e.what();return false;}
+    try {
+        const auto inverse = recordedDeleteInverse(c, "device.remove");
+        const auto* expected = inverse && detail::isRackUndoPacket(*inverse) ? &inverse->at("contents") : nullptr;
+        detail::deleteDevice(c.db, deviceInteger(p, "id"), expected);
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
 bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
@@ -1834,10 +1873,19 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
         const auto id = p.at("id").get<std::int64_t>();
         SQLite::Statement st(c.db,
             "SELECT chain_id, ord, plugin_ref_id, name, enabled, is_rack, "
-            "preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id "
+            "preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id, "
+            "EXISTS(SELECT 1 FROM device_chains WHERE parent_device_id=devices.id) "
             "FROM devices WHERE id = ?");
         st.bind(1, id);
         if (!st.executeStep()) { err = "no such device to capture"; return false; }
+
+        if (st.getColumn(5).getInt() != 0 || st.getColumn(12).getInt() != 0) {
+            // Rack history restores the typed image. Avoid duplicating large
+            // root parameter and state rows in the legacy flat packet.
+            inv = {{"id", id}, {"chain", st.getColumn(0).getInt64()},
+                   {"contents", detail::captureDevice(c.db, id, detail::kRackUndoLimitBytes)}};
+            return true;
+        }
 
         inv = Payload::object();
         inv["id"]    = id;
@@ -1878,13 +1926,36 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
 
 // --- device.move ------------------------------------------------------------
 
+void requireDeviceMoveDestination(SQLite::Database& db, std::int64_t device, std::int64_t chain) {
+    // UNION visits each chain once, including in a malformed cyclic project.
+    SQLite::Statement ancestors(db,
+        "WITH RECURSIVE ancestry(id) AS ("
+        "SELECT id FROM device_chains WHERE id=? "
+        "UNION SELECT parent.chain_id FROM ancestry a "
+        "JOIN device_chains c ON c.id=a.id JOIN devices parent ON parent.id=c.parent_device_id AND parent.is_rack=1"
+        ") SELECT COALESCE(MAX(c.parent_device_id=?),0), COALESCE(MAX(c.track_id IS NOT NULL),0) "
+        "FROM ancestry a JOIN device_chains c ON c.id=a.id");
+    ancestors.bind(1, chain);
+    ancestors.bind(2, device);
+    ancestors.executeStep();
+    if (ancestors.getColumn(0).getInt() != 0)
+        throw std::runtime_error("cannot move a device into its own rack");
+    if (ancestors.getColumn(1).getInt() == 0)
+        throw std::runtime_error("destination chain has an ownership cycle or no valid track owner");
+}
+
 bool deviceMoveApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const auto id = p.at("id").get<std::int64_t>();
+        const auto chain = p.at("chain").get<std::int64_t>();
+        // Earlier versions could record a cyclic move. History must still
+        // replay it and any later edit that repaired it.
+        if (!c.replay) requireDeviceMoveDestination(c.db, id, chain);
         SQLite::Statement st(c.db,
             "UPDATE devices SET chain_id = ?, ord = ? WHERE id = ?");
-        st.bind(1, p.at("chain").get<std::int64_t>());
+        st.bind(1, chain);
         st.bind(2, p.at("ord").get<std::int64_t>());
-        st.bind(3, p.at("id").get<std::int64_t>());
+        st.bind(3, id);
         if (st.exec() == 0) { err = "no such device"; return false; }
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
