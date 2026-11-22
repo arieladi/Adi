@@ -81,6 +81,7 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
         int mix{}, clock{}, cycle{}, rate{}, interpolation{}, points{}, layout{}, low{}, high{}, on{}, type{};
     };
     Map mapping() const;
+    bool hasParameter(int id) const noexcept;
     double read(int id) const;
     const std::vector<Point> &points() const;
     static float average(const std::vector<Point> &);
