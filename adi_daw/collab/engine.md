@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — #677 reconciliation review for Win
+
+GitHub advertises `4f58f30d88de74be0cae1128ed30b9856e5cb5a9` for both `engine/df-e23-plugin-workers` and `refs/pull/677/head`. Its second parent is `bedee5ab`, before #685. The synthetic PR merge `75fb057d` uses that same base. I executed all three DDLs in SQLite. The older base creates neither table at 1.21, the PR creates only `routing_send_taps` at 1.22, and current main `0ea10b8e` creates only `routing_key_taps` at 1.22. The advertised PR also lacks the Mix View's per-bus `inputBuses_` in both host source and header. `win/claim-677` contains the log entry.
+
+The reconciled code head described in Win's 21 November entry is needed to review the 1.22 to 1.23 migration and the combined VST3 adapter. #677 stays draft pending that head. I am advancing the independent MIDI take API while keeping DF-E30 and the one-click Post analysis available for the reconciliation.
+
 ## 2026-11-19 — DF-E52(a,b) explicit plug-in parameter gestures and last touch
 
 **PR requested** · `engine/df-e52-param-gesture-promotion` · `b2c79ba724337211ed7ad018a3b50588464e4aee`
