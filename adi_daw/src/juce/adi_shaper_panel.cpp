@@ -51,9 +51,29 @@ constexpr std::array<SyncDivision, 23> divisions{
      {4, "1 bar"},       {6, "1.5 bars"},   {8, "2 bars"},    {12, "3 bars"},    {16, "4 bars"},
      {32, "8 bars"},     {64, "16 bars"},   {128, "32 bars"}}};
 double divisionValue(double quarters) { return (std::log2(quarters) + 5.) / 12.; }
+constexpr double divisionTolerance = 1.e-6;
+int adjacentDivision(double value, int direction) {
+    int candidate = -1;
+    double closest = 2.;
+    for (int i = 0; i < static_cast<int>(divisions.size()); ++i) {
+        const double distance =
+            direction * (divisionValue(divisions[static_cast<std::size_t>(i)].quarters) - value);
+        if (std::abs(distance) < divisionTolerance)
+            return i + direction;
+        // For an automated value between listed divisions, step to the nearest one in that direction.
+        if (distance > 0 && distance < closest) {
+            closest = distance;
+            candidate = i;
+        }
+    }
+    return candidate;
+}
+Rect divisionStepBounds(Rect control, int direction) {
+    return {control.getRight() - (direction < 0 ? 32.f : 16.f), control.getY(), 16.f, control.getHeight()};
+}
 juce::String cycle(double n) {
     for (const auto &division : divisions)
-        if (std::abs(n - divisionValue(division.quarters)) < 1.e-6)
+        if (std::abs(n - divisionValue(division.quarters)) < divisionTolerance)
             return division.text;
     const double bars = std::exp2(n * 12.0 - 7.0);
     if (bars < .999)
@@ -282,7 +302,7 @@ std::vector<AdiShaperPanel::Control> AdiShaperPanel::controls() const {
             ? Shape::Hold
             : curve[static_cast<std::size_t>(std::clamp(selected_, 0, static_cast<int>(curve.size()) - 1))]
                   .shape;
-    v.push_back({{71, 491, 119, 27},
+    v.push_back({{74, 491, 120, 27},
                  hz ? m.rate : m.cycle,
                  hz ? "Rate" : "Cycle",
                  hz ? frequency(.02 * std::pow(262000., read(m.rate))) : cycle(read(m.cycle)),
@@ -838,17 +858,19 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
             } else if (i) {
                 const double quarters = std::exp2(read(m.cycle) * 12. - 5.);
                 const double denominator = (i == 64 ? 4. : 16.) / quarters;
-                text =
-                    std::abs(denominator - std::round(denominator)) < .001 && denominator >= 1
-                        ? juce::String(i == 64 ? 1 : i / 16) + "/" + juce::String(juce::roundToInt(denominator))
-                        : juce::String(quarters * i / 64., 2) + " QN";
+                if (i == 64 && std::abs(quarters - 4.) < .0001)
+                    text = "4/4";
+                else if (std::abs(denominator - std::round(denominator)) < .001 && denominator >= 1)
+                    text = juce::String(i == 64 ? 1 : i / 16) + "/" + juce::String(juce::roundToInt(denominator));
+                else
+                    text = juce::String(quarters * i / 64., 2) + " QN";
             }
             label(g, text, {x - 19, 203, 38, 14}, 10, dim);
         }
     }
-    for (int i = 0; i <= 8; ++i) {
-        const float y = plot.getY() + i * plot.getHeight() / 8;
-        g.setColour(juce::Colour(i % 4 == 0 ? 0xff3d3d43 : 0xff242427));
+    for (int i = 0; i <= 16; ++i) {
+        const float y = plot.getY() + i * plot.getHeight() / 16;
+        g.setColour(juce::Colour(i % 8 == 0 ? 0xff3d3d43 : (i % 4 == 0 ? 0xff333339 : 0xff1c1c20)));
         g.drawHorizontalLine(juce::roundToInt(y), plot.getX(), plot.getRight());
     }
     std::array<juce::String, 3> scale{"100%", "50%", "0%"};
@@ -931,6 +953,25 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
             g.setColour(ink);
             g.fillEllipse(x - 4, y + 48 * (1 - v) - 4, 8, 8);
             label(g, c.text, c.r.withTop(c.r.getBottom() - 23), 14, ink);
+        } else if (c.id == m.cycle) {
+            const float y = c.r.getCentreY();
+            g.setColour(dim);
+            for (int row = -1; row <= 1; ++row)
+                g.drawLine(c.r.getX() + 7, y + 3.f * row, c.r.getX() + 15, y + 3.f * row);
+            label(g, c.text, c.r.withTrimmedLeft(29).withTrimmedRight(32), 13, ink,
+                  juce::Justification::centredLeft);
+            const double value = read(m.cycle);
+            for (int direction : {-1, 1}) {
+                const auto arrow = divisionStepBounds(c.r, direction).getCentre();
+                const bool available = direction < 0 ? value > divisionTolerance : value < 1. - divisionTolerance;
+                g.setColour(available ? ink : dim.withAlpha(.35f));
+                const float offset = 1.6f * direction;
+                juce::Path chevron;
+                chevron.startNewSubPath(arrow.x - offset, arrow.y - 3.5f);
+                chevron.lineTo(arrow.x + offset, arrow.y);
+                chevron.lineTo(arrow.x - offset, arrow.y + 3.5f);
+                g.strokePath(chevron, juce::PathStrokeType(1.f));
+            }
         } else if ((c.mode == 1 || c.mode == 4 || c.mode >= 10) && c.title.isNotEmpty()) {
             label(g, c.title, c.r.withHeight(c.r.getHeight() * .48f), 11, dim);
             label(g, c.text, c.r.withTrimmedTop(c.r.getHeight() * .45f), 13, ink);
@@ -1406,8 +1447,11 @@ void AdiShaperPanel::writeShape(int shape) {
 }
 void AdiShaperPanel::selectSyncDivision(int position) {
     const auto m = mapping();
-    if (position >= 0 && position < static_cast<int>(divisions.size()) && read(m.clock) < .5)
-        setOnce(m.cycle, divisionValue(divisions[static_cast<std::size_t>(position)].quarters));
+    if (position < 0 || position >= static_cast<int>(divisions.size()) || read(m.clock) >= .5)
+        return;
+    const auto value = divisionValue(divisions[static_cast<std::size_t>(position)].quarters);
+    if (std::abs(read(m.cycle) - value) >= divisionTolerance)
+        setOnce(m.cycle, value);
 }
 void AdiShaperPanel::showSyncDivisions() {
     const auto m = mapping();
@@ -1420,7 +1464,7 @@ void AdiShaperPanel::showSyncDivisions() {
         if (label.endsWithChar('D'))
             label += " (dotted)";
         menu.addItem(static_cast<int>(i) + 1, label, true,
-                     std::abs(read(m.cycle) - divisionValue(division.quarters)) < 1.e-6);
+                     std::abs(read(m.cycle) - divisionValue(division.quarters)) < divisionTolerance);
     }
     juce::Component::SafePointer<AdiShaperPanel> safe(this);
     const auto target = key_;
@@ -1539,9 +1583,14 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
     }
     for (const auto &c : controls())
         if (c.r.contains(p)) {
-            if (c.id == m.cycle && read(m.clock) < .5)
+            if (c.id == m.cycle && read(m.clock) < .5) {
+                for (int direction : {-1, 1})
+                    if (divisionStepBounds(c.r, direction).contains(p)) {
+                        selectSyncDivision(adjacentDivision(read(m.cycle), direction));
+                        return;
+                    }
                 showSyncDivisions();
-            else if (c.id == m.interpolation)
+            } else if (c.id == m.interpolation)
                 chooseShape(c.text == "Hold" ? Shape::Line : Shape::Hold);
             else if (c.mode == 3)
                 setOnce(c.id, read(c.id) < .5 ? 1 : 0);
