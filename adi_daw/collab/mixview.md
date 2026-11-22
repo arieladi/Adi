@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-22 — MX-36 browser search folds authored names, lands after 3 December
+
+The normal Mix View search now uses Stack's accent folding for channel and tool names. Matching retains JUCE's case-insensitive comparison. The browser caches folded channel names with the track list and reads the passive tool publication only on its existing query/generation boundary. Display names keep their original spelling.
+
+The fail-first software-peer fixture has one hundred audio channels and Main. Seven searches and their selection or retained-query checks failed before the fix, including the accented track, sharp-s, ligature, and an accented tool on an otherwise differently named channel. All 343 component checks now pass. Renaming or removing devices and renaming tracks update the active query, selecting a result focuses its real track without adding a journal operation, and four unchanged frames make zero extra device-publication reads.
+
+Windows x64 Release passed all 24 named CTests and the 906 / 329 / 7 fake-peer shell checks. Both touched translation units passed MSVC /W4 /WX; Clang displayed zero project diagnostics. Joined preview `37115afc2`, ADI.exe SHA-256 `b7a6fbcba3a3df11d46786323804ee41947d5bfd3df2df117b2d0abb3fa25226`, ZIP SHA-256 `750d7c1f629254f6d1ea0fef69a3d27e01dac06f3e4c12aab7a45b444ed65c1f`. The Claude brief covers search, held queries, group filtering and the Phase regression.
+
+PR requested — `mixview/mx36-folded-browser-search-lands-after-2026-12-03` at `37115afc2`, also the joined after-date preview tip.
+
 ### 2026-11-22 — DF-M55 Phase by band, lands after 3 December
 
 All and the full Phase page show 24 ERB correlation bands below the vectorscope. The phase calculation uses the same captured stereo window and tap. Compatible readers share one phase plan. It measures only the newest completed window in a worker pass and uses at most two transforms there. Broadband-only Phase, closed or frozen views and one-sided or silent frames add zero transforms. Unoccupied bands stay unmarked. The 32 kHz check verifies the Nyquist bin's half weight.
