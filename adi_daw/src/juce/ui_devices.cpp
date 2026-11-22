@@ -692,9 +692,9 @@ void DevicePanelView::present(const DevicePanelData &d) {
         addAndMakeVisible(*sample);
         resized();
     }
-    // Only a plug-in has a window of its own (parity-7.5 row 1).
-    if (wrench.isVisible() != (d.plugin && !strip.folded(id))) {
-        wrench.setVisible(d.plugin && !strip.folded(id));
+    const bool showWrench = !strip.folded(id) && (d.plugin || d.uid == "org.adidaw.builtin.adi-shaper");
+    if (wrench.isVisible() != showWrench) {
+        wrench.setVisible(showWrench);
         resized();
     }
     // Native EQ uses its declared stable band/section metadata, not the ordinary
@@ -789,7 +789,7 @@ void DevicePanelView::resized() {
     enabled.setBounds(2, 1, 16, 15);
     title.setVisible(!isFolded);
     configureButton.setVisible(!isFolded && !eqPresentation());
-    wrench.setVisible(!isFolded && data != nullptr && data->plugin);
+    wrench.setVisible(!isFolded && data != nullptr && (data->plugin || data->uid == "org.adidaw.builtin.adi-shaper"));
     // Live's order (manual 23.3's figure): the activator, the fold switch, the wrench, the name.
     const int nameLeft = wrench.isVisible() ? 50 : 32;
     wrench.setBounds(32, 1, 16, 15);
