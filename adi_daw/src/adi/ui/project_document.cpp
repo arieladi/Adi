@@ -705,8 +705,11 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
     // reuses it by content).
     // Past what files captured before it in the same drop took (AudioImport::firstFreeId).
-    const auto id = std::max(out.firstFreeId,
-                             store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64());
+    // One `RowIds` for the prepared row (DF-E16), past what the drop's earlier files took.
+    RowIds rows(store_->db());
+    if (out.firstFreeId > 1)
+        rows.reserve("media_files", out.firstFreeId - 1);
+    const auto id = rows.next("media_files");
     OpRequest captured;
     const auto result = media::prepareImport(*store_, pathFromUtf8(utf8Path), id, nowUtc, captured);
     if (!result.ok) {
@@ -736,8 +739,9 @@ ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf
     job.choices = choices;
     job.rate = engineRate_ > 0 ? engineRate_ : 48000.0;
     // The next free ids as the project stands; a project changed before the commit refuses as stale.
-    job.clipId = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM clips").getInt64();
-    job.mediaId = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    RowIds rows(store_->db()); // DF-E16: never an id a remark still holds
+    job.clipId = rows.next("clips");
+    job.mediaId = rows.next("media_files");
     return job;
 }
 clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job, std::stop_token stop) {
@@ -1195,14 +1199,15 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     }
     // The clips and their media take the next free ids, named after their tracks (Live names a take by
     // its track).
-    auto &db = store_->db();
-    auto clip = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM clips").getInt64();
-    auto media = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    // One `RowIds` for the take's rows (DF-E16): past every clip and media row, and past a clip id a
+    // remark still holds.
+    RowIds rows(store_->db());
     std::vector<recording::ClipIds> ids;
     const auto current = view_.current();
     for (const auto &track : result.tracks) {
         const auto *t = current ? current->findTrack(track.trackId) : nullptr;
-        ids.push_back({clip++, media++, t != nullptr ? t->name : std::string("Take")});
+        const auto clip = rows.next("clips");
+        ids.push_back({clip, rows.next("media_files"), t != nullptr ? t->name : std::string("Take")});
         outcome.clips.push_back(ids.back().clip);
     }
     auto edit = recording::prepareCommit(*store_, result, ids);

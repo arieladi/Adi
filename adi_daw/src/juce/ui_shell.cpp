@@ -5,6 +5,7 @@
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
@@ -2421,8 +2422,10 @@ bool AdiRootComponent::insertTrack(bool midi) {
     const auto current = view_.current();
     if (!current)
         return fail("Inserting a track needs an open project.");
+    // The new id from one `RowIds` (DF-E16): past every track and every id a remark still holds.
+    RowIds ids(submitter_.store().db());
     auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi,
-                                       &commands_.recordingDefaults());
+                                       &commands_.recordingDefaults(), ids.next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     edit.ops.front().selBefore = session_.advisory();
@@ -2464,12 +2467,12 @@ bool AdiRootComponent::insertReturnTrack() {
     if (!current)
         return fail("Inserting a return needs an open project.");
     const auto &tracks = current->tracks;
-    std::int64_t id = 1, returns = 0;
-    for (const auto &t : tracks) {
-        id = std::max(id, t->id + 1);
+    std::int64_t returns = 0;
+    for (const auto &t : tracks)
         if (t->kind == "return")
             ++returns;
-    }
+    RowIds ids(submitter_.store().db()); // DF-E16: never an id a remark still holds
+    const auto id = ids.next("tracks");
     OpRequest request;
     request.opType = "track.create";
     request.payload = {{"id", id},
@@ -2744,7 +2747,8 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
     // tracks); Ungroup the selected group.
     const auto id = arrangement.geometry.selection.track;
     auto edit = ungroup ? ungroupTrack(current->tracks, id)
-                        : ::adi::ui::groupTracks(current->tracks, arrangement.geometry.selectedTracks(reader()));
+                        : ::adi::ui::groupTracks(current->tracks, arrangement.geometry.selectedTracks(reader()),
+                                                 RowIds(submitter_.store().db()).next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     edit.ops.front().selBefore = session_.advisory();
@@ -2874,10 +2878,10 @@ bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick,
     const auto *t = current ? current->findTrack(track) : nullptr;
     if (t == nullptr)
         return fail("That track is gone.");
-    auto &db = submitter_.store().db();
+    RowIds rows(submitter_.store().db()); // one allocation context for the edit (DF-E16)
     AutomationIds ids;
-    ids.lane = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes").getInt64();
-    ids.data = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data").getInt64();
+    ids.lane = rows.next("automation_lanes");
+    ids.data = rows.next("automation_data");
     ids.point = 1;
     return submitEdits(::adi::ui::addAutomationPoint(trackEnvelope(*current, track), track, "volume", tick, value,
                                                      t->volumeDb, ids));
