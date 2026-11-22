@@ -824,6 +824,123 @@ void opusDelivery() {
           "the stereo bitrate ceiling does not apply to a mono job");
 }
 
+void batchFileConversion() {
+    Fixture f;
+    FileConversion job;
+    job.source = f.dir.path() / "audio.wav";
+    job.directory = f.job().directory;
+    job.name = "converted";
+    job.encoding.format = audio::WavFormat::Pcm16;
+    job.encoding.dither = audio::WavDither::None;
+    const auto original = media::blake3File(job.source);
+    const auto converted = convertAudioFile(job);
+    check(matches(read(converted, 4096, 48000, audio::WavFormat::Pcm16), 0) &&
+          !converted.snapshot && media::blake3File(job.source).hex == original.hex,
+          "file conversion uses the shared PCM delivery with no project or source mutation");
+
+    job.name = "converted-aiff";
+    job.encoding.container = ExportContainer::Aiff;
+    const auto aiff = convertAudioFile(job);
+    const auto reference = read(converted, 4096, 48000, audio::WavFormat::Pcm16);
+    check(aiff.state == JobState::Completed && aiff.output.extension() == ".aiff" &&
+          equivalentAiff(aiff.output, reference, 2, audio::WavFormat::Pcm16),
+          "file-to-AIFF conversion uses the shared lossless path and the same quantized samples");
+    if (opusExportAvailable()) {
+        job.name = "converted-opus";
+        job.encoding.container = ExportContainer::OggOpus;
+        const auto opus = convertAudioFile(job);
+        check(opus.state == JobState::Completed && opus.output.extension() == ".opus" &&
+              opus.framesWritten == 4096 && !opus.snapshot,
+              opus.error.empty() ? "file-to-Opus conversion uses the shared native decode gate" : opus.error.c_str());
+    }
+
+    job.name = "converted-normalized";
+    job.encoding.container = ExportContainer::Wav;
+    job.normalization.mode = NormalizeMode::Peak;
+    const auto peak = convertAudioFile(job);
+    check(peak.state == JobState::Completed && peak.normalization && peak.normalization->appliedGainDb > 0,
+          "file conversion uses the same verified normalization pass");
+
+    auto same = job;
+    same.directory = job.source.parent_path();
+    same.name.clear();
+    same.collision = Collision::Replace;
+    const auto kept = convertAudioFile(same);
+    check(kept.state == JobState::Failed && kept.error.find("replace its input") != std::string::npos &&
+          media::blake3File(job.source).hex == original.hex,
+          "Replace refuses the input file identity and preserves the original");
+
+    job.name = "converted-cancel";
+    std::stop_source stopped;
+    Control cancel;
+    cancel.stop = stopped.get_token();
+    cancel.progress = [&](JobId, std::uint64_t done, std::uint64_t total) {
+        if (done > 0 && total == 4096) stopped.request_stop();
+    };
+    const auto cancelled = convertAudioFile(job, cancel);
+    check(cancelled.state == JobState::Cancelled && !fs::exists(cancelled.output) && f.noStage(),
+          "cancellation leaves no destination or staging directory");
+
+    job.name = "converted-after-mutation";
+    job.normalization.mode = NormalizeMode::Off;
+    bool edited = false;
+    Control editInput;
+    editInput.progress = [&](JobId, std::uint64_t done, std::uint64_t) {
+        if (done == 0 || edited) return;
+        std::fstream sourceFile(job.source, std::ios::binary | std::ios::in | std::ios::out);
+        sourceFile.seekp(-1, std::ios::end);
+        sourceFile.put(0);
+        sourceFile.close();
+        edited = !sourceFile.fail();
+    };
+    const auto changed = convertAudioFile(job, editInput);
+    check(edited && changed.state == JobState::Failed && changed.error.find("source changed") != std::string::npos &&
+          !fs::exists(changed.output) && f.noStage(),
+          "same-size replacement during conversion cannot publish an inconsistent output");
+}
+void batchProtectsSourcesAndEarlierFiles() {
+    Fixture f;
+    const auto firstSource = f.dir.path() / "audio.wav";
+    const auto secondSource = f.dir.path() / "second.wav";
+    fs::copy_file(firstSource, secondSource);
+    const auto unchanged = media::blake3File(secondSource);
+    FileConversion first;
+    first.source = firstSource;
+    first.directory = secondSource.parent_path();
+    first.name = "second";
+    first.collision = Collision::Replace;
+    auto second = first;
+    second.source = secondSource;
+    second.directory = f.job().directory;
+    second.name = "converted-second";
+    auto third = second;
+    third.source = firstSource;
+    const std::array jobs{first, second, third};
+    const auto result = convertAudioFiles(jobs);
+    check(result.size() == 3 && result[0].state == JobState::Failed &&
+          media::blake3File(secondSource).hex == unchanged.hex &&
+          result[1].state == JobState::Completed && result[2].state == JobState::Failed &&
+          result[2].error.find("earlier delivery") != std::string::npos,
+          "a batch protects another input and its earlier successful delivery under Replace");
+
+    auto cancellable = second;
+    cancellable.name = "cancelled-batch";
+    const std::array cancelledJobs{cancellable, cancellable};
+    std::stop_source stop;
+    Control control;
+    control.stop = stop.get_token();
+    JobId reported = 0;
+    control.progress = [&](JobId id, std::uint64_t frames, std::uint64_t) {
+        if (frames == 0) return;
+        reported = id;
+        stop.request_stop();
+    };
+    const auto cancelled = convertAudioFiles(cancelledJobs, control);
+    check(reported == 1 && cancelled[0].state == JobState::Cancelled &&
+          cancelled[1].state == JobState::Pending && !fs::exists(cancelled[0].output) && f.noStage(),
+          "indices stay stable and cancellation leaves remaining requests pending");
+}
+
 void regionStems() {
     Fixture f;
     f.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,480480,60);"
@@ -1939,7 +2056,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

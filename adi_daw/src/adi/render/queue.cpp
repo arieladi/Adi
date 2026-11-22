@@ -5,6 +5,7 @@
 #include "adi/render/mp3_writer.hpp"
 #include "adi/render/opus_writer.hpp"
 #include "adi/render/vorbis_writer.hpp"
+#include "adi/audio/pcm_stream.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -858,6 +859,131 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         result.state = JobState::Failed; result.error = "unknown exception during export";
     }
     return result;
+}
+
+namespace {
+Result convertAudioFilePrepared(FileConversion job, const Control& control, JobId id,
+                                const std::optional<media::FileIdentity>& expectedSource = {},
+                                const std::function<void(const Result&)>& prepared = {}) {
+    Result result;
+    try {
+        cancellation(control);
+        if (job.source.empty() || job.directory.empty())
+            throw std::invalid_argument("conversion needs a source and output directory");
+        const auto source = fs::absolute(job.source);
+        const auto sourceId = mediaIdentityAt(source);
+        if (expectedSource && *expectedSource != sourceId) {
+            throw std::runtime_error("Conversion source was replaced before its batch step");
+        }
+        const auto stem = portableName(job.name.empty() ? media::pathUtf8(source.stem()) : std::move(job.name));
+        const auto extension = containerSuffix(job.encoding.container);
+        result.output = job.directory / media::pathFromUtf8(stem + extension);
+        detail::prepareOutput(result, job.collision, extension.c_str(), "conversion destination already exists");
+        if (result.replacement && result.replacement->existing == sourceId)
+            throw std::invalid_argument("conversion cannot replace its input");
+        if (prepared) prepared(result);
+        const auto original = hashMedia(source, control);
+        auto input = audio::openPcmStream(source, control.stop);
+        cancellation(control);
+        if (!input.ready()) throw std::runtime_error("Cannot decode conversion source: " + input.error);
+        const auto info = input.stream->info();
+        Job profile;
+        profile.session.sampleRate = static_cast<double>(info.sampleRate);
+        profile.session.channels = static_cast<int>(info.channels);
+        profile.normalization = job.normalization;
+        validateEncoding(profile, job.encoding);
+        validateNormalization(profile.normalization, info.sampleRate, profile.session.channels);
+        const auto encoding = job.encoding.container;
+        const bool packetDelivery = encoding == ExportContainer::Mp3 || encoding == ExportContainer::OggVorbis ||
+                                    encoding == ExportContainer::OggOpus;
+        if (packetDelivery && !info.frames) {
+            throw std::invalid_argument("Conversion to this format needs a source with a declared length");
+        }
+
+        Stage stage(job.directory, result);
+        DeliverySink delivery(stage.path, "conversion", profile, job.encoding, info.frames.value_or(0), 1);
+        constexpr std::size_t block = 4096;
+        std::vector<float> pcm(block * info.channels);
+        std::vector<double> wide(pcm.size());
+        const auto checkpoint = [&] {
+            cancellation(control);
+            if (control.serviceHost) control.serviceHost();
+            cancellation(control);
+        };
+        for (;;) {
+            checkpoint();
+            const auto read = input.stream->read(pcm, control.stop);
+            cancellation(control);
+            if (read.status == audio::PcmReadStatus::End) break;
+            if (read.status != audio::PcmReadStatus::Frames || read.frames == 0)
+                throw std::runtime_error("Cannot read conversion source: " + input.stream->error());
+            const auto samples = static_cast<std::size_t>(read.frames) * info.channels;
+            for (std::size_t i = 0; i < samples; ++i) {
+                if (!std::isfinite(pcm[i])) throw std::runtime_error("Conversion source contains nonfinite audio");
+                wide[i] = pcm[i];
+            }
+            delivery.append(std::span<const double>(wide.data(), samples), read.frames);
+            result.framesWritten += read.frames;
+            if (control.progress) control.progress(id, result.framesWritten, info.frames.value_or(0));
+        }
+        input.stream.reset();
+        if (result.framesWritten == 0) throw std::runtime_error("Conversion source is empty");
+        result.normalization = delivery.finish(checkpoint);
+        checkpoint();
+        if (mediaIdentityAt(source) != sourceId || hashMedia(source, control) != original || mediaIdentityAt(source) != sourceId)
+            throw std::runtime_error("Conversion source changed before publication");
+        detail::publishOutput(delivery.output(), result, control.publicationHooks, "conversion destination already exists");
+    } catch (const Cancelled&) {
+        result.state = JobState::Cancelled;
+    } catch (const std::exception& error) {
+        result.state = JobState::Failed;
+        result.error = error.what();
+    }
+    return result;
+}
+
+bool sameConversionPath(const fs::path& left, const fs::path& right) {
+    std::error_code error;
+    if (fs::equivalent(left, right, error)) return true;
+    return foldedFilename(left) == foldedFilename(right) &&
+        fs::equivalent(fs::absolute(left).parent_path(), fs::absolute(right).parent_path(), error);
+}
+} // namespace
+
+Result convertAudioFile(FileConversion job, Control control) {
+    return convertAudioFilePrepared(std::move(job), control, 0);
+}
+
+std::vector<Result> convertAudioFiles(std::span<const FileConversion> jobs, Control control) {
+    std::vector<Result> results(jobs.size());
+    std::vector<std::optional<media::FileIdentity>> sources(jobs.size());
+    for (std::size_t i = 0; i < jobs.size(); ++i) {
+        if (control.stop.stop_requested()) return results;
+        try {
+            sources[i] = mediaIdentityAt(jobs[i].source);
+        } catch (const std::exception& error) {
+            results[i].state = JobState::Failed;
+            results[i].error = error.what();
+        }
+    }
+    const auto guard = [&](const Result& candidate) {
+        for (std::size_t i = 0; i < jobs.size(); ++i) {
+            if (sources[i] && (sameConversionPath(candidate.output, jobs[i].source) ||
+                (candidate.replacement && candidate.replacement->existing == sources[i]))) {
+                throw std::runtime_error("Conversion output would overwrite a batch input");
+            }
+        }
+        for (const auto& prior : results) {
+            if (prior.state == JobState::Completed && sameConversionPath(candidate.output, prior.output)) {
+                throw std::runtime_error("Conversion output would overwrite an earlier delivery in this batch");
+            }
+        }
+    };
+    for (std::size_t i = 0; i < jobs.size() && !control.stop.stop_requested(); ++i) {
+        if (sources[i]) results[i] = convertAudioFilePrepared(
+            jobs[i], control, static_cast<JobId>(i) + 1, sources[i], guard);
+    }
+    return results;
 }
 
 Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
