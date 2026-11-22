@@ -10,6 +10,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -20,7 +21,10 @@ namespace adi::ui {
 namespace {
 constexpr std::uint32_t allOutputs = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Meters |
                                      SharedAnalysis::Phase | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s |
-                                     SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum;
+                                     SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum |
+                                     SharedAnalysis::Strip;
+constexpr int stripFftSize = 1024;
+constexpr double stripRefreshSeconds = .05, stripSmoothingSeconds = .3;
 constexpr std::size_t maxHistoryColumns = 128;
 constexpr std::size_t pendingHistoryBytesPerDomain = 256 * 1024;
 // PFFFT squares its unnormalised float bins. Leave headroom for that sum
@@ -32,6 +36,10 @@ bool valid(const SharedAnalysis::Request &r) {
     using Weighting = dsp::StereoEnvelopeMeter::Weighting;
     if (r.stereoMeter && (r.outputs != SharedAnalysis::Meters || r.stereoMeter->weighting < Weighting::Standard ||
                           r.stereoMeter->weighting > Weighting::K)) return false;
+    if ((r.outputs & SharedAnalysis::Strip) &&
+        (r.point != engine::ScopePoint::PostFader || r.fftSize != stripFftSize ||
+         (r.hopSize != 0 && r.hopSize != stripFftSize / 4) ||
+         r.channel != SharedAnalysis::Channel::Mid || r.window != dsp::Window::Hann)) return false;
     auto n = r.fftSize;
     for (const auto factor : {2, 3, 5}) while (n % factor == 0) n /= factor;
     const bool device = r.point == engine::ScopePoint::DeviceInput || r.point == engine::ScopePoint::DeviceOutput;
@@ -51,7 +59,7 @@ bool usable(const std::shared_ptr<const engine::ScopeTap> &tap, std::int32_t n) 
 bool spectralOutput(std::uint32_t outputs) noexcept {
     return (outputs & (SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram |
                        SharedAnalysis::Average1s | SharedAnalysis::RealtimeMaximum |
-                       SharedAnalysis::CumulativeMaximum)) != 0;
+                       SharedAnalysis::CumulativeMaximum | SharedAnalysis::Strip)) != 0;
 }
 bool rawSpectralOutput(std::uint32_t outputs) noexcept {
     return (outputs & (SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram)) != 0;
@@ -183,10 +191,85 @@ struct SharedAnalysis::Domain {
     std::shared_ptr<const AverageResult> averageResult;
     std::shared_ptr<const MaximumResult> maximumResult;
     std::shared_ptr<const StereoMeterResult> meterResult;
+    std::shared_ptr<const StripResult> stripResult;
+    struct StripHistory {
+        std::array<float, kStripSpectrumPoints> magnitudes{};
+        std::int64_t period = 0, previousEnd = -1;
+    };
+    std::unique_ptr<StripHistory> strip;
+    std::atomic<std::int64_t> stripNextEnd{0};
+    std::atomic<bool> neutralStrip{false};
     std::shared_ptr<const Result> readResult() const { std::lock_guard lock(resultMutex); return result; }
     std::shared_ptr<const AverageResult> readAverageResult() const { std::lock_guard lock(resultMutex); return averageResult; }
     std::shared_ptr<const MaximumResult> readMaximumResult() const { std::lock_guard lock(resultMutex); return maximumResult; }
     std::shared_ptr<const StereoMeterResult> readMeterResult() const { std::lock_guard lock(resultMutex); return meterResult; }
+    std::shared_ptr<const StripResult> readStripResult() const { std::lock_guard lock(resultMutex); return stripResult; }
+    void publishStrip(std::shared_ptr<const StripResult> next) {
+        std::lock_guard lock(resultMutex);
+        stripResult.swap(next);
+    }
+    void resetStripProjection() noexcept {
+        strip->previousEnd = -1;
+        neutralStrip.store(false, std::memory_order_release);
+        publishStrip({});
+    }
+    void startStripAt(std::int64_t sequence) noexcept {
+        resetStripProjection();
+        strip->period = usable(tap, request.fftSize) ? static_cast<std::int64_t>(
+            std::clamp(std::round(tap->sampleRate() * stripRefreshSeconds), 1.,
+                       static_cast<double>(std::numeric_limits<std::int32_t>::max()))) : 0;
+        stripNextEnd.store(sequence + std::max<std::int64_t>(request.fftSize, strip->period), std::memory_order_release);
+    }
+    std::int64_t stripReadEnd(std::int64_t end) noexcept {
+        const auto due = stripNextEnd.load(std::memory_order_relaxed);
+        const auto period = strip->period;
+        if (!period || end < due) return cursor.next;
+        const auto target = end - (end - due) % period;
+        if (target <= cursor.next) {
+            stripNextEnd.store(target + period, std::memory_order_release);
+            return cursor.next;
+        }
+        const auto first = target - request.fftSize;
+        if (first > cursor.next) {
+            // Preserve the tap's continuity check when older samples are not part of
+            // the window. A seek still differs in stamp, revision, or advancing state.
+            if (cursor.hasExpected && cursor.expectedAdvancing) cursor.expectedStamp += first - cursor.next;
+            cursor.next = first;
+            position = filled = sinceWindow = 0;
+        }
+        return target;
+    }
+    void projectStrip(std::int64_t end) {
+        const auto due = stripNextEnd.load(std::memory_order_relaxed);
+        const auto elapsed = strip->previousEnd < 0 ? 0 : end - strip->previousEnd;
+        const auto quiet = tap->lastParkedSilence();
+        const bool parked = quiet.end >= end && quiet.begin <= firstSequence;
+        const auto weight = elapsed == 0 || parked ? 1.f : static_cast<float>(
+            -std::expm1(-static_cast<double>(elapsed) / (stripSmoothingSeconds * tap->sampleRate())));
+        auto next = std::make_shared<StripResult>();
+        next->generation = tap->generation(); next->sourceEpoch = sourceEpoch;
+        next->transportRevision = transportRevision; next->firstStamp = firstStamp;
+        next->sampleRate = tap->sampleRate(); next->endSequence = end;
+        for (std::size_t i = 0; i < kStripSpectrumPoints; ++i) {
+            const auto start = linear.data() + i * linear.size() / kStripSpectrumPoints;
+            const auto stop = linear.data() + (i + 1) * linear.size() / kStripSpectrumPoints;
+            auto &magnitude = strip->magnitudes[i];
+            const auto input = *std::max_element(start, stop);
+            magnitude = weight == 1.f ? input : std::lerp(magnitude, input, weight);
+            next->spectrumDbfs[i] = dsp::toDbfs(magnitude);
+        }
+        for (std::size_t i = 0; i < kStripScopeColumns; ++i) {
+            const auto first = i * left.size() / kStripScopeColumns;
+            const auto last = (i + 1) * left.size() / kStripScopeColumns;
+            const auto l = std::minmax_element(left.data() + first, left.data() + last);
+            const auto r = std::minmax_element(right.data() + first, right.data() + last);
+            next->scope[i] = {{*l.first, *r.first}, {*l.second, *r.second}};
+        }
+        strip->previousEnd = end;
+        neutralStrip.store(parked, std::memory_order_release);
+        stripNextEnd.store(end + (strip->period - (end - due) % strip->period), std::memory_order_release);
+        publishStrip(std::move(next));
+    }
     void publishMeter(std::shared_ptr<const StereoMeterResult> next) {
         std::lock_guard lock(resultMutex);
         meterResult.swap(next);
@@ -320,6 +403,7 @@ struct SharedAnalysis::Domain {
         consumedSequence.store(cursor.next, std::memory_order_release);
         activateAverage(sequence);
         activateMaximum(sequence);
+        if (outputs.load(std::memory_order_acquire) & Strip) startStripAt(sequence);
         for (const auto &history : cumulativeHistories) {
             history->afterSequence = sequence;
             history->clear();
@@ -328,6 +412,7 @@ struct SharedAnalysis::Domain {
     }
     bool ensureSpectrum(std::uint32_t bits) {
         if (!spectralOutput(bits)) return true;
+        auto nextStrip = (bits & Strip) && !strip ? std::make_unique<StripHistory>() : nullptr;
         if (!spectrum) {
             auto plan = std::make_unique<dsp::Spectrum>(request.fftSize, request.window);
             if (!plan->valid()) return false;
@@ -336,9 +421,14 @@ struct SharedAnalysis::Domain {
             spectrum = std::move(plan); scratch = std::move(time); linear = std::move(bins); second = std::move(stereo);
         }
         if ((bits & Spectrogram) && columns.capacity() < maxHistoryColumns) columns.reserve(maxHistoryColumns);
+        if (nextStrip) strip = std::move(nextStrip);
         return true;
     }
     void releaseUnused(std::uint32_t bits) {
+        if (!(bits & Strip) && strip) {
+            strip.reset();
+            publishStrip({});
+        }
         if (!(bits & Average1s)) {
             average.reset(); averageBins.reset(); averageConfigured = false;
             averageStatus = AverageStatus::Unavailable;
@@ -368,6 +458,7 @@ struct SharedAnalysis::Domain {
     bool parkedWindowSettled(engine::ScopeTap::ParkedSilence quiet, std::uint32_t bits) const noexcept {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
+               (!(bits & Strip) || neutralStrip.load(std::memory_order_acquire)) &&
                !(bits & Average1s) && (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire));
     }
     bool settledParkedSilence(engine::ScopeTap::ParkedSilence quiet) const noexcept {
@@ -394,9 +485,11 @@ struct SharedAnalysis::Domain {
     }
     bool needsWork(const HistoryBudget &budget) const noexcept {
         if (!active.load(std::memory_order_acquire) || !available.load(std::memory_order_acquire) || !tap) return false;
+        const auto end = tap->written();
+        if (outputs.load(std::memory_order_acquire) == Strip && end < stripNextEnd.load(std::memory_order_acquire))
+            return false;
         if (dirty.load(std::memory_order_acquire) ||
             (historyBlocked.load(std::memory_order_acquire) && budget.canClaim(historyColumnBytes()))) return true;
-        const auto end = tap->written();
         const auto consumed = consumedSequence.load(std::memory_order_acquire);
         if (end == consumed) return false;
         const auto quiet = tap->lastParkedSilence();
@@ -405,7 +498,7 @@ struct SharedAnalysis::Domain {
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
-    std::array<std::size_t, 8> outputUsers{}; // State mutex
+    std::array<std::size_t, 9> outputUsers{}; // State mutex
     std::size_t consumers = 0;
     std::uint64_t sourceEpoch = 1, revision = 0, columnSerial = 0, gaps = 0, overruns = 0;
     std::vector<Column> columns;
@@ -493,7 +586,11 @@ struct SharedAnalysis::Domain {
             std::ranges::any_of(cumulativeHistories, [this](const auto &history) {
                 return firstSequence >= history->afterSequence;
             });
-        const bool needsSpectrum = rawSpectralOutput(bits) || averageHopEligible || maximumHopEligible || cumulativeHop;
+        const auto windowEnd = firstSequence + static_cast<std::int64_t>(n);
+        const bool stripHop = (bits & Strip) && newWindow && strip->period &&
+                              windowEnd >= stripNextEnd.load(std::memory_order_relaxed);
+        const bool needsSpectrum = rawSpectralOutput(bits) || averageHopEligible || maximumHopEligible ||
+                                   cumulativeHop || stripHop;
         if (needsSpectrum && !spectrum) return {};
         auto latest = std::make_shared<Result>();
         latest->request = request; latest->outputs = bits; latest->request.outputs = bits;
@@ -554,6 +651,7 @@ struct SharedAnalysis::Domain {
                 }
                 spectralWindow = windowSerial;
             }
+            if (stripHop) projectStrip(windowEnd);
             if (averageHopEligible) {
                 const bool clipped = (request.channel != Channel::Right && clippedLeft) ||
                                      (request.channel != Channel::Left && clippedRight);
@@ -1480,17 +1578,21 @@ struct SharedAnalysis::State {
             const auto n = d.left.size(), hop = static_cast<std::size_t>(d.request.hopSize);
             const auto end = d.tap->written();
             const auto quiet = d.tap->lastParkedSilence();
+            const auto bits = d.outputs.load(std::memory_order_acquire);
+            const bool stripOnly = bits == Strip;
             d.skipParkedBeforeCumulative(quiet);
             // Resume at the end of a previously parked range. Its omitted samples
             // are identical to those in the retained window. The regular cursor
             // still detects a seek, playback start, or another stamp at the join.
             if (quiet.end < end && quiet.end > d.cursor.next && d.settledParkedSilence(quiet))
                 d.cursor.next = quiet.end;
-            while (d.cursor.next < end && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame) {
+            const auto readEnd = stripOnly ? d.stripReadEnd(end) : end;
+            while (d.cursor.next < readEnd && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame) {
                 if (quiet.end >= end && d.settledParkedSilence(quiet)) break;
-                const auto need = d.filled < n ? n - d.filled : hop - d.sinceWindow;
+                const auto remaining = static_cast<std::size_t>(readEnd - d.cursor.next);
+                const auto need = d.filled < n ? n - d.filled : stripOnly ? remaining : hop - d.sinceWindow;
                 const auto length = std::min({need, kMaxSamplesPerFrame - samples, readLeft.size(),
-                                               static_cast<std::size_t>(end - d.cursor.next)});
+                                               remaining});
                 ++reads;
                 auto read = d.tap->read(d.cursor, std::span<float>(readLeft.data(), length),
                                        std::span<float>(readRight.data(), length));
@@ -1498,10 +1600,13 @@ struct SharedAnalysis::State {
                     read.status == engine::ScopeTap::ReadStatus::GenerationChanged) {
                     ++d.gaps;
                     if (read.status == engine::ScopeTap::ReadStatus::Overrun) ++d.overruns;
-                    d.resetWindow(true); discontinuity = true; latest.reset(); continue;
+                    d.resetWindow(true); discontinuity = true; latest.reset();
+                    if (bits & Strip) d.resetStripProjection();
+                    continue;
                 }
                 if (read.status == engine::ScopeTap::ReadStatus::Discontinuity) {
                     ++d.gaps; d.resetWindow(true); discontinuity = true; latest.reset();
+                    if (bits & Strip) d.resetStripProjection();
                 }
                 if (!read.frames) break;
                 samples += static_cast<std::size_t>(read.frames);
@@ -1512,8 +1617,11 @@ struct SharedAnalysis::State {
                 }
                 const bool wasFull = d.filled == n;
                 d.filled = std::min(n, d.filled + static_cast<std::size_t>(read.frames));
-                if (wasFull) d.sinceWindow += static_cast<std::size_t>(read.frames);
-                if (d.filled != n || (wasFull && d.sinceWindow < hop)) continue;
+                if (wasFull && !stripOnly) d.sinceWindow += static_cast<std::size_t>(read.frames);
+                if (d.filled != n) continue;
+                if (stripOnly) {
+                    if (d.cursor.next < readEnd || d.cursor.next < d.stripNextEnd.load(std::memory_order_relaxed)) continue;
+                } else if (wasFull && d.sinceWindow < hop) continue;
                 d.sinceWindow = 0; ++windows; ++d.windowSerial; d.hasWindow = true;
                 d.firstSequence = d.cursor.next - static_cast<std::int64_t>(n);
                 d.advancing = read.advancing;
@@ -1665,6 +1773,9 @@ bool SharedAnalysis::Lease::restartCumulativeMaximum() noexcept {
 }
 std::shared_ptr<const SharedAnalysis::StereoMeterResult> SharedAnalysis::Lease::readStereoMeter() const noexcept {
     return available() && domain_->meter ? domain_->readMeterResult() : nullptr;
+}
+std::shared_ptr<const SharedAnalysis::StripResult> SharedAnalysis::Lease::readStrip() const noexcept {
+    return (outputs_ & Strip) && available() ? domain_->readStripResult() : nullptr;
 }
 bool SharedAnalysis::Lease::restartStereoMeter() noexcept {
     const auto state = state_.lock();
@@ -1895,6 +2006,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
         found->second->changeOutputs(request.outputs, true);
         if (newlyRequested & Average1s) found->second->activateAverage(sequence);
         if (newlyRequested & RealtimeMaximum) found->second->activateMaximum(sequence);
+        if (newlyRequested & Strip) found->second->startStripAt(sequence);
         found->second->updateAvailability();
         ++found->second->consumers; ++state_->consumers;
         return Lease(state_, found->second, request.outputs, std::move(cumulative));
@@ -1919,9 +2031,16 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
     const auto admission = inserted || t.value != previousTap ? t.freshSequence : (t.value ? t.value->written() : 0);
     if (request.outputs & Average1s) domain->activateAverage(admission);
     if (request.outputs & RealtimeMaximum) domain->activateMaximum(admission);
+    if (request.outputs & Strip) domain->startStripAt(admission);
     if (cumulative) cumulative->afterSequence = admission;
     state_->domains.emplace(key, domain); ++state_->consumers;
     return Lease(state_, std::move(domain), request.outputs, std::move(cumulative));
+}
+
+SharedAnalysis::Lease SharedAnalysis::acquireStrip(std::int64_t track) {
+    Request request{track, engine::ScopePoint::PostFader, stripFftSize};
+    request.outputs = Strip;
+    return acquire(request);
 }
 SharedAnalysis::Lease SharedAnalysis::acquireStereoMeter(std::int64_t track, StereoMeterProfile profile) {
     Request request{track, engine::ScopePoint::PostFader, 32};

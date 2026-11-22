@@ -43,6 +43,8 @@ class SharedAnalysis final {
     static constexpr std::size_t kMaxWindowsPerFrame = 16;
     static constexpr std::size_t kMaxSamplesPerFrame = 262144;
     static constexpr std::size_t kMaxReadsPerFrame = 256;
+    static constexpr std::size_t kStripSpectrumPoints = 96;
+    static constexpr std::size_t kStripScopeColumns = 64;
     // Immutable spectrogram-bin payload, including buffers retained by frozen
     // snapshots. This is not a limit on FFT/tap/allocator or client metadata.
     static constexpr std::size_t kMaxHistoryBytes = 64u * 1024u * 1024u;
@@ -50,7 +52,7 @@ class SharedAnalysis final {
     enum class Mode { Worker, Manual };
     enum Output : std::uint32_t {
         Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32,
-        RealtimeMaximum = 64, CumulativeMaximum = 128
+        RealtimeMaximum = 64, CumulativeMaximum = 128, Strip = 256
     };
     struct StereoMeterProfile {
         bool midSide = false;
@@ -120,6 +122,15 @@ class SharedAnalysis final {
         double sampleRate = 0;
         std::uint64_t generation = 0, epoch = 0;
     };
+    struct StripResult {
+        struct ScopeColumn { std::array<float, 2> minimum{}, maximum{}; };
+        // Peak per evenly grouped frequency band, from DC to Nyquist.
+        std::array<float, kStripSpectrumPoints> spectrumDbfs{};
+        std::array<ScopeColumn, kStripScopeColumns> scope{};
+        std::uint64_t generation = 0, sourceEpoch = 0, transportRevision = 0;
+        std::int64_t firstStamp = 0, endSequence = 0;
+        double sampleRate = 0.;
+    };
     struct Stats {
         std::size_t consumers = 0, domains = 0, taps = 0;
         std::uint64_t transforms = 0, publications = 0, frameRequests = 0, workerPasses = 0;
@@ -154,6 +165,7 @@ class SharedAnalysis final {
         std::shared_ptr<const MaximumResult> readMaximum(Output) const noexcept;
         bool restartCumulativeMaximum() noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
+        std::shared_ptr<const StripResult> readStrip() const noexcept;
         bool restartStereoMeter() noexcept;
         // Owner-only activation barrier, not a paint/audio query. A nonzero
         // generation identifies the currently usable tap; written is its completed
@@ -287,6 +299,8 @@ class SharedAnalysis final {
     SharedAnalysis(const SharedAnalysis &) = delete;
     SharedAnalysis &operator=(const SharedAnalysis &) = delete;
     Lease acquire(const Request &);
+    // Hold only while the strip is visible. Uses the track's existing post-fader tap.
+    Lease acquireStrip(std::int64_t track);
     Lease acquireStereoMeter(std::int64_t track, StereoMeterProfile);
     CaptureLease acquireCapture(const CaptureRequest &);
     BarScopeLease acquireBarScope(std::span<const engine::ScopeSource>, std::size_t columns);
