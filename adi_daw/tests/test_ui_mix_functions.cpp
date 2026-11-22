@@ -634,6 +634,40 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
         root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack));
         root.setMixView(true, false);
         root.frame();
+        {
+            using Scale = SharedSpectrumView::SpectrumScale;
+            auto &mix = root.mixViewPanel;
+            auto &info = mix.channels;
+            const auto originalBroker = root.sharedAnalysis;
+            const auto tap = std::make_shared<engine::ScopeTap>(48000., SharedAnalysis::kTapSeconds);
+            auto broker = std::make_shared<SharedAnalysis>(
+                [tap](std::int64_t, engine::ScopePoint) { return tap; },
+                [](std::int64_t, engine::ScopePoint) {}, SharedAnalysis::Mode::Manual);
+            root.sharedAnalysis = broker;
+            info.infoMode.setSelectedId(info.infoMode.getItemId(1), juce::sendNotificationSync);
+            root.frame();
+            std::array<float, 1024> audio;
+            audio.fill(.25f);
+            tap->write(audio.data(), audio.data(), static_cast<std::int32_t>(audio.size()), 0, true);
+            broker->pump();
+            root.frame();
+            const auto shown = info.preview.snapshot();
+            const auto before = broker->stats();
+            mix.analysis.detail.setSpectrumScale(Scale::Extended);
+            root.frame();
+            const auto after = broker->stats();
+            check(info.preview.isShowing() && info.preview.mode() == SharedSpectrumView::Mode::Spectrum &&
+                      info.preview.spectrumScale() == Scale::Extended,
+                  "Mix View Info spectrum uses the current Analysers layout");
+            check(shown && info.preview.snapshot() == shown && after.taps == before.taps &&
+                      after.domains == before.domains && after.spectralPlans == before.spectralPlans &&
+                      after.transforms == before.transforms,
+                  "changing the Info layout keeps the existing spectrum publication and analysis work");
+            info.infoMode.setSelectedId(info.infoMode.getItemId(0), juce::sendNotificationSync);
+            mix.analysis.detail.setSpectrumScale(Scale::Wide);
+            root.sharedAnalysis = originalBroker;
+            root.frame();
+        }
         auto &stack = root.mixViewPanel.stack;
         root.arrangement.geometry.selection.track = 2;
         root.publishSelection();
