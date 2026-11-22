@@ -34,6 +34,8 @@
 
 #pragma once
 
+#include "adi/dsp/modulator_clock.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -55,17 +57,9 @@ public:
     static constexpr std::array<double, 12> kDivisionQuarters{1.0 / 16, 1.0 / 8, 1.0 / 4, 1.0 / 2, 1, 2,
                                                               4,        8,       16,      32,      0.75, 1.0 / 3};
 
-    /// Where the song is at the first sample of a block, for a synced LFO:
-    /// its sample, and the tempo segment it lies in (the segment's first
-    /// sample, its position in quarter notes, its tempo). A sample's position
-    /// is the segment's plus its distance at that tempo, so any blocking reads
-    /// the same position for the same sample.
-    struct Position {
-        std::int64_t sample = 0;
-        std::int64_t originSample = 0;
-        double originQuarterNotes = 0;
-        double bpm = 120;
-    };
+    /// Where the song is at a block's first sample, for a synced LFO (the
+    /// modulators' shared clock, modulator_clock.hpp).
+    using Position = ModulatorClock::Position;
 
     LfoModulator() noexcept;
     void prepare(double sampleRate) noexcept;
@@ -79,11 +73,10 @@ public:
 
 private:
     [[nodiscard]] double shape(double phase, std::int64_t cycle) const noexcept;
-    [[nodiscard]] static double hash(std::int64_t cycle, std::uint64_t salt) noexcept;
     void update() noexcept;
     std::array<double, Count> p_{};
     double rate_ = 48000;
-    double freePhase_ = 0;          // cycles, free running; its integer part counts cycles
+    ModulatorClock clock_;
     double smoothed_ = 0, smoothing_ = 0;
     int waveform_ = Sine;
     bool primed_ = false;
