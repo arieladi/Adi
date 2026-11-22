@@ -51,6 +51,12 @@ public:
     [[nodiscard]] bool analyse(const float* window, double& hz, double& clarity) noexcept;
     [[nodiscard]] std::size_t window() const noexcept { return size_; }
     [[nodiscard]] std::size_t hop() const noexcept { return size_ / 4; }
+    /// The exact differences the last analyse() computed in its fine-period
+    /// search (each over half a window): its cost, bounded by
+    /// kPasses * (2 kSteps + 3).
+    [[nodiscard]] std::size_t lastWork() const noexcept { return work_; }
+    static constexpr int kPasses = 16;
+    static constexpr std::size_t kSteps = 16;
     /// Forget the held samples and the estimate (a transport stop).
     void reset() noexcept;
 
@@ -60,7 +66,7 @@ private:
     std::vector<float> ring_, window_, padded_;
     std::vector<std::complex<float>> bins_;
     std::vector<double> d_, energy_;
-    std::size_t size_ = 0, write_ = 0, sinceLast_ = 0, filled_ = 0;
+    std::size_t size_ = 0, write_ = 0, sinceLast_ = 0, filled_ = 0, work_ = 0;
     double rate_ = 48000, hz_ = 0, clarity_ = 0;
     bool found_ = false;
 };
