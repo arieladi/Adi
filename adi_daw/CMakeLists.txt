@@ -294,6 +294,7 @@ add_library(adi_core STATIC
     src/adi/scan_stamp.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
+    src/adi/sync/midi_sync_wire.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
@@ -1948,6 +1949,10 @@ add_test(NAME adi_time_edit_tests COMMAND adi_time_edit_tests)
 add_executable(adi_time_base_tests tests/test_time_base.cpp)
 target_link_libraries(adi_time_base_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_time_base_tests COMMAND adi_time_base_tests)
+
+add_executable(adi_midi_sync_wire_tests tests/test_midi_sync_wire.cpp)
+target_link_libraries(adi_midi_sync_wire_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_midi_sync_wire_tests COMMAND adi_midi_sync_wire_tests)
 
 add_executable(adi_clip_edit_tests tests/test_clip_edit.cpp)
 target_link_libraries(adi_clip_edit_tests PRIVATE adi_core adi_warnings)
