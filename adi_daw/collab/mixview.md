@@ -11,6 +11,11 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Cumulative Windows Release for review
+
+- **PR requested — `mixview/review-cumulative-20261122` `cafd7fde`.** Windows x64 Release from current main `ac07be74`, with cold Clip/Limiter and EQ delay handling and the neutral-EQ saved-state compatibility fix. All 24 CTests passed, including 940 EQ host checks, 89 pipeline-document checks and 430 generic export-queue checks. The headless shell suites passed 906 Mix View, 329 Arrangement and 7 appearance checks. ZIP SHA-256 `c8ad2fa561b55a401fa6ed75f196c84b0995a904376137649af69c53df3cb0c6`; ADI.exe `25ae550cdd05f4812620c4127deb2d6df7e1d44e89c352c6c81c4474226ba769`. Release and retest brief are together in the private delivery workspace.
+- Win's separate macOS shell rerun passed at `b4cc808b`. The comparison of live Clip history across the application export handoff remains in Needs Window and Engine-Win. Time-based CPU and live verification stay with win under the recorded timing and desktop constraints.
+
 ## 2026-11-22 — Native EQ cold export
 
 - **PR requested — `mixview/eq-initial-export-latency-20261122` `cafd7fde`.** A real registered EQ added through DeviceHost now publishes its first offline delay as prepared graph state. The regression test failed exactly the two false-report checks for 5 ms Lookahead and Zero Phase plus Lookahead on the unmodified host. All 940 host checks passed with the fix under /WX. The 240-sample audio delay and compensated PDC remain exact; a later actual delay edit still reports once and the next callback adopts the new graph latency. The before-date cumulative branch includes both native cold-export fixes.
