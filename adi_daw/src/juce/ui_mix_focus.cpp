@@ -56,6 +56,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         if (!scope.getToggleState()) clearBarScopeData();
         updateMatchControls();
         barScope_.setMonoRequested(showsScopeDifference() ? FocusScopeChannels::Stereo : scopeChannelView());
+        resized();
         redraw_ = true;
         repaint();
     };
@@ -70,8 +71,9 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeDisplay_.onChange = [this] {
         updateScopeDifference();
         barScope_.setMonoRequested(showsScopeDifference() ? FocusScopeChannels::Stereo : scopeChannelView());
+        if (phaseBar_.isEmpty() != showsScopeDifference()) resized();
         redraw_ = true;
-        repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
+        repaint();
     };
     addChildComponent(scopeDisplay_);
     scopeChannels_.setTitle("Focus Scope channels");
@@ -350,7 +352,7 @@ void MixFocus::applyScopeLayerAction(std::int64_t track, std::uint64_t membershi
     shownBar_.reset();
     redraw_ = true;
     if (scopePlaying_) rebuildScope();
-    repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
+    repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_).getUnion(phaseBar_));
 }
 
 void MixFocus::updateScopeLayerAdjustments() {
@@ -654,14 +656,17 @@ void MixFocus::frame(const SnapshotReader &reader) {
         return;
     }
     const bool scopeShown = scope.getToggleState();
-    if (scopeShown != scopeDisplay_.isVisible()) updateMatchControls();
+    if (scopeShown != scopeDisplay_.isVisible()) {
+        updateMatchControls();
+        resized();
+    }
     if (scopeShown && !playing) {
         dropIfActive();
         if (!alive) return;
         if (redraw_) {
             rebuildScope();
             redraw_ = false;
-            repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
+            repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_).getUnion(phaseBar_));
         }
         return;
     }
@@ -762,7 +767,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
         if (!scope.getToggleState()) rebuildPlot();
         rebuildScope();
         redraw_ = false;
-        repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
+        repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_).getUnion(phaseBar_));
     }
 }
 void MixFocus::clearBarScopeData() {
@@ -806,6 +811,7 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
             return;
         barScope_ = std::move(acquired);
         barScope_.setLayerAdjustments(scopeAdjustments_);
+        barScope_.setPhaseRequested(!phaseBar_.isEmpty());
         barScope_.setMonoRequested(showsScopeDifference() ? FocusScopeChannels::Stereo : scopeChannelView());
         barScope_.setDifferenceRequested(differenceRequest_);
     }
@@ -951,6 +957,7 @@ void MixFocus::rebuildPlot() {
     }
 }
 void MixFocus::clearScopeSum() {
+    scopePhase_.reset();
     scopeRange_.reset();
     sum_.reset();
     for (auto &path : scopeSumPaths_) path.clear();
@@ -1000,6 +1007,10 @@ void MixFocus::rebuildScope() {
     if (!scopePlaying_ || (!scopeShown && sumLabel_.isEmpty())) return;
 
     const auto view = scopeChannelView();
+    const auto display = static_cast<ScopeDisplay>(scopeDisplay_.getSelectedId());
+    const bool phaseVisible = scopeShown && display != ScopeDisplay::Difference && !phaseBar_.isEmpty();
+    comparesScopeMembers_ = phaseVisible && members_.size() >= 2 &&
+                            (display == ScopeDisplay::Layers || display == ScopeDisplay::Stack);
     const bool folded = focusScopeIsFolded(view);
     const std::size_t visibleLanes = view == FocusScopeChannels::Stereo ? 2 : 1;
     const auto sourceLane = [view](std::size_t path) { return view == FocusScopeChannels::Right ? 1 : path; };
@@ -1088,9 +1099,12 @@ void MixFocus::rebuildScope() {
         }
         scopeRange_ = FocusScopeRange{shownBar_->firstStamp, shownBar_->frames, shownBar_->sampleRate};
         sum_ = bar.sumReading();
+        if (phaseVisible) scopePhase_ = bar.phase(comparesScopeMembers_);
         scopeHasTrace_ = true;
         return;
     }
+    FocusScopePhase sumPhase;
+    auto *const sumPhaseTarget = phaseVisible && !comparesScopeMembers_ ? &sumPhase : nullptr;
     if (aligned) {
         for (const auto &member : members_) scopeSources_.push_back(member.data.get());
         scopeRange_ = focusScopeRange(scopeSources_);
@@ -1102,8 +1116,10 @@ void MixFocus::rebuildScope() {
                 appendColumn(trace, emit, column, columns, extrema.low, extrema.high);
             };
             sum_ = view == FocusScopeChannels::Side
-                ? focusProjectSum<FocusScopeChannels::Side>(scopeSources_, *scopeRange_, columns, publish, scopeAdjustments_)
-                : focusProjectSum<FocusScopeChannels::Mid>(scopeSources_, *scopeRange_, columns, publish, scopeAdjustments_);
+                ? focusProjectSum<FocusScopeChannels::Side>(scopeSources_, *scopeRange_, columns, publish,
+                                                         scopeAdjustments_, sumPhaseTarget)
+                : focusProjectSum<FocusScopeChannels::Mid>(scopeSources_, *scopeRange_, columns, publish,
+                                                        scopeAdjustments_, sumPhaseTarget);
             trace.finish(emit);
         } else if (scopeRange_ && scopeShown) {
             const auto columns = std::min(plotColumns, scopeRange_->frames);
@@ -1115,11 +1131,23 @@ void MixFocus::rebuildScope() {
                         appendColumn(traces[ch], pathPoint(scopeSumPaths_[ch]), column, columns,
                                      extrema.low[lane], extrema.high[lane]);
                     }
-                }, scopeAdjustments_);
+                }, scopeAdjustments_, sumPhaseTarget);
             for (std::size_t ch = 0; ch < visibleLanes; ++ch)
                 traces[ch].finish(pathPoint(scopeSumPaths_[ch]));
         } else if (scopeRange_ && !sumLabel_.isEmpty()) {
             sum_ = focusReadSum(scopeSources_, *scopeRange_);
+        }
+    }
+    if (phaseVisible) {
+        if (scopeRange_ && comparesScopeMembers_)
+            scopePhase_ = focusScopePhase(*scopeSources_[0], scopeSources_[1], *scopeRange_,
+                                         scopeAdjustments_[0], scopeAdjustments_[1]);
+        else if (scopeRange_)
+            scopePhase_ = sumPhase.reading();
+        else if (members_.size() == 1 && members_.front().data) {
+            const auto &layer = members_.front();
+            if (const auto range = focusScopeMember(*layer.data))
+                scopePhase_ = focusScopePhase(*layer.data, nullptr, *range, layer.scopeAdjustment);
         }
     }
     if (!scopeShown || plotColumns == 0 || (aligned && !scopeRange_)) return;
@@ -1208,6 +1236,10 @@ void MixFocus::resized() {
     scopeDisplay_.setBounds(learnMatch.getBounds());
     scopeChannels_.setBounds(clearMatch.getBounds());
     scopeLayer_.setBounds(alignMeasure_.getBounds());
+    phaseBar_ = scope.getToggleState() && !showsScopeDifference()
+                    ? r.removeFromBottom(std::min(look::fieldHeight, r.getHeight())).reduced(plotInset, 0)
+                    : juce::Rectangle<int>{};
+    barScope_.setPhaseRequested(!phaseBar_.isEmpty());
     plot_ = r.reduced(plotInset).toFloat();
     rebuildMatchPath();
     for (auto &m : members_)
@@ -1215,6 +1247,33 @@ void MixFocus::resized() {
     redraw_ = true;
     visibilityChanged();
 }
+void MixFocus::paintScopePhase(juce::Graphics &g) const {
+    if (phaseBar_.isEmpty()) return;
+    auto area = phaseBar_;
+    const auto labelWidth = std::min(look::mixFocusSourceWidth, area.getWidth() / 3);
+    g.setFont(look::font(look::fontCaption));
+    g.setColour(look::textDim);
+    const auto label = comparesScopeMembers_ ? "Layers Mid phase"
+                       : members_.size() == 1 ? "Layer L/R phase" : "Sum L/R phase";
+    g.drawFittedText(label, area.removeFromLeft(labelWidth), juce::Justification::centredLeft, 1);
+    auto readout = area.removeFromRight(labelWidth);
+    juce::String number = "--";
+    if (scopePhase_) number = (*scopePhase_ > 0. ? "+" : "") + juce::String(*scopePhase_, 2);
+    g.drawFittedText(number, readout, juce::Justification::centredRight, 1);
+    const auto bar = area.reduced(look::gap, std::max(0, (area.getHeight() - look::gap) / 2)).toFloat();
+    if (bar.isEmpty()) return;
+    g.setColour(look::outline);
+    g.fillRect(bar);
+    if (scopePhase_) {
+        const auto middle = bar.getCentreX();
+        const auto value = middle + static_cast<float>(*scopePhase_) * bar.getWidth() * .5f;
+        g.setColour(*scopePhase_ < 0. ? look::record : look::accent);
+        g.fillRect(bar.withX(std::min(middle, value)).withWidth(std::abs(value - middle)));
+    }
+    g.setColour(look::textDim);
+    g.drawVerticalLine(juce::roundToInt(bar.getCentreX()), bar.getY(), bar.getBottom());
+}
+
 void MixFocus::paint(juce::Graphics &g) {
     g.fillAll(look::panel);
     g.setColour(look::text);
@@ -1287,6 +1346,7 @@ void MixFocus::paint(juce::Graphics &g) {
         return;
     }
     if (scopeShown) {
+        paintScopePhase(g);
         const bool stacked = display == ScopeDisplay::Stack && !plot_.isEmpty() && !members_.empty();
         if (!stacked) g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
         if (sumShown) {

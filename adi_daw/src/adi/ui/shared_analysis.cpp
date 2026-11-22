@@ -1009,16 +1009,18 @@ struct SharedAnalysis::BarScopeDomain {
                 if (!prepareDisplayBlocks(first, reads, readLimit, samples, count)) return false;
                 pollDifferenceRequest();
                 const auto fold = monoRequested.load(std::memory_order_relaxed);
+                const auto phase = phaseRequested.load(std::memory_order_relaxed);
                 if (!projection) {
                     for (std::size_t i = 0; i < lanes.size(); ++i)
                         identities[i] = {lanes[i].source, lanes[i].tap->generation()};
                     projection = std::make_shared<FocusScopeBarProjection>();
-                    if (!projection->prepare(range, identities, columns, revision, fold, difference)) {
+                    if (!projection->prepare(range, identities, columns, revision, fold, difference, phase)) {
                         invalidate();
                         return false;
                     }
                 } else {
                     projection->retainMono(fold);
+                    projection->retainPhase(phase);
                 }
                 for (std::size_t i = 0; i < lanes.size(); ++i) {
                     auto &block = blocks[i];
@@ -1056,6 +1058,7 @@ struct SharedAnalysis::BarScopeDomain {
     std::uint64_t expectedRevision = 0, revision = 0;
     std::int64_t end = 0;
     std::atomic<FocusScopeChannels> monoRequested{FocusScopeChannels::Stereo};
+    std::atomic<bool> phaseRequested{false};
     std::mutex differenceMutex; // held only to copy the request, never while processing samples
     std::optional<ScopeDifference> requestedDifference, difference;
     std::atomic<std::uint64_t> differenceVersion{0};
@@ -1583,6 +1586,12 @@ void SharedAnalysis::BarScopeLease::setMonoRequested(FocusScopeChannels fold) no
     if (!state || !domain_) return;
     state->ownerOnly();
     domain_->setMonoRequested(fold);
+}
+void SharedAnalysis::BarScopeLease::setPhaseRequested(bool value) noexcept {
+    const auto state = state_.lock();
+    if (!state || !domain_) return;
+    state->ownerOnly();
+    domain_->phaseRequested.store(value, std::memory_order_relaxed);
 }
 void SharedAnalysis::BarScopeLease::setDifferenceRequested(std::optional<ScopeDifference> requested) noexcept {
     const auto state = state_.lock();

@@ -1163,6 +1163,32 @@ void focusScopeLayerPreview() {
               difference.low == std::array{-3., -.375} && difference.high == difference.low && allocationSizeCount == 0,
           "short Sum, Difference and readouts operate on shifted signed samples without allocation");
 }
+void focusScopePhaseOperands() {
+    constexpr std::int64_t stamp = 64;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 7;
+    constexpr std::array<float, 4> a{.25f, -.5f, .125f, -.25f};
+    constexpr std::array<float, 4> b{-.125f, .25f, -.0625f, .125f};
+    const FocusScopeRange range{stamp, a.size(), rate};
+    const std::array<FocusScopeBarSource, 2> sources{{{{1, ScopePoint::PostFader, 0}, 1},
+                                                      {{2, ScopePoint::PostFader, 0}, 1}}};
+    const std::array<FocusScopeBarBlock, 2> original{{{sources[0], stamp, revision, rate, true, a, a},
+                                                    {sources[1], stamp, revision, rate, true, b, b}}};
+    FocusScopeBarProjection bar;
+    check(bar.prepare(range, sources, a.size(), revision) && bar.append(original) && !bar.phase(true),
+          "an unrequested bar phase reading stays empty");
+    check(bar.prepare(range, sources, a.size(), revision, FocusScopeChannels::Stereo, {}, true) &&
+              bar.append(original) && bar.phase(true) == -1. && bar.phase(false) == 1.,
+          "an opposite Mid pair and its same-polarity stereo sum use different operands");
+    auto inverted = original;
+    inverted[1].inverted = true;
+    check(bar.prepare(range, sources, a.size(), revision, FocusScopeChannels::Stereo, {}, true) &&
+              bar.append(inverted) && bar.phase(true) == 1.,
+          "the phase reading sees visual polarity applied before the Mid operands");
+    bar.retainPhase(false);
+    check(!bar.phase(false) && !bar.phase(true), "withdrawing phase demand drops the preview value");
+}
+
 void focusBarLayerPreview() {
     using namespace adi::ui;
     using Source = adi::engine::ScopeSource;
@@ -3162,7 +3188,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

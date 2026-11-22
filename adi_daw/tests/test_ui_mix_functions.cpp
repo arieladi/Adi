@@ -58,6 +58,7 @@ struct MixFocusTestAccess {
     }
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
     static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
+    static auto scopePhase(const MixFocus &focus) { return focus.scopePhase_; }
     static auto layerAdjustment(MixFocus &focus) {
         const auto *layer = focus.selectedScopeLayer();
         return layer ? layer->scopeAdjustment : FocusScopeLayerAdjustment{};
@@ -1579,6 +1580,21 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
             for (int x = 0; equal && x < overlay.getWidth(); ++x)
                 equal = overlay.getPixelAt(x, y) == restored.getPixelAt(x, y);
         check(equal, "returning to Overlay restores the existing plot exactly");
+        root.frame();
+        check(MixFocusTestAccess::scopePhase(focus) == 1., "Overlay measures the summed stereo pair");
+        layout->setSelectedItemIndex(1, juce::sendNotificationSync);
+        root.frame();
+        check(MixFocusTestAccess::scopePhase(focus) == -1., "Layers measures the first two members' Mid signals");
+        layout->setSelectedItemIndex(2, juce::sendNotificationSync);
+        root.frame();
+        check(MixFocusTestAccess::scopePhase(focus) == -1., "Stack keeps the two-member phase operands");
+        layout->setSelectedItemIndex(3, juce::sendNotificationSync);
+        root.frame();
+        check(MixFocusTestAccess::scopePhase(focus) == 1., "Sum uses the signed combination's left and right");
+        layout->setSelectedItemIndex(4, juce::sendNotificationSync);
+        root.frame();
+        check(!MixFocusTestAccess::scopePhase(focus), "Difference has no phase bar demand");
+        layout->setSelectedItemIndex(0, juce::sendNotificationSync);
         root.frame();
         const auto after = broker->stats();
         check(after.consumers == before.consumers && after.taps == before.taps &&

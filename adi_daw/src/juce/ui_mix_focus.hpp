@@ -78,6 +78,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void showScopeLayerMenu();
     void applyScopeLayerAction(std::int64_t track, std::uint64_t membership, ScopeLayerAction);
     void updateScopeLayerAdjustments();
+    void paintScopePhase(juce::Graphics &) const;
     void refreshControls();
     std::array<const Member *, 2> matchMembers() const noexcept;
     bool canLearnMatch(const std::array<const Member *, 2> &) const noexcept;
@@ -99,7 +100,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::TextButton alignMeasure_{"Measure Align"}, scopeLayer_{"Layer"};
     juce::Label alignReadout_;
     juce::Rectangle<float> plot_;
-    juce::Rectangle<int> titleRow_, sumLabel_;
+    juce::Rectangle<int> titleRow_, sumLabel_, phaseBar_;
     std::vector<const SharedAnalysis::Result *> scopeSources_;
     std::vector<FocusScopeLayerAdjustment> scopeAdjustments_;
     bool scopeOffsetsInMilliseconds_ = false;
@@ -110,6 +111,8 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::optional<FocusScopeBar> requestedBar_;
     std::shared_ptr<const SharedAnalysis::BarScopeResult> shownBar_;
     std::optional<FocusSumReading> sum_;
+    std::optional<double> scopePhase_;
+    bool comparesScopeMembers_ = false;
     std::array<juce::Path, 2> scopeSumPaths_, scopeDifferencePaths_;
     std::optional<SharedAnalysis::ScopeDifference> differenceRequest_;
     std::optional<std::uint64_t> differenceLocate_, differenceRenderedRevision_;
