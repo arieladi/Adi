@@ -15009,7 +15009,92 @@ int main(int argc, char **argv) {
         check(inputs == 0 || portHost.ports().front().input, "inputs are listed first");
         panel.showPage("Audio");
         check(table != nullptr && !table->isVisible(), "the table shows on its own page only");
-        check(portHost.drain({}) == 0 && portHost.dropped() == 0, "with nothing played, nothing to drain");
+        check(portHost.activity() == 0 && portHost.dropped() == 0, "with nothing played, nothing arrived");
+    }
+    {
+        // The keyboard into the session (N60's window half): the feed drains every port's ring on the
+        // audio thread, in time order across ports, each event stamped in the block's stream samples.
+        MidiInputFeed feed;
+        MidiInputFeed::Ring keys, pads, remoteOnly;
+        const auto msg = [](double ms, std::uint8_t a, std::uint8_t b, std::uint8_t c) {
+            MidiPortEvent e;
+            e.timeMs = ms;
+            e.bytes = {a, b, c};
+            e.size = midiMessageSize(a);
+            return e;
+        };
+        const std::array<MidiInputFeed::Source, 3> sources{
+            MidiInputFeed::Source{&keys, 0, true, false, false, 1}, MidiInputFeed::Source{&pads, 1, true, false, false, 2},
+            MidiInputFeed::Source{&remoteOnly, 2, false, true, false, 3}};
+        feed.publish(sources);
+        keys.push(msg(100, 0x90, 60, 127));  // note on, channel 1, key 60, full velocity: before this block's span
+        pads.push(msg(105, 0xb1, 64, 127));  // sustain down, channel 2
+        keys.push(msg(110, 0x80, 60, 0));    // note off
+        remoteOnly.push(msg(106, 0x90, 62, 100));
+        struct Got {
+            std::int64_t sample;
+            engine::Event event;
+        };
+        std::vector<Got> got;
+        const auto take = [&got](std::int64_t sample, const engine::Event &e) {
+            got.push_back({sample, e});
+            return true;
+        };
+        // A 480-frame block at 48 kHz starting at stream sample 4800; the ports' clock reads 112 ms. What
+        // arrived over the last block's span plays one block later at the same offset.
+        const auto n = feed.pump(4800, 480, 48000, 112, take);
+        check(n == 3 && got.size() == 3, "three events from the two Track ports; the Remote-only port reaches no track");
+        if (got.size() == 3) {
+            check(got[0].event.type == engine::EventType::NoteOn && got[0].event.channel == 0 && got[0].event.dim == 60 &&
+                      std::abs(got[0].event.value - 1.0) < 1e-9 && got[0].event.noteId != 0 &&
+                      (got[0].event.noteId >> 40) == 1 && got[0].sample == 4800,
+                  "the note on: channel 0-based, key 60, velocity 1, a nonzero id in port 0's space, on the block's "
+                  "first sample (it arrived before the last block's span)");
+            check(got[1].event.type == engine::EventType::Controller && got[1].event.channel == 1 &&
+                      got[1].event.paramId == 64 && got[1].sample == 4800 + 480 - 7 * 48,
+                  "the sustain from the other port, in time order between them, 7 ms before the clock: 336 samples "
+                  "before the block's end");
+            check(got[2].event.type == engine::EventType::NoteOff && got[2].event.noteId == got[0].event.noteId &&
+                      got[2].sample == 4800 + 480 - 2 * 48 && got[0].sample <= got[1].sample && got[1].sample <= got[2].sample,
+                  "the note off with its note's id, 2 ms before the clock; the stamps never go back");
+        }
+        // An event stamped earlier than one already given is put at that one's sample, never before it.
+        got.clear();
+        keys.push(msg(120, 0x90, 64, 64));
+        pads.push(msg(119, 0x91, 65, 64)); // earlier, from the other port
+        feed.pump(5280, 480, 48000, 121, take);
+        check(got.size() == 2 && got[0].event.dim == 65 && got[1].event.dim == 64 && got[0].sample <= got[1].sample &&
+                  got[0].sample >= 5280 && got[1].sample < 5760,
+              "within the block and in time order across the ports, whatever order they were drained in");
+        got.clear();
+        keys.push(msg(122, 0x80, 64, 0));
+        pads.push(msg(122, 0x81, 65, 0));
+        feed.pump(5760, 480, 48000, 123, take);
+        got.clear();
+        // A refused event is counted; a restart forgets held notes, so a note off with no note on is nothing.
+        got.clear();
+        keys.push(msg(130, 0x90, 67, 90));
+        feed.pump(6240, 480, 48000, 131, [](std::int64_t, const engine::Event &) { return false; });
+        check(feed.refused() == 1, "a full session queue refuses the note, and it is counted");
+        feed.restart();
+        keys.push(msg(140, 0x80, 67, 0));
+        feed.pump(0, 480, 48000, 141, take);
+        check(got.empty(), "after a restart, a note off whose note on came before it sounds nothing");
+        // Unpublished: the audio thread reads no ring.
+        feed.publish({});
+        keys.push(msg(150, 0x90, 60, 100));
+        feed.pump(480, 480, 48000, 151, take);
+        MidiPortEvent left;
+        check(got.empty() && keys.pop(left) && left.bytes[1] == 60, "with nothing published the rings are left alone");
+        // A port with its MPE switch on reads MPE's lower zone: a member channel's note keeps its channel.
+        MidiInputFeed::Ring mpe;
+        const std::array<MidiInputFeed::Source, 1> mpeSource{MidiInputFeed::Source{&mpe, 3, true, false, true, 4}};
+        feed.publish(mpeSource);
+        mpe.push(msg(160, 0x93, 72, 100)); // channel 4, a member of the lower zone
+        feed.pump(960, 480, 48000, 161, take);
+        check(got.size() >= 1 && got[0].event.type == engine::EventType::NoteOn && got[0].event.channel == 3 &&
+                  (got[0].event.noteId >> 40) == 4,
+              "an MPE port's member note: channel 3 zero-based, its id in that port's space");
     }
     {
         // Two ports, as a machine with a keyboard and a synth lists them: the switches write the record.

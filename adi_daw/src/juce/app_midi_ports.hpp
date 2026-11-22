@@ -17,6 +17,7 @@
 #pragma once
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/midi_input_feed.hpp"
 #include "adi/ui/midi_ports.hpp"
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -57,9 +58,10 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     void refresh();
     // Called on the message thread after `refresh` changed what is listed or open.
     std::function<void()> onChange;
-    // Takes every event the open inputs delivered since the last drain, in each port's order, to
-    // `take(event)`, on the message thread. Returns how many it took.
-    std::size_t drain(const std::function<void(const MidiPortEvent &)> &take);
+    // The rings' one consumer (N60), owned by the application so it outlives the device callback that
+    // pumps it: `refresh` publishes the open inputs to it, and the host's end takes them all back
+    // before their rings go. None (tests): the rings fill and nothing drains them.
+    void setFeed(MidiInputFeed *feed);
     // A count that moves each time an open input delivers a message (the MIDI Indicators).
     std::uint64_t activity() const noexcept { return activity_.load(std::memory_order_relaxed); }
     // Events lost because a ring was full (the consumer fell behind), since the host began: the input
@@ -79,6 +81,9 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     std::vector<std::unique_ptr<Input>> inputs_;
     std::atomic<std::uint64_t> activity_{0};
     std::atomic<std::uint64_t> dropped_{0};
+    MidiInputFeed *feed_ = nullptr;
+    std::uint64_t serials_ = 0;
+    void publish();
 };
 // Live's MIDI Ports table on the Tempo & MIDI Settings page (Live 12 manual 41.6): one row per port and
 // direction, its Track, Sync, Remote and MPE switches. A switch is written to the `midi.ports` record at

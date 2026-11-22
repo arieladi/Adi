@@ -29,6 +29,34 @@
 #include <future>
 namespace adi::ui {
 namespace {
+// The document's process with the keyboard in front of it (N60's window half): in the device callback
+// the feed drains the MIDI ports' rings into the session's live input, stamped in this block's stream
+// samples, and then the document renders the block. A device (re)start re-anchors the feed and resets
+// the session's input, as `Session::enqueueMidiInput` asks of a producer whose sample clock restarts.
+class LiveMidiProcessor final : public engine::BlockProcessor {
+  public:
+    LiveMidiProcessor(ProjectDocument &document, MidiInputFeed &feed) : document_(document), feed_(feed) {}
+    void prepare(double sampleRate, std::int32_t maxFrames) override {
+        rate_ = sampleRate;
+        feed_.restart();
+        document_.session().resetMidiInput();
+        document_.prepare(sampleRate, maxFrames);
+    }
+    void process(const engine::AudioIo &io) noexcept override {
+        auto &session = document_.session();
+        feed_.pump(io.streamTimeSamples, io.frames, rate_, juce::Time::getMillisecondCounterHiRes(),
+                   [&session](std::int64_t sample, const engine::Event &event) noexcept {
+                       return session.enqueueMidiInput(sample, event);
+                   });
+        document_.process(io);
+    }
+    void release() override { document_.release(); }
+
+  private:
+    ProjectDocument &document_;
+    MidiInputFeed &feed_;
+    double rate_ = 0;
+};
 // A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
 // `withFileExtension` cuts the name at its last dot, so "Song v1.2" would become "Song v1.adi"
 // where Live writes "Song v1.2.als". The native choosers on Windows and macOS add the extension
@@ -124,6 +152,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // The MIDI ports (SRF-05): listed and opened by the Settings' MIDI Ports; never in a smoke run.
         if (smokeOutput_ == juce::File{}) {
             midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); });
+            midiPorts_->setFeed(&midiFeed_);
             // A port plugged in or out, or a switch thrown: the Settings' table follows.
             // Posted: a refresh can run inside a Settings row's own commit, which the page must outlive.
             midiPorts_->onChange = [this] {
@@ -587,6 +616,7 @@ class AdiApplication final : public juce::JUCEApplication,
             manager_.removeAudioCallback(bridge_.get());
         manager_.closeAudioDevice();
         bridge_.reset();
+        live_.reset();
     }
     juce::File projectsFolder() const {
         const auto chosen = settings_->get("files.projectsFolder");
@@ -1002,7 +1032,10 @@ class AdiApplication final : public juce::JUCEApplication,
             return cores > 1 ? (std::min)(cores - 1U, static_cast<unsigned>(engine::RenderWorkers::maximum))
                              : 0U;
         }, settings::kGraphWorkersMinimumFrames);
-        bridge_ = std::make_unique<device::DeviceBridge>(*document_);
+        // The keyboard into the session (N60): the ports' rings drained in the device callback, in
+        // front of the document's process.
+        live_ = std::make_unique<LiveMidiProcessor>(*document_, midiFeed_);
+        bridge_ = std::make_unique<device::DeviceBridge>(*live_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
         manager_.addAudioCallback(bridge_.get());
         // The meters are the session's strips', which outlive a device change; a strip bound
@@ -1296,11 +1329,13 @@ class AdiApplication final : public juce::JUCEApplication,
             }
         }
         if (midiPorts_ && root_) {
-            // The ports' events go to the engine's live MIDI input once it is on main (ADR-0248 d6 item
-            // 4); until then they light the MIDI Indicators for 150 ms and are let go.
+            // The ports' events go to the session from the device callback (N60); a message arriving
+            // lights the MIDI Indicators for 150 ms.
             const auto now = juce::Time::getMillisecondCounter();
-            if (midiPorts_->drain({}) > 0)
+            if (const auto activity = midiPorts_->activity(); activity != midiSeen_) {
+                midiSeen_ = activity;
                 midiLitUntil_ = now + 150;
+            }
             root_->setMidiIn(now < midiLitUntil_);
         }
         if (floating_) {
@@ -1344,11 +1379,17 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<PluginCatalogueService> catalogue_;
     std::string pluginSourcesKey_;
     // The MIDI port host (SRF-05) and until when the MIDI Indicators stay lit.
+    // The ports' one consumer (N60), declared before the port host that publishes to it and the
+    // processor and the bridge that pump it, so it outlives all three.
+    MidiInputFeed midiFeed_;
     std::unique_ptr<MidiPortHost> midiPorts_;
+    std::uint64_t midiSeen_ = 0;
     juce::uint32 midiLitUntil_ = 0;
     std::unique_ptr<ProjectDocument> document_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
+    // The document with the keyboard in front of it, which the bridge drives (N60).
+    std::unique_ptr<LiveMidiProcessor> live_;
     std::unique_ptr<device::DeviceBridge> bridge_;
     std::unique_ptr<AdiWindow> window_;
     AdiRootComponent *root_ = nullptr;

@@ -7,6 +7,7 @@
 // Every edit goes through the window's own builders and `ProjectDocument`'s calls; where the window
 // builds a request itself, the code here copies it and names the place it copies.
 #pragma once
+#include "adi/ui/midi_input_feed.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_model.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -98,6 +99,29 @@ class Driver {
     void attach(ui::ProjectDocument &doc) { doc_ = &doc; }
     // What the inputs carry; none is silence.
     std::function<float(std::size_t, std::int64_t)> input;
+    // The app's MIDI consumer in front of the document (N60), as `ui_main.cpp`'s LiveMidiProcessor puts
+    // it in the device callback; the ports' clock here is the stream's, in ms. None: no keyboard.
+    ui::MidiInputFeed *feed = nullptr;
+    // A message played on a port at stream sample `at`.
+    struct Played {
+        std::int64_t at = 0;
+        std::array<std::uint8_t, 3> bytes{};
+    };
+    // `blocks` callbacks with `played` reaching `ring` as a port would deliver them: each pushed while the
+    // block that holds its sample runs, stamped with the port time the feed maps back to that sample.
+    void play(ui::MidiInputFeed::Ring &ring, const std::vector<Played> &played, int blocks, Stereo *heard = nullptr) {
+        for (int b = 0; b < blocks; ++b) {
+            for (const auto &p : played)
+                if (p.at >= stream && p.at < stream + kFrames) {
+                    ui::MidiPortEvent e;
+                    e.timeMs = (static_cast<double>(stream) + static_cast<double>(p.at - stream - kFrames)) * 1000.0 / kRate;
+                    e.bytes = p.bytes;
+                    e.size = ui::midiMessageSize(p.bytes[0]);
+                    (void)ring.push(e);
+                }
+            block(heard);
+        }
+    }
     std::int64_t stream = 0;
     // Clip underrun samples over every callback so far. Each clip generation counts its own, and the
     // timer's rebuilds replace the generation, so the count is taken per callback.
@@ -120,6 +144,11 @@ class Driver {
         io.numOut = 2;
         io.frames = kFrames;
         io.streamTimeSamples = stream;
+        if (feed)
+            feed->pump(stream, kFrames, kRate, static_cast<double>(stream) * 1000.0 / kRate,
+                       [this](std::int64_t sample, const engine::Event &event) {
+                           return doc_->session().enqueueMidiInput(sample, event);
+                       });
         doc_->process(io);
         if (clips && clips == doc_->session().clips())
             underruns_ += clips->underrunSamples() - missedBefore;

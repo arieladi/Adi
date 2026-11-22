@@ -339,36 +339,37 @@ void step3(Session &s, Report &report) {
                         entry && !entry->placeholder ? 1 : 0, assigned ? "assigned" : assignError.c_str(), slot ? 1 : 0,
                         armed ? 1 : 0),
                  "OneShot on track 2, \"Insert OneShot\"; loaded; the sample in slot 1; track 2 armed");
-    // Live notes: the app throws the keyboard's events away (ui_main.cpp, `midiPorts_->drain({})` lights the MIDI
-    // indicators only) and ProjectDocument has no live-MIDI entry point.
-    report.step("3b", V::NotBuilt, "the app's MIDI port rings are drained into the indicators only; no document call",
-                "a key played on an armed MIDI track is heard at its time",
-                "the app consumer from MidiPortHost to Session::enqueueMidiInput, port time as stream samples "
-                "(SRF-05 window half); owner window-fn");
-    // The engine call that consumer would make: a note 37 frames into a block, released 0.25 s later.
+    // Live notes (N60): a key played on a port reaches the session through the app's consumer, the feed
+    // the device callback pumps in front of the document (ui_main.cpp, LiveMidiProcessor).
+    ui::MidiInputFeed feed;
+    ui::MidiInputFeed::Ring keyboard;
+    const std::array<ui::MidiInputFeed::Source, 1> port{ui::MidiInputFeed::Source{&keyboard, 0, true, false, false, 1}};
+    feed.publish(port);
+    driver.feed = &feed;
+    // A note 37 frames into a block, released 0.25 s later.
     const auto blockStart = driver.stream;
     constexpr std::int64_t k = 37;
-    const bool queued =
-        doc.session().enqueueMidiInput(blockStart + k, engine::Event{0, engine::EventType::NoteOn, 0, 60, 1, 0, 1.0}) &&
-        doc.session().enqueueMidiInput(blockStart + k + 12000, engine::Event{0, engine::EventType::NoteOff, 0, 60, 1, 0, 0.0});
     Stereo heard;
-    driver.run(300, &heard);
+    driver.play(keyboard, {{blockStart + k, {0x90, 60, 127}}, {blockStart + k + 12000, {0x80, 60, 0}}}, 300, &heard);
+    driver.feed = nullptr;
     std::int64_t first = -1;
     for (std::size_t i = 0; i < heard.size() && first < 0; ++i)
         if (std::abs(heard.c[0][i]) > 1e-4f)
             first = static_cast<std::int64_t>(i);
     const double loud = peak(heard, 0, heard.size());
     const double expected = .5 * gainOf(-12);
-    report.engine("3b", format("queued %d; first sound at +%lld frames from the note's sample; peak %.4f",
-                               queued ? 1 : 0, static_cast<long long>(first < 0 ? -1 : first - k), loud),
-                  format("onset at +1 (the note's own frame plays the sine's first sample, 0); peak %.4f (0.5 at "
-                         "OneShot's -12 dB)",
-                         expected));
+    report.check("3b", first - k == 1 && std::abs(loud - expected) < 1e-3,
+                 format("through the app's MIDI consumer: first sound at +%lld frames from the note's sample; peak %.4f; "
+                        "%llu refused",
+                        static_cast<long long>(first < 0 ? -1 : first - k), loud,
+                        static_cast<unsigned long long>(feed.refused())),
+                 format("a key played on an armed MIDI track is heard at its time: onset at +1, peak %.4f", expected));
 #else
     report.step("3a", V::NotBuilt, "this build has no Pd", "OneShot on a MIDI track", "build with ADI_WITH_PD=ON; owner win");
-    report.step("3b", V::NotBuilt, "the app's MIDI port rings are drained into the indicators only",
-                "a key played on an armed MIDI track is heard at its time",
-                "the app consumer from MidiPortHost to Session::enqueueMidiInput; owner window-fn");
+    (void)doc; // a build without Pd plays nothing here
+    (void)driver;
+    report.step("3b", V::NotBuilt, "this build has no Pd, so no OneShot to play",
+                "a key played on an armed MIDI track is heard at its time", "build with ADI_WITH_PD=ON; owner win");
 #endif
     std::printf("WTS01 3c, 3d: the VST3 instrument, in adi_acceptance_wts01_vst3 (JUCE)\n");
 }

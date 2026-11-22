@@ -32,6 +32,7 @@ struct MidiPortHost::Input final : ump::Consumer {
     }
     MidiPortHost &host;
     std::uint32_t slot;
+    std::uint64_t serial = 0; // this opening, for the feed (never 0)
     std::string id;
     ump::Input connection;
     MidiEventRing<1024> ring;
@@ -52,6 +53,8 @@ MidiPortHost::~MidiPortHost() {
     for (auto &input : inputs_)
         if (input && input->connection.isAlive())
             input->connection.removeConsumer(*input);
+    if (feed_)
+        feed_->publish({}); // the audio thread lets go of every ring before they go
     inputs_.clear();
 }
 std::string MidiPortHost::backend() const {
@@ -68,17 +71,26 @@ std::string MidiPortHost::backend() const {
     }
     return {};
 }
-std::size_t MidiPortHost::drain(const std::function<void(const MidiPortEvent &)> &take) {
-    std::size_t n = 0;
-    MidiPortEvent e;
-    for (auto &input : inputs_)
-        if (input)
-            while (input->ring.pop(e)) {
-                if (take)
-                    take(e);
-                ++n;
-            }
-    return n;
+void MidiPortHost::publish() {
+    // The open inputs, each with the switches its record holds now (N60).
+    std::vector<MidiInputFeed::Source> sources;
+    for (const auto &input : inputs_) {
+        if (!input)
+            continue;
+        const auto port = std::find_if(ports_.begin(), ports_.end(), [&](const Port &p) { return p.input && p.id == input->id; });
+        if (port == ports_.end())
+            continue;
+        sources.push_back({&input->ring, input->slot, port->switches.track, port->switches.remote, port->switches.mpe,
+                           input->serial});
+    }
+    if (feed_)
+        feed_->publish(sources);
+}
+void MidiPortHost::setFeed(MidiInputFeed *feed) {
+    if (feed_ && feed_ != feed)
+        feed_->publish({});
+    feed_ = feed;
+    publish();
 }
 void MidiPortHost::endpointsChanged() { refresh(); }
 void MidiPortHost::refresh() {
@@ -129,7 +141,9 @@ void MidiPortHost::refresh() {
     }
     sortPorts(listed);
     bool changed = listed.size() != ports_.size();
-    // Close every input that is gone or switched off; open those switched on that are not open.
+    // Close every input that is gone or switched off; open those switched on that are not open. A
+    // closed input's ring stays until the feed has been told, so the audio thread never reads it freed.
+    std::vector<std::unique_ptr<Input>> retired;
     for (auto &input : inputs_) {
         if (!input)
             continue;
@@ -138,7 +152,7 @@ void MidiPortHost::refresh() {
         if (!wanted || !input->connection.isAlive()) {
             if (input->connection.isAlive())
                 input->connection.removeConsumer(*input);
-            input.reset();
+            retired.push_back(std::move(input));
             changed = true;
         }
     }
@@ -165,6 +179,7 @@ void MidiPortHost::refresh() {
             slot = inputs_.end() - 1;
         }
         auto input = std::make_unique<Input>(*this, static_cast<std::uint32_t>(slot - inputs_.begin()), p.id);
+        input->serial = ++serials_;
         input->connection = std::move(connection);
         input->connection.addConsumer(*input);
         *slot = std::move(input);
@@ -179,6 +194,8 @@ void MidiPortHost::refresh() {
                 break;
             }
     ports_ = std::move(listed);
+    publish();
+    retired.clear();
     if (changed && onChange)
         onChange();
 }

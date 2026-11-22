@@ -70,22 +70,20 @@ void session(Report &report) {
                         entry ? (entry->placeholder ? ("a placeholder: " + entry->error).c_str() : "loaded") : "absent",
                         label.c_str()),
                  "the fixture instrument loads on track 3, one step \"Insert ADI Test Plain\"");
-    // 3d. Live notes into it: the same gap as OneShot's.
-    report.step("3d", V::NotBuilt, "the app's MIDI port rings are drained into the indicators only; no document call",
-                "a key played on the armed VST3 instrument is heard at its time",
-                "the app consumer from MidiPortHost to Session::enqueueMidiInput (SRF-05 window half); owner window-fn");
+    // 3d. Live notes into it, through the app's MIDI consumer (N60), as OneShot's in 3b.
     auto snap = doc->view().current();
     auto arm = ui::armTracks(snap->tracks, doc->recordStates(), 3, {3}, true, false);
     const bool armed = arm.refusal.empty() && submitEdits(*doc, std::move(arm.ops));
+    ui::MidiInputFeed feed;
+    ui::MidiInputFeed::Ring keyboard;
+    const std::array<ui::MidiInputFeed::Source, 1> port{ui::MidiInputFeed::Source{&keyboard, 0, true, false, false, 1}};
+    feed.publish(port);
+    driver.feed = &feed;
     const auto blockStart = driver.stream;
     constexpr std::int64_t k = 37;
-    const bool queued =
-        armed &&
-        doc->session().enqueueMidiInput(blockStart + k, engine::Event{0, engine::EventType::NoteOn, 0, 69, 1, 0, 1.0}) &&
-        doc->session().enqueueMidiInput(blockStart + k + 12000,
-                                        engine::Event{0, engine::EventType::NoteOff, 0, 69, 1, 0, 0.0});
     Stereo heard;
-    driver.run(60, &heard);
+    driver.play(keyboard, {{blockStart + k, {0x90, 69, 127}}, {blockStart + k + 12000, {0x80, 69, 0}}}, 60, &heard);
+    driver.feed = nullptr;
     std::int64_t first = -1;
     for (std::size_t i = 0; i < heard.size() && first < 0; ++i)
         if (std::abs(heard.c[0][i]) > 1e-4f)
@@ -96,13 +94,15 @@ void session(Report &report) {
     for (std::size_t i = from + 1; i < from + 9600 && i < heard.size(); ++i)
         rising += heard.c[0][i - 1] < 0 && heard.c[0][i] >= 0 ? 1 : 0;
     const double loud = peak(heard, from, from + 9600);
-    report.engine("3d", format("armed %d, queued %d; first sound at +%lld frames from the block start (note at +%lld); "
-                               "%.1f Hz; peak %.4f",
-                               armed ? 1 : 0, queued ? 1 : 0, static_cast<long long>(first), static_cast<long long>(k),
-                               rising / .2, loud),
-                  "onset at +1 from the block start (the fixture plays events at offset 0, its sine starting at 0); "
-                  "440 Hz +-5; peak 0.0713 "
-                  "(0.3 x 0.25 x 0.95, pressure 0)");
+    // The fixture plays a block's events at its first frame, its sine starting at 0: onset at +1 from the
+    // block start, whatever the note's offset within the block.
+    report.check("3d", armed && first == 1 && std::abs(rising / .2 - 440) <= 5 && std::abs(loud - .0713) < 2e-3,
+                 format("through the app's MIDI consumer: armed %d; first sound at +%lld frames from the block start "
+                        "(note at +%lld); %.1f Hz; peak %.4f; %llu refused",
+                        armed ? 1 : 0, static_cast<long long>(first), static_cast<long long>(k), rising / .2, loud,
+                        static_cast<unsigned long long>(feed.refused())),
+                 "a key played on the armed VST3 instrument is heard in its block: onset at +1 from the block start "
+                 "(the fixture plays events at offset 0), 440 Hz +-5, peak 0.0713 (0.3 x 0.25 x 0.95, pressure 0)");
     // 7d. Export with the VST3 in the project: refused on the Export page before a file is asked for.
     snap = doc->view().current();
     arm = ui::armTracks(snap->tracks, doc->recordStates(), 3, {3}, true, false);
