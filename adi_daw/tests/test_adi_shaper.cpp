@@ -766,6 +766,71 @@ void driveAndCrush() {
     check(rack.latency() == 0 && std::bit_cast<std::uint32_t>(result[0]) == std::bit_cast<std::uint32_t>(negativeZero)
           && result[1] == .1875f, "Crush at zero mix is undelayed and bit exact");
 }
+
+void crushHoldClockBlocks() {
+    constexpr std::size_t frames = 144257;
+    std::vector<float> input(frames);
+    std::uint32_t seed = 0x912ab43du;
+    for (auto& sample : input) {
+        seed = 1664525u * seed + 1013904223u;
+        sample = static_cast<float>(seed >> 8) * 0x1p-24f - .5f;
+    }
+    const auto render = [&](std::array<std::size_t, 4> blocks, bool linear,
+                            float low, float high, double startBeat) {
+        Shaper rack;
+        rack.set(Shaper::CrushOn, 1);
+        const auto set = [&](Shaper::ModControl control, float value) {
+            rack.set(Shaper::modParam(Stage::Crush, Band::Mid, control), value);
+        };
+        set(Shaper::SecondaryCurve, linear ? 1.f : 0.f);
+        for (int i = 0; i < 8; ++i)
+            set(static_cast<Shaper::ModControl>(Shaper::Secondary1 + i), i == 0 ? low : high);
+        rack.prepare(48000);
+        rack.tempo(120);
+        auto left = input, right = input;
+        std::size_t pos = 0, block = 0;
+        while (pos < frames) {
+            const auto n = std::min(blocks[block++ % blocks.size()], frames - pos);
+            rack.sync(startBeat + static_cast<double>(pos) / 24000.0, true);
+            rack.process(left.data() + pos, right.data() + pos,
+                         left.data() + pos, right.data() + pos, n);
+            pos += n;
+        }
+        check(rack.latency() == 0, "Crush hold clock retains zero latency");
+        return left;
+    };
+    const std::array<std::size_t, 4> blocks256{256, 256, 256, 256};
+    const std::array<std::size_t, 4> blocks2048{2048, 2048, 2048, 2048};
+    const std::array<std::size_t, 4> irregular{63, 411, 1021, 19};
+    for (bool linear : {false, true}) {
+        for (auto rates : {std::array{20.f, 100.f}, std::array{20.f, 99.f},
+                           std::array{55.f, 55.f}, std::array{100.f, 100.f}}) {
+            for (double start : {0.0, .171875}) {
+                const auto reference = render({frames, frames, frames, frames}, linear, rates[0], rates[1], start);
+                check(render(blocks256, linear, rates[0], rates[1], start) == reference,
+                      "Crush hold clock matches a whole buffer at 256 frames");
+                check(render(blocks2048, linear, rates[0], rates[1], start) == reference,
+                      "Crush hold clock matches a whole buffer at 2048 frames");
+                check(render(irregular, linear, rates[0], rates[1], start) == reference,
+                      "Crush hold clock matches a whole buffer at irregular frame counts");
+            }
+        }
+    }
+    Shaper located;
+    located.set(Shaper::CrushOn, 1);
+    located.set(Shaper::modParam(Stage::Crush, Band::Mid, Shaper::Secondary1), 0);
+    located.prepare(48000);
+    located.sync(0, true);
+    std::array<float, 129> alternating{}, right{};
+    for (std::size_t i = 0; i < alternating.size(); ++i) alternating[i] = (i % 2 ? -.25f : .25f);
+    auto left = alternating;
+    located.process(left.data(), alternating.data(), left.data(), right.data(), left.size());
+    located.sync(2.0, true);
+    left = alternating;
+    located.process(left.data(), alternating.data(), left.data(), right.data(), left.size());
+    check(std::abs(left[64] - left[65]) > .49f,
+          "A transport locate moves the Crush hold contour into its full-rate segment");
+}
 } // namespace
 
 int main() {
@@ -785,6 +850,7 @@ int main() {
     modulationBands();
     driveDryAndLatency();
     driveAndCrush();
+    crushHoldClockBlocks();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }
