@@ -38,7 +38,9 @@ class SharedAnalysis final {
     static constexpr std::size_t kMaxHistoryBytes = 64u * 1024u * 1024u;
     enum class Channel : std::uint8_t { Mid, Side, Left, Right, StereoPower };
     enum class Mode { Worker, Manual };
-    enum Output : std::uint32_t { Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32 };
+    enum Output : std::uint32_t {
+        Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32, RealtimeMaximum = 64
+    };
     struct StereoMeterProfile {
         bool midSide = false;
         dsp::StereoEnvelopeMeter::Weighting weighting = dsp::StereoEnvelopeMeter::Weighting::Standard;
@@ -98,6 +100,10 @@ class SharedAnalysis final {
         AverageStatus status = AverageStatus::Waiting;
         std::uint64_t epoch = 0, processedWindows = 0, windowSerial = 0;
     };
+    struct MaximumResult {
+        std::shared_ptr<const Result> window;
+        std::vector<float> binsDbfs;
+    };
     struct StereoMeterResult {
         dsp::StereoEnvelopeMeter::Reading reading;
         double sampleRate = 0;
@@ -131,6 +137,7 @@ class SharedAnalysis final {
         // Only Average1s leases: same immutable sidecar/window for compatible
         // consumers. Missing/refused publication returns null; inspect status.
         std::shared_ptr<const AverageResult> readAverage() const noexcept;
+        std::shared_ptr<const MaximumResult> readMaximum() const noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
         bool restartStereoMeter() noexcept;
         // Owner-only activation barrier, not a paint/audio query. A nonzero

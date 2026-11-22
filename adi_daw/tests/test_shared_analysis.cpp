@@ -56,6 +56,200 @@ struct Fixture {
         [this](std::int64_t, ScopePoint) { ++acquireCalls; return tap; },
         [this](std::int64_t, ScopePoint) { ++releaseCalls; }, SharedAnalysis::Mode::Manual};
 };
+void realtimeMaximumSpectrum() {
+    constexpr int window = 480;
+    constexpr int rate = 48000;
+    std::array<float, window> first{}, quiet{}, loud{};
+    first.front() = .5f;
+    loud.fill(.5f);
+    for (const int hop : {480, 240, 120}) {
+        Fixture f;
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.window = adi::dsp::Window::Rectangular;
+        request.hopSize = hop;
+        auto raw = f.broker.acquire(request);
+        request.outputs = SharedAnalysis::RealtimeMaximum;
+        auto maximum = f.broker.acquire(request);
+        auto sibling = f.broker.acquire(request);
+        check(raw.available() && maximum.available() && sibling.available() && f.acquireCalls == 1 &&
+                  f.broker.stats().spectralPlans == 1 && f.broker.stats().domains == 1,
+              "visible realtime maximum readers share the raw Spectrum tap, window and FFT plan");
+        if (!maximum.available())
+            continue;
+        f.tap->write(first.data(), first.data(), window, 0, true, 1);
+        f.broker.pump();
+        const auto initial = maximum.readMaximum();
+        const auto input = raw.read();
+        check(initial && sibling.readMaximum() == initial && input && initial->window == input &&
+                  exactBins(initial->binsDbfs, input->binsDbfs) && f.broker.stats().transforms == 1,
+              "the first maximum takes the calibrated raw bins in the same hop without another FFT");
+        if (!initial || initial->binsDbfs.empty())
+            continue;
+        const auto startDb = initial->binsDbfs.front();
+        const auto before = f.broker.stats();
+        f.broker.pump();
+        check(maximum.readMaximum() == initial && before.analysisWindows == f.broker.stats().analysisWindows &&
+                  before.publications == f.broker.stats().publications,
+              "a repaint or redundant pump advances no maximum without a completed physical hop");
+
+        for (int i = 0; i < rate / hop; ++i) {
+            f.tap->write(quiet.data(), quiet.data(), hop, window + i * hop, true, 1);
+            if (i % 4 == 3)
+                f.broker.pump();
+        }
+        f.broker.pump();
+        const auto decayed = maximum.readMaximum();
+        check(decayed && near(decayed->binsDbfs.front(), startDb - 20., .002) &&
+                  f.broker.stats().transforms == 1 && initial->binsDbfs.front() == startDb,
+              "one second of physical hops decays by 20 dB and leaves the held picture immutable");
+        f.tap->write(loud.data(), loud.data(), hop, window + rate, true, 1);
+        f.broker.pump();
+        const auto rising = maximum.readMaximum();
+        const auto current = raw.read();
+        check(rising && current && rising->binsDbfs.front() == current->binsDbfs.front() &&
+                  rising->binsDbfs.front() > startDb && f.broker.stats().transforms == 2,
+              "a louder calibrated bin rises on the next hop without waiting for a redraw");
+
+        f.tap->write(quiet.data(), quiet.data(), window, 2200, true, 2);
+        f.broker.pump();
+        const auto afterSeek = maximum.readMaximum();
+        check(afterSeek && afterSeek->window->transportRevision == 2 &&
+                  afterSeek->window->sourceEpoch > initial->window->sourceEpoch &&
+                  afterSeek->binsDbfs.front() == adi::dsp::kDbFloor,
+              "a seek begins a fresh maximum without reusing an old peak");
+
+        maximum.reset();
+        check(sibling.readMaximum() == afterSeek && f.releaseCalls == 0,
+              "hiding one maximum view leaves the other view's history intact");
+        sibling.reset();
+        raw.reset();
+        const auto hidden = f.broker.stats();
+        f.tap->write(loud.data(), loud.data(), window, 2200 + window, true, 2);
+        f.broker.pump();
+        const auto idle = f.broker.stats();
+        check(hidden.consumers == 0 && hidden.spectralPlans == 0 && f.releaseCalls == 1 &&
+                  hidden.cursorReads == idle.cursorReads && hidden.transforms == idle.transforms,
+              "hiding the final view leaves no maximum plan, capture or FFT work");
+    }
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.hopSize = window / 2;
+    auto raw = f.broker.acquire(request);
+    f.tap->write(loud.data(), loud.data(), window, 0, true, 1);
+    f.broker.pump();
+    request.outputs = SharedAnalysis::RealtimeMaximum;
+    auto reopened = f.broker.acquire(request);
+    f.tap->write(quiet.data(), quiet.data(), window / 2, window, true, 1);
+    f.broker.pump();
+    check(raw.read() && !reopened.readMaximum(),
+          "a newly admitted maximum excludes windows that overlap the loud pre-admission history");
+    f.tap->write(quiet.data(), quiet.data(), window / 2, window + window / 2, true, 1);
+    f.broker.pump();
+    const auto fresh = reopened.readMaximum();
+    check(fresh && fresh->window->firstSequence == window &&
+              fresh->binsDbfs.front() == adi::dsp::kDbFloor && f.acquireCalls == 1,
+          "a new maximum starts at its first complete fresh window on the existing tap");
+
+    f.tap->write(static_cast<const float *>(nullptr), nullptr, window, 2000, false, 2);
+    f.broker.pump();
+    const auto settled = f.broker.stats();
+    for (int i = 0; i < 12; ++i) {
+        f.tap->write(static_cast<const float *>(nullptr), nullptr, window, 2000, false, 2);
+        f.broker.pump();
+    }
+    const auto parked = f.broker.stats();
+    check(settled.cursorReads == parked.cursorReads && settled.transforms == parked.transforms &&
+              settled.publications == parked.publications,
+          "the parked maximum becomes idle once its complete quiet window is at the display floor");
+}
+void realtimeMaximumDecayAndAdmission() {
+    constexpr int window = 480;
+    constexpr int rate = 48000;
+    std::array<float, window> high{}, low{}, quiet{};
+    high.fill(.5f);
+    low.fill(.125f);
+
+    {
+        Fixture fixture;
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.window = adi::dsp::Window::Rectangular;
+        request.hopSize = window;
+        request.outputs = SharedAnalysis::RealtimeMaximum;
+        auto maximum = fixture.broker.acquire(request);
+        fixture.tap->write(high.data(), high.data(), window, 0, true, 1);
+        fixture.broker.pump();
+        const auto start = maximum.readMaximum();
+        for (int i = 0; i < rate / window; ++i) {
+            fixture.tap->write(low.data(), low.data(), window, window * (i + 1), true, 1);
+            if (i % 4 == 3)
+                fixture.broker.pump();
+        }
+        fixture.broker.pump();
+        const auto end = maximum.readMaximum();
+        const auto expectedDrop = 20. * std::log10(.25 + .75 * .1);
+        check(start && end && near(end->binsDbfs.front(), start->binsDbfs.front() + expectedDrop, .002),
+              "realtime maximum falls toward an ongoing weaker signal on the physical hop clock");
+
+        request.outputs |= SharedAnalysis::Spectrum;
+        const auto transforms = fixture.broker.stats().transforms;
+        auto combined = fixture.broker.acquire(request);
+        check(!combined.readMaximum(), "combined lease withholds maximum metadata from before Raw demand");
+        fixture.broker.pump();
+        const auto updated = combined.readMaximum();
+        check(updated && end && updated->window == combined.read() &&
+                  exactBins(updated->binsDbfs, end->binsDbfs) && fixture.broker.stats().transforms == transforms,
+              "adding Raw republishes the same maximum bins and a matching window without a new FFT");
+    }
+
+    {
+        Fixture fixture;
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.hopSize = window / 2;
+        auto raw = fixture.broker.acquire(request);
+        fixture.tap->write(quiet.data(), quiet.data(), window, 0, true, 1);
+        fixture.broker.pump();
+        check(raw.read() != nullptr, "Raw consumed history before a queued discontinuity");
+        for (int i = 0; i < 3; ++i)
+            fixture.tap->write(high.data(), high.data(), window, 2000 + i * window, true, 2);
+        const auto admission = fixture.tap->written();
+        request.outputs = SharedAnalysis::RealtimeMaximum;
+        auto maximum = fixture.broker.acquire(request);
+        fixture.broker.pump();
+        check(!maximum.readMaximum(), "a seek already in the backlog cannot relax the maximum admission fence");
+        fixture.tap->write(quiet.data(), quiet.data(), window, 2000 + 3 * window, true, 2);
+        fixture.broker.pump();
+        const auto fresh = maximum.readMaximum();
+        check(fresh && fresh->window->firstSequence == admission && fresh->binsDbfs.front() == adi::dsp::kDbFloor,
+              "maximum starts with the first complete post-admission window after a backlogged seek");
+    }
+
+    {
+        Fixture fixture;
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.hopSize = window / 2;
+        auto raw = fixture.broker.acquire(request);
+        const float *silent = nullptr;
+        fixture.tap->write(silent, silent, window, 0, false, 1);
+        fixture.broker.pump();
+        const auto oldPicture = raw.read();
+        const auto admission = fixture.tap->written();
+        request.outputs = SharedAnalysis::RealtimeMaximum;
+        auto maximum = fixture.broker.acquire(request);
+        fixture.tap->write(silent, silent, window, 0, false, 1);
+        fixture.broker.pump();
+        const auto parked = maximum.readMaximum();
+        check(oldPicture && parked && parked->window->firstSequence == admission &&
+                  parked->binsDbfs.front() == adi::dsp::kDbFloor,
+              "a new maximum receives a floor picture while a settled Raw reader stays parked");
+        const auto settled = fixture.broker.stats();
+        fixture.tap->write(silent, silent, window, 0, false, 1);
+        fixture.broker.pump();
+        const auto idle = fixture.broker.stats();
+        check(parked && maximum.readMaximum() == parked && idle.cursorReads == settled.cursorReads &&
+                  idle.publications == settled.publications && idle.transforms == 0,
+              "settled parked maximum skips later certified quiet samples");
+    }
+}
 void focusScopeBarTiming() {
     constexpr auto quarter = adi::textproj::kPPQ;
     const adi::engine::TempoMap constant{{{0, 120., 0}}};
@@ -2004,7 +2198,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

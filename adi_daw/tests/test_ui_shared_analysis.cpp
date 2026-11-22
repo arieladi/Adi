@@ -2185,6 +2185,51 @@ void compareAndAveragePages() {
     pages.setPage(Page::Compare);
     check(broker->stats().consumers == 2, "leaving Average releases only the page's own lease");
     raw.reset(); publishedAverage.reset();
+
+    using Mode = SharedSpectrumView::Mode;
+    pages.setPage(Page::Spectrum);
+    pages.spectrumTraceBox.setSelectedId(static_cast<int>(Mode::SpectrumMaximum) + 1, juce::sendNotificationSync);
+    pages.frame(broker, original, main, guitar);
+    SharedAnalysis::Request maximumRequest{main};
+    maximumRequest.outputs = SharedAnalysis::RealtimeMaximum;
+    auto retainedMaximum = broker->acquire(maximumRequest);
+    const auto maximumStart = first->written();
+    write(*first, .8f, maximumStart, 4);
+    broker->pump();
+    pages.frame(broker, original, main, guitar);
+    const auto peak = retainedMaximum.readMaximum();
+    check(pages.page() == Page::Spectrum && pages.pageBox.getText() == "Spectrum" &&
+              pages.spectrumTraceBox.getText() == "Realtime Maximum" && pages.spectrumTraceBox.isShowing() &&
+              pages.detail.view.mode() == Mode::SpectrumMaximum &&
+              pages.detail.view.getTitle() == "Realtime Maximum" && pages.detail.scaleBox.isShowing(),
+          "Realtime Maximum is selectable with the existing Spectrum controls and an accessible label");
+    check(peak && pages.detail.view.snapshot() == peak->window &&
+              std::ranges::equal(pages.detail.view.spectrumBins(), peak->binsDbfs) &&
+              broker->stats().taps == 1 && broker->stats().spectralPlans == 1,
+          "the maximum page draws its immutable analysis bins on the shared tap and FFT");
+    pages.detail.view.clear();
+    pages.frame(broker, original, main, guitar);
+    check(pages.detail.view.spectrumBins().empty() && retainedMaximum.readMaximum() == peak,
+          "clearing the maximum display leaves a sibling's numerical history intact");
+    pages.setPage(Page::Analysis);
+    check(!pages.spectrumTraceBox.isShowing() && broker->stats().consumers == 1 &&
+              retainedMaximum.readMaximum() == peak,
+          "leaving Spectrum hides its trace selector and releases the pane's maximum lease");
+    pages.setPage(Page::Spectrum);
+    pages.frame(broker, original, main, guitar);
+    check(pages.detail.view.mode() == Mode::SpectrumMaximum && broker->stats().consumers == 2,
+          "returning to Spectrum restores the chosen trace");
+    pages.setVisible(false);
+    check(broker->stats().consumers == 1 && retainedMaximum.readMaximum() == peak,
+          "hiding the maximum page drops only its own lease");
+    retainedMaximum.reset();
+    check(broker->stats().consumers == 0 && broker->stats().spectralPlans == 0,
+          "the final maximum view leaves no analysis demand");
+
+    AnalysisPane detached;
+    detached.modeBox.setSelectedId(static_cast<int>(Mode::SpectrumMaximum) + 1, juce::sendNotificationSync);
+    check(detached.modeBox.getText() == "Realtime Maximum" && detached.view.mode() == Mode::SpectrumMaximum,
+          "the detached analyser also exposes Realtime Maximum");
     root.removeFromDesktop();
 }
 

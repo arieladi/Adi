@@ -330,9 +330,18 @@ MixAnalysers::MixAnalysers() {
     table_ = std::make_unique<Table>(*this);
     compare_ = std::make_unique<Compare>(*this);
     setTitle("Analysers");
-    pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Classic Scope", "Phase", "Loudness", "Analysis", "1 s Average", "Compare"}, 1);
+    pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Classic Scope", "Phase", "Loudness", "Analysis",
+                         "1 s Average", "Compare"}, 1);
     pageBox.setTitle("Analyser page");
     sourceBox.setTitle("Analyser source");
+    spectrumTraceBox.addItem("Realtime", static_cast<int>(Mode::Spectrum) + 1);
+    spectrumTraceBox.addItem("Realtime Maximum", static_cast<int>(Mode::SpectrumMaximum) + 1);
+    spectrumTraceBox.setTitle("Spectrum trace");
+    spectrumTraceBox.setSelectedId(static_cast<int>(Mode::Spectrum) + 1, juce::dontSendNotification);
+    spectrumTraceBox.onChange = [this] {
+        const auto id = spectrumTraceBox.getSelectedId();
+        if (page_ == Page::Spectrum && id > 0) detail.setMode(static_cast<Mode>(id - 1));
+    };
     pageBox.onChange = [this] {
         if (const int id = pageBox.getSelectedId(); id > 0) setPage(static_cast<Page>(id - 1));
     };
@@ -347,6 +356,7 @@ MixAnalysers::MixAnalysers() {
     };
     addAndMakeVisible(pageBox);
     addAndMakeVisible(sourceBox);
+    addChildComponent(spectrumTraceBox);
     addChildComponent(detail);
     detail.usePageControls();
     addChildComponent(*table_);
@@ -371,11 +381,13 @@ void MixAnalysers::setPage(Page page) {
     const bool showTable = all || page == Page::Analysis;
     const bool comparing = page == Page::Compare;
     sourceBox.setVisible(page != Page::Analysis && !comparing);
+    spectrumTraceBox.setVisible(page == Page::Spectrum);
     for (auto &tile : tiles_) tile.setVisible(all);
     table_->setVisible(showTable);
     if (!showTable && !comparing) {
         if (page == Page::Scope) detail.setMode(Mode::ClassicScope);
         else if (page == Page::Average) detail.setMode(Mode::SpectrumAverage);
+        else if (page == Page::Spectrum) detail.setMode(static_cast<Mode>(spectrumTraceBox.getSelectedId() - 1));
         else detail.setMode(modes[index - 1]);
     }
     detail.setVisible(!showTable && !comparing);
@@ -386,6 +398,10 @@ void MixAnalysers::setPage(Page page) {
 void MixAnalysers::setMode(Mode mode) {
     if (mode == Mode::ClassicScope) mode = Mode::Scope;
     if (mode == Mode::SpectrumAverage) setPage(Page::Average);
+    else if (mode == Mode::Spectrum || mode == Mode::SpectrumMaximum) {
+        spectrumTraceBox.setSelectedId(static_cast<int>(mode) + 1, juce::dontSendNotification);
+        setPage(Page::Spectrum);
+    }
     else if (const auto found = std::ranges::find(modes, mode); found != modes.end())
         setPage(static_cast<Page>(found - modes.begin() + 1));
 }
@@ -517,9 +533,16 @@ void MixAnalysers::suspend(bool value) {
 void MixAnalysers::resized() {
     auto area = getLocalBounds().reduced(look::border);
     auto header = area.removeFromTop(look::fieldHeight);
-    pageBox.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth() / 2)));
+    const bool showsTrace = page_ == Page::Spectrum;
+    pageBox.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth() / (showsTrace ? 3 : 2))));
     header.removeFromLeft(look::gap);
-    sourceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
+    if (showsTrace) {
+        sourceBox.setBounds(header.removeFromLeft(std::min(look::mixChannelMaxWidth, header.getWidth() / 2)));
+        header.removeFromLeft(look::gap);
+        spectrumTraceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
+    } else {
+        sourceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
+    }
     area.removeFromTop(look::gap);
     if (page_ == Page::Analysis) { table_->setBounds(area); return; }
     if (page_ == Page::Compare) { compare_->setBounds(area); return; }
