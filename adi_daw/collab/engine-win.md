@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — DEV-29(d) additional normalization targets
+
+- DEV-29(d) / EX-05 — PR requested, `engine-win/export-normalization-targets` at `e8c029d4`, on the shared export meter `a1daa886`. Adds explicit RMS-I in dBFS and maximum momentary/short-term LUFS choices to the existing uniform gain and decoded true-peak verification. Integrated remains the existing choice. The target statistic and units appear in the run manifest. MSVC render 430 and normalization 34, including an independently recomputed RMS from the decoded PCM, max M/S kept distinct from integrated loudness, correct ceiling, and refusal when the short-term window cannot fill. This uses the current target interval of -36 to 0 and an RMS default of -14 dBFS when explicitly selected. Window-fn owns the controls; the brickwall, multi-format normalization and together groups have separate integration gates.
+
 ## 2026-11-22 — EX-04 Ogg Opus output
 
 - EX-04 Ogg Opus — PR requested, `engine-win/export-ogg-opus` at `f1ebf38b`, stacked on the combined delivery head `032d74de`, after 3 December. Uses pinned BSD-3-Clause libopus 1.6.1 `22244de5a79bd1d6d623c32e72bf1954b56235be` and libopusenc 0.3 `0dba1bea736ab8bb811409dce80c994a00a2ced9`. Family-0 mono/stereo, 48 kHz, VBR with an explicit target bitrate. Native Ogg reread and libopus decode verify packet continuity, pre-skip and final granule trim before delivery. Verified 4201 stereo and 719 mono frames, deterministic output across graph blocks and no PCM dither, plus a six-format group with the same one device load and 4224 processed frames as the WAV control. MSVC: render 490, WAV 171, NI Stems 85 (native AAC unavailable). The tested decoder is the delivery verifier; arbitrary Opus import, non-48 kHz conversion and decoded lossy normalization remain separate. Win owns workflow packaging. Sources: https://www.opus-codec.org/downloads/ and https://www.rfc-editor.org/rfc/rfc7845.html
