@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-04 decode of the staged lossless files
+
+- EX-04 lossless delivery verification — PR requested, `engine-win/export-lossless-readback` at `5f53b58b` on the six-format `f1ebf38b` stack. Reads the staged WAV/AIFF/FLAC through ADI's existing owner-worker decoder and checks that the container, rate, channels and end-to-end decoded frame count agree with the requested delivery. A finalized WAV deliberately shortened by one byte was refused without publishing a destination. MSVC: render 491, WAV 171, PCM stream 50. This adds one decoded read per lossless delivery and checks its shape and readability. Exact quantized PCM equivalence is independently tested by the combined delivery fixtures. The >4 GiB opt-in case was skipped.
+
 ## 2026-11-22 — DF-E25(c) follow-up on the class-ID producer
 
 - DF-E25(c) producer remains parked pending engine review. The pinned JUCE headless scanner already tries both moduleinfo locations before loading a library. Fast description construction reads the 128-bit CID and keeps two integer hashes. The fallback loads the module once, reads factory class info and does the same hash reduction. Recommendation: capture the CID at that existing description-building boundary, with one metadata snapshot for the fast case and the actual factory for the fallback. A second library load or a lookup by name would break the intended identity and cost contract. The packet/hydration branch remains `7d4128dc`; class-ID persistence and relocation wait for the schema and producer. Source: https://github.com/juce-framework/JUCE/blob/d60b7a78030661574a615b586d9325ba7a7fa7dd/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h
