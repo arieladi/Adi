@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-02 / EX-12: common landing candidate for cycle WAVs and matrix exports
+
+**Lands after 3 December.** `engine-win/export-cycle-and-matrix` `f775a911`, on `export-windowed-delivery` `cd89d843`. Brings the four direct taps, sparse render matrix, continuous cycle WAVs, previously checked codec stack, file conversion and After Export into one candidate. The continuous WAV at 32 kHz splits at the shared rounded sample fence into 85 and 86 frames and concatenates bit-exactly. It loads the test effect once, runs at the 48 kHz project clock, preserves the explicit speaker mask and returns independently matched BLAKE3 receipts. Native MSVC: render 638, WAV 176, normalization 35, NI metadata 85, material commands 29. Raw `D:/adi-engine-win-build/20261120/engine-loans/export-cycle-and-matrix-v3.log`. The prior red cycle assertion read before the WAV fmt chunk because of the reserved RF64 header space. The final test locates the fmt chunk and passed. The native AAC path and grouped or lossy normalization remain open. PR requested.
+
 ## 2026-11-22 — EX-03 / EX-04: tails on the common render and file clock
 
 **Lands after 3 December.** `engine-win/export-windowed-delivery` `cd89d843` on `export-metered-brickwall` `f6f82169`. Compensated input and tail bounds stay on the graph clock. Shortening an Until Silent tail passes the exact delivered count to SoXR and to each independent codec readback. Fixed tail adds 64 samples at 32 kHz. Continuous 48 kHz reference agrees with the shortened tail, output WAV and AIFF agree sample for sample after shared 48 to 32 kHz SRC, and MP3, Vorbis and Opus verify their actual shortened lengths. Loop renders still write only the compensated second pass. Native MSVC: 597 render, 176 WAV, 35 normalization and 85 NI metadata checks. Raw `D:/adi-engine-win-build/20261120/engine-loans/export-windowed-delivery-rerun.log`. The initial compile caught an MSVC shadowing warning in the fixture, fixed before the green run. Live's nonzero first-lap start remains for the director. PR requested.
