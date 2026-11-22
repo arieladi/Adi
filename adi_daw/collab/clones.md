@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Crush prefilter measurements and acceptance cases
+
+Eighty-eight signed stereo transfer measurements and five independent broadband order checks put eight identical first-order low-pass poles after bit reduction and before the fractional sample hold. The cutoff tracks the nominal hold frequency every audio frame. For each pole use the bilinear gain g/(1+g), where g = tan(π times cutoff divided by sample rate). The independently fitted maximum gain was 0.999686062335968 at 44.1, 48 and 96 kHz. A 48 kHz control step measured 0.0000000368 RMS against a current-frame coefficient. Interpolating that coefficient across just two samples missed the transition by over 0.028 peak.
+
+The off switch freezes both channels' filter memories. An entirely flat, exactly full-rate curve passes audio directly. A full-rate plateau in a moving curve runs the filters at their capped gain, including a plateau at the start of the curve. A 3,000-frame plateau at 96 kHz differed from the dry path by 0.015715 RMS. Its re-entry transient reached 3.24 against the normalized input range. The capped gain and single-precision pole histories reproduced the extreme case to 0.000000280 RMS and 0.0000226 peak. Independent kick, bass and signed markers cover ordinary rates and both sides of the cap. The port must preserve the measured transient and a disabled stage's prior sound.
+
+The clones seat takes the owned Crush DSP, rack and Pd declarations, stage tests and registered tests on `clones/shaper-crush-prefilter`. IDs 874–876 select the prefilter per band. Existing projects restore the off state. Thirteen active programs and three of the earlier 81 regressions use it. **Lands after 3 December.**
+
 ## 22 November 2026 — Recallable stereo-shared clock jitter in Crush
 
 `clones/shaper-crush-jitter` at `0b6ca57e` — Model per-band Crush clock jitter and stereo latch timing. **Lands after 3 December.** IDs 871–873 recall each band's amount, defaulting to zero in older projects. Two equal-seeded triangular streams advance independently for dither and timing. In the reference their draws correlated at 0.999999897 while their positions agreed. Pausing dither for 1,024 frames and resuming gave 0.000000715 RMS against the paused sequence. A full-height flat hold also paused its timing sequence while dither continued. The model uses ADI's deterministic generator. Smoothing when automating the amount remains open.
