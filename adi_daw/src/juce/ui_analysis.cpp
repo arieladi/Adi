@@ -1385,10 +1385,13 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     if (area.isEmpty()) return;
     g.setColour(look::textOnBand);
     g.setFont(look::font(10.f, true));
-    const char *names[]{"Spectrum", "Scope", "Sample peak / RMS", "Phase / L-R correlation", "Spectrogram",
-                        "Channel analysis", "Spectrum / 1 s average", "Classic Scope", "Realtime Maximum", "Cumulative Maximum"};
+    static constexpr std::array names{"Spectrum", "Scope", "Sample peak / RMS", "Phase / L-R correlation", "Spectrogram",
+                                      "Channel analysis", "Spectrum / 1 s average", "Classic Scope", "Realtime Maximum",
+                                      "Cumulative Maximum"};
     const char *points[]{"Post Mixer", "Post FX", "Pre FX", "Device In", "Device Out"};
-    g.drawText(juce::String(names[static_cast<int>(mode_)]) + " / " + points[static_cast<int>(point_)] +
+    const auto modeIndex = static_cast<std::size_t>(mode_);
+    const auto title = modeIndex < names.size() ? juce::String(names[modeIndex]) : getTitle();
+    g.drawText(title + " / " + points[static_cast<int>(point_)] +
                    (frozen_ ? " / Frozen" : ""), area.withHeight(14.f), juce::Justification::centredLeft, true);
     const bool mainMeter = mode_ == Mode::Meters && mainMeter_.has_value();
     const auto meterHeight = mainMeter ? 38.f : 0.f;
