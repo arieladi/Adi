@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — DF-M13, external-key Focus FIR
+
+**PR requested.** `mixview/focus-fir-external-dfm13-20261122` at `c3f0abb0`, after `fe18068e`. Packing writes directly into bit-reversed FFT slots, and inverse normalization runs while unpacking the samples. The red test exceeded 306,000 work units. The Release now passes all 455 checks. At 192 kHz / 512 and ten nodes with a distinct stereo key, the worst callback fell from 348,196 to 305,185 counted work units (12.35%). Eight float/double, one/ten-node, internal/external-key comparisons were byte-identical across 3,145,728 samples. Latency stayed 49,152 samples, with no missed deadlines and no callback allocations or frees.
+
+The changed limiter and Focus units passed the same strict clang diagnostics as the landing sweep. A planted signedness warning was caught in both a source file and an included header. The remaining callback wall-time gate is tracked under FOR THE DIRECTOR.
+
 ## 2026-11-22 — DF-M62, limiter transform portability
 
 **PR requested.** `mixview/df-m62-float-transform-20261122` at `d22b81c1`. The float FFT permutation uses the same explicit unsigned count as the double FFT, so the `std::bit_width` return type on libstdc++ 12 cannot produce signed/unsigned comparison diagnostics. Windows x64 Release passed 1,093 limiter-chain checks and the shared limiter owner suite. Eight standalone round trips passed under MSVC /W4 /WX across SIMD and scalar builds.
