@@ -97,6 +97,38 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-22, later, window lane — LOG-1122: the queue of 22 November, the split with window-fn, items released
+
+**The standing queue** is `collab/prompts/2026-11-22-window-queue.md` (win, 22 November). It replaces every earlier list. The lane works it top to bottom until its limit, parks what waits on win or another seat with one line here, and then takes the next unbuilt PLAN row of its lane.
+
+**The split with window-fn** (collab/README.md, win, 22 November; ADR-0248 d3).
+- **The window lane** keeps the look (from agreed sheets only, ADR-0243), the shell and the test kit; WIN-01 is the window lane's.
+- **window-fn** takes the function rows (MX-*, SRF-*, AU-*, ED-*, MI-*, EX-*, the E-items and the DF-W rows marked for it).
+- **The split is by item, not by path.** Where both seats touch a file, each edits it for its own items, the second branch to land merges main, and each names here the other seat's items it touched.
+- **The files shared today** are `project_document.cpp`, `ui_mixer.*`, `ui_shell.cpp` and `track_edits.hpp`.
+
+**DF-W33's push of 22 November** has its entry and its "PR requested": the entry below, 22 November, with the log at `582fbdb7`. Queue item 2 rebuilds that branch as one window-only commit on #677's head. `engine/df-e23-followups` and #677's branch share that head (`25e3dfe9`), which carries the one-click Post op the mixed switch now uses.
+
+**`window/plugins-browser` can retire.** Its `259a2b90` is superseded by window-fn's `8d46c9fa` on main (#676 closed, ADR-0248 d9). Nothing on it is to land; the branch is win's to retire.
+
+**Released, so no item is claimed in both this log and window-fn's:**
+- **DF-W9, DF-W34, DF-W35 and DF-W36** are done on main (the queue's "not yours").
+- **DF-W28** is window-fn's: its move half is on main (`b40ceb93`, the engine's planner). The "Next" of the entry below, which named DF-W28 and DF-W35 (c), is withdrawn.
+
+**The queue's branches still to build, gate or request** (items in the queue's order):
+- **Written, to merge main, build, gate and request:** `window/input-clock` (DF-W18), `window/menu-parameters` (DF-W19), `window/undo-settles` (DF-W29), `window/grid-ticks` (DF-W30, merged with main and in its gate now), `window/held-peak` (DF-W32).
+- **New, not begun:** WIN-01 (the function keys), WIN-09 (the Help menu), WTS-02, WIN-04, WIN-02, WIN-03, WTS-09, WIN-05 and WIN-06 (both land after 3 December), WTS-03.
+- **Parked, each on another seat:**
+  - DF-E35a and CT-04 (engine-win's lane id in the snapshot);
+  - WTS-05 (the control core has no seat);
+  - DF-W24 step 2 (#674's `30fe5329` and `53403555`);
+  - DF-W31 (win's full theme and density sets, N56);
+  - DF-W2 (the Clip View is not handed over).
+
+PR requested: none for this entry (the log itself).
+
+---
+
 ## 2026-11-22, window lane — DF-W33 PR requested: a return inside a group; main's Pd-on browserDevices fixed; ADI-Shaper's window sites reviewed
 
 Win's order of 22 November: (1) DF-W33's window half on #677's branch, (2) the clones seat's hunks in `ui_main.cpp` and `ui_devices.cpp`, (3) the DF-W rows, then look work from agreed sheets.
