@@ -125,6 +125,10 @@ void insertionAndHistory() {
               "one Undo removes only the external insertion and its new ref/chain");
         check(History(store).redo().ok && preparePluginInsert(store,ref,1).referenceId==added.referenceId,
               "redo and another insertion reuse the resolved third-party identity");
+        db.exec("INSERT INTO tracks(id,kind,name) VALUES (8,'vca','VCA')");
+        const auto vca = preparePluginInsert(store, ref, 8);
+        check(!vca.ok && vca.error.find("VCA") != std::string::npos && vca.requests.empty(),
+              "hosted insertion refuses a VCA before preparing any edits");
         ref.format="au";check(!preparePluginInsert(store,ref,1).ok,"unsupported external formats refuse before mutation");
     }
 #if ADI_WITH_PD
@@ -163,6 +167,10 @@ void insertionAndHistory() {
     check(!refused.ok && refused.stale && db.execAndGet("SELECT count(*) FROM devices").getInt()==2,"stale browser result refuses all new rows");
     check(!prepareBuiltinInsert(store,"unknown",1).ok && !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",999).ok &&
           !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",9,prepared.deviceId).ok,"unknown devices, a missing track and a selection on another track refuse (every catalogue entry is available with Pd; the PD-disabled build refuses them all)");
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES (8,'vca','VCA')");
+    const auto vca = prepareBuiltinInsert(store, "org.adidaw.builtin.utility", 8);
+    check(!vca.ok && vca.error.find("VCA") != std::string::npos && vca.requests.empty(),
+          "built-in insertion refuses a VCA before preparing any edits");
 #endif
 }
 void thirdPartyPlacement() {

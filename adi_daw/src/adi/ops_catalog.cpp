@@ -1514,13 +1514,26 @@ Payload capturePanel(OpContext& c, std::int64_t dev) {
 bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         const auto id = deviceInteger(p,"id");
-        if(p.contains("contents")) {detail::restoreDevice(c.db,id,p.at("contents"));return true;}
+        if (p.contains("contents")) {
+            detail::restoreDevice(c.db, id, p.at("contents"));
+            if (!c.replay) {
+                // The captured device can carry a different chain from the outer request.
+                SQLite::Statement restored(c.db, "SELECT chain_id FROM devices WHERE id=?");
+                restored.bind(1, id);
+                if (!restored.executeStep()) throw std::runtime_error("restored device is missing");
+                detail::requireDeviceInsertTrack(c.db,
+                    detail::deviceChainOwner(c.db, restored.getColumn(0).getInt64()));
+            }
+            return true;
+        }
+        const auto chain = deviceInteger(p, "chain");
+        if (!c.replay) detail::requireDeviceInsertTrack(c.db, detail::deviceChainOwner(c.db, chain));
         SQLite::Statement st(c.db,
             "INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name, enabled, "
             "is_rack, preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
         st.bind(1, id);
-        st.bind(2, deviceInteger(p,"chain"));
+        st.bind(2, chain);
         st.bind(3, deviceInteger(p,"ord"));
         if (p.contains("ref") && !p.at("ref").is_null())
             st.bind(4, deviceInteger(p,"ref"));

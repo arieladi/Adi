@@ -26,6 +26,7 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/track_image.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -552,6 +553,50 @@ void testThePanel() {
     check(readPanel(*s, 11) == std::optional<std::vector<std::string>>({"x", "y"}), "arrives configured");
 }
 
+void testInsertRejectsVca() {
+    section("device.insert rejects a VCA but preserves legacy history");
+    Scratch temp("vca-device");
+    auto s = project(temp / "vca.adi");
+    if (!s) {
+        check(false, "create VCA fixture");
+        return;
+    }
+    auto& db = s->db();
+    db.exec("INSERT INTO tracks(id,kind) VALUES (1,'audio'),(2,'vca');"
+            "INSERT INTO device_chains(id,track_id) VALUES (5,1),(6,2);"
+            "INSERT INTO devices(id,chain_id,is_rack) VALUES (9,6,1);"
+            "INSERT INTO device_chains(id,parent_device_id) VALUES (7,9);"
+            "INSERT INTO devices(id,chain_id,name) VALUES (11,7,'Saved device');"
+            "INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES (11,'mix',0.42);");
+    const auto contents = detail::captureDevice(db, 11);
+    check(run(*s, "device.remove", {{"id",11}}), "remove a preexisting VCA device");
+    History history(*s);
+    check(history.undo().ok && detail::captureDevice(db, 11) == contents,
+          "Undo restores the complete older VCA device and its parameter");
+    check(history.redo().ok && countRows(*s, "SELECT count(*) FROM devices WHERE id=?", 11) == 0,
+          "Redo can remove the older device again");
+
+    const auto head = OpJournal(*s).headSeq();
+    std::string error;
+    check(!run(*s, "device.insert", {{"id",12},{"chain",6},{"ord",0}}, &error) &&
+              error.find("VCA") != std::string::npos,
+          "raw insertion on a top-level VCA chain refuses");
+    error.clear();
+    check(!run(*s, "device.insert", {{"id",13},{"chain",7},{"ord",0}}, &error) &&
+              error.find("VCA") != std::string::npos,
+          "raw insertion on a nested VCA rack chain refuses");
+    error.clear();
+    check(!run(*s, "device.insert", {{"id",11},{"chain",5},{"ord",0},{"contents",contents}}, &error) &&
+              error.find("VCA") != std::string::npos,
+          "a fresh captured insert cannot hide its actual VCA chain");
+    check(OpJournal(*s).headSeq() == head &&
+              db.execAndGet("SELECT count(*) FROM devices").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM plugin_params").getInt() == 0,
+          "refused inserts leave neither rows nor audit entries");
+    check(run(*s, "device.insert", {{"id",14},{"chain",5},{"ord",0}}),
+          "the same fresh op still inserts on an audio track");
+}
+
 // --- main ---------------------------------------------------------------------
 
 int main() {
@@ -574,6 +619,7 @@ int main() {
     testChainPair();
     testTheExpressionRoute();
     testThePanel();
+    testInsertRejectsVca();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
