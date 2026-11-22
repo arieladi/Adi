@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 idle Spectrum balance with transport stopped
+
+A visible two-second balance now parks after its entire history reaches exact zero inside a certified silent tap range. The retained result stays fixed with no further worker reads or publications. Restarting on the same stopped stamp preserves the complete two-second denominator and hop phase. Advancing playback starts a new interval.
+
+The parked counter test failed first. All 777 broker checks now pass, including a tap wrap, a partial hop at the tail of the certified range, immediate same-stamp monitoring, the exact trailing denominator and the first advancing window. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed both changed units, and Clang passed the implementation.
+
+Release ZIP SHA-256 `e10c0854b62672c9d91e2d56af80a5b5aff736184e208de0321e418113d3162b`. EXE SHA-256 `d74ac86f4c14a91999660fffaa975a5daf6857f948f0b308f9ad410f134a53df`. The corrected joined archive includes the earlier Spectrum title repair. Timed CPU remains deferred.
+
+PR requested — `mixview/mx21-spectrum-parked-balance-lands-after-2026-12-03` at `c444e88f164292d63be109a75b380dadef32be29`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 Realtime Sigma and Spectrum title repair
 
 Realtime Sigma shows the standard deviation of each bin's linear magnitude. Its mean and central second moment use the same coefficient, with the updated mean used for the residual. The worker takes the square root at publication. Raw, the primary Sigma trace and pinned Sigma traces use the same FFT and physical tap when the profile matches.
