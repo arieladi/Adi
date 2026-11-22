@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — DF-E25(c) follow-up on the class-ID producer
+
+- DF-E25(c) producer remains parked pending engine review. The pinned JUCE headless scanner already tries both moduleinfo locations before loading a library. Fast description construction reads the 128-bit CID and keeps two integer hashes. The fallback loads the module once, reads factory class info and does the same hash reduction. Recommendation: capture the CID at that existing description-building boundary, with one metadata snapshot for the fast case and the actual factory for the fallback. A second library load or a lookup by name would break the intended identity and cost contract. The packet/hydration branch remains `7d4128dc`; class-ID persistence and relocation wait for the schema and producer. Source: https://github.com/juce-framework/JUCE/blob/d60b7a78030661574a615b586d9325ba7a7fa7dd/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h
+
 ## 2026-11-22 — EX-12 After Export for an individual delivery
 
 - EX-12 selected-file import — PR requested, `engine-win/export-after-multiple` at `4b3153e2`, combining the guarded After Export command with the five-format delivery group. When requested, all staged digests are taken before publication and exposed only per successful output. The owner can import the selected file through the existing one-step command, with a fresh digest check and the same undo behavior. Real WAV+AIFF test chose the AIFF, committed one clip to the target track, and one Undo restored the prior head and left both deliveries byte-exact. Strict MSVC: render 498, history 148, material 29. Window owns file selection and dispatch. Opus import still awaits a decoder.
