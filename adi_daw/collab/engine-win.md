@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, N66 stacked after DF-E44
+
+- `engine-win/recording-failed-prefix` at `0900deeb`, based on #710 and stacked on DF-E44 `0ed2c355`. Land DF-E44 first, then N66. The prefix receipt is set after the worker has reported completion and only if neither the write loop nor any sink close reported an exception. DF-E44 still closes every sink, resets the pending job before discarding and keeps any directory that `std::error_code` reports it could not remove.
+- MSVC /WX and `ADI_ACCEPTANCE=ON`: recorder 172/172 (the DF-E44 170 plus two close-after-discontinuity checks), recording commands 149/149, document 319/319, and WTS-01 2a matched all 384,000 captured samples. Playback step 2b still reproduces the known first-block failure on this independent stack.
+- **For window-fn:** stack DFE44-DISCARD on the joined N66 head. Keep its successful interrupted take and one-Undo receipt; surface cleanup refusal and the retained directory in the failure path.
+
+PR requested.
+
 ## 2026-11-22, DF-E64 review follow-up
 
 - `engine-win/play-first-block` at `01b1e723` includes current-main base `ac07be74` and changes only the lent clip source and the focused test since the review. Strict `primeAt` for a stopped transport still needs no pages. The live clip callback uses a private playing snapshot for stopped prefetch; the driver's song clock holds pending Play.
