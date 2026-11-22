@@ -36,6 +36,21 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-17 note identity, lands after 3 December
+
+Branch `engine/dev17-note-identity` at `4af8d0188553bd7b4b7ba261180069d3b1829047`, from `ac07be74`. Suggested PR title **Keep graph note ownership distinct through native plug-in hosts**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev17-note-identity)
+
+One process-wide allocator gives clip tracks, live inputs and the MPE parser independent source prefixes. A held clip's existing `(clip, repeat, ANOT note id)` match retains its runtime serial across a graph publication. The graph addresses note delivery to the source by prefix and broadcasts legacy prefix-zero events. Each native SDK instance uses a fixed map with positive int32 wire IDs. A mapped off or exact CLAP NOTE_END frees the slot. A stale NOTE_END cannot match a different voice after slot reuse.
+
+GCC 14 and Clang 19 built with warnings as errors and passed eight suites each. CLAP 593, MPE parser 88 and output 91, Graph 200, MIDI Clips 519, MIDI Clock Continuity 125, MIDI Controllers 94, and the fixed-map million-admission gate. The latter detects the planted old fold on both compilers. The isolated native VST3 probe passed 225 plus 16 editor checks per compiler. In real CLAP, the deliberately colliding graph pair arrived with distinct IDs and NOTE_END silenced only its own next expression. Real VST3 rendered both same-key pitches, bent and released the live voice, and kept the clip sounding. The clock fixture checks exactly one matching full runtime ID across both paths of a graph swap while the independent reference has its own prefix. Reviewed against the five Win portability patterns.
+
+| Seat | Needs |
+|---|---|
+| win | Reserve the DEV-17 contract ADR. Order the host/event-list pieces with MI-08 and DF-E56. |
+| devices | Use the shared prefix allocator for DEV-18 generators and native Pd MIDI output when those entry points exist. The MIDI 1 same-key decision stays with LM3. |
+
+PR requested
+
 ## 2026-11-22 — DEV-25 hosted readiness evidence, lands after 3 December
 
 Branch `engine/dev25-plugin-readiness` at `d8995f97b7119a6ca72d44e96faa8406e9b6ff14`, from main `ac07be74`. Suggested PR title **Publish verified readiness from hosted plug-ins**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev25-plugin-readiness)
