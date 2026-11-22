@@ -13354,7 +13354,30 @@ int main(int argc, char **argv) {
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
                                                     C::TabMovesFocus, C::WrapTabNavigation},
               "the Navigate menu: the views ADI has, the neighbours, then Tab's two switches (§41.1.1)");
-        check(!names.contains("Help"), "a menu with no command yet is left out");
+        // WIN-09: the Help menu, last, with the manual and the keyboard reference (the Mac's Cmd+?
+        // search then finds ADI's menus); each opens its target.
+        check(names[names.size() - 1] == "Help" && items("Help") == std::vector<int>{C::HelpManual, C::KeyboardReference},
+              "the Help menu, last: the manual and the keyboard reference");
+        {
+            auto &helpRoot = window.root();
+            std::vector<juce::URL> opened;
+            helpRoot.openHelp = [&opened](const juce::URL &u) {
+                opened.push_back(u);
+                return true;
+            };
+            check(helpRoot.command(C::HelpManual) && opened.size() == 1 &&
+                      opened[0].toString(false) == juce::String(AdiRootComponent::kManualAddress),
+                  "the manual entry opens the manual's address");
+            check(helpRoot.command(C::KeyboardReference) && opened.size() == 2 && opened[1].isLocalFile(),
+                  "the keyboard reference entry opens a page written from the keys in force");
+            const auto page = opened.size() == 2 ? opened[1].getLocalFile().loadFileAsString() : juce::String();
+            check(page.contains("ADI Keyboard Shortcuts") && page.contains("Mix View") && page.contains("Undo") &&
+                      !page.contains("<script"),
+                  "the page lists the commands by name, with their keys");
+            helpRoot.openHelp = nullptr;
+            if (opened.size() == 2)
+                opened[1].getLocalFile().deleteFile();
+        }
         // Live 12's View menu: the track controls' and the Mixer View's controls in two submenus.
         {
             const auto viewMenu = bar->getMenuForIndex(names.indexOf("View"), "View");

@@ -212,7 +212,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
-                                  "Arrangement Record", "Export Audio/Video..."};
+                                  "Arrangement Record", "Export Audio/Video...",
+                                  "Live 12 Manual", "Keyboard Shortcuts"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -3356,6 +3357,28 @@ bool AdiRootComponent::focusView(int id) {
         return false;
     }
 }
+juce::File AdiRootComponent::writeKeyboardReference() const {
+    // Every command, in the order the menus know them, with the keys it has now (a user's own included).
+    auto *mappings = commands_.manager.getKeyMappings();
+    const auto escape = [](const juce::String &text) {
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    };
+    juce::String html = "<!doctype html><meta charset=\"utf-8\"><title>ADI Keyboard Shortcuts</title>"
+                        "<h1>ADI Keyboard Shortcuts</h1><table>";
+    for (int id = AppCommands::PlayStop; id <= AppCommands::LastId; ++id) {
+        juce::ApplicationCommandInfo info(id);
+        commands_.getCommandInfo(id, info);
+        juce::StringArray keys;
+        if (mappings != nullptr)
+            for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
+                keys.add(k.getTextDescriptionWithIcons());
+        html << "<tr><td>" << escape(info.shortName) << "</td><td>" << escape(keys.joinIntoString(", "))
+             << "</td></tr>";
+    }
+    html << "</table>";
+    const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("ADI Keyboard Shortcuts.html");
+    return file.replaceWithText(html, false, false, "\n") ? file : juce::File();
+}
 bool AdiRootComponent::command(int id) {
     if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
         return false;
@@ -3466,6 +3489,16 @@ bool AdiRootComponent::command(int id) {
         if (!toggleRecord())
             return false;
         break;
+    case AppCommands::HelpManual:
+    case AppCommands::KeyboardReference: {
+        const auto target = id == AppCommands::HelpManual ? juce::URL(kManualAddress)
+                                                          : juce::URL(writeKeyboardReference());
+        if (target.isEmpty())
+            return fail("The keyboard reference could not be written.");
+        if (!(openHelp ? openHelp(target) : target.launchInDefaultBrowser()))
+            return fail("The system could not open it.");
+        break;
+    }
     case AppCommands::ExportAudio:
         if (!exportAudio)
             return fail("Export runs in the application.");
@@ -3867,7 +3900,9 @@ const std::vector<MenuEntries> &menuBar() {
          {C::FocusControlBar, C::FocusArrangement, C::FocusClipView, C::FocusDeviceView, C::FocusBrowser, 0,
           C::NextNeighbor, C::PreviousNeighbor, 0, C::TabMovesFocus,
           C::WrapTabNavigation}},
-        {"Help", {}}};
+        // WIN-09: the manual and the keyboard reference, so the Mac's Cmd+? search finds ADI's menus;
+        // the Help View (Learn View) joins it later.
+        {"Help", {C::HelpManual, C::KeyboardReference}}};
     return bar;
 }
 } // namespace

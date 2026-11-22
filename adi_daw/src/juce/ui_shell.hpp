@@ -159,7 +159,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
         ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
         ExportAudio,       // the File menu's Export Audio/Video (manual 5.2.1), Ctrl/Cmd+Shift+R
-        LastId = ExportAudio
+        HelpManual,        // the Help menu's manual (WIN-09)
+        KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
+        LastId = KeyboardReference
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -358,6 +360,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live's Export Audio/Video (EX-11): the application shows the Export page with these choices, the
     // render range the selection, else the loop, else the whole song. Unset outside the application.
     std::function<void(const ExportChoices &)> exportAudio;
+    // Opens a Help target (WIN-09): the manual's address, or the keyboard reference's file. Empty, the
+    // system's browser opens it; a test puts its own here.
+    std::function<bool(const juce::URL &)> openHelp;
+    // The manual the Help menu opens: Live 12's, which ADI's behaviour is written against (ADR-0203
+    // d1), until ADI has its own (the director's question in the window log).
+    static constexpr const char *kManualAddress = "https://www.ableton.com/en/live-manual/12/";
+    // The keyboard reference: every command with the keys it has now, as a page; its file.
+    juce::File writeKeyboardReference() const;
     // The Export page's starting choices, from the frame's snapshot and selection.
     ExportChoices exportDefaults() const;
     // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture. The strip begins it
