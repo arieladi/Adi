@@ -11,6 +11,13 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — DF-M3 native High Shelf sound comparison
+
+Four previously model-only 48 kHz/256 stereo cases now ran through the registered native EQ at `88bab8b9` with exact physical readback and zero delay on both sides. All are 12 dB/oct static shelves with Dynamics and Spectral off. None passes whole-render or settled 2–3 s strict gates. Settled RMS is 0.001508 at 2.2 kHz / Q 2.5 / −8 dB; 0.003188 at 14 kHz / Q 4 / −6 dB; 0.001021 at 20 kHz / Q .25 / +6 dB; and 0.002976 at 20 kHz / Q 4 / +6 dB. Largest peaks occur in the first 480 samples. The settled failure at 2.2 kHz rules out the graph edge and startup as the sole causes.
+
+Private report SHA-256 `5a19c38a4f055df88725d29869e9a8c55098c6adb6c9af26f4102331e7a0e613`. No sealed High Shelf cases at 44.1/96 kHz were available in this ledger. Evidence only. Reference matching for the native shelf remains open.
+
+
 ### 22 November — joined branch after #714
 
 Main advanced to `73f13028225c55a0e1a9cb1491ff43b706a80066` with one UTF-8 punctuation correction in EQ PROVENANCE.md. The before-date review branch merged it without conflicts. Git reports byte-identical source, build files, fixtures and tests to the gated `c1e7d8973` Release. The corrected Markdown decodes as UTF-8. The existing 24 CTest and 906 / 329 / 7 results still describe those build inputs. This documentation-only merge uses the existing review binary.
