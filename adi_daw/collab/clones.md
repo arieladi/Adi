@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Three-band Volume follows a distinct first-order split
+
+At 48 kHz with independent stereo impulses, place the split controls at 20% and 58%. Measure the complex response of each individual crossover with the other crossover disabled. For low and high cutoffs respectively, call those measured low-pass responses L1 and L2 and their complementary high-pass responses H1 and H2.
+
+With both slopes at 6 dB/octave, the low band follows L1 × L2, the high follows H1 × H2, and the middle equals the input minus the two outer bands. Soloing each band in turn gave byte-identical output to setting the other two gain curves to zero. This held for both channels. The reconstructed three-band prediction was within 0.000000053 peak per unit impulse. The present low and middle paths differ from the measurement by 0.009226 peak and still cancel at unity. This explains why the earlier recombination check passed.
+
+The 6/24, 12/6 and 12/24 dB/octave pairs instead followed the current serial split and its phase compensation at these settings. The next checks use additional rates, adjacent cutoffs and other stage types. The implementation will retain the measured two-band and steeper-slope paths.
+
 ## 22 November 2026 — Calibrate the Width detector's rise and fall
 
 `clones/shaper-width-follower` at `a1556885` — Apply measured attack and release coefficients to Width. **Lands after 3 December.** The calibration reproduced 131 of 132 held-out coefficients exactly, with a one-float-step difference at the fastest attack at 192 kHz. The earlier implementation failed the stricter trajectory tests. The rack and registered Pd suites passed in both precisions under MSVC /W4 /WX, including long-tail regressions.
