@@ -36,6 +36,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
+
+**PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
+
+Strict Linux GCC 14 and Clang 19 each passed seven suites and 642 checks. Real clip envelope playback kept the sibling's value. The affected clip played its Arrangement value after clearing. The same head with modified retained metadata refused without writing. Exact Undo/Redo preserved future columns and the original range, and an uncaptured cascade refused before touching data. The DF-E53 merge-tree auto-merged this branch's automation lane changes. Gemini's pre-existing main conflict is in `check.cpp`, outside these changes.
+
+Taking bounded Simplify next. Lane-scoped Cut, Copy and Duplicate still need the window-fn selection adapter.
+
 ## 2026-11-22 — PLAN AU-03, original curve guards around Arrangement recording
 
 **PR requested** after the 3 December gate for `engine/au03-guarded-arrangement-passes` at `da8b4adc8052ba595cb0fd6f3eff34ccb5d9b9e3`. It stacks on thinning `2782fb8a` and includes current main `73f13028`. A completed Arrangement pass spanning rendered samples uses the same sealed envelope splice as Insert Shape. Playback keeps the original curve outside `[first,last)`, including the exact old value at the right boundary. Captured tempo and envelope state are checked before publication. The requested stream identity, recorded Hold, optional thinning receipt and one Record Automation undo step are retained. A same-sample or clip-local capture keeps its native timestamp path.
