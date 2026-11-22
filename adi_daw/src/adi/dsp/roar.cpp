@@ -156,14 +156,32 @@ void Roar::set(Param p, double v) noexcept {
     const double old = p_[index];
     p_[index] = std::clamp(whole ? std::round(v) : v, r.low, r.high);
     if (p == RoutingParam && p_[index] != old) {
-        // A stage that sat idle in the last routing must not replay its old
-        // state in this one: every stage and band starts from silence.
-        for (auto& s : stages_) {
-            s.state = {};
-            s.dcIn = s.dcOut = {};
+        // A stage (or a channel of one) that sat idle in the last routing must
+        // not replay its old state in this one: it starts from silence. One
+        // that was running carries on, so the change does not click.
+        const auto was = static_cast<int>(old);
+        const auto used = [was](std::size_t s, std::size_t c) {
+            switch (was) {
+            case Single:
+                return s == 0;
+            case MidSide:
+                return s < 2 && c == 0;
+            default:
+                return true;
+            }
+        };
+        for (std::size_t s = 0; s < kStages; ++s) {
+            for (std::size_t c = 0; c < 2; ++c) {
+                if (!used(s, c)) {
+                    stages_[s].state[c] = {};
+                    stages_[s].dcIn[c] = stages_[s].dcOut[c] = 0;
+                }
+            }
         }
-        for (auto* chain : {&lowLp_, &lowHp_, &highLp_, &highHp_, &allLp_, &allHp_}) {
-            chain->state = {};
+        if (was != Multiband) {
+            for (auto* chain : {&lowLp_, &lowHp_, &highLp_, &highHp_, &allLp_, &allHp_}) {
+                chain->state = {};
+            }
         }
     }
     update();
@@ -176,6 +194,10 @@ void Roar::update() noexcept {
         const auto at = [&](StageField f) { return p_[static_cast<std::size_t>(stage(s, f))]; };
         st.shape = static_cast<int>(at(StageShape));
         st.amount = at(StageAmount) / 100;
+        // The bias is removed through the shape it now passes: a change of
+        // Shape (or of a crusher's Amount) moves the offset with it, so
+        // silence stays silent.
+        st.offset = shape(st.shape, st.bias, st.amount);
         st.driveGlide.set(level(36 * st.amount));
         st.biasGlide.set(0.5 * at(StageBias) / 100);
         st.levelGlide.set(level(at(StageLevel)));
