@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -145,7 +146,12 @@ struct Result {
     // This is a run-local observation, not a reservation or reusable permission.
     std::optional<ReplacementBinding> replacement{};
 };
-struct Entry { JobId id = 0; Job job; Result result; };
+struct Entry { JobId id = 0; Job job; Result result; JobId stemBatch = 0; };
+struct StemPreview {
+    JobId ordinal = 0;
+    Source source;
+    std::filesystem::path output;
+};
 struct RunMember {
     JobId id = 0;
     bool started = false;
@@ -228,6 +234,11 @@ void publishOutput(const std::filesystem::path& stage, Result&, media::PublishHo
 class Queue {
 public:
     JobId add(Job);
+    // Preview an explicit list against the current project and destination.
+    // Each actual render still resolves its own revision and names at start.
+    [[nodiscard]] std::vector<StemPreview> previewStemBatch(const Job&, std::span<const Source>) const;
+    // Revalidate before adding the entire list. Refusal adds no queue entries.
+    std::vector<JobId> addStemBatch(const Job&, std::span<const Source>);
     bool update(JobId, Job);
     bool remove(JobId);
     bool retry(JobId); // only Failed/Cancelled, never silently rerender completed files

@@ -504,6 +504,66 @@ void explicitDirectTaps() {
     check(renderWav(job, loader).state == JobState::Failed && f.noStage(),
           "internal Tail is not a public EX-02 tap");
 }
+void directStemBatch() {
+    Fixture f;
+    f.parallel();
+    Queue queue;
+    auto job = f.job("{track}-{counter}");
+    const std::array sources{Source{1, OfflineTap::PostFader}, Source{2, OfflineTap::PreFader}};
+    const auto preview = queue.previewStemBatch(job, sources);
+    check(preview.size() == 2 && preview[0].ordinal == 1 && preview[0].output.filename() == "Audio-1.wav" &&
+          preview[1].ordinal == 2 && preview[1].output.filename() == "Parallel-2.wav" &&
+          preview[1].source.resolvedTap() == Tap::PostFx && queue.snapshot().empty(),
+          "preview resolves each requested stem and reports cardinality without enqueuing");
+    const auto ids = queue.addStemBatch(job, sources);
+    check(ids == std::vector<JobId>{1, 2}, "batch enqueue uses the preview's stable ordinals");
+    f.store->db().exec("UPDATE tracks SET name='Later' WHERE id=2");
+    queue.run();
+    const auto entries = queue.snapshot();
+    check(entries.size() == 2 && entries[0].result.state == JobState::Completed &&
+          entries[0].result.output.filename() == "Audio-1.wav" && entries[1].result.state == JobState::Completed &&
+          entries[1].result.output.filename() == "Later-2.wav",
+          "names resolve again at the ordinary job-start revision");
+
+    const std::array duplicateMain{Source{}, Source{9}};
+    bool duplicateRefused = false;
+    try { (void)queue.addStemBatch(job, duplicateMain); }
+    catch (const std::invalid_argument&) { duplicateRefused = true; }
+    check(duplicateRefused && queue.snapshot().size() == 2,
+          "main alias and explicit main ID cannot duplicate the same signal");
+    job.nameTemplate = "shared";
+    bool namesRefused = false;
+    try { (void)queue.addStemBatch(job, sources); }
+    catch (const std::runtime_error&) { namesRefused = true; }
+    check(namesRefused && queue.snapshot().size() == 2 && f.noStage(),
+          "Fail refuses a colliding template without partially enqueueing or staging");
+    job.collision = Collision::Increment;
+    const auto numbered = queue.previewStemBatch(job, sources);
+    check(numbered.size() == 2 && numbered[0].ordinal == 3 &&
+          numbered[0].output.filename() == "shared.wav" && numbered[1].output.filename() == "shared (2).wav",
+          "Increment preview reserves preceding names and failed additions consume no ordinals");
+    const auto numberedIds = queue.addStemBatch(job, sources);
+    queue.run();
+    const auto afterIncrement = queue.snapshot();
+    check(numberedIds == std::vector<JobId>{3, 4} && afterIncrement.size() == 4 &&
+          afterIncrement[2].result.state == JobState::Completed && afterIncrement[3].result.state == JobState::Completed &&
+          fs::equivalent(afterIncrement[2].result.output, numbered[0].output) &&
+          fs::equivalent(afterIncrement[3].result.output, numbered[1].output),
+          "incremented batch delivers distinct previewed names");
+
+    job.nameTemplate = "{track}-replace";
+    job.collision = Collision::Replace;
+    const auto replacements = queue.addStemBatch(job, sources);
+    f.store->db().exec("UPDATE tracks SET name='Audio' WHERE id=2");
+    queue.run();
+    const auto afterReplace = queue.snapshot();
+    check(replacements == std::vector<JobId>{5, 6} && afterReplace.size() == 6 &&
+          afterReplace[4].result.state == JobState::Completed &&
+          afterReplace[5].result.state == JobState::Failed &&
+          afterReplace[5].result.error.find("earlier delivery") != std::string::npos &&
+          matches(read(afterReplace[4].result, 866), 137) && f.noStage(),
+          "a later naming change cannot let one batch member replace its predecessor");
+}
 void groupStems() {
     Fixture f;f.effect();f.parallel();
     f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(5,'group','Drums',3);"
@@ -1520,7 +1580,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); explicitDirectTaps(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); explicitDirectTaps(); directStemBatch(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

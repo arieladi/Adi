@@ -19,6 +19,7 @@
 #include <memory>
 #include <set>
 #include <stdexcept>
+#include <type_traits>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -206,6 +207,28 @@ void resolveRegion(Job& job, const rows::Model& model, const engine::TempoMap& t
     if (job.endSample<=job.beginSample) throw std::invalid_argument("export region is shorter than one output sample");
     names.region=region->name;
 }
+void resolveSourceName(Job& job, const rows::Model& model, const engine::TempoMap& tempo, NameContext& names) {
+    const auto& tracks = model.tracks;
+    auto selected = tracks.end();
+    for (auto it = tracks.begin(); it != tracks.end(); ++it)
+        if (job.source.trackId ? it->id == job.source.trackId : it->kind == "master") { selected=it; break; }
+    if (selected == tracks.end()) throw std::runtime_error("export source track is missing");
+    job.source.trackId = selected->id;
+    if (selected->kind != "audio" && selected->kind != "midi" && selected->kind != "instrument" &&
+        selected->kind != "group" && selected->kind != "return" && selected->kind != "master")
+        throw std::runtime_error("export source track has no audio output");
+    names.track = selected->name;
+    auto parent = selected;
+    for (std::size_t depth = 0; parent != tracks.end() && depth < tracks.size(); ++depth) {
+        if (parent->kind == "group") { names.group=parent->name; break; }
+        if (!parent->parentId) break;
+        const auto idOfParent = *parent->parentId;
+        parent = std::find_if(tracks.begin(), tracks.end(), [idOfParent](const auto& t) {return t.id==idOfParent;});
+    }
+    if (job.regionId) resolveRegion(job, model, tempo, names);
+    names.bpm = textproj::renderF64(tempo.bpmAt(tempo.secondsToTicks(
+        static_cast<double>(job.beginSample) / job.session.sampleRate)));
+}
 using detail::Cancelled;
 void cancellation(const Control& c) { if (c.stop.stop_requested()) throw Cancelled{}; }
 std::optional<std::string> comparableHash(std::string hash) {
@@ -310,7 +333,9 @@ void validateOutputName(const fs::path& output) {
         throw std::invalid_argument("final export name exceeds 200 UTF-8 bytes");
 }
 
-void detail::prepareOutput(Result& result,Collision collision,const char* suffix,const char* collisionMessage) {
+namespace {
+void selectOutput(Result& result, Collision collision, const char* suffix,
+                  const char* collisionMessage, const std::set<std::string>& reserved) {
     result.replacement.reset();
     if(collision!=Collision::Fail && collision!=Collision::Increment && collision!=Collision::Replace)
         throw std::invalid_argument("unsupported export collision policy");
@@ -318,6 +343,8 @@ void detail::prepareOutput(Result& result,Collision collision,const char* suffix
     const auto directory=result.output.parent_path();
     if(!fs::is_directory(directory))throw std::runtime_error("export directory does not exist");
     if(collision==Collision::Replace) {
+        if (reserved.contains(foldedFilename(result.output)))
+            throw std::runtime_error("two batch members cannot replace the same output");
         // Freeze the resolved parent so a later working-directory or parent
         // symlink change cannot silently redirect the selected delivery.
         result.output=fs::canonical(directory)/result.output.filename();
@@ -341,8 +368,8 @@ void detail::prepareOutput(Result& result,Collision collision,const char* suffix
         verifyReplacement(result);
         return;
     }
-    std::set<std::string> names;
-    std::uint64_t entries=0;
+    auto names = reserved;
+    auto entries = static_cast<std::uint64_t>(reserved.size());
     for(const auto& entry:fs::directory_iterator(directory)) {
         if(entries==std::numeric_limits<std::uint64_t>::max()-2)
             throw std::runtime_error("export directory has too many entries");
@@ -368,6 +395,12 @@ void detail::prepareOutput(Result& result,Collision collision,const char* suffix
         if(!occupied(result.output))return;
     }
     throw std::runtime_error("export collision set changed during preflight; retry");
+}
+
+} // namespace
+
+void detail::prepareOutput(Result& result, Collision collision, const char* suffix, const char* collisionMessage) {
+    selectOutput(result, collision, suffix, collisionMessage, {});
 }
 
 void detail::discardStage(fs::path&& directory, std::optional<StageCleanupFailure>& failure) noexcept {
@@ -489,24 +522,8 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 throw std::runtime_error(why);
             }
             names.project = store->db().execAndGet("SELECT name FROM project WHERE id=1").getString();
-            const auto& tracks = session.model().tracks;
-            auto selected = tracks.end();
-            for (auto it = tracks.begin(); it != tracks.end(); ++it)
-                if (job.source.trackId ? it->id == job.source.trackId : it->kind == "master") { selected=it; break; }
-            if (selected == tracks.end()) throw std::runtime_error("export source track is missing");
-            job.source.trackId = selected->id;
-            names.track = selected->name;
-            auto parent = selected;
-            for (std::size_t depth = 0; parent != tracks.end() && depth < tracks.size(); ++depth) {
-                if (parent->kind == "group") { names.group=parent->name; break; }
-                if (!parent->parentId) break;
-                const auto idOfParent = *parent->parentId;
-                parent = std::find_if(tracks.begin(), tracks.end(), [idOfParent](const auto& t) {return t.id==idOfParent;});
-            }
             const auto snap = engine::SnapshotBuilder::fromStore(*store);
-            if (job.regionId) resolveRegion(job, session.model(), *snap->tempo, names);
-            names.bpm = textproj::renderF64(snap->tempo->bpmAt(snap->tempo->secondsToTicks(
-                static_cast<double>(job.beginSample) / job.session.sampleRate)));
+            resolveSourceName(job, session.model(), *snap->tempo, names);
             result.snapshot = RenderSnapshot{journalHead, job.source, job.beginSample, job.endSample,
                 job.session.sampleRate, job.regionId, names};
             snapshot.commit();
@@ -654,9 +671,72 @@ JobId Queue::add(Job job) {
     jobs_.push_back({id, std::move(job), {}});
     return id;
 }
+std::vector<StemPreview> Queue::previewStemBatch(const Job& base, std::span<const Source> sources) const {
+    if (sources.empty() || base.niStems || base.exactWavFilename)
+        throw std::invalid_argument("stem batch requires explicit sources and template filenames");
+    if (sources.size() > std::numeric_limits<JobId>::max() - next_)
+        throw std::overflow_error("export job IDs exhausted");
+    auto job = base;
+    job.source = sources.front();
+    validate(job);
+    StoreError error{};
+    auto store = Store::open(base.project, error, true);
+    if (!store || error != StoreError::Ok)
+        throw std::runtime_error(std::string("open export project: ") + toString(error));
+    const SQLite::Transaction read(store->db(), SQLite::TransactionBehavior::DEFERRED);
+    const auto project = store->db().execAndGet("SELECT name FROM project WHERE id=1").getString();
+    const auto model = rows::readModel(*store);
+    const auto snapshot = engine::SnapshotBuilder::fromStore(*store, std::set<std::int64_t>{}, false);
+
+    std::vector<StemPreview> preview;
+    preview.reserve(sources.size());
+    std::set<std::pair<std::int64_t, engine::Tap>> members;
+    std::set<std::string> reserved;
+    for (const auto& source : sources) {
+        job = base;
+        job.source = source;
+        validate(job);
+        NameContext names;
+        names.project = project;
+        names.counter = next_ + static_cast<JobId>(preview.size());
+        resolveSourceName(job, model, *snapshot->tempo, names);
+        if (!members.emplace(job.source.trackId, job.source.resolvedTap()).second)
+            throw std::invalid_argument("duplicate stem source and signal tap");
+        Result output;
+        output.output = job.directory / media::pathFromUtf8(resolveName(job.nameTemplate, names) + ".wav");
+        selectOutput(output, job.collision, ".wav", "stem batch output name is already in use", reserved);
+        reserved.insert(foldedFilename(output.output));
+        preview.push_back({names.counter, job.source, std::move(output.output)});
+    }
+    return preview;
+}
+
+std::vector<JobId> Queue::addStemBatch(const Job& base, std::span<const Source> sources) {
+    const auto preview = previewStemBatch(base, sources);
+    std::vector<JobId> ids;
+    std::vector<Entry> pending;
+    ids.reserve(preview.size());
+    pending.reserve(preview.size());
+    for (std::size_t i = 0; i < preview.size(); ++i) {
+        auto job = base;
+        job.source = sources[i]; // keep the requested alias and resolve names again at render start
+        ids.push_back(preview[i].ordinal);
+        pending.push_back({ids.back(), std::move(job), {}, next_});
+    }
+    if (pending.size() > jobs_.max_size() - jobs_.size())
+        throw std::length_error("export queue capacity exceeded");
+    jobs_.reserve(jobs_.size() + pending.size());
+    static_assert(std::is_nothrow_move_constructible_v<Entry>);
+    for (auto& entry : pending) jobs_.push_back(std::move(entry));
+    next_ += static_cast<JobId>(ids.size());
+    return ids;
+}
+
 bool Queue::update(JobId id, Job job) {
     const auto it = std::find_if(jobs_.begin(), jobs_.end(), [id](const Entry& e) {return e.id==id;});
     if (it == jobs_.end() || it->result.state != JobState::Pending) return false;
+    if (it->stemBatch != 0 && (job.niStems || job.exactWavFilename))
+        throw std::invalid_argument("stem batch entries need ordinary template outputs");
     validate(job); it->job = std::move(job); return true;
 }
 bool Queue::remove(JobId id) {
@@ -837,6 +917,12 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
         lastRun_.members.clear();
         lastRun_.captureComplete = false;
     }
+    struct BatchDelivery {
+        JobId batch;
+        fs::path directory;
+        std::string foldedName;
+    };
+    std::vector<BatchDelivery> deliveries;
     for (std::size_t index = 0; index < pending.size(); ++index) {
         const auto id = pending[index];
         if (control.stop.stop_requested()) break;
@@ -847,6 +933,7 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
             continue;
         }
         const Job job = it->job;
+        const auto stemBatch = it->stemBatch;
         it->result.state = JobState::Running;
         if (member) {
             member->started = true;
@@ -855,16 +942,40 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
             catch (...) { member->job.reset(); lastRun_.captureComplete = false; }
         }
         Result result;
+        const auto deliveryCount = deliveries.size();
         try {
             // The enqueue ordinal is stable across removal/retry. Reusing a
             // vector index would reuse names of completed files after removal.
-            result = job.niStems ? renderNiStems(job, loader, control, id, id)
-                                 : renderWav(job, loader, control, id, id);
+            if (stemBatch != 0) {
+                result = detail::renderWavPrepared(job, loader, control, id, id, [&](const Result& output) {
+                    const auto directory = fs::canonical(output.output.parent_path());
+                    const auto name = foldedFilename(output.output);
+                    if (job.collision == Collision::Replace) {
+                        const auto inRun = std::any_of(deliveries.begin(), deliveries.end(), [&](const BatchDelivery& earlier) {
+                            return earlier.batch == stemBatch && earlier.directory == directory && earlier.foldedName == name;
+                        });
+                        const auto inQueue = std::any_of(jobs_.begin(), jobs_.end(), [&](const Entry& entry) {
+                            return entry.stemBatch == stemBatch && entry.result.state == JobState::Completed &&
+                                   foldedFilename(entry.result.output) == name &&
+                                   fs::weakly_canonical(entry.result.output.parent_path()) == directory;
+                        });
+                        if (inRun || inQueue)
+                            throw std::runtime_error("stem batch member would replace an earlier delivery");
+                    }
+                    // Reserve before publication. A callback may remove an
+                    // earlier completed entry from the current queue.
+                    deliveries.push_back({stemBatch, directory, name});
+                });
+            } else {
+                result = job.niStems ? renderNiStems(job, loader, control, id, id)
+                                     : renderWav(job, loader, control, id, id);
+            }
         } catch (const std::exception& e) {
             result.state = JobState::Failed; result.error = e.what();
         } catch (...) {
             result.state = JobState::Failed; result.error = "cannot initialize export job";
         }
+        if (result.state != JobState::Completed && deliveries.size() > deliveryCount) deliveries.pop_back();
         for (auto& e : jobs_) if (e.id==id) {
             e.result=std::move(result);
             if (member) {
