@@ -84,6 +84,14 @@ Parked the automatic handling of off-scale transposition and degree inversion pe
 
 - MI-04 off-scale scale-degree motion. Check C-sharp moving one degree up and down within C major and whether Invert repairs off-scale notes. I recommend keeping Fit to Scale explicit until those rules are measured.
 
+### 22 November — TM-WT-02 interior AWRP marker edits
+
+**PR requested** for `engine/tm-wt02-interior-warp-markers` at `6fa013a5405452ec4932cda8fccc31956621ae59` from main. The native codec inserts, moves and removes an explicit interior marker while retaining origin, end coverage, flags, neighboring bytes and opaque trailer. It refuses stale original coordinates, either clock crossing a neighbor, and future layouts. No I/O or Store access is needed to produce the replacement BLOB.
+
+GCC 14 and Clang 19 strict builds each passed 353 checks across five Warp suites. An edited interior marker played at approximately 146.7 Hz then 440 Hz from one 440 Hz test tone in both Session widths, with the clip silent at its exact original end. The tests also returned identical original AWRP bytes after insert, move and remove.
+
+Parked TM-WT-02 journal registration on the op reservation, rightmost-marker behavior and ratio constraints on Live, and signed pickup origin on Win's table-or-v2 decision. Parked TM-WT-01 on Q-D and a labeled corpus, and TM-WT-05 on Q-E and the import/drop readings. TM-WT-03's documented offline interpolation can proceed while those gates remain open.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
