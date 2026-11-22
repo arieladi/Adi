@@ -212,6 +212,47 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the third review: fourteen findings in Amp to Dynamic Tube, all fixed
+
+A third adversarial review covered Amp, Cabinet, Corpus, Drum Buss and Dynamic Tube (a finder for
+each, three skeptics for each finding). It confirmed fourteen findings, each by all three skeptics.
+Each fix carries a check that fails on the old code, apart from three that only tightened a test.
+Each is merged up the stack through Grain Delay and Pedal.
+
+**PR requested** (the same branches; new heads):
+
+- **`devices/live-amp` (b2d4855d).**
+  - **Dual off and on replayed the right amp's old state:** a 0.87 thump on silence. The right amp
+    now starts from the left's state.
+  - **The bias check was decided by drive.** It now compares at equal drive.
+  - **The bound check allowed 1e3.** It now holds the output to the power stage's bound at three
+    rates.
+- **`devices/live-cabinet` (d572786d).**
+  - **The same Dual thump** (0.89), fixed the same way.
+  - **Mono's mean was never tested.**
+- **`devices/corpus` (c812da0a).**
+  - **The level grew 6 dB per doubling of the rate.** The input is now scaled by 48 kHz/rate: a
+    2 ms hit is within 0.5 dB at every rate, against 12.1 dB before.
+  - **A tone held at a mode built up to 1,676 at Decay 100.** The resonance now passes a tanh.
+  - **The membrane skipped the Bessel zero j₇₁.** All sixteen modes are now checked against zeros
+    found by bisection.
+- **`devices/drum-buss` (52772ec5).**
+  - **Transients distorted held low tones** (up to 31 % THD at 50 Hz). It now compares a peak
+    envelope with its own lagged copy: a held tone passes with under 0.1 % THD.
+  - **Crunch lifted the band by up to 8 dB.** It is now the band's square, an octave up, and leaves
+    the band's level alone.
+  - **Drive cost full scale 20 dB.** It is now matched by peak at −6 dBFS.
+- **`devices/dynamic-tube` (5e496bf4).**
+  - **A biased tube's DC came out** (up to −4.0). A 5 Hz blocker now removes it.
+  - **Normalising by the slope at the bias gained up to +18 dB.** The tube is now divided by the
+    drive alone, so it never puts out more than it is given.
+- **`devices/grain-delay` (7389daf6) and `devices/live-pedal` (77d27c3c):** the merges above.
+
+**CTest (`ctest -LE acceptance`):**
+- `devices/live-amp` at c4d52f4b (the second review's stack): 286/286 at PD_FLOATSIZE 32 and 64.
+- `devices/shifter-nan` (14472a18): 270/270 at 32 and 64.
+- The top of the stack (`devices/live-pedal`) is running.
+
 ## 2026-11-22 — DEV-22, the chapter's next missing effect: Pedal — lands after 3 December
 
 **PR requested:** head `devices/live-pedal` (998ee01f), base `main`, after `devices/grain-delay`. It
