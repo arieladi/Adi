@@ -15,12 +15,16 @@ namespace {
 using Shaper = adi::dsp::AdiShaper;
 using Band = Shaper::Band;
 using Stage = Shaper::Stage;
+using Follower = adi::dsp::AdiShaperFollower;
+using Control = Follower::Control;
 static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == Shaper::VolumeLowSlope);
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
 static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shaper::DriveOn == 286);
-static_assert(Shaper::CrushOn == 340 && Shaper::Count == 415);
+static_assert(Shaper::CrushOn == 340 && Shaper::LegacyCount == 415);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
-static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::Count);
+static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::LegacyCount);
+static_assert(Shaper::holdFollowerParam(Band::Low, Control::On) == 876);
+static_assert(Shaper::holdFollowerParam(Band::High, Control::Release) + 1 == Shaper::Count && Shaper::Count == 903);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -766,6 +770,112 @@ void driveAndCrush() {
     check(rack.latency() == 0 && std::bit_cast<std::uint32_t>(result[0]) == std::bit_cast<std::uint32_t>(negativeZero)
           && result[1] == .1875f, "Crush at zero mix is undelayed and bit exact");
 }
+
+// A unity-amount detector supplies the time trajectory. Apply the measured
+// signed mapping separately, then give that height to a standalone Crush.
+void holdFollowerOracle(bool split, bool on, bool fullBase) {
+    Shaper rack;
+    rack.prepare(48000);
+    rack.set(Shaper::CrushOn, 1);
+    rack.set(static_cast<Shaper::Param>(Shaper::CrushOn + 1), split ? 3.f : 0.f);
+    rack.set(static_cast<Shaper::Param>(Shaper::CrushOn + 2), 320);
+    rack.set(static_cast<Shaper::Param>(Shaper::CrushOn + 3), 3200);
+    constexpr std::array amounts{.75f, .25f, .625f};
+    constexpr std::array offsets{.125f, -.125f, .25f};
+    constexpr std::array thresholds{.125f, .25f, .0625f};
+    constexpr std::array depths{2.f, 4.f, 8.f};
+    constexpr std::array heights{.25f, .75f, .5f, .875f, .375f, .625f, .125f, .5f};
+    std::array<Follower, 3> meters;
+    std::array<adi::dsp::AdiShaperCrush, 3> crush;
+    for (std::size_t b = 0; b < 3; ++b) {
+        const auto band = static_cast<Band>(b);
+        auto send = [&](Control control, float value) { rack.set(Shaper::holdFollowerParam(band, control), value); };
+        send(Control::On, on ? 1.f : 0.f);
+        send(Control::Mode, b == 2 ? 1.f : 0.f);
+        send(Control::Amount, 100.f * amounts[b]);
+        send(Control::Depth, static_cast<float>(b));
+        send(Control::Offset, 50.f + 50.f * offsets[b]);
+        send(Control::Threshold, 100.f * thresholds[b]);
+        const float hold = b == 2 ? 5.f : 0.f;
+        send(Control::Attack, 0);
+        send(Control::Hold, hold);
+        send(Control::Release, 0);
+        meters[b].prepare(48000);
+        meters[b].set(Control::On, 1);
+        meters[b].set(Control::Amount, 75);
+        meters[b].set(Control::Attack, 0);
+        meters[b].set(Control::Hold, hold);
+        meters[b].set(Control::Release, 0);
+        (void)crush[b].prepare(48000);
+        rack.set(Shaper::modParam(Stage::Crush, band, Shaper::SecondaryCurve), 1);
+        for (int n = 0; n < 8; ++n) {
+            rack.set(Shaper::modParam(Stage::Crush, band, static_cast<Shaper::ModControl>(Shaper::Primary1 + n)), 100);
+            rack.set(Shaper::modParam(Stage::Crush, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + n)),
+                     fullBase ? 100.f : 100.f * heights[static_cast<std::size_t>(n)]);
+        }
+    }
+    // Independent first-order transfer from the 320 Hz and 3.2 kHz splits.
+    struct SplitPole {
+        double previousX = 0, previousY = 0;
+        float run(float x, double g) {
+            previousY = (g * (x + previousX) + (1.0 - g) * previousY) / (1.0 + g);
+            previousX = x;
+            return static_cast<float>(previousY);
+        }
+    };
+    std::array<std::array<SplitPole, 2>, 2> poles{};
+    const double lowG = std::tan(std::numbers::pi * 320.0 / 48000.0);
+    const double highG = std::tan(std::numbers::pi * 3200.0 / 48000.0);
+    double worst = 0;
+    std::array<double, 3> excursion{};
+    for (int i = 0; i < 3072; ++i) {
+        const int cell = (i / 19) % 32;
+        rack.sync(static_cast<double>(cell) / 8.0, false);
+        const auto first = static_cast<std::size_t>(cell / 4);
+        const float base = fullBase ? 1.f : heights[first] +
+            .25f * static_cast<float>(cell % 4) * (heights[(first + 1) % 8] - heights[first]);
+        const float gain = i % 613 < 317 ? .875f : .0625f;
+        const std::array<float, 2> dry{
+            gain * static_cast<float>(.34 * std::sin(.021 * i) + .29 * std::sin(.46 * i)),
+            gain * static_cast<float>(.46 * std::cos(.009 * i) - .22 * std::cos(1.94 * i))};
+        const auto actual = one(rack, dry[0], dry[1]);
+        std::array<std::array<float, 2>, 3> bands{};
+        bands[1] = dry;
+        if (split) {
+            for (std::size_t ch = 0; ch < 2; ++ch) {
+                bands[0][ch] = poles[0][ch].run(dry[ch], lowG);
+                const float upper = dry[ch] - bands[0][ch];
+                bands[1][ch] = poles[1][ch].run(upper, highG);
+                bands[2][ch] = upper - bands[1][ch];
+            }
+        }
+        std::array<float, 2> deltas{};
+        for (std::size_t b : {0U, 2U, 1U}) {
+            if (!split && b != 1) continue;
+            auto wet = bands[b];
+            const float peak = std::max(std::abs(wet[0]), std::abs(wet[1]));
+            const float gated = peak >= thresholds[b] ? peak : 0.f;
+            const float env = meters[b].apply(gated, 0, 0);
+            const float scale = depths[b] * (b == 2 ? amounts[b] : 2.f * amounts[b] - 1.f);
+            const float modulation = env * scale;
+            const float height = on ? std::clamp((b == 2 ? base * modulation : base + modulation) + offsets[b], 0.f, 1.f) : base;
+            excursion[b] = std::max(excursion[b], static_cast<double>(std::abs(height - base)));
+            crush[b].processStereo(wet[0], wet[1], 1.f, height);
+            for (std::size_t ch = 0; ch < 2; ++ch) {
+                if (!split) worst = std::max(worst, static_cast<double>(std::abs(actual[ch] - wet[ch])));
+                else deltas[ch] += wet[ch] - bands[b][ch];
+            }
+        }
+        if (split)
+            for (std::size_t ch = 0; ch < 2; ++ch)
+                worst = std::max(worst, static_cast<double>(std::abs(actual[ch] - (dry[ch] + deltas[ch]))));
+    }
+    check(worst <= (split ? 1.e-6 : 0.), "signed Hold follower drives the current stereo band's Crush clock sample by sample");
+    if (on) {
+        check(excursion[1] > .1, "active Hold follower moves a falling or full-height base");
+        if (split) check(excursion[0] > .1 && excursion[2] > .1, "low Add and high Multiply both move the split fixture");
+    }
+}
 } // namespace
 
 int main() {
@@ -785,6 +895,9 @@ int main() {
     modulationBands();
     driveDryAndLatency();
     driveAndCrush();
+    holdFollowerOracle(false, false, false);
+    holdFollowerOracle(false, true, true);
+    holdFollowerOracle(true, true, false);
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }
