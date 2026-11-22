@@ -45,6 +45,26 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — queue item 1, SHELL-BROWSER-FIXTURE: browserDevices fixed (PR requested)
+
+Reproduced on main `ac07be74` with Pd on: Hybrid Reverb loads now (its native core is ready), so the check
+"Hybrid Reverb is dimmed always" failed. Its load put it on 3 Audio, the plug-in subcase then cleared the
+selection, the built-in loads after it failed, and the strip's first panel was read from an empty list: a
+segfault.
+
+- With Pd on, the test expects every Audio Effect to load, Hybrid Reverb too, as one step, then undone.
+- 3 Audio is chosen again after the plug-in subcase, and the strip read is guarded.
+- Without Pd, Hybrid Reverb is dimmed as the other Pd devices are. `BrowserPanel::unavailable`'s "Hybrid
+  Reverb is not built in ADI yet" was stale, so it is gone and the Browser gives the Pd reason. **Touched for
+  the window lane:** that one line of `src/juce/ui_browser.cpp`.
+
+**Run.** `adi_ui_shell_tests` with Pd on (a JUCE + Pd tree, warnings as errors): 2926 checks, 0 failures, no
+crash; with Pd off: 2911 checks, 0 failures. The window's 27 suites (100%). Fresh profile: the suite's own temp
+settings.
+
+**PR requested** — `window-fn/browser-fixture` at `fa167f5c`, on main `ac07be74`: "adi_daw: SHELL-BROWSER-FIXTURE:
+browserDevices with Hybrid Reverb ready". It depends on nothing.
+
 ## 2026-11-22, window-fn — the standing queue of 22 November taken; MX-02: Split Stereo Pan (PR requested, lands after 3 December)
 
 Win's standing queue (`collab/prompts/2026-11-22-window-fn-queue.md`) replaces every earlier list. MX-02, its
