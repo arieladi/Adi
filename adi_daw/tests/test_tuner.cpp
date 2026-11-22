@@ -22,7 +22,7 @@
 #include <vector>
 
 namespace {
-bool counting = false;
+bool counting = false, failing = false;
 std::size_t allocations = 0;
 int checks = 0, failures = 0;
 void check(bool ok, const std::string& what) {
@@ -36,6 +36,9 @@ void check(bool ok, const std::string& what) {
 void* operator new(std::size_t n) {
     if (counting) {
         ++allocations;
+    }
+    if (failing) {
+        throw std::bad_alloc();
     }
     if (void* p = std::malloc(n ? n : 1)) {
         return p;
@@ -203,7 +206,72 @@ void tuner() {
 
 }  // namespace
 
+/// A DC offset, alone or under a low noise floor, is not a pitch (the
+/// review of eb460dc3: the float autocorrelation's round-off against the
+/// exact energies read as a perfect dip, and the Tuner held a false note).
+void offsets() {
+    int falseReadings = 0, cases = 0;
+    for (double rate : {44100.0, 48000.0, 96000.0}) {
+        for (double dc : {0.5, 0.2, 0.05, 0.01, -0.3, 0.001}) {
+            for (double width : {0.0, 1e-6, 1e-5, 1e-4}) {
+                Tuner t;
+                t.prepare(rate);
+                std::vector<float> x(static_cast<std::size_t>(rate));
+                std::uint32_t s = 777;
+                for (auto& v : x) {
+                    s = s * 1664525u + 1013904223u;
+                    v = static_cast<float>(dc + width * (static_cast<double>(s >> 8) / 16777216.0 - 0.5));
+                }
+                std::vector<float> l(x.size()), r(x.size());
+                t.process(x.data(), x.data(), l.data(), r.data(), x.size());
+                ++cases;
+                if (t.reading().valid) {
+                    ++falseReadings;
+                    std::printf("  a reading of %.1f Hz from DC %.3f, noise %.0e, at %.0f\n", t.reading().hz, dc, width, rate);
+                }
+            }
+        }
+    }
+    check(falseReadings == 0, "a DC offset with or without a low noise floor reads nothing (" + std::to_string(falseReadings) + " of " +
+                                  std::to_string(cases) + " did)");
+}
+
+/// prepare() never throws, even when memory cannot be had (it runs inside a
+/// Pd external's DSP callback); the detector is then inert, and the next
+/// prepare that can allocate restores it.
+void preparing() {
+    PitchDetector d;
+    bool threw = false;
+    failing = true;
+    try {
+        d.prepare(96000);
+    } catch (...) {
+        threw = true;
+    }
+    failing = false;
+    const auto x = sine(440, 48000, 8192);
+    double hz = 0, clarity = 0;
+    check(!threw && d.window() == 0 && !d.analyse(x.data(), hz, clarity), "prepare under a failed allocation does not throw; the detector is inert");
+    d.push(x.data(), x.size());
+    check(!d.estimate(hz, clarity), "an inert detector takes samples and reads nothing");
+    d.prepare(48000);
+    check(d.analyse(x.data(), hz, clarity) && std::abs(cents(hz, 440)) < 1, "the next prepare restores it");
+    Tuner t;
+    failing = true;
+    try {
+        t.prepare(44100);
+    } catch (...) {
+        threw = true;
+    }
+    failing = false;
+    std::vector<float> l(4096), r(4096);
+    t.process(x.data(), x.data(), l.data(), r.data(), 4096);
+    check(!threw && std::equal(l.begin(), l.end(), x.begin()), "a Tuner whose prepare could not allocate still passes the signal");
+}
+
 int main() {
+    offsets();
+    preparing();
     oneWindow();
     richAndNot();
     tuner();

@@ -8,25 +8,33 @@ namespace adi::dsp {
 
 PitchDetector::PitchDetector() { prepare(48000); }
 
-void PitchDetector::prepare(double sampleRate) {
+void PitchDetector::prepare(double sampleRate) noexcept {
     rate_ = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
     // Half the window holds the longest period, with room to walk past it.
     std::size_t size = 1024;
     while (size / 2 < static_cast<std::size_t>(std::ceil(rate_ / kLowestHz)) + 8) {
         size *= 2;
     }
-    if (size != size_ || !fft_) {
-        fft_ = std::make_unique<RealFft>(static_cast<std::int32_t>(2 * size));
-        // A transform PFFFT cannot plan leaves the detector inert (no
-        // reading), never a throw out of a host's DSP callback.
-        size_ = fft_->valid() ? size : 0;
+    // A transform PFFFT cannot plan, or memory that cannot be had, leaves
+    // the detector inert (no reading): never a throw out of a host's DSP
+    // callback, which is where a Pd external prepares.
+    try {
+        if (size != size_ || !fft_) {
+            size_ = 0;
+            fft_ = std::make_unique<RealFft>(static_cast<std::int32_t>(2 * size));
+            size = fft_->valid() ? size : 0;
+        }
+        ring_.assign(size, 0.f);
+        window_.assign(size, 0.f);
+        padded_.assign(2 * size, 0.f);
+        bins_.assign(size + 1, {});
+        d_.assign(size / 2 + 1, 0.0);
+        energy_.assign(size + 1, 0.0);
+        size_ = size;
+    } catch (...) {
+        fft_.reset();
+        size_ = 0;
     }
-    ring_.assign(size_, 0.f);
-    window_.assign(size_, 0.f);
-    padded_.assign(2 * size_, 0.f);
-    bins_.assign(size_ + 1, {});
-    d_.assign(size_ / 2 + 1, 0.0);
-    energy_.assign(size_ + 1, 0.0);
     reset();
 }
 
@@ -83,13 +91,24 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
     const std::size_t half = size_ / 2;
     const auto lowest = static_cast<std::size_t>(std::max(2.0, std::floor(rate_ / kHighestHz)));
     const auto highest = std::min(half - 4, static_cast<std::size_t>(std::ceil(rate_ / kLowestHz)));
+    // The window without its mean, every sample finite: a DC offset is not
+    // a period (left in, the float autocorrelation's round-off against the
+    // exact energies reads as a perfect dip at an arbitrary lag), and a level
+    // under kFloor (-80 dBFS RMS) holds no pitch worth showing.
+    double mean = 0;
+    for (std::size_t j = 0; j < size_; ++j) {
+        mean += std::isfinite(window[j]) ? static_cast<double>(window[j]) : 0.0;
+    }
+    mean /= static_cast<double>(size_);
     energy_[0] = 0;
     for (std::size_t j = 0; j < size_; ++j) {
-        const double v = std::isfinite(window[j]) ? static_cast<double>(window[j]) : 0.0;
+        const double v = (std::isfinite(window[j]) ? static_cast<double>(window[j]) : 0.0) - mean;
+        window_[j] = static_cast<float>(v);
         energy_[j + 1] = energy_[j] + v * v;
     }
-    if (!(energy_[size_] > 1e-9)) {
-        return false;   // silence (or nothing finite) holds no pitch
+    window = window_.data();
+    if (!(energy_[size_] > kFloor * kFloor * static_cast<double>(size_))) {
+        return false;   // silence, a constant, or nothing finite: no pitch
     }
     // The autocorrelation r(t) = sum x_j x_{j+t}, linear thanks to the zero
     // pad, through one transform pair (the inverse carries the 1/N).

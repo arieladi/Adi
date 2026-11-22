@@ -192,19 +192,26 @@ void identityAndRobustness() {
     check(identical, "every block size gives the same samples");
     E e;
     e.set(E::Amount, 100);
+    // Each block is checked as it comes out (the review of a1f60f9b: one
+    // check after three blocks saw only the last).
     std::vector<float> bad(512, std::numeric_limits<float>::quiet_NaN()), o(512), p(512);
+    const auto silent = [&] { return std::all_of(o.begin(), o.end(), [](float v) { return v == 0.f; }); };
+    const auto bounded = [&] { return std::all_of(o.begin(), o.end(), [](float v) { return std::isfinite(v) && std::abs(v) < 1; }); };
     counting = true;
     e.process(bad.data(), bad.data(), o.data(), p.data(), bad.size());
+    const bool nanSilent = silent();
     e.set(E::Mode, E::Sine);
     e.set(E::Frequency, 17000);
     e.process(x.data(), x.data(), o.data(), p.data(), 512);
+    const bool sineBounded = bounded();
     e.set(E::Mode, E::WideNoise);
     e.set(E::Width, 10);
     e.process(x.data(), x.data(), o.data(), p.data(), 512);
+    const bool wideBounded = bounded();
     counting = false;
     check(allocations == 0, "processing and moved controls allocate nothing");
-    check(std::all_of(o.begin(), o.end(), [](float v) { return std::isfinite(v) && std::abs(v) < 1; }),
-          "a NaN input is silence, and every mode stays finite and bounded");
+    check(nanSilent, "a NaN input is silence");
+    check(sineBounded && wideBounded, "after it, Sine at 17 kHz and Wide Noise at Width 10 stay finite and bounded");
     E z;
     z.set(E::Amount, 0);
     std::vector<float> left(4800, 0.25f), shared(4800, -0.5f), rightOut(4800);
@@ -214,7 +221,78 @@ void identityAndRobustness() {
 
 }  // namespace
 
+/// The noise modulator's level, read from the output (the review of
+/// a1f60f9b: the scale assumed a small-angle noise bandwidth, and the noise
+/// fell up to 12 dB short at a high, wide band). For a tone A at f and a
+/// small swing, y = x(t - D) - A w D m cos(...), so the haze, the output less
+/// its carrier, has a power of A^2 (w D)^2 E[m^2] / 2: m's RMS follows. Band
+/// passed noise of RMS 0.5 clipped at +-1 (two sigma) keeps an RMS of 0.48.
+void noiseLevel() {
+    struct Band {
+        double hz, width;
+    };
+    for (const Band b : {Band{1000, 1}, Band{5000, 10}, Band{12000, 1}, Band{18000, 0.08}, Band{18000, 10}}) {
+        E e;
+        e.set(E::Mode, E::Noise);
+        e.set(E::Frequency, b.hz);
+        e.set(E::Width, b.width);
+        e.set(E::Amount, 20);
+        e.prepare(kRate);
+        const double a = 0.4;
+        const auto x = sine(1000, 96000, a);
+        std::vector<float> l, r;
+        run(e, x, x, l, r);
+        double c = 0, s = 0, total = 0;
+        const std::size_t n = 48000, from = l.size() - n;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double phase = 2 * std::numbers::pi * 1000 * static_cast<double>(from + i) / kRate, y = l[from + i];
+            c += y * std::cos(phase);
+            s += y * std::sin(phase);
+            total += y * y;
+        }
+        c *= 2.0 / static_cast<double>(n);
+        s *= 2.0 / static_cast<double>(n);
+        const double haze = total / static_cast<double>(n) - (c * c + s * s) / 2;
+        const double wd = 2 * std::numbers::pi * 1000 / kRate * (0.2 * E::kDeviationMs / 1000 * kRate);
+        const double rms = std::sqrt(2 * haze / (a * a * wd * wd));
+        check(std::abs(rms - 0.48) < 0.04, "Noise at " + std::to_string(b.hz) + " Hz, Width " + std::to_string(b.width) +
+                                               ": the modulator's RMS is 0.48 (" + std::to_string(rms) + ")");
+    }
+}
+
+/// At 768 kHz the swing at Amount 100 (153.6 samples) would leave the ring:
+/// it is held at kMaxDepth, and the output is still that phase modulation.
+void highRate() {
+    const double rate = 768000;
+    E e;
+    e.set(E::Mode, E::Sine);
+    e.set(E::Frequency, 5000);
+    e.set(E::Amount, 100);
+    e.prepare(rate);
+    std::vector<float> x(static_cast<std::size_t>(rate * 1.5)), l(x.size()), r(x.size());
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        x[i] = static_cast<float>(0.5 * std::sin(2 * std::numbers::pi * 1000 * static_cast<double>(i) / rate));
+    }
+    e.process(x.data(), x.data(), l.data(), r.data(), x.size());
+    const auto at = [&](double hz) {
+        std::complex<double> sum = 0;
+        const auto n = static_cast<std::size_t>(rate), from = l.size() - n;
+        for (std::size_t i = 0; i < n; ++i) {
+            sum += static_cast<double>(l[from + i]) * std::polar(1.0, -2 * std::numbers::pi * hz * static_cast<double>(from + i) / rate);
+        }
+        return 2 * std::abs(sum) / static_cast<double>(n);
+    };
+    const double beta = 2 * std::numbers::pi * 1000 / rate * E::kMaxDepth;
+    const double carrier = at(1000), side = at(6000);
+    check(std::abs(20 * std::log10(carrier / (0.5 * std::cyl_bessel_j(0.0, beta)))) < 0.05 &&
+              std::abs(20 * std::log10(side / (0.5 * std::cyl_bessel_j(1.0, beta)))) < 0.05,
+          "768 kHz, Amount 100: the swing is held inside the ring, J0 and J1 of its beta (" + std::to_string(carrier) + ", " +
+              std::to_string(side) + ")");
+}
+
 int main() {
+    noiseLevel();
+    highRate();
     besselSidebands();
     noiseBands();
     identityAndRobustness();

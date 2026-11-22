@@ -61,11 +61,15 @@ void Erosion::update() noexcept {
         b.a1 = -2 * std::cos(w) / a0;
         b.a2 = (1 - alpha) / a0;
     }
-    // White noise of variance 1/3 through it has a variance of (1/3) x 2 x
-    // its noise bandwidth (pi f / 2Q) / rate: scaled to an RMS of 0.5.
-    const double rms = std::sqrt((1.0 / 3) * std::numbers::pi * f / (q * rate_));
+    // White noise of variance 1/3 through it has a variance of (1/3) x its
+    // noise gain, the sum of h^2, which for this band pass is exactly
+    // alpha / (1 + alpha): scaled to an RMS of 0.5. (The small-angle w / 2Q
+    // left the noise up to 12 dB short at a high, wide band.)
+    const double rms = std::sqrt(alpha / (3 * (1 + alpha)));
     scale_ = rms > 0 ? 0.5 / rms : 0;
-    depthTarget_ = p_[Amount] / 100 * kDeviationMs / 1000 * rate_;
+    // The swing stays inside the ring: above about 600 kHz Amount's top is
+    // held at kMaxDepth samples rather than reading samples already replaced.
+    depthTarget_ = std::min(p_[Amount] / 100 * kDeviationMs / 1000 * rate_, kMaxDepth);
 }
 
 double Erosion::noise(std::uint32_t& state) noexcept {
