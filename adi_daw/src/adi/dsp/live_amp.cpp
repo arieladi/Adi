@@ -33,7 +33,16 @@ void LiveAmp::set(Param p, double v) noexcept {
     }
     const auto& r = ranges[static_cast<std::size_t>(index)];
     const bool whole = index == Type || index == Dual;
+    const bool wasDual = p_[Dual] >= 0.5;
     p_[static_cast<std::size_t>(index)] = std::clamp(whole ? std::round(v) : v, r.low, r.high);
+    if (index == Dual && !wasDual && p_[Dual] >= 0.5) {
+        // The right amp sat still while Mono ran the left alone: it starts
+        // from the left's state, so a switch to Dual does not replay its old
+        // state as a thump.
+        state_[1] = state_[0];
+        dcIn_[1] = dcIn_[0];
+        dcOut_[1] = dcOut_[0];
+    }
     update();
 }
 
