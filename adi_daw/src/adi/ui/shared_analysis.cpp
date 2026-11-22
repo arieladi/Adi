@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "shared_analysis.hpp"
+#include "adi/dsp/masking.hpp"
 #include "adi/dsp/spectrum_average.hpp"
 #include "adi/ui/focus_lag.hpp"
 #include "adi/ui/focus_scope.hpp"
@@ -8,6 +9,7 @@
 #include <bit>
 #include <cassert>
 #include <cmath>
+#include <complex>
 #include <condition_variable>
 #include <deque>
 #include <limits>
@@ -22,7 +24,7 @@ namespace {
 constexpr std::uint32_t allOutputs = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Meters |
                                      SharedAnalysis::Phase | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s |
                                      SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum |
-                                     SharedAnalysis::Strip | SharedAnalysis::DeviceBlockAverage;
+                                     SharedAnalysis::Strip | SharedAnalysis::DeviceBlockAverage | SharedAnalysis::PhaseBands;
 constexpr int stripFftSize = 1024;
 constexpr double stripRefreshSeconds = .05, stripSmoothingSeconds = .3;
 constexpr std::size_t maxHistoryColumns = 128;
@@ -30,6 +32,106 @@ constexpr std::size_t pendingHistoryBytesPerDomain = 256 * 1024;
 // PFFFT squares its unnormalised float bins. Leave headroom for that sum
 // at the largest supported FFT as well as for the stereo and M/S projection.
 constexpr float spectralSampleLimit = 1.e12f;
+class PhaseBandPlan {
+    static constexpr auto bandCount = SharedAnalysis::kPhaseBandCount;
+    static constexpr auto unmapped = static_cast<std::uint8_t>(bandCount);
+    using Bands = SharedAnalysis::PhaseBandCorrelations;
+
+  public:
+    PhaseBandPlan(int size, dsp::Window type)
+        : fft_(size), window_(static_cast<std::size_t>(size)), scratch_(window_.size()),
+          left_(window_.size() / 2 + 1), right_(left_.size()), binBands_(left_.size(), unmapped) {
+        dsp::fillWindow(type, window_);
+    }
+
+    bool valid() const noexcept { return fft_.valid(); }
+
+    void bindRate(double rate) noexcept {
+        if (rate == rate_) return;
+        rate_ = rate;
+        windowSerial_ = 0;
+        cached_.reset();
+        hasMappedBins_ = false;
+        std::fill(binBands_.begin(), binBands_.end(), unmapped);
+        constexpr double lowHz = 20.;
+        const double highHz = std::min(20000., rate * .5);
+        const double low = dsp::erbRate(lowHz);
+        const double extent = dsp::erbRate(highHz) - low;
+        if (!(extent > 0.)) return;
+        const double scale = static_cast<double>(bandCount) / extent;
+        const double binHz = rate / static_cast<double>(fft_.size());
+        for (std::size_t i = 1; i < binBands_.size(); ++i) {
+            const double hz = static_cast<double>(i) * binHz;
+            if (hz < lowHz || hz > highHz) continue;
+            const auto band = static_cast<std::uint8_t>((dsp::erbRate(hz) - low) * scale);
+            binBands_[i] = std::min(band, static_cast<std::uint8_t>(bandCount - 1));
+            hasMappedBins_ = true;
+        }
+    }
+
+    std::shared_ptr<const Bands> project(std::uint64_t serial, std::span<const float> left,
+                                         std::span<const float> right, bool stereo, std::size_t &transforms) noexcept {
+        if (serial == windowSerial_) return cached_;
+        windowSerial_ = serial;
+        cached_ = silent_;
+        if (!stereo || !hasMappedBins_) return cached_;
+        auto values = measure(left, right, transforms);
+        try { cached_ = std::make_shared<const Bands>(std::move(values)); }
+        catch (...) { cached_.reset(); } // Broadband Phase stays available.
+        return cached_;
+    }
+
+  private:
+    bool forward(std::span<const float> input, std::span<std::complex<float>> output) noexcept {
+        for (std::size_t i = 0; i < scratch_.size(); ++i) scratch_[i] = input[i] * window_[i];
+        return fft_.forward(scratch_, output);
+    }
+
+    Bands measure(std::span<const float> left, std::span<const float> right, std::size_t &transforms) noexcept {
+        Bands result{};
+        if (!forward(left, left_)) return result;
+        ++transforms;
+        if (!forward(right, right_)) return result;
+        ++transforms;
+        struct Power { double left = 0., right = 0., cross = 0.; };
+        std::array<Power, bandCount> powers{};
+        double totalLeft = 0., totalRight = 0.;
+        for (std::size_t i = 1; i < binBands_.size(); ++i) {
+            if (binBands_[i] == unmapped) continue;
+            const std::complex<double> l{left_[i]}, r{right_[i]};
+            auto &band = powers[binBands_[i]];
+            // Interior bins represent a conjugate pair. Nyquist is real
+            // and alone, so use half its energy on the same scale.
+            const double weight = i + 1 == binBands_.size() ? .5 : 1.;
+            const double lPower = std::norm(l) * weight, rPower = std::norm(r) * weight;
+            band.left += lPower;
+            band.right += rPower;
+            band.cross += (l * std::conj(r)).real() * weight;
+            totalLeft += lPower;
+            totalRight += rPower;
+        }
+        // Discard a band's numerical leakage relative to each channel. With
+        // no energy on either side a correlation has no defined value.
+        constexpr double leakageFloor = 1.e-12;
+        for (std::size_t i = 0; i < powers.size(); ++i) {
+            const auto &band = powers[i];
+            if (band.left > totalLeft * leakageFloor && band.right > totalRight * leakageFloor)
+                result[i] = static_cast<float>(std::clamp(band.cross / std::sqrt(band.left * band.right), -1., 1.));
+        }
+        return result;
+    }
+
+    dsp::RealFft fft_;
+    std::vector<float> window_, scratch_;
+    std::vector<std::complex<float>> left_, right_;
+    std::vector<std::uint8_t> binBands_;
+    bool hasMappedBins_ = false;
+    double rate_ = 0.;
+    std::uint64_t windowSerial_ = 0;
+    std::shared_ptr<const Bands> cached_;
+    const std::shared_ptr<const Bands> silent_ = std::make_shared<const Bands>();
+};
+
 bool valid(const SharedAnalysis::Request &r) {
     if (r.track <= 0 || r.fftSize < 32 || r.fftSize > SharedAnalysis::kMaxFftSize || r.fftSize % 32 ||
         r.hopSize < 0 || r.hopSize > r.fftSize || !r.outputs || (r.outputs & ~allOutputs)) return false;
@@ -257,6 +359,7 @@ struct SharedAnalysis::Domain {
     std::int64_t averageAfterSequence = 0;
     std::shared_ptr<const std::vector<float>> averageBins;
     std::vector<float> ringLeft, ringRight, left, right, scratch, linear, second;
+    std::unique_ptr<PhaseBandPlan> phaseBandPlan;
     const double gain;
     std::size_t position = 0, filled = 0, sinceWindow = 0;
     std::uint64_t windowSerial = 0, spectralWindow = 0, historyWindow = 0, transportRevision = 0;
@@ -497,6 +600,7 @@ struct SharedAnalysis::Domain {
         tap = std::move(next);
         cursor = tap ? tap->cursorAtEnd() : engine::ScopeTap::Cursor{};
         if (tap && !fresh) cursor.next = std::max(tap->oldest(), tap->written() - request.fftSize);
+        if (phaseBandPlan) phaseBandPlan->bindRate(tap ? tap->sampleRate() : 0.);
         if (meter) {
             neutralMeter.store(false, std::memory_order_release);
             publishMeter({});
@@ -545,7 +649,16 @@ struct SharedAnalysis::Domain {
         if (nextStrip) strip = std::move(nextStrip);
         return true;
     }
+    bool ensureOutputPlans(std::uint32_t bits) {
+        if (!(bits & PhaseBands) || phaseBandPlan) return ensureSpectrum(bits);
+        auto candidate = std::make_unique<PhaseBandPlan>(request.fftSize, request.window);
+        if (!candidate->valid() || !ensureSpectrum(bits)) return false;
+        candidate->bindRate(tap ? tap->sampleRate() : 0.);
+        phaseBandPlan = std::move(candidate);
+        return true;
+    }
     void releaseUnused(std::uint32_t bits) {
+        if (!(bits & PhaseBands)) phaseBandPlan.reset();
         if (!(bits & Strip) && strip) {
             strip.reset();
             publishStrip({});
@@ -624,7 +737,7 @@ struct SharedAnalysis::Domain {
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
-    std::array<std::size_t, 10> outputUsers{}; // State mutex
+    std::array<std::size_t, 11> outputUsers{}; // State mutex
     std::size_t consumers = 0;
     std::uint64_t sourceEpoch = 1, revision = 0, columnSerial = 0, gaps = 0, overruns = 0;
     std::vector<Column> columns;
@@ -1773,6 +1886,12 @@ struct SharedAnalysis::State {
             const bool historyRetired = d.retireForPending(*historyBudget);
             if (!latest && (historyFlushed || historyRetired)) latest = d.refreshHistoryPublication();
             if (latest) {
+                // Band phase serves the visible picture only. Intermediate
+                // overlap windows do not need another stereo transform.
+                if (d.phaseBandPlan && (latest->outputs & d.outputs.load(std::memory_order_acquire) & PhaseBands)) {
+                    const bool stereo = latest->rms[0] > 0.f && latest->rms[1] > 0.f;
+                    latest->phaseBands = d.phaseBandPlan->project(latest->windowSerial, d.left, d.right, stereo, done);
+                }
                 // Intermediate hops advance the retained audio window without
                 // copying a stereo raw pair that this pass will never publish.
                 if ((latest->outputs & (Output::Scope | Output::Phase)) && latest->scopeLeft.empty()) {
@@ -2147,7 +2266,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint3
     if (found != state_->domains.end()) {
         std::lock_guard domainLock(found->second->mutex);
         if (cumulative) found->second->cumulativeHistories.reserve(found->second->cumulativeHistories.size() + 1);
-        if (!found->second->ensureSpectrum(request.outputs)) return {};
+        if (!found->second->ensureOutputPlans(request.outputs)) return {};
         const auto newlyRequested = request.outputs & ~found->second->outputs.load(std::memory_order_acquire);
         const auto sequence = found->second->tap ? found->second->tap->written() : 0;
         auto blockAverage = found->second->admitBlockAverage(averageBlocks, sequence);
@@ -2161,7 +2280,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint3
         return Lease(state_, found->second, request.outputs, std::move(cumulative), std::move(blockAverage));
     }
     auto domain = std::make_shared<Domain>(key);
-    if (!domain->ensureSpectrum(request.outputs)) return {};
+    if (!domain->ensureOutputPlans(request.outputs)) return {};
     auto blockAverage = domain->admitBlockAverage(averageBlocks, 0);
     domain->addCumulative(cumulative, 0);
     auto [tap, inserted] = state_->taps.try_emplace(key.source());
@@ -2342,7 +2461,8 @@ SharedAnalysis::Stats SharedAnalysis::stats() const {
     result.successfulEnqueues = state_->successfulEnqueues.load(std::memory_order_relaxed);
     for (const auto &[key, domain] : state_->domains) {
         (void)key;
-        result.spectralPlans += static_cast<std::size_t>(domain->spectrum != nullptr);
+        result.spectralPlans += static_cast<std::size_t>(domain->spectrum != nullptr) +
+                                static_cast<std::size_t>(domain->phaseBandPlan != nullptr);
         result.droppedHistoryColumns += domain->droppedHistory.load(std::memory_order_relaxed);
     }
     result.historyBytes = state_->historyBudget->bytes.load(std::memory_order_acquire);

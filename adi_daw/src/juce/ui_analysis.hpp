@@ -53,6 +53,7 @@ class SharedSpectrumView final : public juce::Component,
     };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
+    void enablePhaseBands();
     void setSource(engine::ScopePoint, std::int64_t device = 0);
     engine::ScopePoint point() const noexcept { return point_; }
     void setChannel(SharedAnalysis::Channel);
@@ -151,6 +152,7 @@ class SharedSpectrumView final : public juce::Component,
     Status status_ = Status::Detached;
     bool suspended_ = false;
     bool frozen_ = false;
+    bool phaseBandsEnabled_ = false;
     Mode mode_ = Mode::Spectrum;
     engine::ScopePoint point_ = engine::ScopePoint::PostFader;
     std::int64_t device_ = 0;

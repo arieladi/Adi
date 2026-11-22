@@ -44,6 +44,8 @@ class SharedAnalysis final {
     static constexpr std::size_t kMaxWindowsPerFrame = 16;
     static constexpr std::size_t kMaxSamplesPerFrame = 262144;
     static constexpr std::size_t kMaxReadsPerFrame = 256;
+    static constexpr std::size_t kPhaseBandCount = 24;
+    using PhaseBandCorrelations = std::array<std::optional<float>, kPhaseBandCount>;
     static constexpr std::size_t kStripSpectrumPoints = 96;
     static constexpr std::size_t kStripScopeColumns = 64;
     // Immutable spectrogram-bin payload, including buffers retained by frozen
@@ -53,7 +55,7 @@ class SharedAnalysis final {
     enum class Mode { Worker, Manual };
     enum Output : std::uint32_t {
         Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32,
-        RealtimeMaximum = 64, CumulativeMaximum = 128, Strip = 256, DeviceBlockAverage = 512
+        RealtimeMaximum = 64, CumulativeMaximum = 128, Strip = 256, DeviceBlockAverage = 512, PhaseBands = 1024
     };
     struct DeviceSpectrumRequest {
         enum class Channel : std::uint8_t { Left, Right, Stereo };
@@ -105,6 +107,9 @@ class SharedAnalysis final {
         std::array<float, 2> peak{}, rms{};
         std::size_t clippedSamples = 0; // Meters: finite samples at or above full scale across both channels.
         double correlation = 0;
+        // Optional L/R correlation in ascending ERB bands. Missing lanes
+        // in a band leave its entry unset.
+        std::shared_ptr<const PhaseBandCorrelations> phaseBands;
         std::vector<float> binsDbfs, scopeLeft, scopeRight;
         // Bounded newest columns. Serial and sourceEpoch expose missed or reset history.
         std::vector<Column> columns;

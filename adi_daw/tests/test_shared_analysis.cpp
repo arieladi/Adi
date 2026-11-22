@@ -2554,6 +2554,116 @@ void sharedModesAndCursors() {
     tone(*f.tap, 1024, .5f, -1.f, 51024); f.broker.pump();
     check(power.read() && near(power.read()->binsDbfs[16], -6.020599913), "stereo power spectrum does not cancel antiphase audio");
 }
+void phaseBandCorrelation() {
+    constexpr int samples = 4096;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, samples};
+    request.hopSize = samples / 2;
+    request.outputs = SharedAnalysis::Phase;
+    auto broad = f.broker.acquire(request);
+    std::array<float, samples> left{}, right{}, silent{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto phase = 2. * std::numbers::pi * static_cast<double>(i) / samples;
+        const auto low = static_cast<float>(.25 * std::sin(32. * phase));
+        const auto high = static_cast<float>(.25 * std::sin(384. * phase));
+        left[i] = low + high;
+        right[i] = low - high;
+    }
+    f.tap->write(left.data(), right.data(), samples, 0, true, 1);
+    check(f.broker.pump() == 0 && broad.read() && !broad.read()->phaseBands && !f.broker.stats().spectralPlans,
+          "broadband phase draws its raw scope and correlation without a spectral plan");
+
+    const auto acquireCalls = f.acquireCalls;
+    request.outputs |= SharedAnalysis::PhaseBands;
+    auto bands = f.broker.acquire(request), sibling = f.broker.acquire(request);
+    check(bands.available() && sibling.available() && f.acquireCalls == acquireCalls && f.broker.stats().taps == 1 &&
+              f.broker.stats().domains == 1 && f.broker.stats().spectralPlans == 1 && !bands.read(),
+          "visible detailed phase readers share one lazy plan on the existing source");
+    check(f.broker.pump() == 2, "a completed detailed phase picture needs one pair of real transforms");
+    const auto picture = bands.read();
+    const auto correlation = [&](const auto &result, std::size_t band, double expected) {
+        return result && result->phaseBands && (*result->phaseBands)[band] &&
+               near(*(*result->phaseBands)[band], expected, 1.e-5);
+    };
+    check(picture && picture == sibling.read() && picture == broad.read() && picture->firstStamp == 0 &&
+              picture->scopeLeft.size() == samples && correlation(picture, 4, 1.) && correlation(picture, 16, -1.) &&
+              !(*picture->phaseBands)[10] && near(picture->correlation, 0.),
+          "375 Hz and 4500 Hz expose opposite band signs without changing the broadband measurement");
+
+    f.tap->write(left.data(), right.data(), samples, samples, true, 1);
+    check(f.broker.pump() == 2 && bands.read() && bands.read()->firstStamp == samples,
+          "multiple completed hops measure only the final visible phase window");
+    f.tap->write(left.data(), silent.data(), samples / 2, 0, true, 2);
+    check(f.broker.pump() == 0 && !bands.read(),
+          "a partial seek window cannot retain the previous band's phase data");
+    f.tap->write(left.data() + samples / 2, silent.data(), samples / 2, samples / 2, true, 2);
+    const auto beforeQuiet = f.broker.stats().transforms;
+    f.broker.pump();
+    const auto oneSided = bands.read();
+    const auto allAbsent = [](const auto &result) {
+        return result && result->phaseBands &&
+               std::ranges::none_of(*result->phaseBands, [](const auto &value) { return value.has_value(); });
+    };
+    check(allAbsent(oneSided) && oneSided->transportRevision == 2 &&
+              f.broker.stats().transforms == beforeQuiet,
+          "a one-sided source marks every band unavailable without executing either transform");
+    f.tap->write(static_cast<const float *>(nullptr), nullptr, samples, samples, false, 2);
+    f.broker.pump();
+    const auto parked = bands.read();
+    const auto parkedStats = f.broker.stats();
+    f.tap->write(static_cast<const float *>(nullptr), nullptr, samples, samples, false, 2);
+    f.broker.pump();
+    check(allAbsent(parked) && bands.read() == parked &&
+              f.broker.stats().workerPasses == parkedStats.workerPasses,
+          "parked silence retains one empty band picture without repeat work");
+
+    f.tap = std::make_shared<ScopeTap>(96000, SharedAnalysis::kTapSeconds);
+    f.broker.refreshSources();
+    check(!bands.read(), "a replacement sample rate invalidates prior band data");
+    f.tap->write(left.data(), right.data(), samples, 0, true, 3);
+    check(f.broker.pump() == 2 && correlation(bands.read(), 7, 1.) && correlation(bands.read(), 19, -1.),
+          "the band mapping follows the new source rate");
+    bands.reset();
+    check(f.broker.stats().spectralPlans == 1 && sibling.read(), "closing one view keeps its sibling's band plan");
+    sibling.reset();
+    f.tap->write(left.data(), right.data(), samples, samples, true, 3);
+    check(f.broker.pump() == 0 && !f.broker.stats().spectralPlans && broad.read() && !broad.read()->phaseBands &&
+              f.broker.stats().taps == 1,
+          "the last detailed view releases the plan while the broadband view remains FFT-free");
+
+    Fixture beyondBins;
+    beyondBins.tap = std::make_shared<ScopeTap>(768000, .25);
+    request.fftSize = 32;
+    request.hopSize = 32;
+    auto tiny = beyondBins.broker.acquire(request);
+    beyondBins.tap->write(left.data(), right.data(), 32, 0, true, 1);
+    check(beyondBins.broker.pump() == 0 && allAbsent(tiny.read()),
+          "a resolution with no in-band FFT bins skips the stereo transforms");
+
+    Fixture nyquist;
+    nyquist.tap = std::make_shared<ScopeTap>(32000, .6);
+    request.fftSize = samples;
+    request.hopSize = samples;
+    request.window = adi::dsp::Window::Rectangular;
+    auto highBand = nyquist.broker.acquire(request);
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto angle = 2. * std::numbers::pi * 2016. * static_cast<double>(i) / samples;
+        const auto tone = static_cast<float>(.25 * std::sin(angle));
+        const float edge = i % 2 ? -.25f : .25f;
+        left[i] = tone + edge;
+        right[i] = tone - edge;
+    }
+    const auto lastBand = SharedAnalysis::kPhaseBandCount - 1;
+    nyquist.tap->write(left.data(), left.data(), samples, 0, true, 4);
+    check(nyquist.broker.pump() == 2 && correlation(highBand.read(), lastBand, 1.),
+          "the penultimate-frequency and Nyquist tones settle together in one coherent band");
+    nyquist.tap->write(left.data(), right.data(), samples, samples, true, 4);
+    // The same-amplitude Nyquist tone has twice the power of the ordinary sine.
+    // Its reversed polarity contributes -2 for the ordinary tone's +1.
+    check(nyquist.broker.pump() == 2 && correlation(highBand.read(), lastBand, -1. / 3.) &&
+              highBand.read()->firstStamp == samples,
+          "the mixed high band counts the real-only Nyquist bin once and other bins twice");
+}
 void clippedSampleWindows() {
     Fixture f;
     SharedAnalysis::Request request{1};
@@ -3800,7 +3910,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

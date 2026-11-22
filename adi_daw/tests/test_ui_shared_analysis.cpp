@@ -60,8 +60,8 @@ struct Fixture {
     std::shared_ptr<SharedAnalysis> broker = std::make_shared<SharedAnalysis>(
         [this](std::int64_t, ScopePoint) { ++acquired; return tap; },
         [this](std::int64_t, ScopePoint) { ++released; }, SharedAnalysis::Mode::Manual);
-    void write(std::int64_t stamp = 0) {
-        std::vector<float> samples(1024);
+    void write(std::int64_t stamp = 0, std::size_t frames = 1024) {
+        std::vector<float> samples(frames);
         for (std::size_t i = 0; i < samples.size(); ++i)
             samples[i] = .5f * static_cast<float>(std::sin(2 * std::numbers::pi * 16 * static_cast<double>(i) / 1024));
         tap->write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), stamp, true);
@@ -1883,6 +1883,56 @@ void classicScopeUnchangedTrace() {
     root.removeFromDesktop();
 }
 
+void detailedPhasePreservesHighFrequencyTrace() {
+    Fixture f;
+    Root root;
+    root.setBounds(0, 0, 300, 260);
+    SharedSpectrumView view;
+    view.setBounds(root.getLocalBounds());
+    view.enablePhaseBands();
+    view.setMode(SharedSpectrumView::Mode::Phase);
+    root.addAndMakeVisible(view);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    view.present(f.broker, 1);
+    std::array<float, 4096> samples{};
+    constexpr std::array cycle{0.f, 1.f, 0.f, -1.f};
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        samples[i] = cycle[i % cycle.size()];
+    f.tap->write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), 0, true);
+    f.broker->pump();
+    view.frame();
+
+    // Isolated software paint, never a desktop capture. The L=R trace must
+    // reach both ends even when the source period matches the old stride.
+    juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+    { juce::Graphics graphics(image); view.paint(graphics); }
+    const auto target = adi::ui::look::value;
+    const auto hasTrace = [&](int top, int bottom) {
+        for (int y = top; y < bottom; ++y) {
+            for (int x = 125; x < 160; ++x) {
+                const auto pixel = image.getPixelAt(x, y);
+                if (std::abs(pixel.getRed() - target.getRed()) <= 2 &&
+                    std::abs(pixel.getGreen() - target.getGreen()) <= 2 &&
+                    std::abs(pixel.getBlue() - target.getBlue()) <= 2) return true;
+            }
+        }
+        return false;
+    };
+    check(view.snapshot() && view.snapshot()->scopeLeft.size() == samples.size() &&
+              hasTrace(24, 85) && hasTrace(135, 205),
+          "detailed Phase draws positive and negative peaks of a 12 kHz in-phase signal");
+    const auto shown = view.snapshot();
+    const auto transforms = f.broker->stats().transforms;
+    view.setChannel(SharedAnalysis::Channel::Left);
+    f.broker->pump();
+    view.frame();
+    check(shown && view.snapshot() == shown && view.getTitle() == "Phase" &&
+              f.broker->stats().transforms == transforms,
+          "a Spectrum channel preference retains the stereo Phase picture");
+    root.removeFromDesktop();
+}
+
 void mixAnalyserPages() {
     using namespace adi::ui;
     using Page = MixAnalysers::Page;
@@ -1932,12 +1982,24 @@ void mixAnalyserPages() {
     check(pages.page() == Page::All && pages.pageBox.getNumItems() == static_cast<int>(Page::Compare) + 1 &&
               pages.sourceBox.getNumItems() == 4 && pages.sourceBox.getSelectedId() == 1,
           "analysers default to All and Main and offer each non-Main channel once");
-    check(all.taps == 3 && all.domains == 3 && all.consumers == 8 && all.spectralPlans == 1,
-          "All shares one Main FFT across spectral views and leases readout rows without their own FFT");
+    check(all.taps == 3 && all.domains == 4 && all.consumers == 8 && all.spectralPlans == 2,
+          "All shares the existing Main tap between the Phase bands and the magnitude views");
     f.write();
     check(f.broker->pump() == 1, "All uses one transform for the compatible Main spectrum and spectrogram");
     pages.frame(f.broker, reader, main->id, first->id);
     check(loudnessReads > 0, "All reads Main loudness through the persistent measurement");
+    f.write(1024, 3072);
+    f.broker->pump();
+    pages.frame(f.broker, reader, main->id, first->id);
+    const SharedSpectrumView *summaryPhase = nullptr;
+    for (int child = 0; child < pages.getNumChildComponents(); ++child) {
+        const auto *tile = dynamic_cast<const SharedSpectrumView *>(pages.getChildComponent(child));
+        if (tile && tile->mode() == SharedSpectrumView::Mode::Phase) summaryPhase = tile;
+    }
+    const auto phasePicture = summaryPhase ? summaryPhase->snapshot() : nullptr;
+    check(phasePicture && phasePicture->phaseBands && !phasePicture->scopeLeft.empty() &&
+              phasePicture->request.fftSize == 4096,
+          "All displays detailed Phase bands and the vectorscope from one completed window");
 
     using SpectrumScale = SharedSpectrumView::SpectrumScale;
     pages.setPage(Page::Spectrum);
@@ -1951,7 +2013,7 @@ void mixAnalyserPages() {
     }
     check(summarySpectrum && summarySpectrum->isShowing() &&
               summarySpectrum->spectrumScale() == SpectrumScale::Extended &&
-              f.broker->stats().spectralPlans == 1 && f.broker->stats().taps == all.taps,
+              f.broker->stats().spectralPlans == all.spectralPlans && f.broker->stats().taps == all.taps,
           "the All spectrum tile uses the selected layout without another analysis plan");
 
 
@@ -1969,7 +2031,32 @@ void mixAnalyserPages() {
                   pages.detail.view.subscribed() && individual.consumers == 1 && individual.taps == 1,
               "each individual analyser page keeps only its actual display subscribed");
     }
-    f.write(1024); f.broker->pump();
+    pages.setPage(Page::Phase);
+    const auto phaseTransforms = f.broker->stats().transforms;
+    std::array<float, 4096> left{}, right{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto phase = 2. * std::numbers::pi * static_cast<double>(i) / static_cast<double>(left.size());
+        const auto low = static_cast<float>(.3 * std::sin(16. * phase));
+        const auto high = static_cast<float>(.23 * std::sin(256. * phase));
+        left[i] = low + high;
+        right[i] = low - high;
+    }
+    f.tap->write(left.data(), right.data(), static_cast<std::int32_t>(left.size()), 4096, true);
+    f.broker->pump();
+    pages.frame(f.broker, reader, main->id, first->id);
+    const auto detailPhase = pages.detail.view.snapshot();
+    check(detailPhase && detailPhase->phaseBands && f.broker->stats().transforms == phaseTransforms + 2,
+          "the individual Phase page requests exactly one stereo transform pair for its detailed result");
+    pages.detail.view.freeze(true);
+    f.write(8192, 4096);
+    f.broker->pump();
+    check(detailPhase && pages.detail.view.snapshot() == detailPhase &&
+              f.broker->stats().transforms == phaseTransforms + 2 && f.broker->stats().taps == 0 &&
+              f.broker->stats().spectralPlans == 0,
+          "holding Phase keeps its existing picture and performs no transform or capture");
+    pages.detail.view.freeze(false);
+    pages.setPage(Page::Loudness);
+    f.write(12288); f.broker->pump();
     pages.frame(f.broker, reader, main->id, first->id);
     check(pages.detail.view.mainMeterSnapshot().has_value(), "the Main Loudness page displays native Main LUFS");
 
@@ -1980,7 +2067,7 @@ void mixAnalyserPages() {
     pages.frame(f.broker, reader, main->id, fixed->id);
     check(pages.detail.view.track() == fixed->id && f.broker->stats().taps == 1,
           "Follow selection retargets without retaining the old tap");
-    f.write(2048); f.broker->pump();
+    f.write(13312); f.broker->pump();
     pages.frame(f.broker, reader, main->id, fixed->id);
     check(!pages.detail.view.mainMeterSnapshot() && loudnessReads == priorLoudnessReads,
           "a channel Loudness page never reads or attributes Main loudness");
@@ -2010,7 +2097,7 @@ void mixAnalyserPages() {
         SharedAnalysis::Request meterRequest{main->id};
         meterRequest.outputs = SharedAnalysis::Meters;
         auto sharedMeter = f.broker->acquire(meterRequest);
-        f.write(3072);
+        f.write(14336);
         f.broker->pump();
         const auto result = sharedMeter.read();
         const auto shared = f.broker->stats();
@@ -2459,7 +2546,8 @@ int main() {
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
-          classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
+          classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixAnalyserPages();
+          compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

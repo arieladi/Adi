@@ -260,6 +260,11 @@ bool isMaximumSpectrum(SharedSpectrumView::Mode mode) noexcept {
     return mode == SharedSpectrumView::Mode::SpectrumMaximum || mode == SharedSpectrumView::Mode::SpectrumCumulativeMaximum;
 }
 void describeAnalysisView(SharedSpectrumView &view, SharedSpectrumView::Mode mode) {
+    if (mode == SharedSpectrumView::Mode::Phase) {
+        view.setTitle("Phase");
+        view.setTooltip("Shows stereo phase and left/right correlation.");
+        return;
+    }
     if (mode == SharedSpectrumView::Mode::ClassicScope) {
         view.setTitle("Classic Scope");
         view.setTooltip("Classic Scope shows the waveform using the selected channel and trigger.");
@@ -305,7 +310,7 @@ void SharedSpectrumView::setMode(Mode mode) {
         };
         addChildComponent(*classicPanel_);
     }
-    if (mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
+    if (mode_ == Mode::Phase || mode == Mode::Phase || mode_ == Mode::ClassicScope || mode == Mode::ClassicScope ||
         isMaximumSpectrum(mode_) || isMaximumSpectrum(mode))
         describeAnalysisView(*this, mode);
     mode_ = mode;
@@ -317,6 +322,17 @@ void SharedSpectrumView::setMode(Mode mode) {
     updateDemand();
     repaint();
 }
+void SharedSpectrumView::enablePhaseBands() {
+    if (phaseBandsEnabled_) return;
+    phaseBandsEnabled_ = true;
+    if (mode_ != Mode::Phase) return;
+    lease_.reset();
+    sourcePosition_ = {};
+    freshRequired_ = true;
+    resetPicture();
+    updateDemand();
+    repaint();
+}
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
@@ -325,9 +341,11 @@ void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device
 }
 void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     if (channel_ == channel) return;
+    channel_ = channel;
+    if (mode_ == Mode::Phase && phaseBandsEnabled_) return;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
-    channel_ = channel; updateDemand(); repaint();
+    updateDemand(); repaint();
 }
 void SharedSpectrumView::setPalette(std::string_view id, bool reverse) {
     if (palette() == id && paletteReversed_ == reverse) return;
@@ -538,7 +556,15 @@ void SharedSpectrumView::updateDemand() noexcept {
             case Mode::Scope: request.outputs = SharedAnalysis::Scope; break;
             case Mode::Meters:
             case Mode::ChannelReadout: request.outputs = SharedAnalysis::Meters; break;
-            case Mode::Phase: request.outputs = SharedAnalysis::Phase; break;
+            case Mode::Phase:
+                request.outputs = SharedAnalysis::Phase;
+                if (phaseBandsEnabled_) {
+                    request.outputs |= SharedAnalysis::PhaseBands;
+                    request.fftSize = 4096;
+                    request.hopSize = request.fftSize / 2;
+                    request.channel = SharedAnalysis::Channel::StereoPower;
+                }
+                break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
             case Mode::SpectrumAverage: request.outputs = SharedAnalysis::Average1s; break;
             case Mode::SpectrumMaximum: request.outputs = SharedAnalysis::RealtimeMaximum; break;
@@ -1061,15 +1087,48 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
             g.fillRect(band.withY(heightFor(db(shown_->peak[static_cast<std::size_t>(channel)]), band)).withHeight(2.f));
         }
     } else if (mode_ == Mode::Phase) {
-        const auto radius = std::min(plot.getWidth(), plot.getHeight()) * .46f;
-        const auto centre = plot.getCentre();
+        auto vectorArea = plot;
+        if (phaseBandsEnabled_) {
+            const juce::Graphics::ScopedSaveState bandStyle(g);
+            const auto rowHeight = static_cast<float>(look::fieldHeight);
+            auto bands = vectorArea.removeFromBottom(std::min(2.f * rowHeight, plot.getHeight() * .4f));
+            const auto caption = bands.removeFromTop(std::min(rowHeight, bands.getHeight() * .5f));
+            g.setFont(look::font(look::fontCaption));
+            g.setColour(look::textOnBand);
+            g.drawText("By band", caption, juce::Justification::centredLeft);
+            const auto width = bands.getWidth() / static_cast<float>(SharedAnalysis::kPhaseBandCount);
+            const auto centreY = bands.getCentreY();
+            const auto gap = std::min(width * .25f, look::line);
+            const auto height = bands.getHeight();
+            const auto neutralHeight = std::min(height, look::line);
+            for (std::size_t i = 0; i < SharedAnalysis::kPhaseBandCount; ++i) {
+                const auto bar = bands.removeFromLeft(width).withTrimmedRight(gap);
+                g.setColour(look::outline);
+                g.fillRect(bar);
+                g.setColour(look::display);
+                g.fillRect(bar.withY(centreY - neutralHeight * .5f).withHeight(neutralHeight));
+                if (!shown_->phaseBands || !(*shown_->phaseBands)[i]) continue;
+                const float value = *(*shown_->phaseBands)[i];
+                const auto level = std::abs(value) * height * .5f;
+                if (level < neutralHeight) {
+                    g.setColour(look::textOnBand);
+                    g.fillRect(bar.withY(centreY - neutralHeight * .5f).withHeight(neutralHeight));
+                } else {
+                    g.setColour(value > 0.f ? look::meterLevel : look::record);
+                    g.fillRect(bar.withY(value > 0.f ? centreY - level : centreY).withHeight(level));
+                }
+            }
+        }
+        const auto radius = std::min(vectorArea.getWidth(), vectorArea.getHeight()) * .46f;
+        const auto centre = vectorArea.getCentre();
         g.setColour(look::outline); g.drawEllipse(centre.x - radius, centre.y - radius, radius * 2, radius * 2, 1.f);
         g.drawVerticalLine(juce::roundToInt(centre.x), centre.y - radius, centre.y + radius);
         g.drawHorizontalLine(juce::roundToInt(centre.y), centre.x - radius, centre.x + radius);
         g.setColour(look::value.withAlpha(.55f));
         const auto size = std::min(shown_->scopeLeft.size(), shown_->scopeRight.size());
-        const auto step = std::max<std::size_t>(1, size / 1024);
-        for (std::size_t i = 0; i < size; i += step) {
+        // Keep the same paint budget without sampling only one waveform phase.
+        const auto first = size - std::min<std::size_t>(size, 1024);
+        for (auto i = first; i < size; ++i) {
             const float l = shown_->scopeLeft[i], r = shown_->scopeRight[i];
             g.fillRect(centre.x + std::clamp((l - r) * .5f, -1.f, 1.f) * radius,
                        centre.y - std::clamp((l + r) * .5f, -1.f, 1.f) * radius, 1.4f, 1.4f);

@@ -376,11 +376,13 @@ MixAnalysers::MixAnalysers() {
     addChildComponent(spectrumTraceBox);
     addChildComponent(detail);
     detail.usePageControls();
+    detail.view.enablePhaseBands();
     addChildComponent(*table_);
     addChildComponent(*compare_);
     const auto comparisonChanged = [this] { updateComparison(owner_.lock()); };
     compareA.onChange = comparisonChanged; compareB.onChange = comparisonChanged;
     for (std::size_t i = 0; i < tiles_.size(); ++i) {
+        if (modes[i] == Mode::Phase) tiles_[i].enablePhaseBands();
         tiles_[i].setMode(modes[i]);
         addChildComponent(tiles_[i]);
     }
