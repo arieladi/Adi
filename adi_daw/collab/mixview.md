@@ -11,6 +11,26 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-22 — DF-M13 half-padded Focus FFT, before 3 December
+
+Focus now finishes the first butterfly while packing half-padded input. It skips the padding writes and keeps the same arithmetic, including when a callback yields between the two halves of a pair. At 192 kHz / 512, with ten enabled bands and an independent stereo key, the fail-first gate measured 305,184–305,185 work units per callback. The new ceiling is 304,161. There were zero callback allocations and zero missed deadlines.
+
+Eight old/new renders at 48 and 192 kHz (float and double, internal and independent stereo key) were byte-identical across 1,474,560 sample values. Latency remained 12,288 and 49,152 samples respectively. PCM SHA-256 `cc87ce79372229c01ee0393e885bfdc847b72784801a12c07ec7fbe5c7f0e79`. The 2.667 ms wall-time check still waits for the quiet window.
+
+Release at `c1e7d8973` on the before-December joined branch. All 24 named CTests and 906 / 329 / 7 fake-peer component checks passed. Focus alone passed 478 checks across 5,081,550 compared samples. MSVC `/W4 /WX` passed both changed units, and the CI Clang warning set reported zero project diagnostics. ADI.exe SHA-256 `3061ceab15ed79e98f998305f98993fe20e23de104fc85b4c769f075d2e25db1`, ZIP SHA-256 `17fda6fddd2fd16fd0c2a4108b6db858e56689c53bd66230798012a8572e3bb4`; packaged with the Focus retest brief.
+
+PR requested — `mixview/focus-half-padded-fft-dfm13-20261122`. Joined at the same commit on `mixview/review-cumulative-20261122`.
+
+### 2026-11-22 — DF-M3 serial signed-key check, 44.1 and 96 kHz
+
+Four headless records on sealed `8ba1d810` passed the established peak/RMS gates. With a 256-frame callback, the native Clip → Limiter chain matched the reference latency at 507 samples (44.1 kHz) and 767 (96 kHz). Worst errors were 5.37e−7 peak and 7.62e−8 RMS. Both active and silent stereo keys were tested at each rate. The fixtures use 2× Smooth and Transparent with limiter oversampling and true peak off. Clipper Soften follows the measured cells (50% at 44.1, 0% at 96). This adds evidence for those exact settings. Live checks and the timed comparison remain open.
+
+### 2026-11-22 — #558 CI retry resolved
+
+The unchanged repair tip `3c767304` is green. The Ubuntu ARM64 GCC rerun passed, as did the gate and the other applicable checks. Ready for Win's landing order.
+
+PR requested — existing #558.
+
 ## 2026-11-22 — MX-36, reuse Stack parameter demand storage
 - Stack reuses its previous device-ID buffer across unchanged layouts. It keeps the sorted demand comparison and restores spare storage before notifying. Fold and unfold each deliver one demand change.
 - The measured part of four warm headless frames allocated four temporary ID buffers before the fix and zero after it. The same card and parameter demand remain active. The exact Release passes 331 function checks, 99 real device document checks, all 24 named CTests and the 906/329/7 component checks. Both units passed MSVC /W4 /WX and the production unit passed Clang.
