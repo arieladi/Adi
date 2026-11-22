@@ -11,6 +11,15 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 continuously staggered pinned Spectrum
+
+The first lead check assumed the broker would still hold the eligible earlier publication when the primary reached it. With consecutive early frames that assumption failed. Each pin now retains one waiting immutable result. The view can present it when heard and keep the newer waiting frame. The next publish epoch and Freeze drop that waiting result. No extra subscription, analysis or captured sample copy.
+
+Two new software-peer pixel assertions failed first and now pass. The exact Release passed 483 analyser assertions, all 24 named CTests, the 906 / 329 / 7 shell checks, both MSVC /W4 /WX units and the implementation Clang check. ZIP SHA-256 `a2abce9e19f7b78c1e7ca610132a67f54cefcda5c9311c420296340e5e78bffa`, EXE `28196de2effb985fa1d5a8687eebc11b9c15912d8e146c92868f34c2f0bf9951`. The accompanying brief includes the continuous timing case.
+
+PR requested — `mixview/mx21-staggered-spectrum-lands-after-2026-12-03` at `e1dbedf9541e2ac716fb998257dd41d300a97120`, also on the joined scheduled preview. Lands after 3 December.
+
+
 ### 22 November — MX-21 pinned Spectrum follows the primary stamp
 
 An advancing pin must be at or before the primary’s first sample for equal-size windows at the same sample rate and transport revision. If the latest pin is ahead, the view keeps the previous compatible outline. Once the primary reaches it, the existing broker publication can be shown. No new tap, FFT or frame timer.
