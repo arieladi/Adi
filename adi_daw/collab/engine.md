@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DF-E27(f) finite numbers in open op fields
+
+**PR requested** for `engine/df-e27-finite-open-payloads` at `d0cf6d3c2abad8e64a19d0431d1d0f5c9a16ca08`. Title **DF-E27 refuse non-finite values in open op payloads**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Current local submissions validate each open object and array down to finite numeric leaves and report the failing member path. The existing remote bounds still apply, and saved CBOR and history playback retain their existing behavior.
+
+The old engine fails four of the same 140 Ops assertions, including a real captured `routing.connect` that writes infinite gain and grows the journal. The candidate refuses it at `row.gain_db` before either changes, accepts a finite route, and restores an already stored non-finite row through Undo. Exact GCC 14 and Clang 19 warnings-as-errors pass all ten suites (Ops, Catalog, History, Stored History, Replay, Changeset, Applied Batches, Track Delete, Note Diff and UI Seams). The OPS validator passes.
+
 ## 2026-11-22 — MI-08 stored expression playback refreshed
 
 **PR requested** for `engine/mi08-expression-playback-current` at `2f1b9d418fe5da89fdd1dc6b826d8a0982d79098`. Title **MI-08 play stored note expression through the session and hosted devices**. Dependencies DF-E63 `c37e20e0`, the current reader `db864e54` and current hosted units `0273aa63`. This supersedes `engine/mi08-expression-playback` `cd8d8e69`. The Session reads notes and expression in the same SQLite snapshot at load and refresh. Note edges and authored knots share the recovered clip clock. The graph and CLAP/VST3 preparation size the five dimensions and chased values for ADR-0056's 16-voice bound.
