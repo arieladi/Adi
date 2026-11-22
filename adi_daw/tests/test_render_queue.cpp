@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/after_export.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
@@ -503,6 +504,52 @@ void multichannelStem() {
     bool exact=true;
     for(int i=0;i<866;++i)for(int c=0;c<6;++c) exact=exact && decoded[static_cast<std::size_t>(6*i+c)]==source(137+i,c);
     check(exact,"every multichannel stem sample survives planar capture and interleaving");
+}
+void afterExportImport() {
+    Fixture f;
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(3,'audio','After Export',2)");
+    auto job = f.job("delivered");
+    auto ordinary = job;
+    ordinary.nameTemplate = "ordinary";
+    check(!renderWav(ordinary, {}).deliveryBlake3, "ordinary exports do not fingerprint their delivery");
+    Control control;
+    control.fingerprintDelivery = true;
+    const auto delivery = renderWav(job, {}, control);
+    const auto actual = media::blake3File(delivery.output);
+    check(delivery.state == JobState::Completed && actual && delivery.deliveryBlake3 == actual.hex,
+          "completed delivery records the actual published bytes for an After Export action");
+
+    clip_edit::ImportOptions target;
+    target.track = 3;
+    target.clipId = 40;
+    target.mediaId = 50;
+    target.at = {1, 200000000};
+    const auto originalHead = OpJournal(*f.store).headSeq();
+    auto cancelled = delivery;
+    cancelled.state = JobState::Cancelled;
+    check(!importAfterExport(*f.store, cancelled, target, 48000).ok && OpJournal(*f.store).headSeq() == originalHead,
+          "cancelled jobs cannot import and leave the project untouched");
+    check(importAfterExport(*f.store, delivery, target, 48000).ok &&
+          f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id=40 AND track_id=3").getInt() == 1,
+          "After Export places audio on the explicit destination track");
+    auto placed = f.job("after-export-playback");
+    placed.source.trackId = 3;
+    placed.beginSample = 9600;
+    placed.endSample = 10466;
+    check(matches(read(renderWav(placed, {}), 866), 137), "the imported clip plays the exported sample range at its new placement");
+    check(History(*f.store).undo().ok && OpJournal(*f.store).headSeq() == originalHead &&
+          f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id=40").getInt() == 0 &&
+          fs::exists(delivery.output) && media::blake3File(delivery.output).hex == actual.hex,
+          "one Undo removes the import and preserves the original delivery file");
+
+    audio::WavWriter swapped(delivery.output, 48000, 2, audio::WavFormat::Float32);
+    std::vector<float> silence(866 * 2);
+    swapped.write(silence.data(), 866);
+    swapped.close();
+    const auto wrongBytes = importAfterExport(*f.store, delivery, target, 48000);
+    check(!wrongBytes.ok && wrongBytes.error.find("changed") != std::string::npos &&
+          OpJournal(*f.store).headSeq() == originalHead && f.noStage(),
+          "same-dimensional replacement is refused without journal or export-stage changes");
 }
 void regionStems() {
     Fixture f;
@@ -1474,7 +1521,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); afterExportImport(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

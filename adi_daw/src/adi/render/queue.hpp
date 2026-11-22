@@ -138,6 +138,7 @@ struct Result {
     // Present only for explicit Replace, including an absent preflight target.
     // This is a run-local observation, not a reservation or reusable permission.
     std::optional<ReplacementBinding> replacement{};
+    std::optional<std::string> deliveryBlake3{}; // requested for a later After Export action
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct RunMember {
@@ -178,6 +179,7 @@ struct Control {
     std::function<void()> serviceHost;
     // Per-call, off-callback diagnostic hooks; only the final user output.
     media::PublishHooks publicationHooks{};
+    bool fingerprintDelivery = false; // no output digest work on ordinary renders
 };
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,

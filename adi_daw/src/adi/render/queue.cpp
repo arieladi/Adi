@@ -398,7 +398,16 @@ void detail::publishVerifiedOutput(const fs::path& stage, Result& result, const 
     if (!result.mediaVerification || !result.mediaVerification->startComplete)
         throw std::runtime_error("export has no complete input media capture");
     verifyMedia(*result.mediaVerification, control);
+    std::optional<std::string> fingerprint;
+    if (control.fingerprintDelivery) {
+        cancellation(control);
+        auto hash = media::blake3File(stage, control.stop);
+        cancellation(control);
+        if (!hash) throw std::runtime_error("Cannot fingerprint staged export for After Export");
+        fingerprint.emplace(std::move(hash.hex));
+    }
     publishOutput(stage, result, control.publicationHooks, collisionMessage);
+    result.deliveryBlake3 = std::move(fingerprint);
 }
 
 void detail::publishOutput(const fs::path& stage, Result& result, media::PublishHooks hooks,
@@ -746,6 +755,7 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"error", result.error}, {"publication", nullptr}, {"stage_cleanup", nullptr},
                 {"normalization", nullptr},
                 {"resolved_snapshot", nullptr}, {"ni_stem_snapshots", Json::array()}, {"media_verification", nullptr}};
+            if (result.deliveryBlake3) value["delivery_blake3"] = *result.deliveryBlake3;
             if(result.replacement) {
                 const auto& binding=*result.replacement;
                 value["replacement_preflight"]={{"target",media::pathUtf8(binding.target)},
