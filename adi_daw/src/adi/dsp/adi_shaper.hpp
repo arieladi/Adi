@@ -4,7 +4,11 @@
 #include "adi/dsp/adi_shaper_drive.hpp"
 #include "adi/dsp/adi_shaper_filter.hpp"
 #include "adi/dsp/adi_shaper_sweep.hpp"
+#include "adi/dsp/adi_shaper_wave.hpp"
+#include "adi/dsp/adi_shaper_scope.hpp"
+#include "adi/dsp/adi_shaper_time.hpp"
 #include <array>
+#include <memory>
 #include <cstddef>
 #include <cstdint>
 
@@ -21,6 +25,7 @@ class AdiShaper {
     static constexpr int modBandParameterCount = 23;
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
+    static constexpr int timeBandParameterCount = 14;
     enum Param { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -28,8 +33,9 @@ class AdiShaper {
                  SweepOn = FilterOn + modStageParameterCount, SweepLowPolarity = SweepOn + modStageParameterCount,
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
-                 Count = CrushOn + modStageParameterCount };
-    enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
+                 TimeOn = CrushOn + modStageParameterCount,
+                 BaseCount = TimeOn + modHeaderSize + 3 * timeBandParameterCount, Count = AdiShaperWaveBank::lastId };
+    enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush, Time };
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
@@ -51,14 +57,26 @@ class AdiShaper {
         return static_cast<Param>(DriveOn + modHeaderSize + driveBandParameterCount * static_cast<int>(band)
                                   + static_cast<int>(control));
     }
+    enum TimeControl { TimeRange, TimeMix, TimeClock, TimeCycle, TimeRate, TimeCurve,
+                       Time1, Time2, Time3, Time4, Time5, Time6, Time7, Time8 };
+    enum class DelayRange { Follow, OneBar, TwoBars, FourBars, EightBars, Short2_5ms, Short10ms, Short20ms };
+    static constexpr Param timeParam(Band band, TimeControl control) noexcept {
+        return static_cast<Param>(TimeOn + modHeaderSize + timeBandParameterCount * static_cast<int>(band)
+                                  + static_cast<int>(control));
+    }
 
     AdiShaper() noexcept;
+    // Off the audio thread. Three stereo Time histories require 48 MiB per
+    // prepared rack, including bypassed racks ready for immediate automation.
+    // The two editable-curve pages use about 66 KiB in total.
     void prepare(double sampleRate) noexcept;
     void set(Param id, float value) noexcept;
     void tempo(double bpm) noexcept;
-    void sync(double quarterNotes, bool playing = true) noexcept;
+    void sync(double quarterNotes, bool playing = true, unsigned historyToleranceFrames = 0) noexcept;
+    void syncAtSample(double quarterNotes, bool playing, std::int64_t sample, std::uint64_t revision) noexcept;
     void process(const float* inL, const float* inR, float* outL, float* outR,
-                 std::size_t frames) noexcept;
+                 std::size_t frames, AdiShaperScope* scope = nullptr) noexcept;
+    AdiShaperScope* shaperScope() noexcept { return &editorScope_; }
     [[nodiscard]] int latency() const noexcept {
         return stages_[static_cast<std::size_t>(Stage::Drive)].enabled ? AdiShaperDrive::latencySamples : 0;
     }
@@ -97,7 +115,7 @@ class AdiShaper {
         void butterworth(double x, Integrator&, double& low, double& high, double& all) const noexcept;
         [[nodiscard]] Bands split(float input, std::size_t channel) noexcept;
         [[nodiscard]] float align(float input, std::size_t channel) noexcept;
-        void quiet() noexcept;
+        bool finishBlock() noexcept;
     };
     struct StageData {
         std::array<CurveBand, 3> bands;
@@ -121,21 +139,31 @@ class AdiShaper {
     void slope(Split& split, float value) noexcept;
     void clock(CurveBand& band, BandControl control, float value) const noexcept;
     void setMod(Param id, float value) noexcept;
+    void prepareStages(double sampleRate) noexcept;
+    void syncClock(double quarterNotes, bool playing) noexcept;
+    void updateTimeRanges() noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
-    std::array<StageData, 7> stages_;
+    AdiShaperScope editorScope_;
+    AdiShaperWaveBank freeWaves_;
+    std::unique_ptr<AdiShaperWaveBank::AudioMemo> audioWaveMemo_;
+    std::array<StageData, 8> stages_;
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperSweep, 3> sweeps_;
     std::array<AdiShaperDrive, 3> drives_;
     std::array<AdiShaperCrush, 3> crush_;
+    std::array<AdiShaperTime, 3> times_;
+    std::array<double, 3> timeSpans_{};
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;
     double sampleRate_ = 48000.0, bpm_ = 120.0, quarterNotes_ = 0.0;
+    double historyQuarterNotes_ = 0.0, lastHistoryStamp_ = 0.0;
+    std::uint64_t expectedSample_ = 0, transportRevision_ = 0;
     float masterMix_ = 1.0f;
-    bool playing_ = true;
+    bool playing_ = true, historyStampSet_ = false, sampleStampSet_ = false;
 };
 
 } // namespace adi::dsp

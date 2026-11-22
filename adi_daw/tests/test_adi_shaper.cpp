@@ -18,9 +18,10 @@ using Stage = Shaper::Stage;
 static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == Shaper::VolumeLowSlope);
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
 static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shaper::DriveOn == 286);
-static_assert(Shaper::CrushOn == 340 && Shaper::Count == 415);
+static_assert(Shaper::CrushOn == 340 && Shaper::TimeOn == 415 && Shaper::BaseCount == 463);
+static_assert(Shaper::timeParam(Band::High, Shaper::Time8) + 1 == Shaper::BaseCount);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
-static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::Count);
+static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::TimeOn);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -325,6 +326,176 @@ void bypassAndInvalid() {
           && left == 0.01f, "zero master mix is bit transparent across live split stages");
 }
 
+bool sameSampleBits(float actual, float expected) {
+    return std::bit_cast<std::uint32_t>(actual) == std::bit_cast<std::uint32_t>(expected);
+}
+
+void nonfiniteAudio() {
+    struct Case {
+        const char* name;
+        void (*configure)(Shaper&);
+    };
+    const std::array cases{
+        Case{"neutral rack substitutes one zero for nonfinite audio", [](Shaper&) {}},
+        Case{"Volume split substitutes one zero for nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::VolumeBands, 1);
+            flat(rack, Stage::Volume, Band::Mid, 50.f);
+        }},
+        Case{"Width compensation stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::WidthBands, 3);
+            rack.set(Shaper::WidthLowSlope, 1);
+            rack.set(Shaper::WidthHighSlope, 2);
+        }},
+        Case{"Pan compensation stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::PanBands, 3);
+            rack.set(Shaper::PanLowSlope, 2);
+            rack.set(Shaper::PanHighSlope, 1);
+        }},
+        Case{"Filter stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::FilterOn, 1);
+            rack.set(Shaper::modParam(Stage::Filter, Band::Mid, Shaper::Type), 1);
+        }},
+        Case{"Sweep flanger delay stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::SweepOn, 1);
+        }},
+        Case{"Sweep phaser feedback stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::SweepOn, 1);
+            rack.set(Shaper::modParam(Stage::Sweep, Band::Mid, Shaper::Type), 5);
+        }},
+        Case{"Drive wet path stays exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::DriveOn, 1);
+            for (int i = 0; i < 8; ++i)
+                rack.set(Shaper::driveParam(Band::Mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + i)), 50);
+        }},
+        Case{"Drive split latency and warm bypass stay exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::DriveOn, 1);
+            rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 1), 3);
+            rack.set(Shaper::MasterMix, 0);
+        }},
+        Case{"Crush hold and dither stay exact after nonfinite audio", [](Shaper& rack) {
+            rack.set(Shaper::CrushOn, 1);
+            rack.set(Shaper::modParam(Stage::Crush, Band::Mid, Shaper::Type), 1);
+            for (int i = 0; i < 8; ++i) {
+                rack.set(Shaper::modParam(Stage::Crush, Band::Mid, static_cast<Shaper::ModControl>(Shaper::Primary1 + i)), 50);
+                rack.set(Shaper::modParam(Stage::Crush, Band::Mid, static_cast<Shaper::ModControl>(Shaper::Secondary1 + i)), 50);
+            }
+        }}
+    };
+    struct Fault {
+        float sample;
+        bool right;
+    };
+    constexpr auto inf = std::numeric_limits<float>::infinity();
+    const std::array faults{Fault{std::numeric_limits<float>::quiet_NaN(), false},
+                            Fault{inf, true}, Fault{-inf, false}};
+    constexpr std::size_t block = 128, frames = 12 * block, badFrame = 2 * block - 1;
+    std::array<float, frames> inL{}, inR{}, actualL{}, actualR{}, expectedL{}, expectedR{};
+    for (std::size_t i = 0; i < frames; ++i) {
+        const auto time = static_cast<double>(i);
+        inL[i] = static_cast<float>(.35 * std::sin(.13 * time));
+        inR[i] = static_cast<float>(.22 * std::cos(.09 * time));
+    }
+    inL.front() = -0.f;
+
+    for (const auto& test : cases) {
+        for (const auto rate : {48000., 96000.}) {
+            for (const auto& fault : faults) {
+                Shaper actual, expected;
+                actual.prepare(rate);
+                expected.prepare(rate);
+                test.configure(actual);
+                test.configure(expected);
+                actualL = inL;
+                actualR = inR;
+                auto& invalid = fault.right ? actualR : actualL;
+                auto& clean = fault.right ? inR : inL;
+                const auto original = clean[badFrame];
+                invalid[badFrame] = fault.sample;
+                clean[badFrame] = 0.f;
+                for (std::size_t frame = 0; frame < frames; frame += block) {
+                    auto* left = actualL.data() + frame;
+                    auto* right = actualR.data() + frame;
+                    actual.process(left, right, left, right, block);
+                    expected.process(inL.data() + frame, inR.data() + frame,
+                                     expectedL.data() + frame, expectedR.data() + frame, block);
+                }
+                clean[badFrame] = original;
+                check(actual.latency() == expected.latency() &&
+                          std::equal(actualL.begin(), actualL.end(), expectedL.begin(), sameSampleBits) &&
+                          std::equal(actualR.begin(), actualR.end(), expectedR.begin(), sameSampleBits),
+                      test.name);
+            }
+        }
+    }
+
+    Shaper crossed;
+    float left = inf, right = -.25f;
+    crossed.process(&left, &right, &right, &left, 1);
+    check(right == 0.f && left == -.25f, "nonfinite stereo copy supports crossed input and output planes");
+}
+
+void finiteDriveOverflow() {
+    constexpr std::size_t frames = 128;
+    std::array<float, frames> inL{}, inR{}, actualL{}, actualR{}, expectedL{}, expectedR{};
+    for (std::size_t i = 0; i < frames; ++i) {
+        const auto time = static_cast<double>(i);
+        inL[i] = static_cast<float>(.35 * std::sin(.13 * time));
+        inR[i] = static_cast<float>(.22 * std::cos(.09 * time));
+    }
+    for (const auto rate : {48000., 96000.}) {
+        Shaper actual, expected;
+        for (auto* rack : {&actual, &expected}) {
+            rack->prepare(rate);
+            rack->set(Shaper::DriveOn, 1);
+            rack->set(Shaper::driveParam(Band::Mid, Shaper::InputTrim), 100);
+            rack->set(Shaper::driveParam(Band::Mid, Shaper::OutputTrim), 100);
+        }
+        auto run = [&](const std::array<float, frames>& left) {
+            actual.process(left.data(), inR.data(), actualL.data(), actualR.data(), frames);
+            expected.process(inL.data(), inR.data(), expectedL.data(), expectedR.data(), frames);
+        };
+        run(inL);
+        auto fault = inL;
+        // Finite ingress with extreme trims at exactly zero Drive overflows
+        // the internal wet float ring, independently of NaN/Inf input handling.
+        fault[frames / 2] = std::numeric_limits<float>::max();
+        run(fault);
+        bool rightExact = std::equal(actualR.begin(), actualR.end(), expectedR.begin(), sameSampleBits);
+        bool leftFinite = true, leftAudible = false;
+        for (int block = 0; block < 3; ++block) {
+            run(inL);
+            rightExact &= std::equal(actualR.begin(), actualR.end(), expectedR.begin(), sameSampleBits);
+            for (float sample : actualL) {
+                leftFinite &= std::isfinite(sample);
+                leftAudible |= std::abs(sample) > .1f;
+            }
+        }
+        check(leftFinite && leftAudible, "Drive recovers finite audio on the next callback after internal overflow");
+        check(rightExact, "Drive overflow recovery preserves the unaffected channel's filter and delay state");
+    }
+}
+
+void driveDryOverflowAtBlockEdge() {
+    constexpr std::size_t frames = 64;
+    for (int layout : {0, 3}) {
+        Shaper rack;
+        rack.set(Shaper::DriveOn, 1);
+        rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 1), static_cast<float>(layout));
+        for (const auto band : {Band::Low, Band::Mid, Band::High})
+            rack.set(Shaper::driveParam(band, Shaper::DriveMix), 0);
+        flat(rack, Stage::Pan, Band::Mid, 100.f);
+        std::array<float, frames> input{}, left{}, right{};
+        input.fill(.25f);
+        input.back() = std::numeric_limits<float>::max();
+        rack.process(input.data(), right.data(), left.data(), right.data(), frames);
+        input.back() = .25f;
+        rack.process(input.data(), right.data(), left.data(), right.data(), frames);
+        check(std::ranges::all_of(left, [](float value) { return std::isfinite(value); }) &&
+                  near(left[32], .25 * std::numbers::sqrt2),
+              "an overflowing upstream stage cannot poison Drive's delayed dry path across a callback edge");
+    }
+}
+
 void clockLimitsAndAliases() {
     constexpr std::size_t count = 100003;
     std::vector<float> inL(count, 1.0f), inR(count, -0.25f), outL(count), outR(count);
@@ -348,13 +519,14 @@ void clockLimitsAndAliases() {
         }
         check(accurate, "free-clock limits follow absolute sample phase over uneven block partitions");
     }
-    Shaper normal;
-    normal.set(Shaper::WidthBands, 3);
-    normal.set(Shaper::WidthLowSlope, 1);
-    normal.set(Shaper::WidthHighSlope, 2);
-    flat(normal, Stage::Width, Band::Mid, 180);
-    flat(normal, Stage::Pan, Band::Mid, 70);
-    Shaper swapped = normal;
+    Shaper normal, swapped;
+    for (auto* rack : {&normal, &swapped}) {
+        rack->set(Shaper::WidthBands, 3);
+        rack->set(Shaper::WidthLowSlope, 1);
+        rack->set(Shaper::WidthHighSlope, 2);
+        flat(*rack, Stage::Width, Band::Mid, 180);
+        flat(*rack, Stage::Pan, Band::Mid, 70);
+    }
     for (std::size_t i = 0; i < count; ++i) {
         inL[i] = static_cast<float>(std::sin(0.1 * static_cast<double>(i)));
         inR[i] = static_cast<float>(std::sin(0.013 * static_cast<double>(i)));
@@ -596,6 +768,105 @@ void driveAndCrush() {
     check(rack.latency() == 0 && std::bit_cast<std::uint32_t>(result[0]) == std::bit_cast<std::uint32_t>(negativeZero)
           && result[1] == .1875f, "Crush at zero mix is undelayed and bit exact");
 }
+
+void timeHeight(Shaper& rack, Band band, float height) {
+    for (int i = 0; i < 8; ++i)
+        rack.set(Shaper::timeParam(band, static_cast<Shaper::TimeControl>(Shaper::Time1 + i)), height);
+}
+
+void timeRanges() {
+    Shaper rack;
+    rack.prepare(12000);
+    rack.tempo(300);
+    rack.set(Shaper::TimeOn, 1);
+    timeHeight(rack, Band::Mid, 0);
+    auto recover = [&](int range, std::size_t delay, const char* description) {
+        rack.set(Shaper::TimeOn, 0);
+        rack.set(Shaper::TimeOn, 1);
+        rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), static_cast<float>(range));
+        std::vector<float> left(delay + 67), right(left.size());
+        left[31] = -.75f;
+        right[31] = .375f;
+        rack.process(left.data(), right.data(), left.data(), right.data(), left.size());
+        bool ok = true;
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            ok &= left[i] == (i == delay + 31 ? -.75f : 0.0f);
+            ok &= right[i] == (i == delay + 31 ? .375f : 0.0f);
+        }
+        check(ok && rack.latency() == 0, description);
+    };
+    constexpr std::array<std::size_t, 8> delays{9600, 9600, 19200, 38400, 76800, 59, 239, 479};
+    for (std::size_t i = 0; i < delays.size(); ++i)
+        recover(static_cast<int>(i), delays[i], "fixed and follow ranges reproduce the measured whole-frame impulses");
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeCycle), 128);
+    recover(0, 307200, "longest supported beat period plays the full 32 bars when it fits in history");
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeClock), 1);
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRate), 40);
+    recover(0, 300, "free-clock Follow uses the band's hertz period");
+
+    rack.prepare(48000);
+    rack.tempo(120);
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), 1);
+    rack.sync(0);
+    std::vector<float> left(200224), right(left.size());
+    left[8192] = .5f;
+    right[8192] = -.25f;
+    rack.process(left.data(), right.data(), left.data(), right.data(), 48000);
+    rack.tempo(60);
+    rack.sync(2);
+    rack.process(left.data() + 48000, right.data() + 48000, left.data() + 48000,
+                 right.data() + 48000, left.size() - 48000);
+    check(left[200192] == .5f && right[200192] == -.25f &&
+          std::count_if(left.begin(), left.end(), [](float v) { return v != 0; }) == 1,
+          "tempo change retains older audio and measures the entire bar at the new tempo");
+
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), 5);
+    rack.set(Shaper::TimeOn, 0);
+    rack.set(Shaper::TimeOn, 1);
+    constexpr std::size_t span = 320;
+    for (std::uint64_t revision : {1U, 2U}) {
+        std::array<float, span> marker{}, markerR{};
+        marker[0] = .75f;
+        rack.syncAtSample(0, true, 0, 1);
+        rack.process(marker.data(), markerR.data(), marker.data(), markerR.data(), 100);
+        // The exact sample cursor stays contiguous regardless of beat-map edits.
+        rack.syncAtSample(.5, true, 100, revision);
+        rack.process(marker.data() + 100, markerR.data() + 100, marker.data() + 100,
+                     markerR.data() + 100, span - 100);
+        check(marker[239] == (revision == 1 ? .75f : 0.f),
+              "native history follows the exact timeline sample and transport revision across tempo-map edits");
+    }
+}
+
+void timeBandHistory() {
+    constexpr std::size_t frames = 1024;
+    Shaper time;
+    time.prepare(48000);
+    time.set(Shaper::TimeOn, 1);
+    time.set(static_cast<Shaper::Param>(Shaper::TimeOn + 1), 3);
+    std::array<float, frames> source{}, actual{}, actualRight{}, sum{};
+    source[11] = -.5f;
+    source[26] = .25f;
+    constexpr std::array<float, 3> heights{0, 100, 50};
+    constexpr std::array<std::size_t, 3> lookback{239, 0, 119};
+    for (std::size_t b = 0; b < heights.size(); ++b) {
+        const auto band = static_cast<Band>(b);
+        time.set(Shaper::timeParam(band, Shaper::TimeRange), 5);
+        timeHeight(time, band, heights[b]);
+        Shaper isolate;
+        isolate.set(Shaper::VolumeBands, 3);
+        for (std::size_t k = 0; k < 3; ++k)
+            flat(isolate, Stage::Volume, static_cast<Band>(k), b == k ? 100.f : 0.f);
+        std::array<float, frames> split{}, right{};
+        isolate.process(source.data(), source.data(), split.data(), right.data(), frames);
+        for (std::size_t i = lookback[b]; i < frames; ++i) sum[i] += split[i - lookback[b]];
+    }
+    time.process(source.data(), source.data(), actual.data(), actualRight.data(), frames);
+    bool matches = true;
+    for (std::size_t i = 0; i < frames; ++i)
+        matches &= near(actual[i], sum[i], 1e-6) && near(actualRight[i], sum[i], 1e-6);
+    check(matches, "three independent Time histories sum the separately delayed split-band impulses");
+}
 } // namespace
 
 int main() {
@@ -607,11 +878,16 @@ int main() {
     independentBandClocks();
     steepCrossovers();
     bypassAndInvalid();
+    nonfiniteAudio();
+    finiteDriveOverflow();
+    driveDryOverflowAtBlockEdge();
     clockLimitsAndAliases();
     modulationStack();
     modulationBands();
     driveDryAndLatency();
     driveAndCrush();
+    timeRanges();
+    timeBandHistory();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

@@ -152,4 +152,16 @@ void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
     left = static_cast<float>(sample[0]);
     right = static_cast<float>(sample[1]);
 }
+
+bool AdiShaperCrush::finishBlock() noexcept {
+    bool repaired = false;
+    for (std::size_t ch = 0; ch < low_.size(); ++ch) {
+        if (!std::isfinite(low_[ch]) || !std::isfinite(held_[ch]) ||
+            !std::isfinite(previousHoldInput_[ch]) || !std::isfinite(previousQuantInput_[ch])) {
+            low_[ch] = held_[ch] = previousHoldInput_[ch] = previousQuantInput_[ch] = 0.0;
+            repaired = true;
+        }
+    }
+    return repaired;
+}
 } // namespace adi::dsp
