@@ -9,6 +9,7 @@
 #include "legacy_plugin_registry.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <fstream>
+#include <string_view>
 
 #if defined(ADI_CATALOGUE_FIXTURE)
 #include "scanner_readiness.hpp"
@@ -225,8 +226,10 @@ bool legacyCatalogueContracts() {
 } // namespace
 #endif
 
-int main() {
+int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
 #if defined(ADI_CATALOGUE_FIXTURE)
+    if (argc == 2 && std::string_view(argv[1]) == "--scanner-readiness")
+        return adi::test::scannerReadinessContracts() ? 0 : 1;
     if (!catalogueContracts()) {
         std::printf("FAIL -- hosted VST3 catalogue lookup\n");
         return 1;

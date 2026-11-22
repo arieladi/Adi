@@ -1770,6 +1770,7 @@ if(ADI_WITH_JUCE)
         set_target_properties(adi_catalogue_clap_fixture PROPERTIES PREFIX "" SUFFIX ".clap")
         add_dependencies(adi_play_render_tests adi_catalogue_clap_fixture)
         target_compile_definitions(adi_play_render_tests PRIVATE ADI_CATALOGUE_CLAP="$<TARGET_FILE:adi_catalogue_clap_fixture>")
+        add_test(NAME adi_clap_readiness_tests COMMAND adi_play_render_tests --scanner-readiness)
     endif()
 
     target_link_libraries(adi_audio_probe PRIVATE

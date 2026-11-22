@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Owned SDK fixture only. No editor, desktop input or audio device.
 #include "juce/vst3_host.hpp"
+#include "process_allocations.hpp"
 #include "temp_directory.hpp"
 #include <array>
 #include <cstdio>
@@ -41,7 +42,8 @@ void contract() {
     auto last = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureKeyLast"));
     auto channels = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureKeyChannels"));
     auto inPlace=reinterpret_cast<int(*)()>(module.getFunction("adiFixtureMainInPlace"));
-    if (!first || !last || !channels || !inPlace)
+    const auto completed = reinterpret_cast<std::uint64_t (*)()>(module.getFunction("adiFixtureCompletedProcessCalls"));
+    if (!first || !last || !channels || !inPlace || !completed)
         throw std::runtime_error("owned fixture observations unavailable");
     for (const auto &desc : list.getTypes())
         for (bool wide : {false, true}) {
@@ -50,6 +52,8 @@ void contract() {
             if (!instance)
                 throw std::runtime_error(error);
             device::Vst3Device d(std::move(instance), device::identityOf(desc));
+            check(d.hostedReadiness() == device::HostedReadiness{true, false, false},
+                  "a real VST3 starts with instantiation evidence");
             const bool mono = desc.name.containsIgnoreCase("Plain");
             const bool defaultActive = mono;
             const int keyWidth = mono ? 1 : 2;
@@ -105,7 +109,29 @@ void contract() {
                 io.sidechain = key;
             }
             io.sidechainSilent = false;
-            d.process(io);
+            auto empty = io;
+            empty.frames = 0;
+            d.process(empty);
+            check(!d.hostedReadiness().firstProcessed, "prepare and an empty block leave first process unset");
+            const auto beforeProcess = completed();
+            engine::Event refuse;
+            refuse.type = engine::EventType::ParamValue;
+            refuse.paramId = 4007;
+            refuse.value = 1.0;
+            auto rejected = io;
+            // Leave the exact output guard samples for the successful call.
+            rejected.frames = 1;
+            rejected.blockOffset = 0;
+            rejected.events = {&refuse, 1};
+            d.process(rejected);
+            check(!d.hostedReadiness().firstProcessed && completed() == beforeProcess,
+                  "the real VST3 SDK refused the first process and published no readiness");
+            outL[0] = outR[0] = -1;
+            outL64[0] = outR64[0] = -1;
+            const auto allocations = test::process_allocations::measure([&] { d.process(io); });
+            check(d.hostedReadiness().firstProcessed && completed() == beforeProcess + 1,
+                  "a successful real VST3 process publishes readiness");
+            check(allocations == 0, "the first successful VST3 process does not allocate");
             check(channels() == keyWidth && first() == 7. / 32 &&
                       last() == (mono ? 17. / 32 : .5),
                   "exact mono/stereo key segment reaches the aux bus at native/narrowed precision");

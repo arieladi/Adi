@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "process_allocations.hpp"
 #include "temp_directory.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/scan_catalogue.hpp"
@@ -73,6 +74,7 @@ inline bool scannerReadinessContracts() {
         if(!counter){receipt["error"]="fixture counter export missing";return finish(false);}
         const auto instantiated=readPids(pidFile);
         if(!mark(Phase::Instantiated,instance && instance->loaded() && instance->identity().uid==ref.uid && error.empty() &&
+                 instance->hostedReadiness()==device::HostedReadiness{true,false,false} &&
                  loader.stats().clap==1 && loader.stats().scans==0 && loader.clap().libraryCount()==1 &&
                  instantiated.child==1 && instantiated.parent==1 && counter(0)==1 && counter(1)==0 && counter(2)==0,
                  {{"loaded",instance && instance->loaded()},{"creates",counter(0)},{"restores",counter(1)},{"process_calls",counter(2)},
@@ -80,27 +82,34 @@ inline bool scannerReadinessContracts() {
         const std::vector<std::uint8_t> initial{'A','D','C','1',1,0,0,0},quarter{'A','D','C','1',4,0,0,0};
         auto invalid=quarter;invalid[4]=3;
         const bool before=instance->saveState("chunk")==initial;
-        const bool rejected=!instance->loadState("chunk",invalid) && !instance->loadState("unsupported",quarter) && instance->saveState("chunk")==initial;
+        const bool rejected=!instance->loadState("chunk",invalid) && !instance->loadState("unsupported",quarter) &&
+                            instance->saveState("chunk")==initial && !instance->hostedReadiness().stateAccepted;
         const bool restored=instance->loadState("chunk",quarter);
-        if(!mark(Phase::StateRestored,before && rejected && restored && instance->saveState("chunk")==quarter && counter(1)==1 && counter(2)==0,
+        if(!mark(Phase::StateRestored,before && rejected && restored && instance->saveState("chunk")==quarter &&
+                 instance->hostedReadiness()==device::HostedReadiness{true,true,false} && counter(1)==1 && counter(2)==0,
                  {{"loaded_state",restored},{"invalid_state_preserved_previous",rejected},{"restores",counter(1)},{"process_calls",counter(2)}}))return finish(false);
         std::array<float,80> left{},right{},outLeft{},outRight{};
         for(std::size_t index=0;index<left.size();++index){left[index]=static_cast<float>(index+1)/256;right[index]=-static_cast<float>(index+2)/128;}
         const float* inputs[]{left.data(),right.data()};float* outputs[]{outLeft.data(),outRight.data()};
-        bool exact=true;std::uint64_t frames=0;bool firstVerified=false;
+        bool exact=true;std::uint64_t frames=0;bool firstVerified=false;int firstAllocations=-1;
         for(const auto count:{19,64,1}) {
             outLeft.fill(-7.0f);outRight.fill(-11.0f);
             engine::NodeIo io;io.in=inputs;io.out=outputs;io.channels=2;io.frames=count;io.blockOffset=5;io.sampleRate=48000;
-            {audio::CallbackScope callback;instance->process(io);}
+            const int allocations=process_allocations::measure([&] {audio::CallbackScope callback;instance->process(io);});
             for(std::size_t index=0;index<left.size();++index) {
                 const bool inside=index>=5 && index<static_cast<std::size_t>(count+5);
                 exact=exact && outLeft[index]==(inside?left[index]*0.25f:-7.0f) && outRight[index]==(inside?right[index]*0.25f:-11.0f);
             }
             frames+=static_cast<std::uint64_t>(count);
-            if(count==19)firstVerified=exact && counter(2)==1 && counter(3)==19;
+            if(count==19) {
+                firstAllocations=allocations;
+                firstVerified=exact && instance->hostedReadiness()==device::HostedReadiness{true,true,true} &&
+                              counter(2)==1 && counter(3)==19 && firstAllocations==0;
+            }
         }
         const bool passed=mark(Phase::AudioVerified,firstVerified && exact && counter(2)==3 && counter(3)==frames && counter(1)==1,
-                 {{"first_process_verified",firstVerified},{"exact_stereo_pcm_and_guard_regions",exact},{"process_calls",counter(2)},
+                 {{"first_process_verified",firstVerified},{"first_process_allocations",firstAllocations},
+                  {"exact_stereo_pcm_and_guard_regions",exact},{"process_calls",counter(2)},
                   {"processed_frames",counter(3)},{"gain",0.25},{"sample_rate",48000},{"maximum_block",64}});
         return finish(passed);
     }catch(const std::exception& exception){receipt["error"]=exception.what();return finish(false);}
