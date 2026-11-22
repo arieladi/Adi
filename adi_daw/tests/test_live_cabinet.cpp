@@ -214,7 +214,42 @@ void reviewed() {
     check(worst < 1e-6 && ml == mr, "Mono feeds the channels' mean: the left alone comes out at half, in both");
 }
 
+/// Output and Dry/Wet moved under a tone glide: the largest step while
+/// they move stays within the signal's own, before or after.
+void glides() {
+    struct Move {
+        K::Param param;
+        double from, to;
+        const char* what;
+    };
+    for (const Move m : {Move{K::Output, -36, 12, "Output"}, Move{K::DryWet, 0, 100, "Dry/Wet"}}) {
+        K k;
+        k.set(m.param, m.from);
+        k.prepare(kRate);
+        std::vector<float> x(96000), l(96000), r(96000);
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            x[i] = static_cast<float>(0.3 * std::sin(2 * std::numbers::pi * 110 * static_cast<double>(i) / kRate));
+        }
+        k.process(x.data(), x.data(), l.data(), r.data(), 48000);
+        k.set(m.param, m.to);
+        k.process(x.data() + 48000, x.data() + 48000, l.data() + 48000, r.data() + 48000, 48000);
+        double moving = 0, settled = 0;
+        for (std::size_t i = 48000; i < 48000 + 4800; ++i) {
+            moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 24000; i < 48000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 72000; i < 96000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        check(moving <= 1.5 * std::max(settled, 1e-9), std::string(m.what) + " glides: no step past the signal's own (" + std::to_string(moving) +
+                                                           " against " + std::to_string(settled) + ")");
+    }
+}
+
 int main() {
+    glides();
     reviewed();
     responses();
     routing();

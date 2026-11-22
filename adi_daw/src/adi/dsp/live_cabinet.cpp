@@ -19,6 +19,8 @@ LiveCabinet::LiveCabinet() noexcept {
 void LiveCabinet::prepare(double sampleRate) noexcept {
     rate_ = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
     state_ = {};
+    output_.prepare(rate_);
+    wet_.prepare(rate_);
     update();
 }
 
@@ -52,8 +54,8 @@ void LiveCabinet::update() noexcept {
     design_[5] = highShelf(rate_, std::min(3000.0, top), mic == NearOff ? -6 : 0);
     design_[6] = lowShelf(rate_, 200, mic == Far ? -3 : 0);
     design_[7] = highShelf(rate_, std::min(8000.0, top), p_[MicType] < 0.5 ? 2 : 0);
-    output_ = std::pow(10.0, p_[Output] / 20);
-    wet_ = p_[DryWet] / 100;
+    output_.set(std::pow(10.0, p_[Output] / 20));
+    wet_.set(p_[DryWet] / 100);
 }
 
 void LiveCabinet::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
@@ -64,6 +66,7 @@ void LiveCabinet::process(const float* inL, const float* inR, float* outL, float
         // hand an output plane that is an input plane).
         const double l = inL && std::isfinite(inL[i]) ? inL[i] : 0.0, r = inR && std::isfinite(inR[i]) ? inR[i] : 0.0;
         const double dry[2] = {l, r};
+        const double level = output_.next(), mix = wet_.next();
         double wet[2] = {dual ? l : 0.5 * (l + r), r};
         for (std::size_t c = 0; c < (dual ? 2u : 1u); ++c) {
             double x = wet[c];
@@ -77,14 +80,14 @@ void LiveCabinet::process(const float* inL, const float* inR, float* outL, float
                 s.y1 = settle(y);
                 x = y;
             }
-            wet[c] = output_ * x;
+            wet[c] = level * x;
         }
         if (!dual) {
             wet[1] = wet[0];
         }
         for (std::size_t c = 0; c < 2; ++c) {
             if (out[c]) {
-                out[c][i] = static_cast<float>(dry[c] + (wet[c] - dry[c]) * wet_);
+                out[c][i] = static_cast<float>(dry[c] + (wet[c] - dry[c]) * mix);
             }
         }
     }
