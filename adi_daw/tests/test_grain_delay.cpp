@@ -217,7 +217,68 @@ void routing() {
 
 }  // namespace
 
+/// The review of 6ec98033: fast grains read past the write head at a low
+/// Frequency (and with Random Pitch), and a move of Frequency rescaled the
+/// running grains' windows (clicks, up to twice the level).
+void reviewed() {
+    struct Reach {
+        double pitch, random, frequency, time, spray, rate;
+    };
+    for (const Reach r : {Reach{12, 0, 1, 50, 0, 48000}, Reach{12, 0, 1, 50, 0, 192000}, Reach{12, 0, 1.05, 1000, 0, 48000},
+                          Reach{12, 100, 2, 50, 0, 48000}, Reach{12, 100, 1, 1000, 500, 48000}, Reach{-36, 100, 1, 1000, 500, 48000}}) {
+        G g;
+        g.set(G::Pitch, r.pitch);
+        g.set(G::RandomPitch, r.random);
+        g.set(G::Frequency, r.frequency);
+        g.set(G::Time, r.time);
+        g.set(G::Spray, r.spray);
+        g.prepare(r.rate);
+        const auto n = static_cast<std::size_t>(r.rate * 8);
+        std::vector<float> x(n), l, rr;
+        for (std::size_t i = 0; i < n; ++i) {
+            x[i] = static_cast<float>(0.3 * std::sin(0.01 * static_cast<double>(i)));
+        }
+        render(g, x, x, l, rr, 4096);
+        check(g.lowestDelay() >= 1, "Pitch " + std::to_string(r.pitch) + ", Random " + std::to_string(r.random) + ", " + std::to_string(r.frequency) +
+                                        " Hz at " + std::to_string(r.rate) + ": no grain reads at or past the write head (least delay " +
+                                        std::to_string(g.lowestDelay()) + ")");
+    }
+    // A constant input stays constant through moves of Frequency: each new
+    // grain rises as its predecessor falls, so the windows still sum to 1.
+    G g;
+    g.set(G::Frequency, 150);
+    g.set(G::DryWet, 100);
+    g.prepare(kRate);
+    const std::vector<float> one(4800, 1.f);
+    std::vector<float> l(4800), r(4800);
+    g.process(one.data(), one.data(), l.data(), r.data(), one.size());   // the line and the grains fill
+    double worst = 0;
+    for (double f : {1.0, 150.0, 60.0, 40.0, 7.0}) {
+        g.set(G::Frequency, f);
+        for (int block = 0; block < 30; ++block) {
+            g.process(one.data(), one.data(), l.data(), r.data(), 3333);
+            for (std::size_t i = 0; i < 3333; ++i) {
+                worst = std::max(worst, std::abs(static_cast<double>(l[i]) - 1));
+            }
+        }
+    }
+    check(worst < 1e-6, "a constant input stays at 1 through moves of Frequency (worst " + std::to_string(worst) + ")");
+    // And pitched grains stay behind the write head through the moves.
+    G up;
+    up.set(G::Pitch, 12);
+    up.set(G::Frequency, 150);
+    up.prepare(kRate);
+    for (double f : {5.0, 150.0, 1.0}) {
+        up.set(G::Frequency, f);
+        for (int block = 0; block < 40; ++block) {
+            up.process(one.data(), one.data(), l.data(), r.data(), 3333);
+        }
+    }
+    check(up.lowestDelay() >= 1, "Pitch +12 through moves of Frequency: no read at or past the write head");
+}
+
 int main() {
+    reviewed();
     exactDelay();
     pitched();
     spray();
