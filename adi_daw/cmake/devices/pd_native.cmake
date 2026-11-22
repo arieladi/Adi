@@ -61,6 +61,7 @@ if(ADI_WITH_PD)
     adi_embed_native_pd(liveGate "pd/devices/Gate.pd")
     adi_embed_native_pd(liveLimiter "pd/devices/Limiter.pd")
     adi_embed_native_pd(alignDelay "pd/devices/Align Delay.pd")
+    adi_embed_native_pd(autoPan "pd/devices/Auto Pan-Tremolo.pd")
     string(APPEND ADI_NATIVE_PD_HEADER "} // namespace adi::device::canonical\n")
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/adi_native_pd_patches.hpp"
         CONTENT "${ADI_NATIVE_PD_HEADER}")
