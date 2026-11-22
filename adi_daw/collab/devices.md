@@ -191,9 +191,45 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the second review: eight findings, all fixed
+
+A second adversarial review covered Auto Shift, the Spectrum device, the Shifter fix and the first
+review's fixes (a finder for each, three skeptics for each finding). It confirmed eight findings,
+each by all three skeptics. Each fix carries a test that fails on the old code, or a plant where the
+old code cannot build the test. Each is merged up the stack.
+
+**PR requested** (the same branches; new heads):
+
+- **`devices/filter-delay` (2c4a1a15).** `prepare()` could throw from Pd's DSP callback, and it set `size_`
+  before the lines were resized. It is now noexcept: a failure leaves the device inert, passing the
+  dry signal.
+- **`devices/dj-filter` (25c20908).** The DJ type seeded its low pass with the input at any cutoff. After
+  `prepare()` at Filter −100, a 1 kHz cosine rang at 0.5. It is now seeded only near the centre.
+- **`devices/auto-shift` (1d566e3a).**
+  - **A corrected tone dropped 40 dB at every crossfade** for pitches like 420, 460 or 300 Hz: the
+    fixed 50 ms window put the Shifter's taps in antiphase. The window now spans whole periods of the
+    reading. The level holds within 1 dB, and a plant with the fixed window brings the dips back.
+    Shift +12 now gives 880 Hz, not 874.
+  - **Detune plus the correction was clamped at ±100 cents.** The shift now goes through Coarse,
+    unclamped.
+  - **The NaN check looked at a later block.**
+- **`devices/spectrum-device` (bc803aef).**
+  - **Refresh was held at the averager's 65,536-sample hop.** It is now the hop at every rate, and
+    the averager still moves 1/Avg per analysis.
+  - **The clamp test started from the value it expected.**
+- **`devices/live-amp` (c4d52f4b):** the merges above.
+- **`devices/shifter-nan` (14472a18).** A finite 3e38 input still latched Frequency mode at NaN. Inputs are
+  now also bounded at 1e6.
+
+The review refuted one finding: that `analysis()` could be read during `set()`.
+
+**CTest:** `devices/auto-shift` at 9149da91 passed 284/284 at PD_FLOATSIZE 64. At 32,
+`adi_scan_cache_tests` (plug-in scanning, not this lane's) failed once under load at 48 s. Run alone it
+passed, in 16 s. The fixed stack is now running on `devices/live-amp` and `devices/shifter-nan`.
+
 ## 2026-11-22 — DEV-22, the chapter's first missing effect: Amp — lands after 3 December
 
-**PR requested:** head `devices/live-amp` (17130593), base `main`, after `devices/spectrum-device`.
+**PR requested:** head `devices/live-amp` (c4d52f4b; first logged as 17130593), base `main`, after `devices/spectrum-device`.
 It stops at this branch if the FOR THE DIRECTOR answer on the missing effects is no.
 - **What it is.**
   - Seven voices, each with an input high pass and a mid bell, a preamp gain and bias, and a power
