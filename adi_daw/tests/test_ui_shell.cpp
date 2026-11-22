@@ -11270,6 +11270,25 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               "a tap under 200 ms latches it; the Status Bar says it waits for the cue path (N23)");
         root.frame();
         check(panel.ref.getToggleState(), "[REF] lit while it is on");
+        // [REF] clicked times its press through the seam too (DF-W18): with the test's clock 600 ms
+        // between press and release it is a hold, which plays only while held, however fast the
+        // machine delivers the click.
+        {
+            if (root.reference().on()) {
+                root.referenceKey(true, 2000);
+                root.referenceKey(false, 2050); // a second tap lets it go
+            }
+            const auto kept = root.input.now;
+            std::int64_t reading = 3000;
+            root.input.now = [&reading] { const auto t = reading; reading += 600; return t; };
+            const auto at = panel.ref.getLocalBounds().getCentre().toFloat();
+            panel.ref.mouseDown(pressAt(panel.ref, at));
+            const bool playing = root.reference().on();
+            panel.ref.mouseUp(dragAt(panel.ref, at, at));
+            check(!root.reference().latched() && playing && !root.reference().on(),
+                  "[REF] held 600 ms by the test's clock plays while held and stops on release: a hold, not a tap");
+            root.input.now = kept;
+        }
         if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); !headlessOnly && out.isNotEmpty()) {
             // Lead with two clips, the Reference latched, for the picture; undone after.
             int made = 0;

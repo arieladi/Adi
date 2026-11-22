@@ -27,12 +27,12 @@ void ReferenceButton::paintButton(juce::Graphics &g, bool over, bool) {
 }
 void ReferenceButton::mouseDown(const juce::MouseEvent &e) {
     juce::Button::mouseDown(e);
-    root_.referenceKey(true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    root_.referenceKey(true, root_.input.ms()); // through the seam a test sets (DF-W18)
     setToggleState(root_.reference().on(), juce::dontSendNotification);
 }
 void ReferenceButton::mouseUp(const juce::MouseEvent &e) {
     juce::Button::mouseUp(e);
-    root_.referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    root_.referenceKey(false, root_.input.ms());
     setToggleState(root_.reference().on(), juce::dontSendNotification);
 }
 void EyeButton::paintButton(juce::Graphics &g, bool over, bool) {
