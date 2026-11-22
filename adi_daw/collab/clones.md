@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Calibrate the Width detector's rise and fall
+
+`clones/shaper-width-follower` at `a1556885` — Apply measured attack and release coefficients to Width. **Lands after 3 December.** The calibration reproduced 131 of 132 held-out coefficients exactly, with a one-float-step difference at the fastest attack at 192 kHz. The earlier implementation failed the stricter trajectory tests. The rack and registered Pd suites passed in both precisions under MSVC /W4 /WX, including long-tail regressions.
+
+On registered stereo kick and bass, RMS error fell from 0.0000000637 to 0.0000000083 in Add and from 0.0000000360 to 0.0000000078 in Multiply. Both peaked at 0.0000000596. Off remained byte-identical to the preceding head and the default matched both the reference and the preceding head exactly. The 256- and 2,048-frame captures agreed.
+
+At 256/2,048 frames Add took 9.2/77.6 µs median and 14.6/131.6 µs p99, versus 21.5/78.9 and 38.6/128.4 µs for the reference. Deadline misses were 1/14 versus 2/4, per 30,720 callbacks at each size. Multiply took 9.9/79.3 µs median, versus 22.0/84.2 µs; misses were 3/2 for both. The main improvement is envelope accuracy.
+
+PR requested
+
 ## 22 November 2026 — Filter the full signal feeding a Hold detector
 
 `clones/shaper-hold-input` at `f6cb7904` — Add high-pass and low-pass cutoffs to each full-input detector. **Lands after 3 December.** The six appended controls retain open cutoffs on older states. The rack, Crush, detector filter and registered Pd suites passed under MSVC /W4 /WX in both precisions. The embedded patch was verified byte for byte. Cutoff automation and re-entry after a neutral setting were tested against independently measured sample trajectories.
