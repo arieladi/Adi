@@ -11,6 +11,13 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — joined branch after #714
+
+Main advanced to `73f13028225c55a0e1a9cb1491ff43b706a80066` with one UTF-8 punctuation correction in EQ PROVENANCE.md. The before-date review branch merged it without conflicts. Git reports byte-identical source, build files, fixtures and tests to the gated `c1e7d8973` Release. The corrected Markdown decodes as UTF-8. The existing 24 CTest and 906 / 329 / 7 results still describe those build inputs. This documentation-only merge uses the existing review binary.
+
+PR requested — `mixview/review-cumulative-20261122` now at `e665a9aa0ac45624110f5cf5145934058286875e`.
+
+
 ### 22 November — MX-21 continuously staggered pinned Spectrum
 
 The first lead check assumed the broker would still hold the eligible earlier publication when the primary reached it. With consecutive early frames that assumption failed. Each pin now retains one waiting immutable result. The view can present it when heard and keep the newer waiting frame. The next publish epoch and Freeze drop that waiting result. No extra subscription, analysis or captured sample copy.
