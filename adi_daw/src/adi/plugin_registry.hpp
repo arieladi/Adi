@@ -31,7 +31,7 @@ namespace SQLite { class Database; }
 
 namespace adi {
 
-enum class ScanDisposition { Succeeded, Abandoned, Failed, Rejected };
+enum class ScanDisposition { Succeeded, UnstampedSuccess, Abandoned, Failed, Rejected };
 enum class ScanFailureKind { Rejected, Crashed, TimedOut };
 // Refresh retries metadata, never re-enables a manual/pending/two-strike block.
 enum class ScanCacheMode { Reuse, Refresh };
@@ -128,7 +128,9 @@ public:
     /// immediately reusable as a negative result. Returns the resulting count.
     std::optional<unsigned> finishFailedScan(const ScanTicket&, const std::string& stamp,
         ScanFailureKind, const std::string& reason, std::int64_t nowUtc, std::string& error);
-    /// Succeeded/Abandoned remove only this pending attempt (empty reason).
+    /// Succeeded and Abandoned complete a pending attempt without retiring success.
+    /// UnstampedSuccess retires stale positive and negative cache entries for
+    /// a fresh, successful probe whose result cannot be stamped (empty reason).
     /// Failed retains it as a legacy block with a nonempty diagnostic.
     /// Rejected removes pending and all stale cache state (empty reason), for
     /// a deterministic rejection without a reliable stamp; never quarantines.

@@ -444,7 +444,7 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
             if(stamp && !stable())return result;
             const bool finished=stamp?
                 registry_->finishCachedScan(*ticket,*stamp,process.output,config_.clock(),result.error):
-                registry_->finishScan(*ticket,ScanDisposition::Succeeded,"",config_.clock(),result.error);
+                registry_->finishScan(*ticket,ScanDisposition::UnstampedSuccess,"",config_.clock(),result.error);
             if(!finished) {
                 result.state=State::Quarantined;return result;
             }
