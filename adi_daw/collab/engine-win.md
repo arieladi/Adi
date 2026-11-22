@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — PD-08 explicit project backup
+
+- PD-08 dated backup worker — PR requested, `engine-win/project-cloud-backup` at `25bf2855` from `87ea349c`. Reuses Collect and Export's consistent snapshot, staged media and progress/cancel. Requires a caller-selected existing folder, names the ZIP from the project file stem and supplied local time, and refuses a same-second collision. MSVC 8 focused checks, including a Unicode name, leap-day timestamp, actual ZIP, and cancellation during archive writing. Window-fn owns the File command, per-run chooser, local clock, progress routing and final status. No sync service was connected.
+
 ## 2026-11-22 — PD-08 project sync-folder status
 
 - PD-08 sync-folder detection — PR requested, `engine-win/project-sync-folder` at `2a2d0f96` from `87ea349c`. Checks the native OneDrive known folder and configured account roots on Windows, or the local CloudDocs directory on macOS. The project lookup uses filesystem identity of its resolved ancestors and chooses the closest root. MSVC settings 338, including direct and nested matches, a sibling prefix, traversal and absent paths. Real OneDrive and macOS iCloud placements were unmeasured. Window-fn owns the status-bar call at project open and Save As. Microsoft Known Folder IDs: https://learn.microsoft.com/windows/win32/shell/knownfolderid
