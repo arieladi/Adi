@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Isolating the effect of saved Crush bias
+
+We reopened all 43 affected programs in the reference, rendered each twice, cleared only the three bias values and rendered again. Thirty-seven repeats and archived recordings agreed within 0.000001 stereo RMS. The other six retain their individual repeat errors in the private results. A seven-stage regression of 0.049439 to 0.224996 RMS came from a program whose full reference output was exactly silent in both bias settings. Crush alone changed by 0.250202 RMS in both the original and the weighted device. Building up the source chain one stage at a time located the mute at Noise before Crush. Removing only Noise from the entire source chain restored a 0.129473 RMS difference between bias settings. Removing any one of the other enabled stages kept it silent.
+
+The nearest remaining complete-stage comparison is Drive into Crush into Volume. The source-order device scores 0.00106906 centered and 0.00106915 with its stored bias. Removing bias from the source as well leaves 0.00106901. The reference change itself is 0.00002615 RMS and the device change is 0.00002661 RMS. The samplewise difference between those two changes is 0.00003468 RMS. This keeps the near miss open.
+
+PR requested
+
 ## 22 November 2026 — Recallable per-band Crush quantizer bias
 
 `clones/shaper-crush-bias` at `5f1d6c4a` — Add calibrated per-band quantizer bias to Crush. **Lands after 3 December.** IDs 865–867 store 0–100% bias independently in the three bands. Missing keys restore the previous centered response. The quantizer carries the preceding sample's bias into threshold crossings. With dither it subtracts the response to the same noise on silence, keeping a silent channel silent. Full-resolution playback stays transparent to the bias control.
