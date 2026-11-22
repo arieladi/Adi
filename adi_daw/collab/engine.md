@@ -106,6 +106,14 @@ GCC 14 and Clang 19 strict builds each passed 345 checks across five suites. An 
 
 Parked the remaining TM-WT-03 settings and Preserve grid on the Warp settings reservation and microfade length and listening acceptance on Live. DEV-22's device contract is present at `4054d859`; the hardware routing rows and native substitution will need the schema and the catalogue handoff. DEV-19 engine scale context can proceed without touching device DSP paths.
 
+### 22 November — DEV-19 the device's compensated project scale
+
+**PR requested** for `engine/dev19-device-scale-timeline` at `33880f60f4681c1a7cdba2903b521b199b2820da` from main. Opted-in hosted devices see the project's immutable ScaleContext at the compensated input sample. Key changes split those devices' segments, and the later authored key wins where rows round to one sample. The compiled context uses the graph's captured rows. Malformed tuning reports a problem while playback continues. Clip-local priority is the next engine portion.
+
+Strict GCC 14 and Clang 19 each passed 624 checks across five suites. The Session fixture crosses coincident keys, a 50-cent tuning degree, and a changed key after refresh. The graph fixture splits exactly at sample 12,000 after seven samples of source latency. Transport-only nodes retain their original segment count. Callback allocation and I/O audits passed.
+
+Parked DEV-20 on the XC-15 input-row reservation, the MidiMemory decision and LM5. DEV-21 hardware loadable instruments remain with the devices seat under its current loan.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
