@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Recall the order of the seven landed stages
+
+`clones/shaper-stage-ranks` at `1719f64e` — Recall the processing order of the seven shaper stages. **Lands after 3 December.** Stable IDs 716–722 address ranks independently. Equal ranks retain the persistent stage identity order. A project saved before ranks existed reopens with the original processing order, including when recalled over a reordered instance.
+
+All 4,096 distinct sampled permutations matched an independent order oracle. Running Volume before and after nonlinear Drive matched the separately evaluated processors in both directions and retained the 16-frame latency. The full rack and registered native/edited Pd tests passed under MSVC /W4 /WX in both signal precisions.
+
+On kick and bass with hard-clipped Drive and constant Volume, the previous and new default sequences took 61.1 and 61.6 µs at 256 frames, and 495.9 and 495.9 µs at 2,048. Moving Drive ahead of Volume took 61.7 and 507.2 µs respectively. These are medians of three ordered sets of nine trials. Thread CPU for the default sequence measured 1.14% and 1.18% of one core on both builds.
+
+PR requested
+
 ## 22 November 2026 — Internal envelope follower for each Width band
 
 `clones/shaper-width-follower` at `a1b02971` — Port the per-band Width envelope follower. **Lands after 3 December.** IDs 727–753 control Add/Multiply, amount, depth, offset, threshold, attack, hold and release independently in three bands. Older states restore the follower switched off, including when recalled over a running instance.
