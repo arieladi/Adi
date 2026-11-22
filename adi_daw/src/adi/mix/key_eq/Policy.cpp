@@ -250,6 +250,13 @@ bool prototypes(double order, int shape, float gainDb, float mappedQ, AnalogCasc
             norm = gn * norm;
             roots = bandRoots(roots, bandwidth, unused);
         }
+        if (conv == 4) {
+            for (std::size_t i = 0; i < roots.count; ++i) {
+                const auto p = roots.values[i].value;
+                zeros.values[i] = {{-p.real(), p.imag()}, false};
+            }
+            norm = 1;
+        }
         const float rootGain =
             f(std::pow(norm, static_cast<double>(f(1.f / f(static_cast<double>(roots.count))))));
         for (std::size_t k = 0; k < roots.count; k += 2) {
@@ -488,6 +495,27 @@ bool anchors(const Analog &s, double w, int shape, float qinv, filters::MatchReq
          std::abs(f(nyq)) <= epsilon ? pi : nyq};
     return true;
 }
+bool bilinear(const Analog &s, double w, filters::Coefficients &output) noexcept {
+    const float capped = f(std::min(w, static_cast<double>(3.1315927505493164f)));
+    const double t = f(std::tan(static_cast<double>(f(capped * .5f))));
+    filters::Coefficients candidate{};
+    if (std::abs(f(s.n[0])) <= epsilon && std::abs(f(s.d[0])) <= epsilon) {
+        const double inverse = 1 / (t * s.d[2] + s.d[1]);
+        candidate = {(t * s.n[2] + s.n[1]) * inverse, (t * s.n[2] - s.n[1]) * inverse, 0,
+                     (t * s.d[2] - s.d[1]) * inverse, 0};
+    } else {
+        const double dt = t * s.d[1], nt = t * s.n[1];
+        const double dt2 = t * t * s.d[2], nt2 = t * t * s.n[2];
+        const double db = dt2 + s.d[0], nb = s.n[0] + nt2;
+        const double inverse = 1 / (db + dt);
+        candidate = {(nb + nt) * inverse, (nt2 - s.n[0]) * (inverse + inverse), (nb - nt) * inverse,
+                     (dt2 - s.d[0]) * (inverse + inverse), (db - dt) * inverse};
+    }
+    if (!filters::validCoefficients(candidate))
+        return false;
+    output = candidate;
+    return true;
+}
 } // namespace
 
 bool validBand(const Band &b) noexcept {
@@ -502,7 +530,7 @@ Status build(double sampleRate, const Band &band, Cascade &output) noexcept {
         return Status::InvalidArgument;
     constexpr std::array<int, 10> shapes{7, 2, 3, 5, 0, 10, 8, 6, 12, 11};
     const int shape = shapes[static_cast<std::size_t>(band.shape)];
-    if (shape == 11 || shape == 12)
+    if (shape == 12)
         return Status::UnsupportedConfiguration;
     int selected = static_cast<int>(f(band.slope + .5f));
     if (selected == 9 && (shape == 0 || shape == 3))
@@ -529,10 +557,15 @@ Status build(double sampleRate, const Band &band, Cascade &output) noexcept {
         return Status::UnsupportedConfiguration;
     Cascade candidate{};
     for (std::size_t i = 0; i < analog.count; ++i) {
-        filters::MatchRequest request{};
-        if (!anchors(analog.sections[i], w, shape, inverseQ, request) ||
-            filters::design(request, candidate.sections[i]) != filters::Status::Ok)
-            return Status::UnsupportedConfiguration;
+        if (shape == 11) {
+            if (!bilinear(analog.sections[i], w, candidate.sections[i]))
+                return Status::UnsupportedConfiguration;
+        } else {
+            filters::MatchRequest request{};
+            if (!anchors(analog.sections[i], w, shape, inverseQ, request) ||
+                filters::design(request, candidate.sections[i]) != filters::Status::Ok)
+                return Status::UnsupportedConfiguration;
+        }
         ++candidate.count;
     }
     output = candidate;
