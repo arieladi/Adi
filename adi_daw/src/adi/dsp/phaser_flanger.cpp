@@ -139,6 +139,11 @@ void PhaserFlanger::process(const float *il, const float *ir, float *ol, float *
                     wet = y;
                 }
                 l.feedback = wet;
+                // DEV-22: the phaser's wet is the classic sum, input plus the
+                // all-pass chain, halved -- that is where the notches are. Live
+                // 12.4 notches at its default 100 % wet (-8.5 dB at 997 Hz in the
+                // research's render); the bare chain is all-pass and would not.
+                wet = .5 * (x + wet);
             } else {
                 const double d = std::clamp(
                     p_[Time] * (mode == 1 ? 1 - .9 * (mod + p_[Amount] / 100) * .5 : 1 + .8 * mod) *

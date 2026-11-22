@@ -25,8 +25,8 @@ struct Statistics {
 };
 // Framework-free EQ -> Carve -> Focus. One serialized audio/configuration
 // publisher, one owner service thread. No owner work is invoked by audio calls.
-// prepare/reset/destruction require stopped processing. An offer is immutable
-// until a new physical callback admits its complete latency/enables snapshot.
+// prepare/reset/destruction require stopped processing. An advertised offer
+// is immutable until a new physical callback admits its complete snapshot.
 class Core final {
   public:
     Core();
@@ -45,7 +45,8 @@ class Core final {
     void reprepareStopped(PrepareSpec, const Settings &);
     [[nodiscard]] bool isPrepared() const noexcept;
     // False rejects invalid settings or an unsupported enabled stage layout/rate.
-    // Later requests coalesce behind the one immutable candidate being serviced.
+    // Later requests coalesce behind the candidate being serviced. Returning
+    // to the active plan may retire that candidate before it is advertised.
     bool requestConfiguration(const Settings &) noexcept;
     bool serviceConfiguration();
     // Lock-free metadata for a third Main/UI observer. Read these versions to
@@ -62,7 +63,7 @@ class Core final {
     // active EQ processing. The stream must continue while warming history.
     // Called by audio or by the same serialized owner that calls service.
     // An arbitrary concurrent UI reader must use an owner-published UI snapshot.
-    // Advertised plans have a non-failing read until their audio acknowledgment.
+    // Returning a plan reserves it for the caller until its audio acknowledgment.
     [[nodiscard]] PlanOffer pendingPlan() const noexcept;
     [[nodiscard]] std::int32_t latencySamples() const noexcept;
     [[nodiscard]] BlockContext beginBlock(std::uint64_t physicalBlock, std::int32_t configuredTotalLatency,

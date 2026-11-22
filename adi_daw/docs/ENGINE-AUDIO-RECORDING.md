@@ -60,14 +60,29 @@ uses captured values and never records, hashes or analyzes again. Identical
 takes deduplicate within the uncommitted batch and against the existing pool.
 Reused external media is relinked to a verified owned recording asset. Each
 publication uses a separate private copy because publishFile moves its source;
-the original take survives a late SQL failure. A failed commit removes only
-newly published files and leaves originals for a fresh prepare/retry. Identical
+the original take survives a late SQL failure. The capture work folder may be
+on a different volume from the project. Preparation reserves an exclusive
+`.adi-media-` directory beneath the project's `audio` folder and copies and
+hash-checks each completed take there. Commit publishes that closed copy with
+`AtomicOnly` on the destination filesystem; it never tries to rename the original
+take across volumes. Destroying the preparation cleans only its reserved stage.
+A failed commit leaves the private capture for a fresh prepare and retry. It
+removes a newly published file only when the native remover can prove its
+recorded identity. Where the remover cannot do that, the transaction still
+rolls back and its error names the retained path. Identical
 owned files retained by undo are reusable, while different content/symlinks
 refuse overwrite. Successful commit removes private takes unless older media
 history still refers to them. The command manages that cleanup: do not blindly
 discard a retained source after success, because Undo may need its old path.
 Undo retains the owned asset; Redo restores the playing clips without the
 private preparation directory. Repeat commit cannot remove a successful asset.
+
+The recording command tests check stage placement and cleanup independently of
+volume layout. Their optional Windows `--cross-volume-work-folder PATH` run
+requires that existing capture folder and the test's temporary project directory
+to have different native volume identities. It first demonstrates that a direct
+cross-volume `AtomicOnly` publication refuses, then checks the real capture,
+project-side publication, byte identity, played PCM and one-step Undo/Redo.
 
 For retrospective audio Capture, keep one `AudioMemory` per enabled physical
 input as described in OPS §9.10. On its owner, take an immutable snapshot and

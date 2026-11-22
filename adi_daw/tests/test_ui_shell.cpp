@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/app_audio_page.hpp"
+#include "../src/juce/app_midi_ports.hpp"
+#include "../src/juce/ui_export.hpp"
 #include "../src/juce/ui_controls.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
@@ -19,6 +21,7 @@
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "adi/ui/automation_override.hpp"
 #include "knobs_device.hpp"
 #include "mix_seek_fixture.hpp"
 #include "temp_directory.hpp"
@@ -27,12 +30,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <set>
@@ -400,6 +405,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
               root.devices.panels.size() == 2,
           "the parity scene has Live's columns and the fourth track's two devices");
     reference(root, "live-parity", write);
+    std::fputs("[shell] liveParity render returned\n", stderr);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     auto render = [&root, folder](const char *name) {
         if (folder.isEmpty())
@@ -441,6 +447,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     root.mark(DirtySet::All);
     root.frame();
     render("adi-parity-mixer.png");
+    std::fputs("[shell] liveParity Mixer View frame returned\n", stderr);
     // Bitwig's project view (the director, 2026-10-28), given a tree as the snapshot will give
     // it once it carries groups (N6): track 2 is a group holding 3, a group holding 4; 1 is Main.
     root.arrangement.setTrackRows([](const SnapshotReader &, std::vector<TrackRow> &rows) {
@@ -474,6 +481,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
         return out;
     };
     const auto before = items();
+    std::fputs("[shell] liveParity project menu read\n", stderr);
     check(before.size() == 5 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
               before[2].first == "Fx" && !before[2].second && !root.namesBar.show.getToggleState(),
           "the project view's menu: the whole project, ticked, then its groups as a tree");
@@ -523,6 +531,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.namesBar.show.getToggleState() &&
               shownRows(root.mixer) == std::vector<std::int64_t>{1, 2, 3, 4},
           "Project shows every track again, the button unlit");
+    std::fputs("[shell] liveParity before teardown\n", stderr);
 }
 // A menu on one line: its items in order, a disabled one dashed, a ticked one starred when `ticks`
 // is set, a separator a bar, so a check sees Live's groups too.
@@ -742,17 +751,17 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                   root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
               "Alt+U unfolds every group");
     }
-    // On the bar over the names, Live's two automation toggles wait for the engine; a click on each
-    // says what for (the director's R6, 2 November). The locator buttons act since C3 (the `locators`
-    // scene).
+    // On the bar over the names: Automation Mode switches on and off (AU-01, its own test below); Lock
+    // Envelopes still waits for the engine, and a click says what for (the director's R6, 2 November).
     {
-        for (auto *button : {&root.namesBar.automation, &root.namesBar.lock}) {
-            const std::string words = button == &root.namesBar.automation ? "Automation Mode waits for the engine's automation"
-                                                                          : "Lock Envelopes waits for the engine's automation";
-            root.say({});
-            button->onClick();
-            check(root.error().rfind(words, 0) == 0, ("a click on it says: " + words).c_str());
-        }
+        root.say({});
+        root.namesBar.lock.onClick();
+        check(root.error().rfind("Lock Envelopes waits for the engine's automation", 0) == 0,
+              "a click on Lock Envelopes says what it waits for");
+        root.namesBar.automation.onClick();
+        check(root.automationMode(), "a click on Automation Mode turns it on");
+        root.namesBar.automation.onClick();
+        check(!root.automationMode(), "and off");
     }
     // Show says the whole project while no group is chosen.
     check(!root.namesBar.show.getToggleState() &&
@@ -1729,6 +1738,22 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               !takesClicks(*reverb->sendKnobs()[1]) && reverb->sendKnobs()[1]->getAlpha() < 1.f &&
               audio->sendOn(0) && takesClicks(a),
           "a return's sends are off until Enable Send; a track's are on");
+    // DF-W35 (a): a track's send with no row reads on, and unticking Enable Send switches it off: a
+    // row, fully down as the knob shows it, written switched off, one step; undo gives the tick back.
+    {
+        audio->enableSend(0, false);
+        root.frame();
+        const auto *off = findSend(root.reader().sends(), 3, 5);
+        check(off != nullptr && !off->enabled && off->gainDb == kSendSilenceDb && !audio->sendOn(0) &&
+                  submitter.nextUndo() && submitter.nextUndo()->label == "Disable Send" &&
+                  submitter.nextUndo()->opCount == 3,
+              "Disable Send on 3 Audio's send A with no row: the row, fully down and off, one step");
+        audio->enableSend(0, false);
+        check(root.error() == "The send is off already.", "unticking it again only says so");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(findSend(root.reader().sends(), 3, 5) == nullptr && audio->sendOn(0), "undone: no row, the send reads on");
+    }
 
     // A typed value commits at once: the row and its level, one undo step.
     audio->sendKnobs()[0]->setValue(-12, juce::sendNotificationSync);
@@ -2559,10 +2584,410 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("not built in ADI yet") != std::string::npos,
           "Hybrid Reverb is dimmed always, and a double-click says why");
     browser.choose(pdDevices);
-    check(browser.rows().size() == 2 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr,
-          "Pd Devices lists ADI's own: Chord Comb and Color Cab");
+    check(browser.rows().size() == 3 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr &&
+              browser.rows()[2].device != nullptr,
+          "Pd Devices lists ADI's own: ADI-Shaper, Chord Comb and Color Cab");
+    // Plug-Ins (DF-W9): outside the app nothing scans, and it says where they list.
     browser.choose(plugIns);
-    check(root.error().find("#438") != std::string::npos, "Plug-Ins says it waits for the scanner");
+    check(root.error().find("list in the application") != std::string::npos && browser.rows().empty(),
+          "Plug-Ins outside the app says the plug-ins list in the application");
+    {
+        // The loader's VST3 lines as `knownPlugins` writes them, and a line of another format.
+        const auto echo = parseKnownVst3("vst3  VST3-Echo-1a2b-3c4d  Echo -- Zeta Audio 1.2.0  (/x/Echo.vst3)");
+        const auto bare = parseKnownVst3("vst3  VST3-Hiss-1  Hiss --  0.9  (/x/Hiss.vst3)");
+        check(echo && echo->uid == "VST3-Echo-1a2b-3c4d" && echo->name == "Echo" && echo->vendor == "Zeta Audio" &&
+                  echo->version == "1.2.0" && echo->path == "/x/Echo.vst3" &&
+                  echo->kind == PluginEntry::Kind::Unknown && bare && bare->name == "Hiss" && bare->vendor.empty() &&
+                  !parseKnownVst3("clap  org.x  X -- Y 1  (/x.clap)") && !parseKnownVst3("vst3  broken"),
+              "a VST3 line of the loader reads as its uid, name, vendor, version and file");
+        check(clapKind(true, "instrument synthesizer") == PluginEntry::Kind::Instrument &&
+                  clapKind(false, "note-effect utility") == PluginEntry::Kind::MidiEffect &&
+                  clapKind(false, "audio-effect delay") == PluginEntry::Kind::Effect,
+              "a CLAP is an instrument, a MIDI effect (a note effect) or an audio effect");
+        PluginListing found;
+        found.plugins = {*echo,
+                         {"clap", "org.adi.glass", "Glass Piano", "Northwind Audio", "1.0", "/x/glass.clap",
+                          PluginEntry::Kind::Instrument},
+                         {"clap", "org.adi.arp", "Arpeggiate", "Northwind Audio", "1.0", "/x/arp.clap",
+                          PluginEntry::Kind::MidiEffect},
+                         *bare};
+        found.failed = 1;
+        // The app's scan as the Browser sees it (DF-W34): choosing Plug-Ins asks for a scan and returns at
+        // once; the list fills when the scan's state arrives.
+        int asked = 0;
+        PluginScan scan;
+        browser.scanPlugins = [&] {
+            ++asked;
+            scan.phase = PluginScan::Phase::Scanning;
+            browser.setPluginScan(scan);
+        };
+        root.say({});
+        browser.choose(plugIns);
+        check(asked == 1 && browser.rows().size() == 1 && browser.rows()[0].heading == "Scanning plug-ins…" &&
+                  root.error() == "Scanning plug-ins…",
+              "choosing Plug-Ins asks for a scan and returns at once; the list and the Status Bar say it scans");
+        scan.candidates = 150;
+        browser.setPluginScan(scan);
+        check(browser.rows().size() == 1 && browser.rows()[0].heading == "Scanning plug-ins: 150 files…",
+              "the files the scan probes are counted on the list's line");
+        scan.phase = PluginScan::Phase::Done;
+        scan.candidates = 0;
+        scan.listing = found;
+        browser.setPluginScan(scan);
+        std::vector<std::pair<juce::String, int>> layout;
+        for (const auto &r : browser.rows())
+            layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
+        const std::vector<std::pair<juce::String, int>> expected{
+            {"CLAP", 0}, {"Northwind Audio", 1}, {"Arpeggiate", 2}, {"Glass Piano", 2},
+            {"VST3", 0}, {"Other", 1},           {"Hiss", 2},       {"Zeta Audio", 1}, {"Echo", 2}};
+        check(layout == expected,
+              "Plug-Ins lists a folder per format, then per vendor, the plug-ins by name; no vendor goes in Other");
+        check(root.error() == "1 plug-in file could not be scanned; the rest are listed.",
+              "a file a complete scan could not read is counted; the rest are listed");
+        browser.choose(plugIns);
+        check(asked == 1 && browser.rows().size() == expected.size(),
+              "choosing Plug-Ins again lists what was found and scans nothing");
+        // A scan running over a listed catalogue: its line heads the list, and a count during it changes
+        // only that line, so the selection stays (DF-W34 on N58).
+        scan.phase = PluginScan::Phase::Scanning;
+        scan.candidates = 150;
+        scan.completed = 0;
+        ++scan.listed;
+        browser.setPluginScan(scan);
+        check(browser.rows().size() == expected.size() + 1 && browser.rows()[0].heading == "Scanning plug-ins: 150 files…" &&
+                  browser.rows()[1].heading == "CLAP",
+              "while a scan runs its line heads what was listed before");
+        browser.list.selectRow(3);
+        scan.completed = 12;
+        browser.setPluginScan(scan);
+        check(browser.list.getSelectedRow() == 3 && browser.rows()[0].heading == "Scanning plug-ins: 12 of 150 files…",
+              "a count changes the line only; the selected plug-in stays selected");
+        scan.phase = PluginScan::Phase::Done;
+        scan.candidates = scan.completed = 0;
+        ++scan.listed;
+        browser.setPluginScan(scan);
+        check(browser.rows().size() == expected.size(), "the scan ended, its line goes");
+        const auto rowNamed = [&browser](const char *name) {
+            for (std::size_t i = 0; i < browser.rows().size(); ++i)
+                if (browser.rows()[i].plugin != nullptr && browser.rows()[i].plugin->name == name)
+                    return static_cast<int>(i);
+            return -1;
+        };
+        const int glass = rowNamed("Glass Piano");
+        check(glass >= 0 && !browser.load(glass) && root.error().find("application's plug-in host") != std::string::npos,
+              "outside the application a double-click on a plug-in says it needs the application's host");
+        // DF-W9's load on N57: the reference handed over, its kind the subtype that places it.
+        std::vector<std::tuple<rows::PluginRef, std::int64_t, bool>> loaded;
+        root.loadPlugin = [&loaded](rows::PluginRef ref, std::int64_t track, std::optional<std::int64_t>, bool guessed) {
+            loaded.emplace_back(std::move(ref), track, guessed);
+            return true;
+        };
+        std::int64_t audioTrack = 0, midiTrack = 0;
+        for (const auto &t : root.reader().tracks())
+            if (t && t->kind == "audio" && audioTrack == 0)
+                audioTrack = t->id;
+            else if (t && t->kind == "midi" && midiTrack == 0)
+                midiTrack = t->id;
+        root.arrangement.geometry.selection.track = midiTrack;
+        check(midiTrack != 0 && browser.load(glass) && loaded.size() == 1 && std::get<1>(loaded[0]) == midiTrack &&
+                  std::get<0>(loaded[0]).format == "clap" && std::get<0>(loaded[0]).uid == "org.adi.glass" &&
+                  std::get<0>(loaded[0]).subtype == "instrument" && std::get<0>(loaded[0]).pathHint == "/x/glass.clap" &&
+                  std::get<0>(loaded[0]).vendor == "Northwind Audio" && !std::get<2>(loaded[0]),
+              "a CLAP instrument loads onto the selected track as an instrument, with its identity and file, not guessed");
+        const int echoRow = rowNamed("Echo");
+        root.arrangement.geometry.selection.track = audioTrack;
+        check(audioTrack != 0 && browser.load(echoRow) && loaded.size() == 2 && std::get<0>(loaded[1]).format == "vst3" &&
+                  std::get<0>(loaded[1]).subtype == "effect" && std::get<2>(loaded[1]),
+              "a VST3 of unknown kind onto an audio track is guessed an effect");
+        root.arrangement.geometry.selection.track = midiTrack;
+        check(browser.load(echoRow) && loaded.size() == 3 && std::get<0>(loaded[2]).subtype == "instrument" &&
+                  std::get<2>(loaded[2]),
+              "onto a MIDI track, an instrument");
+        // A plug-in the project already holds keeps its stored kind (one reference per plug-in).
+        document->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(990,'vst3','VST3-Echo-1a2b-3c4d','Echo','effect')");
+        check(storedSubtype(document->store(), "vst3", "VST3-Echo-1a2b-3c4d") == std::optional<std::string>("effect") &&
+                  !storedSubtype(document->store(), "vst3", "VST3-Hiss-1"),
+              "the project's stored kind for a plug-in it holds, and none for one it does not");
+        document->store().db().exec("DELETE FROM plugin_refs WHERE id = 990");
+        root.arrangement.geometry.selection.track = 0;
+        check(!browser.load(echoRow) && loaded.size() == 3 && root.error().rfind("Select a track", 0) == 0,
+              "with no track selected it says to select one");
+        root.loadPlugin = nullptr;
+        browser.search.setText("zeta", false);
+        browser.search.onTextChange();
+        layout.clear();
+        for (const auto &r : browser.rows())
+            layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
+        check(asked == 1 && layout == std::vector<std::pair<juce::String, int>>{{"VST3", 0}, {"Zeta Audio", 1}, {"Echo", 2}},
+              "the search keeps a plug-in by its vendor too, and asks for no scan");
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
+        // DF-W34 (c): one folder per vendor ignoring case, spelled as the first in sort order; no vendor
+        // and "other" share one folder.
+        PluginScan spelled;
+        spelled.phase = PluginScan::Phase::Done;
+        spelled.listing.plugins = {{"vst3", "a", "Pro-C 2", "FabFilter", "1", "/a.vst3"},
+                                   {"vst3", "b", "Pro-L 2", "Fabfilter", "1", "/b.vst3"},
+                                   {"vst3", "c", "Pro-Q 4", "FabFilter", "1", "/c.vst3"},
+                                   {"vst3", "d", "Hum", "", "1", "/d.vst3"},
+                                   {"vst3", "e", "Fizz", "other", "1", "/e.vst3"}};
+        browser.setPluginScan(spelled);
+        layout.clear();
+        for (const auto &r : browser.rows())
+            layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
+        check(layout == std::vector<std::pair<juce::String, int>>{{"VST3", 0},    {"FabFilter", 1}, {"Pro-C 2", 2},
+                                                                    {"Pro-L 2", 2}, {"Pro-Q 4", 2},   {"other", 1},
+                                                                    {"Fizz", 2},    {"Hum", 2}},
+              "one vendor spelled two ways is one folder, and no vendor goes in with one named other");
+        scan.listing = {};
+        browser.setPluginScan(scan);
+        browser.choose(plugIns);
+        check(browser.rows().empty() && root.error().rfind("No VST3 or CLAP plug-ins were found", 0) == 0,
+              "with none found by a complete scan, it says where to add their folders");
+        // DF-W34 (b): a scan that stopped early is named, with why, and never worded as "the rest".
+        scan.listing.complete = false;
+        scan::Report missing;
+        missing.complete = false;
+        missing.failures.push_back({"/x/Foo.vst3", std::string(kHelperUnavailable), scan::State::Unavailable});
+        applyReport(scan.listing, missing);
+        browser.setPluginScan(scan);
+        browser.choose(plugIns);
+        check(root.error() == "The plug-in scan stopped early: the plug-in scanner could not run (its helper, "
+                              "adi_plugin_scanner, is missing or could not start). Nothing could be listed. Rescan "
+                              "from the Settings' Plug-Ins page." &&
+                  asked == 1,
+              "a scan that stopped early says why and where to rescan, and choosing Plug-Ins does not rescan");
+        scan.listing.plugins = found.plugins;
+        browser.setPluginScan(scan);
+        browser.choose(plugIns);
+        check(root.error().find("The list may be incomplete.") != std::string::npos &&
+                  root.error().find("the rest are listed") == std::string::npos,
+              "with plug-ins kept from before, a stopped scan says the list may be incomplete");
+        browser.scanPlugins = nullptr;
+        browser.setPluginScan({});
+    }
+    {
+        // The loader's report read into the listing (DF-W34 b).
+        scan::Report service;
+        service.complete = false;
+        service.failures.push_back({"", "the registry could not be opened", scan::State::Unavailable});
+        PluginListing l;
+        applyReport(l, service);
+        check(!l.complete && l.failed == 0 && l.stopped == "the plug-in scanner could not run (the registry could not be opened)",
+              "a failure with no file is the scanner's own, not a plug-in's");
+        scan::Report helper; // the helper missing or blocked: the probe names the file it was asked to read
+        helper.complete = false;
+        helper.failures.push_back({"/x/Foo.vst3", std::string(kHelperUnavailable), scan::State::Unavailable});
+        applyReport(l, helper);
+        check(!l.complete && l.stopped.find("the plug-in scanner could not run") == 0 &&
+                  l.stopped.find("Foo.vst3") == std::string::npos,
+              "a helper that could not start is the scanner's failure, not the file's");
+        scan::Report file;
+        file.complete = false;
+        file.failures.push_back({"/x/A.vst3", "quarantined", scan::State::Quarantined});
+        file.failures.push_back({"/x/B.vst3", "bad metadata", scan::State::Invalid});
+        applyReport(l, file);
+        check(!l.complete && l.failed == 0 && l.stopped == "/x/B.vst3 stopped the scan (bad metadata)",
+              "the file whose failure ended the scan is named");
+        scan::Report cancelled;
+        cancelled.complete = false;
+        cancelled.cancelled = true;
+        applyReport(l, cancelled);
+        check(!l.complete && l.stopped == "the scan was stopped before it finished", "a cancelled scan says it was stopped");
+        scan::Report done;
+        done.failures.push_back({"/x/A.vst3", "crashed", scan::State::Failed});
+        done.failures.push_back({"/x/C.clap", "quarantined", scan::State::Quarantined});
+        applyReport(l, done);
+        check(l.complete && l.stopped.empty() && l.failed == 2, "a complete scan counts the files it could not read");
+    }
+    {
+        // The catalogue's service (DF-W34 on N58): it starts the loader's discovery jobs, reads their
+        // progress and adopts each that has finished, on the owner; a stand-in for the loader's job API.
+        using Outcome = DiscoveryEnd::Outcome;
+        std::uint64_t nextJob = 1, cancelled = 0;
+        std::vector<DiscoveryMode> started;
+        DiscoveryProgressRead progress;
+        std::optional<DiscoveryEnd> result;
+        PluginListing catalogue;
+        catalogue.plugins = {{"vst3", "VST3-Glass-1", "Glass Synth", "Northwind Audio", "1.0", "/x/Glass.vst3",
+                              PluginEntry::Kind::Instrument},
+                             {"clap", "org.zeta.echo", "Echo", "Zeta Audio", "2", "/x/Echo.clap", PluginEntry::Kind::Effect}};
+        std::string refusal;
+        DiscoveryPort port;
+        port.start = [&](DiscoveryMode mode) {
+            DiscoveryAdmission a;
+            if (!refusal.empty()) {
+                a.refusal = refusal;
+                return a;
+            }
+            a.job = nextJob++;
+            started.push_back(mode);
+            return a;
+        };
+        port.progress = [&] { return progress; };
+        port.adopt = [&](std::uint64_t job) {
+            return job + 1 == nextJob ? std::exchange(result, std::nullopt) : std::nullopt;
+        };
+        port.cancel = [&](std::uint64_t job) {
+            cancelled = job;
+            return true;
+        };
+        port.listing = [&] { return catalogue; };
+        const auto finish = [&](Outcome outcome, scan::Report report = {}) {
+            DiscoveryEnd e;
+            e.outcome = outcome;
+            e.report = std::move(report);
+            result = std::move(e);
+        };
+        PluginCatalogueService service(port);
+        int changes = 0;
+        service.onChange = [&] { ++changes; };
+        service.showCatalogue();
+        check(service.state().listing.plugins.size() == 2 && service.state().phase == PluginScan::Phase::Done &&
+                  service.state().listing.plugins[0].kind == PluginEntry::Kind::Instrument && started.empty(),
+              "the stored catalogue is listed at once, a VST3 with its kind from the catalogue (N58), no job yet");
+        service.request(DiscoveryMode::Incremental);
+        check(service.running() && started == std::vector{DiscoveryMode::Incremental} &&
+                  service.state().phase == PluginScan::Phase::Scanning && service.state().listing.plugins.size() == 2,
+              "an Incremental discovery starts and returns at once; the list stays meanwhile");
+        progress.job = service.job();
+        progress.hasTotal = true;
+        progress.total = 150;
+        progress.completed = 12;
+        service.poll();
+        check(service.running() && pluginScanStatus(service.state()) == "Scanning plug-ins: 12 of 150 files…",
+              "its progress is read on the owner and said");
+        catalogue.plugins.pop_back();
+        finish(Outcome::Published);
+        service.poll();
+        check(!service.running() && service.state().phase == PluginScan::Phase::Done &&
+                  service.state().listing.plugins.size() == 1 && service.state().listing.complete,
+              "once finished it is adopted, and the catalogue it published is listed");
+        // Rescan during an Incremental: the Incremental stops quietly, and the Refresh follows.
+        service.request(DiscoveryMode::Incremental);
+        const auto first = service.job();
+        service.request(DiscoveryMode::Refresh);
+        check(cancelled == first && service.job() == first, "Rescan stops a running Incremental first");
+        finish(Outcome::Cancelled);
+        service.poll();
+        check(service.running() && started.back() == DiscoveryMode::Refresh && service.state().listing.complete &&
+                  service.state().phase == PluginScan::Phase::Scanning,
+              "then the Refresh starts; a stop the app made is not named as the scan stopping early");
+        service.request(DiscoveryMode::Incremental);
+        check(cancelled == first, "an Incremental asked for during a Refresh waits for it; nothing is stopped");
+        finish(Outcome::Published);
+        service.poll();
+        check(service.running() && started.back() == DiscoveryMode::Incremental, "and follows it");
+        // A project opened while a job runs waits for the job's adoption, so it finds what the job found;
+        // nothing is stopped for it. A folder change leaving the job stale makes it wait for the rerun.
+        int opened = 0;
+        bool jobBesideOpen = true;
+        std::uint64_t listedAtOpen = 0;
+        const auto running = service.job();
+        const auto cancelledBefore = cancelled;
+        service.settleThen([&] {
+            ++opened;
+            jobBesideOpen = service.running();
+            listedAtOpen = service.state().listed;
+        });
+        check(opened == 0 && cancelled == cancelledBefore && service.job() == running,
+              "an open during a job waits for it, and stops nothing");
+        finish(Outcome::Stale);
+        service.poll();
+        check(opened == 0 && service.running() && started.back() == DiscoveryMode::Incremental && started.size() == 5,
+              "a stale job runs again on the new folders, and the open waits for that run");
+        const auto listedBefore = service.state().listed;
+        catalogue.plugins.push_back({"clap", "org.new.one", "New One", "New", "1", "/x/New.clap", PluginEntry::Kind::Effect});
+        finish(Outcome::Published);
+        service.poll();
+        check(opened == 1 && !jobBesideOpen && listedAtOpen > listedBefore && !service.running() &&
+                  service.state().listing.plugins.size() == 2,
+              "it opens once the job is adopted, with no job beside it, the plug-in the job found listed");
+        service.settleThen([&] { ++opened; });
+        check(opened == 2, "with no job running, an open runs at once");
+        // The open runs between jobs: after the running job's adoption, before the job queued behind it.
+        service.request(DiscoveryMode::Incremental);
+        jobBesideOpen = true;
+        service.settleThen([&] {
+            ++opened;
+            jobBesideOpen = service.running();
+        });
+        service.request(DiscoveryMode::Incremental); // queued behind the running one, which goes on
+        finish(Outcome::Published);
+        service.poll();
+        check(opened == 3 && !jobBesideOpen && service.running(), "the open runs before the queued job starts");
+        finish(Outcome::Published);
+        service.poll();
+        // An open waiting on a job that a Rescan stops waits for the Refresh, which publishes what it finds.
+        service.request(DiscoveryMode::Incremental);
+        service.settleThen([&] { ++opened; });
+        service.request(DiscoveryMode::Refresh);
+        finish(Outcome::Cancelled);
+        service.poll();
+        check(opened == 3 && service.running() && started.back() == DiscoveryMode::Refresh,
+              "the stopped job published nothing: the open waits for the Refresh");
+        finish(Outcome::Published);
+        service.poll();
+        check(opened == 4 && !service.running(), "and runs once the Refresh is adopted");
+        // A Rescan whose stop comes too late (the Incremental had already finished): the Incremental is
+        // adopted as it ended, and the Refresh follows once, not twice.
+        bool acceptCancel = false;
+        port.cancel = [&](std::uint64_t job) {
+            cancelled = job;
+            return acceptCancel;
+        };
+        PluginCatalogueService late(port);
+        late.request(DiscoveryMode::Incremental);
+        late.request(DiscoveryMode::Refresh);
+        const auto startedBefore = started.size();
+        finish(Outcome::Published);
+        late.poll();
+        check(late.running() && started.size() == startedBefore + 1 && started.back() == DiscoveryMode::Refresh &&
+                  late.state().listing.complete,
+              "a refused stop: the finished job is adopted, then the Refresh runs");
+        finish(Outcome::Published);
+        late.poll();
+        check(!late.running() && started.size() == startedBefore + 1, "and nothing runs twice");
+        late.stop();
+        // A count during a job changes no list: the Browser keeps its rows and selection.
+        service.request(DiscoveryMode::Incremental);
+        const auto listedDuring = service.state().listed;
+        progress.job = service.job();
+        progress.completed = 40;
+        service.poll();
+        check(service.state().listed == listedDuring && service.state().completed == 40,
+              "a progress count leaves the list's count as it was");
+        finish(Outcome::Published);
+        service.poll();
+        // A job that failed: what was listed stays, and why it stopped is named.
+        service.request(DiscoveryMode::Refresh);
+        scan::Report helper;
+        helper.complete = false;
+        helper.failures.push_back({"", "the helper could not start", scan::State::Unavailable});
+        finish(Outcome::Failed, helper);
+        service.poll();
+        check(!service.running() && !service.state().listing.complete && service.state().listing.plugins.size() == 2 &&
+                  service.state().listing.stopped == "the plug-in scanner could not run (the helper could not start)",
+              "a failed job keeps the list and names why it stopped");
+        // The person's own cancel (none here yet) and a job that could not start.
+        refusal = "the plug-in scanner could not run (helper missing)";
+        service.request(DiscoveryMode::Refresh);
+        check(!service.running() && service.state().phase == PluginScan::Phase::Done &&
+                  service.state().listing.stopped == "the plug-in scanner could not run (helper missing)",
+              "a job that could not start is named, and nothing runs");
+        refusal.clear();
+        // Quit: the running job is cancelled, nothing more starts, and the waiting opens are dropped.
+        service.request(DiscoveryMode::Incremental);
+        const auto last = service.job();
+        service.settleThen([&] { ++opened; });
+        service.stop();
+        finish(Outcome::Cancelled);
+        service.poll();
+        service.request(DiscoveryMode::Refresh);
+        check(cancelled == last && !service.running() && opened == 4 && started.back() == DiscoveryMode::Incremental,
+              "Quit cancels the job; nothing starts after it and no waiting open runs");
+        check(changes > 0, "the owner was told of each change");
+    }
     browser.choose(audioEffects);
     const auto chainOf = [&](std::int64_t track) {
         std::vector<std::string> out;
@@ -7468,7 +7893,7 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
         canvas.mouseUp(dragAt(canvas, grab, drop));
         root.frame();
         check(along && clipOf(1)->posTicks == 2 * bar && clipOf(3)->posTicks == 2 * bar && clipOf(2)->posTicks == bar &&
-                  submitter.nextUndo()->label == "Move Clips" && submitter.nextUndo()->opCount == 2,
+                  submitter.nextUndo()->label == "Move Clips",
               "track 3's clip dragged a bar later by its bar, track 1's picked: both move a bar, one step");
         check(root.command(AppCommands::Undo), "undo");
         root.frame();
@@ -7507,12 +7932,62 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
             std::sort(out.begin(), out.end());
             return out;
         };
-        check(onTrack(1).empty() && onTrack(2) == std::vector<std::int64_t>{11} && onTrack(3) == std::vector<std::int64_t>{12, 13} &&
+        check(onTrack(1).empty() && onTrack(2) == std::vector<std::int64_t>{11} && onTrack(3) == std::vector<std::int64_t>{12} &&
                   submitter.nextUndo()->label == "Move Clips" && geo.selection.track == 3,
-              "both a row down: track 1's on track 2, track 2's on track 3, one step; the selection follows the one dragged");
-        check(root.command(AppCommands::Undo), "undo");
+              "both a row down: track 1's on track 2, track 2's on track 3, one step; 13, which 12 now covers whole, "
+              "goes, as in Live (DF-W28); the selection follows the one dragged");
+        // DF-W28: a clip moved partly over another of its new track cuts the covered part off; one Undo puts
+        // both back.
+        check(root.command(AppCommands::Undo), "undo the row-down move");
         root.frame();
-        check(onTrack(1) == std::vector<std::int64_t>{11} && onTrack(2) == std::vector<std::int64_t>{12}, "puts them back");
+        check(onTrack(1) == std::vector<std::int64_t>{11} && onTrack(2) == std::vector<std::int64_t>{12},
+              "puts them back, 13 with them");
+        const auto *thirteen = [&]() -> const engine::ClipNode * {
+            for (const auto &c : root.reader().findTrack(3)->clips)
+                if (c->id == 13)
+                    return c.get();
+            return nullptr;
+        }();
+        check(thirteen != nullptr, "13 is back on track 3");
+        if (thirteen != nullptr) {
+            const auto start = thirteen->posTicks, length = thirteen->lengthTicks;
+            check(root.placeClips({{12, 3, start + length / 2}}, "Move Clip"), "12 onto the second half of 13");
+            root.frame();
+            const engine::ClipNode *after = nullptr;
+            for (const auto &c : root.reader().findTrack(3)->clips)
+                if (c->id == 13)
+                    after = c.get();
+            check(after != nullptr && after->posTicks == start && after->lengthTicks == length / 2,
+                  "13 keeps the part 12 does not cover; its covered half goes");
+            check(root.command(AppCommands::Undo), "undo");
+            root.frame();
+            bool whole = false;
+            for (const auto &c : root.reader().findTrack(3)->clips)
+                whole = whole || (c->id == 13 && c->posTicks == start && c->lengthTicks == length);
+            check(whole, "one Undo gives 13 back whole");
+            // Where the planner does not place yet (here a track with an automation lane, AU-05), the clip
+            // moves as before, keeping what it lands on, and the Status Bar says why.
+            automation::LaneSpec volumeLane;
+            volumeLane.id = 77;
+            volumeLane.ownerKind = "track";
+            volumeLane.ownerId = 3;
+            volumeLane.paramRef = "volume";
+            volumeLane.paramName = "Volume";
+            check(submitter.submit(automation::createLane(volumeLane)).ok, "an automation lane on track 3");
+            root.frame();
+            check(root.placeClips({{12, 3, start + length / 2}}, "Move Clip") &&
+                      root.error().rfind("Moved, keeping what the clips land on", 0) == 0,
+                  "with an automation lane the move still goes, saying it keeps what it lands on");
+            root.frame();
+            bool kept = false, moved = false;
+            for (const auto &c : root.reader().findTrack(3)->clips) {
+                kept = kept || (c->id == 13 && c->lengthTicks == length);
+                moved = moved || (c->id == 12 && c->posTicks == start + length / 2);
+            }
+            check(kept && moved, "12 moved, 13 kept whole");
+            check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the move and the lane");
+            root.frame();
+        }
         // A row up, track 1's would leave the lanes: they keep their tracks, and move in time.
         clickClip(1);
         clickClip(2, pick);
@@ -8467,6 +8942,42 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
         root.paintEntireComponent(g, true);
     }
     save(grouped, "adi-arrangement.png");
+    // The Browser's Plug-Ins (DF-W9), as the app lists what its loader found: two formats, their vendors,
+    // instruments, effects and a MIDI effect (invented names), with Melody selected and a synth chosen.
+    {
+        using K = PluginEntry::Kind;
+        PluginListing found;
+        found.plugins = {
+            {"clap", "com.northwind.glass", "Glass Piano", "Northwind Audio", "1.4.2", "/p/Glass Piano.clap", K::Instrument},
+            {"clap", "com.northwind.arc", "Arc Synth", "Northwind Audio", "2.0.1", "/p/Arc Synth.clap", K::Instrument},
+            {"clap", "com.northwind.chordz", "Chord Weaver", "Northwind Audio", "1.1.0", "/p/Chord Weaver.clap", K::MidiEffect},
+            {"clap", "org.tidewater.plate", "Plate Room", "Tidewater DSP", "3.2.0", "/p/Plate Room.clap", K::Effect},
+            {"clap", "org.tidewater.tape", "Tape Echo", "Tidewater DSP", "3.2.0", "/p/Tape Echo.clap", K::Effect},
+            {"vst3", "VST3-Saturator X-5a1c", "Saturator X", "Copperline", "1.8", "/p/Saturator X.vst3", K::Unknown},
+            {"vst3", "VST3-Bus Glue-77e0", "Bus Glue", "Copperline", "1.8", "/p/Bus Glue.vst3", K::Unknown},
+            {"vst3", "VST3-Strings 1-0b3d", "Chamber Strings", "Harbor Instruments", "4.0.3", "/p/Chamber Strings.vst3",
+             K::Unknown},
+            {"vst3", "VST3-Low End-91aa", "Low End", "Harbor Instruments", "4.0.3", "/p/Low End.vst3", K::Unknown}};
+        PluginScan scanned;
+        scanned.phase = PluginScan::Phase::Done;
+        scanned.listing = found;
+        root.browser.setPluginScan(scanned);
+        for (std::size_t i = 0; i < root.browser.sidebar().size(); ++i)
+            if (root.browser.sidebar()[i].name == "Plug-Ins")
+                root.browser.choose(static_cast<int>(i));
+        for (std::size_t i = 0; i < root.browser.rows().size(); ++i)
+            if (root.browser.rows()[i].plugin != nullptr && root.browser.rows()[i].plugin->name == "Arc Synth")
+                root.browser.list.selectRow(static_cast<int>(i));
+        check(root.browser.rows().size() == 15, "the showcase's Plug-Ins: two formats, four vendors, nine plug-ins");
+        root.frame();
+        root.frame();
+        juce::Image plugIns(juce::Image::ARGB, 1920, 1080, true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(plugIns);
+            root.paintEntireComponent(g, true);
+        }
+        save(plugIns, "adi-plugins.png");
+    }
     commands.detach(root);
     document->release();
 }
@@ -9703,6 +10214,50 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     arm.onClick();
     root.frame();
     check(arm.getToggleState() && document->automationArmed(), "and on again");
+    // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): the knob's context menu offers it
+    // while its lane is overridden, and it is no undo step.
+    root.reenableLane = [&](std::int64_t lane) {
+        const bool ok = document->reenableAutomation(lane);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    const auto reenableItem = [&](const ParameterControl &control, juce::PopupMenu &menu) -> const juce::PopupMenu::Item * {
+        root.addReenableAutomation(menu, deviceLaneOf(*root.current(), control.device, control.format, control.parameter));
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Re-Enable Automation")
+                return &it.getItem();
+        return nullptr;
+    };
+    {
+        auto &control = *root.devices.panels[0]->controls[0];
+        juce::PopupMenu following;
+        const auto *off = reenableItem(control, following);
+        check(off != nullptr && !off->isEnabled, "Cutoff follows its lane: the menu's Re-Enable Automation is unavailable");
+        cutoff.onDragStart();
+        cutoff.setValue(.6, juce::sendNotificationSync);
+        cutoff.onDragEnd();
+        document->tick(0);
+        root.frame();
+        const auto titleAgain = root.undoTitle(false);
+        juce::PopupMenu menu;
+        const auto *item = reenableItem(control, menu);
+        check(reEnable.getToggleState() && item != nullptr && item->isEnabled && item->action != nullptr,
+              "overridden again: the knob's menu offers Re-Enable Automation");
+        if (item != nullptr && item->action)
+            item->action();
+        root.frame();
+        check(!reEnable.getToggleState() && !document->session().automationOverridden() &&
+                  root.undoTitle(false) == titleAgain && root.error().empty(),
+              "chosen, Cutoff follows its lane again: the switch unlit, no undo step");
+        check(!document->reenableAutomation(root.current()->automationLanes.front()->id) &&
+                  !document->error().empty(),
+              "a lane that is not overridden is refused, with the reason");
+        root.say({});
+        juce::PopupMenu none;
+        root.addReenableAutomation(none, nullptr);
+        check(none.getNumItems() == 0, "a control with no lane gets no item");
+    }
     // A root with no session (the hooks unset) says so instead of toggling.
     root.reenableAutomation = nullptr;
     root.armAutomation = nullptr;
@@ -9716,9 +10271,607 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
           "and Automation Arm says so, showing Live's default, on");
     document->release();
 }
+// Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
+// monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
+// document whose callback the test drives with an input.
+void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "arm-record.adi", true, {}, error);
+    check(document != nullptr, "a project to arm and record in");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "record");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    root.startRecording = [&](std::int64_t insertTick, bool playing) {
+        const bool ok = document->startRecording(insertTick, 2, playing);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.stopRecording = [&] { document->stopRecording(); };
+    root.recording = [&] { return document->recording(); };
+    root.setSize(1440, 900);
+    // The application's frame: the timer's tick, the rows handed over, the window's frame.
+    std::int64_t now = 0;
+    const auto frame = [&] {
+        document->tick(++now);
+        root.setRecordStates(document->recordStates());
+        root.frame();
+    };
+    frame();
+    const auto stripOf = [&](MixerPanel &panel, std::int64_t id) -> MixerStrip * {
+        for (const auto &strip : panel.strips())
+            if (strip->track() == id)
+                return strip.get();
+        return nullptr;
+    };
+    // 3 Audio's row and 2 MIDI's in the side Mixer (4 Audio is below the fold at this size).
+    auto *three = stripOf(root.mixer, 4), *midi = stripOf(root.mixer, 3);
+    check(three != nullptr && midi != nullptr && !three->arm.getToggleState(), "3 Audio and 2 MIDI, unarmed");
+    if (three == nullptr || midi == nullptr) {
+        document->release();
+        return;
+    }
+    const auto states = [&] { return document->recordStates(); };
+    check(states().at(4).monitor == Monitor::Off, "New's tracks store monitoring Off (Live's default is Auto: AWAITING 20)");
+    three->arm.onClick();
+    frame();
+    check(states().at(4).armed && three->arm.getToggleState() && root.error().empty(),
+          "a click on 3 Audio's Arm arms it (track.setArm), lit from the rows");
+    midi->arm.onClick();
+    frame();
+    check(states().at(3).armed && !states().at(4).armed && midi->arm.getToggleState() && !three->arm.getToggleState(),
+          "Exclusive Arm: arming 2 MIDI disarms 3 Audio");
+    check(root.armTrack(4, true) && root.armTrack(5, true), "Ctrl/Cmd adds 3 Audio and 4 Audio");
+    frame();
+    check(states().at(3).armed && states().at(4).armed && states().at(5).armed && three->arm.getToggleState(),
+          "with Ctrl/Cmd all three stay armed");
+    check(!root.armTrack(1, false) && root.error().find("no Arm") != std::string::npos, "Main has no Arm");
+    // The monitoring switch: a click on In, Auto or Off in the Mixer View's In/Out section.
+    root.command(AppCommands::ToggleMixerView);
+    const bool inOutWasOn = root.state().mixerInOut;
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
+    frame();
+    if (auto *wide = stripOf(root.mixerView, 4)) {
+        const auto keptHeight = wide->getHeight();
+        wide->setSize(wide->getWidth(), 360);
+        check(wide->monitorAt({10, 19 + 65}) == Monitor::In && wide->monitorAt({35, 19 + 65}) == Monitor::Auto &&
+                  wide->monitorAt({58, 19 + 65}) == Monitor::Off && !wide->monitorAt({10, 19 + 20}),
+              "In, Auto and Off each where the switch draws them, Audio From not");
+        wide->setSize(wide->getWidth(), keptHeight);
+    } else
+        check(false, "3 Audio's strip in the Mixer View");
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
+    root.command(AppCommands::ToggleMixerView);
+    check(root.setMonitor(4, Monitor::In), "3 Audio's monitoring to In");
+    frame();
+    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Off &&
+              root.recordState(4).monitor == Monitor::In,
+          "track.setMonitorMode In on 3 Audio alone");
+    check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again is accepted");
+    frame();
+    check(root.command(AppCommands::Undo), "undo");
+    frame();
+    check(states().at(4).monitor == Monitor::Off, "the same choice again changed nothing: one Undo puts 3 Audio back on Off");
+    check(root.command(AppCommands::Redo), "redo");
+    frame();
+    check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring");
+    // Arrangement Record: F9 records both armed audio tracks; 2 MIDI, armed too, records nothing yet.
+    juce::ApplicationCommandInfo recordInfo(AppCommands::ArrangementRecord);
+    commands.getCommandInfo(AppCommands::ArrangementRecord, recordInfo);
+    check(recordInfo.shortName == "Arrangement Record" &&
+              recordInfo.defaultKeypresses.contains(juce::KeyPress(juce::KeyPress::F9Key)),
+          "Arrangement Record is named as Live's and on F9 (manual 21.1)");
+    auto &record = root.transport.record;
+    check(record.getTitle() == "Arrangement Record" && !record.getToggleState(), "the Record switch, unlit");
+    record.onClick();
+    frame();
+    check(document->recording() && record.getToggleState() && root.error() == "", "Record records; lit");
+    std::array<float, 64> left{}, right{}, outL{}, outR{};
+    const float *inputs[]{left.data(), right.data()};
+    float *outputs[]{outL.data(), outR.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 2;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        for (std::size_t i = 0; i < 64; ++i) {
+            left[i] = .25f;
+            right[i] = -.25f;
+        }
+        io.streamTimeSamples = stream;
+        document->process(io);
+        stream += 64;
+    };
+    for (int b = 0; b < 16; ++b)
+        block();
+    check(root.command(AppCommands::ArrangementRecord), "F9's command again");
+    frame();
+    check(!document->recording() && !record.getToggleState() && document->mailbox().desiredPlaying(),
+          "stops the recording; the transport plays on, as Live's");
+    for (int i = 0; i < 5000 && document->landingTake(); ++i) {
+        block();
+        document->tick(++now);
+        if (document->landingTake())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    auto landed = document->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 2 && landed->message == "Recorded 2 takes.",
+          "both armed tracks' takes land together");
+    frame();
+    check(root.reader().findTrack(4)->clips.size() == 1 && root.reader().findTrack(5)->clips.size() == 1,
+          "a clip on each armed track");
+    check(root.command(AppCommands::Undo), "one Undo");
+    frame();
+    check(root.reader().findTrack(4)->clips.empty() && root.reader().findTrack(5)->clips.empty(),
+          "takes both takes back");
+    // Punch-in: Record while playing records from the playhead, and Stop ends the take with the transport.
+    check(root.command(AppCommands::ArrangementRecord) && document->recording() && document->mailbox().desiredPlaying(),
+          "Record while playing records; the transport keeps rolling");
+    for (int b = 0; b < 8; ++b)
+        block();
+    check(root.command(AppCommands::Stop), "Stop mid-take");
+    check(!document->recording() && !document->mailbox().desiredPlaying(), "Stop ends the recording and the transport");
+    for (int i = 0; i < 5000 && document->landingTake(); ++i) {
+        block();
+        document->tick(++now);
+        if (document->landingTake())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    landed = document->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 2, "the punched-in takes land");
+    frame();
+    // A Count-In is playing for the window: Space during it stops, it does not start again.
+    {
+        OpRequest countIn;
+        countIn.opType = "transport.setCountIn";
+        countIn.payload = {{"bars", 1}};
+        check(document->ops().submit(countIn).ok && document->synchronise(), "Count-In of one bar");
+        frame();
+        block();
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(), "Record from stopped, with a Count-In");
+        block();
+        check(document->mailbox().playing() && document->session().transport().countInRemaining() > 0,
+              "during the Count-In the window reads the transport as playing");
+        check(root.command(AppCommands::PlayStop) && !document->recording() && !document->mailbox().desiredPlaying(),
+              "Space during the Count-In stops it and the recording");
+        block();
+        check(!document->mailbox().playing() && document->session().transport().countInRemaining() == 0,
+              "the Count-In is cancelled");
+        for (int i = 0; i < 5000 && document->landingTake(); ++i) {
+            block();
+            document->tick(++now);
+            if (document->landingTake())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        (void)document->takeLanded();
+    }
+    // With the loop on, Record says it waits for take lanes.
+    {
+        OpRequest loop;
+        loop.opType = "transport.setLoop";
+        loop.payload = {{"on", true}, {"start", 0}, {"end", 3840}};
+        check(document->ops().submit(loop).ok && document->synchronise(), "the loop on");
+        frame();
+        check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
+                  root.error().find("loop") != std::string::npos,
+              "Record with the loop on is refused, saying why");
+    }
+    // Without the application's hooks Record says where it runs.
+    root.startRecording = nullptr;
+    check(!root.command(AppCommands::ArrangementRecord) && root.error().find("in the application") != std::string::npos,
+          "outside the application Record says it records there");
+    // MIDI Arrangement Overdub: the window's own switch.
+    auto &overdub = root.transport.overdub;
+    overdub.onClick();
+    frame();
+    check(root.midiOverdub() && overdub.getToggleState(), "Overdub on, lit");
+    overdub.onClick();
+    frame();
+    check(!root.midiOverdub() && !overdub.getToggleState(), "and off");
+    document->release();
+}
+// EX-11, the Export page (Live 12 manual 5.2.1): the choices in Live's order, what the renderer cannot do
+// yet refused with its reason, the range from the selection, the loop or the song, and the job the choices
+// make, rendered to a WAV by the engine's renderer.
+void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "export.adi", true, {}, error);
+    check(document != nullptr, "a project to export");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "export");
+    root.setSize(1440, 900);
+    root.frame();
+    // The command: on Ctrl/Cmd+Shift+R, named as Live's; outside the application it says where it runs.
+    juce::ApplicationCommandInfo info(AppCommands::ExportAudio);
+    commands.getCommandInfo(AppCommands::ExportAudio, info);
+    check(info.shortName == "Export Audio/Video..." &&
+              info.defaultKeypresses.contains(juce::KeyPress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+          "Export Audio/Video, on Ctrl/Cmd+Shift+R");
+    check(!root.command(AppCommands::ExportAudio) && root.error() == "Export runs in the application.",
+          "outside the application it says where it runs");
+    std::optional<ExportChoices> asked;
+    root.exportAudio = [&](const ExportChoices &c) { asked = c; };
+    // With nothing selected: the loop brace, whether the loop is on or not (New's brace: four bars), Main,
+    // at the project's rate.
+    const auto &transport = root.reader().transport();
+    check(root.command(AppCommands::ExportAudio) && asked && !transport.loopEnabled &&
+              asked->startTicks == transport.loopStartTicks &&
+              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks && asked->lengthTicks == 4 * textproj::kWhole &&
+              asked->track == 0 && asked->sampleRate == root.reader().sampleRate(),
+          "the loop brace with the loop off, Main, at the project's rate");
+    auto &sel = root.arrangement.geometry.selection;
+    sel.start = 3840;
+    sel.end = 3840 * 5;
+    check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
+          "a time selection is the range, as Live's");
+    sel.start = 3840 * 5;
+    sel.end = 3840;
+    check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
+          "a selection made right to left is the same range");
+    sel.start = sel.end = 0;
+    // The page: Live's rows in Live's order, Main and the tracks to render.
+    ExportChoices c = *asked;
+    c.lengthTicks = textproj::kWhole * 2; // two 4/4 bars
+    ExportPage page(c, {{4, "3 Audio"}, {6, "A Reverb"}}, root.reader().meters());
+    std::vector<juce::String> titles;
+    for (auto *control : std::initializer_list<juce::Component *>{&page.renderedTrack, &page.start, &page.length,
+                                                                   &page.includeReturnAndMain, &page.renderAsLoop,
+                                                                   &page.convertToMono, &page.normalize,
+                                                                   &page.createAnalysisFile, &page.sampleRate,
+                                                                   &page.encodePcm, &page.fileType, &page.bitDepth,
+                                                                   &page.dither, &page.encodeMp3, &page.video})
+        titles.push_back(control->getTitle());
+    check(titles == std::vector<juce::String>{"Rendered Track", "Render Start", "Render Length",
+                                              "Include Return and Main Effects", "Render as Loop", "Convert to Mono",
+                                              "Normalize", "Create Analysis File", "Sample Rate", "Encode PCM",
+                                              "File Type", "Bit Depth", "Dither Options", "Encode MP3", "Export Video"},
+          "Live's choices in Live's order");
+    check(page.renderedTrack.getNumItems() == 3 && page.renderedTrack.getText() == "Main" &&
+              page.start.getText() == "1.1.1" && page.length.getText() == "2.0.0" && page.refusals().empty() &&
+              page.exportButton.isEnabled(),
+          "Main, from 1.1.1 for 2.0.0: Export is offered");
+    {
+        // The range as filled is kept exact while its fields are unchanged; the project's rate is offered
+        // when the list lacks it.
+        ExportChoices odd = c;
+        odd.lengthTicks = textproj::kWhole + 7;
+        odd.sampleRate = 192000;
+        ExportPage exact(odd, {}, root.reader().meters());
+        check(exact.choices().lengthTicks == textproj::kWhole + 7 && exact.choices().sampleRate == 192000 &&
+                  exact.sampleRate.getText() == "192000",
+              "an unedited range stays exact past the sixteenths it shows, and 192 kHz stays 192 kHz");
+    }
+    page.encodeMp3.setToggleState(true, juce::dontSendNotification);
+    page.encodeMp3.onClick();
+    check(!page.exportButton.isEnabled() && page.refusals().size() == 1 &&
+              page.refusals()[0].find("MP3 waits") != std::string::npos,
+          "MP3 on: Export waits, saying why");
+    page.encodeMp3.setToggleState(false, juce::dontSendNotification);
+    page.encodeMp3.onClick();
+    page.renderedTrack.setSelectedId(2, juce::sendNotificationSync);
+    check(page.choices().track == 4 && !page.exportButton.isEnabled() &&
+              page.refusals()[0].find("Include Return and Main Effects off") != std::string::npos,
+          "a track through the returns and Main waits; the reason says what renders now");
+    page.includeReturnAndMain.setToggleState(false, juce::dontSendNotification);
+    page.includeReturnAndMain.onClick();
+    check(page.exportButton.isEnabled(), "with the effects off, the track's own signal renders");
+    page.length.setText("one bar", false);
+    page.length.onTextChange();
+    check(!page.exportButton.isEnabled() && page.refusals()[0].find("Render Length is not a length") != std::string::npos,
+          "a length that is not one is refused");
+    page.length.setText("1.2.0", false);
+    page.length.onTextChange();
+    check(page.exportButton.isEnabled() && page.choices().lengthTicks == textproj::kWhole + textproj::kWhole / 2,
+          "1.2.0 is a bar and two beats");
+    std::optional<ExportChoices> exported;
+    page.onExport = [&](const ExportChoices &e) { exported = e; };
+    page.exportButton.onClick();
+    check(exported && exported->track == 4 && !exported->includeReturnAndMain, "Export hands over the choices");
+    // The job, and a real render of the project: Main for one bar, 16-bit, at 44.1 kHz.
+    ExportChoices one;
+    one.lengthTicks = textproj::kWhole;
+    one.sampleRate = 44100;
+    one.bitDepth = 16;
+    one.dither = "No Dither";
+    one.normalize = true;
+    const auto now = document->view().current();
+    const auto tempo = now ? now->tempo : nullptr;
+    check(tempo != nullptr, "the project's tempo map");
+    if (!tempo) {
+        document->release();
+        return;
+    }
+    auto job = exportJob(one, document->store().path(), dir / "Song {mix}.wav", *tempo);
+    const auto expected = exportSample(*tempo, textproj::kWhole, 44100);
+    check(job.directory == dir && job.nameTemplate == "Song {{mix}}" && job.beginSample == 0 && job.endSample == expected &&
+              job.session.sampleRate == 44100 && job.encoding.format == audio::WavFormat::Pcm16 &&
+              job.encoding.dither == audio::WavDither::None && job.normalization.mode == render::NormalizeMode::Peak &&
+              job.source.trackId == 0,
+          "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize");
+    one.normalize = false; // a silent song has no peak to normalize
+    // New's Set holds Reverb and Delay, which a build without Pd cannot load, and the renderer renders
+    // only a project whose every device loads: an empty project here.
+    {
+        StoreError made{};
+        auto empty = Store::createEmpty(dir / "export-empty.adi", made);
+        check(empty != nullptr, "an empty project to render");
+        if (empty)
+            empty->db().exec("INSERT INTO project(id,name) VALUES(1,'Export'); INSERT INTO tracks(id,kind,name) VALUES(1,'master','Main')");
+    }
+    job = exportJob(one, dir / "export-empty.adi", dir / "Song {mix}.wav", *tempo);
+    const auto result = render::renderWav(job, {});
+    if (result.state != render::JobState::Completed)
+        std::printf("render: %s\n", result.error.c_str());
+    check(result.state == render::JobState::Completed && result.output == dir / "Song {mix}.wav" &&
+              std::filesystem::exists(result.output) && result.framesWritten == static_cast<std::uint64_t>(expected),
+          "the renderer writes the chosen file, the whole range");
+    document->release();
+}
+// MX-23 and SRF-02 from the strip: the fader's own drag is the document's live gesture, one undo step at
+// the release, the selected tracks moving together by the same move, Esc putting them back.
+void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "drag-live.adi", true, {}, error);
+    check(document != nullptr, "a project for the strip's drags");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "drag");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.beginMixerDrag = [&](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
+                              const std::string &label) {
+        return document->beginMixerDrag(selection, value, label);
+    };
+    root.mixerDrag = [&](double value) { return document->mixerDrag(value); };
+    root.endMixerDrag = [&] { return document->endMixerDrag(); };
+    root.cancelMixerDrag = [&] { document->cancelMixerDrag(); };
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.setSize(1440, 900);
+    root.frame();
+    // A drag is the mouse held down: the strip goes live only then (a typed value or a double-click does not).
+    const auto press = [] { juce::ModifierKeys::currentModifiers = juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier); };
+    const auto letGo = [] { juce::ModifierKeys::currentModifiers = juce::ModifierKeys(); };
+    MixerStrip *three = nullptr, *midi = nullptr;
+    for (const auto &strip : root.mixer.strips()) {
+        if (strip->track() == 4)
+            three = strip.get();
+        if (strip->track() == 3)
+            midi = strip.get();
+    }
+    check(three != nullptr && midi != nullptr, "3 Audio's and 2 MIDI's rows");
+    if (three == nullptr || midi == nullptr) {
+        document->release();
+        return;
+    }
+    const auto volumeOf = [&](std::int64_t id) {
+        SQLite::Statement q(document->store().db(), "SELECT volume_db FROM mixer_strip WHERE track_id = ?");
+        q.bind(1, id);
+        return q.executeStep() ? q.getColumn(0).getDouble() : 999.0;
+    };
+    const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto before = opCount();
+    // A drag: start, three moves, release.
+    press();
+    three->volume.onDragStart();
+    for (const double db : {-3.0, -6.0, -9.0}) {
+        three->volume.setValue(db, juce::dontSendNotification);
+        three->volume.onValueChange();
+    }
+    check(document->mixerDragging() && opCount() == before && volumeOf(4) == 0,
+          "while the fader moves nothing is written; the document's gesture holds it");
+    letGo();
+    three->volume.onDragEnd();
+    root.frame();
+    check(!document->mixerDragging() && opCount() == before + 1 && std::abs(volumeOf(4) + 9) < 1e-6 &&
+              root.undoTitle(false) == "Undo Change Track Volume",
+          "released, one op and one undo step, at the value let go");
+    // Two tracks selected, the drag on one of them: both move by the same amount.
+    auto &sel = root.arrangement.geometry.selection;
+    sel.track = 3;
+    sel.toTrack = 4;
+    root.frame();
+    press();
+    midi->volume.onDragStart();
+    midi->volume.setValue(-6.0, juce::dontSendNotification);
+    midi->volume.onValueChange();
+    letGo();
+    midi->volume.onDragEnd();
+    root.frame();
+    check(std::abs(volumeOf(3) + 6) < 1e-6 && std::abs(volumeOf(4) + 15) < 1e-6 && document->ops().nextUndo() &&
+              document->ops().nextUndo()->opCount == 2 && document->ops().nextUndo()->label == "Change Track Volume",
+          "with 2 MIDI and 3 Audio selected, a drag on 2 MIDI moves both by -6 dB, in one step");
+    check(root.command(AppCommands::Undo) && std::abs(volumeOf(3)) < 1e-6 && std::abs(volumeOf(4) + 9) < 1e-6,
+          "one Undo takes both back");
+    sel.track = sel.toTrack = 0;
+    root.frame();
+    // Esc while dragging puts the value back, and the release commits nothing.
+    const auto stepBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+    press();
+    three->volume.onDragStart();
+    three->volume.setValue(-30.0, juce::dontSendNotification);
+    three->volume.onValueChange();
+    auto *focused = juce::Component::getCurrentlyFocusedComponent();
+    check(focused == three && focused->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !document->mixerDragging(),
+          "the dragged strip has the keys, and Esc cancels the drag");
+    root.frame();
+    letGo();
+    three->volume.onDragEnd();
+    root.frame();
+    check(std::abs(three->volume.getValue() + 9) < 1e-6, "the fader shows the value it was put back to");
+    check((document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == stepBefore && std::abs(volumeOf(4) + 9) < 1e-6,
+          "and the release after it writes nothing");
+    // Pan, the same way.
+    press();
+    three->pan.onDragStart();
+    three->pan.setValue(-.5, juce::dontSendNotification);
+    three->pan.onValueChange();
+    letGo();
+    three->pan.onDragEnd();
+    root.frame();
+    check(root.undoTitle(false) == "Undo Change Track Panning" &&
+              std::abs(document->store().db().execAndGet("SELECT pan FROM mixer_strip WHERE track_id = 4").getDouble() + .5) < 1e-9,
+          "a pan drag is one step too");
+    // A click with no move on an off-grid value, two tracks selected: nothing is written.
+    {
+        OpRequest odd;
+        odd.opType = "mixer.setVolume";
+        odd.payload = {{"id", 4}, {"db", -4.7321}};
+        check(document->ops().submit(odd).ok && document->synchronise(), "3 Audio at -4.7321 dB");
+        root.frame();
+        sel.track = 3;
+        sel.toTrack = 4;
+        root.frame();
+        const auto step = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+        const auto two = volumeOf(3);
+        press();
+        three->volume.onDragStart();
+        letGo();
+        three->volume.onDragEnd();
+        root.frame();
+        check((document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == step && volumeOf(3) == two &&
+                  std::abs(volumeOf(4) + 4.7321) < 1e-9,
+              "a click on the fader that does not move writes nothing, on either selected track");
+        sel.track = sel.toTrack = 0;
+        root.frame();
+    }
+    // A typed value or a double-click is not a drag: it sets the clicked control alone, at once.
+    three->volume.onDragStart();
+    three->volume.setValue(-3.0, juce::dontSendNotification);
+    three->volume.onValueChange();
+    three->volume.onDragEnd();
+    root.frame();
+    check(!document->mixerDragging() && std::abs(volumeOf(4) + 3) < 1e-6, "without the mouse held, the value commits at the end");
+    // Without the live gesture, the release commits as before.
+    root.beginMixerDrag = nullptr;
+    press();
+    three->volume.onDragStart();
+    three->volume.setValue(-12.0, juce::dontSendNotification);
+    three->volume.onValueChange();
+    letGo();
+    three->volume.onDragEnd();
+    root.frame();
+    check(std::abs(volumeOf(4) + 12) < 1e-6, "without the live gesture the release commits the value");
+    document->release();
+}
+// AU-01: Automation Mode in the Arrangement (Live 12 manual 25.2, 25.3): a track's Volume envelope on its
+// lane; a click adds a breakpoint (the lane made in the same step), a drag moves one, a double-click or
+// Delete removes one; each one undo step.
+void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-mode.adi", true, {}, error);
+    check(document != nullptr, "a project to automate");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automate");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    auto &canvas = root.arrangement.canvas;
+    check(!root.automationMode(), "Automation Mode is off in a new window");
+    root.namesBar.automation.onClick();
+    root.frame();
+    check(root.automationMode() && root.namesBar.automation.getToggleState(), "the bar's switch turns it on, lit");
+    const auto bodies = canvas.laneBodies();
+    const ArrangementCanvas::LaneBody *audio = nullptr;
+    for (const auto &b : bodies)
+        if (b.track->id == 4)
+            audio = &b;
+    check(audio != nullptr, "3 Audio's lane");
+    if (audio == nullptr) {
+        document->release();
+        return;
+    }
+    const auto laneOf = [&] { return trackEnvelope(*document->view().current(), 4); };
+    const float midY = (audio->top + audio->bottom) / 2;
+    const float barX = static_cast<float>(root.arrangement.geometry.x(textproj::kWhole));
+    canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, midY}));
+    root.frame();
+    auto env = laneOf();
+    check(env.lane != nullptr && env.data != nullptr && env.data->points.size() == 1 &&
+              env.data->points[0].time == textproj::kWhole && std::abs(env.data->points[0].value + 32) < 1.5 &&
+              root.undoTitle(false) == "Undo Add Automation Point",
+          "a click on the lane adds a breakpoint on the grid at the value there, the Volume lane with it, one step");
+    check(env.lane->paramRef == "volume" && env.lane->valueDomain == "real" && env.lane->ownerKind == "track",
+          "the lane is the track's Volume in dB, as the engine plays it");
+    check(env.data->points[0].curve == 1, "a new breakpoint is linear to the next, as the lane draws it");
+    // Drag it a bar later and up.
+    const auto pointAt = juce::Point<float>(barX, (audio->top + audio->bottom) / 2);
+    const auto hit = canvas.automationPointAt(pointAt);
+    check(hit && hit->track == 4, "the breakpoint is found where it is drawn");
+    const float twoBars = static_cast<float>(root.arrangement.geometry.x(2 * textproj::kWhole));
+    const float upper = audio->top + (audio->bottom - audio->top) * .25f;
+    canvas.mouseDown(pressAt(canvas, pointAt));
+    canvas.mouseDrag(dragAt(canvas, pointAt, {twoBars + 1, upper}));
+    check(laneOf().data->points[0].time == textproj::kWhole, "while it is dragged nothing is written");
+    canvas.mouseUp(dragAt(canvas, pointAt, {twoBars + 1, upper}));
+    root.frame();
+    env = laneOf();
+    check(env.data->points.size() == 1 && env.data->points[0].time == 2 * textproj::kWhole &&
+              env.data->points[0].value > -32 && root.undoTitle(false) == "Undo Move Automation Point",
+          "let go, it is a bar later and higher: one step");
+    check(root.command(AppCommands::Undo) && laneOf().data->points[0].time == textproj::kWhole, "Undo puts it back");
+    check(root.command(AppCommands::Redo), "and Redo moves it again");
+    root.frame();
+    // A double-click on it deletes it.
+    const auto moved = canvas.automationPointAt(
+        {twoBars, audio->bottom - static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)});
+    check(moved.has_value(), "the moved breakpoint is found where it is drawn now");
+    if (moved) {
+        canvas.mouseDoubleClick(pressAt(canvas, {twoBars, audio->bottom - static_cast<float>((laneOf().data->points[0].value + 70) / 76) * (audio->bottom - audio->top)}));
+        root.frame();
+        check(laneOf().lane == nullptr && root.undoTitle(false) == "Undo Delete Automation Point",
+              "a double-click on the last breakpoint deletes it and its lane, so the fader plays again: one step");
+    }
+    // Chosen, Delete takes it away.
+    canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, midY}));
+    root.frame();
+    canvas.mouseDown(pressAt(canvas, {barX, midY}));
+    canvas.mouseUp(pressAt(canvas, {barX, midY}));
+    check(canvas.chosenAutomationPoint().has_value(), "a click on a breakpoint chooses it");
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && laneOf().lane == nullptr,
+          "Delete takes the chosen breakpoint away");
+    // The lane's foot is silence, as the fader's.
+    canvas.mouseDown(pressAt(canvas, {barX + 1, audio->scaleBottom}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, audio->scaleBottom}));
+    root.frame();
+    check(laneOf().data != nullptr && laneOf().data->points.size() == 1 && laneOf().data->points[0].value == -150,
+          "a breakpoint at the lane's foot is silence (-150 dB, as the fader writes it)");
+    root.namesBar.automation.onClick();
+    check(!root.automationMode(), "and the switch turns Automation Mode off");
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
+    std::fputs("[shell] mix fixture entered\n", stderr);
     StoreError err{};
     auto store = Store::createEmpty(dir / "mixview.adi", err);
     check(store != nullptr, "the Mix View's project opens");
@@ -9742,7 +10895,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         madeAll = submitter.submit(std::move(r)).ok && madeAll;
     }
     check(madeAll, "Kick, Bass, Lead and Main");
-    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "mix");
+    // Keep the three long-lived roots off the Debug test thread stack.
+    const auto rootStorage = std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
+                                                               persistence, session, "mix");
+    auto &root = *rootStorage;
+    std::fputs("[shell] mix fixture root constructed\n", stderr);
     root.setSize(1440, 900);
     root.mark(DirtySet::All);
     root.frame();
@@ -9762,7 +10919,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     root.frame();
     check(panel.stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
               panel.stack.channelScope.getSelectedId() == 1 && panel.stack.model().shownCount() == 0 &&
-              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("Device View"),
+              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("+ Function"),
           "STACK starts with tool channels and explains how to add the first tool");
     {
         const auto selectionBefore = root.arrangement.geometry.selection;
@@ -10146,10 +11303,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.referenceTrack() == 0 && root.arrangement.geometry.inView(12), "back to the stub: Lead shows");
     }
     // A second window keeps its own.
-    AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "mix-other");
-    other.setSize(1200, 720);
-    other.frame();
-    check(!other.mixViewPanel.isVisible() && other.arrangement.isVisible(), "a second window keeps its own view");
+    const auto other = std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
+                                                         persistence, session, "mix-other");
+    other->setSize(1200, 720);
+    other->frame();
+    check(!other->mixViewPanel.isVisible() && other->arrangement.isVisible(), "a second window keeps its own view");
     root.transport.mix.onClick();
     root.frame();
     check(!root.state().mixView && !panel.isVisible() && root.arrangement.isVisible() && root.mixer.isVisible() &&
@@ -10173,6 +11331,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         root.transport.mix.onClick();
         root.frame();
     }
+    std::fputs("[shell] mix fixture docking start\n", stderr);
     // In a window of its own, onto any display (ADR-0209 d11, ADR-0180 d3): the same panel moves
     // into the floating host's window and back.
     {
@@ -10276,6 +11435,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.command(AppCommands::ToggleMixView) && !panel.isVisible() && root.arrangement.isVisible(), "and F4 closes it");
         root.applicationCommand = nullptr;
     }
+    std::fputs("[shell] mix fixture device document start\n", stderr);
     // A real document and its shared feed, using only the headless Knobs fixture.
     {
         std::string error;
@@ -10295,8 +11455,10 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             }
             check(document->ops().submit(std::move(make)).ok && document->synchronise(),
                   "two actual ordered devices on one track");
-            AdiRootComponent actual(document->view(), document->ops(), document->mailbox(), commands,
-                                    document->views(), document->sessionState(), "mix-devices");
+            const auto actualStorage = std::make_unique<AdiRootComponent>(document->view(), document->ops(),
+                document->mailbox(), commands, document->views(), document->sessionState(), "mix-devices");
+            auto &actual = *actualStorage;
+            std::fputs("[shell] mix fixture device root constructed\n", stderr);
             // This test peer overrides createNewPeer with UiFakePeer: no OS window, input or display.
             UiPeerRoot fake;
             fake.setSize(1440, 900);
@@ -10411,6 +11573,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 check(knobs && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
                           actual.undoTitle(false) == beforeUndo,
                       "one undo restores the untouched parameter through the shared authority");
+                std::fputs("[shell] mix fixture compact activator start\n", stderr);
                 const auto compactTime = std::max(dragTime + 20,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setAutoZoom(false, compactTime);
@@ -10450,6 +11613,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     check(actual.command(AppCommands::Undo), "undo only the displayed second pill's activator");
                     document->tick(38); actual.frame();
                 }
+                std::fputs("[shell] mix fixture compact activator returned\n", stderr);
                 const auto restoreTime = std::max(compactTime + 210,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setBaseHeight(100, restoreTime);
@@ -11012,6 +12176,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             actual.afterEdit = nullptr;
             fake.removeChildComponent(&actual);
             fake.removeFromDesktop();
+            std::fputs("[shell] mix fixture demand peers start\n", stderr);
             // Exercise the real main/floating visibility hooks with fake peers.
             // Neither DocumentWindow constructs a native peer in this fixture.
             std::map<const void *, std::vector<std::int64_t>> demands;
@@ -11149,7 +12314,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   "panel End still reaches its original owner after target validation turns stale");
         }
     }
+    std::fputs("[shell] mix fixture seek checks start\n", stderr);
     adi::uitest::mixSeekChecks(commands, dir, check);
+    std::fputs("[shell] mix fixture seek checks returned\n", stderr);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     if (!headlessOnly && folder.isNotEmpty()) {
         root.command(AppCommands::ToggleMixView);
@@ -11195,6 +12362,19 @@ int main(int argc, char **argv) {
     engine::Transport driver;
     settings::AppSettings settings(appdata::App::Daw, temp.path() / "settings.json");
     AppCommands commands(settings);
+    const auto trace = [](const char *name, const auto &fixture) {
+        std::fprintf(stderr, "[shell] begin %s\n", name);
+        fixture();
+        std::fprintf(stderr, "[shell] end %s\n", name);
+    };
+    if (argc == 2 && std::string(argv[1]) == "--arrangement-components-only") {
+        // These fixtures render components in software and do not create a native peer.
+        trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
+        trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
+        trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
+        std::printf("%d checks, %d failures (Arrangement components)\n", checks, failures);
+        return failures ? 1 : 0;
+    }
     if (argc == 2 && std::string(argv[1]) == "--mixview-only") {
         // Deliberately before every UiPeerRoot/addToDesktop/reference() branch below.
         // Fake plug-ins and UiFakePeer only; no native window, desktop input/capture or audio device.
@@ -12012,16 +13192,17 @@ int main(int argc, char **argv) {
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), then Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport},
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them; Quit is the application menu's on the Mac");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the menu bar: File, Edit, Create, View, Options, Navigate");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
-                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::Quit},
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
+                                                C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them; it ends with Quit and no longer holds Settings");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
@@ -12063,7 +13244,8 @@ int main(int argc, char **argv) {
                       C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
-                      C::LastId == C::FitToTimeRange,
+                      C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
+                      C::LastId == C::ExportAudio,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -13807,6 +14989,65 @@ int main(int argc, char **argv) {
               "the Status Bar's corner toggle hides it again");
         document->release();
     }
+    // SRF-05: the MIDI Ports table at the Tempo & MIDI page's head, in place of the record's own row, over
+    // the application's port host (on a machine with no MIDI, it lists none and says so).
+    {
+        MidiPortHost portHost([&settings] { return settings.get("midi.ports"); });
+        SettingsPanel panel(settings);
+        panel.setSize(560, 680);
+        panel.midiPorts = [&]() -> std::unique_ptr<juce::Component> { return std::make_unique<MidiPortsTable>(portHost, settings); };
+        panel.showPage("Tempo & MIDI");
+        auto *table = dynamic_cast<MidiPortsTable *>(panel.midiPortsTable());
+        const bool recordRow = std::any_of(panel.rows().begin(), panel.rows().end(), [](const auto &row) {
+            return row->setting.key.rfind("midi.port", 0) == 0;
+        });
+        check(table != nullptr && table->isVisible() && !recordRow && table->rows().size() == portHost.ports().size(),
+              "Tempo & MIDI shows the MIDI Ports table, one row per port the system lists, not the record's text or the per-port rows");
+        std::size_t inputs = 0;
+        for (const auto &p : portHost.ports())
+            inputs += p.input ? 1 : 0;
+        check(inputs == 0 || portHost.ports().front().input, "inputs are listed first");
+        panel.showPage("Audio");
+        check(table != nullptr && !table->isVisible(), "the table shows on its own page only");
+        check(portHost.drain({}) == 0 && portHost.dropped() == 0, "with nothing played, nothing to drain");
+    }
+    {
+        // Two ports, as a machine with a keyboard and a synth lists them: the switches write the record.
+        std::string refused;
+        check(settings.set("midi.ports", settings::Value::object(), {}, refused), "no port records");
+        MidiPortHost::Port keys, synth;
+        keys.id = "in:port-1";
+        keys.name = "Keystation 61";
+        keys.input = true;
+        synth.id = "out:port-1"; // a two-way port: one identifier, a record per direction
+        synth.name = "Synth";
+        synth.output = true;
+        MidiPortHost portHost([&settings] { return settings.get("midi.ports"); }, {synth, keys});
+        int changes = 0;
+        portHost.onChange = [&] { ++changes; };
+        MidiPortsTable table(portHost, settings);
+        std::vector<std::function<void()>> posted;
+        table.post = [&posted](std::function<void()> job) { posted.push_back(std::move(job)); };
+        table.setSize(520, 200);
+        check(table.rows().size() == 2 && table.rows()[0]->id == "in:port-1" && table.rows()[0]->input &&
+                  table.rows()[0]->name->getText() == "Input: Keystation 61" &&
+                  table.rows()[1]->name->getText() == "Output: Synth",
+              "a row per port and direction, inputs first, as Live's table");
+        auto &track = *table.rows()[0]->switches[0];
+        check(track.getToggleState() == midiPortDefault("track"), "Track shows the row's default");
+        track.setToggleState(!track.getToggleState(), juce::dontSendNotification);
+        track.onClick();
+        check(posted.size() == 1, "the write waits for the click to return");
+        for (auto &job : posted)
+            job();
+        check(midiPortSwitches(settings.get("midi.ports"), "in:port-1").track != midiPortDefault("track") &&
+                  midiPortSwitches(settings.get("midi.ports"), "out:port-1").track == midiPortDefault("track") && changes == 1 &&
+                  portHost.ports()[0].switches.track != midiPortDefault("track") && table.error().empty(),
+              "a click on Track writes the port's record at once, and the host follows");
+        table.rebuild();
+        check(table.rows()[0]->switches[0]->getToggleState() != midiPortDefault("track"), "the table shows what is kept");
+        check(settings.set("midi.ports", settings::Value::object(), {}, refused), "the records cleared again");
+    }
     // The Settings window in Live's shape (ADR-0203 d11, Master Reference V.1).
     {
         SettingsPanel panel(settings);
@@ -13826,7 +15067,10 @@ int main(int argc, char **argv) {
                     ++placed;
                     once = once && tabOf(*setting) == tab.name;
                 }
-        check(once && placed == settings::registry().size(), "every setting is on one tab, once");
+        std::size_t paged = 0;
+        for (const auto &s : settings::registry())
+            paged += s.page.empty() ? std::size_t{0} : std::size_t{1}; // internal preferences (DEV-23) have no page
+        check(once && placed == paged, "every setting is on one tab, once");
         {
             // Live's sections in Live's order (N14), then ADI's own settings on the tab, in the
             // tab's own group: Live 12 manual 2.3.1 lists neither Zoom on Selection, the tooltips
@@ -14272,40 +15516,44 @@ int main(int argc, char **argv) {
                 juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
-    liveParity(commands, temp.path(), write);
-    groupTracks(commands, temp.path());
-    footRows(commands, temp.path());
-    newProject(commands, temp.path());
-    stripParamUndo(commands, temp.path());
-    deviceClipboard(commands, temp.path());
-    pluginWindows(commands, temp.path());
-    automationArm(commands, temp.path());
-    sendKnobs(commands, temp.path());
-    audioDrop(commands, temp.path());
-    importPrompt(commands, settings, temp.path());
-    browserDevices(commands, temp.path());
-    splitAndRangeEdits(commands, settings, temp.path());
-    clipClipboard(commands, temp.path());
-    timeCommands(commands, temp.path());
-    colorCabTile(commands, temp.path());
-    rangeSelection(commands, temp.path());
-    clipToTrack(commands, temp.path());
-    clipView(commands, temp.path(), write);
-    clipViewNotes(commands, temp.path());
-    clipViewFields(commands, temp.path());
-    clipViewTools(commands, temp.path());
-    clipViewMore(commands, temp.path());
-    clipViewTime(commands, temp.path());
-    clipViewClipTime(commands, temp.path());
-    clipViewMulti(commands, temp.path());
-    mixViewShell(commands, temp.path());
-    recordingOptions(commands, settings, temp.path());
-    undoHistoryWindow(commands, temp.path());
-    clipWaveforms(commands, temp.path());
-    clipFades(commands, temp.path());
-    showcase(commands, temp.path());
-    loopMetronome(commands, settings, temp.path());
-    locators(commands, temp.path());
+    trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
+    trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
+    trace("footRows", [&] { footRows(commands, temp.path()); });
+    trace("newProject", [&] { newProject(commands, temp.path()); });
+    trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
+    trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
+    trace("pluginWindows", [&] { pluginWindows(commands, temp.path()); });
+    trace("automationArm", [&] { automationArm(commands, temp.path()); });
+    trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
+    trace("exportPage", [&] { exportPage(commands, temp.path()); });
+    trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
+    trace("automationMode", [&] { automationMode(commands, temp.path()); });
+    trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
+    trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
+    trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
+    trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
+    trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
+    trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
+    trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
+    trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
+    trace("rangeSelection", [&] { rangeSelection(commands, temp.path()); });
+    trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
+    trace("clipView", [&] { clipView(commands, temp.path(), write); });
+    trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
+    trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
+    trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
+    trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });
+    trace("clipViewTime", [&] { clipViewTime(commands, temp.path()); });
+    trace("clipViewClipTime", [&] { clipViewClipTime(commands, temp.path()); });
+    trace("clipViewMulti", [&] { clipViewMulti(commands, temp.path()); });
+    trace("mixViewShell", [&] { mixViewShell(commands, temp.path()); });
+    trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
+    trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
+    trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
+    trace("clipFades", [&] { clipFades(commands, temp.path()); });
+    trace("showcase", [&] { showcase(commands, temp.path()); });
+    trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
+    trace("locators", [&] { locators(commands, temp.path()); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

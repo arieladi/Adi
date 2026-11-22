@@ -176,11 +176,13 @@ void checkpointRelocation() {
     const auto hash=f.store->db().execAndGet("SELECT state_hash FROM history_checkpoint_content WHERE id=1").getString();
     const auto copyPath=f.target("checkpoint-copy");check(f.store->saveCopy(copyPath).ok,"copy a compacted project with checkpoint media");
     StoreError error{};auto copy=Store::open(copyPath,error);check(copy!=nullptr,"compacted copy reopens");if(!copy)return;
-    auto replay=Store::create(copyPath.parent_path()/"Replay.adi",error);if(!replay)throw std::runtime_error("checkpoint replay fixture");
+    auto replay=Store::create(copyPath.parent_path()/"Replay.adi",error);
+    if(!replay)throw std::runtime_error("checkpoint replay fixture (Replay.adi): "+std::string(toString(error)));
     check(History::restoreReplayBase(*copy,*replay).ok && resolves(*replay),"copied legacy checkpoint resolves media from its relocated folder");
     const auto copiedHash=copy->db().execAndGet("SELECT state_hash FROM history_checkpoint_content WHERE id=1").getString();
     check(copiedHash!=hash && f.store->db().execAndGet("SELECT state_hash FROM history_checkpoint_content WHERE id=1").getString()==hash,"copy refreshes its checkpoint content identity without changing source content");
-    auto cached=Store::create(copyPath.parent_path()/"Cached.adi",error);if(!cached)throw std::runtime_error("cached replay fixture");
+    auto cached=Store::create(copyPath.parent_path()/"Cached.adi",error);
+    if(!cached)throw std::runtime_error("cached replay fixture (Cached.adi): "+std::string(toString(error)));
     {SQLite::Transaction transaction(cached->db());history_detail::installCheckpoint(*cached,history_detail::readCheckpointContent(copy->db(),copiedHash));transaction.commit();}
     check(resolves(*cached) && digestProject(*cached).text==digestProject(*replay).text,"content-addressed checkpoint and compatibility image relocate identically");
 }

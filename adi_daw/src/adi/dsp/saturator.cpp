@@ -29,24 +29,53 @@ double analog(double x, double threshold = .5) {
         threshold + (1 - threshold) * (1 - std::exp(-(a - threshold) / (1 - threshold))), x);
 }
 } // namespace
+// High Quality's 4x resampling filter (DEV-22). Live 12.4 reports 3 samples
+// for Saturator's default preset, which has High Quality on; the linear-phase
+// 65-tap windowed sinc ADI used (cutoff 0.1125 of the 4x rate, Hann window,
+// unity DC gain) delays 16 samples. This is that filter's minimum-phase
+// version (real cepstrum, 65 536 points, truncated to 65 taps, renormalised
+// to unity DC gain): the same magnitude, a low-frequency group delay of 7.12
+// taps per pass, so 3.56 samples for the two passes at the base rate.
+// Saturator reports Live's 3; the 0.56-sample remainder is stated, not hidden.
+// test_saturator.cpp checks the table's properties.
+const std::array<double, 65> &Saturator::resamplingFilter() noexcept {
+    static constexpr std::array<double, 65> kMinimumPhase{
+    0.0003293405348762169, 0.002176673440947512, 0.007911771045729179,
+    0.020780631086244287, 0.0437213033832084, 0.07751952759266591,
+    0.11905104515739558, 0.16063017245122582, 0.1912555678892358,
+    0.19980219867352123, 0.17923421109096663, 0.13017873534186808,
+    0.062140243222746895, -0.008595934842104575, -0.06397484847983334,
+    -0.09035610338629377, -0.08343334258186878, -0.04980036303461106,
+    -0.0043892673418461856, 0.035264070545582595, 0.055604149026011775,
+    0.05179887286997291, 0.02876747200506284, -0.0017473371726911655,
+    -0.026603853966077846, -0.03673099126302919, -0.03033284307825303,
+    -0.012678575836145962, 0.0070783195151236334, 0.02033909447007628,
+    0.022661868537916945, 0.0150388927342886, 0.002587498975775022,
+    -0.008395448717446352, -0.013438791293596476, -0.011575026636660497,
+    -0.005124455605031215, 0.0020025173153397713, 0.006431769127551455,
+    0.006791690704173281, 0.003933381382309, 3.211050588102245e-05,
+    -0.002770060573948034, -0.0034113391674449353, -0.0021807502805149407,
+    -0.0002367458547505455, 0.001212951985304903, 0.001560688949378694,
+    0.0009653382023900397, 5.5264163424560754e-05, -0.0005566934738829543,
+    -0.0006223185518011642, -0.0002979883152396614, 7.324316724193997e-05,
+    0.00023742769969847656, 0.0001697409881901787, 1.7135364022133357e-05,
+    -6.759826665203861e-05, -4.913766292709773e-05, 9.392767549838501e-07,
+    1.3169777278025054e-05, 7.742155280719074e-07, 1.2179299303154722e-08,
+    6.618539050511837e-10, 1.2658897518109293e-10,
+    };
+    return kMinimumPhase;
+}
 void Saturator::prepare(double sr) noexcept {
     rate_ = std::isfinite(sr) && sr > 0 ? sr : 48000;
     lane_ = {};
-    double sum = 0;
-    for (std::size_t i = 0; i < 65; ++i) {
-        const double x = static_cast<double>(i) - 32;
-        const double sinc =
-            x == 0 ? .225 : std::sin(std::numbers::pi * .225 * x) / (std::numbers::pi * x);
-        fir_[i] = sinc * (.5 - .5 * std::cos(2 * std::numbers::pi * static_cast<double>(i) / 64));
-        sum += fir_[i];
-    }
-    for (auto &c : fir_)
-        c /= sum;
+    fir_ = resamplingFilter();
 }
 void Saturator::set(Param id, double v) noexcept {
-    constexpr std::array<double, Count> lo{0, -36, -50,  0, 0, -24, -24, 20, 0.1, -60,
+    // Live 12.4's ranges where ADI's control means the same (its shipped
+    // default preset): Amt Lo +-36 dB, Frequency 30..18500 Hz, Output -36..0 dB.
+    constexpr std::array<double, Count> lo{0, -36, -50,  0, 0, -36, -24, 30, 0.1, -36,
                                            0, 0,   -100, 0, 0, 0,   0.1, 0,  0},
-        hi{7, 36, 0, 2, 1, 24, 24, 18000, 4, 0, 100, 100, 100, 100, 100, 100, 20, 1, 1};
+        hi{7, 36, 0, 2, 1, 36, 24, 18500, 4, 0, 100, 100, 100, 100, 100, 100, 20, 1, 1};
     if (id < 0 || id >= Count || !std::isfinite(v))
         return;
     const auto i = static_cast<std::size_t>(id);
@@ -124,16 +153,27 @@ void Saturator::process(const float *il, const float *ir, float *ol, float *orr,
             if (p_[PreDC] >= .5)
                 input = hp;
             l.dry[l.dryPos] = in[c];
-            const double dry = hq ? l.dry[(l.dryPos + 1) % 17] : in[c];
-            l.dryPos = (l.dryPos + 1) % 17;
+            const double dry = hq ? l.dry[(l.dryPos + 1) % 4] : in[c];   // 3 samples, the reported latency
+            l.dryPos = (l.dryPos + 1) % 4;
+            // DF-E37 (a): at a partial Dry/Wet with High Quality on, the dry is
+            // upsampled beside the wet and mixed BEFORE the down-sampling filter,
+            // so both pass the same two minimum-phase filters and share one phase
+            // response. A plain 3-sample dry against them comb-filtered (-13.9 dB
+            // at 18 kHz at 50 %). At 0 % the dry stays the exact 3-sample delay;
+            // at 100 % there is no dry.
+            const bool inLoop = hq && mix > 0 && mix < 1;
             double wet = 0;
             for (int k = 0; k < factor; ++k) {
-                double x = input;
+                double x = input, xd = 0;
                 if (hq) {
                     l.up[l.pos] = k == 0 ? input * 4 : 0;
+                    l.upDry[l.pos] = k == 0 ? in[c] * 4 : 0;
                     x = 0;
                     for (std::size_t j = 0; j < 65; ++j)
                         x += fir_[j] * l.up[(l.pos + 65 - j) % 65];
+                    if (inLoop)
+                        for (std::size_t j = 0; j < 65; ++j)
+                            xd += fir_[j] * l.upDry[(l.pos + 65 - j) % 65];
                 }
                 if (p_[ColorOn] >= .5) {
                     x = filter(x, f[0], l.z[0]);
@@ -145,7 +185,7 @@ void Saturator::process(const float *il, const float *ir, float *ol, float *orr,
                     x = filter(x, f[3], l.z[3]);
                 }
                 if (hq) {
-                    l.down[l.pos] = x;
+                    l.down[l.pos] = inLoop ? xd + (x - xd) * mix : x;
                     double y = 0;
                     for (std::size_t j = 0; j < 65; ++j)
                         y += fir_[j] * l.down[(l.pos + 65 - j) % 65];
@@ -155,7 +195,7 @@ void Saturator::process(const float *il, const float *ir, float *ol, float *orr,
                 } else
                     wet = x;
             }
-            double combined = dry + (wet - dry) * mix;
+            double combined = inLoop ? wet : dry + (wet - dry) * mix;
             if (p_[PostClip] >= 1.5)
                 combined = std::clamp(combined, -1., 1.);
             else if (p_[PostClip] >= .5)

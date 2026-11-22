@@ -262,7 +262,9 @@ public:
     /// moves with it: the graph is built once more, asks again, and that build
     /// leaves the plug-in active.
     [[nodiscard]] bool processesDouble() const noexcept override { return double64_; }
+    [[nodiscard]] std::int32_t sidechainInputChannels() const noexcept override { return keyChannels_; }
     [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return true; }
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
@@ -484,6 +486,8 @@ private:
     std::vector<clap_id> paramIds_;
     bool activated_ = false;
     bool double64_ = false;            ///< every port takes 64 bits (see processesDouble)
+    std::int32_t mainInputBus_=0, keyInputBus_=-1, keyChannels_=0;
+    void readInputBusRoles(); // deactivated, owner only; the callback reads these cached indices
     bool requestedOffline_ = false;
     bool preparedOffline_ = false;
     bool processing_ = false;          ///< start_processing succeeded (ADR-0123)
@@ -721,6 +725,8 @@ private:
     std::atomic<std::uint64_t> guiSize_{0};
 
     static const void* getExtension(const clap_host_t*, const char* id);
+    static bool isMainThread(const clap_host_t*);
+    static bool isAudioThread(const clap_host_t*);
     static void latencyChanged(const clap_host_t*);
     static void portsRescan(const clap_host_t*, std::uint32_t flags);
     static bool portsRescanSupported(const clap_host_t*, std::uint32_t flag);
@@ -736,6 +742,8 @@ private:
     static void requestCallback(const clap_host_t*);
 
     clap_host_t host_{};
+    const std::thread::id ownerThread_ = std::this_thread::get_id();
+    clap_host_thread_check_t threadCheckExt_{&ClapHostGlue::isMainThread, &ClapHostGlue::isAudioThread};
     clap_host_params_t      hostParamsExt_{};   ///< ADR-0142
     clap_host_state_t       hostStateExt_{};    ///< ADR-0142
     std::atomic<std::uint64_t> stateSignals_{0};
