@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/automation_override.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/ui/fade_edits.hpp"
@@ -1590,7 +1591,18 @@ juce::PopupMenu ArrangementView::headerMenu() {
                        "Colour");
     return menu;
 }
-void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
+void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane) {
+    contextMenuItems(header, lane).showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
+        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+}
+const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const {
+    if (!root.automationMode())
+        return nullptr;
+    const auto *current = root.current().get(); // the root holds it: the pointer outlives this call
+    const auto *t = current != nullptr ? geometry.trackAt(reader(), y) : nullptr;
+    return t != nullptr ? laneOf(*current, "track", t->id, "volume") : nullptr;
+}
+juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::AutomationLaneNode *lane) {
     auto menu = header ? headerMenu() : juce::PopupMenu();
     if (!header) {
         auto &commands = root.commands();
@@ -1612,9 +1624,9 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
         // The lanes' menu sets the grid as well (§6.10).
         menu.addSeparator();
         addGridItems(menu);
+        root.addReenableAutomation(menu, lane);
     }
-    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
-        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+    return menu;
 }
 std::int64_t ArrangementView::colourIndex(std::int64_t track) const {
     const auto rows = geometry.rows(reader());
@@ -2869,7 +2881,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         return;
     if (e.mods.isPopupMenu()) {
         view.select(e.x, e.y, view.snaps(e.mods));
-        view.contextMenu(e.getScreenPosition(), false);
+        // In Automation Mode the menu is the envelope's too: its lane's Re-Enable Automation (AU-04).
+        view.contextMenu(e.getScreenPosition(), false, view.automationLaneAt(e.y));
     } else if (!panning) {
         // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
