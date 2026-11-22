@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Attribute Hold detection in saved signal chains
+
+Nine saved settings use manual Hold detection supported by this comparison. Two select the full stage input and both leave its cutoffs open. Seven use their own split band. An additional seven automatic-release settings have a different response and remain outside this comparison.
+
+Each test restored the same registered controls, kick and bass, clock implementation and surrounding processors. The previous enabled and disabled renders reproduced all archived full-stream hashes in both the fixed and the measured original orders. Against the previous enabled detector, calibrating attack and release moved two original-order settings closer to the reference, six by less than 0.000001 RMS and one farther away. The fixed-order counts were three closer, five within tolerance and one farther. Eight of the nine audio files changed in each order. The largest change in original-order output was 0.005111 stereo RMS.
+
+None of the nine crossed 0.001 RMS. The closest remains at 0.0010692 in its measured order. The overall measured-order count remains 44 of 873 below threshold, and the fixed-order count remains 40 of 873. No source audio or settings are distributed.
+
 ## 22 November 2026 — Three-band Volume follows a distinct first-order split
 
 At 48 kHz with independent stereo impulses, place the split controls at 20% and 58%. Measure the complex response of each individual crossover with the other crossover disabled. For low and high cutoffs respectively, call those measured low-pass responses L1 and L2 and their complementary high-pass responses H1 and H2.
