@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MI-08 native expression reader refreshed
+
+**PR requested** for `engine/mi08-expression-read-current` at `db864e543d7c80de9020e5e16174ced4d42b5b99`, after DF-E63 `c37e20e0395ac3783e46c30f48f1583086cb025d`. Title **MI-08 read stored note expression on the current clip clock**. This supersedes `engine/mi08-note-expression-read` `e5b350cd`. The Clip View can ask for decoded curves and row-level diagnostics while ordinary property reads avoid that work. The refreshed branch keeps DF-E63's recovered stored clock and its exact linear End regression. It reads historical strides and unknown dimensions while preserving the original bytes.
+
+GCC 14 and Clang 19 Debug warnings-as-errors passed six suites (Clip Details, MIDI Clips, Clip Edit, UI Seams, Project Bootstrap and Engine). Clip Details passes 41 checks. Eager decoding planted in the native Clip Details gate fails the explicit opt-in check. The editor's `noteExpression.write` and `noteExpression.clear` still await Win's reservation.
+
 ## 2026-11-22 — DF-E24(b,c) staged with the DF-E20 stack
 
 **PR requested with #677 after Win's reconciliation and the combined gate.** The additional staged commit is `72dfdc77deacf0269fa3ea7e27c1a32ea20ca40e` on `engine/df-e23-followups-staged`, after `096edc93`. Title **DF-E24 guard main routes and staged mixer lane ownership**. New direct and captured main routes and disabled-route activation refuse a second enabled track output. The planner retains the lowest-ID valid main route and reports every duplicate. Replay restores saved duplicates. The callback overlay changes published scalar controls through its image and reads automation from the acquired generation. The owner retains its lane pointer and holder during a rebuild. The cue monitor retains its explicit binding.
