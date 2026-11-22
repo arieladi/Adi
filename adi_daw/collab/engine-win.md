@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, after 3 December, PD-06 and PD-05 recorder restack
+
+- PD-06 `engine-win/interrupted-audio-recording` at `69033a9c` now follows DF-E44 and N66 `0900deeb`. PD-05 `engine-win/recording-launch-discovery` at `0b88a229` follows that exact PD-06 head. The joined recorder preserves both close-all/cancel cleanup and finalized-prefix admission, with the recovery identity and placement receipt checks intact.
+- Both exact heads passed MSVC /WX recorder 172/172 and UI document 319/319. Recording commands passed 185/185 on PD-06 and 190/190 on PD-05, including the startup process-exit, live lock and empty-session controls.
+- **Parked, Save As rebinding.** Run `adi_recording_commands_tests --save-as-recovery-contract`. The Windows red fixture switches and refreshes the same Store successfully, then observes that stale options still start and successor options are refused. Engine or Win to supply or lend the accepted-successor `Session::refresh`/`startRecording` hunk. The test exercises the positive receipt and Undo path once that binding is fixed. Window-fn keeps the Save As guard during active or pending recording and the reopen question.
+
+PR requested for restack and regression review.
+
 ## 2026-11-22, CT-03 MIDI loop materializer
 
 - `engine-win/midi-loop-takes` at `a889fa3e`, stacked on the engine's same-transaction note capture `254d7d1c`. Each pass creates a take lane and clip, then prepares its native note diff in the same transaction. The take closes a held note at the pass boundary. The main copy keeps the cumulative note image supplied by the recorder, including the carried hold and recorded IDs. Each pass has its own Undo and the explicit Record Quantize diff is a separate commit.
