@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Master mix through two active stages
+
+The existing ADI-Shaper master routing matches 105 fresh reference observations. For stationary master values of 0, 25, 50, 75 and 100%, multiplying each active band's blend by the master reproduced six million stereo frames exactly. The cases included Volume and Width in both orders, Volume and nonlinear Drive in both orders, unequal band mixes, three split slopes, both buffer sizes at 48 kHz and 256 frames at 96 kHz. The 960,000 stereo frames common to both 48 kHz block sizes were identical. Eighteen of the 873 saved programs have an intermediate master value. All eighteen use multiple stages.
+
+With a +0.5 left-only marker at half master, Volume at quarter gain followed by mono Width returned +0.234375 left and +0.078125 right. A single dry/full-chain crossfade would return +0.28125 and +0.03125. On stereo material the final crossfade missed by 0.075509 RMS in that pairing and by 0.106619 through Volume into Drive. At zero master the active Drive retained its 16-frame delay. The 12 and 24 dB/octave crossovers retained their phase response. These readings cover fixed master settings. The current routing stands.
+
 ## 22 November 2026 — Registered white Noise and Room against the reference
 
 On the same stereo kick and bass at 48 kHz, the registered white Noise stage on `5e9b063d` took 28.2 µs at 256 frames and 218.9 µs at 2,048. The reference took 42.3 and 174.8 µs. Subtracting each path's bypass cost within paired trials gave 24.4 and 193.9 µs for ADI and 25.9 and 127.5 µs for the reference. The larger block is a performance target.
