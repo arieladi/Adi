@@ -1982,6 +1982,11 @@ add_executable(adi_precision_tests tests/test_precision.cpp)
 target_link_libraries(adi_precision_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_precision_tests COMMAND adi_precision_tests)
 
+target_sources(adi_core PRIVATE src/adi/measure/loopback.cpp)
+add_executable(adi_loopback_measurement_tests tests/test_loopback_measurement.cpp)
+target_link_libraries(adi_loopback_measurement_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_loopback_measurement_tests COMMAND adi_loopback_measurement_tests)
+
 # ADR-0156: one decoder for imported audio, into the decoding cache. The
 # libraries' implementations compile once, as C, outside the warning wall;
 # adi_core's clip worker asks the decoder for a playable file.
