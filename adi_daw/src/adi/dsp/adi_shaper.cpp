@@ -41,6 +41,13 @@ void sanitizeStereo(const float* inL, const float* inR, float* outL, float* outR
         std::transform(inR, inR + frames, outR, finiteOrZero);
     }
 }
+void applyWidth(float width, float& left, float& right) noexcept {
+    if (width == 1.0f) return;
+    const float mid = 0.5f * left + 0.5f * right;
+    const float side = (0.5f * left - 0.5f * right) * width;
+    left = mid + side;
+    right = mid - side;
+}
 } // namespace
 
 AdiShaper::AdiShaper() noexcept {
@@ -487,11 +494,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames) noexcept {
     auto applyGain = [](Gain g, float& l, float& r) {
         if constexpr (kind == Stage::Width) {
-            if (g.left == 1.0f) return;
-            const float mid = 0.5f * l + 0.5f * r;
-            const float side = (0.5f * l - 0.5f * r) * g.left;
-            l = mid + side;
-            r = mid - side;
+            applyWidth(g.left, l, r);
         } else {
             l *= g.left;
             r *= g.right;
@@ -600,6 +603,33 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     }
 }
 
+bool AdiShaper::renderFixedWidth(StageData& stage, float* left, float* right, std::size_t frames) noexcept {
+    if (stage.layout != 3 || stage.low.slope != 0 || stage.high.slope != 0) return false;
+    std::array<float, 3> widths;
+    for (std::size_t i = 0; i < widths.size(); ++i) {
+        const auto& band = stage.bands[i];
+        if (!band.primary.constant) return false;
+        widths[i] = band.active ? band.heldGains[0].left : 1.0f;
+    }
+    for (std::size_t i = 0; i < frames; ++i) {
+        const float dryL = left[i], dryR = right[i];
+        const auto bands = stage.firstOrderBands(dryL, dryR);
+        float sumL = 0.0f, sumR = 0.0f;
+        const auto addBand = [&](const std::array<float, 2>& dry, float width) {
+            float l = dry[0], r = dry[1];
+            applyWidth(width, l, r);
+            sumL += l - dry[0];
+            sumR += r - dry[1];
+        };
+        addBand(bands.low, widths[0]);
+        addBand(bands.high, widths[2]);
+        addBand(bands.mid, widths[1]);
+        left[i] = sumL == 0.0f ? dryL : dryL + sumL;
+        right[i] = sumR == 0.0f ? dryR : dryR + sumR;
+    }
+    return true;
+}
+
 void AdiShaper::process(const float* inL, const float* inR, float* outL, float* outR,
                         std::size_t frames) noexcept {
     if (!frames) return;
@@ -612,7 +642,9 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
             if (!stage.enabled) return;
         }
         if (!stage.active && stage.layout == 0) return;
-        render<kind>(stage, outL, outR, outL, outR, frames);
+        bool rendered = false;
+        if constexpr (kind == Stage::Width) rendered = renderFixedWidth(stage, outL, outR, frames);
+        if (!rendered) render<kind>(stage, outL, outR, outL, outR, frames);
         bool repaired = false;
         if (stage.layout != 0) {
             repaired |= stage.low.finishBlock();

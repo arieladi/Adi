@@ -111,6 +111,7 @@ class AdiShaper {
         std::size_t index = 0;
         void advance(float& l, float& r) noexcept;
     };
+    static bool renderFixedWidth(StageData& stage, float* left, float* right, std::size_t frames) noexcept;
     static Gain gain(Stage kind, float amount, float mix) noexcept;
     void updateBand(Stage kind, CurveBand& band) const noexcept;
     void updateActivity(StageData& stage) noexcept;

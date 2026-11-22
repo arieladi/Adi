@@ -342,34 +342,50 @@ void firstOrderBandImpulses() {
 }
 
 void movingFirstOrderSplits() {
-    // Values from the two independent one-pole cascades after changing the
-    // cutoff on an impulse tail. Either reversed cascade agrees at fixed Hz.
-    constexpr std::array<int, 4> frames{5, 6, 13, 14};
-    constexpr double taps[3][4]{
-        {.01801779918, .01431862004, .00085552534, .00066339767},
-        {-.01627774942, -.01463293413, -.00092014108, -.00070538760},
-        {-.00174004976, .00031431409, .00006461574, .00004198993}
-    };
-    for (std::size_t b = 0; b < 3; ++b) {
+    // A pair of independent two-way devices gives the correct response while
+    // each edge is moving, including the device's own cutoff timing.
+    const auto isolate = [](const std::vector<float>& input, int layout, Band selected) {
         Shaper shaper;
         shaper.prepare(48000);
-        shaper.set(Shaper::VolumeBands, 3);
+        shaper.set(Shaper::VolumeBands, static_cast<float>(layout));
         const auto lower = static_cast<Shaper::Param>(Shaper::VolumeBands + 1);
         const auto upper = static_cast<Shaper::Param>(Shaper::VolumeBands + 2);
         shaper.set(lower, 160);
         shaper.set(upper, 8000);
-        for (std::size_t i = 0; i < 3; ++i)
-            flat(shaper, Stage::Volume, static_cast<Band>(i), i == b ? 100.f : 0.f);
-        std::array<float, 15> impulse{}, left{}, right{};
-        impulse[0] = 1;
-        shaper.process(impulse.data(), impulse.data(), left.data(), right.data(), 5);
+        for (const auto b : {Band::Low, Band::Mid, Band::High})
+            flat(shaper, Stage::Volume, b, b == selected ? 100.f : 0.f);
+        std::vector<float> left(input.size()), right(input.size());
+        const auto render = [&](std::size_t first, std::size_t end) {
+            shaper.process(input.data() + first, input.data() + first, left.data() + first,
+                           right.data() + first, end - first);
+        };
+        render(0, 733);
         shaper.set(lower, 3200);
-        shaper.process(impulse.data() + 5, impulse.data() + 5, left.data() + 5, right.data() + 5, 8);
-        shaper.set(upper, 4100);
-        shaper.process(impulse.data() + 13, impulse.data() + 13, left.data() + 13, right.data() + 13, 2);
-        for (std::size_t i = 0; i < frames.size(); ++i)
-            check(near(left[frames[i]], taps[b][i], 2.0e-8), "each moving outer band crosses its own edge first");
+        render(733, 2783);
+        shaper.set(upper, 5200);
+        render(2783, input.size());
+        return left;
+    };
+    std::vector<float> input(8192);
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const double t = static_cast<double>(i);
+        input[i] = static_cast<float>(.38 * std::sin(.033 * t) + .19 * std::cos(.23 * t));
     }
+    const auto bass = isolate(isolate(input, 1, Band::Low), 2, Band::Mid);
+    const auto treble = isolate(isolate(input, 2, Band::High), 1, Band::Mid);
+    const auto reversedBass = isolate(isolate(input, 2, Band::Mid), 1, Band::Low);
+    const auto low = isolate(input, 3, Band::Low);
+    const auto mid = isolate(input, 3, Band::Mid);
+    const auto high = isolate(input, 3, Band::High);
+    bool discriminates = false;
+    float peak = 0;
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const float middle = input[i] - bass[i] - treble[i];
+        peak = std::max({peak, std::abs(low[i] - bass[i]), std::abs(mid[i] - middle), std::abs(high[i] - treble[i])});
+        discriminates |= std::abs(bass[i] - reversedBass[i]) > .0001f;
+    }
+    check(peak < 4e-7f, "each moving outer band crosses its own edge first and the middle is complementary");
+    check(discriminates, "the moving input distinguishes reversed crossover order");
 }
 
 void bypassAndInvalid() {
