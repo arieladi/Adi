@@ -249,6 +249,12 @@ Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU bu
 - Strict Linux GCC 14 and Clang 19 each passed 14 checks. Independent olefile 0.47 in strict defect mode reopened six streams from the ASan/UBSan fixture, including nested, empty, 4095/4096-byte cutoff cases and a 16 MiB payload spanning two DIFAT sectors. All bytes matched. Checked the Nov 20 patterns.
 - AAF object and property lowering, vendor reader integration, and delivery remain parked on TM-IC-03, the pinned LibAAF source and EX-04/AAF-3.
 
+### 22 November — MX-32 VST3 track-context measurement fixture
+
+- PR requested for `engine/mx32-vst3-context-fixture` at `db99def9b5a071a710e80f1c76c403ecced410df` from main `73f13028`. All three existing ADI Expression Test classes expose Steinberg's `ChannelContext::IInfoListener`. Opt-in receipts include the instance, exact UTF-16 name units and host color. The measurement changes no app host path.
+- Strict Linux GCC 14 and Clang 19 built the real VST3 bundles. The native scanner discovered each bundle's three classes under separate `ADI_HOME` roots. A direct SDK host delivered six notifications per build and verified Unicode including a surrogate pair, ARGB alpha, absent color and per-instance ordering. Scan itself produced no context receipt. Checked the Nov 20 patterns.
+- Win's Live measurement is ready once the fixture lands or its branch is used. Set `ADI_VST3_CHANNEL_CONTEXT_LOG` to a fresh absolute path, fully restart Live 12.4 from that environment, load ADI Test Plain, then rename and recolor its track. Record the Live build and receipt after load, rename and recolor. MX-32 production behavior stays parked on that Live result or director approval.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
