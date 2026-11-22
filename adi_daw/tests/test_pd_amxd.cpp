@@ -201,11 +201,11 @@ void testWhatIsRefusedIsNamed() {
     check(!r.ok() && r.pdPatch.empty(), "nothing is produced when any box is refused");
     std::vector<std::string> ids;
     for (const auto& b : r.refused) ids.push_back(b.id + ":" + b.maxClass);
-    check(ids == std::vector<std::string>{"obj-1:%", "obj-5:zl.group"},
-          "refused: [% 1.] (float modulo), [zl.group]; [+ 1.], [sig~], [cycle~] with its phase inlet in use and "
-          "[line~] with its end bang pass");
+    check(ids == std::vector<std::string>{"obj-5:zl.group"},
+          "refused: [zl.group]; [% 1.] (an integer modulo in Max), [+ 1.], [sig~], [cycle~] with its phase inlet in "
+          "use and [line~] with its end bang pass");
     if (!r.refused.empty())
-        check(r.refused[0].reason.find("modulo") != std::string::npos, "with the reason: " + r.refused[0].reason);
+        check(r.refused[0].reason.find("no translation") != std::string::npos, "with the reason: " + r.refused[0].reason);
     // Inside a subpatcher, a refusal names the path to it.
     const std::string inner = R"(,"patcher":{"boxes":[)" + box("obj-1", "zl.len", 10, 10, R"("")") + R"(],"lines":[]})";
     const auto sub = translateMaxPatcher(patcher({box("obj-9", "p helper", 10, 10, "", "newobj", inner)}, {}),
@@ -417,6 +417,8 @@ void testMaxIntegersAreHeard() {
         {"[unpack] fed 3.7 4.2 gives 4 then 3, right to left", probe("3.7 4.2", "unpack", R"("int","int")", 2),
          {"X: 4", "X: 3"}},
         {"[t i f] fed 2.5 gives 2.5 then 2", probe("2.5", "t i f", R"("int","float")", 2), {"X: 2.5", "X: 2"}},
+        {"[% 3] fed 8.9 gives 2 (8 % 3)", probe("8.9", "% 3", R"("int")"), {"X: 2"}},
+        {"[% 2.5] fed 7.3 gives 1 (Max's % is an int modulo: 7 % 2)", probe("7.3", "% 2.5", R"("int")"), {"X: 1"}},
     };
     for (const auto& c : cases) {
         const auto t = translateMaxPatcher(c.json, AmxdKind::AudioEffect);
@@ -701,7 +703,7 @@ void testStepFourSignals() {
     // [biquad~] given Max's "1 0 0 -0.5 0" (y = x + 0.5 y1): DC gain 2.
     const std::string bq = patcher(
         {box("obj-1", "loadbang", 120, 10, R"("bang")"), box("obj-2", "1 0 0 -0.5 0", 120, 40, R"("")", "message"),
-         box("obj-3", "sig~ 1", 20, 40, kSig), box("obj-4", "biquad~", 20, 80, kSig),
+         box("obj-3", "sig~ 1", 20, 40, kSig), box("obj-4", "biquad~ @smooth 0", 20, 80, kSig),
          box("obj-5", "plugout~", 20, 140, "")},
         {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-4", 0), line("obj-3", 0, "obj-4", 0),
          line("obj-4", 0, "obj-5", 0), line("obj-4", 0, "obj-5", 1)});
@@ -712,6 +714,19 @@ void testStepFourSignals() {
     check(tb.ok() && std::fabs(settled - 2.0) < 1e-5 && std::fabs(first - 1.0) < 1e-6,
           "Max's biquad~ \"1 0 0 -0.5 0\" starts at 1 and settles at 2: " + std::to_string(first) + ", " +
               std::to_string(settled) + error);
+    // With its smoothing on (Max's default), coefficients that change at run
+    // time are refused: how Max smooths them is not yet read.
+    std::string smoothed = bq;
+    const auto at0 = smoothed.find("biquad~ @smooth 0");
+    if (at0 != std::string::npos) smoothed.replace(at0, std::string("biquad~ @smooth 0").size(), "biquad~");
+    const auto tsm = translateMaxPatcher(smoothed, AmxdKind::AudioEffect);
+    check(!tsm.ok() && tsm.refused.size() == 1 && tsm.refused[0].reason.find("smooth") != std::string::npos,
+          "the same with Max's default smoothing is refused, naming it");
+    std::string saved = bq;
+    const std::string typed = R"("text":"biquad~ @smooth 0")";
+    const auto at1 = saved.find(typed);
+    if (at1 != std::string::npos) saved.replace(at1, typed.size(), R"("saved_object_attributes":{"smooth":0},"text":"biquad~")");
+    check(translateMaxPatcher(saved, AmxdKind::AudioEffect).ok(), "and smoothing off as a saved attribute translates");
     const auto args = translateMaxPatcher(
         patcher({box("obj-1", "biquad~ 0.5 0.1 0.2 -0.3 0.4", 10, 10, kSig)}, {}), AmxdKind::AudioEffect);
     check(args.ok() && args.pdPatch.find("biquad~ 0.3 -0.4 0.5 0.1 0.2") != std::string::npos,

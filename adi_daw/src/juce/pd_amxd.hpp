@@ -36,6 +36,8 @@
 //     the feedback SUBTRACTED) become Pd's fb1 fb2 ff1 ff2 ff3 (ADDED): a
 //     coefficient list is reordered and its b's negated on the way in.
 //     live.text (toggle mode), live.menu and live.tab are parameters too.
+//   * Max's [%] is an INTEGER modulo whatever it is given (step 8): [% 2.5]
+//     takes 2 as its divisor and truncates what it is fed, as [+ 1] does.
 //   * [cycle~]'S PHASE INLET (step 6) offsets the phase in Max and resets it
 //     in Pd's [osc~]: such a [cycle~] is [phasor~] -> [+~] -> [cos~].
 //   * BPATCHERS (step 5). One whose patcher is embedded becomes a [pd name]
@@ -45,7 +47,9 @@
 //     take the same arguments; a bpatcher inside it takes its own. A # with
 //     no argument is refused rather than guessed, as is a bpatcher naming a
 //     patcher file outside the device.
-// Refused, for later steps: float modulo, signal-rate
+// Refused, for later steps: a biquad~ whose coefficients change at run time
+// while its smoothing is on (Max's default; how it smooths is not yet read),
+// signal-rate
 // biquad~ coefficients and slide~ times, live.text's button mode, bpatchers
 // of a file outside the device, MIDI devices and instruments; and
 // not read at all: frozen devices (`mx@c`) and Live's own encrypted devices

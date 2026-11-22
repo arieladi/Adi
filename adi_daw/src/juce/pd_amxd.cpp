@@ -478,11 +478,11 @@ private:
         static const std::set<std::string> twoInlet{"+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=", "min", "max"};
         if (twoInlet.count(cls) != 0 || cls == "abs") {
             if (args.size() > 1 || !allNumbers) return refuse(b, cls, "expects one number at most");
-            const bool isFloat = !args.empty() && isFloatLiteral(args[0]);
-            if (isFloat) {
-                if (cls == "%") return refuse(b, cls, "a float modulo has no Pd counterpart yet");
-                return obj(b, b.text);
-            }
+            // Max's [%] works on ints whatever it is given (its reference: a
+            // float is "converted to int"), so a float argument does not make
+            // it the float form as it does the other operators.
+            const bool isFloat = !args.empty() && isFloatLiteral(args[0]) && cls != "%";
+            if (isFloat) return obj(b, b.text);
             // Max's integer form: inputs truncated; '/' truncates its result too.
             const std::string pdText = cls + (args.empty() || cls == "abs" ? "" : " " + args[0]);
             return integer(b, pdText, cls == "abs" ? 1 : 2, cls == "/");
@@ -701,11 +701,36 @@ private:
     /// Max [biquad~] takes a0 a1 a2 b1 b2 for y = a0 x + a1 x1 + a2 x2 - b1 y1 -
     /// b2 y2; Pd's takes fb1 fb2 ff1 ff2 ff3 with the feedback ADDED. So a
     /// coefficient list is reordered and its b's negated on the way in.
-    void biquad(const Box& b, const std::vector<std::string>& args) {
+    /// Max's biquad~ smooths its coefficient changes unless its `smooth`
+    /// attribute is 0 (on by default; its reference does not say how). Pd's
+    /// biquad~ takes a new list at once. So coefficients that change at run
+    /// time translate only with smoothing off; coefficients given as
+    /// arguments are the filter from the start.
+    void biquad(const Box& b, const std::vector<std::string>& typed) {
+        bool smooth = true;
+        if (b.raw.contains("saved_object_attributes") && b.raw["saved_object_attributes"].is_object() &&
+            b.raw["saved_object_attributes"].contains("smooth") && b.raw["saved_object_attributes"]["smooth"].is_number())
+            smooth = b.raw["saved_object_attributes"]["smooth"].get<double>() != 0;
+        std::vector<std::string> args;
+        for (std::size_t k = 0; k < typed.size(); ++k) {
+            if (typed[k] == "@smooth" && k + 1 < typed.size() && isNumber(typed[k + 1])) {
+                smooth = std::strtod(typed[k + 1].c_str(), nullptr) != 0;
+                ++k;
+                continue;
+            }
+            args.push_back(typed[k]);
+        }
         if (!(args.empty() || args.size() == 5) || !std::all_of(args.begin(), args.end(), isNumber))
             return refuse(b, "biquad~", "five coefficients or none");
         for (int k = 1; k <= 5; ++k)
             if (connected(b, false, k)) return refuse(b, "biquad~", "signal-rate coefficients are not translated yet");
+        const bool changes = std::any_of(lines_.begin(), lines_.end(), [&](const Line& l) {
+            return l.dst == b.id && l.inlet == 0 && !isSignalSource(l);
+        });
+        if (smooth && changes)
+            return refuse(b, "biquad~",
+                          "Max smooths coefficient changes (its smooth attribute, on by default) in a way not yet "
+                          "read; with @smooth 0 it translates");
         const auto neg = [](const std::string& v) { return number(-std::strtod(v.c_str(), nullptr)); };
         const std::string init = args.empty() ? "" : " " + neg(args[3]) + " " + neg(args[4]) + " " + args[0] + " " +
                                                          args[1] + " " + args[2];
