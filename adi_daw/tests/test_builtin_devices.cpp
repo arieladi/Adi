@@ -61,7 +61,7 @@ struct Project {
     }
 };
 void catalogueAndHost() {
-    check(builtinCatalog().size()==23 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
+    check(builtinCatalog().size()==24 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
     std::set<std::string_view> identities;int available=0;
     for(const auto& info:builtinCatalog()) {
         check(identities.insert(info.uid).second && !info.name.empty() && !info.category.empty() && !info.group.empty(),"catalogue identities are unique and labels/category/folder are present");
@@ -83,7 +83,7 @@ void catalogueAndHost() {
         check(allocations.load(std::memory_order_relaxed)==0,"canonical built-in processing allocates nothing");
     }
 #if ADI_WITH_PD
-    check(available==23,"all registered native canonical factories are available");
+    check(available==24,"all registered native canonical factories are available");
 #else
     check(available==0,"PD-disabled build advertises no unavailable backend as loadable");
 #endif
@@ -94,6 +94,31 @@ void catalogueAndHost() {
     fake.format="clap";(void)composed(request,error);
     check(delegated==1 && error=="external","composition retains external-format loader");
 }
+#if ADI_WITH_PD
+// DEV-22: the Gate reports its Lookahead as latency, and the bypass wrapper
+// keeps it (ADR-0203 d4): 10 ms is 480 samples at 48 kHz.
+void gateLatency() {
+    auto gate=load("org.adidaw.builtin.gate");
+    gate->prepare(48000,64);
+    std::string lookahead;
+    for(std::int32_t i=0;i<gate->paramCount();++i){
+        if(gate->paramAt(i)->name=="Lookahead"){
+            lookahead=gate->paramAt(i)->id;
+        }
+    }
+    check(!lookahead.empty() && gate->setParam(lookahead,ParamValue::fromNormalized(1.0)),"the Gate's Lookahead is a control");
+    std::array<std::array<float,64>,2> input{},output{};float* in[]={input[0].data(),input[1].data()};float* out[]={output[0].data(),output[1].data()};
+    NodeIo io;io.in=in;io.out=out;io.channels=2;io.frames=64;
+    for(int block=0;block<8;++block){
+        gate->process(io);
+        gate->pumpMainThread();
+    }
+    DeviceNode node(*gate);
+    const auto active=node.latencySamples();
+    node.setBypassed(true);
+    check(active==480 && node.latencySamples()==480,"the Gate reports its 10 ms lookahead (480 samples) and keeps it while bypassed");
+}
+#endif
 void paramsAndState() {
 #if ADI_WITH_PD
     auto instance=load("org.adidaw.builtin.utility");
@@ -576,4 +601,8 @@ void instrumentSession() {
     hybridSession();  // DEV-22
     samplerSession();  // DEV-21
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{catalogueAndHost();
+#if ADI_WITH_PD
+gateLatency();
+#endif
+paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

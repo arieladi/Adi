@@ -58,6 +58,7 @@ if(ADI_WITH_PD)
     adi_embed_native_pd(transportAbstraction "pd/adi.transport.pd")
     adi_embed_native_pd(sampleAbstraction "pd/devices/adi.sample.pd")
     adi_embed_native_pd(glueCompressor "pd/devices/Glue Compressor.pd")
+    adi_embed_native_pd(liveGate "pd/devices/Gate.pd")
     string(APPEND ADI_NATIVE_PD_HEADER "} // namespace adi::device::canonical\n")
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/adi_native_pd_patches.hpp"
         CONTENT "${ADI_NATIVE_PD_HEADER}")

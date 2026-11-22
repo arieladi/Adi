@@ -57,7 +57,7 @@ struct Fixture {
     int inputs;
     std::array<Change, 4> changes;
 };
-constexpr std::array<Fixture, 21> fixtures{{
+constexpr std::array<Fixture, 22> fixtures{{
     {"ADI-Shaper.pd", 2, {{{2, 3}, {128, 1}, {131, 2}, {23, 24}}}},
     {"AutoFilter.pd", 4, {{{3, 2500}, {11, 38}, {33, 1}, {34, 65}}}},
     {"Chord Comb.pd", 2, {{{1, 3}, {3, 0.2f}, {4, 0.4f}, {5, 0.7f}}}},
@@ -78,6 +78,7 @@ constexpr std::array<Fixture, 21> fixtures{{
     {"Shifter.pd", 2, {{{1, 2}, {2, 7}, {31, 1}, {33, 12}}}},
     {"Utility.pd", 2, {{{4, 140}, {11, 6}, {12, -20}, {14, 1}}}},
     {"Glue Compressor.pd", 2, {{{1, -30}, {2, 2}, {4, 6}, {7, 60}}}},
+    {"Gate.pd", 2, {{{1, -30}, {6, -20}, {7, 1}, {8, 1}}}},
     {"Vocoder.pd", 4, {{{1, 1}, {12, 2}, {20, 2}, {24, 70}}}}
 }};
 std::unique_ptr<adi::device::PdSampleBuffer> sample(double rate = 48000, double level = 1) {
