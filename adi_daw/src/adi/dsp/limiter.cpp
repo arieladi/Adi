@@ -17,6 +17,7 @@ void LookaheadLimiter::prepare(double sampleRate, int channels, int maxLookahead
     TruePeakMeter::design(factor_, taps_);
     tpDelay_ = factor_ > 1 ? TruePeakMeter::kDelay + kTruePeakSpread : 0;
     history_.assign(static_cast<std::size_t>(channels_) * TruePeakMeter::kTapsPerPhase, 0.0);
+    frame_.assign(static_cast<std::size_t>(channels_), 0.0);
     ring_ = maxLookahead_ + tpDelay_ + 1;
     delay_.assign(static_cast<std::size_t>(channels_) * static_cast<std::size_t>(ring_), 0.0);
     dqCap_ = maxLookahead_ + 2;
@@ -74,8 +75,59 @@ void LookaheadLimiter::process(const double* const* in, double* const* out, int 
     run(in, out, frames);
 }
 
+void LookaheadLimiter::processOffline(const float* const* in, float* const* out, std::int64_t frames) {
+    runOffline(in, out, frames);
+}
+
+void LookaheadLimiter::processOffline(const double* const* in, double* const* out, std::int64_t frames) {
+    runOffline(in, out, frames);
+}
+
 template <class Sample>
-double LookaheadLimiter::truePeakTarget(const Sample* const* in, int i) noexcept {
+void LookaheadLimiter::runOffline(const Sample* const* in, Sample* const* out, std::int64_t frames) {
+    reset();
+    if (frames <= 0) {
+        return;
+    }
+    constexpr int kBlock = 1024;
+    const auto channels = static_cast<std::size_t>(channels_);
+    std::vector<Sample> scratch(channels * kBlock), silence(kBlock, Sample(0));
+    std::vector<Sample*> scratchAt(channels);
+    std::vector<const Sample*> inAt(channels), silenceAt(channels, silence.data());
+    for (std::size_t c = 0; c < channels; ++c) {
+        scratchAt[c] = scratch.data() + c * kBlock;
+    }
+    const std::int64_t latency = latencySamples();
+    std::int64_t produced = 0;   // frames process() has given so far
+    // Output frame `produced + k` is input frame `produced + k - latency`:
+    // keep those inside [0, frames). Every one lands at or before the last
+    // input frame read, so `out` may be `in`.
+    const auto keep = [&](int n) {
+        const std::int64_t from = std::max<std::int64_t>(0, latency - produced);
+        const std::int64_t to = std::min<std::int64_t>(n, frames + latency - produced);
+        for (std::size_t c = 0; c < channels; ++c) {
+            for (std::int64_t k = from; k < to; ++k) {
+                out[c][produced + k - latency] = scratchAt[c][k];
+            }
+        }
+        produced += n;
+    };
+    for (std::int64_t off = 0; off < frames; off += kBlock) {
+        const int n = static_cast<int>(std::min<std::int64_t>(kBlock, frames - off));
+        for (std::size_t c = 0; c < channels; ++c) {
+            inAt[c] = in[c] + off;
+        }
+        process(inAt.data(), scratchAt.data(), n);
+        keep(n);
+    }
+    for (std::int64_t left = latency; left > 0; left -= kBlock) {
+        const int n = static_cast<int>(std::min<std::int64_t>(kBlock, left));
+        process(silenceAt.data(), scratchAt.data(), n);
+        keep(n);
+    }
+}
+
+double LookaheadLimiter::truePeakTarget() noexcept {
     constexpr int kTaps = TruePeakMeter::kTapsPerPhase;
     // The segment from sample j = n - 8 to j + 1: |x[j]| and every phase the
     // interpolator puts between j and j + 1 (all of them land there; see
@@ -85,7 +137,7 @@ double LookaheadLimiter::truePeakTarget(const Sample* const* in, int i) noexcept
     double peak = 0.0;
     for (int c = 0; c < channels_; ++c) {
         double* h = history_.data() + static_cast<std::size_t>(c) * kTaps;
-        h[slot] = static_cast<double>(in[c][i]);
+        h[slot] = frame_[static_cast<std::size_t>(c)];
         peak = std::max(peak, std::fabs(h[(slot - TruePeakMeter::kDelay + kTaps) % kTaps]));
         for (int p = 0; p < factor_; ++p) {
             double y = 0.0;
@@ -114,14 +166,19 @@ void LookaheadLimiter::run(const Sample* const* in, Sample* const* out, int fram
     const int audioDelay = L + (tp ? tpDelay_ : 0);
 
     for (int i = 0; i < frames; ++i) {
+        // A non-finite sample is silence, to the detector and in the audio.
+        for (int c = 0; c < channels_; ++c) {
+            const double x = static_cast<double>(in[c][i]);
+            frame_[static_cast<std::size_t>(c)] = std::isfinite(x) ? x : 0.0;
+        }
         // --- detection: SAMPLE PEAK, or TRUE PEAK, across all channels -----
         double t = 1.0;
         if (tp) {
-            t = truePeakTarget(in, i);
+            t = truePeakTarget();
         } else {
             double peak = 0.0;
             for (int c = 0; c < channels_; ++c) {
-                const double a = std::fabs(static_cast<double>(in[c][i]));
+                const double a = std::fabs(frame_[static_cast<std::size_t>(c)]);
                 if (a > peak) peak = a;
             }
             t = peak > ceiling_ ? ceiling_ / peak : 1.0;
@@ -166,7 +223,7 @@ void LookaheadLimiter::run(const Sample* const* in, Sample* const* out, int fram
         for (int c = 0; c < channels_; ++c) {
             double* ringC = delay_.data() + static_cast<std::size_t>(c) *
                                             static_cast<std::size_t>(ring_);
-            ringC[writeIdx_] = static_cast<double>(in[c][i]);
+            ringC[writeIdx_] = frame_[static_cast<std::size_t>(c)];
             out[c][i] = static_cast<Sample>(ringC[readIdx] * g);
         }
         writeIdx_ = (writeIdx_ + 1) % ring_;
