@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Calibrate the Hold detector's rise and fall
+
+`clones/shaper-hold-input` at `cf693f3a` — Use the calibrated envelope coefficients in the Hold detector. **Lands after 3 December.** Its shared coefficient implementation is byte-identical to the Width review. The independent signed-step regression failed on the preceding implementation. The rack, Crush, detector filter and registered Pd suites passed in both precisions under MSVC /W4 /WX.
+
+All 96 registered stereo kick-and-bass captures reproduced their audio across repeat runs and 256/2,048-frame blocks at 48 kHz. Latency was zero. Error against the reference fell from 0.001356 to 0.000417 for a held flat contour, from 0.000751 to 0.000475 for full-height Add and from 0.000446 to 0.000288 for the filtered cut pair. Moving Multiply rose from 0.036258 to 0.036812. An independent detector readout on that same signal improved from 0.00000538 to 0.0000000154 RMS in normalized height. The separate full-rate capture and clock reviews affect the final output.
+
+The held flat contour at 256/2,048 took 24.6/209.6 µs median and 48.9/427.6 µs p99, versus 100.9/706.3 and 249.4/5,515.3 µs for the reference. Misses were 3/0 versus 9/8. Moving Multiply used 32.4/246.1 µs median versus 105.7/755.1 µs; misses were 6/0 versus 76/103, per 20,480 callbacks per size. Median and p99 fell below the reference in all sixteen measured cells.
+
+PR requested
+
 ## 22 November 2026 — Order of the two outer three-band filters
 
 Two stereo cutoff steps distinguish filter arrangements that sound identical at fixed frequencies. Keep the opposite edge fixed and step each cutoff separately at frame 8,192 on sustained, independent left and right input. Read the instantaneous coefficients from separately rendered two-band outputs and use those measured coefficients in each candidate three-band reconstruction.
