@@ -60,7 +60,9 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 #          every ABI a large clone to build something none of them build.
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
-  # EX-04: the native Ogg container and Vorbis encoder.
+  # EX-04: the native Ogg container, Vorbis and Opus encoders.
+  "xiph/opus opus BSD-3-Clause v1.6.1 22244de5a79bd1d6d623c32e72bf1954b56235be build"
+  "xiph/libopusenc libopusenc BSD-3-Clause v0.3 0dba1bea736ab8bb811409dce80c994a00a2ced9 build"
   "xiph/ogg ogg BSD-3-Clause v1.3.6 be05b13e98b048f0b5a0f5fa8ce514d56db5f822 build"
   "xiph/vorbis vorbis BSD-3-Clause v1.3.7 0657aee69dec8508a0011f47f3b69d7538e9d262 build"
   # Musical tempo/phase sync only; the SDK pins standalone Asio by gitlink.
