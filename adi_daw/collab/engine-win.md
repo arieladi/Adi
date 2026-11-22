@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, after 3 December, DEV-25 Clean discovery
+
+- `engine-win/scanner-clean-mode` at `9a1928bb` adds Clean to the asynchronous catalogue job. It skips cache hits and permits a fresh probe of an unchanged typed automatic quarantine. Ticket admission keeps manual and pending blocks. Ordinary Incremental, Refresh and CacheOnly retain their policies.
+- MSVC /WX scanner cache 142/142, scanner protocol 58/58, catalogue 41/41, and the JUCE player/render suite passed. The native K=1/K=4 fixture produced the same ordered catalogue. Each eligible native module was probed once in its child, the manual block launched none, and warm Incremental and CacheOnly reused the rebuilt metadata.
+- **For window-fn:** wire Alt+Rescan and Alt at launch to `startDiscovery(DiscoveryMode::Clean)`. The synchronous catalogue call explicitly refuses Clean.
+
+PR requested.
+
 ## 2026-11-22, after 3 December, DF-E25(c) scanner class-ID packet
 
 - `engine-win/vst3-class-id-packets` at `7d4128dc` adds a strict, versioned packet for exact VST3 class IDs alongside the existing JUCE UIDs. The reader still accepts legacy packets. A new packet validates every 32-digit ID, rejects duplicates or a partial set within a module, and hydrates from existing registry storage without a helper or database migration.
