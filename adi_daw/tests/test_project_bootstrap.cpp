@@ -37,6 +37,9 @@ void newProject() {
     check(count(*store,"tracks")==7 && db.execAndGet("SELECT count(*) FROM tracks WHERE kind='midi'").getInt()==2 &&
           db.execAndGet("SELECT count(*) FROM tracks WHERE kind='audio'").getInt()==2,
           "the default Set has two MIDI and two audio tracks");
+    check(db.execAndGet("SELECT count(*) FROM tracks WHERE id BETWEEN 2 AND 5 AND monitor_mode=2").getInt()==4 &&
+          db.execAndGet("SELECT count(*) FROM tracks WHERE id IN(1,6,7) AND monitor_mode=0").getInt()==3,
+          "New monitors all four input tracks on Auto");
     check(db.execAndGet("SELECT group_concat(name,',') FROM (SELECT name FROM tracks "
                         "WHERE kind!='master' ORDER BY index_in_parent,id)").getString()=="1 MIDI,2 MIDI,3 Audio,4 Audio,A Reverb,B Delay",
           "default track names and positions are deterministic");
@@ -103,9 +106,36 @@ void newProject() {
     check(!refused && error==StoreError::AlreadyExists && count(*store,"tracks")==7,
           "New refuses to overwrite an existing project");
 }
+void monitorDefaultAndLegacyRedo() {
+    test::TempDirectory temp("bootstrap","track-monitor");
+    StoreError error{};
+    auto store=Store::createEmpty(temp.path()/"monitor.adi",error);
+    if (!store) throw std::runtime_error("create monitor fixture");
+    auto& db=store->db();
+    OpJournal journal(*store);
+    OpRequest create;
+    create.opType="track.create";
+    create.payload={{"id",1},{"kind","instrument"}};
+    const auto created=journal.commit(create);
+    if (!created.ok) throw std::runtime_error(created.error);
+    const auto monitor=[&] { return db.execAndGet("SELECT monitor_mode FROM tracks WHERE id=1").getInt(); };
+    check(monitor()==2,"ordinary track.create monitors a new instrument on Auto");
+    auto history=History(*store);
+    check(history.undo().ok && history.redo().ok && monitor()==2,
+          "Redo retains the recorded Auto default of the new track");
+    if(!history.undo().ok) throw std::runtime_error("prepare replay of an older create");
+    const auto legacy=encodePayload({{"id",1}});
+    SQLite::Statement prior(db,"UPDATE ops SET inverse=? WHERE seq=?");
+    prior.bind(1,legacy.data(),static_cast<int>(legacy.size()));
+    prior.bind(2,created.seqs.front());
+    prior.exec();
+    check(history.redo().ok && monitor()==0,
+          "redoing an older track.create retains its original Off default");
+}
+
 }
 int main() {
-    try{newProject();}catch(const std::exception& e){check(false,e.what());}
+    try{newProject();monitorDefaultAndLegacyRedo();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);
     return failures?1:0;
 }

@@ -409,7 +409,8 @@ void pairedInverseAndUnknownLogFields() {
     const auto result = project.commit(create);
     require(History(*project.store).undo().ok, "paired track undo");
     expect(latest(observer), AppliedBatchKind::Undo, result.seqs.back(), {},
-        {inverse(create, request("track.delete", {{"id", 7}}), result)}, "inverse names actual paired delete handler");
+        {inverse(create, request("track.delete", {{"id", 7}, {"monitorMode", 2}}), result)},
+        "inverse names the paired delete handler and retains the creation monitor mode");
     require(History(*project.store).redo().ok, "paired track redo");
     expect(latest(observer), AppliedBatchKind::Redo, {}, result.seqs.back(), {forward(create, result)}, "paired redo restores original dispatch");
     const auto edit = param(100, "P", .5); const auto edited = project.commit(edit);

@@ -400,6 +400,24 @@ bool trackRoleInverse(OpContext& c,const Payload& p,Payload& inverse,std::string
     }catch(const std::exception& exception){err=exception.what();return false;}
 }
 
+std::int64_t newTrackMonitorMode(const Payload& p) {
+    const auto& kind=p.at("kind").get_ref<const std::string&>();
+    return kind=="audio" || kind=="midi" || kind=="instrument"?2:0;
+}
+std::int64_t trackCreationMonitorMode(const OpContext& context,const Payload& p) {
+    if (!context.replay) return newTrackMonitorMode(p);
+    const auto& replay=*context.replay;
+    if (replay.opType!="track.create" || replay.asInverse || !replay.hasInverse) return 0;
+    std::string error;
+    const auto inverse=decodeFromLog(replay.inverse,error);
+    if (!inverse) throw std::runtime_error("cannot decode recorded track creation: "+error);
+    if (!inverse->contains("monitorMode")) return 0; // creation from before N67
+    if (detail::signedInteger(inverse->at("id"))!=detail::signedInteger(p.at("id")) ||
+        inverse->at("monitorMode")!=2 || newTrackMonitorMode(p)!=2)
+        throw std::runtime_error("invalid recorded monitor mode for new track");
+    return 2;
+}
+
 bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         if(p.contains("contents")) {
@@ -410,8 +428,8 @@ bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
         // undo a create, redo it, and the object must return with the SAME id
         // or every later op referencing it points at nothing.
         SQLite::Statement st(c.db,
-            "INSERT INTO tracks(id, kind, name, parent_id, index_in_parent) "
-            "VALUES (?,?,?,?,?)");
+            "INSERT INTO tracks(id, kind, name, parent_id, index_in_parent, monitor_mode) "
+            "VALUES (?,?,?,?,?,?)");
         st.bind(1, p.at("id").get<std::int64_t>());
         st.bind(2, p.at("kind").get<std::string>());
         st.bind(3, p.value("name", std::string{}));
@@ -420,6 +438,7 @@ bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
         else
             st.bind(4);
         st.bind(5, p.value("index", std::int64_t{0}));
+        st.bind(6, trackCreationMonitorMode(c,p));
         st.exec();
 
         // Every track needs a mixer strip; creating it here rather than in a
@@ -435,6 +454,10 @@ bool trackCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string&
     if (!p.contains("id")) { err = "track.create payload has no id"; return false; }
     inv = Payload::object();
     inv["id"] = p.at("id");
+    if (!p.contains("contents")) {
+        const auto mode=newTrackMonitorMode(p);
+        if (mode!=0) inv["monitorMode"]=mode;
+    }
     return true;   // paired: track.delete
 }
 
