@@ -668,6 +668,19 @@ void contended(std::int32_t frames, double seconds, const std::vector<const char
 
 }  // namespace
 
+// A debug build counts allocations only (its times are not the product's),
+// and runs a tenth as long so it fits its CTest timeout: every callback is
+// still counted from the first, the warm-up second included. The parts that
+// only time (three of the four contention variants, the breakdown) are an
+// optimised build's alone.
+#if defined(NDEBUG)
+constexpr double kLength = 1.0;
+constexpr bool kTimed = true;
+#else
+constexpr double kLength = 0.1;
+constexpr bool kTimed = false;
+#endif
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 #if defined(_MSC_VER) && defined(_DEBUG)
@@ -681,25 +694,27 @@ int main() {
     try {
         for (std::int32_t frames : {64, 128}) {
             std::printf("\n[each built-in alone, %d frames]\n", frames);
-            eachBuiltinAlone(frames, 10.0);
+            eachBuiltinAlone(frames, 10.0 * kLength);
         }
         const std::vector<const char*> chain{"org.adidaw.builtin.saturator", "org.adidaw.builtin.eq-eight",
                                              "org.adidaw.builtin.reverb", "org.adidaw.builtin.delay",
                                              "org.adidaw.builtin.adi-shaper"};
         for (std::int32_t frames : {64, 128}) {
             std::printf("\n[WTS-01's project, %d frames]\n", frames);
-            theSessionsProject(frames, 20.0, true, chain, true);
-            contended(frames, 10.0, chain, true, true, true);
-            contended(frames, 10.0, chain, true, false, false);
-            contended(frames, 10.0, chain, false, true, false);
-            contended(frames, 10.0, chain, false, false, false);
-            // Where the time goes: an empty project (the engine's own share),
-            // then the chain grown one device at a time.
-            theSessionsProject(frames, 5.0, false, {}, false);
-            for (std::size_t n = 0; n <= chain.size(); ++n) {
-                theSessionsProject(frames, 5.0, true,
-                                   std::vector<const char*>(chain.begin(), chain.begin() + static_cast<std::ptrdiff_t>(n)),
-                                   false);
+            theSessionsProject(frames, 20.0 * kLength, true, chain, true);
+            contended(frames, 10.0 * kLength, chain, true, true, true);
+            if constexpr (kTimed) {
+                contended(frames, 10.0, chain, true, false, false);
+                contended(frames, 10.0, chain, false, true, false);
+                contended(frames, 10.0, chain, false, false, false);
+                // Where the time goes: an empty project (the engine's own
+                // share), then the chain grown one device at a time.
+                theSessionsProject(frames, 5.0, false, {}, false);
+                for (std::size_t n = 0; n <= chain.size(); ++n) {
+                    theSessionsProject(
+                        frames, 5.0, true,
+                        std::vector<const char*>(chain.begin(), chain.begin() + static_cast<std::ptrdiff_t>(n)), false);
+                }
             }
         }
     } catch (const std::exception& e) {
