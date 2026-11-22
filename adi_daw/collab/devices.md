@@ -21,7 +21,7 @@ Time. Beat Repeat and External Audio Effect are left out of the count; they are 
   - This seat starts Amp now, on its own branch, and stops there if the answer is no.
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 36 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 37 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -179,6 +179,10 @@ method); Live's files and renders stay in the director's research.
 36. **Cabinet (built after 3 December).** A fresh Cabinet, every control as shown (the cabinet and
     microphone lists, the mic types, Dual's default). Pink noise through each cabinet with each
     microphone: the response from 40 Hz to 16 kHz.
+37. **Corpus (built after 3 December).** A fresh Corpus, every control as shown (the type list,
+    Ratio and Opening, the LFO and filter sections, the defaults). For each type at its default, a
+    click: the first eight modes' frequencies against the first, and the first mode's decay time at
+    Decay 0, 50 and 100 %.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -193,6 +197,23 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Corpus — lands after 3 December
+
+**PR requested:** head `devices/corpus` (eb01d991), base `main`, after `devices/live-cabinet`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.** Sixteen two-pole resonant modes of a beam, a marimba bar, a string, a membrane, a
+  plate, a pipe or a tube, each at its textbook ratios. The controls are Tune, Fine, Decay, Material,
+  Hit, Brightness, Inharmonics, two listening positions, Bleed, Gain and Dry/Wet.
+- **Not built:** Ratio, Opening, the LFO, the filter, MIDI frequency and Spread.
+- **Tests:**
+  - `adi_corpus_tests` 22. An impulse rings at each model's first four textbook ratios within 0.1 %.
+    The first mode's T60 is within 2 %. A node at the hit or the listening position silences a
+    string's second mode. Fine, Inharmonics and the rate's limit. Bleed. Block sizes, NaN, no
+    allocation.
+  - parity max error 0;
+  - the catalogue holds 39 built-ins.
+- **Reading 37, added to the ONE list.**
 
 ## 2026-11-22 — DEV-22, the chapter's next missing effect: Cabinet — lands after 3 December
 
