@@ -8,6 +8,7 @@
 #include "temp_directory.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -113,6 +114,110 @@ DecodeProblem problemOf(F&& f, std::string* message = nullptr) {
 }
 
 // --- formats ------------------------------------------------------------------------------
+
+void waveMetadata(const fs::path& folder) {
+    auto put = [](std::string& out, std::uint32_t value, unsigned bytes) {
+        for (unsigned i = 0; i < bytes; ++i)
+            out.push_back(static_cast<char>((value >> (8*i)) & 255));
+    };
+    auto chunk = [&](std::string& parent, const char* name, const std::string& payload) {
+        parent.append(name, 4);
+        put(parent, static_cast<std::uint32_t>(payload.size()), 4);
+        parent += payload;
+        if (payload.size() & 1U) parent.push_back('\0');
+    };
+    auto makeWave = [&](const fs::path& path, std::size_t dataBytes, const std::string& metadata) {
+        std::string body("WAVE");
+        std::string format;
+        put(format,1,2);
+        put(format,1,2);
+        put(format,48000,4);
+        put(format,96000,4);
+        put(format,2,2);
+        put(format,16,2);
+        chunk(body,"fmt ",format);
+        chunk(body,"data",std::string(dataBytes,'\0'));
+        body += metadata;
+        std::string bytes("RIFF");
+        put(bytes,static_cast<std::uint32_t>(body.size()),4);
+        bytes += body;
+        std::ofstream file(path,std::ios::binary);
+        file.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));
+        if (!file) throw std::runtime_error("write WAVE metadata fixture");
+    };
+
+    std::string metadata;
+    std::string acid;
+    put(acid,2,4);
+    put(acid,48,2);
+    put(acid,0,2);
+    put(acid,0,4);
+    put(acid,8,4);
+    put(acid,8,2);
+    put(acid,7,2);
+    put(acid,std::bit_cast<std::uint32_t>(128.5f),4);
+    chunk(metadata,"acid",acid);
+    chunk(metadata,"inst",std::string{61,0,0,0,127,1,127});
+    std::string sampler;
+    for (const auto word : {0U,0U,20833U,65U,0U,0U,0U,2U,0U}) put(sampler,word,4);
+    for (const auto word : {7U,1U,2U,8U,0x80000000U,3U}) put(sampler,word,4);
+    for (const auto word : {8U,0U,10U,1600000U,0U,0U}) put(sampler,word,4);
+    chunk(metadata,"smpl",sampler);
+    std::string info("INFO");
+    chunk(info,"INAM",std::string("L\xC3\xA9ger \0",8));
+    chunk(info,"INAM",std::string("duplicate\0",10));
+    chunk(info,"IART",std::string("\xFF\0",2));
+    chunk(info,"IGNR","missing terminator");
+    chunk(info,"IKEY",std::string("drums; loop\0",12));
+    chunk(metadata,"LIST",info);
+
+    const auto tagged = folder / "tagged.media";
+    makeWave(tagged,2U<<20,metadata);
+    const auto bytes = fs::file_size(tagged);
+    const auto read = readWaveSampleMetadata(tagged);
+    check(read.sampleRate == 48000 && read.channels == 1 && read.frames == (1U<<20),
+          "WAVE metadata sniffs the container and skips a PCM payload larger than the reader budget");
+    check(read.acid && read.acid->bpm == 128.5 && read.acid->rootNote == 48 &&
+              !read.acid->oneShot && read.acid->beats == 8 &&
+              read.acid->meterNumerator == 7 && read.acid->meterDenominator == 8,
+          "ACID tempo, root, meter and loop hint retain their native meanings");
+    check(read.instrumentRoot == 61 && read.samplerRoot == 65 && read.loops.size() == 1 &&
+              read.loops.front().type == WaveLoopType::Alternating && read.loops.front().firstFrame == 2 &&
+              read.loops.front().endFrame == 9 && read.loops.front().sampleFraction == 0x80000000U &&
+              read.loops.front().playCount == 3,
+          "instrument and sampler roots are separate and valid loops have an exclusive source end");
+    check(read.text.contains(WaveInfoTag::Title) && read.text.at(WaveInfoTag::Title) == "L\xC3\xA9ger" &&
+              read.text.contains(WaveInfoTag::Keywords) && read.text.at(WaveInfoTag::Keywords) == "drums; loop" &&
+              !read.text.contains(WaveInfoTag::Artist) && !read.text.contains(WaveInfoTag::Genre) &&
+              fs::file_size(tagged) == bytes,
+          "INFO emits bounded UTF-8, preserves the first valid tag and leaves the source alone");
+
+    const auto plain = folder / "plain.wav";
+    makeWave(plain,32,{});
+    const auto noTags = readWaveSampleMetadata(plain);
+    check(noTags.frames == 16 && !noTags.acid && !noTags.instrumentRoot &&
+              !noTags.samplerRoot && noTags.loops.empty() && noTags.text.empty(),
+          "a valid untagged sample remains distinguishable from a failed read");
+
+    std::string largeInfo("INFO"), largeMetadata;
+    chunk(largeInfo,"ICMT",std::string(2U<<20,'x'));
+    chunk(largeMetadata,"LIST",largeInfo);
+    const auto oversized = folder / "oversized-info.wav";
+    makeWave(oversized,32,largeMetadata);
+    check(problemOf([&] { (void)readWaveSampleMetadata(oversized); }) == DecodeProblem::Unsupported,
+          "an oversized metadata allocation is refused within the fixed budget");
+    std::stop_source stop;
+    stop.request_stop();
+    check(problemOf([&] { (void)readWaveSampleMetadata(tagged,stop.get_token()); }) == DecodeProblem::Cancelled,
+          "a cancelled analysis opens no source");
+    const auto ioBefore = callbackFileIo.load();
+    const auto realtime = [&] {
+        const CallbackScope callback;
+        return problemOf([&] { (void)readWaveSampleMetadata(tagged); });
+    }();
+    check(realtime == DecodeProblem::AudioThread && callbackFileIo.load() == ioBefore,
+          "metadata refuses the audio callback before file I/O");
+}
 
 void formats(const fs::path& root) {
     check(sniff(fixture("tone16.flac")) == SourceFormat::Flac, "sniff: FLAC");
@@ -333,6 +438,7 @@ int main() {
     try {
         adi::test::TempDirectory tmp("decode", "suite");
         formats(tmp.path());
+        waveMetadata(tmp.path());
         refusals(tmp.path());
         audioThread(tmp.path());
         keyedByHash(tmp.path());
