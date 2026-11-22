@@ -164,9 +164,11 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
     // multiple and not a neighbour's; the last pass divides its error by m.
     //
     // Its cost is bounded, as it runs on the audio thread: at most kPasses
-    // passes of at most kSteps steps. A walk that leaves the coarse dip (a
-    // window of silence then a tone drives it toward the shortest lags) ends
-    // the reading: the window holds no single period.
+    // passes of at most kSteps steps. A period walked out of the range the
+    // detector reads (a window of silence then a tone drives the walk toward
+    // the shortest lags) ends the reading: the window holds no single
+    // period. A pitch moving inside the window (vibrato, a glide) may put the
+    // fine dip a few samples from the coarse one; that reading stands.
     const std::size_t length = size_ - half - 2;
     const auto diff = [&](std::size_t lag) {
         ++work_;
@@ -200,8 +202,8 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
         const double curve = a - 2 * here + c;
         const double offset = curve > 0 ? std::clamp(0.5 * (a - c) / curve, -0.5, 0.5) : 0.0;
         period = (static_cast<double>(at) + offset) / static_cast<double>(multiple);
-        if (!(std::abs(period - static_cast<double>(tau)) < 1.5)) {
-            return false;   // the walk left the coarse dip
+        if (!(period >= static_cast<double>(lowest) - 1 && period <= static_cast<double>(highest) + 1)) {
+            return false;   // walked out of the range read
         }
     }
     hz = rate_ / period;
