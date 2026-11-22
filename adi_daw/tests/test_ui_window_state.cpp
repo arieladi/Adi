@@ -58,6 +58,14 @@ void heldPeaksShared() {
     heldNow = .5f;
     check(peaks.read(&other, &floating, takeTest) == .5f && peaks.read(&meter, &rows, takeTest) == 0.f && peaks.meters() == 2,
           "another strip's held peak is its own");
+    // A view hidden lets its share go (its strip unframed): a transient while it was hidden is not
+    // shown as current when it reads again.
+    peaks.forget(&mixerView);
+    heldNow = .95f;
+    (void)peaks.read(&meter, &rows, takeTest);
+    heldNow = .1f;
+    check(peaks.read(&meter, &mixerView, takeTest) == .1f,
+          "a view shown again reads what is taken then, not a transient it missed while hidden");
     peaks.forget(&floating);
     peaks.forget(&rows);
     peaks.forget(&mixerView);

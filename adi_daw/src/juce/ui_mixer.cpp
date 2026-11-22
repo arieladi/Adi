@@ -320,6 +320,7 @@ void MixerStrip::resolveMeter() {
         heldPeaks().forget(this);
     meter_ = found;
 }
+void MixerStrip::unframed() { heldPeaks().forget(this); }
 MixerStrip::~MixerStrip() {
     heldPeaks().forget(this);
     pan.setLookAndFeel(nullptr);
@@ -1288,8 +1289,15 @@ void MixerPanel::placeColumns() {
         s.setVisible(true);
     }
     for (; n < strips_.size(); ++n)
-        if (!strips_[n]->dragging())
+        if (!strips_[n]->dragging()) {
             strips_[n]->setVisible(false);
+            strips_[n]->unframed();
+        }
+}
+void MixerPanel::visibilityChanged() {
+    if (!isVisible())
+        for (const auto &s : strips_)
+            s->unframed();
 }
 void MixerPanel::place() {
     if (vertical_) {
@@ -1344,8 +1352,10 @@ void MixerPanel::place() {
         y += h;
     }
     for (std::size_t i = used; i < strips_.size(); ++i)
-        if (!strips_[i]->dragging())
+        if (!strips_[i]->dragging()) {
             strips_[i]->setVisible(false);
+            strips_[i]->unframed();
+        }
 }
 void MixerPanel::frame(bool changed) noexcept {
     if (changed)

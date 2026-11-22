@@ -77,6 +77,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Finds the engine's meter for the track again (MixerPanel::meter): on binding, on every
     // refresh, and when the panel is asked to (MixerPanel::resolveMeters).
     void resolveMeter();
+    // Not framed any more (hidden in the pool, or its panel hidden): its held peak's share is let go,
+    // so a peak it missed is never shown as current when it reads again (DF-W32).
+    void unframed();
     juce::Slider volume, pan;
     // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
@@ -257,6 +260,8 @@ class MixerPanel final : public juce::Component {
     // Find every bound strip's meter again: when the session has gained strips (the audio device
     // attached; a refresh does the same for each strip shown).
     void resolveMeters();
+    // Hidden, the panel's strips stop being framed: each lets its held peak's share go (DF-W32).
+    void visibilityChanged() override;
     // Move Focus to Mixer (§42.16): the Track Activator of the track's strip, else of the
     // first strip shown. False when no strip is shown.
     bool focusTrack(std::int64_t track);
