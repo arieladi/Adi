@@ -32,6 +32,21 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-06 rack macro playback, lands after DEV-03 and 3 December
+
+Branch `engine/dev06-rack-macros` at `0a2e3eb94b9826248ac4962fc996310f9a2b97b5`, stacked on DEV-03 `757d934a`. Suggested PR title **Play rack macros through mapped device parameters**. [Compare](https://github.com/arieladi/Adi/compare/engine/dev03-rack-structure...engine/dev06-rack-macros)
+
+All 16 stable macro references read their existing native rows. Stored values and automation use the existing sample clock and deliver one ParamValue per mapped target. Contributions are curved and summed in target units before the target range clamps the result. Takeover suppresses ordinary automation only on the owned target. Removing the last mapping chases that target's ordinary lane again. The journal supports value, rename, map, unmap and range edits, and playback generates no parameter writes in the project.
+
+GCC 14 and Clang 19 passed eight suites each with warnings as errors. Parameter Automation 148, Gesture Playback 569, Session 291, OPS Schema 277, CLAP 589, Graph 200, Device Copy 105 and Built-in Values 16. The rack fixture proves an exact sample-131 change, two spellings of one CLAP parameter, native-range clamp, takeover and release, Undo, and zero callback allocations. Standalone macro math passed 34 under each compiler and detected planted sum/clamp defects. OPS validation passed. Reviewed against Win's five portability patterns.
+
+| Seat | Needs |
+|---|---|
+| win | Reserve selector/settings, enabled mappings, breakpoint curves and authored target caps. This branch exposes the stable chainSelect handle. Saved selector values and gating await DEV-02 and the reservation. |
+| window-fn | Bind the new edit operations and use Session::macroControls for the mapped control's takeover affordance. |
+
+PR requested
+
 ## 2026-11-22 — DEV-03 rack structure, lands after DEV-01 and 3 December
 
 Branch `engine/dev03-rack-structure` at `757d934ab821cac25756452010a679970cb853f7`, stacked on DEV-01 `cb8b4fb6`. Suggested PR title **Capture rack subtrees and paste them under fresh identities**. [Compare](https://github.com/arieladi/Adi/compare/engine/dev01-rack-playback...engine/dev03-rack-structure)
