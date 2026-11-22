@@ -33,6 +33,8 @@
 
 #pragma once
 
+#include "adi/dsp/glide.hpp"
+
 #include <array>
 #include <cstddef>
 #include <vector>
@@ -68,14 +70,18 @@ private:
     struct Line {
         std::vector<float> ring;
         double b0 = 0, a1 = 0, a2 = 0, s1 = 0, s2 = 0;   ///< the band pass, transposed DF-II
-        double current = 0, target = 0, gainL = 0, gainR = 0, feedback = 0, last = 0;
-        bool on = true, filter = true;
+        double current = 0, target = 0, last = 0;
+        bool filter = true;
+        /// Volume and Pan's two gains, Feedback, and On (the input fades in
+        /// and out): each glides over about 10 ms once audio runs.
+        Glide gainL, gainR, feedback, on;
     };
     void update(std::size_t line) noexcept;
     std::array<double, Count> p_{};
     std::array<Line, kLines> lines_;
     std::size_t write_ = 0, size_ = 0;
-    double rate_ = 48000, bpm_ = 120, glide_ = 0, dry_ = 1;
+    double rate_ = 48000, bpm_ = 120, glide_ = 0;
+    Glide dry_;
 };
 
 }  // namespace adi::dsp

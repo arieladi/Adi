@@ -132,9 +132,11 @@ void echoes() {
     ring.process(pulse.data(), zero.data(), a.data(), b.data(), 240);
     ring.set(F::param(0, F::On), 0);
     std::vector<float> rest(4800, 0.f), restL(4800), restR(4800);
-    std::vector<float> more = impulse(4800, 100);
+    // On fades the input out over about 10 ms (it glides, and lands exactly
+    // on 0 within 60 ms): an impulse 73 ms later is not taken at all.
+    std::vector<float> more = impulse(4800, 3500);
     ring.process(more.data(), more.data(), restL.data(), restR.data(), 4800);
-    check(std::abs(restL[240] - 1.f) < 1e-7 && std::abs(restL[720] - 0.5f) < 1e-7 && restL[580] == 0.f,
+    check(std::abs(restL[240] - 1.f) < 1e-7 && std::abs(restL[720] - 0.5f) < 1e-7 && restL[3980] == 0.f,
           "On off: the echoes already in the line ring out, the new input is not taken");
 }
 
@@ -318,7 +320,47 @@ void preparing() {
     check(a[480] == 1.f, "the next prepare restores it");
 }
 
+/// Dry, a line's Volume, Pan and Feedback, and its On, moved at a tone's
+/// peak, glide: the largest step while they move stays within the signal's
+/// own, before or after.
+void glides() {
+    struct Move {
+        F::Param param;
+        double from, to;
+        const char* what;
+    };
+    for (const Move m : {Move{F::Dry, -70, 6, "Dry"}, Move{F::param(0, F::Volume), -70, 6, "Volume"}, Move{F::param(0, F::Pan), -50, 50, "Pan"},
+                         Move{F::param(0, F::Feedback), 0, 90, "Feedback"}, Move{F::param(0, F::On), 0, 1, "On"}}) {
+        F f = alone(0);
+        f.set(F::param(0, F::Time), 7);   // the echo of a 110 Hz tone, out of phase with it
+        f.set(F::Dry, -6);
+        f.set(m.param, m.from);
+        f.prepare(kRate);
+        std::vector<float> x(96000), l(96000), r(96000);
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            x[i] = static_cast<float>(0.3 * std::sin(2 * std::numbers::pi * 110 * static_cast<double>(i) / kRate));
+        }
+        constexpr std::size_t at = 48109;   // the tone's peak
+        f.process(x.data(), x.data(), l.data(), r.data(), at);
+        f.set(m.param, m.to);
+        f.process(x.data() + at, x.data() + at, l.data() + at, r.data() + at, x.size() - at);
+        double moving = 0, settled = 0;
+        for (std::size_t i = at; i < at + 4800; ++i) {
+            moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 24000; i < 48000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 72000; i < 96000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        check(moving <= 1.5 * std::max(settled, 1e-9), std::string(m.what) + " glides: no step past the signal's own (" + std::to_string(moving) +
+                                                           " against " + std::to_string(settled) + ")");
+    }
+}
+
 int main() {
+    glides();
     preparing();
     echoes();
     sync();
