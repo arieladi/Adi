@@ -60,6 +60,7 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 #          every ABI a large clone to build something none of them build.
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
+  "chirlu/soxr soxr LGPL-2.1-or-later 0.1.3 945b592b70470e29f917f4de89b4281fbbd540c0 build"
   # EX-04: the native Ogg container and Vorbis encoder.
   "xiph/ogg ogg BSD-3-Clause v1.3.6 be05b13e98b048f0b5a0f5fa8ce514d56db5f822 build"
   "xiph/vorbis vorbis BSD-3-Clause v1.3.7 0657aee69dec8508a0011f47f3b69d7538e9d262 build"

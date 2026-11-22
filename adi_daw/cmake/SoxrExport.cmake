@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+set(ADI_SOXR_SOURCE "${ADI_THIRD_PARTY}/soxr" CACHE PATH "Pinned SoXR source for export")
+target_sources(adi_core PRIVATE src/adi/render/delivery_src.cpp)
+if(EXISTS "${ADI_SOXR_SOURCE}/src/soxr.h")
+    function(adi_add_export_soxr)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+        set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+        list(APPEND CMAKE_MODULE_PATH "${ADI_SOXR_SOURCE}/cmake/Modules")
+        set(BUILD_SHARED_LIBS OFF)
+        set(BUILD_TESTS OFF)
+        set(BUILD_EXAMPLES OFF)
+        set(WITH_OPENMP OFF)
+        set(WITH_LSR_BINDINGS OFF)
+        set(WITH_VR32 OFF)
+        set(WITH_CR32 OFF)
+        set(WITH_CR64 ON)
+        set(WITH_CR32S OFF)
+        set(WITH_CR64S OFF)
+        set(WITH_PFFFT OFF)
+        set(WITH_AVFFT OFF)
+        set(WITH_DEV_TRACE OFF)
+        add_subdirectory("${ADI_SOXR_SOURCE}" "${CMAKE_BINARY_DIR}/third_party/soxr" EXCLUDE_FROM_ALL SYSTEM)
+    endfunction()
+    adi_add_export_soxr()
+    # SoXR carries its own pffft.h. Keep that include path private to this
+    # translation unit so ADI's spectrum keeps its separate pinned API.
+    set_property(SOURCE src/adi/render/delivery_src.cpp APPEND PROPERTY
+        INCLUDE_DIRECTORIES "${ADI_SOXR_SOURCE}/src")
+    set_property(SOURCE src/adi/render/delivery_src.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ADI_HAVE_SOXR=1)
+    target_link_libraries(adi_core PRIVATE soxr)
+endif()

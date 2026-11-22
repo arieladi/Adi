@@ -50,6 +50,7 @@ struct NiStems {
     std::vector<NiStem> stems; // one to four direct wet sources; unused slots silent
     std::uint32_t bitRate = 256000; // per stereo track, one codec setting for all five
 };
+enum class ExportRatePolicy { RequestedRate, ProjectThenDownsample };
 struct Job {
     std::filesystem::path project;
     std::filesystem::path directory;
@@ -71,6 +72,7 @@ struct Job {
     // Empty preserves the ordinary one-file contract. Nonempty deliveries share
     // one graph render and the same output clock, range and channel layout.
     std::vector<DeliverySpec> deliveries{};
+    ExportRatePolicy ratePolicy = ExportRatePolicy::RequestedRate;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
@@ -95,6 +97,7 @@ struct RenderSnapshot {
     double sampleRate = 0;
     std::optional<std::int64_t> regionId{};
     NameContext names; // the values used to resolve this output's name
+    double graphSampleRate = 0;
 };
 struct MediaReference {
     std::int64_t clipId = 0, mediaId = 0;
