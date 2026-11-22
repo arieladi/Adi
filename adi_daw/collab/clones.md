@@ -17,6 +17,24 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Steep Filter responses in the registered device
+
+`clones/shaper-filter-steep` at `5fff5d0a` — Add 24 dB/octave low-pass and high-pass on independent bands. **Lands after 3 December.** All 415 existing normalized values passed sparse recall. Native and edited Pd passed live response changes in all three bands, including control writes during a ringing response. The rack, filter and registered suites passed at both Pd precisions under MSVC /W4 /WX. The kernel passed 1,370,196 signed comparisons against two existing sections in series. Its signed impulse test matched the original within 0.000000206 of a unit impulse. Reversing the two sections failed both moving-response checks.
+
+Registered stereo kick and bass at 48 kHz. Each timing pair lists 256 / 2,048 frames in µs across 30,720 callbacks at each size. RMS compares the complete stereo render with the reference. All arms reported zero latency. All block-size pairs reproduced their audio exactly, and the existing high-pass output matched the prior head byte-for-byte.
+
+| Response | Prior → new RMS | New median | Reference median | New p99 | Reference p99 | New misses | Reference misses |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Low-pass | 0.00406 → 4.93e-08 | 29.8 / 241.8 | 69.5 / 484.6 | 53.5 / 478.9 | 141.3 / 2,064.9 | 10 / 0 | 19 / 2 |
+| High-pass | 0.00181 → 7.78e-08 | 33.6 / 266.1 | 70.0 / 483.0 | 125.5 / 542.5 | 130.1 / 1,243.1 | 7 / 3 | 16 / 2 |
+| Moving low-pass | 0.112 → 1.9e-06 | 62.5 / 532.1 | 111.6 / 687.9 | 133.6 / 4,705.2 | 397.3 / 1,648.7 | 13 / 7 | 66 / 0 |
+| Moving high-pass | 0.0281 → 8.48e-07 | 79.1 / 505.1 | 113.0 / 684.6 | 232.0 / 777.2 | 390.4 / 1,356.5 | 28 / 1 | 71 / 3 |
+| Existing high-pass | 9.2e-08 → 9.2e-08 | 28.2 / 166.5 | 65.4 / 263.5 | 133.5 / 542.3 | 172.4 / 562.5 | 23 / 0 | 22 / 0 |
+
+For Win when merging with peak at `966700ee` and stereo offset at `830d3a12`: keep each band's three independent controls, with peak taking precedence over steep. Reindex the nine appended control/message pairs from the final canvas and connect every message to the external. The private 424-control merge passed native and crossed editable Pd at 32-bit precision, including all nine sparse controls in normalized and real units. Removing the middle band's offset, peak or steep wire failed the signed audio comparison in each case. Giving steep precedence over peak also failed it.
+
+PR requested
+
 ## 22 November 2026 — First half-step after Filter silence
 
 On affected clean Filter restarts, the first of the two updates in a sample behaves as if damping increases by 2. The second update uses the ordinary law. Signed low-pass, high-pass and band-pass outputs independently constrain the two updates. Across 156 per-channel recordings at 26 rate and control settings, the magnitude of the preceding band-pass sample correctly classified all 25 exceptional and 131 ordinary restarts, including 11 with exactly zero prior state.
