@@ -58,6 +58,10 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     void refresh();
     // Called on the message thread after `refresh` changed what is listed or open.
     std::function<void()> onChange;
+    // Called at once when the inputs the feed reads, or their switches, changed: the application
+    // releases the notes held from them (`Session::resetMidiInput`), so a key held on a port closed,
+    // unplugged or switched off does not sound on.
+    std::function<void()> onInputsChanged;
     // The rings' one consumer (N60), owned by the application so it outlives the device callback that
     // pumps it: `refresh` publishes the open inputs to it, and the host's end takes them all back
     // before their rings go. None (tests): the rings fill and nothing drains them.

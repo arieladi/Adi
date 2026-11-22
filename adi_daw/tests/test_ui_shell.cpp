@@ -15095,6 +15095,27 @@ int main(int argc, char **argv) {
         check(got.size() >= 1 && got[0].event.type == engine::EventType::NoteOn && got[0].event.channel == 3 &&
                   (got[0].event.noteId >> 40) == 4,
               "an MPE port's member note: channel 3 zero-based, its id in that port's space");
+        // Its MPE switch turned off with the key held: the zone changes, the key keeps its release.
+        got.clear();
+        const std::array<MidiInputFeed::Source, 1> plain{MidiInputFeed::Source{&mpe, 3, true, false, false, 4}};
+        feed.publish(plain);
+        mpe.push(msg(170, 0x83, 72, 0));
+        feed.pump(1440, 480, 48000, 171, take);
+        check(got.size() == 1 && got[0].event.type == engine::EventType::NoteOff && (got[0].event.noteId >> 40) == 4,
+              "the MPE switch changed under a held key: its note off still arrives, with its note's id");
+        // A busy port does not starve the others: the block's budget is shared.
+        got.clear();
+        MidiInputFeed::Ring busy, quiet;
+        const std::array<MidiInputFeed::Source, 2> two{MidiInputFeed::Source{&busy, 5, true, false, false, 5},
+                                                       MidiInputFeed::Source{&quiet, 6, true, false, false, 6}};
+        feed.publish(two);
+        for (int i = 0; i < 900; ++i)
+            busy.push(msg(180, 0xb0, 1, static_cast<std::uint8_t>(i % 128)));
+        quiet.push(msg(180.5, 0x90, 50, 90));
+        feed.pump(1920, 480, 48000, 181, take);
+        check(std::any_of(got.begin(), got.end(), [](const Got &g) { return g.event.type == engine::EventType::NoteOn; }) &&
+                  got.size() <= MidiInputFeed::kMaxPerBlock,
+              "the quiet port's note gets through in the same block as 900 messages from a busy port");
     }
     {
         // Two ports, as a machine with a keyboard and a synth lists them: the switches write the record.

@@ -196,6 +196,8 @@ void MidiPortHost::refresh() {
     ports_ = std::move(listed);
     publish();
     retired.clear();
+    if (changed && onInputsChanged)
+        onInputsChanged();
     if (changed && onChange)
         onChange();
 }

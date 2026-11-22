@@ -153,6 +153,10 @@ class AdiApplication final : public juce::JUCEApplication,
         if (smokeOutput_ == juce::File{}) {
             midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); });
             midiPorts_->setFeed(&midiFeed_);
+            midiPorts_->onInputsChanged = [this] {
+                if (document_)
+                    document_->session().resetMidiInput();
+            };
             // A port plugged in or out, or a switch thrown: the Settings' table follows.
             // Posted: a refresh can run inside a Settings row's own commit, which the page must outlive.
             midiPorts_->onChange = [this] {

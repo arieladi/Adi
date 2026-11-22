@@ -16,6 +16,8 @@
 // - The device restarting its sample clock (a new device, rate or buffer) invalidates the anchor and the
 //   parsers' held notes (`restart`); the application then resets the session's input, as the session's
 //   contract asks of a producer whose clock restarts.
+// - One parser per port: a UMP-native device's groups (its jacks) share it and its channels; on ALSA and
+//   CoreMIDI each jack is a port of its own.
 // - Note ids are the parser's, made unique across ports with the port's slot in their high bits, and
 //   nonzero, as the session requires; channels are given zero-based (the parser counts a note's from 1).
 //
@@ -32,6 +34,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <thread>
 namespace adi::ui {
@@ -76,32 +79,45 @@ class MidiInputFeed {
     template <class Enqueue>
     std::size_t pump(std::int64_t blockStart, std::int32_t frames, double sampleRate, double nowMs, Enqueue &&enqueue) noexcept {
         if (restart_.exchange(false, std::memory_order_acq_rel)) {
-            for (auto &p : parsers_)
+            for (auto &p : *parsers_)
                 p.reset();
             seen_.fill(0);
             last_ = -1;
         }
-        const int at = active_.load(std::memory_order_seq_cst);
-        reading_.store(at, std::memory_order_seq_cst);
-        // A publish between the load and the store left `at` stale, and its caller may already be
-        // freeing that list's rings: read the list in force now, never the one `at` names.
-        const int now = active_.load(std::memory_order_seq_cst);
-        if (now != at)
+        // Announce the list, then confirm it is still the one in force; until a load after the store
+        // finds it unchanged, a publish may have moved on and its caller be freeing the rings it named.
+        // Once confirmed, any publish moving away from it sees it announced and waits for the end.
+        int now = active_.load(std::memory_order_seq_cst);
+        for (;;) {
             reading_.store(now, std::memory_order_seq_cst);
+            const int again = active_.load(std::memory_order_seq_cst);
+            if (again == now)
+                break;
+            now = again;
+        }
         const auto &list = lists_[static_cast<std::size_t>(now)];
         std::size_t taken = 0;
         pending_ = 0;
-        for (std::size_t i = 0; i < list.count; ++i) {
-            const auto &s = list.items[i];
-            // A slot that now holds another input starts with a clean parser.
-            if (seen_[s.port] != s.serial || mpe_[s.port] != s.mpe) {
-                parsers_[s.port].reset();
-                parsers_[s.port].setZone(s.mpe ? engine::MpeZone::lower() : engine::MpeZone{});
+        // The block's budget is shared in turn: the port served first rotates, and each takes at most an
+        // equal share of what is left, so one busy port cannot starve the others.
+        const std::size_t n = list.count;
+        for (std::size_t j = 0; j < n; ++j) {
+            const auto &s = list.items[(start_ + j) % n];
+            auto &parser = (*parsers_)[s.port];
+            // A slot that now holds another input starts with a clean parser; a change of its MPE
+            // switch changes the zone only, so the keys held keep their releases.
+            if (seen_[s.port] != s.serial) {
+                parser.reset();
                 seen_[s.port] = s.serial;
+                mpe_[s.port] = !s.mpe;
+            }
+            if (mpe_[s.port] != s.mpe) {
+                parser.setZone(s.mpe ? engine::MpeZone::lower() : engine::MpeZone{});
                 mpe_[s.port] = s.mpe;
             }
+            const std::size_t share = (kMaxPerBlock - pending_) / (n - j);
             MidiPortEvent e;
-            while (pending_ < kMaxPerBlock && s.ring->pop(e)) {
+            for (std::size_t taken = 0; taken < share && s.ring->pop(e); ++taken) {
                 if (!s.track)
                     continue; // Remote only: no track hears it
                 e.port = s.port;
@@ -109,6 +125,7 @@ class MidiInputFeed {
             }
         }
         reading_.store(-1, std::memory_order_release);
+        start_ = n > 0 ? (start_ + 1) % n : 0;
         // Time order across the ports; a port's own order where the times are equal. In place and stable:
         // `std::stable_sort` may allocate, which the audio thread must not, and a block holds a few events.
         for (std::size_t i = 1; i < pending_; ++i) {
@@ -123,10 +140,14 @@ class MidiInputFeed {
             const auto &e = buffer_[i];
             auto sample = first;
             if (sampleRate > 0 && std::isfinite(e.timeMs) && std::isfinite(nowMs))
-                sample = blockStart + frames + static_cast<std::int64_t>(std::llround((e.timeMs - nowMs) * sampleRate / 1000.0));
+                // The ports stamp with JUCE's millisecond counter, which some backends read in its 32-bit
+                // form that wraps every 2^32 ms while the high-resolution one does not: the age is taken
+                // modulo the wrap.
+                sample = blockStart + frames +
+                         static_cast<std::int64_t>(std::llround(std::remainder(e.timeMs - nowMs, 4294967296.0) * sampleRate / 1000.0));
             sample = std::clamp(sample, std::max(first, last_), lastSample);
             Out out{};
-            parsers_[e.port].feed(e.bytes.data(), e.size, &Out::sink, &out);
+            (*parsers_)[e.port].feed(e.bytes.data(), e.size, &Out::sink, &out);
             for (std::size_t k = 0; k < out.count; ++k) {
                 auto ev = out.events[k];
                 ev.frame = 0;
@@ -174,7 +195,11 @@ class MidiInputFeed {
     std::atomic<bool> restart_{true};
     std::atomic<std::uint64_t> refused_{0};
     // Audio thread only.
-    std::array<engine::MpeParser, kMaxSources> parsers_{};
+    // About 74 kB a parser: on the heap, so a feed fits on any stack. Made with the feed, never on the
+    // audio thread.
+    std::unique_ptr<std::array<engine::MpeParser, kMaxSources>> parsers_ =
+        std::make_unique<std::array<engine::MpeParser, kMaxSources>>();
+    std::size_t start_ = 0;
     std::array<std::uint64_t, kMaxSources> seen_{};
     std::array<bool, kMaxSources> mpe_{};
     std::array<MidiPortEvent, kMaxPerBlock> buffer_{};
