@@ -233,6 +233,56 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the eighth review: this round's fixes; 8 findings, all fixed
+
+Two finders covered only the last round's changes, and three skeptics checked every finding. Eight were
+confirmed and none refuted.
+- **The detector (`devices/tuner`, 9dcd6cd2).**
+  - The fault: the range-only cut-off of 743f1e40 let a walk pulled by a note's onset through. A window
+    of silence then a tone read clearly sharp, by up to 280 cents. Auto Shift applied that as up to
+    49 cents of mis-correction at the start of every note.
+  - A window whose two halves differ in energy by more than half again holds a note starting or
+    stopping. There, the period must again stay within 1.5 samples of the coarse dip. A steady level
+    (vibrato, a glide) keeps the range rule.
+  - `adi_tuner_tests` 49:
+    - after silence, every clear reading is within 10 cents (worst 7.8);
+    - vibrato and glides still read 137 of 137 hops;
+    - without the rule the onsets read up to 188 cents off, and with it on every window, vibrato reads
+      0 to 18 hops.
+  - Two plants each fail. A first attempt at one plant hit MSVC's constant-condition warning and ran
+    nothing; it was redone so that it builds.
+- **Auto Shift (`devices/auto-shift`, c95041a9).**
+  - **Filter bursts.** Its one low-pass was retuned while it ran: a falling ratio burst up to +15 dB.
+  - **Stale filtering.** The copy was filtered for the ratio when each sample was written, so a shift up
+    aliased fully for one latency (107 ms).
+  - Seven fixed filtered copies now replace that low-pass, one per band of ratios (every four
+    semitones, to 4.5), each designed once in `prepare()`.
+  - **In-tune notes under Correction.** They gave a ratio a hair from 1: the tap never re-centred, and
+    the copies flickered with treble notches. A shift within 0.2 cents is now a ratio of exactly 1. The
+    input is read directly up to a ratio of 1.05, and a step down a band waits until the ratio is 2 %
+    below it.
+  - **Decimation.** It rounded down, so 88.2 kHz ran undecimated. It now rounds up.
+  - `adi_auto_shift_tests` 121:
+    - Shift changes downward never rise past the input's peak.
+    - A 15 kHz alias right after a shift up is under −40 dB.
+    - An in-tune corrected note at Dry/Wet 50 % keeps the input's level within 0.05 dB.
+    - Three plants each fail.
+  - Merged up the stack to `devices/spectral-resonator` (3788b9ff).
+- **The translator (`devices/amxd-audit`, 1d191219).**
+  - A message led by a word, stored for a later bang, is now made a list first, so a box sends
+    `hello 3` both when the message arrives and when banged. That `$1` is the first word in Max is
+    the reading of three skeptics; the question stays on reading 14.
+  - A biquad~ pole on the unit circle, to 1e-6, is refused. There Pd's float test decides differently
+    from this one's double test.
+  - `adi_pd_amxd_tests` 134. Two plants each fail.
+
+**New heads:** `devices/tuner` 9dcd6cd2, `devices/erosion` 6f515860, `devices/vinyl-distortion` 1f98221e,
+`devices/filter-delay` c3382443, `devices/dj-filter` c2589479, `devices/auto-shift` c95041a9, then
+spectrum-device 448f1573, live-amp ddf3cecc, live-cabinet fd5eb31e, corpus 94bccf8d, drum-buss 9374445c,
+dynamic-tube 297d725a, grain-delay 95125474, live-pedal 8ab3d650, roar 99c9b74c, spectral-time 1559ae3a,
+spectral-resonator 3788b9ff; `devices/amxd-audit` 1d191219. CTest of the previous tops is running; the
+new tops follow it.
+
 ## 2026-11-22 — the seventh review: Auto Shift rebuilt again and the audit fixes; 17 findings, all fixed
 
 The review covered the spliced Auto Shift (b50591ad) and translator steps 9 and 10. Two finders worked on
