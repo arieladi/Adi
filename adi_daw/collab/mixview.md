@@ -11,6 +11,22 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-22 — DF-M55 Phase by band, lands after 3 December
+
+All and the full Phase page show 24 ERB correlation bands below the vectorscope. The phase calculation uses the same captured stereo window and tap. Compatible readers share one phase plan. It measures only the newest completed window in a worker pass and uses at most two transforms there. Broadband-only Phase, closed or frozen views and one-sided or silent frames add zero transforms. Unoccupied bands stay unmarked. The 32 kHz check verifies the Nyquist bin's half weight.
+
+A fail-first software paint check reproduced a missing 12 kHz trace when a four-sample draw stride skipped the sine's extrema. Drawing the newest 1,024 contiguous points keeps the earlier paint budget. Changing the Spectrum channel preference preserves the stereo Phase picture and lease.
+
+The joined preview includes the current before-December Focus FIR work reduction. The private brief includes a 48 kHz test signal with two opposing bands, sign reversal, silence and a one-sided segment. Visual comparison stays with Win. Timing results still wait for the quiet window.
+
+Checked 24 CTests, including 732 broker, 473 analyser component, 331 Mix Functions and 478 Focus checks. The fake-peer shell passed 906 / 329 / 7 on Mix View / Arrangement / Appearance. The five touched translation units pass MSVC /W4 /WX and the three production units pass the CI Clang warnings. Review source `5d03be372`, ADI.exe SHA-256 `64a71e04ce7e2eed3f0267e6cf22a238bb8f58cd984f8435cf62da1fff91fb88`, ZIP SHA-256 `e80ec60f7f20050bb6ae46ec275ffecc58edb5f6cccff8c6f41a40a3f3ee091e`.
+
+PR requested — `mixview/phase-bands-lands-after-2026-12-03` at `084138bcc`. Joined preview `mixview/review-scope-lands-after-2026-12-03` at `5d03be372`.
+
+### 2026-11-22 — DF-M3 Low Shelf diagnosis
+
+A separate steady-state fit isolated startup and filter-design differences on two native Low Shelf rows. Independently fitted left and right replayed the held-out sections to 5.32e−10 RMS or better. The two tested native sections are +1.16 dB at 18.5 kHz and +1.40 dB at 35.0 kHz versus their references. Their own initial responses take approximately 45–49 ms to reach their fitted recurrence. Saved reference responses follow their settled recurrence from the start. No native audio changed.
+
 ### 2026-11-22 — DF-M3 native Low Shelf comparison, evidence only
 
 All ten sealed 12 dB/oct Low Shelf inputs now ran through the real registered native EQ at its verified `88bab8b9` replay pin, across 44.1, 48, 96 and 192 kHz. All ten have the expected zero latency and retain the exact mapped physical settings. No cell passes the full audio null. The largest early peak error is 0.202. The isolated 2–3 s window also fails all ten, with RMS residuals from 0.000945 to 0.00472, so the start ramp alone cannot explain the difference. The validated reciprocal offline section passed the same inputs. The raw arrays, exact settings and measurements stay private. This evidence does not change the DAW's EQ. The native section fit and current Release retest remain open.
