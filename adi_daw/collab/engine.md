@@ -114,6 +114,18 @@ Strict GCC 14 and Clang 19 each passed 624 checks across five suites. The Sessio
 
 Parked DEV-20 on the XC-15 input-row reservation, the MidiMemory decision and LM5. DEV-21 hardware loadable instruments remain with the devices seat under its current loan.
 
+### 22 November — DEV-19 per-track clip scale publication
+
+**PR requested** for `engine/dev19-clip-local-device-scale` at `ad26772cf3d1a6bf65a06dae553851848d95398b`, stacked on the compensated project-scale publication. A sole unmuted main Arrangement MIDI clip can supply its local scale to devices on its own track. Its half-open span uses the MIDI playback clock in either placement domain. Suppressed takes, muted clips and unavailable aliases are excluded. Where eligible clips overlap, the device borrows the project scale until one remains.
+
+Strict GCC 14 and Clang 19 each passed 1,251 checks across seven suites. A real Session applies two track-local scales independently, suppresses an underlying project change while a clip owns the scale, restores the correct project key on overlap and at a clip end, and publishes a changed clip root through a seek. Existing native MIDI, graph, realisation and callback audits passed.
+
+Parked device DSP switches with the devices seat and the Live policy for overlap, live input and Session launch focus. The next engine PLAN item is DEV-24's native deadline meter.
+
+### FOR THE DIRECTOR
+
+- DEV-19 competing clip scales. I recommend the project fallback while simultaneous Arrangement clips disagree. Please include a Live reading with two local clips, a local clip overlapping an inheriting clip, and incoming played notes over each.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
