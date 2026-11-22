@@ -78,11 +78,17 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // refresh, and when the panel is asked to (MixerPanel::resolveMeters).
     void resolveMeter();
     juce::Slider volume, pan;
+    // Live's Split Stereo Pan (manual 18.1; MX-02): the left and the right source each panned, in the pan's
+    // place while the track's pan mode is split.
+    juce::Slider panLeft, panRight;
+    bool splitPan() const noexcept { return split_; }
     // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
     // the row after the sends in the track controls, and as the section under the mixer in the
     // Mixer View.
     juce::Slider delay;
+    void layoutSplitPan();
+    bool split_ = false;
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
     // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
     // track that records.
