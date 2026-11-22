@@ -239,6 +239,62 @@ void independentBandClocks() {
     check(independent, "low and high clocks, independent of middle, reach all four gate combinations");
 }
 
+void movingSplitFrequency() {
+    struct Marker { int frame; float left, right; };
+    struct Case {
+        int rate, block, layout, first, reverse, resume;
+        float startHz, targetHz, reverseHz;
+        std::array<Marker, 8> markers;
+    };
+    // Stereo readings across a settled start, a cutoff edit, sleep and two reversals.
+    const Case cases[] = {
+        {48000, 1501, 1, 3002, 15010, 16511, 75.56745f, 1016.7104f, 179.7307f, {{
+            {3001, .010076268f, .008461583f}, {3093, -.018152379f, -.0000590917f},
+            {3413, .002465307f, -.001880494f}, {5301, -.068414122f, .005988033f},
+            {12017, .134959355f, -.040318754f}, {15015, .148542926f, -.003031600f},
+            {16514, .076997496f, -.032812890f}, {27070, -.114130966f, -.019084699f}}}},
+        {96000, 64, 2, 128, 24704, 26880, 2169.9453f, 223.19997f, 1262.6097f, {{
+            {127, .034125403f, .019640185f}, {219, .049681336f, -.022049962f},
+            {539, -.046229124f, -.026577929f}, {2427, .034114186f, .024341084f},
+            {17895, .041243073f, .005447381f}, {24781, .039315760f, .010030907f},
+            {27022, .061800599f, .004443620f}, {47999, -.013915322f, .002687446f}}}}
+    };
+    for (const auto& c : cases) {
+        Shaper rack, chunked;
+        const auto cutoff = static_cast<Shaper::Param>(Shaper::VolumeBands + c.layout);
+        for (auto* model : {&rack, &chunked}) {
+            model->prepare(c.rate);
+            model->set(Shaper::VolumeBands, static_cast<float>(c.layout));
+            if (model == &chunked) model->set(cutoff, c.reverseHz);
+            model->set(cutoff, c.startHz);
+            flat(*model, Stage::Volume, c.layout == 1 ? Band::Mid : Band::High, 0);
+        }
+        const int frames = c.markers.back().frame + 1;
+        std::vector<float> left(frames), right(frames);
+        for (int i = 0; i < frames; ++i) {
+            left[i] = static_cast<float>(((i * 1093 + 251) & 2047) - 1024) / 1024;
+            right[i] = static_cast<float>(((i * 317 + 707) & 2047) - 1024) / 2048;
+        }
+        auto chunkLeft = left, chunkRight = right;
+        for (int pos = 0; pos < frames; pos += c.block) {
+            for (auto* model : {&rack, &chunked}) {
+                if (pos == c.first || pos == c.resume) model->set(cutoff, c.targetHz);
+                if (pos == c.reverse) model->set(cutoff, c.reverseHz);
+            }
+            const int end = std::min(pos + c.block, frames);
+            rack.process(left.data() + pos, right.data() + pos, left.data() + pos, right.data() + pos,
+                         static_cast<std::size_t>(end - pos));
+            for (int at = pos; at < end; at += 512)
+                chunked.process(chunkLeft.data() + at, chunkRight.data() + at, chunkLeft.data() + at,
+                                chunkRight.data() + at, static_cast<std::size_t>(std::min(512, end - at)));
+        }
+        check(left == chunkLeft && right == chunkRight, "cold cutoff overrides and identical split boundaries are exact");
+        for (const auto& m : c.markers)
+            check(near(left[m.frame], m.left, 4e-7) && near(right[m.frame], m.right, 4e-7),
+                  "split frequency follows its measured edit and resumes the sleeping trajectory");
+    }
+}
+
 using Complex = std::complex<double>;
 struct Response { Complex low, high; };
 Response crossover(int slope, double cutoff, double f) {
@@ -774,6 +830,7 @@ int main() {
     beatGate();
     clocksAndLinearCurve();
     splitBands();
+    movingSplitFrequency();
     independentBandClocks();
     steepCrossovers();
     bypassAndInvalid();

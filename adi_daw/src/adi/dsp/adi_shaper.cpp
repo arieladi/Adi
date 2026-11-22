@@ -59,6 +59,7 @@ AdiShaper::AdiShaper() noexcept {
 void AdiShaper::prepare(double sampleRate) noexcept {
     if (!std::isfinite(sampleRate) || sampleRate < 1.0) return;
     sampleRate_ = sampleRate;
+    splitStep_ = -std::expm1(-72.02133 / sampleRate_);
     quarterNotes_ = 0.0;
     playing_ = true;
     for (auto& filter : filters_) filter.prepare(sampleRate);
@@ -70,7 +71,7 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     for (auto& stage : stages_) {
         stage.low.reset();
         stage.high.reset();
-        updateSplits(stage);
+        updateSplits(stage, true);
         for (auto& band : stage.bands) {
             band.phase = 0;
             updateStep(band);
@@ -84,6 +85,38 @@ void AdiShaper::Split::prepare(double hz, double sampleRate) noexcept {
     a1 = 1.0 / (1.0 + warped * (std::numbers::sqrt2 + warped));
     a2 = warped * a1;
     a3 = warped * a2;
+}
+
+void AdiShaper::Split::setFrequency(double hz, double sampleRate, bool cold) noexcept {
+    if (cold) rendered = false;
+    else if (hz == targetHz) return;
+    targetHz = hz;
+    logTarget = std::log2(hz);
+    changing = rendered;
+    if (!rendered) {
+        logFrequency.fill(logTarget);
+        prepare(targetHz, sampleRate);
+    }
+}
+
+bool AdiShaper::Split::startChunk(double sampleRate) noexcept {
+    rendered = true;
+    if (!changing) return false;
+    // The normalized cutoff spans ten octaves. Inside one 14-bit control
+    // step the filter uses the exact target and keeps all three memories.
+    if (std::abs(logTarget - logFrequency.back()) > 10.0 / 16384.0) return true;
+    prepare(targetHz, sampleRate);
+    changing = false;
+    return false;
+}
+
+void AdiShaper::Split::advanceFrequency(double step, double sampleRate) noexcept {
+    double input = logTarget;
+    for (double& memory : logFrequency) {
+        memory += step * (input - memory);
+        input = memory;
+    }
+    prepare(std::exp2(input), sampleRate);
 }
 
 void AdiShaper::Split::reset() noexcept {
@@ -170,10 +203,10 @@ bool AdiShaper::Split::finishBlock() noexcept {
     return repaired;
 }
 
-void AdiShaper::updateSplits(StageData& stage) const noexcept {
-    stage.low.prepare(stage.lowHz, sampleRate_);
+void AdiShaper::updateSplits(StageData& stage, bool cold) const noexcept {
+    stage.low.setFrequency(stage.lowHz, sampleRate_, cold);
     const double upper = stage.layout == 3 ? std::max(stage.lowHz, stage.highHz) : stage.highHz;
-    stage.high.prepare(upper, sampleRate_);
+    stage.high.setFrequency(upper, sampleRate_, cold);
 }
 
 void AdiShaper::updateStep(CurveBand& band) const noexcept {
@@ -246,7 +279,7 @@ void AdiShaper::layout(StageData& stage, int value) noexcept {
     stage.low.reset();
     stage.high.reset();
     stage.layout = value;
-    updateSplits(stage);
+    updateSplits(stage, true);
     updateActivity(stage);
 }
 
@@ -270,6 +303,7 @@ void AdiShaper::restart(Stage kind) noexcept {
     auto& stage = stages_[static_cast<std::size_t>(kind)];
     stage.low.reset();
     stage.high.reset();
+    updateSplits(stage, true);
     for (auto& band : stage.bands) {
         band.phase = band.hertz ? 0 : cyclePhase(quarterNotes_ / band.beats);
         updateStep(band);
@@ -505,7 +539,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     const bool hasLow = (stage.layout & 1) != 0;
     const bool hasHigh = (stage.layout & 2) != 0;
     const bool flatPhase = (!hasLow || stage.low.slope == 0) && (!hasHigh || stage.high.slope == 0);
-    for (std::size_t i = 0; i < frames; ++i) {
+    auto renderSplitSample = [&](std::size_t i) {
         float dryL = inL[i], dryR = inR[i];
         float midL = dryL, midR = dryR;
         // First-order splits reconstruct the source exactly. Its aligned dry
@@ -546,6 +580,21 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         accumulate(1, midL, midR);
         outL[i] = !flatPhase ? sumL : (sumL == 0.0f ? dryL : dryL + sumL);
         outR[i] = !flatPhase ? sumR : (sumR == 0.0f ? dryR : dryR + sumR);
+    };
+    for (std::size_t first = 0; first < frames;) {
+        const bool moveLow = hasLow && stage.low.startChunk(sampleRate_);
+        const bool moveHigh = hasHigh && stage.high.startChunk(sampleRate_);
+        if (!moveLow && !moveHigh) {
+            for (auto i = first; i < frames; ++i) renderSplitSample(i);
+            return;
+        }
+        const auto end = first + std::min<std::size_t>(512, frames - first);
+        for (auto i = first; i < end; ++i) {
+            if (moveLow) stage.low.advanceFrequency(splitStep_, sampleRate_);
+            if (moveHigh) stage.high.advanceFrequency(splitStep_, sampleRate_);
+            renderSplitSample(i);
+        }
+        first = end;
     }
 }
 
