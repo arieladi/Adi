@@ -11,6 +11,11 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — MX-30, closing an idle mixer strip
+- When the last Strip observer leaves a compatible raw Spectrum domain, its separate Strip picture is released and the raw view keeps its existing publication. Closing the strip no longer schedules an idle worker pass or rewrites that raw view. Pending work for other consumers and the new 50 ms boundary on reopen still run.
+- The red suite failed the retained-publication and no-extra-work checks. The exact Release passes 712 broker checks, 24 named CTests and the 906 Mix View, 329 Arrangement and 7 Appearance component gates. Both changed units passed MSVC /W4 /WX and the production source passed the Clang warning sweep. These are work counters. The timed budget and full Mixer canvas remain in their assigned lanes.
+- PR requested — `mixview/mx30-strip-idle-lands-after-2026-12-03` at `8e03d995`, stacked on the scheduled preview and strip producer. Lands after 3 December.
+
 ## 2026-11-22 — Device Spectrum cursor
 - The full Device Spectrum shows the hovered frequency, pitch and level coordinate in ADI's theme. The ruler and frequencies past the source's Nyquist stay clear. A pointer already in the plot reads when fresh audio arrives. The compact Info preview still forwards its click to its parent.
 - The red fixture failed the pointer guide check. The exact Release passed 468 Spectrum component checks, all 24 named CTests and the 906 Mix View, 329 Arrangement and 7 Appearance component gates. Pointer use retains the same immutable picture and leaves analysis counters unchanged. Both changed translation units passed MSVC /W4 /WX, and Clang reported zero diagnostics for the production unit.
