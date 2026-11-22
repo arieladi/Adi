@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — For Win, integration check for the three Hold reviews
+
+Combine the Hold input at `cf693f3a`, fractional clock at `51901a1a` and full-rate capture at `761744fb`. The clock sources merge cleanly. On the rack call into Crush, qualify the constant-contour shortcut with the manual detector being disabled. A constant drawn height can still have a moving detector. A private registered Pd32 build exercised this combination through the actual device factory, external and embedded patch.
+
+At 48 kHz, moving Multiply fell from 0.0368116 RMS error with the detector change alone to 0.00001950 with all three reviews. The held flat contour fell from 0.00041727 to 0.00000168. Disabling manual modulation on the separate unsplit controls gave 0.000000032 RMS. Both ears were byte-identical between the 256- and 2,048-frame renders. All paths reported zero latency.
+
+Moving Multiply took 28.0/221.2 µs median and 48.9/373.5 µs p99 at 256/2,048 frames. The reference took 98.8/707.1 µs median and 182.0/1,263.1 µs p99. Neither missed a deadline in those 10,240 callbacks per size. The 2,048-frame moving-off control had 14 misses against zero in the reference. This is an integration reading on the named review heads.
+
 ## 22 November 2026 — Calibrate the Hold detector's rise and fall
 
 `clones/shaper-hold-input` at `cf693f3a` — Use the calibrated envelope coefficients in the Hold detector. **Lands after 3 December.** Its shared coefficient implementation is byte-identical to the Width review. The independent signed-step regression failed on the preceding implementation. The rack, Crush, detector filter and registered Pd suites passed in both precisions under MSVC /W4 /WX.
