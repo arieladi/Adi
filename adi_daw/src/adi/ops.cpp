@@ -9,6 +9,7 @@
 
 #include "adi/history_compaction.hpp"
 #include "adi/history_roots.hpp"
+#include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -20,6 +21,7 @@
 #include <cstdio>
 #include <limits>
 #include <regex>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -56,6 +58,51 @@ std::string_view typeName(FieldType t) {
     return "?";
 }
 
+
+// The Window already submits an Ungroup as parent moves, optional ordering
+// writes, then deletion of the empty group. Capture every peer's destination
+// on the first move so its send pruning sees the full forest. Keep all
+// submitted operations and sequence IDs in the journal.
+std::optional<Payload> captureUngroupPeers(SQLite::Database& db, std::span<const OpRequest> ops) {
+    if (ops.size() < 3 || ops.front().opType != "track.setParent" ||
+        ops[1].opType != "track.setParent" || ops.back().opType != "track.delete")
+        return std::nullopt;
+    const auto groupId = detail::signedInteger(ops.back().payload.at("id"));
+    SQLite::Statement group(db, "SELECT parent_id FROM tracks WHERE id=? AND kind='group'");
+    group.bind(1, groupId);
+    if (!group.executeStep()) return std::nullopt;
+    const auto parentColumn = group.getColumn(0);
+    const auto parent = parentColumn.isNull() ? Payload(nullptr) : Payload(parentColumn.getInt64());
+
+    std::set<std::int64_t> lifted;
+    Payload companions = Payload::array();
+    std::size_t next = 0;
+    for (; next + 1 < ops.size() && ops[next].opType == "track.setParent"; ++next) {
+        const auto& op = ops[next];
+        const auto& payload = op.payload;
+        if (op.runtimeProof || payload.contains("companions") || payload.contains("groupedSends"))
+            return std::nullopt;
+        const auto id = detail::signedInteger(payload.at("id"));
+        const auto destination = payload.contains("parent") ? payload.at("parent") : Payload(nullptr);
+        if (destination != parent || !lifted.insert(id).second)
+            return std::nullopt;
+        if (next != 0) companions.push_back({{"id", id}, {"parent", destination}});
+    }
+    for (; next + 1 < ops.size(); ++next)
+        if (ops[next].opType != "track.reorder" || ops[next].runtimeProof)
+            return std::nullopt;
+    if (ops.back().runtimeProof) return std::nullopt;
+
+    SQLite::Statement children(db, "SELECT id FROM tracks WHERE parent_id=?");
+    children.bind(1, groupId);
+    while (children.executeStep())
+        if (lifted.erase(children.getColumn(0).getInt64()) == 0)
+            return std::nullopt;
+    if (!lifted.empty()) return std::nullopt;
+    auto first = ops.front().payload;
+    first["companions"] = std::move(companions);
+    return first;
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -632,6 +679,13 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             }
             const auto& q = reqs[i];
             const auto* d = descs[i];
+            // Sealed packets keep exactly the operations previewed by their owner.
+            std::optional<Payload> ungroup;
+            if (i == groupStart && !expectedSource) {
+                const auto end = groupEnds.empty() ? reqs.size() : groupEnds[group];
+                ungroup = captureUngroupPeers(db, reqs.subspan(i, end - i));
+            }
+            const auto& payload = ungroup ? *ungroup : q.payload;
 
             // The inverse is built from the state ABOUT TO BE OVERWRITTEN, so
             // it must run before apply (OPS.md §6.1). If it cannot produce a
@@ -640,7 +694,7 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             bool haveInverse = false;
             if (d->buildInverse && !d->ephemeral) {
                 std::string err;
-                if (!d->buildInverse(ctx, q.payload, inverse, err)) {
+                if (!d->buildInverse(ctx, payload, inverse, err)) {
                     r.error = q.opType + ": cannot build inverse: " + err;
                     return r;   // Transaction dtor rolls back
                 }
@@ -648,12 +702,12 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             }
 
             std::string err;
-            if (!d->apply(ctx, q.payload, err)) {
+            if (!d->apply(ctx, payload, err)) {
                 r.error = q.opType + ": " + err;
                 return r;
             }
 
-            const auto payloadBytes = encodePayload(q.payload);
+            const auto payloadBytes = encodePayload(payload);
             std::vector<std::byte> inverseBytes;
             if (haveInverse) inverseBytes = encodePayload(inverse);
 
@@ -699,7 +753,7 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             clock.bind(2, store_.clientId());
             clock.bind(3, ++lamport);
             clock.exec();
-            if (!applied.append(store_, q.opType, d->name, q.payload, seq, txnId, false, err, q.runtimeProof)) {
+            if (!applied.append(store_, q.opType, d->name, payload, seq, txnId, false, err, q.runtimeProof)) {
                 r.error = "cannot capture applied operation: " + err;
                 return r;
             }

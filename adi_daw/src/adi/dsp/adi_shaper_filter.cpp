@@ -115,4 +115,16 @@ void AdiShaperFilter::process(float& left, float& right, float cutoff, float res
     right = tick(right, channels_[1]);
 }
 
+bool AdiShaperFilter::finishBlock() noexcept {
+    bool repaired = false;
+    for (auto& state : channels_) {
+        if (!std::isfinite(state.pole) || !std::isfinite(state.band) ||
+            !std::isfinite(state.low) || !std::isfinite(state.previousBand)) {
+            state = {};
+            repaired = true;
+        }
+    }
+    return repaired;
+}
+
 } // namespace adi::dsp

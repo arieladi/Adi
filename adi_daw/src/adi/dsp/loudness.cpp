@@ -104,7 +104,17 @@ void LoudnessMeter::prepare(double sampleRate, std::span<const double> channelWe
     range_.prepare(kBins);
     truePeakOn_ = n > 0;
     truePeak_.prepare(rate_, static_cast<int>(n));
+    tailZeros_.assign(static_cast<std::size_t>(TruePeakMeter::kTapsPerPhase), 0.0);
+    tailChannels_.assign(n, tailZeros_.data());
     reset();
+}
+
+void LoudnessMeter::finish() noexcept {
+    // The interpolator answers kDelay samples late; a phase's whole length of
+    // silence drains it. Only the true peak sees it.
+    if (truePeakOn_ && !tailChannels_.empty()) {
+        truePeak_.process(tailChannels_.data(), channels(), TruePeakMeter::kTapsPerPhase);
+    }
 }
 
 void LoudnessMeter::reset() noexcept {
@@ -147,7 +157,15 @@ void LoudnessMeter::run(const Sample* const* channels, int frames) noexcept {
     for (int f = 0; f < frames; ++f) {
         double weighted = 0.0;
         for (std::size_t c = 0; c < n; ++c) {
-            const double x = static_cast<double>(channels[c][f]);
+            // A non-finite sample reads as silence and a huge one is held
+            // to +120 dBFS, so neither can poison the filters or overflow
+            // the energy (N13 guards these too). The true peak guards its own.
+            double x = static_cast<double>(channels[c][f]);
+            if (!std::isfinite(x)) {
+                x = 0.0;
+            } else {
+                x = std::clamp(x, -1.0e6, 1.0e6);
+            }
             const Biquad& a = shelf_[c];
             State& s = shelfState_[c];
             const double y = a.b0 * x + a.b1 * s.x1 + a.b2 * s.x2 - a.a1 * s.y1 - a.a2 * s.y2;

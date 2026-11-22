@@ -230,6 +230,7 @@ public:
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
     [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
+    [[nodiscard]] virtual bool canProcessOnWorker() const noexcept { return false; }
 
     /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
     /// default: the device is handed float in every graph, converted either
@@ -585,6 +586,10 @@ public:
     [[nodiscard]] bool wantsDeviceTransport() const noexcept override {
         return inst_ && inst_->wantsDeviceTransport();
     }
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override {
+        return inst_ && inst_->canProcessOnWorker();
+    }
+    [[nodiscard]] const void* workerAffinity() const noexcept override { return inst_; }
 
     [[nodiscard]] bool hasBypass() const noexcept override { return true; }
     void processActive(const engine::NodeIo& io) noexcept override;

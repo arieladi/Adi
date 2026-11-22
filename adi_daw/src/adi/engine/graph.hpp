@@ -236,6 +236,8 @@ public:
     /// affinity. Opted-in nodes restore any FP control state they change.
     /// Duplicate pointers in a graph are always callback-only.
     [[nodiscard]] virtual bool canProcessOnWorker() const noexcept { return false; }
+    /// Different adapters of the same device share this key.
+    [[nodiscard]] virtual const void* workerAffinity() const noexcept { return this; }
 
     /// Opt-in device bypass (ADR-0203 d4). The graph keeps a dry delay at
     /// graph precision, including while the node is active, and owns its

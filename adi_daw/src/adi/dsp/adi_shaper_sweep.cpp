@@ -56,7 +56,9 @@ bool AdiShaperSweep::prepare(double sampleRate) noexcept {
 }
 
 void AdiShaperSweep::reset() noexcept {
-    write_ = valid_ = 0;
+    write_ = 0;
+    valid_ = {};
+    delayFault_ = {};
     low_ = {};
     states_ = {};
 }
@@ -131,22 +133,28 @@ void AdiShaperSweep::updateFeedback(float value) noexcept {
 void AdiShaperSweep::flange(float& left, float& right) noexcept {
     // Old ring samples are inaccessible after a reset, so switching modes
     // takes bounded time even on a very high sample-rate stream.
-    Stereo first{}, second{};
-    if (valid_ >= delayFrames_) first = delay_[(write_ - delayFrames_) & mask_];
-    if (valid_ > delayFrames_) second = delay_[(write_ - delayFrames_ - 1) & mask_];
     const Stereo input{left, right};
     Stereo output;
     for (std::size_t ch = 0; ch < 2; ++ch) {
-        const float delayed = first[ch] + (second[ch] - first[ch]) * delayFraction_;
+        auto& valid = valid_[ch];
+        const float first = valid >= delayFrames_ ? delay_[(write_ - delayFrames_) & mask_][ch] : 0.0f;
+        const float second = valid > delayFrames_ ? delay_[(write_ - delayFrames_ - 1) & mask_][ch] : 0.0f;
+        const float delayed = first + (second - first) * delayFraction_;
         const float filtered = delayed - low_[ch];
         low_[ch] = clean(low_[ch] + highpassAmount_ * filtered);
-        delay_[write_][ch] = clean(softDrive(input[ch] + loop_ * filtered));
+        const float next = softDrive(input[ch] + loop_ * filtered);
+        if (std::isfinite(next)) {
+            delay_[write_][ch] = clean(next);
+        } else {
+            delay_[write_][ch] = 0.0f;
+            delayFault_[ch] = true;
+        }
         output[ch] = dry_ * input[ch] + wet_ * filtered;
+        if (valid < mask_) ++valid;
     }
     left = output[0];
     right = output[1];
     write_ = (write_ + 1) & mask_;
-    if (valid_ < mask_) ++valid_;
 }
 
 void AdiShaperSweep::phase(float& left, float& right) noexcept {
@@ -180,6 +188,24 @@ void AdiShaperSweep::processStereo(float& left, float& right, float centerHeight
     if (feedbackHeight != feedback_) updateFeedback(feedbackHeight);
     if (stages_ == 0) flange(left, right);
     else phase(left, right);
+}
+
+bool AdiShaperSweep::finishBlock() noexcept {
+    bool repaired = false;
+    for (std::size_t ch = 0; ch < low_.size(); ++ch) {
+        bool bad = delayFault_[ch] || !std::isfinite(low_[ch]);
+        for (unsigned i = 0; i < stages_; ++i)
+            bad |= !std::isfinite(states_[i][ch]);
+        if (bad) {
+            // Invalidate only the affected delay lane without walking its ring.
+            valid_[ch] = 0;
+            delayFault_[ch] = false;
+            low_[ch] = 0.0f;
+            for (auto& state : states_) state[ch] = 0.0f;
+            repaired = true;
+        }
+    }
+    return repaired;
 }
 
 } // namespace adi::dsp

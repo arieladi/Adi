@@ -23,6 +23,8 @@
 #include "adi/dsp/rmsc.hpp"
 #include "adi/dsp/true_peak.hpp"
 
+#include "true_peak_reference.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -685,6 +687,9 @@ void testTheTruePeakLimiterAllocatesNothing() {
 // EX4 -- the brickwall as an offline stage, and the true-peak mode's edges
 // ---------------------------------------------------------------------------
 
+/// The independent true peak, shared with tests/test_loudness.cpp.
+using adi::test::independentTruePeak;
+
 /// Planar channels of doubles.
 using Planar = std::vector<std::vector<double>>;
 
@@ -759,53 +764,6 @@ double samplePeakOf(const Planar& y) {
     for (const auto& ch : y) {
         for (double v : ch) {
             peak = std::max(peak, std::fabs(v));
-        }
-    }
-    return peak;
-}
-
-/// AN INDEPENDENT TRUE PEAK, sharing nothing with TruePeakMeter::design: a
-/// Kaiser-windowed sinc of +-48 samples (beta 9), read at 32 points in every
-/// sample interval from `from` to `to`, each read with its whole kernel (48
-/// samples either side). Slow, and only for tests. Its own accuracy is
-/// checked against sines whose crest is known, before it judges the limiter.
-double independentTruePeak(const Planar& y, std::size_t from, std::size_t to) {
-    constexpr int kHalf = 48, kPoints = 32;
-    constexpr double kBeta = 9.0;
-    const auto besselI0 = [](double v) {
-        double sum = 1.0, term = 1.0;
-        for (int k = 1; k < 64; ++k) {
-            term *= (v / (2.0 * k)) * (v / (2.0 * k));
-            sum += term;
-        }
-        return sum;
-    };
-    // kernel[j][m + kHalf] weighs x[n + m] for the point n + j / kPoints.
-    std::vector<double> kernel(static_cast<std::size_t>(kPoints) * (2 * kHalf + 1));
-    for (int j = 0; j < kPoints; ++j) {
-        const double frac = static_cast<double>(j) / kPoints;
-        for (int m = -kHalf; m <= kHalf; ++m) {
-            const double t = frac - static_cast<double>(m);   // distance from x[n + m]
-            const double sinc = std::fabs(t) < 1e-12 ? 1.0 : std::sin(kPi * t) / (kPi * t);
-            const double r = t / (kHalf + 1.0);
-            const double w = std::fabs(r) >= 1.0 ? 0.0 : besselI0(kBeta * std::sqrt(1.0 - r * r)) / besselI0(kBeta);
-            kernel[static_cast<std::size_t>(j * (2 * kHalf + 1) + m + kHalf)] = sinc * w;
-        }
-    }
-    double peak = 0.0;
-    for (const auto& ch : y) {
-        const auto first = static_cast<int>(std::max<std::size_t>(from, kHalf));
-        const auto last = static_cast<int>(std::min<std::size_t>(to, ch.size() - kHalf));
-        for (int i = first; i < last; ++i) {
-            peak = std::max(peak, std::fabs(ch[static_cast<std::size_t>(i)]));
-            for (int j = 1; j < kPoints; ++j) {
-                const double* k = kernel.data() + static_cast<std::size_t>(j * (2 * kHalf + 1));
-                double v = 0.0;
-                for (int m = -kHalf; m <= kHalf; ++m) {
-                    v += k[m + kHalf] * ch[static_cast<std::size_t>(i + m)];
-                }
-                peak = std::max(peak, std::fabs(v));
-            }
         }
     }
     return peak;

@@ -14,7 +14,8 @@ struct BuiltinInfo {
     bool instrument=false;
     // Ask the graph for the exact musical position of each render segment.
     bool usesTransportPosition=false;
-    // Parameters appended after an older state was saved reopen at their defaults.
+    // Its audio is held while a whole state applies. (Every built-in now
+    // reopens a parameter its state omits at the default: DF-E57.)
     bool resetMissingParameters=false;
 };
 [[nodiscard]] std::span<const BuiltinInfo> builtinCatalog() noexcept;
