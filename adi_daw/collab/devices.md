@@ -168,6 +168,48 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — items 19 to 22 reviewed: eleven findings, all fixed
+
+An adversarial review of the five new cores (a finder for each branch, three skeptics for each
+finding) confirmed eleven findings, each by all three skeptics. Each fix is on its own branch, with a
+test that fails on the old code. Each lower branch is merged up the stack, so the stacked PRs keep
+their order. The heads below replace those logged for items 19, 20 and 22.
+
+**PR requested** (the same branches; new heads):
+
+- **`devices/tuner` (485425e0).**
+  - **A DC offset read as a confident false pitch,** and the Tuner held it. Alone or under a low noise
+    floor, 56 of 72 cases did; none do now. The window's mean is removed, and a window under
+    −80 dBFS RMS reads nothing.
+  - **`prepare()` could throw out of Pd's DSP callback.** It is now noexcept: a failed allocation
+    leaves the detector inert, and the Tuner passes the signal.
+- **`devices/erosion` (993d8b26).**
+  - **The noise modulator was up to 12 dB short of its stated RMS.** It was scaled by a small-angle
+    bandwidth. It is now scaled by the band pass's exact noise gain, α/(1+α), and is 0.48 (0.5 clipped)
+    at every band.
+  - **Above about 600 kHz the swing left the ring.** It is now held at 61.5 samples.
+  - **The NaN check looked at a later block.**
+- **`devices/vinyl-distortion` (d6872b77).**
+  - **Stereo pinch kept the mid clean only when L = R.** The pinch now comes from the mid's band.
+  - **Moving Tracing Drive gave a 0.48 thump.** The DC is now blocked before Drive scales it.
+  - **A 1.5e19 input came out as inf.**
+- **`devices/filter-delay` (ecfcad4a).**
+  - **Synced times at 20–40 BPM were cut to 6 s.** The lines now hold 12 s.
+  - **The exact-arrival check allowed 1e-7.** It is now bit for bit, and fails without the snap.
+- **`devices/dj-filter` (664adb8c).**
+  - **Leaving the centre, or sweeping across it, clicked** (0.49 on a 0.5 sine). The fix is in Auto
+    Filter's DJ type: on a change of side, the SVF takes the new side's state at rest.
+  - Auto Filter's 166 checks and parity are unchanged.
+
+**CTest (`ctest -LE acceptance`):**
+- `devices/channel-eq` (776ad5eb): 277/277 at 32 and 64.
+- `devices/hybrid-reverb-nupc` (fb1c7e9a): 268/268 at 32 and 64.
+- `devices/dj-filter` (729bc803, before the fixes): 283/283 at 32; the 64 run is pending.
+
+**Found in passing, not this branch's to change:** `dsp::Shifter` passes a NaN input into its delay
+line, where it stays (Auto Shift, next, sanitises its own input). The fix belongs on its own branch
+with a test; it is queued as this lane's next small item.
+
 ## 2026-11-22 — standing queue item 22: the DJ Filter on Auto Filter's cores — lands after 3 December
 
 **PR requested:** head `devices/dj-filter` (729bc803), base `main`, after `devices/filter-delay`.
