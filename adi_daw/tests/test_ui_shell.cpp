@@ -21,6 +21,7 @@
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "adi/ui/cue_edits.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "knobs_device.hpp"
 #include "mix_seek_fixture.hpp"
@@ -2037,6 +2038,54 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               !mainStrip->returnSwitches()[0]->isVisible(),
           "the Mixer View strips lose their Sends section, Main's Pre/Post switches with it");
     render("adi-sends-hidden.png");
+    // Live's cueing (manual 18.6; MX-08): Cue Switches turn the Solo buttons into Cue buttons; Main's
+    // Cue Volume and Cue Out. Every one is the project's, outside undo.
+    {
+        const auto title = root.undoTitle(false);
+        const auto ticked = [&](int id) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            return (info.flags & juce::ApplicationCommandInfo::isTicked) != 0;
+        };
+        check(ticked(AppCommands::SoloSwitches) && !ticked(AppCommands::CueSwitches), "Solo Switches by default");
+        check(root.command(AppCommands::CueSwitches) && root.current()->cue.cueMode && ticked(AppCommands::CueSwitches) &&
+                  !ticked(AppCommands::SoloSwitches) && root.undoTitle(false) == title,
+              "Cue Switches: the project's cue mode, ticked, no undo step");
+        root.frame();
+        column = rowOf(root.mixerView, 3);
+        check(column != nullptr && column->solo.getButtonText() == "C" && column->solo.getTitle() == "Cue",
+              "a track's Solo button is its Cue button");
+        if (column != nullptr) {
+            column->solo.onClick();
+            root.frame();
+            check(cued(*root.current(), 3) && !root.current()->findTrack(3)->soloed && root.undoTitle(false) == title,
+                  "a click cues the track without soloing it, no undo step");
+            column = rowOf(root.mixerView, 3);
+            check(column != nullptr && column->solo.getToggleState(), "and lights its Cue button");
+            if (column != nullptr)
+                column->solo.onClick();
+            root.frame();
+            check(!cued(*root.current(), 3), "a second click uncues it");
+        }
+        mainStrip = rowOf(root.mixerView, 7);
+        check(mainStrip != nullptr && mainStrip->cueVolume.isVisible() && mainStrip->cueVolume.getTitle() == "Cue Volume",
+              "Main has its Cue Volume");
+        if (mainStrip != nullptr) {
+            mainStrip->cueVolume.setValue(-12, juce::sendNotificationSync);
+            root.frame();
+            check(std::abs(root.current()->cue.volumeDb + 12) < 1e-9 && root.undoTitle(false) == title,
+                  "a typed Cue Volume is the project's at once, no undo step");
+        }
+        check(root.setCueOutput(2) && root.current()->cue.firstOutputChannel == 2 && !root.setCueOutput(3) &&
+                  root.current()->cue.firstOutputChannel == 2,
+              "Cue Out takes a stereo pair (3/4); an odd first channel is refused");
+        check(root.command(AppCommands::SoloSwitches) && !root.current()->cue.cueMode, "Solo Switches again");
+        root.frame();
+        column = rowOf(root.mixerView, 3);
+        check(column != nullptr && column->solo.getButtonText() == "S" && column->solo.getTitle() == "Solo",
+              "the Solo button is Solo's again");
+        root.say({});
+    }
     check(root.keyPressed(sendsKey) && root.state().sends && a.isVisible() && a.getY() == 37,
           "Ctrl/Cmd+Alt+S shows the track controls' again");
     column = rowOf(root.mixerView, 3);
@@ -13189,7 +13238,7 @@ int main(int argc, char **argv) {
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), then Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
@@ -13204,7 +13253,8 @@ int main(int argc, char **argv) {
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace,
+                                                   0, C::Settings},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
@@ -13245,7 +13295,8 @@ int main(int argc, char **argv) {
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
                       C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
-                      C::LastId == C::ExportAudio,
+                      C::SoloSwitches == C::ExportAudio + 1 && C::CueSwitches == C::SoloSwitches + 1 &&
+                      C::LastId == C::CueSwitches,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "

@@ -803,6 +803,11 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // Cue Out's stereo pairs (MX-08): as many outputs as the device has open, to the highest.
+        root->outputChannels = [this] {
+            const auto *device = manager_.getCurrentAudioDevice();
+            return device != nullptr ? device->getActiveOutputChannels().getHighestBit() + 1 : 0;
+        };
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
