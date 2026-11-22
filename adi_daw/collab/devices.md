@@ -7,7 +7,8 @@ device PRs do not conflict on one shared log file.
 
 ## FOR THE DIRECTOR
 
-**The Live readings — the one list (ADR-0248 d8, d14).** For the director's own Claude session on
+**The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
+session; 19 to 21 (the post-3-December effects) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -66,18 +67,45 @@ method); Live's files and renders stay in the director's research.
     from -48 to 0 dBFS, 500 ms each, for the static curve; a 1 kHz sine at -6 dBFS switched on for
     300 ms after silence, then off, for attack and release; an impulse of 0.5 for the delay.
 18. **Beat Repeat (ADR-0249 d7; it is built after 3 December, its reading may come now).** A fresh
-    Beat Repeat at 48 kHz, every control as shown. Then feed it a click every 1/16 at a different
-    level each, so every frame can be told apart:
-    - the capture: which frames the first repeat holds, and whether the trigger frame is its first;
-    - a Grid change while repeating, at a marked time: the first slice it affects, and where
+    Beat Repeat at 48 kHz, every control as shown. Then feed it independently seeded, uncorrelated
+    left and right markers (noise, a different seed per channel), so that every frame of each
+    channel can be told apart (the clones seat's method; `pd/devices/Beat Repeat.md` holds the same
+    items):
+    - **capture direction:** the markers immediately before and after the capture point. Does the
+      slice start at the trigger frame or end there, and does the trigger frame belong to the slice?
+    - **a Grid change while repeating,** at a marked frame: the first slice it affects, and where
       playback resumes;
-    - at 117 BPM and Grid 1/16 (a slice of 6,153.846 samples): the first frame of each of 16
-      successive repeats, to tell a carried fractional phase from per-slice rounding;
-    - a slice that wraps across two marked levels: the length and weights of the join;
-    - a locate while it repeats, including one back to the same position: which earlier frames it
-      can still play;
-    - at 20 BPM with the longest Interval and Grid: the oldest input frame it plays, in samples, at
-      44.1, 48 and 96 kHz.
+    - **fractional phase:** at 117 BPM and Grid 1/16 (a slice of 6,153.846 samples), the first frame
+      of each of 16 successive wraps, to tell a carried fractional phase from per-slice rounding;
+    - **the join:** across a wrap between two marked levels, the transition's length and weights;
+    - **locate:** while it repeats, including a jump back to the same position: which pre-locate
+      frames it can still play;
+    - **the oldest frame:** at 20 BPM with the longest Interval and Grid, the oldest input frame it
+      plays, in frames and seconds, at 44.1, 48 and 96 kHz;
+    - **the meter:** in 7/4, does 1 Bar span seven quarter notes? And what does 4 Bars do at
+      20 BPM in a long meter (shortened, or played in full)?
+    - **a held Repeat:** held for a minute, does it keep playing the same slice?
+19. **Glue Compressor (ADR-0249 d7; built after 3 December).** A fresh Glue Compressor, every control
+    as shown: Threshold, Ratio, Attack, Release (and Auto), Makeup, Range, Dry/Wet, Soft Clip.
+    - At those defaults, a 1 kHz sine in 6 dB steps from −48 to 0 dBFS, 500 ms each, for the curve
+      and its knee.
+    - A −6 dBFS burst of 2 ms and one of 10 s, each followed by silence, at Release Auto: the
+      reduction over the 2 s after each, for Auto's law.
+    - Soft Clip on, a 1 kHz sine at +6 dBFS: the output's peak and its first five harmonics.
+20. **Gate (ADR-0249 d7; built after 3 December).** A fresh Gate, every control as shown: Threshold,
+    Return, Attack, Hold, Release, Floor, Flip, Lookahead.
+    - A 1 kHz sine stepping −50 → −30 → −42 → −50 dBFS, 500 ms each: when it opens and closes
+      (the hysteresis), and the gain's shape over Attack and Release.
+    - A 10 ms burst with Hold 100 ms: when Release starts.
+    - Flip on with Floor −20 dB: the gain open and closed.
+    - Lookahead 10 ms: the delay it reports.
+21. **Limiter (ADR-0249 d7; built after 3 December).** A fresh Limiter, every control as shown: Gain,
+    Ceiling, Release (and Auto), Lookahead, Stereo/L/R/M/S, the mode.
+    - The delay it reports at each Lookahead.
+    - +12 dB white noise: the output's sample peak and true peak in each mode.
+    - Soft Clip: a 1 kHz sine at −20 dBFS, then at +6 dBFS, the output's peak and its first five
+      harmonics.
+    - M/S with a hard-left signal over the ceiling: the peak on each channel.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -92,6 +120,198 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — the post-3-December queue: Compressor, Glue Compressor, Gate, Limiter, and Beat Repeat's contract (all land after 3 December)
+
+These five branches are win's item 3 for this week, in ADR-0249 d7's order. **Each lands after
+3 December; none is asked to land before.** Each is built, not verified: its ranges, defaults and
+laws are ADI's until a Live 12.4 reading. The readings are on the ONE list above:
+- 17 for the Compressor;
+- 19–21, new, for the Glue Compressor, Gate and Limiter;
+- 18, revised to the clones seat's method, for Beat Repeat.
+
+No parity is claimed until a reading agrees.
+
+Four review rounds covered them, each with three skeptics per finding: the cores and the contract;
+then the device commit and the fixes; then the second fixes; then the brickwall's re-plan. Every
+confirmed finding is fixed on its branch, with a check that fails on the code before the fix. The
+last round confirmed one test gap, now closed, and nothing in the code.
+
+### Compressor, a loadable built-in — lands after 3 December
+
+**PR requested:** head `devices/compressor` (3ae7ab4c), base `main`, after `devices/sampler-loadable`
+lands: it is stacked on it, and takes `devices/compressor-core` in by merge (6777df67).
+- **The device.** The DEV-22 core (`dsp/live_compressor.*`: Peak, RMS and Expand; Lin and Log
+  envelopes; lookahead 0, 1 or 10 ms, reported) becomes a built-in:
+  - the `[adi.compressor~]` external;
+  - the canonical canvas `pd/devices/Compressor.pd`, 11 controls, ids 1–11;
+  - native dispatch in the built-in host;
+  - the catalogue entry `org.adidaw.builtin.compressor` (Audio Effects, Dynamics, stereo).
+  - The catalogue now holds 22 built-ins, with its canvases index-aligned.
+- **Fixed after review: the core's recursive states decayed into stuck denormals** after about 35 s
+  of silence. Nothing on a built-in's path sets flush-to-zero, and the Compressor is never
+  suspended. Each state now settles on exactly 0 once it is negligible; a check fails on the old
+  core in all four detector and envelope pairs.
+- **Tests:**
+  - native against Pd parity, max error 0 (adi_pd_native_devices_tests 300);
+  - adi_builtin_devices_tests 231;
+  - adi_live_compressor_tests 39;
+  - the object walk, 79.
+- CTest at PD_FLOATSIZE 32 and 64 (MSVC Debug, /W4 /WX): 268/268 at both; lint clean.
+
+### Glue Compressor, the core — lands after 3 December
+
+**PR requested:** head `devices/glue-compressor` (de5c6bd2, two commits on main), base `main`.
+- **What it is.** A stereo-linked bus compressor that works in dB, with zero latency and no
+  allocation:
+  - Ratio 2, 4 or 10:1;
+  - seven Attack choices, 0.01–30 ms;
+  - six Release choices, 0.1–1.2 s, or Auto (two stages: fast from a short peak, slow from a held
+    level);
+  - Makeup, Range, Dry/Wet, and Soft Clip toward −0.5 dBFS.
+- **Fixed after review:**
+  - switching to Auto mid-release stepped the reduction down about 3.1 dB; Auto now starts from
+    the reduction as it is;
+  - the states decayed into denormals under the threshold; they now settle on exactly 0.
+- adi_glue_compressor_tests 23; plants caught. No canvas or catalogue entry yet: that waits on
+  reading 19, as the Compressor's waited on 17. CTest 268/268 at PD_FLOATSIZE 32 and 64; lint clean.
+
+### Gate, the core — lands after 3 December
+
+**PR requested:** head `devices/live-gate` (18cf40a3, two commits on main), base `main`.
+- **What it is.** A gate linked on the louder channel:
+  - it opens at Threshold and closes below Threshold less Return (the hysteresis), after Hold;
+  - Attack and Release are one-poles;
+  - Floor's low end is silence;
+  - Flip;
+  - Lookahead (0, 1 or 10 ms, reported) delays the audio, never the detector.
+- **Fixed after review: Flip mixed the smoothed gain with an unsmoothed Floor.** Moving Floor gave
+  +6 dB, or silence for a whole Release. The one-pole now runs on the gate's opening (0 to 1), so
+  the gain never leaves Floor to unity, and the law at a fixed Floor is unchanged.
+- adi_live_gate_tests 49; plants caught. CTest 268/268 at PD_FLOATSIZE 32 and 268/268 at 64; lint
+  clean.
+
+### Limiter, Live's, and a change to the brickwall — lands after 3 December
+
+**PR requested:** head `devices/live-limiter` (3a3bce5f), base `main`, after
+`devices/limiter-offline` lands: it is stacked on it.
+- **What it is.** Live's Limiter on ADI's lookahead brickwall:
+  - Gain, Ceiling, Release;
+  - lookahead 1.5, 3 or 6 ms, reported, with 10 samples more in True Peak mode at 48 kHz;
+  - Link: Stereo, L/R or M/S;
+  - Mode: Standard, Soft Clip or True Peak.
+  - Under the ceiling, every mode and link passes the input delayed, bit for bit.
+- **Fixed after review:**
+  - **A Link change spliced in an idle brickwall's stale or empty delay.** Each link now has its
+    own brickwalls, mixed by weights that sum to one. A new path waits a latency while its delay
+    fills, then rises over at least another while the others give way. A change at any point of a
+    fade mixes on from wherever the output is: there is no step, and the ceiling holds.
+  - **A lowered Ceiling let the samples already in the delay leave above it.** A clamp overshoots
+    between the samples; a scale attenuates twice and then steps. So the fix is in the brickwall
+    (`dsp/limiter.*`, LookaheadLimiter), and **win, this touches the export's brickwall too**:
+    - the detector keeps each step's level, and the hold is the ceiling over the window's loudest;
+      it is the same value as before, and adi_dsp_tests' 433 checks pass unchanged;
+    - a lowered ceiling re-plans the gains already set, cutting each boxcar entry to the new
+      ceiling over the loudest sample it covers. The guarantee then holds exactly from the next
+      sample;
+    - quiet material is untouched, the cost is O(lookahead) once per lowering, and nothing is
+      allocated.
+  - **In M/S, a NaN on one channel silenced the other.** Each channel is now screened before the
+    encode.
+- adi_live_limiter_tests 58; each fix's checks fail on the code before it; plants caught. CTest 268/268
+  at PD_FLOATSIZE 32 and 64; lint clean.
+
+### Beat Repeat, the contract — lands after 3 December
+
+**PR requested:** head `devices/beat-repeat-contract` (e243ab13, three commits on main), base
+`main`. Documentation only: `pd/devices/Beat Repeat.md`.
+- **What it fixes:**
+  - the UID, and 17 control ids, for good (names, ranges and defaults come from reading 18);
+  - the core's design;
+  - the clones seat's Repeat Cell test method: per-frame markers and a frame oracle;
+  - ADR-0249 d7's tests;
+  - reading 18's items.
+- **After review:**
+  - the slice is copied at capture, so a repeat held by Repeat plays the same slice to the end;
+  - the input history holds one Grid at most;
+  - the reach is stated, since a bar follows the meter: 16 quarter notes at 20 BPM, 48 s, about
+    37 MB a buffer at 96 kHz. A longer Grid is shortened from the trigger until reading 18 says
+    otherwise.
+- **For the clones seat: one history kernel with ADI-Shaper's Time stage?** The answer turns on
+  reading 18's capture direction.
+  - **If the slice ends at the trigger, yes.** Beat Repeat keeps a backward ring of one Grid. One
+    kernel, with the capacity set by each caller, would share the ring's write, its valid count,
+    and a whole-frame read at an integer age (Beat Repeat's copy at capture).
+    - The fractional read is Time's own; Beat Repeat's read head reads its slice copy.
+    - Each caller keeps its oldest-frame rule, its locate policy and its slice storage.
+  - **If the slice starts at the trigger, no.** There is no input ring, so nothing to share.
+  - **Your three conditions are set aside on purpose; none of them decides it.**
+    - The oldest frame and the locate retention are each caller's own policy.
+    - The write source is already fixed: ADR-0249 d7 makes the history the input.
+  - The kernel would live in `dsp/` under this lane, with you reviewing the hunk Time takes.
+
+## 2026-11-22 — the 3 December performance pass: every built-in's callback at 64 and 128 frames; Hybrid Reverb no longer spikes
+
+**PR requested:** head `devices/perf-pass` (920fac00, two commits on 0ea10b8e), base `main`. It adds
+a new suite, `adi_builtin_realtime_tests`, which builds with `-DADI_ACCEPTANCE=ON` and runs under
+`ctest -L acceptance` or `-L performance`. It also changes one built-in, Hybrid Reverb.
+
+- **What the suite measures, at 64 and 128 frames.**
+  - **Each built-in alone, all 20.** Noise goes in, the first parameter moves every block, and an
+    instrument gets a note every 100 ms. Every declared sample slot is filled (Hybrid Reverb gets a
+    5 s impulse). ADI-Shaper runs working: every stage on, three bands, moving curves. At its
+    defaults it would only copy its input.
+  - **WTS-01's project.** It is built through the app's own document calls: OneShot with a sample on
+    an armed MIDI track, then Saturator, EQ Eight, Reverb, Delay and ADI-Shaper, worked through the
+    device strip's gestures. It plays from the start, with live notes and the app's timer.
+  - **A breakdown,** from an empty New project up the chain, one device at a time.
+  - **A contended pass.** The callback runs on its own thread, paced like a device, while the timer
+    and a control's gestures run on another, as in the app.
+- **What it checks.**
+  - **Allocation.** No allocation in any callback, from the first one: every `operator new` form,
+    plus the CRT hook (`malloc` too) in an MSVC debug build.
+  - **Stalls.** No callback over half the deadline that recurs block for block over two runs of
+    the same input. That is a device's own stall (a first touch, a page, a lock), not the
+    machine's preemption.
+  - **Cost.** The p99 of a built-in alone under 15 % of the deadline (Hybrid Reverb 25 %, stated
+    below), and the whole project's under 50 %.
+  - **Contention.** Under contention, every raw callback inside the deadline.
+  - Timings are judged in an optimised build only; Debug checks allocations.
+- **Measured** (RelWithDebInfo on this machine).
+  - **No built-in allocates, locks or stalls.** The built-ins' audio paths were also audited for
+    locks; the only mutex is pd_builtins' registration table.
+  - **Alone:**
+    - the heaviest by p99 are Saturator (7–10 %), Vocoder (7–9 %), Reverb (6–8 %), Multiband
+      Dynamics (5–6 %) and ADI-Shaper working (4 %);
+    - everything else is under 4 %.
+  - **The project:**
+    - p99 is 31–36 % of the deadline at both sizes, recurring worst 456–880 µs;
+    - an empty New project already takes 90–150 µs per 64-frame callback, 11–14 % of the deadline.
+      That is the engine's own share.
+  - **Contended:** the worst callback near a gesture's commit is no worse than one apart from it.
+    All four variants are alike, so no lock shows.
+- **Fixed: Hybrid Reverb spiked one callback in four.**
+  - **The cause.** Its uniformly partitioned convolution did the whole multiply-accumulate over
+    every partition at the 256-sample boundary. With a 5 s impulse (937 partitions), p99 was 634 µs
+    at 64 frames (48 % of the deadline), with a recurring worst of 838 µs.
+  - **The fix.** The next block's older partitions are now summed a share at a time over the 256
+    samples before it, on a schedule set by the sample position alone. The boundary keeps the
+    newest partition and the FFTs.
+  - **Now:** recurring worst 231 µs.
+  - Its tests are unchanged and pass: exact against direct convolution, bit-identical across block
+    sizes, Pd parity.
+- **Left, for win to place:**
+  - **Hybrid Reverb's steady cost.** With a 5 s impulse, p99 is still 17–20 % of the deadline at an
+    even load. Non-uniform partitioning would cut it; that is a convolution redesign, after
+    3 December.
+  - **For the engine seat:** an empty New project's 90–150 µs per 64-frame callback is the largest
+    share of the project's cost. It is worth profiling before 3 December if the session runs at
+    64 frames.
+- **Reviewed:** three dimensions with three skeptics per finding. Five confirmed gaps in the first
+  version of the suite are fixed in the second commit: ADI-Shaper timed as a copy, missing samples,
+  warm-up allocations uncounted, a project that never played, and contention untested.
+- CTest 267/267 (MSVC Debug, /W4 /WX); the suite passes in Debug (70 checks) and RelWithDebInfo
+  (156).
 
 ## 2026-11-20, late — for win: the twelve requested branches together on main, and where the queue stands
 
