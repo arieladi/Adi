@@ -12,6 +12,10 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## FOR THE DIRECTOR — DEV-25, VST3 readiness evidence
+
+May Win add a status-bearing seam to pinned JUCE 9.0.5 under ADR-0097 §3? I recommend exposing the existing opaque-state restore's SDK outcomes and the fallback audio process result. That preserves saved project chunks, controller resynchronization and the wrapper's parameter cache. The current void calls discard those results. Keep VST3 state acceptance and wrapper-only first process unverified until that seam exists. The CLAP and raw VST3 evidence can proceed on their own.
+
 ## FOR THE DIRECTOR — DF-E29(e), MIDI timing with Delay Compensation off
 
 Should MIDI keep the upstream plug-in's physical latency when Delay Compensation is off, or follow the same heard-time clock as the addressed automation? On current main the setting is reachable through the engine API. The app registry declares the setting, and its production switch has no Session binding yet. A real graph with a 1,024-sample reporting delay put the note and automation at sample 4,116 when compensation was on. With compensation off the note arrived at 5,140 and automation still arrived at 4,116.
