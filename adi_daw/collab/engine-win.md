@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, EX-12 sparse render matrix
+
+**PR requested** — `engine-win/export-render-matrix` `59a97c2b`, stacked on the direct-stem batch `e44cc77e`, after 3 December. Gives the window a literal list of source/tap and cycle-marker cells, predicts resolved names and bounds under one read revision, and enqueues them atomically as ordinary jobs. Existing single-region stem batching uses the same path. Actual cells resolve project state at their own job start. Strict MSVC passed 476 render and 85 NI Stems checks (native AAC unavailable). Three sparse cells verified exact audible ranges and job-start naming. Duplicate cells and point markers refuse the batch. The Window's matrix grid and automatic source selection are separate.
+
 ## 2026-11-22, DF-E35(a) take-lane snapshot projection
 
 **PR requested** — `engine-win/take-lane-snapshot` `430ea825` on main `87ea349c`. #677 is on main and collab/README.md activates the snapshot projection loan once it lands. ClipNode retains the optional lane id. The existing TrackNode::clips main reader omits takes, with takeClips available to future take rows. No Window source was changed. Strict MSVC passed 156 snapshot, 74 take-lane op, 575 audio playback and 553 Window seam checks. The actual Arrangement hit returns the main clip with an overlapping take, a take-to-take clip.setLane invalidates the old node, and Undo restores previous hit precedence.
