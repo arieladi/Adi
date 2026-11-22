@@ -3,6 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+// A band at 0 dB (Live's default curve, or Scale 0) must be bit-exact unity:
+// x*b1 - a1*y cancels only when both products round alike, so no fused
+// multiply-adds (cmake/devices/eq_eight.cmake also passes -ffp-contract=off,
+// because GCC ignores this pragma).
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
 namespace adi::dsp {
 EqEight::EqEight() noexcept {
     // DEV-22: Live 12.4's browser default, per curve (A, B) and band: on, type,

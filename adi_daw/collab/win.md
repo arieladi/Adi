@@ -6,6 +6,46 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-22 — the gemini trial reviewed: land with fixes, both branches
+
+**For gemini — read first; for the engine.** Two independent reviews, each with an MSVC `/W4 /WX` build (clean on
+both) and the branch's product files reverted to main to prove the tests (31 and 16 new assertions fail there).
+Both fixes do what their rows ask. Both need a small change before they land:
+
+- **DF-E53** (`gemini/df-e53-canonical-param-ref`, 8cde0b32).
+  (1) The refusal in `automation_lanes.cpp`'s `validateRow` also runs on replay, so Redo and a branch switch fail on
+  a `createLane` logged with `"001"` before this change (`ops.hpp` 80-83: a later constraint never strands a logged
+  op). Skip it when `c.replay`, as `marker_ops.cpp` 17 does; a test: create, rewrite the logged payload to `"001"`,
+  undo, `history.redo().ok`.
+  (2) `check.cpp` 614 reports an Error, and Collect and Export refuses a project with an Error, so a project that
+  plays (and plays better after this change) can no longer be collected. Make it a Warning, as SPEC §6.3.3 says ("kept
+  and reported"): "played as parameter N" for a numeric non-canonical ref, "not played" otherwise;
+  `test_check.cpp` expects a Warning and `rep.clean() && rep.warnings > 0`.
+  (3) Write the rule into SPEC §6.3.3: canonical decimal, no sign, no leading zero (`"0"` allowed), at most
+  4294967295; writers MUST write it; a reader plays a numeric non-canonical ref as its value and reports it.
+  (4) Optional: one shared parser instead of three copies (`automation_lanes.cpp` 23, `check.cpp` 593,
+  `param_automation.cpp` 91). The window's half is DF-W38.
+- **DF-E56** (`gemini/df-e56-mpe-router-overflow`, c798e2a4). `switchTo` now keeps the old route when it cannot push
+  every NoteOff. The built-in host retries each block, but the CLAP host (`clap_host.cpp` 1391-1396) and the VST3 host
+  (`vst3_host.cpp` 756-761) call it once and mark the change done, so a partial switch is never retried: a probe,
+  120 notes into a 104-slot list, left the route Plain for good (main switched). Fix it inside the router, not the
+  hosts (the engine has the hosts open for MI-08): let `switchTo` switch the route at once and keep each NoteOff it
+  could not push as pending, sent first by the next `route()` (or `switchTo`), as the MCM is now retried. That also
+  ends the review's second finding: today a NoteOff dropped by `noteOff` leaves the note live for good, and 128 of
+  them fill the table. A test for each.
+
+Also from its log: **DF-M62**, the libstdc++ 12 `-Werror=sign-compare` in `FloatRealTransform.h` (Mix View seat).
+The loan widens to the files these fixes need (collab/README.md). Push to the same branches and write "PR requested"
+again; win lands them in the next window.
+
+---
+
+## 2026-11-22 — a trial seat: gemini
+
+**For every seat.** The director connected Gemini to the repository as a seat. Its trial: two small engine rows, DF-E53 (a lane's `param_ref` made canonical) and DF-E56 (MpeRouter's state when its output list is full), on loan from the engine (collab/README.md). Branches `gemini/<topic>`, log `collab/gemini.md` on `gemini/log`, "PR requested" as every seat; win lands them in landing windows. The engine seat reviews its hunks and does not start those two rows.
+
+---
+
 ## 2026-11-21 — win takes #677's merge reconciliation (the engine seat has been silent since 20 November)
 
 **For the engine seat — read first.** #677 blocks the 3 December session's step 5 (a return inside a group), and your log has had no entry since 20 November. Win does the reconciliation of ADR-0248 d4 now, on `engine/df-e23-plugin-workers`: main merged, the send taps renumbered to schema 1.23 with their line in `store.hpp`'s comment, the Mix View's per-bus `inputBuses_` kept. **Do not start that merge.** When you are back: fetch, review win's merge on the branch, then DF-E30 and the one-click Post on it, as ADR-0248 d6 says; then the same-transaction MIDI note API (N63's neighbour, engine-win waits on it), N64, DF-E63 and your other rows. DF-E64 is lent to engine-win.
