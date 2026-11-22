@@ -20,6 +20,10 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#if defined(ADI_HAVE_FLAC)
+#include <FLAC/stream_decoder.h>
+#include <memory>
+#endif
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -504,6 +508,87 @@ void multichannelStem() {
     for(int i=0;i<866;++i)for(int c=0;c<6;++c) exact=exact && decoded[static_cast<std::size_t>(6*i+c)]==source(137+i,c);
     check(exact,"every multichannel stem sample survives planar capture and interleaving");
 }
+#if defined(ADI_HAVE_FLAC)
+struct FlacReadback {
+    unsigned channels = 0, bits = 0;
+    std::size_t valuesRead = 0;
+    std::span<const float> expected;
+    bool valid = true;
+};
+
+FLAC__StreamDecoderWriteStatus compareFlacBlock(const FLAC__StreamDecoder*, const FLAC__Frame* frame,
+        const FLAC__int32* const samples[], void* context) {
+    auto& readback = *static_cast<FlacReadback*>(context);
+    const auto& header = frame->header;
+    const auto values = static_cast<std::size_t>(header.blocksize) * header.channels;
+    if (header.channels != readback.channels || header.bits_per_sample != readback.bits ||
+        header.sample_rate != 48000 || values > readback.expected.size() - readback.valuesRead)
+        return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
+    for (unsigned i = 0; i < header.blocksize; ++i)
+        for (unsigned c = 0; c < header.channels; ++c) {
+            const auto expected = std::ldexp(readback.expected[readback.valuesRead++],
+                                            static_cast<int>(readback.bits) - 1);
+            readback.valid = readback.valid && expected == static_cast<float>(samples[c][i]);
+        }
+    return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
+}
+
+void flacDecodeError(const FLAC__StreamDecoder*, FLAC__StreamDecoderErrorStatus, void* context) {
+    static_cast<FlacReadback*>(context)->valid = false;
+}
+
+bool equivalentFlac(const fs::path& path, FlacReadback& readback) {
+    std::unique_ptr<FLAC__StreamDecoder, decltype(&FLAC__stream_decoder_delete)>
+        decoder(FLAC__stream_decoder_new(), FLAC__stream_decoder_delete);
+    const auto utf8 = media::pathUtf8(path);
+    if (!decoder || !FLAC__stream_decoder_set_md5_checking(decoder.get(), true) ||
+        FLAC__stream_decoder_init_file(decoder.get(), utf8.c_str(), compareFlacBlock, nullptr,
+                                       flacDecodeError, &readback) != FLAC__STREAM_DECODER_INIT_STATUS_OK)
+        return false;
+    const bool decoded = FLAC__stream_decoder_process_until_end_of_stream(decoder.get());
+    return FLAC__stream_decoder_finish(decoder.get()) && decoded && readback.valid &&
+           readback.valuesRead == readback.expected.size();
+}
+#endif
+
+void flacExports() {
+    Fixture f;
+    auto j = f.job("flac");
+    j.encoding.container = ExportContainer::Flac;
+    j.encoding.format = audio::WavFormat::Float32;
+    check(renderWav(j, {}).state == JobState::Failed && f.noStage(),
+          "FLAC rejects Float32 before creating a stage");
+#if defined(ADI_HAVE_FLAC)
+    j.endSample = j.beginSample + 4201;
+    j.encoding.dither = audio::WavDither::Shaped2;
+    j.encoding.ditherSeed = 6789;
+    for (const auto format : {audio::WavFormat::Pcm16, audio::WavFormat::Pcm24}) {
+        j.encoding.format = format;
+        j.nameTemplate = format == audio::WavFormat::Pcm16 ? "pcm16" : "pcm24";
+        auto wave = j;
+        wave.encoding.container = ExportContainer::Wav;
+        const auto expected = read(renderWav(wave, {}), 4201, 48000, format);
+        const auto result = renderWav(j, {});
+        check(result.state == JobState::Completed && result.output.extension() == ".flac",
+              result.error.empty() ? "FLAC publishes the resolved file" : result.error.c_str());
+        FlacReadback readback{2, format == audio::WavFormat::Pcm16 ? 16U : 24U, 0, expected};
+        check(expected.size() == 8402 && equivalentFlac(result.output, readback),
+              "FLAC decodes to the same dithered PCM codes as WAV across the last partial block");
+        j.collision = Collision::Increment;
+        const auto increment = renderWav(j, {});
+        check(increment.state == JobState::Completed && increment.output != result.output &&
+              increment.output.extension() == ".flac" && f.noStage(),
+              "incremented FLAC retains the extension and leaves no staging directory");
+        j.collision = Collision::Fail;
+    }
+#else
+    j.encoding.format = audio::WavFormat::Pcm24;
+    const auto missing = renderWav(j, {});
+    check(missing.state == JobState::Failed && missing.error.find("libFLAC") != std::string::npos && f.noStage(),
+          "source-free builds explain FLAC unavailability before staging");
+#endif
+}
+
 void regionStems() {
     Fixture f;
     f.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,480480,60);"
@@ -1494,7 +1579,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

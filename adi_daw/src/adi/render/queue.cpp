@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/render/queue.hpp"
+#include "adi/render/flac_writer.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -122,9 +123,16 @@ void validate(const Job& j) {
     if (j.source.trackId < 0 || (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
         throw std::invalid_argument("invalid direct stem source or tap");
     if (j.encoding.format != audio::WavFormat::Float32 && j.encoding.format != audio::WavFormat::Pcm16 && j.encoding.format != audio::WavFormat::Pcm24)
-        throw std::invalid_argument("unsupported export WAV encoding");
+        throw std::invalid_argument("unsupported export sample encoding");
     if (!audio::validDither(j.encoding.dither))
         throw std::invalid_argument("unsupported export dither");
+    if (j.encoding.container != ExportContainer::Wav && j.encoding.container != ExportContainer::Flac)
+        throw std::invalid_argument("unknown export container");
+    if (j.encoding.container == ExportContainer::Flac) {
+        if (j.niStems || j.exactWavFilename || j.session.channels > 8 || j.encoding.format == audio::WavFormat::Float32)
+            throw std::invalid_argument("FLAC export requires PCM16 or PCM24, 1..8 channels and a template name");
+        if (!flacExportAvailable()) throw std::runtime_error("FLAC export requires the pinned libFLAC build");
+    }
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
     if (j.exactWavFilename) {
@@ -500,10 +508,12 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 job.session.sampleRate, job.regionId, names};
             snapshot.commit();
         }
+        const bool flac = job.encoding.container == ExportContainer::Flac;
+        const char* extension = flac ? ".flac" : ".wav";
         const auto filename = job.exactWavFilename ? *job.exactWavFilename :
-            resolveName(job.nameTemplate, names) + ".wav";
+            resolveName(job.nameTemplate, names) + extension;
         result.output = job.directory / media::pathFromUtf8(filename);
-        detail::prepareOutput(result,job.collision,".wav","export destination already exists");
+        detail::prepareOutput(result,job.collision,extension,"export destination already exists");
         if(prepared)prepared(result);
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
@@ -614,7 +624,12 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         });
         else writer->close();
         cancellation(control);
-        detail::publishVerifiedOutput(staged, result, control, "export destination already exists");
+        const auto deliver = flac ? stage.path / "render.flac" : staged;
+        if (flac) encodeStagedFlac(staged, deliver, [&] {
+            cancellation(control); if (control.serviceHost) control.serviceHost(); cancellation(control);
+        });
+        cancellation(control);
+        detail::publishVerifiedOutput(deliver, result, control, "export destination already exists");
     } catch (const Cancelled&) {
         result.state = JobState::Cancelled;
     } catch (const std::exception& e) {
@@ -720,7 +735,8 @@ std::string serializeRunManifest(const RunReport& run) {
                 {"processing_precision", job.session.precision == engine::Precision::Float64 ? "float64" : "float32"},
                 {"delay_compensation", job.session.delayCompensation},
                 {"external_tempo_bpm", optionalNumber(job.session.externalTempoBpm)},
-                {"container", job.niStems ? "ni_stems_mp4" : "wav"},
+                {"container", job.niStems ? "ni_stems_mp4" :
+                    (job.encoding.container == ExportContainer::Flac ? "flac" : "wav")},
                 {"wav_encoding", job.encoding.format == audio::WavFormat::Float32 ? "float32" :
                     (job.encoding.format == audio::WavFormat::Pcm16 ? "pcm16" : "pcm24")},
                 {"dither", audio::ditherName(job.encoding.dither)},
