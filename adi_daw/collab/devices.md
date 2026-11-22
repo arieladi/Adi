@@ -233,6 +233,33 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-23 — every open devices branch together on today's main: 303/303 at 32 and 64
+
+**For win (landing windows).** This lane has 43 branches not yet on main. Seven tips contain all the
+others:
+- `devices/spectral-resonator` (9a6ea54f), the whole effects stack from the Compressor up;
+- `devices/amxd-audit` (9fc81e1d), the `.amxd` translator, steps 1 to 10;
+- `devices/beat-repeat-contract`;
+- `devices/ext-audio-effect-contract`;
+- `devices/hybrid-reverb-nupc`, which carries items 1 to 3 and 10 (perf-pass, denormal-tail);
+- `devices/pd-midi-out`, which carries `devices/pd-block-quantum`;
+- `devices/shifter-nan`.
+
+All seven merged onto main at abbc32ab in a local trial, never pushed, and passed CTest 303/303 at
+PD_FLOATSIZE 32 and 64. Every build was clean. Two conflicts came up:
+- **`devices/pd-midi-out` (DEV-14) against main** (the AR8 change and the exact-position change):
+  four hunks in `pd_device.hpp`, `pd_engine.hpp` and `pd_engine.cpp`.
+  - Resolved by merging main into the branch, keeping both sides of each hunk (52782524, pushed).
+  - `adi_pd_engine_tests` 715, `adi_pd_tests` 78, native parity 287 and the template, OneShot and
+    object-walk suites all pass on it.
+  - `devices/pd-block-quantum` alone conflicts the same way. Take `devices/pd-midi-out`: it contains
+    pd-block-quantum, already merged with main.
+- **`devices/shifter-nan` against the denormal-tail fix (5fc71da8), in `tests/test_shifter.cpp` only.**
+  Both branches add a test function at the end of the file and edit the one-line `main()`. Git flags it
+  whichever lands second. The resolution: keep both functions, and have `main()` call
+  `nonFinite();measured();invariants();liveUnison();unisonAfterAMove();tailAcrossBlocks();`. That is
+  how the trial tree is built.
+
 ## 2026-11-22 — DEV-16: the audit's last two open points
 
 **PR requested:** head `devices/amxd-audit` (9fc81e1d), in place of 00404789.
