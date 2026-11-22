@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Reverb on the historical 873-program comparison
+
+The historical bank had 39 programs below 0.001 stereo RMS, including one of the 163 programs using Reverb. We reproduced all 163 archived, four-bar stereo renders byte for byte with their corresponding registered historical builds. The comparison then replayed 162 in source order with the held weighted curves, Time, band Trim and the corrected room from `df9f2778`. Downstream clocks account for each preceding processor's latency. One program requires an unavailable band solo.
+
+With room muted, one of 162 passed. Enabling the room raised that to three, with both gains among the 25 programs whose full chain was represented. Across those 162, 56 errors fell and 106 rose. The median change was +0.00260713 RMS. In the 16 earlier Trim regressions the errors fell for three and rose for thirteen. None of those sixteen crossed the threshold.
+
+The two threshold crossings were 0.00344542 to 0.000454536 for Time → Reverb → Filter, and 0.00232475 to 0.000537071 for Sweep → Volume → Reverb → Width. The existing pass stayed below threshold at 0.000075677. All three repeated in fresh runs with identical stereo samples in both conditions. Carrying forward the original captures for the 710 Reverb-inactive programs and the one unported solo gives **39 muted and 41 enabled across the 873-entry comparison**. This total combines the measured stage chain with those archived captures. A single integrated device build still needs its own full-bank render.
+
+PR requested
+
 ## 22 November 2026 — Devices handoff for exact ADI-Shaper musical divisions
 
 The clock correction for DEV-31 is parked for Devices at normalized parameter delivery in `builtin_host.cpp` and the canonical shaper adapter in `native_devices.cpp`. A registered Volume ramp tested all 23 panel divisions at 48 kHz and 120 BPM. Main `87ea349c` and the held panel top `3e8e20f5` produced identical results in Pd32 and Pd64. Thirteen stored divisions decoded to a different float from the nearest float to the intended value. Fifteen differed from the exact musical ratio. At a 24-hour timeline position the largest phase error was 0.04119879 cycles for a half-beat period.
