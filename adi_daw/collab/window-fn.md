@@ -44,6 +44,55 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — N60's window half: the keyboard into the session (PR requested)
+
+Win's first item of the new week: WTS-01's 3b and 3d. The keyboard reached nothing; it now reaches the
+armed track's instrument.
+
+- **The consumer.** `MidiInputFeed` (`adi/ui/midi_input_feed.hpp`, no JUCE) is the port rings' one
+  consumer. It runs on the audio thread, in the device callback, before the document processes the block:
+  the application wraps the document in `LiveMidiProcessor`, which the `DeviceBridge` drives. It drains
+  every port's ring and reads each message with the engine's own `MpeParser`, the port's MPE switch
+  choosing its zone. It then hands the events, in time order across ports, to `Session::enqueueMidiInput`,
+  the session's one serialized producer. Only a port whose Track switch is on reaches the tracks; a port
+  open for Remote only is drained and goes to nothing until a control surface consumes it. Note ids are
+  made unique across ports, nonzero, and channels zero-based, as the session's contract asks.
+- **Time.** Each event is stamped in stream samples from its port time. At each block the ports' clock
+  is anchored to the block's first sample, and what arrived during the last block's span plays one block
+  later at the same offset, so the gaps between notes are kept. Nothing is put before an earlier event.
+  The age is taken modulo the 2^32 ms wrap of the counter some backends use. A device restart re-anchors
+  the feed and resets the session's input.
+- **Lifetimes.** The application owns the feed, declared before the port host and the bridge, so it
+  outlives both. The host publishes its open inputs on each refresh; `publish` waits for the audio thread
+  to let go of the list it replaces, and only then are closed inputs' rings freed. A change of inputs or
+  switches resets the session's live input, so no key held on a closed port sounds on. A change of the MPE
+  switch changes the zone only. No allocation or lock on the audio thread; the parsers are on the heap.
+  The MIDI Indicators read the inputs' activity count instead of draining the rings.
+- **Known limit.** One parser per port: a UMP-native device's groups share its channels. On ALSA and
+  CoreMIDI each jack is a port of its own.
+
+**Run.** The window's 27 suites (100%). `adi_ui_shell_tests` 2922 checks, 0 failures, including the feed:
+time order across ports, stamps and clamping, zero-based channels, note ids per port, Remote-only ports,
+refusals, restart, unpublished rings, the MPE zone and its change under a held key, and fairness.
+WTS-01 with `-DADI_ACCEPTANCE=ON`: the harness's driver now pumps the feed as `LiveMidiProcessor` does,
+and 3b and 3d play their keys into a port ring.
+- **3b PASS** (a build with Pd, and so OneShot): first sound at +1 frame from the note's sample, peak
+  0.1256, nothing refused.
+- **3d PASS** (the VST3 fixture): onset at +1 from the block start, as the fixture plays events at
+  offset 0, 440.0 Hz, peak 0.0712.
+
+The session's remaining FAIL is 2b, the engine's read-ahead at Play, and 7c and 7e fail only without Pd.
+Review: two dimensions, a skeptic on each finding. Confirmed and fixed: the handoff's race (two publishes
+could free a ring being read), `std::stable_sort` allocating on the audio thread, the feed's 4.7 MB on a
+test's stack, a busy port starving the others, held notes sticking when a port closed, and the MPE switch
+dropping releases. Taken as a known limit: the UMP groups. Two findings were refuted.
+
+**For win.** `tests/acceptance/*` are yours. Step 3b, 3d and the harness's `Driver` changed as above, and
+step 3's `doc` and `driver` are now marked used in a build without Pd, which did not compile before.
+
+**PR requested** — `window-fn/midi-live` at `fe24a5b0`, on main `0ea10b8e`: "adi_daw: N60's window half: the
+keyboard into the session, from the device callback". It depends on nothing.
+
 ## 2026-11-20, window-fn — DF-W36: `MidiPortHost::dropped()` safe from any thread (PR requested)
 
 Win's evening entry gave DF-W36 to this seat. The header said `activity` and `dropped` may be read from
