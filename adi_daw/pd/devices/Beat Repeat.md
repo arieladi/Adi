@@ -149,23 +149,31 @@ be told apart.
 
 `AdiShaperTime` (on `clones/shaper-time`) is a fixed 2²¹-frame stereo ring
 allocated in `prepare()`, read at a fractional delay: 43.7 s at 48 kHz and
-21.8 s at 96 kHz. Beat Repeat at 20 BPM with a 4-bar reach needs about 48 s,
-so a fixed capacity cannot serve both. **The answer: yes to one kernel, with
-the capacity the caller's, set in `prepare()`.** What is shared: a stereo
-input ring, its valid count, and an interpolated read at a fractional age.
-What each caller keeps: its capacity, its oldest-frame rule, its locate
-policy, and its slice boundaries, playback phase and storage (Beat Repeat's
-slice buffer above).
+21.8 s at 96 kHz. **The answer turns on one reading, the capture direction
+(reading 18).**
 
-This departs from the handoff's three conditions on purpose. Two of them, the
-oldest readable frame and the retention across a locate, are each caller's
-own, so they cannot block the sharing; the capacities already differ (Time's
-2²¹ frames against Beat Repeat's 48 s). One condition stays: the ring is
-shared only if reading 18 shows that Beat Repeat writes its input before the
-effect, as Time does. If Live writes something else (its own output, or the
-input after the filter), the kernel is not shared. The kernel would live in
-`dsp/` under the devices lane, with the clones seat reviewing the hunk Time
-takes from it.
+- **If the slice ends at the trigger,** Beat Repeat keeps a backward input
+  ring of one Grid (up to the 48 s reach above, more than Time's fixed ring
+  holds at 48 kHz). Then the answer is yes: one kernel, with the capacity the
+  caller's, set in `prepare()`. What is shared is the ring's write, its valid
+  count, and a read of whole frames at an integer age, which is Beat Repeat's
+  copy at capture. The interpolated read at a fractional age is Time's own.
+  Beat Repeat does not use it, because its read head reads its slice copy. Each
+  caller also keeps its own capacity, oldest-frame rule, locate policy, and
+  slice boundaries, playback phase and storage.
+- **If the slice starts at the trigger,** Beat Repeat keeps no input ring (the
+  slice buffer fills forward), and there is nothing to share. The answer is
+  then no.
+
+This departs from the handoff's three conditions on purpose, and none of them
+decides the question:
+- The oldest readable frame and the retention across a locate are each
+  caller's own policy, kept apart above, so they cannot block the sharing.
+- The write source is already fixed: ADR-0249 d7 makes the history the input
+  and the device no feedback delay.
+
+The capture direction is what decides. The kernel would live in `dsp/` under
+the devices lane, with the clones seat reviewing the hunk Time takes from it.
 
 ## The panel
 
