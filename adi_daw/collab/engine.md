@@ -36,6 +36,22 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-25 hosted readiness evidence, lands after 3 December
+
+Branch `engine/dev25-plugin-readiness` at `d8995f97b7119a6ca72d44e96faa8406e9b6ff14`, from main `ac07be74`. Suggested PR title **Publish verified readiness from hosted plug-ins**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev25-plugin-readiness)
+
+The per-instance snapshot records successful instantiation, the CLAP SDK accepting an explicit chunk, and the first successful nonempty CLAP or raw VST3 process. The three evidence bits stay with their native instance and publish through one byte-sized lock-free atomic. Empty blocks, activation, and failing process calls leave FirstProcessed clear.
+
+GCC 14 and Clang 19 each built with warnings as errors and passed CLAP 588, the native VST3 fixture 127, and the scanner-isolated real CLAP readiness case. The two real SDK fixtures show zero measured C++ allocations in the first successful callback. Real CLAP rejected malformed state before accepting the valid chunk and rendered 84 exact stereo frames. Real VST3 refused the first process in both precisions, then completed an actual render. The broader Clang Play Render run stopped at its earlier VST3 canonical path-alias assertion. The separate readiness CTest ran the same owned CLAP case independently. Reviewed the changes against the five Win portability patterns.
+
+| Seat | Needs |
+|---|---|
+| engine-win | Use `DeviceInstance::hostedReadiness()` for the DEV-25 display and export. The evidence bits are independent, so a native instance can process before an explicit state load. |
+| win and Director | VST3 state acceptance and fallback process evidence await the status-bearing JUCE seam described under FOR THE DIRECTOR. Existing load and fallback paths continue to handle project bytes and audio. |
+| win | Order the host hunks with MI-08 and its DF-E56 follow-up when landing. |
+
+PR requested
+
 ## 2026-11-22 — DEV-07 and DEV-32 parked
 
 - DEV-07 waits for Devices' LFO and Shaper kernels and Win's route-table schema reservation.
