@@ -861,6 +861,12 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->cancelMixerDrag = [this] { document_->cancelMixerDrag(); };
+        root->tapTempoGesture = [this](double bpm, std::int64_t eventTick, std::int64_t nowMs) {
+            const bool ok = document_->tapTempo(bpm, eventTick, static_cast<std::uint64_t>(nowMs));
+            if (!ok)
+                root_->say(document_->error());
+            return ok;
+        };
         for (auto *panel : {&root->mixer, &root->mixerView}) {
             // The strips' meters: the engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381),
             // through the session; null until the session has a strip for the track. The strips
@@ -1307,6 +1313,8 @@ class AdiApplication final : public juce::JUCEApplication,
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
             root_->setRecordStates(document_->recordStates());
+            // A Tap Tempo run ends once the taps stop (HI-01), on the taps' clock.
+            document_->pollTapTempo(juce::Time::getMillisecondCounter());
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 root_->say(landed->message);

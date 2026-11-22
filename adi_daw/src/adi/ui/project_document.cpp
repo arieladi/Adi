@@ -8,6 +8,7 @@
 #include "adi/device_key_routes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/gesture_presentation.hpp"
+#include "adi/ui/tap_tempo.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -139,6 +140,7 @@ std::string ProjectDocument::snapshotName(std::int64_t nowUtc, int utcOffsetMinu
 }
 bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     warning_.clear();
+    (void)endTapTempo(); // a Tap Tempo run is a step of the file it was tapped in
     // The store refuses an existing file too, in its own words; the Status Bar gets ours, with
     // the name, since Live would have asked here and replaced it.
     std::error_code ignored;
@@ -1014,6 +1016,76 @@ void ProjectDocument::settleRecording() {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
+}
+bool ProjectDocument::tapTempo(double bpm, std::int64_t eventTick, std::uint64_t nowMs) {
+    const auto value = [&]() -> std::unique_ptr<const gesture::Input> {
+        if (tapInserts_)
+            return std::make_unique<gesture::TempoInsertInput>(bpm, 0);
+        return std::make_unique<gesture::TempoInput>(bpm);
+    };
+    if (tap_) {
+        auto updated = tap_->update(value(), nowMs);
+        if (updated.status.ok()) {
+            error_.clear();
+            return true;
+        }
+        // A tap after the run's quiet end, before the tick saw it: that run ends, and this tap begins another.
+        if (!endTapTempo())
+            return false;
+    }
+    auto attached = gesture::Coordinator::attach(*store_, std::make_shared<gesture::EnginePresentation>(view_, session_));
+    if (!attached.status.ok() || !attached.value) {
+        error_ = "Tap Tempo cannot be heard live: " + attached.status.message;
+        return false;
+    }
+    tapCoordinator_ = std::move(attached.value);
+    // Tempo has no live-value path: the gesture previews it structurally, the snapshot rebuilt per tap.
+    gesture::Spec spec;
+    spec.strategy = gesture::Strategy::Structural;
+    spec.label = "Tap Tempo";
+    // The event's row, else (none at that position) an inserted one.
+    tapInserts_ = false;
+    auto begun = tapCoordinator_->begin(spec, gesture::tempoProducer(eventTick));
+    if (!begun.status.ok() || !begun.session) {
+        tapInserts_ = true;
+        begun = tapCoordinator_->begin(spec, gesture::tempoInsertProducer(eventTick));
+    }
+    if (!begun.status.ok() || !begun.session) {
+        error_ = begun.status.message.empty() ? "Tap Tempo could not begin." : begun.status.message;
+        return false;
+    }
+    tap_ = std::make_unique<gesture::QuietSession>(std::move(begun.session),
+                                                   static_cast<std::uint64_t>(TapTempo::kPauseMs));
+    const auto updated = tap_->update(value(), nowMs);
+    if (!updated.status.ok()) {
+        error_ = updated.status.message;
+        (void)tap_->cancel();
+        tap_.reset();
+        return false;
+    }
+    error_.clear();
+    return true;
+}
+void ProjectDocument::pollTapTempo(std::uint64_t nowMs) {
+    if (!tap_)
+        return;
+    const auto polled = tap_->poll(nowMs);
+    if (polled.ended) {
+        tap_.reset();
+        synchronise();
+    }
+}
+bool ProjectDocument::endTapTempo() {
+    if (!tap_)
+        return true;
+    const auto ended = tap_->end();
+    tap_.reset();
+    synchronise();
+    if (!ended.status.ok()) {
+        error_ = ended.status.message;
+        return false;
+    }
+    return true;
 }
 bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {

@@ -373,6 +373,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool(double)> mixerDrag;
     std::function<bool()> endMixerDrag;
     std::function<void()> cancelMixerDrag;
+    // Tap Tempo's run as the document's quiet gesture (HI-01): the tempo heard at each tap, one undo step once
+    // the taps stop. Unset (outside the application), each tap's value is committed as before.
+    std::function<bool(double bpm, std::int64_t eventTick, std::int64_t nowMs)> tapTempoGesture;
     std::function<bool()> reenableAutomation;
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
     // envelope again; false with the reason said. Session state, no undo step, as the global switch.

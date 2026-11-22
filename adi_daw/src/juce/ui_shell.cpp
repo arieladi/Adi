@@ -3241,6 +3241,21 @@ bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
     const double value = std::round(std::clamp(*bpm, kMinTempo, kMaxTempo) * 100) / 100;
     if (std::abs(value - tapBpm_) < .005)
         return true;
+    if (tapTempoGesture) {
+        // The event in force at the playhead, as Change Tempo picks it; the gesture keeps it for the run.
+        const auto current = view_.current();
+        if (!current || !current->tempo)
+            return fail("The tempo needs an open project.");
+        std::int64_t eventTick = 0;
+        const auto at = timelineTick();
+        for (const auto &event : current->tempo->events)
+            if (event.posTicks <= at)
+                eventTick = std::max(eventTick, event.posTicks);
+        if (!tapTempoGesture(value, eventTick, nowMs))
+            return false;
+        tapBpm_ = value;
+        return true;
+    }
     // The run's step gives way to this tap's, while it is still the latest: one step for the run.
     if (const auto last = submitter_.nextUndo(); tapStep_ != 0 && last && last->txnId == tapStep_) {
         const bool paused = arrangement.followPaused;
