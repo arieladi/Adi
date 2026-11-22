@@ -153,7 +153,7 @@ struct Clip {
     }
     std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames,bool lookAhead=true) const noexcept {
         std::array<std::int64_t,slots> out; out.fill(-1);
-        if (monitorInputOnly) return out;
+        if (monitorInputOnly || !t.playing()) return out;
         std::size_t used = 0;
         auto sourceRange = [&](std::int64_t from, std::int64_t count) {
             // sourceAt never reads at or past the effective source End.
@@ -407,10 +407,14 @@ public:
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
         if(!transport.playing() || (!clips.empty() && clips.front()->monitorInputOnly)){
             if(io.blockOffset==0) {
+                // Only the live source callback looks ahead while stopped.
+                // Candidate preparation keeps the captured transport intact.
+                auto nextPlay=transport;
+                if(!nextPlay.playing())nextPlay.play();
                 for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex) {
                     auto* clip=clips[clipIndex];
                     clip->releaseAdmission();
-                    clip->request(clip->wanted(transport,maxFrames));
+                    clip->request(clip->wanted(nextPlay,maxFrames));
                 }
             }
             return;
