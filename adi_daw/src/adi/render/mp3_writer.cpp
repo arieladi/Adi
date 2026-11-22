@@ -133,8 +133,11 @@ void Mp3Writer::write(std::span<const double> samples, std::uint32_t frames) {
     s.written += frames;
 }
 
-void Mp3Writer::finish(const std::function<void()>& service) {
+void Mp3Writer::finish(const std::function<void()>& service, std::optional<std::uint64_t> frames) {
     auto& s = *impl_;
+    if (frames && (*frames == 0 || *frames > s.expected || *frames != s.written))
+        throw std::runtime_error("Encoded tail length disagrees with the rendered range");
+    if (frames) s.expected = *frames;
     if (s.written != s.expected) throw std::runtime_error("Incomplete staged MP3 capture");
     if (service) service();
     s.writePacket(lame_encode_flush(s.encoder.get(), s.packet.data(), static_cast<int>(s.packet.size())));
@@ -159,7 +162,7 @@ Mp3Writer::~Mp3Writer() = default;
 void Mp3Writer::write(std::span<const double>, std::uint32_t) {
     throw std::runtime_error("MP3 export requires the pinned LAME build");
 }
-void Mp3Writer::finish(const std::function<void()>&) {
+void Mp3Writer::finish(const std::function<void()>&, std::optional<std::uint64_t>) {
     throw std::runtime_error("MP3 export requires the pinned LAME build");
 }
 

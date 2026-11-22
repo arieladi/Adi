@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace adi::render {
@@ -23,7 +24,7 @@ public:
     DeliverySrc& operator=(const DeliverySrc&) = delete;
 
     void append(std::span<const double> source, std::uint32_t frames);
-    void finish(const std::function<void()>& checkpoint);
+    void finish(const std::function<void()>& checkpoint, std::uint64_t frames = 0);
 
 private:
     struct Impl;

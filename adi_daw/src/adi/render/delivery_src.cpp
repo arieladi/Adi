@@ -68,8 +68,13 @@ void DeliverySrc::append(std::span<const double> source, std::uint32_t frames) {
     }
 }
 
-void DeliverySrc::finish(const std::function<void()>& checkpoint) {
+void DeliverySrc::finish(const std::function<void()>& checkpoint, std::uint64_t frames) {
     auto& s = *impl_;
+    if (frames != 0) {
+        if (frames > s.requested || frames < std::min(s.requested, s.generated))
+            throw std::runtime_error("Delivery SRC cannot change the completed range");
+        s.requested = frames;
+    }
     for (;;) {
         if (checkpoint) checkpoint();
         std::size_t produced = 0;
@@ -95,7 +100,7 @@ DeliverySrc::~DeliverySrc() = default;
 void DeliverySrc::append(std::span<const double>, std::uint32_t) {
     throw std::runtime_error("Project-rate downsampling requires the pinned SoXR build");
 }
-void DeliverySrc::finish(const std::function<void()>&) {
+void DeliverySrc::finish(const std::function<void()>&, std::uint64_t) {
     throw std::runtime_error("Project-rate downsampling requires the pinned SoXR build");
 }
 

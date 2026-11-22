@@ -190,6 +190,33 @@ std::string deliveryName(const std::string& base, const DeliverySpec& delivery) 
     return name;
 }
 
+const char* tailModeName(TailMode mode) {
+    switch (mode) {
+        case TailMode::Off: return "off";
+        case TailMode::Fixed: return "fixed";
+        case TailMode::UntilSilent: return "until_silent";
+    }
+    return "unknown";
+}
+void validateTail(const Job& job) {
+    const auto& tail = job.tail;
+    const bool hasTail = tail.mode != TailMode::Off;
+    if (job.gaplessBatch) {
+        if (hasTail || job.renderAsLoop)
+            throw std::invalid_argument("gapless batches cannot render independent tails or loops");
+        throw std::invalid_argument("the continuous gapless batch renderer is not available");
+    }
+    if ((hasTail && job.renderAsLoop) || (job.niStems && (hasTail || job.renderAsLoop)))
+        throw std::invalid_argument("tail extension and Render as Loop require separate ordinary renders");
+    if (!hasTail) return;
+    if (tail.maxMilliseconds == 0 || (tail.mode != TailMode::Fixed && tail.mode != TailMode::UntilSilent))
+        throw std::invalid_argument("invalid export tail mode or duration");
+    if (tail.mode == TailMode::UntilSilent &&
+        (tail.holdMilliseconds == 0 || tail.holdMilliseconds > tail.maxMilliseconds ||
+         !std::isfinite(tail.thresholdDbfs) || tail.thresholdDbfs > 0 || tail.thresholdDbfs < -300))
+        throw std::invalid_argument("invalid export tail silence threshold or hold");
+}
+
 void validate(const Job& j) {
     if (j.project.empty() || (!j.analysisOnly && j.directory.empty())) {
         throw std::invalid_argument("project and output directory are required for a delivery");
@@ -207,6 +234,7 @@ void validate(const Job& j) {
     if (j.regionId && *j.regionId <= 0) throw std::invalid_argument("region ID must be positive");
     if (j.source.trackId < 0 || (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
         throw std::invalid_argument("invalid direct stem source or tap");
+    validateTail(j);
     if (j.ratePolicy != ExportRatePolicy::RequestedRate && j.ratePolicy != ExportRatePolicy::ProjectThenDownsample)
         throw std::invalid_argument("unknown export sample rate policy");
     if (j.analysisOnly) {
@@ -347,14 +375,16 @@ public:
         writtenFrames_ += frames;
     }
 
-    std::optional<NormalizationReport> finish(const std::function<void()>& service) {
-        if (expectedFrames_ != 0 && writtenFrames_ != expectedFrames_) {
+    std::optional<NormalizationReport> finish(const std::function<void()>& service,
+                                              std::optional<std::uint64_t> deliveryFrames = std::nullopt) {
+        const auto frames = deliveryFrames.value_or(expectedFrames_);
+        if ((frames != 0 && writtenFrames_ != frames) || (expectedFrames_ != 0 && frames > expectedFrames_)) {
             throw std::runtime_error("Encoder received an incomplete input range");
         }
         std::optional<NormalizationReport> report;
-        if (mp3_) mp3_->finish(service);
-        else if (vorbis_) vorbis_->finish(service);
-        else if (opus_) opus_->finish(service);
+        if (mp3_) mp3_->finish(service, deliveryFrames);
+        else if (vorbis_) vorbis_->finish(service, deliveryFrames);
+        else if (opus_) opus_->finish(service, deliveryFrames);
         else if (normalization_) report = normalization_->finish(pcm_, encoding_.format,
                                                                    encoding_.dither, seed_, service, encoding_.speakerMask);
         else wav_->close();
@@ -831,14 +861,25 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         const auto outputRate = static_cast<std::int64_t>(job.session.sampleRate);
         const bool downsampling = graphRate != outputRate;
         const auto outputFrames = job.endSample - job.beginSample;
-        const auto sourceBegin = downsampling ? projectFrames(job.beginSample, graphRate, outputRate, outputRate / 2) :
-            job.beginSample;
-        const auto sourceFrames = downsampling ? projectFrames(outputFrames, graphRate, outputRate, outputRate - 1) :
-            outputFrames;
-        const auto rawBegin = addLatency(sourceBegin, latency);
+        const auto sourceBegin = projectFrames(job.beginSample, graphRate, outputRate, outputRate / 2);
+        const auto sourceFrames = projectFrames(outputFrames, graphRate, outputRate, outputRate - 1);
         const auto sourceEnd = addLatency(sourceBegin, sourceFrames);
-        const auto rawEnd = addLatency(sourceEnd, latency);
-        const auto total = static_cast<std::uint64_t>(outputFrames);
+        const auto writtenBegin = job.renderAsLoop ? sourceEnd : sourceBegin;
+        const auto rawBegin = addLatency(writtenBegin, latency);
+        const auto rawEnd = addLatency(addLatency(writtenBegin, sourceFrames), latency);
+        const bool hasTail = job.tail.mode != TailMode::Off;
+        const auto tailFrames = hasTail ?
+            nsSample(static_cast<std::int64_t>(job.tail.maxMilliseconds) * 1000000, outputRate) : 0;
+        const auto outputWithTail = addLatency(outputFrames, tailFrames);
+        const auto sourceWithTail = projectFrames(outputWithTail, graphRate, outputRate, outputRate - 1);
+        const auto renderEnd = addLatency(addLatency(writtenBegin, sourceWithTail), latency);
+        if (hasTail && rawEnd < 0)
+            throw std::invalid_argument("tail requires the compensated range end to reach the render timeline");
+        const auto total = static_cast<std::uint64_t>(outputWithTail);
+        const bool untilSilent = job.tail.mode == TailMode::UntilSilent;
+        const auto holdFrames = untilSilent ?
+            nsSample(static_cast<std::int64_t>(job.tail.holdMilliseconds) * 1000000, graphRate) : 0;
+        const auto threshold = untilSilent ? std::pow(10.0, job.tail.thresholdDbfs / 20.0) : 0.0;
         const auto channels = static_cast<std::size_t>(job.session.channels);
         const auto fold = job.deliveries.empty() ? job.encoding.channelFold : job.deliveries.front().encoding.channelFold;
         const auto outputChannels = deliveryChannels(job, fold);
@@ -896,7 +937,9 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         std::unique_ptr<DeliverySrc> converter;
         if (downsampling) converter = std::make_unique<DeliverySrc>(static_cast<unsigned>(graphRate),
             static_cast<unsigned>(outputRate), static_cast<unsigned>(channels), total, writeDelivery);
+        std::int64_t graphFramesWritten = 0;
         const auto write = [&](std::uint32_t frames) {
+            graphFramesWritten += frames;
             const std::span<const double> samples(interleaved.data(), static_cast<std::size_t>(frames) * channels);
             if (converter) converter->append(samples, frames);
             else writeDelivery(samples, frames);
@@ -909,14 +952,14 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         // Signed output latency may map a requested position before transport
         // zero: that is silence, not a negative locate (which clamps).
         if (rawBegin < 0) {
-            auto silence = (std::min)(static_cast<std::uint64_t>(sourceFrames), static_cast<std::uint64_t>(-rawBegin));
+            auto silence = (std::min)(static_cast<std::uint64_t>(sourceWithTail), static_cast<std::uint64_t>(-rawBegin));
             while (silence > 0) {
                 const auto frames = static_cast<std::uint32_t>((std::min)(silence, static_cast<std::uint64_t>(block)));
                 write(frames);
                 silence -= frames; progress();
             }
         }
-        session.transport().loop(0, 0, false);
+        session.transport().loop(sourceBegin, sourceEnd, job.renderAsLoop);
         session.transport().locate(0);
         session.transport().play();
         const auto started = std::chrono::steady_clock::now();
@@ -932,11 +975,18 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 graph->outputLatencyOf(endpoint->node) != latency)
                 throw std::runtime_error("device latency or topology changed during export; retry after it settles");
         };
-        // Preroll from zero preserves instruments, effects and automation.
-        for (std::int64_t at = 0; at < rawEnd;) {
+        // Ordinary preroll remains. Loop export discards the first lap and
+        // captures the second at the tap's compensated sample positions.
+        std::int64_t quietFrames = 0;
+        for (std::int64_t at = 0; at < renderEnd;) {
+            if (hasTail && at >= sourceEnd && session.transport().playing())
+                session.transport().play(false); // stop timeline input; keep the same running graph
             service();
             if (!session.clips()->prime()) throw std::runtime_error("export clip read timed out");
-            const auto frames = static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(block), rawEnd - at));
+            auto count = (std::min)(static_cast<std::int64_t>(block), renderEnd - at);
+            if (hasTail && at < sourceEnd) count = (std::min)(count, sourceEnd - at);
+            if (job.renderAsLoop) count = session.transport().contiguousFrames(0, count);
+            const auto frames = static_cast<std::int32_t>(count);
             engine::AudioIo io;
             io.out = dp.empty() ? fp.data() : nullptr;
             io.out64 = dp.empty() ? nullptr : dp.data();
@@ -947,30 +997,43 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             if (!graph->copyNodeOutput(endpoint->node, io)) throw std::runtime_error("export source has no complete rendered block");
             if (session.clips()->readErrors() || session.clips()->underrunSamples()) throw std::runtime_error("export clip read failed or underrun");
             const auto first = (std::max)(at, rawBegin);
-            const auto last = at + frames;
+            auto last = at + frames;
+            bool tailFinished = false;
             // Validate preroll too: a nonfinite value may poison later state.
-            for (std::int32_t f = 0; f < frames; ++f) for (std::size_t c = 0; c < channels; ++c) {
-                const auto i = static_cast<std::size_t>(f);
-                const double value = dp.empty() ? static_cast<double>(fp[c][i]) : dp[c][i];
-                if (!std::isfinite(value) || (!converter && !foldStereo && checkFloatRange &&
-                    std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
-                    throw std::runtime_error("nonfinite or out-of-range audio during export");
-                if (at + f >= first)
-                    interleaved[static_cast<std::size_t>(at + f - first) * channels + c] = value;
+            for (std::int32_t f = 0; f < frames; ++f) {
+                bool quiet = true;
+                for (std::size_t c = 0; c < channels; ++c) {
+                    const auto i = static_cast<std::size_t>(f);
+                    const double value = dp.empty() ? static_cast<double>(fp[c][i]) : dp[c][i];
+                    if (!std::isfinite(value) || (!converter && !foldStereo && checkFloatRange &&
+                        std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
+                        throw std::runtime_error("nonfinite or out-of-range audio during export");
+                    if (at + f >= first)
+                        interleaved[static_cast<std::size_t>(at + f - first) * channels + c] = value;
+                    if (untilSilent && std::abs(value) > threshold) quiet = false;
+                }
+                if (untilSilent && at + f >= rawEnd) {
+                    quietFrames = quiet ? quietFrames + 1 : 0;
+                    if (quietFrames >= holdFrames) {
+                        last = at + f + 1;
+                        tailFinished = true;
+                        break;
+                    }
+                }
             }
-            if (first < last) {
-                const auto count = static_cast<std::uint32_t>(last - first);
-                write(count);
-            }
+            if (first < last) write(static_cast<std::uint32_t>(last - first));
             at = last;
             progress();
+            if (tailFinished) break;
         }
         service(); // include reports raised by the final process call
+        const auto delivered = untilSilent ? static_cast<std::uint64_t>(std::clamp(
+            projectFrames(graphFramesWritten, outputRate, graphRate, graphRate / 2), outputFrames, outputWithTail)) : total;
         if (converter) {
-            converter->finish(service);
+            converter->finish(service, delivered);
             progress();
         }
-        if (completedFrames != total) throw std::runtime_error("export produced an incomplete range");
+        if (completedFrames != delivered) throw std::runtime_error("export produced an incomplete range");
         if (analysis) {
             verifyMedia(*result.mediaVerification, control, false);
             result.analysis = analysis->finish();
@@ -981,7 +1044,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             cancellation(control); if (control.serviceHost) control.serviceHost(); cancellation(control);
         };
         if (preparedFiles.empty()) {
-            result.normalization = sinks.front().finish(serviceEncoding);
+            result.normalization = sinks.front().finish(serviceEncoding, delivered);
             cancellation(control);
             detail::publishVerifiedOutput(sinks.front().output(), result, control, "export destination already exists");
         } else {
@@ -989,7 +1052,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             // All files have the same captured source and input verification.
             for (auto& sink : sinks) {
                 cancellation(control);
-                (void)sink.finish(serviceEncoding);
+                (void)sink.finish(serviceEncoding, delivered);
             }
             verifyMedia(*result.mediaVerification, control);
             if (control.fingerprintDelivery) {
@@ -1361,6 +1424,9 @@ std::string serializeRunManifest(const RunReport& run) {
             item["job"] = {{"project", media::pathUtf8(job.project)}, {"directory", media::pathUtf8(job.directory)},
                 {"name_template", job.nameTemplate}, {"source", sourceValue(job.source)},
                 {"collision",job.collision==Collision::Fail ? "fail" : job.collision==Collision::Increment ? "increment" : "replace"},
+                {"render_as_loop", job.renderAsLoop},
+                {"tail", {{"mode", tailModeName(job.tail.mode)}, {"maximum_ms", job.tail.maxMilliseconds},
+                          {"threshold_dbfs", job.tail.thresholdDbfs}, {"hold_ms", job.tail.holdMilliseconds}}},
                 {"requested_range", {{"begin_sample", job.beginSample}, {"end_sample", job.endSample},
                     {"region_id", job.regionId ? Json(*job.regionId) : Json(nullptr)}}},
                 {"requested_profile", std::move(profile)}};

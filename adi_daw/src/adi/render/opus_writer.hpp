@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace adi::render {
@@ -21,7 +22,7 @@ public:
     OpusWriter(const OpusWriter&) = delete;
     OpusWriter& operator=(const OpusWriter&) = delete;
     void write(std::span<const double>, std::uint32_t frames);
-    void finish(const std::function<void()>& service);
+    void finish(const std::function<void()>& service, std::optional<std::uint64_t> frames = std::nullopt);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

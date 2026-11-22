@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace adi::render {
@@ -20,7 +21,7 @@ public:
     VorbisWriter& operator=(const VorbisWriter&) = delete;
 
     void write(std::span<const double>, std::uint32_t frames);
-    void finish(const std::function<void()>& service);
+    void finish(const std::function<void()>& service, std::optional<std::uint64_t> frames = std::nullopt);
 
 private:
     struct Impl;

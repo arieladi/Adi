@@ -215,8 +215,11 @@ void OpusWriter::write(std::span<const double> pcm, std::uint32_t frames) {
     state.written += frames;
 }
 
-void OpusWriter::finish(const std::function<void()>& service) {
+void OpusWriter::finish(const std::function<void()>& service, std::optional<std::uint64_t> frames) {
     auto& state = *impl_;
+    if (frames && (*frames == 0 || *frames > state.expected || *frames != state.written))
+        throw std::runtime_error("Encoded tail length disagrees with the rendered range");
+    if (frames) state.expected = *frames;
     require(state.written == state.expected, "Opus stream has an incomplete input range");
     if (service) service();
     if (state.ready != 0) state.flushInput();
@@ -242,7 +245,7 @@ void OpusWriter::write(std::span<const double>, std::uint32_t) {
     throw std::logic_error("Opus writer is unavailable");
 }
 
-void OpusWriter::finish(const std::function<void()>&) {
+void OpusWriter::finish(const std::function<void()>&, std::optional<std::uint64_t>) {
     throw std::logic_error("Opus writer is unavailable");
 }
 

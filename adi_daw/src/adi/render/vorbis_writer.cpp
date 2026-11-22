@@ -172,8 +172,11 @@ void VorbisWriter::write(std::span<const double> samples, std::uint32_t frames) 
     state.written += frames;
 }
 
-void VorbisWriter::finish(const std::function<void()>& service) {
+void VorbisWriter::finish(const std::function<void()>& service, std::optional<std::uint64_t> frames) {
     auto& state = *impl_;
+    if (frames && (*frames == 0 || *frames > state.expected || *frames != state.written))
+        throw std::runtime_error("Encoded tail length disagrees with the rendered range");
+    if (frames) state.expected = *frames;
     if (state.written != state.expected) {
         throw std::runtime_error("Vorbis stream has an incomplete input range");
     }
@@ -220,7 +223,7 @@ void VorbisWriter::write(std::span<const double>, std::uint32_t) {
     throw std::logic_error("Vorbis writer is unavailable");
 }
 
-void VorbisWriter::finish(const std::function<void()>&) {
+void VorbisWriter::finish(const std::function<void()>&, std::optional<std::uint64_t>) {
     throw std::logic_error("Vorbis writer is unavailable");
 }
 

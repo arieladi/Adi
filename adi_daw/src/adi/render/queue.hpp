@@ -56,6 +56,13 @@ struct NiStems {
     std::uint32_t bitRate = 256000; // per stereo track, one codec setting for all five
 };
 enum class ExportRatePolicy { RequestedRate, ProjectThenDownsample };
+enum class TailMode { Off, Fixed, UntilSilent };
+struct Tail {
+    TailMode mode = TailMode::Off;
+    std::uint32_t maxMilliseconds = 0; // fixed length, or the upper bound of UntilSilent
+    double thresholdDbfs = -90;
+    std::uint32_t holdMilliseconds = 50;
+};
 struct Job {
     std::filesystem::path project;
     std::filesystem::path directory;
@@ -80,6 +87,10 @@ struct Job {
     ExportRatePolicy ratePolicy = ExportRatePolicy::RequestedRate;
     // Analyze the selected compensated source without a private or published delivery.
     bool analysisOnly = false;
+    Tail tail{};
+    bool renderAsLoop = false;
+    // Reserved for the continuous region renderer (EX-12).
+    bool gaplessBatch = false;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
