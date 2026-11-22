@@ -6,6 +6,7 @@
 #include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/clip_edits.hpp"
+#include "adi/ui/cue_edits.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
@@ -212,7 +213,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
-                                  "Arrangement Record", "Export Audio/Video..."};
+                                  "Arrangement Record", "Export Audio/Video...", "Solo Switches", "Cue Switches"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -658,6 +659,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ArrangementRecord: // manual 21.1 and §41.6: F9
         info.addDefaultKeypress(juce::KeyPress::F9Key, 0);
         info.setTicked(active_ != nullptr && active_->isRecording());
+        break;
+    case SoloSwitches: // manual 18.6: the Options menu's pair, one ticked, from the project's field
+    case CueSwitches:
+        info.setTicked(active_ != nullptr && active_->current() &&
+                       active_->current()->cue.cueMode == (id == CueSwitches));
+        info.setActive(active_ != nullptr && active_->current() != nullptr);
         break;
     case ExportAudio: // manual 5.2.1 and §41.3: Ctrl/Cmd+Shift+R
         info.addDefaultKeypress('r', cmd | shift);
@@ -2869,6 +2876,42 @@ bool AdiRootComponent::setSoloInPlace(bool on) {
     dirty_.mark(DirtySet::All);
     return true;
 }
+// What every cue op shares (MX-08): a transport op outside undo, the session re-reading the project
+// after it, nothing said; Follow is not paused, nothing in the arrangement moved.
+bool AdiRootComponent::submitCue(TrackEdit edit, const char *needs) {
+    if (!view_.current())
+        return fail(needs);
+    if (!edit.refusal.empty())
+        return fail(edit.refusal);
+    if (edit.ops.empty())
+        return true;
+    if (const auto result = submitter_.submit(std::move(edit.ops)); !result)
+        return fail(result.error);
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    dirty_.mark(DirtySet::All);
+    return true;
+}
+bool AdiRootComponent::setCueMode(bool cue) {
+    const auto current = view_.current();
+    return submitCue(current ? cueModeEdit(*current, cue) : TrackEdit{}, "Cue Switches need an open project.");
+}
+bool AdiRootComponent::cueTrack(std::int64_t track) {
+    // A Cue button toggles its own track only: Live's Exclusive Solo is solo's, and whether Live's Cue
+    // is exclusive is to be read on Live 12 (PROVISIONAL, MX-08).
+    const auto current = view_.current();
+    return submitCue(current ? cueTrackEdit(*current, track, !cued(*current, track)) : TrackEdit{},
+                     "Cueing needs an open project.");
+}
+bool AdiRootComponent::setCueVolume(double db) {
+    const auto current = view_.current();
+    return submitCue(current ? cueVolumeEdit(*current, db) : TrackEdit{}, "Cue Volume needs an open project.");
+}
+bool AdiRootComponent::setCueOutput(int firstChannel) {
+    const auto current = view_.current();
+    return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");
+}
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
     const auto result = submitter_.restore(txnId);
     if (!result.ok)
@@ -3667,6 +3710,10 @@ bool AdiRootComponent::command(int id) {
         if (!soloTrack(arrangement.geometry.selection.track, false))
             return false;
         break;
+    case AppCommands::SoloSwitches:
+    case AppCommands::CueSwitches:
+        // Complete on its own, as Solo in Place: setCueMode re-reads the session and says why it refuses.
+        return setCueMode(id == AppCommands::CueSwitches);
     case AppCommands::SoloInPlace:
         // Complete on its own, as the Solo button's menu is: the session's re-read, the Status Bar
         // and the marks are setSoloInPlace's, so the tail below is not run a second time.
@@ -3851,15 +3898,15 @@ const std::vector<MenuEntries> &menuBar() {
         // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Solo in Place
         // (§18.6), in its own group after the grid's, as Live 12's menu places it (read on Live 12,
         // 5 November: Solo Switches, Cue Switches, Solo in Place, before Settings), and Settings on
-        // Windows (§2.3). Solo Switches and Cue Switches come with the cue path (B6).
+        // Windows (§2.3). Solo Switches and Cue Switches are the cue path's (B6, MX-08).
 #if JUCE_MAC
         {"Options",
          {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
-          C::SoloInPlace}},
+          C::SoloSwitches, C::CueSwitches, C::SoloInPlace}},
 #else
         {"Options",
          {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
-          C::SoloInPlace, 0, C::Settings}},
+          C::SoloSwitches, C::CueSwitches, C::SoloInPlace, 0, C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, the Groove Pool and the
         // Learn View come with those views; the Mixer with its keyboard.

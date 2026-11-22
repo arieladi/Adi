@@ -4,6 +4,7 @@
 #include "ui_shell.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/ui/cue_edits.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -249,6 +250,27 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
             commitDelay();
     };
     addChildComponent(delay);
+    cueVolume.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+    cueVolume.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    cueVolume.setRange(kCueFloorDb, kCueTopDb, .01);
+    cueVolume.setSkewFactor(2.27); // as the volume's: the top of the travel finer than the foot
+    cueVolume.textFromValueFunction = [](double v) {
+        return v <= kCueFloorDb ? juce::String("-inf") : juce::String(v, 1) + " dB";
+    };
+    cueVolume.setValue(0, juce::dontSendNotification);
+    cueVolume.setTitle("Cue Volume");
+    cueVolume.setTooltip("How loud the cued tracks play to Cue Out.");
+    cueVolume.setScrollWheelEnabled(false);
+    cueVolume.onDragStart = [this] { cueDragging_ = true; };
+    cueVolume.onDragEnd = [this] {
+        cueDragging_ = false;
+        panel_.root.setCueVolume(cueVolume.getValue());
+    };
+    cueVolume.onValueChange = [this] {
+        if (!cueDragging_)
+            panel_.root.setCueVolume(cueVolume.getValue());
+    };
+    addChildComponent(cueVolume);
     active.setTitle("Track Activator");
     active.setTooltip("Turns the track's output on or off.");
     solo.setTitle("Solo");
@@ -273,7 +295,13 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
     active.onClick = [this] { panel_.root.activateTrack(track_); };
     // Live's Solo (manual 18.1): exclusive unless Ctrl/Cmd is held; the selected tracks together.
-    solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
+    // With Options > Cue Switches it is Live's Cue button (manual 18.6; MX-08): the track to Cue Out.
+    solo.onClick = [this] {
+        if (const auto current = panel_.root.current(); current && current->cue.cueMode)
+            panel_.root.cueTrack(track_);
+        else
+            panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown());
+    };
     // Its right-click menu: Solo in Place (manual 18.6).
     solo.onMenu = [this] { soloMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&solo)); };
     // Live's Arm (manual 21.1): Exclusive Arm unless Ctrl/Cmd is held; the selected tracks together.
@@ -359,7 +387,22 @@ void MixerStrip::frame(bool changed) noexcept {
         delay.setValue(trackDelayMs(t->delaySamples, panel_.root.reader().sampleRate()), juce::dontSendNotification);
         keepLatency.setToggleState(t->recording.keepMonitoringLatency, juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
-        solo.setToggleState(t->soloed, juce::dontSendNotification);
+        if (kind_ == "master" && !cueDragging_)
+            if (const auto *snap = panel_.root.reader().get())
+                cueVolume.setValue(std::max(kCueFloorDb, snap->cue.volumeDb), juce::dontSendNotification);
+        // Solo, or with Cue Switches the track's Cue (manual 18.6; MX-08): "C" until the window lane
+        // draws Live's headphones.
+        const bool cueMode = panel_.root.reader().get() && panel_.root.reader().get()->cue.cueMode;
+        if (cueMode_ != cueMode) {
+            cueMode_ = cueMode;
+            solo.setButtonText(cueMode ? "C" : "S");
+            solo.setTitle(cueMode ? "Cue" : "Solo");
+            solo.setTooltip(cueMode ? "Cues the track: it plays to Cue Out, for headphones, without soloing it."
+                                    : "Solos the track.");
+        }
+        solo.setToggleState(cueMode ? panel_.root.reader().get() && cued(*panel_.root.reader().get(), track_)
+                                    : t->soloed,
+                            juce::dontSendNotification);
         // A group holding a soloed track shows its Solo half coloured (Live 12 manual 18.3). The
         // property is set once at construction, so a frame only changes its value.
         const bool half = kind_ == "group" && !t->soloed && holdsSoloed(panel_.root.reader().tracks(), track_);
@@ -476,6 +519,8 @@ void MixerStrip::resized() {
         peakHold.setBounds(11, top + 5, 35, 12);
         pan.setBounds(15, bottom - 91, 27, 27);
         active.setBounds(18, bottom - 59, 21, 21);
+        cueVolume.setVisible(kind_ == "master");
+        cueVolume.setBounds(15, bottom - 62, 27, 27);
         solo.setBounds(17, bottom - 33, 23, 12);
         arm.setBounds(17, bottom - 16, 23, 12);
         const bool tall = getHeight() >= MixerPanel::kTallHeight;
@@ -711,6 +756,23 @@ std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept
         return std::nullopt;
     return monitorCellAt(5.f, 37.f, 6, at);
 }
+bool MixerStrip::onCueOut(juce::Point<int> at) const noexcept {
+    return kind_ == "master" && panel_.vertical() && io_ > 0 &&
+           juce::Rectangle<int>(4, kMixerTop + 73, getWidth() - 10, 13).contains(at);
+}
+void MixerStrip::cueOutMenu() {
+    // The device's outputs in stereo pairs, 1/2 first (Main's); the one in use ticked (MX-08).
+    const int outputs = panel_.root.outputChannels ? panel_.root.outputChannels() : 0;
+    const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
+    juce::PopupMenu m;
+    for (int pair = 0; pair == 0 || pair + 1 < outputs; pair += 2)
+        m.addItem(juce::String(pair + 1) + "/" + juce::String(pair + 2), true, pair == first,
+                  [safe = SafePointer<MixerStrip>(this), pair] {
+                      if (safe)
+                          safe->panel_.root.setCueOutput(pair);
+                  });
+    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+}
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
     // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut,
     // at x 4, y kMixerTop + 59, its boxes 3 apart) and the track controls' column (paintInOut, at x 5,
@@ -759,9 +821,10 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
         drawChooser(g, {4.f, static_cast<float>(top + y), static_cast<float>(w - 8), 13.f}, text, enabled);
     };
     if (kind_ == "master") {
-        // Live's Cue Out waits on the cue path (N23, N43), so it shows dimmed.
+        // Live's Cue Out (manual 18.6; MX-08): the stereo pair the cued tracks play to, chosen here.
         label(60, "Cue Out");
-        chooser(73, "1/2", false);
+        const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
+        chooser(73, (std::to_string(first + 1) + "/" + std::to_string(first + 2)).c_str(), true);
         label(90, "Main Out");
         chooser(103, "1/2", true);
         return;
@@ -878,6 +941,10 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         if (e.eventComponent == this)
             if (const auto mode = monitorAt(e.getPosition()))
                 panel_.root.setMonitor(track_, *mode);
+        return;
+    }
+    if (e.eventComponent == this && onCueOut(e.getPosition())) {
+        cueOutMenu();
         return;
     }
     if (e.eventComponent == this && onMonitorInOrAuto(e.getPosition())) {

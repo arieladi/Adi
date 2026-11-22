@@ -159,7 +159,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
         ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
         ExportAudio,       // the File menu's Export Audio/Video (manual 5.2.1), Ctrl/Cmd+Shift+R
-        LastId = ExportAudio
+        SoloSwitches,      // Live's Options menu (manual 18.6; MX-08): the Solo buttons solo
+        CueSwitches,       // ... or cue, sending the track to Cue Out
+        LastId = CueSwitches
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -369,6 +371,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool()> endMixerDrag;
     std::function<void()> cancelMixerDrag;
     std::function<bool()> reenableAutomation;
+    // How many outputs the audio device has open (the highest open channel's number), for Cue Out's
+    // stereo pairs (MX-08). Unset or 0: none known, and Cue Out offers only 1/2.
+    std::function<int()> outputChannels;
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
     // envelope again; false with the reason said. Session state, no undo step, as the global switch.
     std::function<bool(std::int64_t)> reenableLane;
@@ -619,6 +624,13 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
     bool setSoloInPlace(bool on);
+    // Live's cueing (manual 18.6; MX-08), each one transport op outside undo, saved with the project:
+    // Solo Switches or Cue Switches; a track's Cue button; Main's Cue Volume; Cue Out's stereo pair.
+    bool setCueMode(bool cue);
+    bool cueTrack(std::int64_t track);
+    bool setCueVolume(double db);
+    bool setCueOutput(int firstChannel);
+    bool submitCue(TrackEdit edit, const char *needs);
     // A track's Rec-Q or Play-Q ("off" or a grid) and its Keep Monitoring Latency in Recorded Audio
     // (#397, N31; MR V.2 §9; Live 12 manual 18.8), each one undo step. Nothing follows them yet.
     bool setQuantize(std::int64_t track, bool record, const std::string &choice);

@@ -83,6 +83,14 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // the row after the sends in the track controls, and as the section under the mixer in the
     // Mixer View.
     juce::Slider delay;
+    // Live's Cue Volume on Main (manual 18.6; MX-08): how loud the cued tracks play to Cue Out. Main's
+    // only, in the Mixer View, where a track has its Activator. One transport op at release or when
+    // typed, outside undo.
+    juce::Slider cueVolume;
+    // Cue Out's chooser on Main (painted in the In/Out section): its stereo pairs; the pick is written.
+    void cueOutMenu();
+    // Whether `at` is on Main's Cue Out chooser, where `paintMixerInOut` draws it.
+    bool onCueOut(juce::Point<int> at) const noexcept;
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
     // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
     // track that records.
@@ -92,6 +100,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     static constexpr int kDelayDragPixels = 20000;
     juce::TextButton active;
     SoloButton solo{"S"};
+    bool cueMode_ = false; // the Solo button is the Cue button (Options > Cue Switches)
+    bool cueDragging_ = false;
     ArmButton arm;
     // A return's Pre/Post switch, where a track has Arm (ADR-0203 d3: one switch on each return);
     // lit while its sends tap after the fader, as Live's.
