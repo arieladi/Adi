@@ -958,6 +958,76 @@ void focusScopeDifference() {
           "new B and Mid produce a null without reacquiring sources or requesting FFT work");
 }
 
+void focusScopeSideDemand() {
+    using namespace adi::ui;
+    using Source = adi::engine::ScopeSource;
+    using Channels = FocusScopeChannels;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 63;
+    constexpr std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    unsigned opens = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        ++opens;
+        return taps[static_cast<std::size_t>(source.track - 1)];
+    }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 1);
+    if (!lease) { check(false, "Side uses the normal grouped Scope lease"); return; }
+
+    const auto write = [&](std::int64_t stamp, float left, float right, float other) {
+        const float silence = 0.f;
+        taps[0]->write(&left, &right, 1, stamp, true, revision);
+        taps[1]->write(&silence, &other, 1, stamp, true, revision);
+        broker.pump();
+    };
+    const auto lane = [](const auto &result, Channels channel) {
+        return result && result->projection ? result->projection->sumMonoColumns(channel)
+            : std::span<const FocusScopeBarProjection::MonoColumn>{};
+    };
+
+    lease.setMonoRequested(Channels::Side);
+    check(lease.request({0, 2, rate}, revision), "Side starts on the existing stamped bar");
+    write(0, .75f, -.75f, .25f);
+    write(1, -.75f, .75f, 0.f);
+    const auto first = lease.read();
+    const auto side = lane(first, Channels::Side);
+    check(side.size() == 1 && side.front().low == -.75 && side.front().high == .625 &&
+              lane(first, Channels::Mid).empty(),
+          "the Side lane bins signed corresponding samples and never retains an unrequested Mid lane");
+    const auto member = first && first->projection ? first->projection->memberMonoColumns(0, Channels::Side)
+        : std::span<const FocusScopeBarProjection::MonoColumn>{};
+    check(member.size() == 1 && member.front().low == -.75 && member.front().high == .75,
+          "Side retains opposite polarity even though both independent lanes have identical extrema");
+
+    check(lease.request({2, 2, rate}, revision), "the next Side bar starts normally");
+    write(2, .75f, -.75f, .25f);
+    lease.setMonoRequested(Channels::Mid);
+    write(3, -.75f, .75f, 0.f);
+    const auto switched = lease.read();
+    check(switched && switched->projection && switched->projection->sumColumns().size() == 1 &&
+              lane(switched, Channels::Mid).empty() && lane(switched, Channels::Side).empty() &&
+              side.size() == 1 && side.front().high == .625,
+          "changing the fold drops incomplete bins and keeps old published bins immutable");
+
+    SharedAnalysis::Result a, b;
+    for (auto *result : {&a, &b}) {
+        result->advancing = true;
+        result->transportRevision = revision;
+        result->sampleRate = rate;
+        result->outputs = SharedAnalysis::Scope;
+    }
+    a.scopeLeft = {.75f, -.75f};
+    a.scopeRight = {-.75f, .75f};
+    b.scopeLeft = {0.f, 0.f};
+    b.scopeRight = {.25f, 0.f};
+    FocusSumColumn difference;
+    const auto range = focusProjectDifference(a, b, 1, Channels::Side,
+        [&](std::size_t, const auto &column) { difference = column; });
+    check(range && difference.low == std::array{-.75, 0.} && difference.high == std::array{.875, 0.} &&
+              opens == 2 && broker.stats().taps == 2 && broker.stats().transforms == 0,
+          "short Side Difference subtracts A minus B before folding and needs no additional acquisition");
+}
+
 void focusBarScopeBrokerBoundaries() {
     using Source = adi::engine::ScopeSource;
     using Status = SharedAnalysis::BarScopeStatus;
@@ -2992,7 +3062,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
