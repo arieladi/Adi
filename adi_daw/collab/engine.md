@@ -150,6 +150,18 @@ Strict GCC 14 and Clang 19 each passed 25 checks. Twenty-five stress runs per co
 
 - TM-SV-03 Gate and Repeat release. I recommend canceling a Gate press that is still queued when released, and ending only Repeat's retrigger hold on release. Check both across a quantization boundary in Live, including a slot already running on the same track.
 
+### 22 November — TM-SV-04 Follow Action targets
+
+**PR requested** for `engine/tm-sv04-follow-targets` at `59056abc5475bcfb28684079db6fb0a13e81e9bd`, stacked on the launch gesture tests. The pure resolver finds runs of occupied slots on one track and returns a literal slot and clip or an explicit stop, unchanged, unavailable or unresolved group boundary. Any and Other consume a uniform rank from the session's pass. Jump validates the explicit destination supplied by its owner. No playback clock or storage change is needed for this part.
+
+GCC 14 and Clang 19 strict builds each passed 32 checks. The fixture covers all ten action names and all 256 occupancy patterns over eight slots, including boundaries, holes, singleton groups, all admissible ranks and the original launch queue stress.
+
+Parked Follow Action chance coupling, boundary wrap, Jump scope, timing, scene-tempo application and capture on their existing Live readings and the launcher/slot dependencies. Parked MX-15 on its master-section reservation and Live's seven curves and Post-send behavior. TM-WT-04/-07/-08 await the native Warp setting and analysis prerequisites. DEV-02 chain-zone admission can proceed on the existing four-byte rows.
+
+### FOR THE DIRECTOR
+
+- TM-SV-04 group ends. I recommend wrapping Previous/Next within the occupied group only if Live does, and leaving a lone Other unchanged until the reading. Please include whether Jump can cross an empty slot and what happens when its chosen destination is empty.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
