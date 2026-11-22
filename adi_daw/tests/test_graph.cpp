@@ -12,6 +12,9 @@
 // caller, which is the property ADR-0036 bought and ADR-0045 extends.
 
 #include "adi/engine/graph.hpp"
+#include "adi/engine/note_identity.hpp"
+#include "adi/engine/transport.hpp"
+#include "juce/device_model.hpp"
 
 #include <algorithm>
 #include <array>
@@ -21,11 +24,28 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <new>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 using namespace adi::engine;
+
+namespace {
+thread_local bool countTransformAllocations = false;
+thread_local int transformAllocations = 0;
+}
+void* operator new(std::size_t size) {
+    if (countTransformAllocations) ++transformAllocations;
+    if (void* result = std::malloc(size == 0 ? 1 : size)) return result;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return operator new(size); }
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
 namespace {
 
@@ -2421,6 +2441,286 @@ void testATailIsAskedOnceABlock() {
     eqi(f.asks - before, 8, "eight blocks, eight questions");
 }
 
+class GridTransform final : public Node {
+public:
+    std::uint32_t noteSourcePrefix() const noexcept override { return prefix_; }
+    bool transformsEvents() const noexcept override { return true; }
+    bool hasBypass() const noexcept override { return true; }
+    bool bypassed() const noexcept override { return bypass; }
+    std::int32_t latencySamples() const noexcept override { return delay; }
+
+    void transformEvents(EventSpan input, EventList& output, const EventTransformContext& context) noexcept override {
+        for (const auto& event : input) output.push(event);
+        const auto begin = elapsed;
+        elapsed += context.frames;
+        if (context.bypassed || !context.playing) return;
+        for (auto frame = begin; frame < elapsed; ++frame) {
+            if (frame % 113 == 0) {
+                on_.type = EventType::NoteOn;
+                on_.dim = 61;
+                on_.value = 0.75;
+                on_.noteId = eventIdentity(prefix_, ++serial_);
+                on_.frame = context.blockOffset + static_cast<std::int32_t>(frame - begin);
+                held_ = output.push(on_);
+            } else if (frame % 113 == 41) {
+                releaseGenerated(output, context.blockOffset + static_cast<std::int32_t>(frame - begin));
+            }
+        }
+    }
+
+    void releaseGenerated(EventList& output, std::int32_t frame) noexcept override {
+        if (!held_) return;
+        Event stop = on_;
+        stop.type = EventType::NoteOff;
+        stop.value = 0.0;
+        stop.frame = frame;
+        if (output.push(stop)) held_ = false;
+    }
+
+    void process(const NodeIo&) noexcept override {}
+    bool bypass = false;
+    std::int32_t delay = 0;
+    std::int64_t elapsed = 0;
+
+private:
+    const std::uint32_t prefix_ = allocateEventSourcePrefix();
+    std::uint32_t serial_ = 0;
+    Event on_;
+    bool held_ = false;
+};
+
+struct GridConsumer final : Node {
+    EventFlow eventFlow() const noexcept override { return EventFlow::Consume; }
+    void process(const NodeIo& io) noexcept override {
+        for (const auto& event : io.events) {
+            if (count == heard.size()) break;
+            heard[count++] = {clock + event.frame, event.type, static_cast<std::uint32_t>(event.noteId), event.dim};
+        }
+    }
+    struct Packet {
+        std::int64_t sample = 0;
+        EventType type = EventType::NoteOn;
+        std::uint32_t serial = 0;
+        std::uint16_t key = 0;
+        bool operator==(const Packet&) const noexcept = default;
+    };
+    std::array<Packet, 256> heard{};
+    std::size_t count = 0;
+    std::int64_t clock = 0;
+};
+
+void testEventTransformGrid() {
+    section("DEV-18 -- generated events precede segmentation and keep their grid");
+    const auto measure = [](std::int32_t block) {
+        GridTransform transform;
+        GridConsumer consumer;
+        Graph graph;
+        const auto root = graph.addNode(transform);
+        const auto out = graph.addNode(consumer);
+        graph.connect(root, out);
+        graph.setOutput(out);
+        graph.prepare(48000.0, block);
+        check(graph.ok(), "the event-transform graph prepares");
+        std::array<float, 4096> left{}, right{};
+        float* outputs[]{left.data(), right.data()};
+        AudioIo io;
+        io.out = outputs;
+        io.numOut = 2;
+        transformAllocations = 0;
+        countTransformAllocations = true;
+        while (consumer.clock < 8192) {
+            io.frames = static_cast<std::int32_t>(std::min<std::int64_t>(block, 8192 - consumer.clock));
+            graph.process(io);
+            consumer.clock += io.frames;
+        }
+        countTransformAllocations = false;
+        check(transformAllocations == 0, "the event transform path performs no callback allocations");
+        check(transform.elapsed == 8192, "every physical sample advances the transform clock once");
+        check(consumer.count == 146, "the generated note pairs arrive through the graph");
+        return consumer.heard;
+    };
+    const auto reference = measure(32);
+    bool identical = true;
+    for (std::int32_t frames = 33; frames <= 4096; ++frames)
+        identical = (measure(frames) == reference) && identical;
+    check(identical, "note pairs preserve frames and lifetime at every block size from 32 to 4096");
+}
+
+void testChainedEventTransforms() {
+    class Pitch final : public adi::device::DeviceInstance {
+    public:
+        explicit Pitch(bool chord) : chord_(chord) {}
+        const adi::device::DeviceIdentity& identity() const noexcept override { return identity_; }
+        bool loaded() const noexcept override { return true; }
+        std::uint32_t transformSourcePrefix() const noexcept override { return prefix_; }
+        void transformEvents(EventSpan input, EventList& output, const EventTransformContext&) noexcept override {
+            for (auto event : input) {
+                if (!chord_) {
+                    event.dim += 12;
+                    output.push(event);
+                } else {
+                    output.push(event);
+                    event.dim += 7;
+                    event.noteId = eventIdentity(prefix_, 12);
+                    output.push(event);
+                }
+            }
+        }
+        void acknowledgeGenerated(const Event&, bool delivered) noexcept override {
+            if (delivered) ++acknowledged;
+        }
+        void process(const NodeIo&) noexcept override {}
+        int acknowledged = 0;
+    private:
+        adi::device::DeviceIdentity identity_;
+        const std::uint32_t prefix_ = allocateEventSourcePrefix();
+        bool chord_;
+    };
+    Pitch pitch(false), chord(true);
+    adi::device::DeviceNode pitchNode(pitch), chordNode(chord);
+    GridConsumer sink;
+    Graph graph;
+    const auto first = graph.addNode(pitchNode);
+    const auto second = graph.addNode(chordNode);
+    const auto last = graph.addNode(sink);
+    graph.connect(first, second);
+    graph.connect(second, last);
+    graph.setOutput(last);
+    graph.prepare(48000.0, 128);
+    auto on = heldNote(EventType::NoteOn, 11, 60);
+    auto off = heldNote(EventType::NoteOff, 11, 60);
+    on.frame = 17;
+    off.frame = 79;
+    graph.pushInputEvent(first, on);
+    graph.pushInputEvent(first, off);
+    Out out(128);
+    graph.process(makeIo(out, 128));
+    using Packet = GridConsumer::Packet;
+    check(sink.count == 4 && sink.heard[0] == Packet{17, EventType::NoteOn, 11, 72} &&
+          sink.heard[1] == Packet{17, EventType::NoteOn, 12, 79} &&
+          sink.heard[2] == Packet{79, EventType::NoteOff, 11, 72} &&
+          sink.heard[3] == Packet{79, EventType::NoteOff, 12, 79},
+          "both transforms see gathered inputs in order and forward distinct notes at the original split frames");
+    check(pitch.acknowledged == 0 && chord.acknowledged == 2,
+          "generated on and off acknowledgements reach only their native device owner");
+}
+
+void testEventTransformRelease() {
+    section("DEV-18 -- generated note ownership on bypass, transport edges and a graph swap");
+    const auto scenario = [](std::string_view action) {
+        GridTransform source;
+        GridConsumer sink;
+        if (action == "pending" || action == "retained" || action == "remove-pending") source.delay = 100;
+        Graph graph;
+        const auto a = graph.addNode(source);
+        const auto b = graph.addNode(sink);
+        graph.connect(a, b);
+        graph.setOutput(b);
+        graph.prepare(48000.0, 128);
+
+        Transport transport;
+        if (action == "loop") transport.loop(0, 20);
+        transport.play();
+        std::array<float, 128> left{}, right{};
+        float* outputs[]{left.data(), right.data()};
+        TransportInfo info;
+        info.deviceClock = &transport;
+        AudioIo io;
+        io.out = outputs;
+        io.numOut = 2;
+        io.frames = 32;
+        io.transport = &info;
+        const auto render = [&](Graph& value) {
+            info.playing = transport.playing();
+            info.timelineSample = transport.position();
+            info.transportRevision = transport.revision();
+            value.process(io);
+            transport.advance(io.frames);
+            sink.clock += io.frames;
+        };
+        render(graph);
+        if (action == "loop") {
+            check(sink.count == 2 && sink.heard[1] == GridConsumer::Packet{20, EventType::NoteOff, 1, 61},
+                  "a loop wrap releases the current generated note at its exact interior sample");
+            return;
+        }
+        if (action == "bypass") source.bypass = true;
+        if (action == "stop") transport.play(false);
+        if (action == "pending") {
+            check(sink.count == 0, "the generated attack is pending beyond this block");
+            transport.play(false);
+            for (int block = 0; block < 5; ++block) render(graph);
+            check(sink.count == 1 && sink.heard[0] == GridConsumer::Packet{132, EventType::NoteOff, 1, 61},
+                  "stop withdraws the delayed attack while the release still traverses the compensated path");
+            return;
+        }
+        if (action == "seek") transport.locate(640);
+        if (action == "retained") {
+            while (sink.clock < 128) render(graph);
+            check(sink.count == 1 && sink.heard[0] == GridConsumer::Packet{100, EventType::NoteOn, 1, 61},
+                  "a generated note is already sounding while its compensation-delayed off is pending");
+            Graph rebuilt;
+            const auto first = rebuilt.addNode(source);
+            const auto last = rebuilt.addNode(sink);
+            rebuilt.connect(first, last);
+            rebuilt.setOutput(last);
+            rebuilt.prepare(48000.0, 128);
+            const auto carried = rebuilt.adoptEventHistory(graph);
+            render(rebuilt);
+            check(carried >= 2 && sink.count == 2 &&
+                  sink.heard[1] == GridConsumer::Packet{141, EventType::NoteOff, 1, 61},
+                  "a surviving transform keeps its queued releases across graph publication");
+            return;
+        }
+        if (action == "remove-pending") {
+            while (sink.clock < 128) render(graph);
+            Graph removed;
+            removed.setOutput(removed.addNode(sink));
+            removed.prepare(48000.0, 128);
+            (void)removed.adoptEventHistory(graph);
+            render(removed);
+            const auto heard = std::span{sink.heard}.first(sink.count);
+            const GridConsumer::Packet awaited{128, EventType::NoteOff, 1, 61};
+            check(std::ranges::count(heard, awaited) == 1,
+                  "removing the generator delivers an already queued release to the surviving consumer");
+            return;
+        }
+        if (action == "remove") {
+            Graph removed;
+            removed.setOutput(removed.addNode(sink));
+            removed.prepare(48000.0, 128);
+            transformAllocations = 0;
+            countTransformAllocations = true;
+            (void)removed.adoptEventHistory(graph);
+            render(removed);
+            countTransformAllocations = false;
+            check(transformAllocations == 0, "publication and first render do not allocate for departing notes");
+            check(sink.count == 2 && sink.heard[1] == GridConsumer::Packet{32, EventType::NoteOff, 1, 61},
+                  "a removed generator releases into its surviving consumer");
+
+            Graph restored;
+            const auto restoredSource = restored.addNode(source);
+            const auto restoredSink = restored.addNode(sink);
+            restored.connect(restoredSource, restoredSink);
+            restored.setOutput(restoredSink);
+            restored.prepare(48000.0, 128);
+            (void)restored.adoptEventHistory(removed);
+            io.frames = 128;
+            render(restored);
+            check(sink.count == 4 && sink.heard[2].serial == 2 && sink.heard[3].serial == 2,
+                  "undo reintroduces the generator without retriggering its retired voice");
+            return;
+        }
+        render(graph);
+        check(sink.count == 2 && sink.heard[1] == GridConsumer::Packet{32, EventType::NoteOff, 1, 61},
+              "one release reaches the consumer on " + std::string(action));
+        if (action == "bypass")
+            check(source.elapsed == 64, "bypass keeps the event transform's clock advancing");
+    };
+    for (const auto action : {"bypass", "stop", "seek", "loop", "remove", "pending", "retained", "remove-pending"})
+        scenario(action);
+}
+
 }  // namespace
 
 int main() {
@@ -2474,6 +2774,9 @@ int main() {
         testAForwardedNoteGetsItsOwnSegment();
         testFanInOverflowIsCountedNotAllocated();
         testDeferredOverflowIsCounted();
+        testEventTransformGrid();
+        testChainedEventTransforms();
+        testEventTransformRelease();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;
