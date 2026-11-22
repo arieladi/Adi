@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Measured stereo cutoff offset for Filter
+
+Filter accounted for 12 of the 39 preset regressions that reversed on exactly one stage removal. A separate impulse experiment found a control missing from the seven-stage device. With identical input on both channels and a single low-pass band, the reference distributes its cutoff differently to L and R. For a bipolar setting x from −1 to +1, the left offset is 60x|x| semitones and the right offset has the opposite sign. Each cutoff stays within the original ten-octave frequency range, about 20.6 Hz to 21.1 kHz. The default is centered.
+
+At 44.1, 48 and 96 kHz we measured nine offsets at three cutoff settings. Inverting the first impulse sample of the measured one-pole response recovered all 162 channel offsets within 0.000005 semitone. Main applies one cutoff to both channels. The isolated test establishes the offset law. How much that control accounts for in a complete preset still requires a paired render.
+
+PR requested
+
 ## 22 November 2026 — Test the ADI-Shaper beat gate in a compensated Session
 
 `clones/shaper-session-gate` at `046e5248` — Test the ADI-Shaper beat gate in a compensated Session. An upstream 379-frame delay, the ordinary registered device, the Session transport and captured stereo output are all in the test. At 48 kHz the expected open/close frames were 49,531 and 115,067 with compensation, and 49,152 and 114,688 without it. A one-sample allowance at the exact transition accounts for seconds-to-beats rounding.
