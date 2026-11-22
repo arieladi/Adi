@@ -185,10 +185,28 @@ Payload readValue(const SQLite::Column& c, FieldType t) {
     }
 }
 
+bool otherMainOutput(SQLite::Database& db, std::int64_t track, std::int64_t route) {
+    SQLite::Statement other(db, "SELECT 1 FROM routing WHERE src_kind='track' AND src_id=? "
+                                "AND dst_kind='track' AND kind='main' AND enabled<>0 AND id<>? LIMIT 1");
+    other.bind(1, track);
+    other.bind(2, route);
+    return other.executeStep();
+}
+
 template <std::size_t I>
 bool scalarApply(OpContext& c, const Payload& p, std::string& err) {
     constexpr auto& S = kScalars[I];
     try {
+        if constexpr (std::string_view(S.op) == "routing.setEnabled") {
+            if (!c.replay && p.at("enabled").get<bool>()) {
+                const auto id = detail::signedInteger(p.at("id"));
+                SQLite::Statement track(c.db, "SELECT src_id FROM routing WHERE id=? AND "
+                    "src_kind='track' AND dst_kind='track' AND kind='main' AND enabled=0");
+                track.bind(1, id);
+                if (track.executeStep() && otherMainOutput(c.db, track.getColumn(0).getInt64(), id))
+                    throw std::runtime_error("track already has an enabled main output");
+            }
+        }
         SQLite::Statement st(c.db, std::string("UPDATE ") + S.table + " SET " + S.col +
                                        " = ? WHERE " + S.idCol + " = ?");
         bindValue(st, 1, p.at(S.key), S.type);
@@ -730,6 +748,8 @@ std::optional<Payload> recordedRoutingInverse(const OpContext& c, std::string_vi
 
 bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        const bool newTrackMain = !c.replay && p.at("kind") == "main" &&
+                                  p.at("srcKind") == "track" && p.at("dstKind") == "track";
         if (!c.replay && p.at("kind") == "send" && p.at("srcKind") == "track")
             requireNewSendSourceTrack(c.db, detail::signedInteger(p.at("src")));
         if (p.at("kind") == "send" && p.at("srcKind") == "track" && p.at("dstKind") == "track" &&
@@ -761,6 +781,9 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
                 detail::signedInteger(row.at("dst_id")) != detail::signedInteger(p.at("dst")) ||
                 row.at("kind") != p.at("kind"))
                 throw std::runtime_error("captured routing row differs from the declared route");
+            if (newTrackMain && (!row.contains("enabled") || detail::signedInteger(row.at("enabled")) != 0) &&
+                otherMainOutput(c.db, detail::signedInteger(row.at("src_id")), id))
+                throw std::runtime_error("track already has an enabled main output");
             if (p.contains("sendTapRow") && (row.at("kind") != "send" ||
                 detail::signedInteger(p.at("sendTapRow").at("routing_id")) != id))
                 throw std::runtime_error("captured send tap belongs to another route");
@@ -773,6 +796,9 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
             }
             return true;
         }
+        if (newTrackMain &&
+            otherMainOutput(c.db, detail::signedInteger(p.at("src")), detail::signedInteger(p.at("id"))))
+            throw std::runtime_error("track already has an enabled main output");
         bool pre=false;
         if(p.at("kind")=="send" && p.at("dstKind")=="track")
             if(const auto choice=explicitReturnSendTap(c.db,p.at("dst").get<std::int64_t>()))pre=*choice;

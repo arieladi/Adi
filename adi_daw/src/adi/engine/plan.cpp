@@ -148,13 +148,6 @@ GraphPlan planGraph(const rows::Model& m) {
             continue;
         }
 
-        PlannedEdge e;
-        e.from = from->second;
-        e.to = to->second;
-        e.bus = (r->kind == "sidechain") ? Bus::Sidechain : Bus::Main;
-        e.kind = r->kind;
-        plan.edges.push_back(e);
-
         if (r->kind == "main") {
             // ADR-0065: a 'user' row is the user's own routing and a 'auto' row
             // is a materialised default. Either way the main output is decided
@@ -162,13 +155,19 @@ GraphPlan planGraph(const rows::Model& m) {
             // track would double it into its destination.
             const auto how = (r->origin == "auto") ? PlannedNode::Route::Auto
                                                    : PlannedNode::Route::User;
-            const auto seen = mainDecided.find(r->srcId);
-            if (seen != mainDecided.end())
+            if (!mainDecided.emplace(r->srcId, how).second) {
                 plan.problems.push_back("tracks#" + std::to_string(r->srcId) +
                                         " has more than one main output");
-            mainDecided[r->srcId] = how;
+                continue;
+            }
             plan.nodes[from->second].route = how;
         }
+        PlannedEdge e;
+        e.from = from->second;
+        e.to = to->second;
+        e.bus = (r->kind == "sidechain") ? Bus::Sidechain : Bus::Main;
+        e.kind = r->kind;
+        plan.edges.push_back(e);
     }
 
     // --- the default, for every track that did not decide ------------------

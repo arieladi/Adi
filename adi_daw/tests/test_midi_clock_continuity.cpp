@@ -2,6 +2,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/blob.hpp"
 #include "adi/controller_lanes.hpp"
+#include "adi/engine/midi_clips.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -88,18 +89,10 @@ struct Delay final:device::DeviceInstance {
         }
     }
 };
-struct Fixture {
+struct Project {
     test::TempDirectory temp{"midi_clock_continuity","session"};
     std::unique_ptr<Store> store;
-    Session session;
-    Instrument* instrument=nullptr;
-    std::array<Instrument*,4> instruments{};
-    Precision width;
-    std::int64_t clock=0;
-    unsigned loads=0;
-    std::array<float,200> narrow{};
-    std::array<double,200> wide{};
-    explicit Fixture(Precision precision):width(precision) {
+    Project() {
         StoreError error{};store=Store::createEmpty(temp.path()/"session.adi",error);
         if(!store)throw std::runtime_error("create session");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Main',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','continuity','Test','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Test'); INSERT INTO clips(id,track_id,kind,time_base,pos_ticks,length_ticks) VALUES(1,1,'midi',0,0,23063040); DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0)");
@@ -113,6 +106,17 @@ struct Fixture {
         const std::vector<NoteRecord> data(notes);
         if(!store->putEventStream(1,"notes",writeStream<NoteRecord>(FourCC::Notes,data)))throw std::runtime_error("write notes");
     }
+};
+struct Fixture : Project {
+    Session session;
+    Instrument* instrument=nullptr;
+    std::array<Instrument*,4> instruments{};
+    Precision width;
+    std::int64_t clock=0;
+    unsigned loads=0;
+    std::array<float,200> narrow{};
+    std::array<double,200> wide{};
+    explicit Fixture(Precision precision):width(precision) {}
     void pedal(bool on) {
         const std::array<controllers::Point,1> points{{{0,0,on?1.:0.,0,0,0}}};
         const auto prepared=controllers::prepareWrite(*store,1,3,64,points);
@@ -126,10 +130,6 @@ struct Fixture {
     void delay(bool twice=false) {
         store->db().exec("UPDATE devices SET ord=1; INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(2,1,0,1,'Delay')");
         if(twice)store->db().exec("UPDATE devices SET ord=2 WHERE id=1; INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(3,1,1,1,'Delay 2')");
-    }
-    void fanout(bool stopped=false) {
-        store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(2,'midi','Direct',2),(3,'midi','Delayed',3); UPDATE device_chains SET track_id=2 WHERE id=1; INSERT INTO device_chains(id,track_id) VALUES(2,3); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(2,2,0,1,'Delay'),(3,2,1,1,'Second instrument'); INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind) VALUES(1,'track',1,'track',2,'main'),(2,'track',1,'track',3,'main')");
-        if(stopped)store->db().exec("UPDATE devices SET name='Stop' WHERE id=3");
     }
     void load() {
         SessionSpec spec{2,48000,100,width};
@@ -325,11 +325,15 @@ void destinationIdentity(Precision width) {
           original->events(EventType::NoteOn)==priorOn+1,
           "reactivating an existing destination chases the note which sounded only on the intervening event route");
 }
-void fillDestination(Fixture& f,std::int64_t device=1) {
-    auto* graph=f.session.graph().currentGraph();graph->setEventCapacity(4);graph->prepare(48000,100);
-    const auto target=graph->find(*f.session.nodeFor(device));
+void fillDestination(Graph& graph, Node& destination) {
+    graph.setEventCapacity(4);
+    graph.prepare(48000,100);
+    const auto target=graph.find(destination);
     Event filler;filler.type=EventType::ParamValue;
-    for(int i=0;i<4;++i)graph->pushInputEvent(target,filler);
+    for(int i=0;i<4;++i)graph.pushInputEvent(target,filler);
+}
+void fillDestination(Fixture& f) {
+    fillDestination(*f.session.graph().currentGraph(), *f.session.nodeFor(1));
 }
 void rejection(Precision width) {
     Fixture f(width);f.write({Fixture::note(42,0,240240)});f.start();fillDestination(f);f.render();
@@ -345,11 +349,93 @@ void rejection(Precision width) {
 bool silent(const Instrument& instrument) {
     return std::all_of(instrument.voices.begin(),instrument.voices.end(),[](auto voice){return voice==0;});
 }
+
+// Exercise graph-level MIDI fan-out directly. A project track has one main
+// output, while GraphHost still supports multiple internal event consumers.
+struct FanoutFixture : Project {
+    Instrument direct, delayed;
+    Delay delay, stop{EventFlow::Stop};
+    device::DeviceNode first{direct}, latency{delay}, second{delayed}, stopped{stop};
+    std::array<Instrument*, 2> instruments{&direct, &delayed};
+    Transport transport;
+    std::shared_ptr<MidiClipState> midiState = makeMidiClipState();
+    GraphHost host;
+    Precision width;
+    Node* latencyNode = &latency;
+    Node* secondTarget = &second;
+    std::vector<rows::TempoEvent> tempo{{0, 120.}};
+    std::int64_t clock = 0;
+
+    explicit FanoutFixture(Precision precision) : width(precision) {
+        store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) "
+                         "VALUES(2,'midi','Direct',2),(3,'midi','Delayed',3)");
+        host.setPrecision(width);
+    }
+    void refresh() {
+        auto model = rows::readModel(*store);
+        model.tempo = tempo;
+        std::vector<Node*> branch;
+        if (latencyNode) branch.push_back(latencyNode);
+        branch.push_back(secondTarget);
+        auto midiPath = [&](std::int64_t id) {
+            if (id != 1) return std::vector<Node*>{};
+            auto path = branch;
+            path.insert(path.begin(), &first);
+            return path;
+        };
+        MidiClips midi(model, transport, 48000, midiState, midiPath);
+        RealizeOptions options;
+        options.sourcesFor = [&](std::int64_t track) { return midi.sourcesFor(track); };
+        options.devicesFor = [&](std::int64_t track) {
+            if (track == 2) return std::vector<Node*>{&first};
+            return track == 3 ? branch : std::vector<Node*>{};
+        };
+        const auto fanout = [](GraphPlan& plan) {
+            const auto source = *plan.indexOf(1);
+            std::erase_if(plan.edges, [&](const PlannedEdge& edge) { return edge.from == source; });
+            plan.edges.push_back({source, *plan.indexOf(2), Bus::Main, "test fan-out"});
+            plan.edges.push_back({source, *plan.indexOf(3), Bus::Main, "test fan-out"});
+        };
+        if (!host.rebuild(model, options, 48000, 100, fanout)) throw std::runtime_error(host.error());
+    }
+    void setTempo(std::int64_t boundary) {
+        if (boundary == 0) tempo.front().bpm = 240.;
+        else tempo.push_back({boundary, 240.});
+        refresh();
+    }
+    void load() {
+        refresh();
+        transport.play();
+    }
+    void start() {
+        load();
+        for (int i = 0; i < 10; ++i) render();
+    }
+    void render(GraphHost::RenderBlock* held = nullptr) {
+        std::array<float, 200> narrow{};
+        std::array<double, 200> wide{};
+        float* out[]{narrow.data(), narrow.data() + 100};
+        double* out64[]{wide.data(), wide.data() + 100};
+        AudioIo io;
+        io.frames = 100;
+        io.numOut = 2;
+        io.streamTimeSamples = clock;
+        if (width == Precision::Float64) io.out64 = out64;
+        else io.out = out;
+        direct.clock = delayed.clock = clock;
+        const audio::CallbackScope callback;
+        if (held) (void)held->process(io);
+        else host.process(io);
+        transport.advance(100);
+        clock += 100;
+    }
+};
+
 void fanoutReleases(Precision width) {
     for(const std::int64_t duration:{100,1000}) {
-        Fixture f(width),reference(width);
+        FanoutFixture f(width),reference(width);
         for(auto* fixture:{&f,&reference}) {
-            fixture->fanout();fixture->write({Fixture::note(42,0,duration*24024/100)});fixture->load();
+            fixture->write({Fixture::note(42,0,duration*24024/100)});fixture->load();
         }
         const auto boundary=duration+100;
         while(f.clock<boundary)f.render();
@@ -357,7 +443,7 @@ void fanoutReleases(Precision width) {
               f.instruments[1]->events(EventType::NoteOff)==0 &&
               f.instruments[1]->events(EventType::NoteOn)==(duration<512?0u:1u),
               "fan-out swap occurs after direct release while the second off, and a short note's on, remain queued");
-        if(!f.session.setExternalTempoAt(*f.store,240.,boundary*24024/100))throw std::runtime_error(f.session.error());
+        f.setTempo(boundary*24024/100);
         while(f.clock<duration+700)f.render();
         while(reference.clock<duration+700)reference.render();
         bool exact=true,equal=true;
@@ -376,29 +462,29 @@ void fanoutReleases(Precision width) {
         check(exact,"each actual fan-out consumer receives exactly one on and off at its own compensated arrival, including short notes");
         check(equal,"clock publication preserves both native fan-out event streams exactly against the no-rebuild reference");
     }
-    Fixture seeking(width);seeking.fanout();seeking.write({Fixture::note(42,0,24024)});seeking.load();
+    FanoutFixture seeking(width);seeking.write({Fixture::note(42,0,24024)});seeking.load();
     seeking.render();seeking.render();seeking.refresh();
-    {auto held=seeking.session.beginRender();seeking.session.transport().locate(48000);seeking.render(&held);}
+    {const audio::CallbackScope callback;auto held=seeking.host.beginRender();seeking.transport.locate(48000);seeking.render(&held);}
     while(seeking.clock<1000)seeking.render();
     check(seeking.instruments[1]->events(EventType::NoteOn)==0 && silent(*seeking.instruments[0]) && silent(*seeking.instruments[1]),
           "seek after adoption cancels a short note's future fan-out on while safely releasing every existing voice");
 
-    Fixture rebased(width);rebased.fanout();rebased.write({Fixture::note(42,0,24024)});rebased.load();
+    FanoutFixture rebased(width);rebased.write({Fixture::note(42,0,24024)});rebased.load();
     rebased.render();rebased.render();
-    if(!rebased.session.setExternalTempo(*rebased.store,240.))throw std::runtime_error(rebased.session.error());
+    rebased.setTempo(0);
     while(rebased.clock<1000)rebased.render();
     check(rebased.instruments[1]->events(EventType::NoteOn)==0 && silent(*rebased.instruments[1]),
           "retiming an already released short note cannot retain a future on whose paired old release was discarded");
 
-    Fixture limited(width);limited.fanout();limited.write({Fixture::note(42,0,24024)});limited.load();
+    FanoutFixture limited(width);limited.write({Fixture::note(42,0,24024)});limited.load();
     limited.render();limited.render();limited.refresh();
-    auto* candidate=limited.session.graph().currentGraph();candidate->setEventCapacity(1);candidate->prepare(48000,100);
+    auto* candidate=limited.host.currentGraph();candidate->setEventCapacity(1);candidate->prepare(48000,100);
     while(limited.clock<1000)limited.render();
     check(limited.instruments[1]->events(EventType::NoteOn)==0 && silent(*limited.instruments[0]) && silent(*limited.instruments[1]),
           "a queue which retains the future on but cannot retain its paired off never resurrects the force-stopped voice");
 
-    Fixture held(width);held.fanout();held.write({Fixture::note(42,0,240240)});held.load();held.render();
-    if(!held.session.setExternalTempoAt(*held.store,240.,24024))throw std::runtime_error(held.session.error());
+    FanoutFixture held(width);held.write({Fixture::note(42,0,240240)});held.load();held.render();
+    held.setTempo(24024);
     while(held.clock<1200)held.render();
     bool moved=true;
     for(std::size_t branch=0;branch<2;++branch) {
@@ -410,15 +496,15 @@ void fanoutReleases(Precision width) {
     }
     check(moved,"a still-held voice retains its queued fan-out onset when a live tempo update moves its not-yet-issued release");
 
-    Fixture refused(width);refused.fanout();refused.store->db().exec("DELETE FROM devices WHERE id=2");
-    refused.write({Fixture::note(42,0,240240)});refused.start();fillDestination(refused,3);refused.render();
+    FanoutFixture refused(width);refused.latencyNode=nullptr;
+    refused.write({Fixture::note(42,0,240240)});refused.start();fillDestination(*refused.host.currentGraph(),refused.second);refused.render();
     check(refused.instruments[0]->events(EventType::NoteOff)==1 && refused.instruments[1]->events(EventType::NoteOff)==0 &&
           !silent(*refused.instruments[1]),"one actual fan-out target can reject a release after the other consumes it");
     refused.refresh();refused.render();
     check(refused.instruments[1]->events(EventType::NoteOff)==1 && refused.instruments[1]->events(EventType::NoteOn)==1 &&
           silent(*refused.instruments[1]),"a partial fan-out rejection retains release ownership across publication until retry succeeds");
 
-    Fixture stopped(width);stopped.fanout(true);
+    FanoutFixture stopped(width);stopped.secondTarget=&stopped.stopped;
     std::vector<NoteRecord> notes;
     for(std::uint64_t id=1;id<=130;++id)notes.push_back(Fixture::note(id,static_cast<std::int64_t>(id-1)*24024,240));
     if(!stopped.store->putEventStream(1,"notes",writeStream<NoteRecord>(FourCC::Notes,notes)))throw std::runtime_error("write fan-out notes");
