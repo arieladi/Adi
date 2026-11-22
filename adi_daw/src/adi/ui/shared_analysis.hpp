@@ -196,6 +196,12 @@ class SharedAnalysis final {
         std::shared_ptr<CaptureDomain> domain_;
         friend class SharedAnalysis;
     };
+    struct ScopeDifference {
+        engine::ScopeSource a, b;
+        bool mid = false;
+        std::uint64_t selection = 0;
+        bool operator==(const ScopeDifference &) const = default;
+    };
     enum class BarScopeStatus { Idle, Pending, Ready, Missed };
     struct BarScopeResult {
         std::int64_t firstStamp = 0;
@@ -216,6 +222,7 @@ class SharedAnalysis final {
         bool request(const FocusScopeRange &, std::uint64_t expectedRevision = 0) noexcept;
         // Use the same sources. Mid starts with a full unread window and can be dropped mid-capture.
         void setMidRequested(bool) noexcept;
+        void setDifferenceRequested(std::optional<ScopeDifference>) noexcept;
         double sampleRate() const noexcept;
         BarScopeStatus status() const noexcept;
         std::shared_ptr<const BarScopeResult> read() const noexcept;

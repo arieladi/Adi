@@ -882,6 +882,23 @@ struct SharedAnalysis::BarScopeDomain {
         includeMid.store(enabled, std::memory_order_relaxed);
     }
 
+    void setDifferenceRequested(std::optional<ScopeDifference> requested) noexcept {
+        const std::lock_guard lock(differenceMutex);
+        if (requested == requestedDifference) return;
+        requestedDifference = requested;
+        differenceVersion.fetch_add(1, std::memory_order_release);
+    }
+
+    void pollDifferenceRequest() noexcept {
+        if (seenDifferenceVersion == differenceVersion.load(std::memory_order_acquire)) return;
+        {
+            const std::lock_guard lock(differenceMutex);
+            difference = requestedDifference;
+            seenDifferenceVersion = differenceVersion.load(std::memory_order_relaxed);
+        }
+        if (projection) projection->discardDifference();
+    }
+
     // On the owner this runs under State::mutex, which also protects tap rebinding.
     bool needsWork() const noexcept {
         if (!active.load() || status.load() != BarScopeStatus::Pending || !rate.load()) return false;
@@ -936,12 +953,13 @@ struct SharedAnalysis::BarScopeDomain {
                     if (!prepareLane(i, first, reads, readLimit, samples)) return false;
                     finish = std::min(finish, lanes[i].chunkEnd);
                 }
+                pollDifferenceRequest();
                 const bool wantsMid = includeMid.load(std::memory_order_relaxed);
                 if (!projection) {
                     for (std::size_t i = 0; i < lanes.size(); ++i)
                         identities[i] = {lanes[i].source, lanes[i].tap->generation()};
                     projection = std::make_shared<FocusScopeBarProjection>();
-                    if (!projection->prepare(range, identities, columns, revision, wantsMid)) {
+                    if (!projection->prepare(range, identities, columns, revision, wantsMid, difference)) {
                         invalidate();
                         return false;
                     }
@@ -984,6 +1002,10 @@ struct SharedAnalysis::BarScopeDomain {
     std::uint64_t expectedRevision = 0, revision = 0;
     std::int64_t end = 0;
     std::atomic<bool> includeMid{false};
+    std::mutex differenceMutex; // held only to copy the request, never while processing samples
+    std::optional<ScopeDifference> requestedDifference, difference;
+    std::atomic<std::uint64_t> differenceVersion{0};
+    std::uint64_t seenDifferenceVersion = 0;
     std::shared_ptr<FocusScopeBarProjection> projection;
 };
 
@@ -1507,6 +1529,12 @@ void SharedAnalysis::BarScopeLease::setMidRequested(bool enabled) noexcept {
     if (!state || !domain_) return;
     state->ownerOnly();
     domain_->setMidRequested(enabled);
+}
+void SharedAnalysis::BarScopeLease::setDifferenceRequested(std::optional<ScopeDifference> requested) noexcept {
+    const auto state = state_.lock();
+    if (!state || !domain_) return;
+    state->ownerOnly();
+    domain_->setDifferenceRequested(requested);
 }
 double SharedAnalysis::BarScopeLease::sampleRate() const noexcept { return *this ? domain_->rate.load() : 0.; }
 SharedAnalysis::BarScopeStatus SharedAnalysis::BarScopeLease::status() const noexcept {

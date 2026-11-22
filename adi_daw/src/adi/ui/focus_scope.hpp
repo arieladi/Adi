@@ -72,6 +72,29 @@ struct FocusScopeBarBlock {
     bool advancing = false;
     std::span<const float> left, right;
 };
+inline FocusSumColumn focusEmptyExtrema() noexcept {
+    constexpr auto inf = std::numeric_limits<double>::infinity();
+    return {{inf, inf}, {-inf, -inf}};
+}
+
+// The two windows already passed the same stamp and transport checks as Sum.
+inline void focusIncludeDifference(FocusSumColumn &extrema, std::span<const float> leftA,
+                                   std::span<const float> rightA, std::span<const float> leftB,
+                                   std::span<const float> rightB, bool mid) noexcept {
+    const auto include = [&](std::size_t channel, double sample) {
+        extrema.low[channel] = std::min(extrema.low[channel], sample);
+        extrema.high[channel] = std::max(extrema.high[channel], sample);
+    };
+    for (std::size_t i = 0; i < leftA.size(); ++i) {
+        const double left = static_cast<double>(leftA[i]) - leftB[i];
+        const double right = static_cast<double>(rightA[i]) - rightB[i];
+        if (mid) include(0, focusScopeMidSample(left, right));
+        else {
+            include(0, left);
+            include(1, right);
+        }
+    }
+}
 struct FocusScopePoint {
     float x = 0.f, y = 0.f;
     bool operator==(const FocusScopePoint &) const = default;
@@ -125,7 +148,8 @@ class FocusScopeBarProjection {
     };
 
     bool prepare(FocusScopeRange range, std::span<const FocusScopeBarSource> sources,
-                 std::size_t requestedColumns, std::uint64_t transportRevision, bool includeMid = false) {
+                 std::size_t requestedColumns, std::uint64_t transportRevision, bool includeMid = false,
+                 std::optional<SharedAnalysis::ScopeDifference> difference = {}) {
         const auto columns = std::min({requestedColumns, range.frames,
                                        static_cast<std::size_t>(SharedAnalysis::kMaxFftSize)});
         if (sources.size() < 2 || columns == 0 || !transportRevision || range.first < 0 ||
@@ -141,13 +165,30 @@ class FocusScopeBarProjection {
                 return false;
         }
 
-        constexpr auto inf = std::numeric_limits<double>::infinity();
-        std::vector<FocusSumColumn> bins((sources.size() + 1) * columns, FocusSumColumn{{inf, inf}, {-inf, -inf}});
+        std::array<std::size_t, 2> differenceIndexes{};
+        std::vector<FocusSumColumn> differenceBins;
+        if (difference) {
+            const auto find = [&](engine::ScopeSource source) {
+                return std::ranges::find(sources, source, &FocusScopeBarSource::source);
+            };
+            const auto a = find(difference->a), b = find(difference->b);
+            if (a != sources.end() && b != sources.end() && a != b) {
+                differenceIndexes = {static_cast<std::size_t>(a - sources.begin()),
+                                     static_cast<std::size_t>(b - sources.begin())};
+                differenceBins.assign(columns, focusEmptyExtrema());
+            } else {
+                difference.reset();
+            }
+        }
+        std::vector<FocusSumColumn> bins((sources.size() + 1) * columns, focusEmptyExtrema());
         std::vector<MidColumn> midBins;
         if (includeMid) midBins.resize((sources.size() + 1) * columns);
         std::vector<FocusScopeBarSource> identities(sources.begin(), sources.end());
         bins_ = std::move(bins);
         midBins_ = std::move(midBins);
+        differenceBins_ = std::move(differenceBins);
+        difference_ = difference;
+        differenceIndexes_ = differenceIndexes;
         sources_ = std::move(identities);
         range_ = range;
         transportRevision_ = transportRevision;
@@ -193,6 +234,15 @@ class FocusScopeBarProjection {
     [[nodiscard]] std::span<const MidColumn> sumMidColumns() const noexcept { return midLane(sources_.size()); }
     // Used only for an unfinished projection. Published results are immutable.
     void discardMid() noexcept { std::vector<MidColumn>{}.swap(midBins_); }
+    [[nodiscard]] std::span<const FocusSumColumn> differenceColumns(
+        const SharedAnalysis::ScopeDifference &expected) const noexcept {
+        return difference_ == expected ? std::span(differenceBins_).first(visibleColumns_)
+                                       : std::span<const FocusSumColumn>{};
+    }
+    void discardDifference() noexcept {
+        difference_.reset();
+        std::vector<FocusSumColumn>{}.swap(differenceBins_);
+    }
     [[nodiscard]] std::span<const FocusSumColumn> sumColumns() const noexcept { return lane(sources_.size()); }
     [[nodiscard]] std::optional<FocusSumReading> sumReading() const noexcept {
         if (!frames()) return {};
@@ -233,6 +283,12 @@ class FocusScopeBarProjection {
                     energy_[ch] += value[ch] * value[ch];
                 }
             }
+            if (difference_) {
+                const auto &a = blocks[differenceIndexes_[0]], &b = blocks[differenceIndexes_[1]];
+                focusIncludeDifference(differenceBins_[column_], a.left.subspan(begin, added),
+                                       a.right.subspan(begin, added), b.left.subspan(begin, added),
+                                       b.right.subspan(begin, added), difference_->mid);
+            }
             frames_ += added;
             begin = end;
             visibleColumns_ = column_ + 1;
@@ -263,6 +319,9 @@ class FocusScopeBarProjection {
     std::vector<FocusScopeBarSource> sources_;
     std::vector<FocusSumColumn> bins_;
     std::vector<MidColumn> midBins_;
+    std::vector<FocusSumColumn> differenceBins_;
+    std::optional<SharedAnalysis::ScopeDifference> difference_;
+    std::array<std::size_t, 2> differenceIndexes_{};
     std::uint64_t transportRevision_ = 0;
     std::size_t columns_ = 0, framesPerColumn_ = 0, remainder_ = 0;
     std::size_t frames_ = 0, column_ = 0, endOfColumn_ = 0, carry_ = 0, visibleColumns_ = 0;
@@ -297,6 +356,29 @@ focusScopeRange(std::span<const SharedAnalysis::Result *const> sources) noexcept
     }
     if (first >= last) return {};
     return FocusScopeRange{first, static_cast<std::size_t>(last - first), primary.sampleRate};
+}
+
+template <class PublishColumn>
+std::optional<FocusScopeRange> focusProjectDifference(const SharedAnalysis::Result &a,
+                                                      const SharedAnalysis::Result &b,
+                                                      std::size_t columns, bool mid, PublishColumn &&publish) {
+    const std::array<const SharedAnalysis::Result *, 2> pair{&a, &b};
+    const auto range = focusScopeRange(pair);
+    if (!range) return {};
+    columns = std::min(columns, range->frames);
+    const auto startA = static_cast<std::size_t>(range->first - a.firstStamp);
+    const auto startB = static_cast<std::size_t>(range->first - b.firstStamp);
+    for (std::size_t column = 0; column < columns; ++column) {
+        const auto begin = column * range->frames / columns;
+        const auto length = (column + 1) * range->frames / columns - begin;
+        auto extrema = focusEmptyExtrema();
+        focusIncludeDifference(extrema, std::span(a.scopeLeft).subspan(startA + begin, length),
+                               std::span(a.scopeRight).subspan(startA + begin, length),
+                               std::span(b.scopeLeft).subspan(startB + begin, length),
+                               std::span(b.scopeRight).subspan(startB + begin, length), mid);
+        publish(column, extrema);
+    }
+    return range;
 }
 
 // The supplied range must be accepted for these sources. Measure the signed

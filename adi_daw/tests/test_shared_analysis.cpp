@@ -944,7 +944,8 @@ void focusScopeDifference() {
     write(3, 1);
     const auto replaced = lease.read();
     check(replaced && replaced->projection && replaced->projection->differenceColumns(first).empty() &&
-              replaced->projection->differenceColumns(second).empty() && values.front().low == stereo.low,
+              replaced->projection->differenceColumns(second).empty() && values.size() == 1 &&
+              values.front().low == stereo.low,
           "changing B discards the incomplete comparison and does not mutate a published bar");
     check(lease.request({4, 2, rate}, revision), "new selection begins on the next full bar");
     write(4, 0);
