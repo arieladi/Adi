@@ -266,10 +266,20 @@ GraphHost::RenderBlock::RenderBlock(GraphHost& host) noexcept
     : host_(host), snapshot_(host.acquireRender()), serial_(host.renderSerial_) {
     // Transport/latency queries and every logical slice must observe the same
     // physically admitted compensation plan, before any samples are rendered.
-    if (snapshot_) snapshot_->graph().graph().pinPhysicalPdc(serial_);
+    if (snapshot_) {
+        auto &graph = snapshot_->graph().graph();
+        graph.pinPhysicalPdc(serial_);
+        trackTiming_ = host_.trackTimingEnabled_.load(std::memory_order_acquire);
+        if (trackTiming_)
+            graph.beginTrackTiming(serial_);
+    }
 }
 GraphHost::RenderBlock::~RenderBlock() {
-    if (serial_ == host_.renderSerial_) host_.renderActive_ = false;
+    if (serial_ == host_.renderSerial_) {
+        if (snapshot_ && trackTiming_)
+            snapshot_->graph().graph().finishTrackTiming(serial_);
+        host_.renderActive_ = false;
+    }
 }
 bool GraphHost::RenderBlock::valid() const noexcept {
     return host_.renderActive_ && serial_ == host_.renderSerial_ && snapshot_ != nullptr;
@@ -305,6 +315,13 @@ bool GraphHost::RenderBlock::process(const AudioIo& io) noexcept {
 void GraphHost::process(const AudioIo& io) noexcept {
     auto block = beginRender();
     (void)block.process(io);
+}
+
+std::optional<TrackProcessingBlock> GraphHost::trackProcessingTime() const {
+    if (!trackTimingEnabled_.load(std::memory_order_acquire))
+        return {};
+    const auto *graph = currentGraph();
+    return graph ? graph->trackProcessingTime() : std::nullopt;
 }
 
 const GraphTransportState* GraphHost::renderedTransportState()const noexcept {
