@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Restore side-channel inversion in Width Multiply
+
+`clones/shaper-width-follower` at `2859eb9f` — Preserve signed side gain in Width Multiply. **Lands after 3 December.** Width now uses the common ADI-Shaper follower implementation. Negative Multiply results can reverse the stereo difference while preserving the mid. Add retains its zero floor. The regression fails on the previous head. The rack and registered native/Pd suites passed under MSVC /W4 /WX in both precisions.
+
+On the negative-offset kick-and-bass comparison, stereo error fell from 0.00599931 to 0.0000000140 RMS at both block sizes. The largest residual was 0.000000328. All twelve registered captures from the preceding six-state Width test remained byte-identical across 2,304,000 stereo frames. Both default renders passed the input exactly. Latency remained zero.
+
+At 256/2,048 frames the revised device took 13.0/103.2 µs median, compared with 12.5/104.2 µs on the preceding head and 73.4/493.4 µs in the reference. Revised p99 was 22.0/212.3 µs versus 145.0/4,544.7 µs in the reference. Deadline misses were 1/1 for the revision and 7/14 for the reference across 30,720 callbacks at each size.
+
+PR requested
+
 ## 22 November 2026 — Isolate the endpoint and stochastic clock interactions
 
 All 163 historical programs with enabled Crush were replayed from a frozen weighted device. The endpoint change alone altered 42 stereo streams in fixed order and 43 in source order. Against the original, the fixed comparisons were eleven lower in RMS, nine higher and 143 within 0.000001. Source order gave nine lower, eleven higher and 143 within tolerance.
