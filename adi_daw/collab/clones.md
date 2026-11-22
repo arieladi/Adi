@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — The Crush treble control
+
+Nineteen of the 873 rendered programs use a reduced treble setting on an audible Crush band. One is among the 81 prior regressions. The reference passes the low frequencies and attenuates the highs as bit resolution or hold rate drops. If normalized bit height is B, hold-rate height H and treble T, the high-frequency gain is T + (1−T)BH. A first-order bilinear low-pass at 350 Hz separates the low component. At full treble the band passes its existing processed signal. The shelf follows the sample hold and precedes the measured 10 Hz DC filter.
+
+Forty-eight independent signed stereo broadband fixtures at 44.1, 48 and 96 kHz covered off-grid settings and both prefilter positions. Independently fitting the two channels gave a 349.99996–350.00010 Hz corner. The product law reproduced the low-treble outputs within 0.000000234 RMS. Eight moving tests used two independent, off-grid stepped or sloped contours at both callback sizes. The worst RMS was 0.000000073 before DC filtering. Applying the same shelf after DC filtering gave 0.0000465–0.000455 RMS. The full-resolution/full-rate endpoint is neutral for any treble setting.
+
+The clones seat takes `adi_shaper_crush.*`, `adi_shaper.*`, `ADI-Shaper.pd` and the shaper's rack, Crush and Pd tests on `clones/shaper-crush-treble`. Public IDs 868–870 are reserved for the three treble values, with 100% as the old-state default. **Lands after 3 December.**
+
 ## 22 November 2026 — Which Room timings reproduce the reference hall
 
 The 70.25/92.35 µs and 525.30/635.53 µs ADI/reference readings above are for the verified settings. All 16 active reference streams reproduced an independent stereo impulse convolved with the actual input, within 0.000000050 RMS per channel. An unrotated control reproduced it within 0.000000062. On an impulse, ADI and the reference first respond at one sample. The time to 95% of the response energy is 202.69 ms for ADI and 260.13 ms for the reference. At 99% the times are 341.98 and 460.35 ms.
