@@ -97,6 +97,11 @@ class OneShot final : public DeviceInstance {
     const ParamDescriptor *paramAt(std::int32_t) const noexcept override;
     ParamValue getParam(const std::string &) const noexcept override;
     bool setParam(const std::string &, const ParamValue &) override;
+    /// Any thread (an atomic store): parameter index i to a normalized value,
+    /// canonical as setParam stores it, without a string lookup (DEV-21).
+    void setParamAt(int i, double normalized) noexcept;
+    /// The same, from a value in the parameter's own unit.
+    void setRealAt(int i, double value) noexcept;
     std::string paramText(const std::string &, double) const override;
     std::vector<std::string> stateRoles() const override { return {"component"}; }
     std::vector<std::uint8_t> saveState(const std::string &) const override;
