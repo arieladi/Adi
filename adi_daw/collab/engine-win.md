@@ -56,6 +56,11 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 **MEASURED.** The exact requested tips `fc2d0a7b`, `f26730fb`, `55f20c8c` and `879a5d15` merge cleanly on `b56b1348`. Their combined tree passed 593 checks in five strict MSVC x64 `/W4 /WX` suites with the SQLiteCpp 3.4.0 pin. The gate exercised live MIDI parsing, Capture MIDI, actual archive publication, audio recording and process-exit recording discovery. The review and landing requests stay on the four original branch tips.
 
+## 2026-11-22 — DF-E64 Play starts with the recorded take
+
+- PR requested `engine-win/play-first-block` (`c7f3d9cc`). Engine review (loan). Read ahead at the stopped or located playhead, and keep Play pending until the graph running the first block admits its source pages. Stop cancels pending Play, a later Locate retargets it, and failed media stays silent without holding unrelated clips. Offline admission remains strict.
+- Windows MSVC Debug, `ADI_ACCEPTANCE=ON`, pinned SQLiteCpp, warnings as errors: WTS-01 2b before the fix lost 256 frames of the 384,000-frame take. The fixed run waited one 256-frame callback after a cold Locate/Play, then matched every take sample with zero underruns. The acceptance driver checks that the held callback stays silent at the locate position and measures from actual transport start. Full headless WTS-01 and the clip playback, render slices and window state tests passed (4/4).
+
 ## 2026-11-19, order the MIDI settings before the graph-worker preference
 
 **PR requested** — `engine-win/graph-worker-setting` at `35a035acaf21b95da53e47923b217e945de1905d`, after Window-fn's MIDI settings `6cec1b83` and current main `88e2d94e`. The merge retains both Settings sections. The existing engine application wiring can merge the resolved settings tip. The worker preference stays Auto at granted buffers of 1,024 samples and above, serial below the threshold or for an unknown buffer, with explicit Off.
