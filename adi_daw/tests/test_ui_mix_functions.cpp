@@ -1865,8 +1865,11 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     check(channels && channels->isVisible() && channels->getText() == "Stereo",
           "Focus Scope defaults to Stereo and exposes the channel selector");
     if (channels) {
-        channels->setSelectedId(2, juce::sendNotificationSync);
-        frame();
+        const auto select = [&](FocusScopeChannels view) {
+            channels->setSelectedId(static_cast<int>(view), juce::sendNotificationSync);
+            frame();
+        };
+        select(FocusScopeChannels::Mid);
         check(!MixFocusTestAccess::sumPulseAt(focus, .125f, .75f),
               "selecting Mid never presents the old stereo bins as Mid");
         writeUntil(2 * bar);
@@ -1877,8 +1880,23 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         check(opens == std::array{1, 1} && broker->stats().taps == 2 && broker->stats().consumers == 1 &&
                   broker->stats().transforms == 0,
               "changing Focus Scope projection keeps the existing grouped reader and taps");
-        channels->setSelectedId(1, juce::sendNotificationSync);
-        frame();
+        select(FocusScopeChannels::Left);
+        check(channels->getText() == "Left" && MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+                  MixFocusTestAccess::sumPulseAt(focus, .875f, -.625f),
+              "Left immediately reuses the captured left lane");
+        select(FocusScopeChannels::Right);
+        check(channels->getText() == "Right" && MixFocusTestAccess::sumPulseAt(focus, .125f, -.75f) &&
+                  !MixFocusTestAccess::sumPulseAt(focus, .875f, -.625f),
+              "Right immediately shows only the signed right lane");
+        select(FocusScopeChannels::Side);
+        check(channels->getText() == "Side" && !MixFocusTestAccess::sumPulseAt(focus, .125f, -.75f),
+              "switching to Side clears the old Right lane");
+        writeUntil(3 * bar);
+        check(MixFocusTestAccess::scopeInterval(focus, 2 * bar, static_cast<std::size_t>(bar), rate) &&
+                  MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+                  MixFocusTestAccess::sumPulseAt(focus, .875f, -.3125f),
+              "Side preserves opposed signals and halves a single-sided pulse");
+        select(FocusScopeChannels::Stereo);
         check(MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::sumPulseAt(focus, .875f, -.625f),
               "returning to Stereo reuses the same completed bar's stereo columns immediately");
@@ -1893,20 +1911,35 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         frame();
         check(display->getText() == "Difference" && !MixFocusTestAccess::hasDifference(focus),
               "choosing Difference never shows the previous combined projection");
-        writeUntil(3 * bar);
+        writeUntil(4 * bar);
         check(MixFocusTestAccess::hasDifference(focus) &&
                   MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::differencePulseAt(focus, .875f, .625f),
               "Stereo Difference subtracts the selected channel from starred Main");
-        channels->setSelectedId(2, juce::sendNotificationSync);
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Right), juce::sendNotificationSync);
+        frame();
+        check(MixFocusTestAccess::hasDifference(focus) &&
+                  MixFocusTestAccess::differencePulseAt(focus, .125f, -.75f) &&
+                  !MixFocusTestAccess::differencePulseAt(focus, .875f, .625f),
+              "Right Difference reuses the existing Stereo pair projection immediately");
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Mid), juce::sendNotificationSync);
         frame();
         check(!MixFocusTestAccess::hasDifference(focus),
               "switching to Mid clears the previous Stereo Difference");
-        writeUntil(4 * bar);
+        writeUntil(5 * bar);
         check(MixFocusTestAccess::hasDifference(focus) &&
                   !MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::differencePulseAt(focus, .875f, .3125f),
               "Mid Difference cancels opposed stereo and halves a single-sided difference");
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Side), juce::sendNotificationSync);
+        frame();
+        check(!MixFocusTestAccess::hasDifference(focus),
+              "Side Difference never reuses the old Mid Difference");
+        writeUntil(6 * bar);
+        check(MixFocusTestAccess::hasDifference(focus) &&
+                  MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
+                  MixFocusTestAccess::differencePulseAt(focus, .875f, .3125f),
+              "Side Difference projects the signed paired differences before extrema");
         check(opens == std::array{1, 1} && broker->stats().taps == 2 && broker->stats().consumers == 1 &&
                   broker->stats().transforms == 0,
               "Difference adds no tap, consumer or spectrum transform");

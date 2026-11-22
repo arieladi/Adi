@@ -58,7 +58,12 @@ struct FocusSumReading {
 struct FocusSumColumn {
     std::array<double, 2> low{}, high{};
 };
-inline double focusScopeMidSample(double left, double right) noexcept { return (left + right) * .5; }
+inline constexpr bool focusScopeIsFolded(FocusScopeChannels channels) noexcept {
+    return channels == FocusScopeChannels::Mid || channels == FocusScopeChannels::Side;
+}
+inline double focusScopeFoldSample(FocusScopeChannels fold, double left, double right) noexcept {
+    return (fold == FocusScopeChannels::Side ? left - right : left + right) * .5;
+}
 struct FocusScopeBarSource {
     engine::ScopeSource source;
     std::uint64_t generation = 0; // ScopeTap::generation() or SharedAnalysis::Result::generation
@@ -72,23 +77,24 @@ struct FocusScopeBarBlock {
     bool advancing = false;
     std::span<const float> left, right;
 };
-inline FocusSumColumn focusEmptyExtrema(bool mid = false) noexcept {
+inline FocusSumColumn focusEmptyExtrema(bool mono = false) noexcept {
     constexpr auto inf = std::numeric_limits<double>::infinity();
-    return mid ? FocusSumColumn{{inf, 0.}, {-inf, 0.}} : FocusSumColumn{{inf, inf}, {-inf, -inf}};
+    return mono ? FocusSumColumn{{inf, 0.}, {-inf, 0.}} : FocusSumColumn{{inf, inf}, {-inf, -inf}};
 }
 
 // The two windows already passed the same stamp and transport checks as Sum.
 inline void focusIncludeDifference(FocusSumColumn &extrema, std::span<const float> leftA,
                                    std::span<const float> rightA, std::span<const float> leftB,
-                                   std::span<const float> rightB, bool mid) noexcept {
+                                   std::span<const float> rightB, FocusScopeChannels fold) noexcept {
     const auto include = [&](std::size_t channel, double sample) {
         extrema.low[channel] = std::min(extrema.low[channel], sample);
         extrema.high[channel] = std::max(extrema.high[channel], sample);
     };
+    const bool mono = focusScopeIsFolded(fold);
     for (std::size_t i = 0; i < leftA.size(); ++i) {
         const double left = static_cast<double>(leftA[i]) - leftB[i];
         const double right = static_cast<double>(rightA[i]) - rightB[i];
-        if (mid) include(0, focusScopeMidSample(left, right));
+        if (mono) include(0, focusScopeFoldSample(fold, left, right));
         else {
             include(0, left);
             include(1, right);
@@ -137,7 +143,7 @@ inline std::optional<std::int64_t> focusWindowEnd(std::int64_t first, std::int64
 // this collector neither acquires taps nor advances the transport.
 class FocusScopeBarProjection {
   public:
-    struct MidColumn {
+    struct MonoColumn {
         double low = std::numeric_limits<double>::infinity();
         double high = -std::numeric_limits<double>::infinity();
 
@@ -148,7 +154,8 @@ class FocusScopeBarProjection {
     };
 
     bool prepare(FocusScopeRange range, std::span<const FocusScopeBarSource> sources,
-                 std::size_t requestedColumns, std::uint64_t transportRevision, bool includeMid = false,
+                 std::size_t requestedColumns, std::uint64_t transportRevision,
+                 FocusScopeChannels mono = FocusScopeChannels::Stereo,
                  std::optional<SharedAnalysis::ScopeDifference> difference = {}) {
         const auto columns = std::min({requestedColumns, range.frames,
                                        static_cast<std::size_t>(SharedAnalysis::kMaxFftSize)});
@@ -175,17 +182,18 @@ class FocusScopeBarProjection {
             if (a != sources.end() && b != sources.end() && a != b) {
                 differenceIndexes = {static_cast<std::size_t>(a - sources.begin()),
                                      static_cast<std::size_t>(b - sources.begin())};
-                differenceBins.assign(columns, focusEmptyExtrema(difference->mid));
+                differenceBins.assign(columns, focusEmptyExtrema(focusScopeIsFolded(difference->fold)));
             } else {
                 difference.reset();
             }
         }
         std::vector<FocusSumColumn> bins((sources.size() + 1) * columns, focusEmptyExtrema());
-        std::vector<MidColumn> midBins;
-        if (includeMid) midBins.resize((sources.size() + 1) * columns);
+        std::vector<MonoColumn> monoBins;
+        if (focusScopeIsFolded(mono)) monoBins.resize((sources.size() + 1) * columns);
         std::vector<FocusScopeBarSource> identities(sources.begin(), sources.end());
         bins_ = std::move(bins);
-        midBins_ = std::move(midBins);
+        monoBins_ = std::move(monoBins);
+        mono_ = mono;
         differenceBins_ = std::move(differenceBins);
         difference_ = difference;
         differenceIndexes_ = differenceIndexes;
@@ -218,8 +226,11 @@ class FocusScopeBarProjection {
                 return false;
         }
 
-        if (midBins_.empty()) appendValid<false>(blocks, count);
-        else appendValid<true>(blocks, count);
+        switch (mono_) {
+        case FocusScopeChannels::Mid: appendValid<FocusScopeChannels::Mid>(blocks, count); break;
+        case FocusScopeChannels::Side: appendValid<FocusScopeChannels::Side>(blocks, count); break;
+        default: appendValid<FocusScopeChannels::Stereo>(blocks, count); break;
+        }
         return true;
     }
 
@@ -228,12 +239,19 @@ class FocusScopeBarProjection {
     [[nodiscard]] std::span<const FocusSumColumn> memberColumns(std::size_t member) const noexcept {
         return member < sources_.size() ? lane(member) : std::span<const FocusSumColumn>{};
     }
-    [[nodiscard]] std::span<const MidColumn> memberMidColumns(std::size_t member) const noexcept {
-        return member < sources_.size() ? midLane(member) : std::span<const MidColumn>{};
+    [[nodiscard]] std::span<const MonoColumn> memberMonoColumns(std::size_t member,
+                                                               FocusScopeChannels expected) const noexcept {
+        return member < sources_.size() ? monoLane(member, expected) : std::span<const MonoColumn>{};
     }
-    [[nodiscard]] std::span<const MidColumn> sumMidColumns() const noexcept { return midLane(sources_.size()); }
+    [[nodiscard]] std::span<const MonoColumn> sumMonoColumns(FocusScopeChannels expected) const noexcept {
+        return monoLane(sources_.size(), expected);
+    }
     // Used only for an unfinished projection. Published results are immutable.
-    void discardMid() noexcept { std::vector<MidColumn>{}.swap(midBins_); }
+    void retainMono(FocusScopeChannels requested) noexcept {
+        if (requested == mono_ || monoBins_.empty()) return;
+        mono_ = FocusScopeChannels::Stereo;
+        std::vector<MonoColumn>{}.swap(monoBins_);
+    }
     [[nodiscard]] std::span<const FocusSumColumn> differenceColumns(
         const SharedAnalysis::ScopeDifference &expected) const noexcept {
         return difference_ == expected ? std::span(differenceBins_).first(visibleColumns_)
@@ -251,7 +269,7 @@ class FocusScopeBarProjection {
     }
 
   private:
-    template <bool IncludeMid>
+    template <FocusScopeChannels Fold>
     void appendValid(std::span<const FocusScopeBarBlock> blocks, std::size_t count) noexcept {
         const auto remember = [](FocusSumColumn &column, const std::array<double, 2> &sample) {
             for (std::size_t ch = 0; ch < sample.size(); ++ch) {
@@ -270,14 +288,14 @@ class FocusScopeBarProjection {
                     const auto index = member * columns_ + column_;
                     remember(bins_[index], sample);
                     // Combine corresponding samples before binning to preserve cancellation.
-                    if constexpr (IncludeMid)
-                        midBins_[index].include(focusScopeMidSample(sample[0], sample[1]));
+                    if constexpr (focusScopeIsFolded(Fold))
+                        monoBins_[index].include(focusScopeFoldSample(Fold, sample[0], sample[1]));
                     value[0] += sample[0];
                     value[1] += sample[1];
                 }
                 remember(sum, value);
-                if constexpr (IncludeMid)
-                    midBins_[blocks.size() * columns_ + column_].include(focusScopeMidSample(value[0], value[1]));
+                if constexpr (focusScopeIsFolded(Fold))
+                    monoBins_[blocks.size() * columns_ + column_].include(focusScopeFoldSample(Fold, value[0], value[1]));
                 for (std::size_t ch = 0; ch < value.size(); ++ch) {
                     peak_[ch] = std::max(peak_[ch], std::abs(value[ch]));
                     energy_[ch] += value[ch] * value[ch];
@@ -287,7 +305,7 @@ class FocusScopeBarProjection {
                 const auto &a = blocks[differenceIndexes_[0]], &b = blocks[differenceIndexes_[1]];
                 focusIncludeDifference(differenceBins_[column_], a.left.subspan(begin, added),
                                        a.right.subspan(begin, added), b.left.subspan(begin, added),
-                                       b.right.subspan(begin, added), difference_->mid);
+                                       b.right.subspan(begin, added), difference_->fold);
             }
             frames_ += added;
             begin = end;
@@ -311,14 +329,16 @@ class FocusScopeBarProjection {
         return std::span(bins_).subspan(index * columns_, visibleColumns_);
     }
 
-    [[nodiscard]] std::span<const MidColumn> midLane(std::size_t index) const noexcept {
-        if (midBins_.empty() || !visibleColumns_) return {};
-        return std::span(midBins_).subspan(index * columns_, visibleColumns_);
+    [[nodiscard]] std::span<const MonoColumn> monoLane(std::size_t index,
+                                                       FocusScopeChannels expected) const noexcept {
+        if (expected != mono_ || monoBins_.empty() || !visibleColumns_) return {};
+        return std::span(monoBins_).subspan(index * columns_, visibleColumns_);
     }
     FocusScopeRange range_;
     std::vector<FocusScopeBarSource> sources_;
     std::vector<FocusSumColumn> bins_;
-    std::vector<MidColumn> midBins_;
+    std::vector<MonoColumn> monoBins_;
+    FocusScopeChannels mono_ = FocusScopeChannels::Stereo;
     std::vector<FocusSumColumn> differenceBins_;
     std::optional<SharedAnalysis::ScopeDifference> difference_;
     std::array<std::size_t, 2> differenceIndexes_{};
@@ -361,7 +381,8 @@ focusScopeRange(std::span<const SharedAnalysis::Result *const> sources) noexcept
 template <class PublishColumn>
 std::optional<FocusScopeRange> focusProjectDifference(const SharedAnalysis::Result &a,
                                                       const SharedAnalysis::Result &b,
-                                                      std::size_t columns, bool mid, PublishColumn &&publish) {
+                                                      std::size_t columns, FocusScopeChannels fold,
+                                                      PublishColumn &&publish) {
     const std::array<const SharedAnalysis::Result *, 2> pair{&a, &b};
     const auto range = focusScopeRange(pair);
     if (!range || !columns) return {};
@@ -371,11 +392,11 @@ std::optional<FocusScopeRange> focusProjectDifference(const SharedAnalysis::Resu
     for (std::size_t column = 0; column < columns; ++column) {
         const auto begin = column * range->frames / columns;
         const auto length = (column + 1) * range->frames / columns - begin;
-        auto extrema = focusEmptyExtrema(mid);
+        auto extrema = focusEmptyExtrema(focusScopeIsFolded(fold));
         focusIncludeDifference(extrema, std::span(a.scopeLeft).subspan(startA + begin, length),
                                std::span(a.scopeRight).subspan(startA + begin, length),
                                std::span(b.scopeLeft).subspan(startB + begin, length),
-                               std::span(b.scopeRight).subspan(startB + begin, length), mid);
+                               std::span(b.scopeRight).subspan(startB + begin, length), fold);
         publish(column, extrema);
     }
     return range;
@@ -383,7 +404,7 @@ std::optional<FocusScopeRange> focusProjectDifference(const SharedAnalysis::Resu
 
 // The supplied range must be accepted for these sources. Measure the signed
 // stereo sum and optionally emit its display extrema during the same scan.
-template <bool IncludeMid = false, class PublishColumn>
+template <FocusScopeChannels Fold = FocusScopeChannels::Stereo, class PublishColumn>
 FocusSumReading focusProjectSum(std::span<const SharedAnalysis::Result *const> sources,
                                 const FocusScopeRange &range, std::size_t columns,
                                 PublishColumn &&publishColumn) {
@@ -409,14 +430,14 @@ FocusSumReading focusProjectSum(std::span<const SharedAnalysis::Result *const> s
         scan(0, range.frames, [](double, double) {});
     }
     for (std::size_t column = 0; column < columns; ++column) {
-        [[maybe_unused]] constexpr auto inf = std::numeric_limits<double>::infinity();
-        using Extrema = std::conditional_t<IncludeMid, FocusScopeBarProjection::MidColumn, FocusSumColumn>;
+        constexpr bool mono = focusScopeIsFolded(Fold);
+        using Extrema = std::conditional_t<mono, FocusScopeBarProjection::MonoColumn, FocusSumColumn>;
         Extrema extrema;
-        if constexpr (!IncludeMid) extrema = {{inf, inf}, {-inf, -inf}};
+        if constexpr (!mono) extrema = focusEmptyExtrema();
         scan(column * range.frames / columns, (column + 1) * range.frames / columns,
              [&](double left, double right) {
-                 if constexpr (IncludeMid) {
-                     extrema.include(focusScopeMidSample(left, right));
+                 if constexpr (focusScopeIsFolded(Fold)) {
+                     extrema.include(focusScopeFoldSample(Fold, left, right));
                  } else {
                      extrema.low[0] = std::min(extrema.low[0], left);
                      extrema.high[0] = std::max(extrema.high[0], left);

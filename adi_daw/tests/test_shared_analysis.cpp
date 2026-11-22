@@ -254,6 +254,7 @@ void realtimeMaximumDecayAndAdmission() {
 }
 void focusScopeMidBeforeBinning() {
     using adi::ui::FocusScopeBarBlock;
+    using adi::ui::FocusScopeChannels;
     using adi::ui::FocusScopeBarProjection;
     using adi::ui::FocusScopeBarSource;
     using adi::ui::FocusScopeRange;
@@ -268,16 +269,10 @@ void focusScopeMidBeforeBinning() {
         std::size_t midCount = 0;
         std::array<double, 2> mid{};
     };
-    const auto capture = [&]<class Projection>(Projection &projection, std::span<const float> right,
-                                                bool requestMid) -> std::optional<Captured> {
-        bool prepared;
-        if constexpr (requires { projection.prepare(range, sources, 1, revision, true); }) {
-            prepared = requestMid ? projection.prepare(range, sources, 1, revision, true)
-                                  : projection.prepare(range, sources, 1, revision);
-        } else {
-            prepared = projection.prepare(range, sources, 1, revision);
-        }
-        if (!prepared) return {};
+    const auto capture = [&](FocusScopeBarProjection &projection, std::span<const float> right,
+                              bool requestMid) -> std::optional<Captured> {
+        const auto view = requestMid ? FocusScopeChannels::Mid : FocusScopeChannels::Stereo;
+        if (!projection.prepare(range, sources, 1, revision, view)) return {};
         for (std::size_t frame = 0; frame < left.size(); ++frame) {
             const auto stamp = range.first + static_cast<std::int64_t>(frame);
             const auto quiet = std::span(silence).subspan(frame, 1);
@@ -296,11 +291,9 @@ void focusScopeMidBeforeBinning() {
         const auto member = projection.memberColumns(0), sum = projection.sumColumns();
         if (!projection.complete() || member.size() != 1 || sum.size() != 1) return {};
         Captured result{member.front(), sum.front(), 0, {}};
-        if constexpr (requires { projection.memberMidColumns(std::size_t{}); }) {
-            const auto mid = projection.memberMidColumns(0);
-            result.midCount = mid.size();
-            if (mid.size() == 1) result.mid = {mid.front().low, mid.front().high};
-        }
+        const auto mid = projection.memberMonoColumns(0, FocusScopeChannels::Mid);
+        result.midCount = mid.size();
+        if (mid.size() == 1) result.mid = {mid.front().low, mid.front().high};
         return result;
     };
     const auto stereoMatches = [](const std::optional<Captured> &result,
@@ -816,6 +809,7 @@ void focusBarScopeBroker() {
     check(released == 2 && broker.stats().taps == 0, "the last subscriber releases each tap exactly once");
 }
 void focusBarScopeMidDemand() {
+    using adi::ui::FocusScopeChannels;
     using Source = adi::engine::ScopeSource;
     using Status = SharedAnalysis::BarScopeStatus;
     constexpr double rate = 48000.;
@@ -836,30 +830,30 @@ void focusBarScopeMidDemand() {
         taps[1]->write(&second, &silent, 1, stamp, true, revision);
         broker.pump();
     };
-    lease.setMidRequested(true);
+    lease.setMonoRequested(FocusScopeChannels::Mid);
     check(lease.request({0, 2, rate}, revision), "a Mid bar uses the existing capture request");
     write(0, .75f, -.5f);
     check(lease.status() == Status::Pending, "a partial Mid bar is not published");
     write(1, -.75f, .5f);
     const auto mid = lease.read();
     const auto levels = [](const auto &result) {
-        return result && result->projection ? result->projection->sumMidColumns()
-            : std::span<const adi::ui::FocusScopeBarProjection::MidColumn>{};
+        return result && result->projection ? result->projection->sumMonoColumns(FocusScopeChannels::Mid)
+            : std::span<const adi::ui::FocusScopeBarProjection::MonoColumn>{};
     };
     const auto combined = levels(mid);
-    const auto member = mid && mid->projection ? mid->projection->memberMidColumns(0)
-        : std::span<const adi::ui::FocusScopeBarProjection::MidColumn>{};
+    const auto member = mid && mid->projection ? mid->projection->memberMonoColumns(0, FocusScopeChannels::Mid)
+        : std::span<const adi::ui::FocusScopeBarProjection::MonoColumn>{};
     check(combined.size() == 1 && combined.front().low == -.25 && combined.front().high == .25 &&
               member.size() == 1 && member.front().low == 0. && member.front().high == 0.,
           "the grouped publication bins signed Mid for members and the sum");
 
     check(lease.request({2, 2, rate}, revision), "the following bar starts on the same grouped lease");
     write(2, 1.f, .5f);
-    lease.setMidRequested(false);
+    lease.setMonoRequested(FocusScopeChannels::Stereo);
     write(3, -1.f, -.5f);
     const auto stereo = lease.read();
     check(stereo && stereo->projection && stereo->projection->sumColumns().size() == 1 &&
-              stereo->projection->memberMidColumns(0).empty() && levels(stereo).empty(),
+              stereo->projection->memberMonoColumns(0, FocusScopeChannels::Mid).empty() && levels(stereo).empty(),
           "turning off Mid discards unpublished Mid extrema without restarting the stereo reader");
     check(levels(mid).size() == 1 && levels(mid).front().high == .25,
           "an already published Mid snapshot stays immutable when the view changes");
@@ -895,19 +889,19 @@ void focusScopeDifference() {
     const auto capture = [](FocusSumColumn &out) { return [&](std::size_t, const auto &column) { out = column; }; };
     allocationSizeCount = 0;
     observeAllocationSizes = true;
-    const auto overlap = focusProjectDifference(a, b, 1, false, capture(stereo));
+    const auto overlap = focusProjectDifference(a, b, 1, FocusScopeChannels::Stereo, capture(stereo));
     observeAllocationSizes = false;
     check(overlap && overlap->first == 2 && overlap->frames == 2 && allocationSizeCount == 0 &&
               stereo.low == std::array{-1.5, .25} && stereo.high == std::array{1.5, .25},
           "short Difference subtracts stamped samples before extrema, with no allocation");
-    check(focusProjectDifference(a, b, 1, true, capture(mid)) && mid.low[0] == -.625 && mid.high[0] == .875,
+    check(focusProjectDifference(a, b, 1, FocusScopeChannels::Mid, capture(mid)) && mid.low[0] == -.625 && mid.high[0] == .875,
           "Mid combines the paired L/R sample differences before binning");
-    check(focusProjectDifference(a, a, 1, false, capture(null)) &&
+    check(focusProjectDifference(a, a, 1, FocusScopeChannels::Stereo, capture(null)) &&
               null.low == std::array{0., 0.} && null.high == std::array{0., 0.},
           "a waveform subtracts from itself to exact silence");
     ++b.transportRevision;
     bool wrongRevision = false;
-    check(!focusProjectDifference(a, b, 1, false, [&](std::size_t, const auto &) { wrongRevision = true; }) &&
+    check(!focusProjectDifference(a, b, 1, FocusScopeChannels::Stereo, [&](std::size_t, const auto &) { wrongRevision = true; }) &&
               !wrongRevision, "Difference never renders across two transport revisions");
 
     std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25),
@@ -925,8 +919,8 @@ void focusScopeDifference() {
         taps[2]->write(&left[i], &right[i], 1, stamp, true, revision);
         broker.pump();
     };
-    const SharedAnalysis::ScopeDifference first{sources[0], sources[1], false, 1};
-    const SharedAnalysis::ScopeDifference second{sources[0], sources[2], true, 2};
+    const SharedAnalysis::ScopeDifference first{sources[0], sources[1], FocusScopeChannels::Stereo, 1};
+    const SharedAnalysis::ScopeDifference second{sources[0], sources[2], FocusScopeChannels::Mid, 2};
     lease.setDifferenceRequested(first);
     check(lease.request({0, 2, rate}, revision), "Difference requests a normal stamped bar");
     write(0, 0);

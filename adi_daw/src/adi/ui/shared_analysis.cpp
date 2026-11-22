@@ -878,8 +878,8 @@ struct SharedAnalysis::BarScopeDomain {
         return true;
     }
 
-    void setMidRequested(bool enabled) noexcept {
-        includeMid.store(enabled, std::memory_order_relaxed);
+    void setMonoRequested(FocusScopeChannels fold) noexcept {
+        monoRequested.store(focusScopeIsFolded(fold) ? fold : FocusScopeChannels::Stereo, std::memory_order_relaxed);
     }
 
     void setDifferenceRequested(std::optional<ScopeDifference> requested) noexcept {
@@ -954,17 +954,17 @@ struct SharedAnalysis::BarScopeDomain {
                     finish = std::min(finish, lanes[i].chunkEnd);
                 }
                 pollDifferenceRequest();
-                const bool wantsMid = includeMid.load(std::memory_order_relaxed);
+                const auto fold = monoRequested.load(std::memory_order_relaxed);
                 if (!projection) {
                     for (std::size_t i = 0; i < lanes.size(); ++i)
                         identities[i] = {lanes[i].source, lanes[i].tap->generation()};
                     projection = std::make_shared<FocusScopeBarProjection>();
-                    if (!projection->prepare(range, identities, columns, revision, wantsMid, difference)) {
+                    if (!projection->prepare(range, identities, columns, revision, fold, difference)) {
                         invalidate();
                         return false;
                     }
-                } else if (!wantsMid) {
-                    projection->discardMid();
+                } else {
+                    projection->retainMono(fold);
                 }
                 const auto count = static_cast<std::size_t>(finish - first);
                 for (std::size_t i = 0; i < lanes.size(); ++i) {
@@ -1001,7 +1001,7 @@ struct SharedAnalysis::BarScopeDomain {
     FocusScopeRange range;
     std::uint64_t expectedRevision = 0, revision = 0;
     std::int64_t end = 0;
-    std::atomic<bool> includeMid{false};
+    std::atomic<FocusScopeChannels> monoRequested{FocusScopeChannels::Stereo};
     std::mutex differenceMutex; // held only to copy the request, never while processing samples
     std::optional<ScopeDifference> requestedDifference, difference;
     std::atomic<std::uint64_t> differenceVersion{0};
@@ -1524,11 +1524,11 @@ bool SharedAnalysis::BarScopeLease::request(const FocusScopeRange &range, std::u
     state->ownerOnly();
     return domain_->request(range, expected);
 }
-void SharedAnalysis::BarScopeLease::setMidRequested(bool enabled) noexcept {
+void SharedAnalysis::BarScopeLease::setMonoRequested(FocusScopeChannels fold) noexcept {
     const auto state = state_.lock();
     if (!state || !domain_) return;
     state->ownerOnly();
-    domain_->setMidRequested(enabled);
+    domain_->setMonoRequested(fold);
 }
 void SharedAnalysis::BarScopeLease::setDifferenceRequested(std::optional<ScopeDifference> requested) noexcept {
     const auto state = state_.lock();
