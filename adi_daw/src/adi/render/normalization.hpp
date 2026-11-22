@@ -13,6 +13,7 @@ struct Normalization {
     NormalizeMode mode=NormalizeMode::Off;
     double targetLufs=-14,truePeakCeilingDb=-1;
     std::vector<double> channelWeights{};
+    bool brickwall=false;
 };
 struct NormalizationReport {
     std::optional<double> sourceLufs{},sourceSamplePeakDb{},sourceTruePeakDb{};
@@ -20,6 +21,7 @@ struct NormalizationReport {
     double appliedGainDb=0;
     bool ceilingLimited=false;
     unsigned encodingPasses=0;
+    bool brickwallApplied=false;
 };
 void validateNormalization(const Normalization&,std::uint32_t rate,int channels);
 /// Offline worker, using a fresh job-owned staging file. Retains interleaved

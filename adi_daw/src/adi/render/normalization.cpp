@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/render/normalization.hpp"
+#include "adi/dsp/limiter.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <algorithm>
@@ -36,6 +37,37 @@ struct Measurement {
     }
 };
 void service(const std::function<void()>& callback){if(callback)callback();}
+void readBlock(std::ifstream& source,std::span<double> values) {
+    const auto bytes=static_cast<std::streamsize>(values.size_bytes());
+    source.read(reinterpret_cast<char*>(values.data()),bytes);
+    if(source.gcount()!=bytes)throw std::runtime_error("Incomplete normalization capture");
+}
+void limitProgramme(std::ifstream& source,std::span<double> scratch,std::vector<double>& planar,
+                    std::size_t width,std::uint64_t frames,std::uint32_t rate,double gain,double ceilingDb,
+                    const std::function<void()>& callback) {
+    if(frames>planar.max_size()/width)
+        throw std::runtime_error("Brickwall normalization exceeds the offline address space");
+    const auto length=static_cast<std::size_t>(frames);
+    planar.resize(length*width);
+    std::vector<double*> channels(width);
+    for(std::size_t channel=0;channel<width;++channel)channels[channel]=planar.data()+channel*length;
+    for(std::size_t first=0;first<length;) {
+        service(callback);
+        const auto count=std::min<std::size_t>(blockFrames,length-first);
+        readBlock(source,scratch.first(count*width));
+        for(std::size_t frame=0;frame<count;++frame)
+            for(std::size_t channel=0;channel<width;++channel)
+                channels[channel][first+frame]=scratch[frame*width+channel]*gain;
+        first+=count;
+    }
+    dsp::LookaheadLimiter limiter;
+    limiter.prepare(rate,static_cast<int>(width),0);
+    limiter.setTruePeak(true);
+    limiter.setCeiling(std::pow(10.0,ceilingDb/20.0));
+    service(callback);
+    limiter.processOffline(channels.data(),channels.data(),static_cast<std::int64_t>(frames));
+    service(callback);
+}
 }
 void validateNormalization(const Normalization& options,std::uint32_t rate,int channels) {
     if(options.mode!=NormalizeMode::Off && options.mode!=NormalizeMode::Peak && options.mode!=NormalizeMode::Loudness)throw std::invalid_argument("Unknown export normalization mode");
@@ -94,32 +126,48 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
     service(callback);NormalizationReport report;const auto source=state.input.finish();
     report.sourceLufs=source.first;report.sourceTruePeakDb=source.second;
     if(state.samplePeak>0)report.sourceSamplePeakDb=20*std::log10(state.samplePeak);
-    double gainDb=0;
+    const bool brickwall=state.options.mode==NormalizeMode::Loudness && state.options.brickwall;
+    double gainDb=0,limiterCeiling=state.options.truePeakCeilingDb;
     if(state.options.mode==NormalizeMode::Peak)gainDb=report.sourceSamplePeakDb?-*report.sourceSamplePeakDb:0;
     else {
         if(state.frames<static_cast<std::uint64_t>(std::llround(state.rate*0.4)) || !source.first || !source.second)
             throw std::runtime_error("LUFS target requires at least 400 ms of measurable gated audio; choose Peak or Off");
         gainDb=state.options.targetLufs-*source.first;
         const auto ceilingGain=state.options.truePeakCeilingDb-*source.second;
-        if(gainDb>ceilingGain){gainDb=ceilingGain;report.ceilingLimited=true;}
+        if(gainDb>ceilingGain) {
+            if(!brickwall)gainDb=ceilingGain;
+            report.ceilingLimited=true;
+        }
     }
-    std::vector<double> values(static_cast<std::size_t>(state.channels)*blockFrames);
+    const auto width=static_cast<std::size_t>(state.channels);
+    std::vector<double> values(width*blockFrames),limited;
     std::vector<float> encoded(values.size());
     for(unsigned pass=0;pass<4;++pass) {
         service(callback);
         double quantizationGain=1.0;
         {
             std::ifstream sourceFile(state.spool,std::ios::binary);if(!sourceFile)throw std::runtime_error("Cannot reopen normalization capture");
+            const double gain=state.options.mode==NormalizeMode::Loudness?std::pow(10,gainDb/20):1;
+            report.brickwallApplied=brickwall && *source.second+gainDb>limiterCeiling;
+            if(report.brickwallApplied) {
+                report.ceilingLimited=true;
+                limitProgramme(sourceFile,values,limited,width,state.frames,state.rate,gain,limiterCeiling,callback);
+            }
             audio::WavWriter writer(output,state.rate,static_cast<std::uint16_t>(state.channels),format,nullptr,std::uint64_t{1}<<32,dither,seed);
             quantizationGain=writer.quantizationGain();
-            const double gain=state.options.mode==NormalizeMode::Loudness?std::pow(10,gainDb/20):1;
             for(std::uint64_t first=0;first<state.frames;) {
                 service(callback);const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,state.frames-first));
-                const auto samples=static_cast<std::size_t>(count)*static_cast<std::size_t>(state.channels);
-                const auto bytes=static_cast<std::streamsize>(samples*sizeof(double));sourceFile.read(reinterpret_cast<char*>(values.data()),bytes);
-                if(sourceFile.gcount()!=bytes)throw std::runtime_error("Incomplete normalization capture");
+                const auto samples=static_cast<std::size_t>(count)*width;
+                if(report.brickwallApplied) {
+                    const auto length=static_cast<std::size_t>(state.frames);
+                    for(std::size_t frame=0;frame<count;++frame)
+                        for(std::size_t channel=0;channel<width;++channel)
+                            values[frame*width+channel]=limited[channel*length+static_cast<std::size_t>(first)+frame];
+                } else readBlock(sourceFile,std::span<double>(values).first(samples));
                 for(std::size_t sample=0;sample<samples;++sample) {
-                    const auto value=state.options.mode==NormalizeMode::Peak?(state.samplePeak>0?values[sample]/state.samplePeak:values[sample]):values[sample]*gain;
+                    auto value=values[sample];
+                    if(state.options.mode==NormalizeMode::Peak && state.samplePeak>0)value/=state.samplePeak;
+                    if(state.options.mode==NormalizeMode::Loudness && !report.brickwallApplied)value*=gain;
                     if(!std::isfinite(value) || (format==audio::WavFormat::Float32 && std::abs(value)>std::numeric_limits<float>::max()))throw std::runtime_error("Normalized audio exceeds the output format");
                     values[sample]=value;
                 }
@@ -146,18 +194,21 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
         if(*measuredOutput.second<=state.options.truePeakCeilingDb) {
             // Absolute gating can admit windows after a large boost. Correct
             // against the encoded result, retaining the same captured audio.
-            if(measuredOutput.first) {
+            if(measuredOutput.first && (!brickwall || pass+1<4)) {
                 const auto correction=state.options.targetLufs-*measuredOutput.first;
-                if(std::abs(correction)>0.1 && (correction<0 || !report.ceilingLimited)) {
+                if(std::abs(correction)>0.1 && (brickwall || correction<0 || !report.ceilingLimited)) {
                     const auto available=state.options.truePeakCeilingDb-*measuredOutput.second;
-                    const auto delta=std::min(correction,available);
+                    const auto delta=brickwall?std::clamp(correction,-3.0,3.0):std::min(correction,available);
                     if(delta<correction)report.ceilingLimited=true;
                     if(std::abs(delta)>1e-6){gainDb+=delta;continue;}
                 }
             }
             return report;
         }
-        gainDb-=*measuredOutput.second-state.options.truePeakCeilingDb+0.01;report.ceilingLimited=true;
+        const auto excess=*measuredOutput.second-state.options.truePeakCeilingDb+0.01;
+        if(report.brickwallApplied)limiterCeiling-=std::min(excess,3.0);
+        else gainDb-=brickwall?std::min(excess,3.0):excess;
+        report.ceilingLimited=true;
     }
     throw std::runtime_error("Encoded output cannot meet its normalization target and ceiling");
 }

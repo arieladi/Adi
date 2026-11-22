@@ -730,6 +730,7 @@ std::string serializeRunManifest(const RunReport& run) {
                     (job.normalization.mode == NormalizeMode::Peak ? "peak" : "loudness")},
                     {"target_lufs", job.normalization.targetLufs},
                     {"true_peak_ceiling_db", job.normalization.truePeakCeilingDb},
+                    {"brickwall", job.normalization.brickwall},
                     {"channel_weights", job.normalization.channelWeights}}}};
             if (job.niStems) {
                 profile["ni_stems"] = {{"bit_rate_per_stream", job.niStems->bitRate}, {"stems", Json::array()}};
@@ -797,7 +798,7 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"output_lufs", optionalNumber(report.outputLufs)},
                     {"output_true_peak_db", optionalNumber(report.outputTruePeakDb)},
                     {"applied_gain_db", report.appliedGainDb}, {"ceiling_limited", report.ceilingLimited},
-                    {"encoding_passes", report.encodingPasses}};
+                    {"encoding_passes", report.encodingPasses}, {"brickwall_applied", report.brickwallApplied}};
             }
             item["result"] = std::move(value);
         }
