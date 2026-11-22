@@ -11,6 +11,17 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 Extended logarithmic display grid
+
+Dense Extended traces use up to 1,024 logarithmic cells. Each occupied cell keeps its strongest displayed bin. Interior empty cells interpolate between measured frequencies and both ends stop at the measured limits. Sparse profiles keep their direct path. The grid is display-only and reused with each view's existing immutable publication.
+
+Two software-peer geometry assertions failed first and all 495 analyser assertions now pass. The targeted cases cover a crowded-bin peak, low-bin interpolation, a partial Nyquist cell, resize round-trip and unchanged broker work. All 24 CTests and the 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed both units and Clang passed the implementation.
+
+ZIP SHA-256 `6b2209a58919a068f2274d5432f92a70833c378631ca2f42f330484dd50d4cde`; EXE SHA-256 `19572e396faa2c02d0ba2e918308af2675297a8557e5f37d67eaf7fb3190c56a`. The Claude brief covers peak visibility, 24 kHz cutoff, Freeze, slope and the companion readouts. Timing still waits for the quiet window.
+
+PR requested — `mixview/mx21-extended-log-grid-lands-after-2026-12-03` at `9b3efbdef01f26ea29bb4d4a9cfbf668b0374f21`, also the joined scheduled preview. Lands after 3 December.
+
+
 ### 22 November — MX-21 retained Wide Spectrum path
 
 Wide now projects its line when a publication, slope or scale changes. Paint and resize use that retained geometry. The Wide ruler still follows a lower Nyquist edge and the primary retains its previous stroke. Freeze holds the raw frame while permitting display tilt.
