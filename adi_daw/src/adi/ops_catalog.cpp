@@ -19,6 +19,7 @@
 #include "adi/clip_image.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/clip_edit_ops.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/blob.hpp"
 #include "adi/automation_edits.hpp"
 #include "adi/automation_lanes.hpp"
@@ -573,53 +574,82 @@ bool audioDetachInverse(OpContext& c,const Payload& p,Payload& inv,std::string& 
     } catch(const std::exception& e){err=e.what();return false;}
 }
 
+Payload captureClipPlacement(SQLite::Database& db, std::int64_t id) {
+    SQLite::Statement st(db, "SELECT id,track_id,lane_id,time_base,pos_ticks,pos_ns,"
+                             "length_ticks,length_ns FROM clips WHERE id=?");
+    st.bind(1, id);
+    if (!st.executeStep()) throw std::runtime_error("no such clip");
+    return detail::captureQueryRow(st);
+}
+bool legacyClipPlacement(const OpContext& c) {
+    if (!c.replay) return false;
+    if (!c.replay->hasInverse || c.replay->asInverse) return true;
+    std::string error;
+    const auto inverse = decodeFromLog(c.replay->inverse, error);
+    if (!inverse) throw std::runtime_error("cannot decode clip placement inverse: " + error);
+    return !inverse->contains("_placement");
+}
+bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool move) {
+    try {
+        const auto id = detail::signedInteger(p.at("id"));
+        if (p.contains("_placement")) {
+            const auto& saved = p.at("_placement");
+            if (!c.replay || !c.replay->asInverse || saved.at("id") != id)
+                throw std::runtime_error("invalid captured clip placement");
+            detail::restoreRow(c.db, "clips", saved, "id");
+            return true;
+        }
+        const auto start = detail::signedInteger(p.at(move ? "to" : "pos"));
+        Payload values = {{"id", id}};
+        if (move) {
+            // Match the take-lane contract for both new and scalar replay operations.
+            SQLite::Statement laneOwner(c.db,
+                "SELECT 1 FROM clips c JOIN lanes l ON l.id=c.lane_id "
+                "WHERE c.id=? AND (l.track_id<>c.track_id OR l.track_id<>?)");
+            laneOwner.bind(1, id);
+            laneOwner.bind(2, detail::signedInteger(p.at("track")));
+            if (laneOwner.executeStep())
+                throw std::runtime_error("detach a take-lane clip before moving it to another track");
+        }
+        if (legacyClipPlacement(c)) {
+            // Old logs deliberately reproduce the row effects they recorded.
+            values["pos_ticks"] = start;
+            values[move ? "track_id" : "length_ticks"] = p.at(move ? "track" : "length");
+            detail::restoreRow(c.db, "clips", values, "id");
+            return true;
+        }
+        const auto before = captureClipPlacement(c.db, id);
+        const bool linear = before.at("time_base") == 1;
+        std::optional<edit::TimeMap> time;
+        if (linear) time.emplace(c.db);
+        const auto position = time ? time->nanos(start) : start;
+        const auto* lengthKey = linear ? "length_ns" : "length_ticks";
+        values[linear ? "pos_ns" : "pos_ticks"] = position;
+        if (move) {
+            const auto track = detail::signedInteger(p.at("track"));
+            values["track_id"] = track;
+            if (!before.at(lengthKey).is_null())
+                (void)edit::addTime(position, detail::signedInteger(before.at(lengthKey)));
+        } else {
+            const auto ticks = detail::signedInteger(p.at("length"));
+            if (ticks < 0) throw std::runtime_error("clip length must be nonnegative");
+            const auto end = edit::addTime(start, ticks);
+            values[lengthKey] = time ? time->nanos(end) - position : ticks;
+        }
+        detail::restoreRow(c.db, "clips", values, "id");
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
 bool clipMoveApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement laneOwner(c.db,"SELECT 1 FROM clips c JOIN lanes l ON l.id=c.lane_id WHERE c.id=? AND (l.track_id<>c.track_id OR l.track_id<>?)");
-        laneOwner.bind(1,detail::signedInteger(p.at("id")));laneOwner.bind(2,detail::signedInteger(p.at("track")));
-        if(laneOwner.executeStep())throw std::runtime_error("detach a take-lane clip before moving it to another track");
-        SQLite::Statement st(c.db,
-            "UPDATE clips SET pos_ticks = ?, track_id = ? WHERE id = ?");
-        st.bind(1, p.at("to").get<std::int64_t>());
-        st.bind(2, p.at("track").get<std::int64_t>());
-        st.bind(3, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such clip"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+    return clipPlacementApply(c, p, err, true);
 }
-bool clipMoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "SELECT pos_ticks, track_id FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["to"] = st.getColumn(0).getInt64();
-        inv["track"] = st.getColumn(1).getInt64();
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
 bool clipResizeApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement st(c.db,
-            "UPDATE clips SET pos_ticks = ?, length_ticks = ? WHERE id = ?");
-        st.bind(1, p.at("pos").get<std::int64_t>());
-        st.bind(2, p.at("length").get<std::int64_t>());
-        st.bind(3, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such clip"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+    return clipPlacementApply(c, p, err, false);
 }
-bool clipResizeInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+bool clipPlacementInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
     try {
-        SQLite::Statement st(c.db, "SELECT pos_ticks, length_ticks FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["pos"] = st.getColumn(0).getInt64();
-        inv["length"] = st.getColumn(1).getInt64();
+        const auto id = detail::signedInteger(p.at("id"));
+        inv = {{"id", id}, {"_placement", captureClipPlacement(c.db, id)}};
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1941,9 +1971,9 @@ const OpDescriptor kHandWritten[] = {
     {"clip.detachAudio", "Detach unedited audio", Scope::Edit, EngineImpact::GraphRebuild, kFId, false, false,
      audioDetachApply, audioDetachInverse, "clip.attachAudio"},
     {"clip.move", "Move a clip in time, and optionally to another track", Scope::Edit, EngineImpact::Snapshot,
-     kFClipMove, false, false, clipMoveApply, clipMoveInverse, ""},
+     kFClipMove, false, false, clipMoveApply, clipPlacementInverse, ""},
     {"clip.resize", "Change a clip's start and length", Scope::Edit, EngineImpact::Snapshot, kFClipResize,
-     false, false, clipResizeApply, clipResizeInverse, ""},
+     false, false, clipResizeApply, clipPlacementInverse, ""},
 
     {"note.insert", "Add a note to a clip", Scope::Edit, EngineImpact::Snapshot, kFNoteFull, false, false,
      notes::noteInsertApply, notes::noteInsertInverse, "note.delete"},

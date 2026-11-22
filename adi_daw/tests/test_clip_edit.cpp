@@ -36,6 +36,105 @@ struct Project {
     bool fade(Payload value){OpRequest request;request.opType="clip.setFades";request.payload=std::move(value);return OpJournal(*store).commit(request).ok;}
     const ClipNode& clip(const Snapshot& snapshot,std::size_t index=0){return *snapshot.tracks[0]->clips[index];}
 };
+void nativePlacement() {
+    Project p;
+    auto& db = p.store->db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'audio','Destination');"
+            "INSERT INTO lanes(id,track_id,ord,name,kind) VALUES"
+            "(301,21,0,'Take','take'),(302,22,0,'Destination Take','take');"
+            "DELETE FROM tempo_map;"
+            "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(5765760,60,0);"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,"
+            "pos_ns=250000000,length_ns=200000000,lane_id=301 WHERE id=7");
+    const auto native = [&](const char* sql) { return db.execAndGet(sql).getInt64(); };
+    OpJournal journal(*p.store);
+    History history(*p.store);
+    const auto makeRequest = [](const char* type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return request;
+    };
+    const auto commit = [&](const char* type, Payload payload) {
+        return journal.commit(makeRequest(type, std::move(payload)));
+    };
+    const auto initial = SnapshotBuilder::fromStore(*p.store);
+    const auto* track = initial->findTrack(21);
+    if (!track) throw std::runtime_error("missing placement fixture track");
+    const auto original = std::find_if(track->clips.begin(), track->clips.end(),
+                                      [](const auto& clip) { return clip->id == 7; });
+    check(original != track->clips.end() && (*original)->posTicks == 2882880 &&
+              (*original)->lengthTicks > 0, "arrangement projects linear placement onto its tick clock");
+    check(commit("clip.move", {{"id", 7}, {"to", 5765760}, {"track", 21}}).ok &&
+              native("SELECT pos_ns FROM clips WHERE id=7") == 500000000 &&
+              native("SELECT lane_id FROM clips WHERE id=7") == 301,
+          "a same-track linear move converts ticks and keeps the take lane");
+    const auto oldHead = journal.headSeq();
+    check(!commit("clip.move", {{"id", 7}, {"to", 11531520}, {"track", 22}}).ok &&
+              journal.headSeq() == oldHead &&
+              native("SELECT track_id FROM clips WHERE id=7") == 21 &&
+              native("SELECT lane_id FROM clips WHERE id=7") == 301 &&
+              native("SELECT pos_ns FROM clips WHERE id=7") == 500000000,
+          "a raw cross-track move of a take refuses without editing or journalling");
+    const std::array moveBatch{
+        makeRequest("clip.setLane", {{"id", 7}, {"lane", nullptr}}),
+        makeRequest("clip.move", {{"id", 7}, {"to", 11531520}, {"track", 22}}),
+        makeRequest("clip.setLane", {{"id", 7}, {"lane", 302}})
+    };
+    check(journal.commit(moveBatch).ok &&
+              native("SELECT pos_ns FROM clips WHERE id=7") == 1500000000 &&
+              native("SELECT lane_id FROM clips WHERE id=7") == 302 &&
+              native("SELECT length_ns FROM clips WHERE id=7") == 200000000,
+          "explicit detach, native move and attach preserve duration in one transaction");
+    check(history.undo().ok && native("SELECT track_id FROM clips WHERE id=7") == 21 &&
+              native("SELECT lane_id FROM clips WHERE id=7") == 301 &&
+              native("SELECT pos_ns FROM clips WHERE id=7") == 500000000,
+          "move Undo restores exact native time, track and lane");
+    check(history.redo().ok && native("SELECT pos_ns FROM clips WHERE id=7") == 1500000000 &&
+              native("SELECT lane_id FROM clips WHERE id=7") == 302,
+          "move Redo restores the explicit destination lane and physical position");
+    check(commit("clip.resize", {{"id", 7}, {"pos", 2882880}, {"length", 5765760}}).ok &&
+              native("SELECT pos_ns FROM clips WHERE id=7") == 250000000 &&
+              native("SELECT length_ns FROM clips WHERE id=7") == 750000000 &&
+              native("SELECT pos_ticks IS NULL AND length_ticks IS NULL FROM clips WHERE id=7") == 1,
+          "linear resize across a tempo change uses both endpoints in native units");
+    check(history.undo().ok && native("SELECT pos_ns FROM clips WHERE id=7") == 1500000000 &&
+              native("SELECT length_ns FROM clips WHERE id=7") == 200000000 &&
+              history.redo().ok && native("SELECT length_ns FROM clips WHERE id=7") == 750000000,
+          "linear resize Undo and Redo leave inactive tick columns null");
+    check(!commit("clip.resize", {{"id", 7}, {"pos", INT64_MAX}, {"length", 10}}).ok &&
+              native("SELECT length_ns FROM clips WHERE id=7") == 750000000,
+          "overflowing resize refuses atomically");
+    check(commit("clip.resize", {{"id", 7}, {"pos", 2882880}, {"length", 0}}).ok &&
+              native("SELECT length_ns FROM clips WHERE id=7") == 0 &&
+              history.undo().ok && native("SELECT length_ns FROM clips WHERE id=7") == 750000000,
+          "raw resize keeps zero-length clips valid and restores native duration on Undo");
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(499,21,'midi',0,100)");
+    check(commit("clip.move", {{"id", 499}, {"to", -20}, {"track", 21}}).ok &&
+              native("SELECT pos_ticks FROM clips WHERE id=499") == -20 &&
+              history.undo().ok && native("SELECT pos_ticks FROM clips WHERE id=499") == 0,
+          "musical moves retain the signed tick domain and round-trip through Undo");
+
+    const auto legacy = commit("clip.move", {{"id", 7}, {"to", 5765760}, {"track", 22}});
+    if (!legacy.ok) throw std::runtime_error(legacy.error);
+    const auto inverse = encodePayload(Payload{{"id", 7}, {"to", 0}, {"track", 22}});
+    SQLite::Statement replace(db, "UPDATE ops SET inverse=? WHERE seq=?");
+    replace.bind(1, inverse.data(), static_cast<int>(inverse.size()));
+    replace.bind(2, legacy.seqs.back());
+    replace.exec();
+    db.exec("UPDATE clips SET pos_ns=250000000,pos_ticks=5765760 WHERE id=7");
+    check(history.undo().ok && native("SELECT pos_ticks FROM clips WHERE id=7") == 0 &&
+              history.redo().ok && native("SELECT pos_ticks FROM clips WHERE id=7") == 5765760 &&
+              native("SELECT pos_ns FROM clips WHERE id=7") == 250000000,
+          "a historical scalar inverse and its forward replay retain their original row effects");
+
+    db.exec("INSERT INTO media_files(id,hash_blake3,orig_name) VALUES(70,'overflow','source.wav');"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(7,70,128);"
+            "UPDATE clips SET pos_ns=9223372036854775800,length_ns=100,fade_out_ticks=10 WHERE id=7");
+    const auto copy = clip_edit::copyClip(*p.store, 7, 48000);
+    check(!copy.ok && copy.error.find("overflows signed 64-bit") != std::string::npos,
+          "capturing fades from a damaged linear extent refuses before addition can overflow");
+}
 void stateAndSharing() {
     Project p;auto& db=p.store->db();auto old=SnapshotBuilder::fromStore(*p.store);
     check(p.clip(*old).fadeInTicks==0 && p.clip(*old).fadeOutTicks==0 && !p.clip(*old).fadeInTension,"new audio clips have no automatic fades or shape row");
@@ -1054,4 +1153,4 @@ void groupedSplits() {
 }
 } // namespace
 
-int main(){try{stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
