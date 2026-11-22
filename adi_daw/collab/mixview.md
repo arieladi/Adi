@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — DF-M17, high-rate dynamics output verification
+
+The four reviewed dynamics components passed all 20 reducing comparisons at 48, 176.4, 192, 384 and 768 kHz. Each matched the reported zero latency and stayed below the existing peak and RMS limits without gain fit, time shift or trimming. The worst peak residual was 4.48e-8; request and segment variations were byte-identical where exercised. The 768 kHz headless probe first reproduced all four 48 kHz control arrays byte for byte.
+
+The exact DS, Gate and compressor review heads are already published. This item adds private evidence only and is ready for win's register update. It covers four specified settings, with a reducing signal at each rate. CPU, other quality modes and native product admission remain separate.
+
 ## 2026-11-22 — DF-M34 owner boundary and completed Stack coverage
 
 **Needs Engine for DF-M34.** Graph already sends the exact frame count to `Node::silenceTaps` each time it omits a callback. The device backend receives only a one-time `didSuspend`. Request one device hook forwarding each skipped segment's exact length. Limiter's 128-sample convolution and audio-delay phases, and EQ's zero-phase FIR and spectral overlap/hop phases, depend on it. Resetting at wake or estimating from callback index would change future audio after an odd-length sleep. The neutral EQ and Clean suspension slice remains the independent completed part. Stateful sleep stays open and current audio behaviour is preserved.
