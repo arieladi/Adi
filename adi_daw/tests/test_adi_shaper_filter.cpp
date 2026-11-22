@@ -120,6 +120,65 @@ void resonantLevel() {
     check(worst < 0.0002, "half-scale impulse excites the measured damped resonance");
 }
 
+void steepImpulseResponse() {
+    struct Reading {
+        Mode mode;
+        double rate;
+        float cutoff, resonance;
+        std::array<double, 6> taps;
+    };
+    constexpr std::array frames{0, 1, 4, 11, 37, 115};
+    constexpr std::array readings{
+        Reading{Mode::LowPass24, 44100., .5f, .75f,
+                {.000007344, .000057657, .001082071, .013522163, .066714846, .013291698}},
+        Reading{Mode::HighPass24, 48000., .625f, .84375f,
+                {.894808352, -.233009875, -.247777283, .068233803, -.023254154, -.012620030}},
+        Reading{Mode::LowPass24, 96000., .875f, .90625f,
+                {.008931626, .060447052, .469319373, -.506946385, .335888416, .039872151}},
+        Reading{Mode::HighPass24, 96000., .375f, .5f,
+                {.988622308, -.022923127, -.023579974, -.024577584, -.022560012, .005617304}}
+    };
+    double worst = 0.;
+    for (const auto& test : readings) {
+        Filter filter;
+        filter.prepare(test.rate);
+        filter.setMode(test.mode);
+        std::size_t tap = 0;
+        for (int i = 0; i <= frames.back(); ++i) {
+            float left = i == 0 ? 1.f / 128.f : 0.f, right = -left;
+            filter.process(left, right, test.cutoff, test.resonance);
+            if (i != frames[tap]) continue;
+            worst = std::max({worst, std::abs(128. * left - test.taps[tap]),
+                              std::abs(128. * right + test.taps[tap])});
+            ++tap;
+        }
+    }
+    std::printf("Steep signed impulse maximum error %.9g\n", worst);
+    check(worst < 5e-5, "steep low-pass and high-pass impulses reproduce six measured taps");
+}
+
+void movingSteepResponse() {
+    for (Mode mode : {Mode::LowPass12, Mode::HighPass12}) {
+        Filter steep, first, second;
+        steep.setMode(mode == Mode::LowPass12 ? Mode::LowPass24 : Mode::HighPass24);
+        first.setMode(mode);
+        second.setMode(mode);
+        bool exact = true;
+        for (int frame = 0; frame < 32768; ++frame) {
+            const float cutoff = static_cast<float>(std::abs(frame % 8192 - 4096)) / 4096.f;
+            const float resonance = static_cast<float>(frame % 769) / 768.f;
+            const float dryL = static_cast<float>(frame % 227 - 113) / 123.f;
+            const float dryR = static_cast<float>(53 - frame % 107) / 72.f;
+            float left = dryL, right = dryR, expectedL = dryL, expectedR = dryR;
+            steep.process(left, right, cutoff, resonance);
+            first.process(expectedL, expectedR, cutoff, resonance);
+            second.process(expectedL, expectedR, cutoff, .2f);
+            exact = exact && left == expectedL && right == expectedR;
+        }
+        check(exact, "moving steep response runs the variable section before the fixed section on each ear");
+    }
+}
+
 void movingContours() {
     // Three seconds at 120 BPM. A stereo saw input, an ascending/descending
     // cutoff and an opposing resonance contour exercise both filter states.
@@ -161,5 +220,7 @@ int main() {
     sampleRatesAndReset();
     resonantLevel();
     movingContours();
+    steepImpulseResponse();
+    movingSteepResponse();
     return failures == 0 ? 0 : 1;
 }

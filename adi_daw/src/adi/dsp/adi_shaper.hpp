@@ -28,7 +28,8 @@ class AdiShaper {
                  SweepOn = FilterOn + modStageParameterCount, SweepLowPolarity = SweepOn + modStageParameterCount,
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
-                 Count = CrushOn + modStageParameterCount };
+                 BaseCount = CrushOn + modStageParameterCount,
+                 FilterLowSteep = 915, FilterMidSteep, FilterHighSteep, Count };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
@@ -120,6 +121,7 @@ class AdiShaper {
     void layout(StageData& stage, int value) noexcept;
     void slope(Split& split, float value) noexcept;
     void clock(CurveBand& band, BandControl control, float value) const noexcept;
+    void updateFilterMode(std::size_t band) noexcept;
     void setMod(Param id, float value) noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
@@ -127,6 +129,7 @@ class AdiShaper {
                                      float* outL, float* outR, std::size_t frames) noexcept;
     std::array<StageData, 7> stages_;
     std::array<AdiShaperFilter, 3> filters_;
+    std::array<bool, 3> filterSteep_{};
     std::array<AdiShaperSweep, 3> sweeps_;
     std::array<AdiShaperDrive, 3> drives_;
     std::array<AdiShaperCrush, 3> crush_;

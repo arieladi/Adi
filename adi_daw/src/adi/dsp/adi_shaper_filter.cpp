@@ -6,6 +6,10 @@
 #include <numbers>
 
 namespace adi::dsp {
+namespace {
+// The second section uses the same normalized resonance law as the first.
+const double fixedDamping = 2.0 - 1.995 * std::cbrt(static_cast<double>(0.2f));
+} // namespace
 
 AdiShaperFilter::AdiShaperFilter() noexcept { prepare(48000.0); }
 
@@ -29,11 +33,19 @@ void AdiShaperFilter::prepare(double sampleRate) noexcept {
     reset();
 }
 
-void AdiShaperFilter::reset() noexcept { channels_ = {}; }
+void AdiShaperFilter::reset() noexcept {
+    channels_ = {};
+    second_ = {};
+}
 
 void AdiShaperFilter::setMode(Mode mode) noexcept {
-    if (mode_ != mode) {
+    const bool cascade = mode == Mode::LowPass24 || mode == Mode::HighPass24;
+    if (mode == Mode::LowPass24) mode = Mode::LowPass12;
+    if (mode == Mode::HighPass24) mode = Mode::HighPass12;
+    if (mode_ != mode || cascade_ != cascade) {
         mode_ = mode;
+        cascade_ = cascade;
+        if (cascade && lastCutoff_ >= 0.0f) fixed_ = response(fixedDamping);
         reset();
     }
 }
@@ -49,23 +61,28 @@ double AdiShaperFilter::warpAt(float cutoff) const noexcept {
                                              + t * (left.slope + right.slope - 2.0 * delta)));
 }
 
+AdiShaperFilter::Response AdiShaperFilter::response(double damping) const noexcept {
+    const double a1 = 1.0 / (1.0 + g_ * (g_ + damping));
+    return {a1, 1.0 / 12.0 + (4.0 / 27.0) * g_ * a1};
+}
+
 void AdiShaperFilter::tune(float cutoff, float resonance) noexcept {
     if (cutoff != lastCutoff_) {
         lastCutoff_ = cutoff;
         g_ = warpAt(cutoff);
         inverseG_ = 1.0 / g_;
         poleGain_ = g_ / (1.0 + g_);
+        if (cascade_) fixed_ = response(fixedDamping);
     }
     if (resonance != lastResonance_) {
         lastResonance_ = resonance;
         damping_ = 2.0 - 1.995 * std::cbrt(static_cast<double>(resonance));
         gentleResonance_ = (2.0 - damping_) * (2.0 / 3.0);
     }
-    a1_ = 1.0 / (1.0 + g_ * (g_ + damping_));
-    resonanceScale_ = 1.0 / 12.0 + (4.0 / 27.0) * g_ * a1_;
+    variable_ = response(damping_);
 }
 
-float AdiShaperFilter::tick(float input, Channel& state) const noexcept {
+float AdiShaperFilter::tick(float input, Channel& state, const Response& coefficients) const noexcept {
     const double x = input;
     if (x == 0.0 && std::abs(state.band) + std::abs(state.low) + std::abs(state.pole) < 1.0e-28) {
         state = {};
@@ -87,7 +104,7 @@ float AdiShaperFilter::tick(float input, Channel& state) const noexcept {
         // Impulse amplitude sweeps show additional damping proportional to
         // the preceding band output squared, saturating at large amplitudes.
         const double squared = state.previousBand * state.previousBand;
-        const double gain = a1_ * (1.0 + squared / 12.0) / (1.0 + resonanceScale_ * squared);
+        const double gain = coefficients.a1 * (1.0 + squared / 12.0) / (1.0 + coefficients.resonanceScale * squared);
         band = gain * (state.band + g_ * (excitation - state.low));
         low = state.low + g_ * band;
         if (mode_ == Mode::HighPass12) highSum += (band - state.band) * inverseG_;
@@ -111,18 +128,26 @@ void AdiShaperFilter::process(float& left, float& right, float cutoff, float res
         if (!std::isfinite(resonance)) resonance = std::max(0.0f, lastResonance_);
         tune(std::clamp(cutoff, 0.0f, 1.0f), std::clamp(resonance, 0.0f, 1.0f));
     }
-    left = tick(left, channels_[0]);
-    right = tick(right, channels_[1]);
+    left = tick(left, channels_[0], variable_);
+    right = tick(right, channels_[1], variable_);
+    if (cascade_) {
+        left = tick(left, second_[0], fixed_);
+        right = tick(right, second_[1], fixed_);
+    }
 }
 
 bool AdiShaperFilter::finishBlock() noexcept {
     bool repaired = false;
-    for (auto& state : channels_) {
+    const auto verify = [&](Channel& state) {
         if (!std::isfinite(state.pole) || !std::isfinite(state.band) ||
             !std::isfinite(state.low) || !std::isfinite(state.previousBand)) {
             state = {};
             repaired = true;
         }
+    };
+    for (auto& state : channels_) verify(state);
+    if (cascade_) {
+        for (auto& state : second_) verify(state);
     }
     return repaired;
 }

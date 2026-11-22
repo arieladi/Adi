@@ -288,6 +288,17 @@ void AdiShaper::resetKernels(Stage kind) noexcept {
     }
 }
 
+void AdiShaper::updateFilterMode(std::size_t band) noexcept {
+    using Mode = AdiShaperFilter::Mode;
+    const auto type = stages_[static_cast<std::size_t>(Stage::Filter)].bands[band].type;
+    auto mode = static_cast<Mode>(type);
+    if (filterSteep_[band]) {
+        if (mode == Mode::LowPass12) mode = Mode::LowPass24;
+        else if (mode == Mode::HighPass12) mode = Mode::HighPass24;
+    }
+    filters_[band].setMode(mode);
+}
+
 void AdiShaper::setMod(Param id, float value) noexcept {
     if (id >= SweepLowPolarity && id < DriveOn) {
         sweeps_[static_cast<std::size_t>(id - SweepLowPolarity)].setPolarity(value >= 0.5f);
@@ -339,7 +350,7 @@ void AdiShaper::setMod(Param id, float value) noexcept {
     case Type:
         if (kind == Stage::Filter) {
             band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 4.0f)));
-            filters_[index].setMode(static_cast<AdiShaperFilter::Mode>(band.type));
+            updateFilterMode(index);
         } else if (kind == Stage::Sweep) {
             band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 5.0f)));
             sweeps_[index].setMode(static_cast<AdiShaperSweep::Mode>(band.type));
@@ -366,6 +377,14 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= BaseCount) {
+        if (id >= FilterLowSteep && id <= FilterHighSteep) {
+            const auto band = static_cast<std::size_t>(id - FilterLowSteep);
+            filterSteep_[band] = value >= 0.5f;
+            updateFilterMode(band);
+        }
+        return;
+    }
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         for (std::size_t i = 0; i < stages_.size(); ++i) updateStage(static_cast<Stage>(i));

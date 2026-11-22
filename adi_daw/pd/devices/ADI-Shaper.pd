@@ -838,6 +838,12 @@
 #X msg 3585 4719 p 413 \$1;
 #X obj 3585 4756 adi.param \$0 415 0 100 100 % lin Crush_High_Hold_Rate_8;
 #X msg 3585 4783 p 414 \$1;
+#X obj 4135 20 adi.param \$0 916 0 1 0 - toggle Filter_Low_24_dB;
+#X msg 4135 47 p 915 \$1;
+#X obj 4135 84 adi.param \$0 917 0 1 0 - toggle Filter_Mid_24_dB;
+#X msg 4135 111 p 916 \$1;
+#X obj 4135 148 adi.param \$0 918 0 1 0 - toggle Filter_High_24_dB;
+#X msg 4135 175 p 917 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -1678,3 +1684,9 @@
 #X connect 836 0 1 0;
 #X connect 837 0 838 0;
 #X connect 838 0 1 0;
+#X connect 839 0 840 0;
+#X connect 840 0 1 0;
+#X connect 841 0 842 0;
+#X connect 842 0 1 0;
+#X connect 843 0 844 0;
+#X connect 844 0 1 0;

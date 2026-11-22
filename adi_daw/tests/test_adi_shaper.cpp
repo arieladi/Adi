@@ -18,9 +18,10 @@ using Stage = Shaper::Stage;
 static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == Shaper::VolumeLowSlope);
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
 static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shaper::DriveOn == 286);
-static_assert(Shaper::CrushOn == 340 && Shaper::Count == 415);
+static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
-static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::Count);
+static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
+static_assert(Shaper::FilterLowSteep == 915 && Shaper::Count == 918);
 int failures = 0;
 
 void check(bool condition, const char* description) {

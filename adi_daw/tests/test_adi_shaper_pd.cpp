@@ -219,6 +219,111 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         }
     }
 }
+void steepFilterRecall() {
+    auto source = open();
+    for (int i = 0; i < 5; ++i) {
+        for (const int id : {140, 163, 186}) {
+            set(*source, id, i * .25);
+            check(source->getParam(std::to_string(id)).real == i, "legacy normalized Filter type positions");
+        }
+    }
+    for (int id = 1; id <= 415; ++id) set(*source, id, (id % 5) * .25);
+    set(*source, 916, 1);
+    set(*source, 918, 1);
+    auto saved = adi::Payload::from_cbor(source->saveState("state"));
+    auto restored = open();
+    check(restored->loadState("state", adi::Payload::to_cbor(saved)), "recall steep Filter selectors");
+    check(restored->getParam("916").real == 1 && restored->getParam("917").real == 0
+          && restored->getParam("918").real == 1, "independent steep selectors survive reopening");
+    saved.erase("real");
+    for (int id = 916; id <= 918; ++id) saved.at("params").erase(std::to_string(id));
+    set(*restored, 917, 1);
+    check(restored->loadState("state", adi::Payload::to_cbor(saved)), "recall normalized legacy state over steep Filter");
+    for (int id = 1; id <= 415; ++id) {
+        const auto key = std::to_string(id);
+        check(restored->getParam(key).normalized == source->getParam(key).normalized,
+              "normalized legacy controls survive a sparse recall");
+    }
+    for (int id = 916; id <= 918; ++id)
+        check(restored->getParam(std::to_string(id)).real == 0, "absent steep selectors return to their default");
+}
+
+void steepFilterPd(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    adi::device::PdLatencyReceiver latency;
+    std::string error;
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    check(path.open(latency, error) && path.isNative() == !crossed, "open the requested steep Filter path");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    Shaper expected, ordinary;
+    expected.prepare(48000);
+    ordinary.prepare(48000);
+    const auto send = [&](Shaper::Param id, float value) {
+        check(path.sendParameter(static_cast<int>(id) + 1, value), "send the live Filter parameter");
+        expected.set(id, value);
+        ordinary.set(id, value);
+    };
+    send(Shaper::FilterOn, 1);
+    send(static_cast<Shaper::Param>(Shaper::FilterOn + 1), 3);
+    for (int i = 0; i < 3; ++i) {
+        const auto band = static_cast<Shaper::Band>(i);
+        send(Shaper::modParam(Shaper::Stage::Filter, band, Shaper::Type), static_cast<float>(2 * i));
+        for (int j = 0; j < 8; ++j) {
+            send(Shaper::modParam(Shaper::Stage::Filter, band, static_cast<Shaper::ModControl>(Shaper::Primary1 + j)), 53);
+            send(Shaper::modParam(Shaper::Stage::Filter, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + j)), 42);
+        }
+    }
+    using Block = std::array<std::array<float, 64>, 2>;
+    Block input{}, got{}, want{}, unmodified{};
+    const float* in[]{input[0].data(), input[1].data()};
+    float* out[]{got[0].data(), got[1].data()};
+    adi::engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.in = in;
+    io.out = out;
+    for (int block = 0; block < 19; ++block) {
+        const int index = block == 0 ? 0 : (block - 1) / 6;
+        const int step = block == 0 ? 0 : (block - 1) % 6 + 1;
+        const auto selector = static_cast<Shaper::Param>(Shaper::FilterLowSteep + index);
+        const auto type = Shaper::modParam(Shaper::Stage::Filter, static_cast<Shaper::Band>(index), Shaper::Type);
+        if (step == 1) {
+            // The oracle receives no edit while a 6 dB or band-pass response is ringing.
+            check(path.sendParameter(static_cast<int>(selector) + 1, 1), "toggle steep on an unaffected type");
+        } else if (step == 2) {
+            expected.set(selector, 1);
+            send(type, 1);
+        } else if (step == 3) {
+            send(type, 3);
+        } else if (step == 4) {
+            send(type, static_cast<float>(2 * index));
+        } else if (step == 5) {
+            check(path.sendParameter(static_cast<int>(selector) + 1, 0), "clear steep on an unaffected type");
+        } else if (step == 6) {
+            expected.set(selector, 0);
+            send(type, 1);
+        }
+        for (std::size_t i = 0; i < input[0].size(); ++i) {
+            const int n = block * 64 + static_cast<int>(i);
+            input[0][i] = static_cast<float>(.29 * std::sin(.061 * n)) + (n % 13 == 2 ? .35f : 0.f);
+            input[1][i] = static_cast<float>(.23 * std::cos(.19 * n)) - (n % 19 == 4 ? .43f : 0.f);
+        }
+        expected.process(in[0], in[1], want[0].data(), want[1].data(), 64);
+        ordinary.process(in[0], in[1], unmodified[0].data(), unmodified[1].data(), 64);
+        path.process(io);
+        for (std::size_t ch = 0; ch < 2; ++ch)
+            check(got[crossed ? 1 - ch : ch] == want[ch], "live steep selection and unaffected filter history agree");
+        if (step == 2 || step == 3)
+            check(want != unmodified, "both supported steep responses change the chosen band's audio");
+        if (step == 1 || step == 5)
+            check(want == unmodified, "unsupported steep edits preserve every running sample");
+    }
+    check(latency.latencySamples() == 0, "steep Filter adds zero latency");
+}
+
 // The host splits a block at every lane event (DF-E50), and every piece of
 // the segment carries the transport of the segment's first sample. A synced
 // curve must keep its own clock after the first piece: lane values for an
@@ -266,9 +371,13 @@ void automationKeepsTheClock() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 418, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    for (int i = 0; i < 3; ++i)
+        check(device->paramAt(415 + i) && device->paramAt(415 + i)->id == std::to_string(916 + i),
+              "append the steep selectors after the legacy parameters");
+    steepFilterRecall();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
@@ -381,6 +490,8 @@ int main() try {
     const auto editedDir = edited.path().string();
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
+    steepFilterPd(ADI_SHAPER_PATCH_DIR, false);
+    steepFilterPd(editedDir, true);
     modulationPd(editedDir, false, false);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
