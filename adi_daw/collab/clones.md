@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Choose the linked band or full input for the Hold detector
+
+Two of the sixteen stored active Hold followers select a separate detector input with both filtering edges open. Both are in split mode. Changing only the detector source altered the original isolated output by up to 0.00019030 stereo RMS. In a different state with linked routing, changing the stored cutoff limits alone left every sample unchanged. The non-default low-pass cutoff is dormant while the detector follows its band.
+
+An upstream Volume stage at one quarter gain distinguishes the raw device input from the input reaching Crush. Isolated low, middle and high bands supplied three independent controls. Linked routing followed its processed band exactly. With both filter edges open the separate route followed the current stage input before splitting to within 0.0000000156 RMS. Reading the original device input instead was about 0.20 RMS wrong. Reading the detector's own split band was 0.03–0.04 RMS wrong.
+
+The clones seat takes one per-band source selector in the existing Hold port. IDs 904–906 select the linked band or the full stage input. An earlier state recalls the linked band in all three slots. Acceptance compares split bands after upstream gain, verifies the same input at opened filter edges and preserves all samples of earlier linked projects. This routing can cover two additional manual historical states. Separate tests cover finite high- and low-cut settings. **Lands after 3 December.**
+
 ## 22 November 2026 — Restore side-channel inversion in Width Multiply
 
 `clones/shaper-width-follower` at `2859eb9f` — Preserve signed side gain in Width Multiply. **Lands after 3 December.** Width now uses the common ADI-Shaper follower implementation. Negative Multiply results can reverse the stereo difference while preserving the mid. Add retains its zero floor. The regression fails on the previous head. The rack and registered native/Pd suites passed under MSVC /W4 /WX in both precisions.
