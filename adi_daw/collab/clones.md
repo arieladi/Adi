@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Registered white Noise and Room against the reference
+
+On the same stereo kick and bass at 48 kHz, the registered white Noise stage on `5e9b063d` took 28.2 µs at 256 frames and 218.9 µs at 2,048. The reference took 42.3 and 174.8 µs. Subtracting each path's bypass cost within paired trials gave 24.4 and 193.9 µs for ADI and 25.9 and 127.5 µs for the reference. The larger block is a performance target.
+
+Room on `df9f2778` took 100.6 and 813.8 µs versus 89.9 and 556.7 µs for the reference. Increases over bypass were 95.4 and 788.7 µs versus 73.1 and 510.6 µs. This compares the processing cost of ADI's own response and the reference's default hall at matching controls. The stereo outputs differ. Reported latency was zero for all sixteen stage, host, block and bypass conditions.
+
+The figures are medians of five trial medians. Timers covered only the registered processing call. Every trial covered the same multiset of input block positions. White missed 5 of 7,500 and 6 of 9,375 enabled deadlines at the two sizes, versus 28 and 4. Room missed 19 and 21, versus 21 and 7. Sixteen of ADI's 21 large-block Room misses fell in one trial. These are wall durations under the measured workload. The two hosts lack matching processing-thread cycle readings.
+
 ## 22 November 2026 — Four-track Drive deadline audit
 
 The original nine-trial run on `44de27f0` missed 713 of 73,728 callback deadlines, down from 1,209. The aggregate one-percent boundary therefore fell below 5.3333 ms on the repair. The earlier 4.5697 ms is the median of nine trial p99s. Three individual trials still exceeded the deadline at 6.9778, 5.9085 and 13.1699 ms.
