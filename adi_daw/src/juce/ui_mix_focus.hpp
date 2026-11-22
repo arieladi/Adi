@@ -72,6 +72,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     FocusScopeChannels scopeChannelView() const noexcept;
     bool showsScopeDifference() const noexcept;
     void updateScopeDifference();
+    void rebuildDifferenceSpectrum(const SharedAnalysis::ScopeDifferenceSpectrum &, double sampleRate);
     [[nodiscard]] Member *selectedScopeLayer() noexcept;
     [[nodiscard]] juce::PopupMenu scopeLayerMenu(const Member &) const;
     void updateScopeLayerControl();
@@ -98,6 +99,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::Component strip_;
     juce::ComboBox scopeDisplay_, scopeChannels_;
     juce::TextButton alignMeasure_{"Measure Align"}, scopeLayer_{"Layer"};
+    juce::ToggleButton differenceSpectrum_{"Spectrum"};
     juce::Label alignReadout_;
     juce::Rectangle<float> plot_;
     juce::Rectangle<int> titleRow_, sumLabel_, phaseBar_;
@@ -114,6 +116,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::optional<double> scopePhase_;
     bool comparesScopeMembers_ = false;
     std::array<juce::Path, 2> scopeSumPaths_, scopeDifferencePaths_;
+    juce::Path differenceSpectrumPath_;
     std::optional<SharedAnalysis::ScopeDifference> differenceRequest_;
     std::optional<std::uint64_t> differenceLocate_, differenceRenderedRevision_;
     std::uint64_t differenceSelection_ = 0;

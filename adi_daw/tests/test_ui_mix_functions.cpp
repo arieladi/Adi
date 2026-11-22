@@ -59,6 +59,9 @@ struct MixFocusTestAccess {
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
     static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
     static auto scopePhase(const MixFocus &focus) { return focus.scopePhase_; }
+    static bool requestsResidualSpectrum(const MixFocus &focus) {
+        return focus.differenceRequest_ && focus.differenceRequest_->spectrum;
+    }
     static auto layerAdjustment(MixFocus &focus) {
         const auto *layer = focus.selectedScopeLayer();
         return layer ? layer->scopeAdjustment : FocusScopeLayerAdjustment{};
@@ -1594,6 +1597,20 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
         layout->setSelectedItemIndex(4, juce::sendNotificationSync);
         root.frame();
         check(!MixFocusTestAccess::scopePhase(focus), "Difference has no phase bar demand");
+        juce::ToggleButton *residual = nullptr;
+        for (auto *child : focus.getChildren())
+            if (child->getTitle() == "Difference spectrum") residual = dynamic_cast<juce::ToggleButton *>(child);
+        check(residual && residual->isShowing() && !MixFocusTestAccess::requestsResidualSpectrum(focus),
+              "Difference offers its spectrum without requesting it by default");
+        if (residual) {
+            focus.select(second);
+            residual->setToggleState(true, juce::dontSendNotification);
+            residual->onClick();
+            check(MixFocusTestAccess::requestsResidualSpectrum(focus), "Spectrum explicitly requests the aligned delta");
+            residual->setToggleState(false, juce::dontSendNotification);
+            residual->onClick();
+            check(!MixFocusTestAccess::requestsResidualSpectrum(focus), "returning to the waveform drops spectrum demand");
+        }
         layout->setSelectedItemIndex(0, juce::sendNotificationSync);
         root.frame();
         const auto after = broker->stats();

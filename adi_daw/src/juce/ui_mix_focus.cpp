@@ -94,6 +94,10 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeLayer_.setTooltip("Preview polarity and timing for the selected layer. Playback stays unchanged.");
     scopeLayer_.onClick = [this] { showScopeLayerMenu(); };
     addChildComponent(scopeLayer_);
+    differenceSpectrum_.setTitle("Difference spectrum");
+    differenceSpectrum_.setTooltip("Show the spectrum of the two aligned scope channels after subtraction.");
+    differenceSpectrum_.onClick = [this] { updateScopeDifference(); repaint(); };
+    addChildComponent(differenceSpectrum_);
     learnMatch.setTooltip("Capture the selected channel's spectrum difference toward the starred channel. Plays unchanged.");
     learnMatch.onClick = [this] { learnMatchPreview(); };
     clearMatch.onClick = [this] { clearMatchPreview(); updateMatchControls(); };
@@ -963,6 +967,7 @@ void MixFocus::clearScopeSum() {
     for (auto &path : scopeSumPaths_) path.clear();
     if (differenceRenderedRevision_) {
         for (auto &path : scopeDifferencePaths_) path.clear();
+        differenceSpectrumPath_.clear();
         differenceRenderedRevision_.reset();
     }
 }
@@ -975,6 +980,7 @@ bool MixFocus::showsScopeDifference() const noexcept {
            scopeDisplay_.getSelectedId() == static_cast<int>(ScopeDisplay::Difference);
 }
 void MixFocus::updateScopeDifference() {
+    differenceSpectrum_.setVisible(showsScopeDifference());
     std::optional<SharedAnalysis::ScopeDifference> next;
     if (showsScopeDifference()) {
         const auto pair = matchMembers();
@@ -983,8 +989,8 @@ void MixFocus::updateScopeDifference() {
             next = SharedAnalysis::ScopeDifference{
                 {pair[0]->id, engine::ScopePoint::PostFader, 0},
                 {pair[1]->id, engine::ScopePoint::PostFader, 0},
-                focusScopeIsFolded(view) ? view : FocusScopeChannels::Stereo,
-                differenceRequest_ ? differenceRequest_->selection : 0};
+                view, differenceRequest_ ? differenceRequest_->selection : 0,
+                differenceSpectrum_.getToggleState()};
     }
     if (next == differenceRequest_) return;
     if (next) next->selection = ++differenceSelection_;
@@ -992,10 +998,41 @@ void MixFocus::updateScopeDifference() {
     barScope_.setDifferenceRequested(next);
     if (differenceRenderedRevision_) {
         for (auto &path : scopeDifferencePaths_) path.clear();
+        differenceSpectrumPath_.clear();
         differenceRenderedRevision_.reset();
     }
     redraw_ = true;
 }
+
+void MixFocus::rebuildDifferenceSpectrum(const SharedAnalysis::ScopeDifferenceSpectrum &spectrum, double sampleRate) {
+    if (spectrum.binsDbfs.empty() || spectrum.fftSize <= 0 || plot_.isEmpty()) return;
+    const double binHz = sampleRate / static_cast<double>(spectrum.fftSize);
+    const double maximum = std::min(20000., sampleRate * .5);
+    if (!(binHz > 0. && maximum > 20.)) return;
+    const double logRange = std::log(maximum / 20.);
+    const auto width = static_cast<std::size_t>(plot_.toNearestInt().getWidth());
+    if (!width) return;
+    const auto firstBin = [&](std::size_t x) {
+        const auto frequency = 20. * std::exp(logRange * static_cast<double>(x) / static_cast<double>(width));
+        return std::min(spectrum.binsDbfs.size() - 1, static_cast<std::size_t>(std::ceil(frequency / binHz)));
+    };
+    auto first = firstBin(0);
+    for (std::size_t x = 0; x < width; ++x) {
+        const auto next = firstBin(x + 1);
+        const auto last = x + 1 == width ? next + 1 : std::max(first + 1, next);
+        const auto bins = std::span(spectrum.binsDbfs).subspan(first, last - first);
+        const auto peak = std::clamp(static_cast<double>(*std::ranges::max_element(bins)),
+                                     dsp::analyser::kFloorDb, dsp::analyser::kCeilingDb);
+        const auto fraction = static_cast<float>((peak - dsp::analyser::kFloorDb) /
+            (dsp::analyser::kCeilingDb - dsp::analyser::kFloorDb));
+        const auto point = juce::Point<float>{plot_.getX() + static_cast<float>(x) * plot_.getWidth() /
+            static_cast<float>(width), plot_.getBottom() - fraction * plot_.getHeight()};
+        if (x == 0) differenceSpectrumPath_.startNewSubPath(point);
+        else differenceSpectrumPath_.lineTo(point);
+        first = next;
+    }
+}
+
 void MixFocus::rebuildScope() {
     clearScopeSum();
     scopeHasTrace_ = false;
@@ -1034,6 +1071,15 @@ void MixFocus::rebuildScope() {
     if (showsScopeDifference()) {
         const auto locate = root_.settledLocateRevision();
         if (!differenceRequest_ || !aligned || !locate || !plotColumns) return;
+        if (differenceRequest_->spectrum) {
+            if (!shownBar_ || shownBar_->transportRevision < *locate) return;
+            const auto *spectrum = shownBar_->differenceSpectrum(*differenceRequest_);
+            if (!spectrum) return;
+            scopeRange_ = FocusScopeRange{shownBar_->firstStamp, shownBar_->frames, shownBar_->sampleRate};
+            differenceRenderedRevision_ = shownBar_->transportRevision;
+            rebuildDifferenceSpectrum(*spectrum, shownBar_->sampleRate);
+            return;
+        }
         std::array<FocusScopePathReducer, 2> traces;
         const auto draw = [&](std::size_t column, std::size_t columns, const FocusSumColumn &extrema) {
             for (std::size_t ch = 0; ch < visibleLanes; ++ch) {
@@ -1223,6 +1269,8 @@ void MixFocus::resized() {
     titleRow_ = titleRow;
     alignReadout_.setBounds(titleRow.withTrimmedLeft(
         std::max(0, titleRow.getWidth() - 3 * look::mixFocusSourceWidth)));
+    differenceSpectrum_.setBounds(titleRow.withTrimmedLeft(
+        std::max(0, titleRow.getWidth() - look::mixFocusSourceWidth)));
     sumLabel_ = titleRow.getWidth() >= 4 * look::mixFocusSourceWidth
                     ? titleRow.removeFromRight(2 * look::mixFocusSourceWidth) : juce::Rectangle<int>{};
     auto actions = r.removeFromBottom(buttonRow);
@@ -1291,7 +1339,9 @@ void MixFocus::paint(juce::Graphics &g) {
     const bool wantsSum = scopeShown && (display == ScopeDisplay::Overlay || sumOnly);
     const bool sumShown = wantsSum && (!scopeSumPaths_[0].isEmpty() || !scopeSumPaths_[1].isEmpty());
     const bool sumOverRange = wantsSum && sum_ && (sum_->peak[0] > 1. || sum_->peak[1] > 1.);
-    juce::String title = differenceOnly ? "Difference (A - B)" : scopeShown ? "Scope" : "Together";
+    const bool spectrumOnly = differenceOnly && differenceSpectrum_.getToggleState();
+    juce::String title = spectrumOnly ? "Difference spectrum (dBFS)"
+                         : differenceOnly ? "Difference (A - B)" : scopeShown ? "Scope" : "Together";
     if (scopeShown && alignment_ != Alignment::Ready && !sumOnly && !differenceOnly)
         title += "   Individual traces";
     else if (scopeShown && scopeRange_ && (!differenceOnly || differenceReady)) {
@@ -1304,7 +1354,8 @@ void MixFocus::paint(juce::Graphics &g) {
         if (sumShown && !sumOverRange && !sumOnly) title += "   Sum overlay";
     }
     if (!scopeShown && match_) title += matchCaption_;
-    const auto summaryBounds = alignReadout_.isVisible() ? alignReadout_.getBounds() : sumLabel_;
+    const auto summaryBounds = differenceSpectrum_.isVisible() ? differenceSpectrum_.getBounds()
+                               : alignReadout_.isVisible() ? alignReadout_.getBounds() : sumLabel_;
     const int titleWidth = summaryBounds.isEmpty() ? plot.getWidth() : std::max(0, summaryBounds.getX() - plot.getX());
     g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
                std::max(0, plot.getY() - scroll_.getBottom()), juce::Justification::centredLeft);
@@ -1329,14 +1380,21 @@ void MixFocus::paint(juce::Graphics &g) {
     }
     g.setColour(look::outline);
     if (differenceOnly) {
-        g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
+        if (!spectrumOnly) g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
         if (differenceReady) {
             juce::Graphics::ScopedSaveState saved(g);
             g.reduceClipRegion(plot);
-            g.setColour(look::textDim);
-            g.strokePath(scopeDifferencePaths_[1], juce::PathStrokeType(look::line));
-            g.setColour(look::text);
-            g.strokePath(scopeDifferencePaths_[0], juce::PathStrokeType(look::heavyLine));
+            if (spectrumOnly) {
+                g.setColour(look::text);
+                if (differenceSpectrumPath_.isEmpty())
+                    g.drawText("No difference", plot_, juce::Justification::centred);
+                else g.strokePath(differenceSpectrumPath_, juce::PathStrokeType(look::heavyLine));
+            } else {
+                g.setColour(look::textDim);
+                g.strokePath(scopeDifferencePaths_[1], juce::PathStrokeType(look::line));
+                g.setColour(look::text);
+                g.strokePath(scopeDifferencePaths_[0], juce::PathStrokeType(look::heavyLine));
+            }
         } else {
             g.setColour(look::textDim);
             g.setFont(look::font());
