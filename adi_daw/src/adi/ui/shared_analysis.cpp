@@ -1242,7 +1242,7 @@ struct SharedAnalysis::Domain {
                (!(bits & CumulativeMaximum) || cumulativeReady.load(std::memory_order_acquire));
     }
     bool keepsParkedHop(std::uint32_t bits) const noexcept {
-        constexpr std::uint32_t windowed = Spectrum | Scope | Phase | RealtimeMaximum | RealtimeSigma;
+        constexpr std::uint32_t windowed = Spectrum | Scope | Phase | PhaseBands | RealtimeMaximum | RealtimeSigma;
         return !(bits & ~windowed) || canParkAverage(bits) || spectrumLevelHistory;
     }
     void skipCertifiedSilenceTo(std::int64_t next) noexcept {

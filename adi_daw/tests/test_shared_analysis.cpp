@@ -2694,9 +2694,10 @@ void parkedWindowHopPhase() {
     constexpr std::uint64_t revision = 61;
     constexpr auto realtime = SharedAnalysis::RealtimeMaximum | SharedAnalysis::RealtimeSigma;
     constexpr auto ordinary = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Phase;
-    constexpr std::array<std::uint32_t, 7> outputs{
+    constexpr auto bandedPhase = SharedAnalysis::Phase | SharedAnalysis::PhaseBands;
+    constexpr std::array<std::uint32_t, 8> outputs{
         SharedAnalysis::Scope, SharedAnalysis::Phase, SharedAnalysis::Spectrum, ordinary,
-        SharedAnalysis::RealtimeMaximum, SharedAnalysis::RealtimeSigma, ordinary | realtime};
+        SharedAnalysis::RealtimeMaximum, SharedAnalysis::RealtimeSigma, ordinary | realtime, bandedPhase};
     const std::array<float, window> zeros{};
     std::array<float, window> left, right;
     left.fill(.5f);
@@ -2709,6 +2710,7 @@ void parkedWindowHopPhase() {
         request.hopSize = hop;
         request.window = adi::dsp::Window::Rectangular;
         request.outputs = output;
+        if (output & SharedAnalysis::PhaseBands) request.channel = SharedAnalysis::Channel::StereoPower;
         auto view = parked.broker.acquire(request);
         auto uninterrupted = reference.broker.acquire(request);
         const float *silence = nullptr;
@@ -2743,6 +2745,8 @@ void parkedWindowHopPhase() {
         write(parked, left.data(), right.data(), 1);
         write(reference, left.data(), right.data(), 1);
         const auto audible = view.read(), expected = uninterrupted.read();
+        const auto transforms = (output & SharedAnalysis::PhaseBands) != 0 ? 2u
+            : (output & (SharedAnalysis::Spectrum | realtime)) != 0 ? 1u : 0u;
         check(first && audible && expected && audible != first && expected != controlQuiet &&
                   audible->windowSerial == expected->windowSerial &&
                   audible->firstSequence == quietFrames + untilHop && audible->firstSequence == expected->firstSequence &&
@@ -2751,8 +2755,14 @@ void parkedWindowHopPhase() {
                   audible->peak == std::array{.5f, .25f} && exactBins(audible->rms, expected->rms) &&
                   audible->correlation == expected->correlation && exactBins(audible->binsDbfs, expected->binsDbfs) &&
                   exactBins(audible->scopeLeft, expected->scopeLeft) && exactBins(audible->scopeRight, expected->scopeRight) &&
-                  parked.broker.stats().transforms == ((output & (SharedAnalysis::Spectrum | realtime)) != 0 ? 1u : 0u),
+                  parked.broker.stats().transforms == transforms,
               "windowed monitors wake at the uninterrupted hop with matching samples, stamps and levels");
+        if (output & SharedAnalysis::PhaseBands)
+            check(first && first->phaseBands && settled.transforms == 0 && audible && expected &&
+                      audible->phaseBands && expected->phaseBands && *audible->phaseBands == *expected->phaseBands &&
+                      std::ranges::none_of(*first->phaseBands, [](const auto &band) { return band.has_value(); }) &&
+                      std::ranges::any_of(*audible->phaseBands, [](const auto &band) { return band && *band < -.999f; }),
+                  "the displayed Phase bands retain an empty floor, then match the original hop with one stereo FFT pair");
         const auto exactTrace = [&](const auto &resumed, const auto &control, const auto &initial, const auto &controlInitial) {
             return resumed && initial && control && controlInitial && resumed != initial &&
                    resumed->window == audible && control->window == expected &&
