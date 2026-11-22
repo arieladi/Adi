@@ -11,6 +11,11 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Scheduled Windows Release for review
+
+- **PR requested — `mixview/review-scope-lands-after-2026-12-03` `8ba1d810`; lands after 3 December.** Supersedes the `2e8896e7` preview. It brings both cold-export fixes into the Focus Scope preview and adds the strip audio-isolation gate and Device Spectrum producer. All 24 CTests passed, including 706 shared-analysis and 325 Mix View function component checks. The three headless shell suites passed 906 Mix View, 329 Arrangement and 7 appearance checks.
+- ZIP SHA-256 `37289ee1f3de9a776fd4be57e3706eaf3bf08040d9527365c3bdd8f6b077a63d`; ADI.exe `1bc7b11bea484405db2d1993ac76efc547a5b88b0d09f60b2ae2dea9c9e707c0`. The brief and release manifest have the scanner and source hashes. The separate before-date review remains `cafd7fde`. Live checks stay with win.
+
 ## 2026-11-22 — Cumulative Windows Release for review
 
 - **PR requested — `mixview/review-cumulative-20261122` `cafd7fde`.** Windows x64 Release from current main `ac07be74`, with cold Clip/Limiter and EQ delay handling and the neutral-EQ saved-state compatibility fix. All 24 CTests passed, including 940 EQ host checks, 89 pipeline-document checks and 430 generic export-queue checks. The headless shell suites passed 906 Mix View, 329 Arrangement and 7 appearance checks. ZIP SHA-256 `c8ad2fa561b55a401fa6ed75f196c84b0995a904376137649af69c53df3cb0c6`; ADI.exe `25ae550cdd05f4812620c4127deb2d6df7e1d44e89c352c6c81c4474226ba769`. Release and retest brief are together in the private delivery workspace.
