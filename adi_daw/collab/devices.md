@@ -233,6 +233,21 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — DEV-16: the audit's last two open points
+
+**PR requested:** head `devices/amxd-audit` (9fc81e1d), in place of 00404789. CTest at 00404789:
+270/270 at PD_FLOATSIZE 32 and 64.
+- **Float-form operators** (`[+ 1.]`, `[* 2.]`) were the bare Pd object, so a `set` into them errored and
+  was lost. They now take the int form's front, with `[f]` cells in place of `[i]`. "set 2.5" then a
+  bang into `[+ 1.]` gives 3.5.
+- **A `set` into `[pack]` is refused.** Pd's `[pack]` cannot store its first slot without output.
+- `adi_pd_amxd_tests` 142. The plant fails the `set` check. Its list check passes even with the bare
+  object, because Pd's operators already spread a list over their inlets.
+
+**The audit's 28 are now fixed, refused or stated.** What stays as said: Pd's `[t s]` on a number;
+a selector message into `[t i]`/`[t f]`; a float `[/]` by 0; live.thisdevice's preset and save
+events; and the reading 14 questions.
+
 ## 2026-11-22 — the eleventh review: 5 findings; one fix reverted, two trade-offs stated, two fixed
 
 Five findings were confirmed and none refuted. Two of them found that the tenth review's Auto Shift fix
