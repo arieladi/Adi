@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/controller_maps.hpp"
+#include "adi/panel.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace adi {
 namespace {
@@ -36,6 +38,9 @@ Payload row(SQLite::Statement& st,int offset=0) {
 }
 bool validSource(const ControllerCc& cc) {
     return !cc.port.empty() && cc.channel>=1 && cc.channel<=16 && cc.number>=0 && cc.number<=127;
+}
+bool normalized(double value) noexcept {
+    return value >= 0.0 && value <= 1.0;
 }
 bool matches(const Payload& b,const ControllerCc& cc) {
     return b.value("protocol",std::string{})=="midi" && b.value("msg_type",std::string{})=="cc" &&
@@ -151,6 +156,92 @@ bool controllerRangeActive(double value, double begin, double end) noexcept {
     if (!std::isfinite(value) || !std::isfinite(begin) || !std::isfinite(end)) return false;
     if (begin <= end) return value >= begin && value <= end;
     return value < end || value > begin;
+}
+
+std::optional<double> resolveNudge(const panel::Record& parameter, std::int64_t ticks,
+                                   bool fine, std::optional<double> interval,
+                                   bool accelerateUnitTicks) noexcept {
+    const double current = parameter.driven ? parameter.playing : parameter.stored;
+    if (parameter.missing || ticks == 0 || !normalized(current)) return std::nullopt;
+    const auto stepCount = parameter.shape == panel::Shape::Switch ? 2 : parameter.stepCount;
+    if (stepCount > 1) {
+        const double last = static_cast<double>(stepCount - 1);
+        const double step = std::round(current * last);
+        const double next = std::clamp(step + static_cast<double>(ticks), 0.0, last);
+        if (next == step) return std::nullopt;
+        return next / last;
+    }
+    if (parameter.shape == panel::Shape::Menu) return std::nullopt;
+
+    double step = fine ? 0.001 : 0.01;
+    if (accelerateUnitTicks && interval && *interval >= 0 && *interval < 30.0) {
+        step *= std::pow(4.0, (30.0 - *interval) / 30.0);
+    }
+    const double next = std::clamp(current + static_cast<double>(ticks) * step, 0.0, 1.0);
+    if (next == current) return std::nullopt;
+    return next;
+}
+
+bool ControllerTickCounter::add(std::int64_t ticks) noexcept {
+    constexpr auto min = std::numeric_limits<std::int64_t>::min();
+    constexpr auto max = std::numeric_limits<std::int64_t>::max();
+    auto pending = pending_.load(std::memory_order_relaxed);
+    do {
+        if ((ticks > 0 && pending > max - ticks) || (ticks < 0 && pending < min - ticks)) return false;
+    } while (!pending_.compare_exchange_weak(pending, pending + ticks, std::memory_order_relaxed));
+    return true;
+}
+
+bool ControllerTickCounter::toggle(bool down) noexcept {
+    if (down && !down_ && !add(1)) return false;
+    down_ = down;
+    return true;
+}
+
+std::int64_t ControllerTickCounter::take() noexcept {
+    return pending_.exchange(0, std::memory_order_relaxed);
+}
+
+void TakeoverGate::reset() noexcept {
+    previousInput_.reset();
+    previousTarget_.reset();
+    lastOffer_.reset();
+    anchor_.reset();
+    pickedUp_ = false;
+}
+
+std::optional<double> TakeoverGate::apply(double input, double target, bool externallyTouched) noexcept {
+    if (!normalized(input) || !normalized(target)) return std::nullopt;
+    if (externallyTouched || (previousTarget_ && target != *previousTarget_ && target != lastOffer_)) {
+        reset();
+    }
+    previousTarget_ = target;
+    const auto previous = std::exchange(previousInput_, input);
+    double value = input;
+    switch (mode_) {
+        case ControllerTakeover::Jump:
+            break;
+        case ControllerTakeover::Pickup:
+            pickedUp_ = pickedUp_ || input == target ||
+                (previous && target >= std::min(input, *previous) && target <= std::max(input, *previous));
+            if (!pickedUp_) return std::nullopt;
+            break;
+        case ControllerTakeover::Scale: {
+            if (!anchor_) anchor_ = ScaleAnchor{input, target};
+            const auto& anchor = *anchor_;
+            const double change = input - anchor.input;
+            value = anchor.target;
+            if (change > 0) value += change * (1.0 - anchor.target) / (1.0 - anchor.input);
+            if (change < 0) value += change * anchor.target / anchor.input;
+            value = std::clamp(value, 0.0, 1.0);
+            break;
+        }
+        default:
+            return std::nullopt;
+    }
+    if (value == target) return std::nullopt;
+    lastOffer_ = value;
+    return value;
 }
 
 ControllerMode detectControllerMode(std::span<const int> values, ControllerLearnMotion motion) noexcept {

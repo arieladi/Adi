@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "adi/ops.hpp"
+#include <atomic>
 #include <functional>
 #include <optional>
 #include <span>
@@ -8,6 +9,7 @@
 #include <vector>
 
 namespace adi {
+namespace panel { struct Record; }
 struct ControllerCc {
     std::string port;
     int channel = 1; // Settings/learn use 1..16, never the wire's zero-based nibble.
@@ -48,6 +50,42 @@ struct ControllerBinding {
 [[nodiscard]] std::optional<double> decodeAbsoluteControllerValue(ControllerAbsoluteFormat, int midiValue) noexcept;
 [[nodiscard]] bool controllerCcIsDown(int midiValue) noexcept;
 [[nodiscard]] bool controllerRangeActive(double value, double begin, double end) noexcept;
+[[nodiscard]] constexpr bool controllerModeUsesHostAcceleration(ControllerMode mode) noexcept {
+    return mode >= ControllerMode::LinearTwosComplement && mode <= ControllerMode::LinearSignedBitInverted;
+}
+
+// The owner folds signed input into an absolute value for ParamOps. Missing or
+// clamped controls produce no edit. A missing interval is the first tick.
+[[nodiscard]] std::optional<double> resolveNudge(const panel::Record&, std::int64_t ticks,
+    bool fine, std::optional<double> msSinceLastTick = {}, bool accelerateUnitTicks = false) noexcept;
+
+// One physical binding. Producers may add relative ticks concurrently with
+// an owner take. The binding's input producer alone supplies its toggle levels.
+class ControllerTickCounter {
+public:
+    [[nodiscard]] bool add(std::int64_t ticks) noexcept;
+    [[nodiscard]] bool toggle(bool down) noexcept;
+    [[nodiscard]] std::int64_t take() noexcept;
+private:
+    std::atomic<std::int64_t> pending_{0};
+    bool down_ = false;
+};
+
+// Absolute sources only. Relative sources go directly through resolveNudge.
+// An attributed external write can re-arm the gate even for an equal value.
+class TakeoverGate {
+public:
+    explicit TakeoverGate(ControllerTakeover mode) noexcept : mode_(mode) {}
+    [[nodiscard]] std::optional<double> apply(double input, double target,
+        bool externallyTouched = false) noexcept;
+    void reset() noexcept;
+private:
+    struct ScaleAnchor { double input, target; };
+    ControllerTakeover mode_;
+    std::optional<double> previousInput_, previousTarget_, lastOffer_;
+    std::optional<ScaleAnchor> anchor_;
+    bool pickedUp_ = false;
+};
 // Reads the lane's actual owner/param_ref, not its display name. Returns one
 // resolved controller.bind request; rejects non-Remote and reserved controls.
 [[nodiscard]] std::optional<OpRequest> learnController(
