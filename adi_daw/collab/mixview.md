@@ -2,6 +2,15 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-22 — Focus FIR reuse and dormant transform storage
+
+**PR requested.** `mixview/focus-fir-work-dfm13-20261122` at `fe18068e`, after the neutral Clean/EQ slice `d8194c80`. The optimized internal key reuses forward and inverse transforms only when the current and previous partitions permit it. Separate overlap rings retain the tails of an earlier external key. The tests-only baseline failed four work-limit assertions. The optimized Windows x64 Release passed 446 checks and compared 4,819,406 samples, with zero callback allocations or deallocations. At 192 kHz / 512 for one and ten nodes, internal-key total and worst-callback convolution work stayed below 70% of the corresponding external-key case, with exact paired audio and no missed deadlines. These counters measure work units. Real callback CPU timing remains with the matched quiet-machine run.
+
+**PR requested.** `mixview/focus-lazy-storage-20261122` at `80eacfe8`, after the joined review ancestry `bc118bae`. Keep this as a separate two-commit core review. Preparing native IIR without phase allocates no transform storage. The first FIR or phase configuration allocates it on the owner before latency admission. The red baseline failed two storage assertions; the optimized Windows x64 Release passed 463 checks and compared 5,081,550 samples, with exact first render and re-entry and zero callback allocations. This tip includes the separate Mix View slices awaiting the cumulative build.
+
+The D: archive link stopped making sustained progress. Only the Mix View build was interrupted. Its compiled objects are being transferred to an SSD cache and its original tree is retained. The exact cumulative Release candidate is now `80eacfe8`.
+
+
 ## 2026-11-22 — current-main integration and Windows Release gates
 
 Fetched main at `0ea10b8e`. Its catalogue service now supplies the Stack picker and Browser from one discovery job. The reconciliation keeps the landed automation menu and Export UI. The Classic Scope faceplate and controls remain intact and the interface, menus and catalogue use the ADI name. The window-loan slices follow as separate children at `6febf651` (DF-M60a) and `2aec0323` (Focus Match Locate). The paired DF-M60b candidate uses Engine's landed adapter `b1a9cee8` and adds owned dormant VST3 route coverage, including different Pre FX and Post FX signals.
