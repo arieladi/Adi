@@ -36,6 +36,7 @@ class MixAnalysers final : public juce::Component {
   private:
     class Table;
     class Compare;
+    class SpectrumStatistics;
     struct Channel {
         std::int64_t id;
         std::string name;
@@ -57,9 +58,11 @@ class MixAnalysers final : public juce::Component {
         bool operator==(const PinProjectionStamp &) const = default;
     };
     std::optional<PinProjectionStamp> pinnedSpectrumStamp_;
+    bool hasPinnedSpectrum_ = false;
     juce::ToggleButton pinnedTracks_{"Pinned tracks"};
     std::unique_ptr<Table> table_;
     std::unique_ptr<Compare> compare_;
+    std::unique_ptr<SpectrumStatistics> spectrumStatistics_;
     std::array<SharedSpectrumView, 5> tiles_;
     std::vector<Channel> channels_;
     std::weak_ptr<SharedAnalysis> owner_;

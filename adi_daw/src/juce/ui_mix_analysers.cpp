@@ -343,9 +343,71 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
     bool suspended_ = false, held_ = false;
 };
 
+class MixAnalysers::SpectrumStatistics final : public juce::Component {
+  public:
+    SpectrumStatistics() {
+        setInterceptsMouseClicks(false, false);
+        balance_.setTitle("RMS Balance");
+        balance_.setTooltip("Left and right RMS balance over the primary Spectrum window.");
+        correlation_.setTitle("Stereo Correlation");
+        correlation_.setTooltip("Signed left and right correlation over the primary Spectrum window.");
+        balance_.setText("RMS balance --", juce::dontSendNotification);
+        correlation_.setText("Correlation --", juce::dontSendNotification);
+        for (auto *label : {&balance_, &correlation_}) addAndMakeVisible(*label);
+        refreshAppearance();
+    }
+
+    void present(const std::shared_ptr<const SharedAnalysis::Result> &window) {
+        if (!window.owner_before(last_) && !last_.owner_before(window)) return;
+        last_ = window;
+        juce::String balance("--"), correlation("--");
+        if (window) {
+            const double left = window->rms[0], right = window->rms[1];
+            const bool hasLeft = std::isfinite(left) && left > 0., hasRight = std::isfinite(right) && right > 0.;
+            if (hasLeft && hasRight) {
+                const double difference = 20. * std::log10(left / right);
+                balance = std::abs(difference) < .05 ? juce::String("Centre")
+                    : juce::String(difference > 0. ? "L " : "R ") + juce::String(std::abs(difference), 1) + " dB";
+                if (std::isfinite(window->correlation)) {
+                    const auto value = std::abs(window->correlation) < .005 ? 0. : window->correlation;
+                    correlation = juce::String(value < 0. ? "" : "+") + juce::String(value, 2);
+                }
+            } else if (hasLeft || hasRight) {
+                balance = hasLeft ? "L only" : "R only";
+            }
+        }
+        balance_.setText("RMS balance " + balance, juce::dontSendNotification);
+        correlation_.setText("Correlation " + correlation, juce::dontSendNotification);
+    }
+
+    void refreshAppearance() {
+        const std::pair appearance{look::themeId(), look::densityId()};
+        if (appearance_ == appearance) return;
+        appearance_ = appearance;
+        for (auto *label : {&balance_, &correlation_}) {
+            label->setFont(look::font(look::fontCaption));
+            label->setColour(juce::Label::textColourId, look::textDim);
+        }
+    }
+
+    void resized() override {
+        auto area = getLocalBounds();
+        balance_.setBounds(area.removeFromLeft((area.getWidth() - look::gap) / 2));
+        area.removeFromLeft(look::gap);
+        correlation_.setBounds(area);
+    }
+    void visibilityChanged() override { if (!isShowing()) present({}); }
+
+  private:
+    juce::Label balance_, correlation_;
+    std::optional<std::pair<ThemeId, DensityId>> appearance_;
+    std::weak_ptr<const SharedAnalysis::Result> last_;
+};
+
 MixAnalysers::MixAnalysers() {
     table_ = std::make_unique<Table>(*this);
     compare_ = std::make_unique<Compare>(*this);
+    spectrumStatistics_ = std::make_unique<SpectrumStatistics>();
     setTitle("Analysers");
     pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Classic Scope", "Phase", "Loudness", "Analysis",
                          "1 s Average", "Compare"}, 1);
@@ -390,6 +452,7 @@ MixAnalysers::MixAnalysers() {
     detail.view.enablePhaseBands();
     addChildComponent(*table_);
     addChildComponent(*compare_);
+    addChildComponent(*spectrumStatistics_);
     const auto comparisonChanged = [this] { updateComparison(owner_.lock()); };
     compareA.onChange = comparisonChanged; compareB.onChange = comparisonChanged;
     for (std::size_t i = 0; i < tiles_.size(); ++i) {
@@ -537,11 +600,20 @@ void MixAnalysers::updatePinnedSpectrum(const SnapshotReader &reader, std::uint6
     detail.view.setSpectrumOverlayTracks(std::span{selected}.first(count),
                                          SharedSpectrumView::SpectrumOverlayProfile::Overview);
     pinnedSpectrumStamp_ = current;
+    const bool hasPins = count != 0;
+    if (hasPinnedSpectrum_ != hasPins) {
+        hasPinnedSpectrum_ = hasPins;
+        resized();
+    }
 }
 void MixAnalysers::clearPinnedSpectrum() {
     if (!pinnedSpectrumStamp_) return;
     pinnedSpectrumStamp_.reset();
     detail.view.setSpectrumOverlayTracks({});
+    if (hasPinnedSpectrum_) {
+        hasPinnedSpectrum_ = false;
+        resized();
+    }
 }
 void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const SnapshotReader &reader,
                          std::int64_t main, std::int64_t selected, std::uint64_t viewGeneration,
@@ -581,6 +653,10 @@ void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const Sn
         table_->frame(broker);
     }
     if (detail.isVisible()) detail.frame(broker, track, track);
+    if (spectrumStatistics_->isShowing()) {
+        spectrumStatistics_->refreshAppearance();
+        spectrumStatistics_->present(detail.view.snapshot());
+    }
 }
 
 void MixAnalysers::setMainMeterSource(const std::shared_ptr<const MainMeterSource> &source) {
@@ -595,6 +671,7 @@ void MixAnalysers::suspend(bool value) {
     compare_->suspend(value);
     table_->suspend(value);
     for (auto &tile : tiles_) tile.suspend(value);
+    if (value) spectrumStatistics_->present({});
 }
 
 void MixAnalysers::resized() {
@@ -613,6 +690,10 @@ void MixAnalysers::resized() {
         sourceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
     }
     area.removeFromTop(look::gap);
+    const bool showStatistics = hasPinnedSpectrum_ && showsTrace &&
+        area.getWidth() >= 2 * look::mixChannelMinWidth + look::gap && area.getHeight() >= 2 * look::mixChannelRowHeight;
+    spectrumStatistics_->setVisible(showStatistics);
+    if (showStatistics) spectrumStatistics_->setBounds(area.removeFromBottom(look::mixChannelRowHeight));
     if (page_ == Page::Analysis) { table_->setBounds(area); return; }
     if (page_ == Page::Compare) { compare_->setBounds(area); return; }
     if (page_ != Page::All) { detail.setBounds(area); return; }

@@ -1800,6 +1800,100 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                   "the existing panel publishes the new 48 kHz primary and pin profiles after a 96 kHz rebind");
         }
     }
+    if (rate == 48000) {
+        const auto findLabel = [](const auto &walk, juce::Component &parent, const juce::String &name) -> juce::Label * {
+            if (auto *label = dynamic_cast<juce::Label *>(&parent); label && label->getTitle() == name) return label;
+            for (auto *child : parent.getChildren())
+                if (auto *label = walk(walk, *child, name)) return label;
+            return nullptr;
+        };
+        const auto statistic = [&](const juce::String &name) {
+            const auto *label = findLabel(findLabel, pages, name);
+            return label && label->isShowing() && !label->getBounds().isEmpty() ? label->getText() : juce::String{};
+        };
+        const auto balance = [&] { return statistic("RMS Balance"); };
+        const auto correlation = [&] { return statistic("Stereo Correlation"); };
+        const auto sendLevels = [&](float left, float right) {
+            const auto tap = tapFor(main);
+            if (!tap) return false;
+            const std::vector<float> a(static_cast<std::size_t>(overviewFft), left);
+            const std::vector<float> b(static_cast<std::size_t>(overviewFft), right);
+            tap->write(a.data(), b.data(), overviewFft, tap->written(), true, 4);
+            for (int pass = 0; pass < 12; ++pass) broker->pump();
+            root.frame();
+            return true;
+        };
+
+        pages.setPage(Page::Spectrum);
+        choose(false);
+        check(balance().isEmpty() && correlation().isEmpty(),
+              "ordinary Spectrum has no pinned readouts");
+        choose(true);
+        const auto plan = broker->stats();
+        const bool wroteInverted = sendLevels(.5f, -.25f);
+        const auto picture = pages.detail.view.snapshot();
+        const auto observedBalance = balance(), observedCorrelation = correlation();
+        check(wroteInverted && picture && picture->rms[0] == .5f && picture->rms[1] == .25f &&
+                  picture->correlation == -1. && observedBalance.contains("L 6.0") &&
+                  observedCorrelation.contains("-1.00"),
+              "pinned readouts use the primary window's RMS direction and signed anti-correlation");
+        const auto published = broker->stats();
+        check(published.consumers == plan.consumers && published.taps == plan.taps &&
+                  published.domains == plan.domains && published.spectralPlans == plan.spectralPlans,
+              "pinned readouts do not add a consumer or plan to the existing primary and pin spectra");
+        for (int frame = 0; frame < 4; ++frame) { root.frame(); broker->pump(); }
+        const auto statisticsIdle = broker->stats();
+        check(statisticsIdle.workerPasses == published.workerPasses && statisticsIdle.transforms == published.transforms &&
+                  statisticsIdle.publications == published.publications,
+              "unchanged pinned readouts do not do worker work");
+
+        const auto fullBounds = pages.getBounds();
+        const auto fullBottom = pages.detail.getBottom();
+        pages.setBounds(fullBounds.withWidth(look::mixChannelMinWidth));
+        root.frame();
+        const auto compact = broker->stats();
+        check(balance().isEmpty() && correlation().isEmpty() && pages.detail.getBottom() > fullBottom &&
+                  pages.detail.view.snapshot() == picture && compact.domains == statisticsIdle.domains &&
+                  compact.transforms == statisticsIdle.transforms,
+              "compact pinned Spectrum removes the readout row without losing the primary picture");
+        pages.setBounds(fullBounds);
+        root.frame();
+        check(!observedBalance.isEmpty() && balance() == observedBalance && correlation() == observedCorrelation,
+              "expanding the panel restores readouts from its existing picture");
+
+        const auto freeze = [&](bool value) {
+            auto &button = pages.detail.freezeButton;
+            button.setToggleState(value, juce::dontSendNotification);
+            if (button.onClick) button.onClick();
+            root.frame();
+        };
+        freeze(true);
+        check(!pages.detail.view.subscribed() && !attached(first) && !attached(wide) &&
+                  pages.detail.view.snapshot() == picture && !observedBalance.isEmpty() &&
+                  balance() == observedBalance && correlation() == observedCorrelation,
+              "Freeze preserves the same statistics and releases their existing Spectrum demand");
+        freeze(false);
+        check(!balance().contains("L 6.0") && !correlation().contains("-1.00"),
+              "resuming clears frozen numbers until a fresh Spectrum window arrives");
+        const bool wroteAligned = sendLevels(.25f, .5f);
+        check(wroteAligned && balance().contains("R 6.0") && correlation().contains("+1.00"),
+              "fresh primary samples update the stereo statistics after Freeze");
+        const bool wroteOneSide = sendLevels(.5f, 0.f);
+        check(wroteOneSide && balance().contains("L only") && correlation().contains("--"),
+              "a one-sided primary has a balance direction but no stereo correlation");
+        const bool wroteQuiet = sendLevels(0.f, 0.f);
+        check(wroteQuiet && balance().contains("--") && correlation().contains("--"),
+              "silence has neither a balance direction nor a stereo correlation");
+
+        pages.setVisible(false);
+        const auto hidden = broker->stats();
+        for (int frame = 0; frame < 4; ++frame) { root.frame(); broker->pump(); }
+        const auto hiddenIdle = broker->stats();
+        check(balance().isEmpty() && correlation().isEmpty() && !pages.detail.view.subscribed() &&
+                  !attached(first) && !attached(wide) && hiddenIdle.workerPasses == hidden.workerPasses &&
+                  hiddenIdle.transforms == hidden.transforms && hiddenIdle.publications == hidden.publications,
+              "a hidden Spectrum exposes no readouts and adds no worker activity");
+    }
     detachPeer();
 }
 
