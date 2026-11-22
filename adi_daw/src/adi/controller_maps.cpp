@@ -4,6 +4,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace adi {
@@ -49,20 +50,38 @@ bool validateBinding(OpContext& c,const Payload& b,std::string& error) {
     }
     const auto protocol=b.at("protocol").get<std::string>();
     const auto type=b.at("msg_type").get<std::string>();
-    if(protocol!="midi" && protocol!="osc" && protocol!="mackie" && protocol!="hui") {
+    const bool keyboard = protocol == "key";
+    if(protocol!="midi" && protocol!="osc" && protocol!="mackie" && protocol!="hui" && !keyboard) {
         error="unknown controller protocol"; return false;
     }
-    if(type!="cc" && type!="note" && type!="pb" && type!="nrpn" && type!="sysex" && type!="osc_path") {
+    if(type!="cc" && type!="note" && type!="pb" && type!="nrpn" && type!="sysex" && type!="osc_path" && type!="key") {
         error="unknown controller message type"; return false;
     }
     const auto within=[&](const char* key,std::int64_t lo,std::int64_t hi,bool required) {
         return b.at(key).is_null() ? !required : b.at(key).get<std::int64_t>()>=lo && b.at(key).get<std::int64_t>()<=hi;
     };
-    if(b.at("device_name").get<std::string>().empty() ||
-       !within("channel",1,16,type=="cc" || type=="note" || type=="pb" || type=="nrpn") ||
-       !within("msg_num",0,type=="nrpn"?16383:127,type=="cc" || type=="note" || type=="nrpn") ||
-       !within("mode",0,2,true) || !within("takeover",0,2,true) ||
-       b.at("range_min").get<double>()>b.at("range_max").get<double>()) {
+    if (keyboard != (type == "key")) {
+        error = "keyboard bindings require the key protocol and message type";
+        return false;
+    }
+    const bool deviceNamed = !b.at("device_name").get_ref<const std::string&>().empty();
+    if (keyboard) {
+        const auto mode = b.at("mode").get<std::int64_t>();
+        if (deviceNamed || !b.at("channel").is_null() || !b.at("osc_path").is_null() ||
+            !within("msg_num", 1, std::numeric_limits<std::int32_t>::max(), true) ||
+            (mode != static_cast<int>(ControllerMode::Absolute) && mode != static_cast<int>(ControllerMode::Toggle))) {
+            error = "invalid project keyboard source";
+            return false;
+        }
+    } else if (!deviceNamed ||
+               !within("channel",1,16,type=="cc" || type=="note" || type=="pb" || type=="nrpn") ||
+               !within("msg_num",0,type=="nrpn"?16383:127,type=="cc" || type=="note" || type=="nrpn")) {
+        error = "invalid controller source";
+        return false;
+    }
+    if(!within("mode",0,static_cast<int>(ControllerMode::LinearSignedBitInverted),true) ||
+       !within("takeover",0,2,true) || !std::isfinite(b.at("range_min").get<double>()) ||
+       !std::isfinite(b.at("range_max").get<double>())) {
         error="invalid controller source, mode, takeover or range"; return false;
     }
     if((protocol=="osc") != (type=="osc_path") ||
@@ -84,14 +103,79 @@ bool validateBinding(OpContext& c,const Payload& b,std::string& error) {
 }
 }
 
-ControllerMode detectControllerMode(std::span<const int> values) noexcept {
+std::optional<int> decodeRelativeControllerTicks(ControllerMode mode, int value) noexcept {
+    if (value < 0 || value > 127) return std::nullopt;
+    switch (mode) {
+        case ControllerMode::Relative:
+        case ControllerMode::LinearTwosComplement:
+            return value < 64 ? value : value - 128;
+        case ControllerMode::BinaryOffset:
+        case ControllerMode::LinearBinaryOffset:
+            return value - 64;
+        case ControllerMode::SignedBit:
+        case ControllerMode::LinearSignedBit:
+            return value < 64 ? value : -(value - 64);
+        case ControllerMode::SignedBitInverted:
+        case ControllerMode::LinearSignedBitInverted:
+            return value < 64 ? -value : value - 64;
+        case ControllerMode::Absolute:
+        case ControllerMode::Toggle:
+            break;
+    }
+    return std::nullopt;
+}
+
+std::optional<double> decodeAbsoluteControllerValue(ControllerAbsoluteFormat format, int value) noexcept {
+    if (value < 0) return std::nullopt;
+    switch (format) {
+        case ControllerAbsoluteFormat::SevenBit:
+            if (value <= 127) return value / 127.0;
+            break;
+        case ControllerAbsoluteFormat::FourteenBit:
+            if (value <= 16383) return value / 16383.0;
+            break;
+        case ControllerAbsoluteFormat::PitchBend:
+            if (value <= 16383) {
+                return value < 8192 ? value / 16384.0 : 0.5 + (value - 8192) / 16382.0;
+            }
+            break;
+    }
+    return std::nullopt;
+}
+
+bool controllerCcIsDown(int value) noexcept {
+    return value >= 64 && value <= 127;
+}
+
+bool controllerRangeActive(double value, double begin, double end) noexcept {
+    if (!std::isfinite(value) || !std::isfinite(begin) || !std::isfinite(end)) return false;
+    if (begin <= end) return value >= begin && value <= end;
+    return value < end || value > begin;
+}
+
+ControllerMode detectControllerMode(std::span<const int> values, ControllerLearnMotion motion) noexcept {
     if(values.empty()) return ControllerMode::Absolute;
+    if (motion == ControllerLearnMotion::SlowLeftTurn) {
+        for (const auto mode : {ControllerMode::Relative, ControllerMode::BinaryOffset,
+                                ControllerMode::SignedBit, ControllerMode::SignedBitInverted}) {
+            bool moved = false;
+            const bool consistent = std::all_of(values.begin(), values.end(), [&](int value) {
+                const auto ticks = decodeRelativeControllerTicks(mode, value);
+                moved = moved || ticks == -1;
+                return ticks == -1 || ticks == 0;
+            });
+            if (consistent && moved) return mode;
+        }
+        return ControllerMode::Absolute;
+    }
     bool twos=true,offset=true,movedTwos=false,movedOffset=false;
     for(int v:values) {
         twos=twos && (v==0 || v==1 || v==127); movedTwos=movedTwos || v==1 || v==127;
         offset=offset && v>=63 && v<=65; movedOffset=movedOffset || v==63 || v==65;
     }
-    return (twos && movedTwos) || (offset && movedOffset) ? ControllerMode::Relative : ControllerMode::Absolute;
+    if (twos && movedTwos) return ControllerMode::Relative;
+    if (offset && movedOffset) return ControllerMode::BinaryOffset;
+    return ControllerMode::Absolute;
 }
 std::optional<OpRequest> learnControllerTarget(std::int64_t id,const std::string& kind,
     std::int64_t targetId,const std::string& param,const ControllerCc& source,
@@ -109,7 +193,7 @@ std::optional<OpRequest> learnControllerTarget(std::int64_t id,const std::string
     if(policy.takeover!=ControllerTakeover::Jump && policy.takeover!=ControllerTakeover::Pickup && policy.takeover!=ControllerTakeover::Scale) {
         error="invalid controller takeover policy";return std::nullopt;
     }
-    const auto mode=detectControllerMode(values);
+    const auto mode=detectControllerMode(values,policy.learnMotion);
     Payload binding={{"device_name",source.port},{"protocol","midi"},{"channel",source.channel},
         {"msg_type","cc"},{"msg_num",source.number},{"osc_path",nullptr},
         {"target_kind",kind},{"target_id",targetId},{"target_param",param},

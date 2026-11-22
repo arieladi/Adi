@@ -38,7 +38,7 @@ void run() {
     check(!learnController(*s,5,2,cc,std::array{128},policy,error),"invalid CC rejected");
     check(!learnController(*s,5,2,cc,std::span<const int>{},policy,error),"empty observation rejected");
     check(detectControllerMode(std::array{1,127,0,1})==ControllerMode::Relative,"twos cluster");
-    check(detectControllerMode(std::array{63,64,65})==ControllerMode::Relative,"offset cluster");
+    check(detectControllerMode(std::array{63,64,65})==ControllerMode::BinaryOffset,"offset cluster retains its wire encoding");
     check(detectControllerMode(std::array{64,64})==ControllerMode::Absolute,"neutral alone ambiguous");
     check(detectControllerMode(absolute)==ControllerMode::Absolute,"absolute sweep");
     check(detectControllerMode(std::array{1,65,127})==ControllerMode::Absolute,"mixed clusters not relative");
@@ -139,9 +139,107 @@ void directTargets() {
     check(missing && !OpJournal(*store).commit(*missing).ok && digestProject(*store).text==current,"commit validates current target existence without creating a lane");
 }
 
+void encoderWires() {
+    struct Encoding { ControllerMode mode, linear; int left, right, neutral, fastLeft, fastRight; };
+    using Mode = ControllerMode;
+    constexpr std::array encoders{
+        Encoding{Mode::Relative, Mode::LinearTwosComplement, 127, 1, 0, 124, 4},
+        Encoding{Mode::BinaryOffset, Mode::LinearBinaryOffset, 63, 65, 64, 60, 68},
+        Encoding{Mode::SignedBit, Mode::LinearSignedBit, 65, 1, 0, 68, 4},
+        Encoding{Mode::SignedBitInverted, Mode::LinearSignedBitInverted, 1, 65, 0, 4, 68}
+    };
+    for (const auto& encoder : encoders) {
+        check(detectControllerMode(std::array{encoder.neutral, encoder.left, encoder.left},
+                  ControllerLearnMotion::SlowLeftTurn) == encoder.mode,
+              "a witnessed slow left turn identifies the encoding and polarity");
+        for (const auto mode : {encoder.mode, encoder.linear}) {
+            check(decodeRelativeControllerTicks(mode, encoder.left) == -1 &&
+                      decodeRelativeControllerTicks(mode, encoder.right) == 1 &&
+                      decodeRelativeControllerTicks(mode, encoder.neutral) == 0,
+                  "relative encodings report one signed step and their neutral marker");
+            check(decodeRelativeControllerTicks(mode, encoder.fastLeft) == -4 &&
+                      decodeRelativeControllerTicks(mode, encoder.fastRight) == 4,
+                  "both variants retain the exact tick magnitude from the wire");
+        }
+    }
+    check(static_cast<int>(Mode::Relative) == 1 && decodeRelativeControllerTicks(Mode::Relative, 64) == -64,
+          "old mode 1 remains two's complement including its signed minimum");
+    check(!decodeRelativeControllerTicks(Mode::Absolute, 1) && !decodeRelativeControllerTicks(Mode::Toggle, 1) &&
+              !decodeRelativeControllerTicks(Mode::BinaryOffset, -1) && !decodeRelativeControllerTicks(Mode::Relative, 128),
+          "relative decoding refuses other controller kinds and invalid wire words");
+    check(detectControllerMode(std::array{0,0}, ControllerLearnMotion::SlowLeftTurn) == Mode::Absolute &&
+              detectControllerMode(std::array{1,65}, ControllerLearnMotion::SlowLeftTurn) == Mode::Absolute,
+          "neutral or contradictory samples cannot witness an encoder's direction");
+    using Value = ControllerAbsoluteFormat;
+    check(decodeAbsoluteControllerValue(Value::SevenBit, 127) == 1 &&
+              decodeAbsoluteControllerValue(Value::FourteenBit, 0) == 0 &&
+              decodeAbsoluteControllerValue(Value::FourteenBit, 16383) == 1 &&
+              !decodeAbsoluteControllerValue(Value::SevenBit, 128) &&
+              !decodeAbsoluteControllerValue(Value::FourteenBit, 16384),
+          "absolute endpoints use the declared MIDI width and refuse overflows");
+    const auto belowCenter = decodeAbsoluteControllerValue(Value::PitchBend, 8191);
+    check(decodeAbsoluteControllerValue(Value::PitchBend, 0) == 0 && belowCenter && *belowCenter < 0.5 &&
+              decodeAbsoluteControllerValue(Value::PitchBend, 8192) == 0.5 &&
+              decodeAbsoluteControllerValue(Value::PitchBend, 16383) == 1 &&
+              !decodeAbsoluteControllerValue(Value::PitchBend, -1),
+          "pitch bend uses an exact center with distinct low and high halves");
+    check(!controllerCcIsDown(63) && controllerCcIsDown(64) && controllerCcIsDown(127) && !controllerCcIsDown(128),
+          "note-like CC goes down at 64 and ends at 127");
+    check(controllerRangeActive(0.25, 0.25, 0.75) && controllerRangeActive(0.75, 0.25, 0.75) &&
+              !controllerRangeActive(0.25, 0.75, 0.25) && !controllerRangeActive(0.5, 0.75, 0.25) &&
+              controllerRangeActive(0.1, 0.75, 0.25), "inverted activator bounds complement the inclusive interval");
+}
+
+void encoderBindings() {
+    test::TempDirectory temp("controller", "encoder-rows");
+    auto store = project(temp.path() / "encoders.adi");
+    ControllerPolicy policy;
+    policy.remoteEnabled = true;
+    policy.learnMotion = ControllerLearnMotion::SlowLeftTurn;
+    const ControllerCc source{"Encoder", 1, 10};
+    std::string error;
+    const auto learned = learnControllerTarget(3, "track", 1, "volume", source, std::array{0,65,65}, policy, error);
+    if (!learned) throw std::runtime_error(error);
+    check(learned->payload.at("binding").at("mode") == 4 && learned->payload.at("binding").at("takeover") == 0,
+          "Learn stores the witnessed signed-bit mode and bypasses absolute takeover");
+    OpJournal journal(*store);
+    History history(*store);
+    for (int mode = 0; mode <= 9; ++mode) {
+        auto request = *learned;
+        request.payload["binding"]["mode"] = mode;
+        check(journal.commit(request).ok && readControllerBindings(*store).front().binding.at("mode") == mode,
+              "every documented mode commits as its exact numeric code");
+    }
+    const auto encoder = readControllerBindings(*store).front().binding;
+    auto keyboard = *learned;
+    auto& key = keyboard.payload["binding"];
+    key["device_name"] = "";
+    key["protocol"] = "key";
+    key["channel"] = nullptr;
+    key["msg_type"] = "key";
+    key["msg_num"] = 65560;
+    key["mode"] = static_cast<int>(ControllerMode::Toggle);
+    key["range_min"] = 1.0;
+    key["range_max"] = 0.0;
+    check(journal.commit(keyboard).ok && readControllerBindings(*store).front().binding == key,
+          "a project Key Map stores a special key without a machine device and preserves inverted bounds");
+    check(history.undo().ok && readControllerBindings(*store).front().binding == encoder &&
+              history.redo().ok && readControllerBindings(*store).front().binding == key,
+          "undo and redo preserve complete older encoder and new keyboard rows");
+    auto invalid = keyboard;
+    invalid.payload["binding"]["channel"] = 1;
+    check(!journal.commit(invalid).ok, "a keyboard binding cannot name a MIDI channel");
+    invalid = keyboard;
+    invalid.payload["binding"]["protocol"] = "midi";
+    check(!journal.commit(invalid).ok, "keyboard messages require the keyboard protocol");
+    invalid = keyboard;
+    invalid.payload["binding"]["msg_num"] = -1;
+    check(!journal.commit(invalid).ok, "a project Key Map refuses an invalid key code");
+}
+
 }
 int main() {
-    try { run(); directTargets(); } catch(const std::exception& e) { check(false,e.what()); }
+    try { run(); directTargets(); encoderWires(); encoderBindings(); } catch(const std::exception& e) { check(false,e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);
     return failures?1:0;
 }
