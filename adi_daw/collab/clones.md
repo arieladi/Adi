@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Recallable per-band Crush quantizer bias
+
+`clones/shaper-crush-bias` at `5f1d6c4a` — Add calibrated per-band quantizer bias to Crush. **Lands after 3 December.** IDs 865–867 store 0–100% bias independently in the three bands. Missing keys restore the previous centered response. The quantizer carries the preceding sample's bias into threshold crossings. With dither it subtracts the response to the same noise on silence, keeping a silent channel silent. Full-resolution playback stays transparent to the bias control.
+
+The old core failed a signed stereo reading at 0.06657066 against 0.17970359. Twenty-one independent broadband comparisons at three rates gave at most 0.000000102 RMS and 0.00000516 peak error. The rack, Crush and registered native/edited-Pd suites passed under MSVC /W4 /WX at both precisions. Source and device recordings were independently identical across 256 and 2,048 frames. Centered recordings matched their archives exactly. The instantaneous bias is calibrated. The source's smoothing of an automated target remains unmeasured.
+
+At 75% bias the registered median/p99 on stereo kick and bass was 20.7/45.4 µs at 256 frames and 201.8/293.2 µs at 2,048, versus 42.1/75.4 and 348.6/1,660.9 µs for the reference. Neither biased ADI run missed a deadline in 10,240 callbacks per size. Both reported zero latency and the largest per-channel RMS error was 0.000000163. At zero bias the registered medians were 25.3 and 165.4 µs, with one deadline miss at 256 frames.
+
+Forty-three of 873 saved programs use a nonzero bias on an audible band. On the seven-stage main comparison seven improved, eighteen worsened and eighteen moved by at most 0.000001 RMS. One program went from 0.00003743 to 0.013589. Reopening its weighted curve preserved 0.00003744 and the audible crossing. Forcing minimum bit resolution in that program's solo Crush made the difference between zero and full bias 0.0122618 RMS in both engines. On the weighted original-stage-order pipeline fifteen errors fell, twelve rose and sixteen stayed within tolerance. All 25 overlapping prior stage renders reproduced their centered full-length files exactly. The measured pipeline retains 42 of 873 below 0.001 RMS. The weighted fixed-order experiment retains 40. These are private composite comparisons pending an integrated build.
+
+PR requested
+
 ## 22 November 2026 — Master mix through two active stages
 
 The existing ADI-Shaper master routing matches 105 fresh reference observations. For stationary master values of 0, 25, 50, 75 and 100%, multiplying each active band's blend by the master reproduced six million stereo frames exactly. The cases included Volume and Width in both orders, Volume and nonlinear Drive in both orders, unequal band mixes, three split slopes, both buffer sizes at 48 kHz and 256 frames at 96 kHz. The 960,000 stereo frames common to both 48 kHz block sizes were identical. Eighteen of the 873 saved programs have an intermediate master value. All eighteen use multiple stages.
