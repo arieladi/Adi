@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/delivery_src.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
@@ -213,6 +214,54 @@ void sampleRateConversion() {
     for (std::size_t i=0;i<samples.size()/2;++i)
         correct=correct && std::abs(samples[2*i]-0.25f)<1e-5f && std::abs(samples[2*i+1]+0.5f)<1e-5f;
     check(correct,"48 kHz media renders at 44.1 kHz with ranges measured in output samples");
+}
+void projectRateDelivery() {
+    Fixture f;
+    f.effect();
+    std::vector<float> dc(8192, 0.25f);
+    audio::WavWriter sourceFile(f.dir.path() / "audio.wav", 48000, 2, audio::WavFormat::Float32);
+    sourceFile.write(dc.data(), 4096);
+    sourceFile.close();
+    auto job = f.job("project-then-soxr");
+    job.session.sampleRate = 44100;
+    job.ratePolicy = ExportRatePolicy::ProjectThenDownsample;
+    if (!deliverySrcAvailable()) {
+        const auto missing = renderWav(job, {});
+        check(missing.state == JobState::Failed && missing.error.find("SoXR") != std::string::npos && f.noStage(),
+              "source-free builds refuse project-rate conversion before staging");
+        return;
+    }
+    double preparedAt = 0;
+    const DeviceLoader capture = [&](const DeviceRequest& request, std::string&) {
+        preparedAt = request.sampleRate;
+        auto delay = std::make_unique<Delay>();
+        delay->delay = 31;
+        delay->gain = 2;
+        return delay;
+    };
+    job.endSample = job.beginSample + 2301;
+    const auto first = renderWav(job, capture);
+    const auto pcm = read(first, 2301, 44100);
+    check(preparedAt == 48000 && first.snapshot && first.snapshot->graphSampleRate == 48000 &&
+          first.snapshot->sampleRate == 44100 && first.snapshot->beginSample == 137 &&
+          first.snapshot->endSample == 2438,
+          "lower-rate delivery keeps project-rate effects and records both clocks");
+    check(pcm.size() == 4602 && std::all_of(pcm.begin() + 512, pcm.end() - 512,
+          [](float value) { return std::abs(value - 0.5f) < 1e-5f; }),
+          "SoXR receives the compensated selected effect output and preserves its interior gain");
+
+    job.session.maxFrames = 111;
+    job.nameTemplate = "repartitioned-soxr";
+    const auto repeated = read(renderWav(job, capture), 2301, 44100);
+    check(!repeated.empty() && repeated == pcm, "small graph blocks produce the same trimmed SoXR samples");
+
+    job.nameTemplate = "higher-direct";
+    job.session.sampleRate = 96000;
+    const auto higher = renderWav(job, capture);
+    check(higher.state == JobState::Completed && preparedAt == 96000 && higher.snapshot &&
+          higher.snapshot->graphSampleRate == higher.snapshot->sampleRate &&
+          higher.framesWritten == 2301 && f.noStage(),
+          "higher-rate job prepares the graph directly at the delivery rate");
 }
 void cancellationAndFailures() {
     Fixture f;
@@ -1474,7 +1523,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

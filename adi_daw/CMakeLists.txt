@@ -478,6 +478,7 @@ endif()
 target_include_directories(adi_core SYSTEM PUBLIC "${ADI_THIRD_PARTY}/clap/include")
 target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
+include(cmake/SoxrExport.cmake)
 # PUBLIC: dsp/spectrum.cpp includes pffft.h, and nothing else in the tree does.
 target_link_libraries(adi_core PRIVATE adi_pffft)
 

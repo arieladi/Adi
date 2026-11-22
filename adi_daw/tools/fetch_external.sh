@@ -60,6 +60,7 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 #          every ABI a large clone to build something none of them build.
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
+  "chirlu/soxr soxr LGPL-2.1-or-later 0.1.3 945b592b70470e29f917f4de89b4281fbbd540c0 build"
   # Musical tempo/phase sync only; the SDK pins standalone Asio by gitlink.
   "Ableton/link link GPL-2.0-or-later Link-4.1.1 5ba907ae027a8c2ec8824463e37296dcefc5e9be build submodules"
   # Public headers only: independent ABI shims dynamically load Linux AAC.

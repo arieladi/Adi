@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/render/queue.hpp"
+#include "adi/render/delivery_src.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -125,6 +126,8 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export WAV encoding");
     if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
         throw std::invalid_argument("unsupported export dither");
+    if (j.ratePolicy != ExportRatePolicy::RequestedRate && j.ratePolicy != ExportRatePolicy::ProjectThenDownsample)
+        throw std::invalid_argument("unknown export sample rate policy");
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
     if (j.exactWavFilename) {
@@ -160,6 +163,14 @@ std::int64_t addLatency(std::int64_t position, std::int64_t latency) {
     if (latency > 0 && position > std::numeric_limits<std::int64_t>::max() - latency)
         throw std::invalid_argument("export range plus latency overflows");
     return position + latency; // position >= 0; cached endpoint latency is the sum of two int32 values
+}
+std::int64_t projectFrames(std::int64_t frames, std::int64_t graphRate, std::int64_t deliveryRate,
+                           std::int64_t rounding) {
+    const auto pages = frames / deliveryRate;
+    if (pages > std::numeric_limits<std::int64_t>::max() / graphRate)
+        throw std::invalid_argument("export rate conversion exceeds the supported timeline");
+    const auto remainder = (frames % deliveryRate) * graphRate;
+    return addLatency(pages * graphRate, (remainder + rounding) / deliveryRate);
 }
 std::int64_t positiveEnd(std::int64_t begin, std::int64_t length) {
     if (begin < 0 || length <= 0 || begin > std::numeric_limits<std::int64_t>::max()-length)
@@ -453,6 +464,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         if (!store || error != StoreError::Ok) throw std::runtime_error(std::string("open export project: ") + toString(error));
         engine::Session session;
         session.graph().setFadeFrames(0);
+        auto graphRate = static_cast<std::int64_t>(job.session.sampleRate);
         NameContext names;
         names.counter = counter;
         {
@@ -469,6 +481,15 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 if (!head.getColumn(0).isNull()) journalHead = head.getColumn(0).getInt64();
             }
             auto renderSpec=job.session;
+            if (job.ratePolicy == ExportRatePolicy::ProjectThenDownsample) {
+                const auto projectRate = store->db().execAndGet("SELECT sample_rate FROM project WHERE id=1").getInt64();
+                if (projectRate < 8000 || projectRate > 768000)
+                    throw std::runtime_error("project sample rate is outside the export graph's supported range");
+                if (projectRate > graphRate && !deliverySrcAvailable())
+                    throw std::runtime_error("Project-rate downsampling requires the pinned SoXR build");
+                graphRate = (std::max)(graphRate, projectRate);
+                renderSpec.sampleRate = static_cast<double>(graphRate);
+            }
             renderSpec.performanceState=false;
             renderSpec.exporting=true;
             if (!session.load(*store, std::move(loader), renderSpec)) throw std::runtime_error(session.error());
@@ -497,7 +518,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             names.bpm = textproj::renderF64(snap->tempo->bpmAt(snap->tempo->secondsToTicks(
                 static_cast<double>(job.beginSample) / job.session.sampleRate)));
             result.snapshot = RenderSnapshot{journalHead, job.source, job.beginSample, job.endSample,
-                job.session.sampleRate, job.regionId, names};
+                job.session.sampleRate, job.regionId, names, static_cast<double>(graphRate)};
             snapshot.commit();
         }
         const auto filename = job.exactWavFilename ? *job.exactWavFilename :
@@ -515,9 +536,17 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         auto& coalescer = session.devices().coalescer();
         coalescer.setQuietPeriodMs(0); // offline jobs must not outrun the live debounce
         const auto reports = coalescer.stats().reports;
-        const auto rawBegin = addLatency(job.beginSample, latency);
-        const auto rawEnd = addLatency(job.endSample, latency);
-        const auto total = static_cast<std::uint64_t>(job.endSample - job.beginSample);
+        const auto outputRate = static_cast<std::int64_t>(job.session.sampleRate);
+        const bool downsampling = graphRate != outputRate;
+        const auto outputFrames = job.endSample - job.beginSample;
+        const auto sourceBegin = downsampling ? projectFrames(job.beginSample, graphRate, outputRate, outputRate / 2) :
+            job.beginSample;
+        const auto sourceFrames = downsampling ? projectFrames(outputFrames, graphRate, outputRate, outputRate - 1) :
+            outputFrames;
+        const auto rawBegin = addLatency(sourceBegin, latency);
+        const auto sourceEnd = addLatency(sourceBegin, sourceFrames);
+        const auto rawEnd = addLatency(sourceEnd, latency);
+        const auto total = static_cast<std::uint64_t>(outputFrames);
         const auto channels = static_cast<std::size_t>(job.session.channels);
         const auto block = static_cast<std::size_t>(job.session.maxFrames);
         std::vector<float> narrow(channels * block);
@@ -538,10 +567,22 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 static_cast<std::uint16_t>(channels),job.encoding.format,nullptr,std::uint64_t{1}<<32,
                 job.encoding.dither,job.encoding.ditherSeed^counter);
         else normalized=std::make_unique<NormalizationCapture>(stage.path/"capture.f64",static_cast<std::uint32_t>(job.session.sampleRate),job.session.channels,job.normalization);
-        auto write=[&](std::uint32_t frames) {
-            if(normalized)normalized->append(std::span<const double>(interleaved.data(),static_cast<std::size_t>(frames)*channels),frames);
-            else writer->write(interleaved.data(),frames);
-            result.framesWritten+=frames;
+        const auto writeDelivery = [&](std::span<const double> samples, std::uint32_t frames) {
+            if (downsampling && std::any_of(samples.begin(), samples.end(), [&](double value) {
+                return !std::isfinite(value) || (!normalized && job.encoding.format == audio::WavFormat::Float32 &&
+                    std::abs(value) > static_cast<double>(std::numeric_limits<float>::max()));
+            })) throw std::runtime_error("Downsampled audio exceeds the output format");
+            if (normalized) normalized->append(samples, frames);
+            else writer->write(samples.data(), frames);
+            result.framesWritten += frames;
+        };
+        std::unique_ptr<DeliverySrc> converter;
+        if (downsampling) converter = std::make_unique<DeliverySrc>(static_cast<unsigned>(graphRate),
+            static_cast<unsigned>(outputRate), static_cast<unsigned>(channels), total, writeDelivery);
+        const auto write = [&](std::uint32_t frames) {
+            const std::span<const double> samples(interleaved.data(), static_cast<std::size_t>(frames) * channels);
+            if (converter) converter->append(samples, frames);
+            else writeDelivery(samples, frames);
         };
         auto progress = [&] {
             if (control.progress) control.progress(id, result.framesWritten, total);
@@ -551,7 +592,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         // Signed output latency may map a requested position before transport
         // zero: that is silence, not a negative locate (which clamps).
         if (rawBegin < 0) {
-            auto silence = (std::min)(total, static_cast<std::uint64_t>(-rawBegin));
+            auto silence = (std::min)(static_cast<std::uint64_t>(sourceFrames), static_cast<std::uint64_t>(-rawBegin));
             while (silence > 0) {
                 const auto frames = static_cast<std::uint32_t>((std::min)(silence, static_cast<std::uint64_t>(block)));
                 write(frames);
@@ -594,7 +635,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             for (std::int32_t f = 0; f < frames; ++f) for (std::size_t c = 0; c < channels; ++c) {
                 const auto i = static_cast<std::size_t>(f);
                 const double value = dp.empty() ? static_cast<double>(fp[c][i]) : dp[c][i];
-                if (!std::isfinite(value) || (!normalized && job.encoding.format == audio::WavFormat::Float32 &&
+                if (!std::isfinite(value) || (!converter && !normalized && job.encoding.format == audio::WavFormat::Float32 &&
                     std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
                     throw std::runtime_error("nonfinite or out-of-range audio during export");
                 if (at + f >= first)
@@ -607,8 +648,12 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             at = last;
             progress();
         }
-        if (result.framesWritten != total) throw std::runtime_error("export produced an incomplete range");
         service(); // include reports raised by the final process call
+        if (converter) {
+            converter->finish(service);
+            progress();
+        }
+        if (result.framesWritten != total) throw std::runtime_error("export produced an incomplete range");
         if(normalized)result.normalization=normalized->finish(staged,job.encoding.format,job.encoding.dither,job.encoding.ditherSeed^counter,[&] {
             cancellation(control);if(control.serviceHost)control.serviceHost();cancellation(control);
         });
@@ -694,7 +739,7 @@ std::string serializeRunManifest(const RunReport& run) {
     const auto snapshotValue = [&](const RenderSnapshot& snapshot) -> Json {
         return {{"journal_head", snapshot.journalHead}, {"source", sourceValue(snapshot.source)},
             {"begin_sample", snapshot.beginSample}, {"end_sample", snapshot.endSample},
-            {"sample_rate", snapshot.sampleRate},
+            {"sample_rate", snapshot.sampleRate}, {"graph_sample_rate", snapshot.graphSampleRate},
             {"region_id", snapshot.regionId ? Json(*snapshot.regionId) : Json(nullptr)},
             {"names", {{"project", snapshot.names.project}, {"track", snapshot.names.track},
                 {"group", snapshot.names.group}, {"bpm", snapshot.names.bpm},
@@ -712,6 +757,8 @@ std::string serializeRunManifest(const RunReport& run) {
             const auto& job = *member.job;
             Json profile{{"sample_rate", job.session.sampleRate}, {"channels", job.session.channels},
                 {"max_frames", job.session.maxFrames},
+                {"rate_policy", job.ratePolicy == ExportRatePolicy::ProjectThenDownsample ?
+                    "project_then_downsample" : "requested_rate"},
                 {"processing_precision", job.session.precision == engine::Precision::Float64 ? "float64" : "float32"},
                 {"delay_compensation", job.session.delayCompensation},
                 {"external_tempo_bpm", optionalNumber(job.session.externalTempoBpm)},
