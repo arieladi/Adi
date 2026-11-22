@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Device Spectrum cursor
+- The full Device Spectrum shows the hovered frequency, pitch and level coordinate in ADI's theme. The ruler and frequencies past the source's Nyquist stay clear. A pointer already in the plot reads when fresh audio arrives. The compact Info preview still forwards its click to its parent.
+- The red fixture failed the pointer guide check. The exact Release passed 468 Spectrum component checks, all 24 named CTests and the 906 Mix View, 329 Arrangement and 7 Appearance component gates. Pointer use retains the same immutable picture and leaves analysis counters unchanged. Both changed translation units passed MSVC /W4 /WX, and Clang reported zero diagnostics for the production unit.
+- ADI.exe SHA-256 `ef065a684d12094d64ddd8e2acbed225ac10432355e59d5649b550b50f7e15f0`. ZIP SHA-256 `40490cb87387f1dd72e469e4adaffb22bc0b55d6c4f95cf8cea8b1ec408db985`. The scheduled review brief leads with the cursor and its live comparison.
+- PR requested — `mixview/df-m55-spectrum-cursor-lands-after-2026-12-03` at `e4db4580`. The scheduled review branch points at the same commit. Lands after 3 December.
+
 ## 2026-11-22 — Matched-filter review branch reconciled
 - #558 merged main `87ea349c69` at `3c767304a9`. Resolved its only conflict in the CMake registration. Main's EQ, serial EQ and compressor registrations are retained alongside the standalone matched-filter target and test. The filter and its test match the prior reviewed source.
 - Configured the full headless CMake tree with MSVC warnings as errors. The matched-filter target and test both compiled with /W4 /WX. All 43 checks passed with zero process allocations or deallocations. This is an unexposed component, so the current Windows review builds cover the user-visible work.
