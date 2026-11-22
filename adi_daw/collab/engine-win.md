@@ -4,6 +4,18 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, DF-E35(a) take-lane snapshot projection
+
+**PR requested** — `engine-win/take-lane-snapshot` `430ea825` on main `87ea349c`. #677 is on main and collab/README.md activates the snapshot projection loan once it lands. ClipNode retains the optional lane id. The existing TrackNode::clips main reader omits takes, with takeClips available to future take rows. No Window source was changed. Strict MSVC passed 156 snapshot, 74 take-lane op, 575 audio playback and 553 Window seam checks. The actual Arrangement hit returns the main clip with an overlapping take, a take-to-take clip.setLane invalidates the old node, and Undo restores previous hit precedence.
+
+**Needs engine/window-fn:** engine review and land before DF-E17. Window-fn can bind take rows to takeClips and pass the explicit CT-01 EditScope. The audition display stays separate.
+
+## 2026-11-22, EX-12 continuous gapless region export
+
+**PR requested** — `engine-win/export-gapless-regions` `75440982`, stacked on EX-03 `d84677d2`, after 3 December. Adjacent cycle markers are resolved from the one captured project revision and sorted chronologically. The private WAV captures one continuous device and dither pass. Slices preserve exact frames and PCM codes. The files preflight before delivery, and publication rechecks the same media after staging. Windows /W4 /WX passed 475 render, 143 WAV and 85 NI Stems checks (native AAC unavailable). The dithered PCM24 null included a delayed effect ringing across the cut, and the test excludes a one-sample gap, duplicate output names and independent tails.
+
+**Needs Win:** integrate shared queue hunks in the export landing window. Pairwise merge previews found overlaps in the FLAC/AIFF/MP3 container, suffix and CMake declarations, and in the SoXR/EX-03 range clocks. In the joined tree, apply .wav/.aiff/.flac/.mp3 selection consistently to preview, keep timing/latency in the graph clock and encoded counts in the delivery clock, and check the combined gapless/SRC/tail path. The published topic heads were tested separately.
+
 ## 2026-11-22, EX-04 project-rate capture and SoXR downsampling
 
 **PR requested** — `engine-win/export-project-rate` `44f34b96` on main `87ea349c`, after 3 December. Pins SoXR 0.1.3 to `945b592b70470e29f917f4de89b4281fbbd540c0` (LGPL-2.1-or-later). The explicit ProjectThenDownsample policy keeps a lower-rate export's graph and devices at the saved project rate. It streams the compensated selection through SoXR VHQ double before encoding and normalization. Higher-rate jobs still process at delivery rate. The requested bounds, output frame count and both rates remain observable. MSVC /W4 /WX passed 440 render, 143 WAV and 85 NI Stems checks (native AAC unavailable). The 48-to-44.1 kHz test verified correct FX preparation rate, compensation, exact 2301 output frames and identical samples across two block partitions.
