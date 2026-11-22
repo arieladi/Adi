@@ -4,6 +4,19 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, standing queue dependencies before 3 December
+
+- **Parked, DF-E64 integration.** Engine or Win: please supply or lend the `Session::RenderBlock` Play-path hunk. Window-fn: please review the published `window_state.hpp` and `project_document.cpp` hunks. Win owns the WTS-01 harness; please capture from the first playing callback while asserting silence and an unchanged song position during the hold. The focused delayed-reader test uses no owner-side prime.
+- **Needs, MX-09.** Win's latest ownership entry confirms the recording half. Engine: please expose the driver's input and output latency in samples to the recording owner. I will build and verify the explicit placement offset.
+- **Needs, CT-01.** I will keep DF-E17's same-track lane retention and explicit cross-track detach contract. Engine review of the EditScope hunks requested.
+
+## FOR THE DIRECTOR
+
+- **CT-01 and CT-02.** Should a take audition replace the main track, persist, or create Undo? What is Live's exact new-lane name, and where does recorded pre-roll go with loop and punch? Recommend transient exclusive audition without an Undo entry, and keeping pre-roll outside loop-pass clips until a reference capture settles placement.
+- **CT-04.** How does comping treat an empty take-lane interval and a selection that extends beyond the take? Recommend preserving existing main audio outside the selected source material until the measured behavior is settled.
+- **EX-03.** Where does Live start the unwritten pass of Render as Loop? Recommend using the selected range start for the loop pass and handling earlier priming separately, pending the reference.
+- **EX-05.** Should export brickwall detection go beyond BS.1770 4x? Recommend keeping 4x as the compatibility meter and using finer detection only if an oversampled acceptance test still finds a ceiling miss.
+
 ## 2026-11-22, project saved plug-ins and the #642 gate
 
 - **PR requested** — N68, `engine-win/project-plugin-saved-path` at `43787b7b`. After an adopted Incremental or Refresh job, a project can probe an installed VST3 or CLAP named by its saved absolute path. The request uses the isolated helper and respects quarantine. Explicit CacheOnly and in-flight jobs suppress new probes. A miss without a saved path keeps the adopted Browser catalogue and starts no scan. In the Windows JUCE `adi_play_render_tests` suite, real VST3 and CLAP fixtures outside the search roots loaded after adoption. The CLAP quarantine and missing-hint controls passed. The Windows desktop application built with N62 and N68 together.
