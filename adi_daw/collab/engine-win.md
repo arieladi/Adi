@@ -4,6 +4,11 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-05: conditional normalization and the render contract
+
+- **Lands after 3 December.** `engine-win/export-conditional-normalization` `d1fcb88e` on `export-cycle-and-matrix` `f775a911`. The measured source statistic gates the target gain. The caller explicitly chooses whether to preserve source level or enforce the true-peak ceiling when conditional loudness skips the target. Above/Below controls, dithered ceiling enforcement, separate skip/ceiling readings and Peak's unity case passed. The settings default for the skipped ceiling still waits on the director, with the recommendation above. Strict native MSVC: 638 render, 176 WAV and 41 normalization checks. Raw `D:/adi-engine-win-build/20261120/engine-loans/export-conditional-normalization.log`. PR requested.
+- **Lands after 3 December.** `engine-win/export-pipeline-contract` `c81794b2` documents the verified combined signal path in `docs/RENDER-RUN-MANIFEST.md`. It corrects the old Replace and group-renumbering descriptions and records analyze and multiple delivery receipts. Reviewed against the code and the named Windows tests. The branch adds documentation only on the tested `d1fcb88e` parent. PR requested.
+
 ## 2026-11-22 — EX-02 / EX-12: common landing candidate for cycle WAVs and matrix exports
 
 **Lands after 3 December.** `engine-win/export-cycle-and-matrix` `f775a911`, on `export-windowed-delivery` `cd89d843`. Brings the four direct taps, sparse render matrix, continuous cycle WAVs, previously checked codec stack, file conversion and After Export into one candidate. The continuous WAV at 32 kHz splits at the shared rounded sample fence into 85 and 86 frames and concatenates bit-exactly. It loads the test effect once, runs at the 48 kHz project clock, preserves the explicit speaker mask and returns independently matched BLAKE3 receipts. Native MSVC: render 638, WAV 176, normalization 35, NI metadata 85, material commands 29. Raw `D:/adi-engine-win-build/20261120/engine-loans/export-cycle-and-matrix-v3.log`. The prior red cycle assertion read before the WAV fmt chunk because of the reserved RF64 header space. The final test locates the fmt chunk and passed. The native AAC path and grouped or lossy normalization remain open. PR requested.
