@@ -241,7 +241,85 @@ void identityAndRobustness() {
 
 }  // namespace
 
+/// The review of 6f75c80a: three findings, each a check that fails on the
+/// old core.
+void reviewed() {
+    // Stereo pinch keeps the mid clean for any input, not only L == R: one
+    // channel alone, and a pure side signal (whose mid is silence).
+    {
+        V v;
+        v.set(V::TracingOn, 0);
+        v.set(V::PinchOn, 1);
+        v.set(V::PinchDrive, 0.5);
+        v.set(V::PinchFreq, 1100);
+        v.set(V::Soft, 1);
+        v.set(V::Stereo, 1);
+        v.prepare(kRate);
+        const auto s = sine(1100, 48000, 0.4);
+        const std::vector<float> zero(s.size(), 0.f);
+        std::vector<float> l, r;
+        run(v, s, zero, l, r);
+        double mid = 0, side = 0;
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            mid = std::max(mid, std::abs(0.5 * (static_cast<double>(l[i]) + r[i]) - 0.5 * s[i]));
+            side = std::max(side, std::abs(0.5 * (static_cast<double>(l[i]) - r[i]) - 0.5 * s[i]));
+        }
+        check(mid < 1e-6 && side > 0.01, "Stereo pinch, the left channel alone: the mid is clean, the side carries the pinch");
+        V w;
+        w.set(V::TracingOn, 0);
+        w.set(V::PinchOn, 1);
+        w.set(V::PinchDrive, 0.5);
+        w.set(V::Stereo, 1);
+        w.prepare(kRate);
+        std::vector<float> minus(s.size());
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            minus[i] = -s[i];
+        }
+        run(w, s, minus, l, r);
+        check(l == s && r == minus, "Stereo pinch on a pure side signal: its mid is silence, and nothing is added");
+    }
+    // Moving Tracing Drive under a steady tone makes no thump: the output
+    // less its input, averaged over 1 ms (a whole cycle of the tone and of
+    // its second harmonic), stays near 0 after the move.
+    {
+        V v;
+        v.set(V::TracingDrive, 0);
+        v.set(V::TracingFreq, 1000);
+        v.prepare(kRate);
+        const auto s = sine(1000, 57600, 0.7);
+        std::vector<float> l(s.size()), r(s.size());
+        v.process(s.data(), s.data(), l.data(), r.data(), 48000);
+        v.set(V::TracingDrive, 1);
+        v.process(s.data() + 48000, s.data() + 48000, l.data() + 48000, r.data() + 48000, 9600);
+        double worst = 0;
+        for (std::size_t i = 48000; i + 48 <= s.size(); ++i) {
+            double sum = 0;
+            for (std::size_t k = 0; k < 48; ++k) {
+                sum += static_cast<double>(l[i + k]) - s[i + k];
+            }
+            worst = std::max(worst, std::abs(sum / 48));
+        }
+        check(worst < 0.01, "Tracing Drive moved from 0 to 1 under a tone: no low thump (" + std::to_string(worst) + ")");
+    }
+    // A huge finite input never comes out infinite.
+    {
+        V v;
+        v.set(V::TracingDrive, 1);
+        v.set(V::PinchOn, 1);
+        v.prepare(kRate);
+        std::vector<float> big(4800), l, r;
+        for (std::size_t i = 0; i < big.size(); ++i) {
+            big[i] = static_cast<float>(1.5e19 * std::sin(2 * std::numbers::pi * 1000 * static_cast<double>(i) / kRate));
+        }
+        run(v, big, big, l, r);
+        check(std::all_of(l.begin(), l.end(), [](float s) { return std::isfinite(s); }) &&
+                  std::all_of(r.begin(), r.end(), [](float s) { return std::isfinite(s); }),
+              "an input of 1.5e19 comes out finite");
+    }
+}
+
 int main() {
+    reviewed();
     tracing();
     pinch();
     crackle();

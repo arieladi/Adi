@@ -5,13 +5,16 @@
 //
 //   Tracing   On, Drive (0 to 1), Freq (50 Hz to 18 kHz), Width (1/Q, 0.1
 //             to 10): the stylus's tracing error, an even distortion. The
-//             band b at Freq adds 2 Drive b^2, its DC removed: a tone A at
-//             Freq gains a second harmonic of Drive A^2.
+//             band b at Freq adds 2 Drive times b^2 with its DC removed (the
+//             DC is removed before Drive scales it, so moving Drive makes no
+//             thump): a tone A at Freq gains a second harmonic of Drive A^2.
 //   Pinch     On, Drive, Freq, Width: the pinch effect, an odd distortion
 //             of its own band, f(g b) / g - b with g = 1 + 20 Drive; f is
-//             tanh (Soft) or a hard clip at 1 (Hard). Stereo adds it to the
-//             left channel and takes it from the right, so the mid is clean
-//             and the distortion lives in the side; Mono adds it to both.
+//             tanh (Soft) or a hard clip at 1 (Hard). Stereo takes it from
+//             the band of the mid, adds it to the left channel and takes it
+//             from the right, so the mid is clean whatever the channels hold
+//             and the distortion lives in the side; Mono distorts each
+//             channel's own band.
 //   Soft      Soft or Hard: the pinch's curve.
 //   Stereo    Mono or Stereo: the pinch's image.
 //   Crackle   Volume (-70 dB, off, to 0 dB) and Density (0 to 50 crackles a
@@ -76,7 +79,7 @@ public:
 private:
     struct Band {
         double b0 = 0, a1 = 0, a2 = 0;
-        std::array<double, 2> s1{}, s2{};   ///< per channel, transposed DF-II
+        std::array<double, 3> s1{}, s2{};   ///< left, right and mid, transposed DF-II
         void design(double rate, double hz, double width) noexcept;
         double run(std::size_t channel, double x) noexcept;
     };

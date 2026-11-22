@@ -3,11 +3,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 namespace adi::dsp {
 namespace {
 double settle(double x) noexcept { return std::abs(x) < 1e-30 ? 0 : x; }
+constexpr double kBound = 1e4;   ///< the tracing band's bound: 80 dB over full scale
+constexpr double kLargest = std::numeric_limits<float>::max();
 }  // namespace
 
 void VinylDistortion::Band::design(double rate, double hz, double width) noexcept {
@@ -94,25 +97,32 @@ void VinylDistortion::process(const float* inL, const float* inR, float* outL, f
         if (roll < crackleChance_) {
             crackle_ = (size < 0.5 ? -1 : 1) * (0.25 + 1.5 * std::abs(size - 0.5));
         }
+        // The pinch's own band of the mid, for Stereo: added to the left and
+        // taken from the right, it leaves the mid clean whatever the two
+        // channels hold. Every band runs whether or not its distortion is on,
+        // so switching one on starts from the signal's own state.
+        const double midBand = pinch_.run(2, 0.5 * (x[0] + x[1]));
+        const double qMid = pinchOn && stereo ? VinylDistortion::pinch(midBand, p_[PinchDrive], soft) : 0.0;
         for (std::size_t c = 0; c < 2; ++c) {
-            // The bands and the blocker run whether or not their distortion
-            // is on, so switching one on starts from the signal's own state.
             double y = x[c];
-            const double b = tracing_.run(c, x[c]), e = 2 * p_[TracingDrive] * b * b;
+            // The even product: b^2 with its DC blocked, then scaled by
+            // 2 Drive, so a move of Drive scales a signal that has no DC and
+            // makes no thump. The band is bounded first, so a huge (finite)
+            // input cannot square past a float.
+            const double b = std::clamp(tracing_.run(c, x[c]), -kBound, kBound), e = b * b;
             const double blocked = e - dcIn_[c] + dcPole_ * dcOut_[c];
             dcIn_[c] = e;
             dcOut_[c] = settle(blocked);
             if (tracingOn) {
-                y += blocked;   // the even product, its DC blocked: 2 Drive b^2
+                y += 2 * p_[TracingDrive] * blocked;
             }
             const double band = pinch_.run(c, x[c]);
             if (pinchOn) {
-                const double q = VinylDistortion::pinch(band, p_[PinchDrive], soft);
-                y += stereo && c == 1 ? -q : q;
+                y += stereo ? (c == 0 ? qMid : -qMid) : VinylDistortion::pinch(band, p_[PinchDrive], soft);
             }
             y += crackleLevel_ * crackle_;
             if (out[c]) {
-                out[c][i] = static_cast<float>(y);
+                out[c][i] = static_cast<float>(std::clamp(y, -kLargest, kLargest));
             }
         }
     }
