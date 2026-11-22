@@ -192,6 +192,16 @@ Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU bu
 - Strict Linux GCC 14 and Clang 19 both passed 19 checks, covering 131,072 HUI wire round trips, interleaved strips, touch and ping boundaries, and the existing 147,456 MCU wire round trips. Checked the Nov 20 patterns. Baseline logs are under `/workspace/adi-engine-validation/srf08-mcu-*-hui-*.log`.
 - Parked SRF-08 host slots, profiles, lock/pin, button parity and real feedback scheduling on the window-owned port host, CTL-06 and SF-22a. SRF-09/10 and SRF-13/14 host integration wait on the shared control feed and settings/permission wiring.
 
+### 22 November — TM-IC-02 Standard MIDI File codec
+
+- PR requested for `engine/tm-ic02-smf-codec` at `ec51512380ec79aea98e4f0a0475bd992c593f1e` from main `73f13028`. The JUCE-free reader/writer covers SMF 0/1/2, PPQ/SMPTE divisions, bounded VLQs, 64-bit ticks, running status, opaque meta and SysEx, unknown chunks, and named structural errors with byte offsets. Preserved VLQ widths allow exact re-export of accepted unedited input.
+- Strict Linux GCC 14 and Clang 19 each passed 27 focused checks. In the pinned DryWetMIDI corpus an ASan/UBSan run exercised 63 valid-labelled and 666 invalid-labelled files. All 270 accepted files round-tripped byte for byte. The other valid-labelled fixture contains only a format-1 header declaring zero tracks. The 208 accepted invalid-labelled files had opaque meta data, unknown material or wire-valid divisions that DryWetMIDI classified differently. No sanitizer issue. Checked the Nov 20 patterns. [DryWetMIDI corpus](https://github.com/melanchall/drywetmidi/tree/b2f4dbaaaaecb58e746dc62588b492c2bd91e3e5/Resources/MIDI%20files)
+- Parked project import/export and extension storage on TM-IC-03 shared ops, the window's command wiring and AWAITING 13.
+
+### FOR THE DIRECTOR
+
+- For AWAITING 13, I recommend retaining the source division, keeping project tempo on ordinary import, and measuring Live 12.4 multi-track placement and format/PPQ before locking the defaults. The codec is usable while those decisions are open.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
