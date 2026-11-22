@@ -32,6 +32,30 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PD-03 capture attached device state before document saves
+
+**PR requested** for `engine/pd03-snapshot-all` at `67515e1c3d2c402179f8a23ffe57b6393ccf2eda`. Title **Capture attached device state before document saves**. Base main `9f2abf4a`. `ParamOps::snapshotAll` commits through the attached Session. Successful zero `journalOps` means unchanged. Failure carries the reason and device when known, plus the counts of any previous durable operations. Each device's save still uses the existing guarded gesture and ADR-0142 first-state semantics.
+
+GCC 14 and Clang 19 warnings-as-errors passed all 193 ParamOps checks each. Two attached devices cover silent `stateEpoch == 0`, exactly one loadState per edited existing chunk, no op for unchanged state, capture refusal, journal refusal, and retry. The snapshot persists its sampled bytes without replacing a later silent edit in the plug-in. The earlier implementation fails the two checks for preserving and saving that later edit. The separate device-replacement branch `4a1b47e7` has a clean textual join.
+
+| Seat | Adoption |
+|---|---|
+| window-fn | Call `snapshotAll(nowMs)` and check `.ok()` before Take Snapshot, close, Save As, Save a Copy, and Collect. The operation reports any earlier durable writes so a retry can finish the remainder. |
+
+## 2026-11-22 — MI-08 hosted release continuity and real VST3 MPE
+
+**PR requested** for `engine/mi08-expression-playback-current` at `e105cf3ef7439c989966a430ea004cfb8c0fcdb2`. Title **Restore legacy VST3 MPE controls and prove hosted release continuity**. Fast-forward from `2f1b9d41`, after `engine/mi08-expression-units-current` `f0b5b6a7` and Gemini `da6d1629`. Mapped VST3 controls retain unrounded parameter delivery. The MpeMidi route uses ADR-0097's legacy event wire for its own unmapped configuration and per-note controls. An ordinary Controller event retains the existing unsupported diagnostic when its mapping is absent, including on MpeMidi. Provenance attaches to the emitted control. Gemini retains the refused-attack change.
+
+The ABI-aligned local join `6c606baa` includes #677, DF-E24(a), the MIDI API, N63/N64/N67 and the queued Engine heads. Exact GCC warnings-as-errors passed nine headless suites on the release candidate, including CLAP and MPE Output. The pure candidate MPE Output suite passes 128 under Clang as well. Native VST3 GCC and Clang each pass 132 key/wire checks plus 225 probe and 16 editor checks with the owned fixture scanned in isolated ADI_HOME. CLAP's 585-check gate passes both compilers. At 16 frames both hosts deliver every one of 128 switch releases. CLAP delivers its 16 new attacks afterwards. A deliberately full router segment queues one release and the next segment sends it in its original dialect. The two pending-wire plants and the old undersized adapter fail the intended checks.
+
+Real pinned Linux Surge XT 1.3.4 (`release_xt_1.3.4`, `f7b97c68`) reopened a persisted ANOT/AEXP project. On the original host the three pitch windows stayed at 261.641 Hz and counted 509 unsupported generated controls. The production candidate measured C4 261.641 Hz, C4 +6 369.900 Hz, and C5 523.062 Hz, within 0.6 cents. There were zero event or parameter drops and no out-of-range events. A separate authored unmapped CC remains counted exactly once. The plugin's controller was unreachable in both runs. The native waveform is Linux evidence. The Windows Surge and Serum 2 rig acceptance remains Win's.
+
+## 2026-11-22 — DF-E10 Link stopped-frame diagnostics
+
+**PR requested** for `engine/df-e10-link-stop-diagnostic` at `b29455f43bfe21268836660b1e38d9f9c89c60b0`. Title **Report Link stop intent and timing when the shared beat stalls**. Base main `9f2abf4a`. The #548 assertion keeps its behaviour and now prints validity, requested playing state, beat, and tempo for both frames when it fails.
+
+Pinned Link 4.1.1 `5ba907a`, GCC 14 and Clang 19 warnings-as-errors, 43 checks each. Reusing the Stop timestamp failed exactly one check in both runs and printed `valid=1 requestedPlaying=0 beat=2 tempo=60` for each frame. Next native ARM64 recurrence can be diagnosed from that output.
+
 ## 2026-11-22 — MI-08 units joined with Gemini's release retry
 
 **PR requested** for `engine/mi08-expression-units-current` at `f0b5b6a7ab17b4fe3615926045c85e2aceb0fb8d`. Title **Convert authored note expression units with the bounded MIDI release queue**. This fast-forwards the prior `0273aa63` by joining Gemini's exact `da6d1629`. GCC 14 and Clang 19 warnings-as-errors each passed 128 MPE output checks, including the 120-note/104-slot pending-release probe and the authored dB and pan checks. The playback branch joins this exact head. Gemini retains its refused-attack fix.
