@@ -45,6 +45,23 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-22, window-fn — DF-W38: a device lane found by the parameter it names (PR requested)
+
+Win's entry of 22 November gave DF-W38 to this seat, after DF-E53. Its window half does not need to wait:
+`laneOf` compared a device lane's `param_ref` as written, so a lane stored as "001" (a hand-made or older
+file) was never found for parameter 1, and Re-Enable Automation went missing for it. A device lane's ref is
+now compared by the decimal id it parses to, up to 32 bits, as the engine's parser does (the same rule as
+`param_automation.cpp`'s `parseParamId`). A track's or a send's ref is compared as written. Once DF-E53
+shares its parser, this one can call it.
+
+**Run.** The window's 27 suites (100%); `adi_ui_seams_tests` 555 checks ("001" is parameter 1, parameter 2
+has none, a track's ref as written), `adi_ui_shell_tests` 2911, both 0 failures. No review workflow ran for a
+twenty-line change.
+
+**PR requested** — `window-fn/lane-ref-canonical` at `996d5b1f`, on main `ce29e618`: "adi_daw: DF-W38: a device
+lane's ref is the parameter it parses to". It depends on nothing; it touches the same function as
+`window-fn/lane-chooser` (DF-W37), a merge of one hunk.
+
 ## 2026-11-22, window-fn — MX-04: Options > Delay Compensation (PR requested)
 
 M1's MX-04, its open half (the PLAN M1 rows, after win's three items). The registry row
