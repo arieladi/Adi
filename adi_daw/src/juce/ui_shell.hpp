@@ -306,6 +306,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
     std::int64_t renderedSamplePosition() const noexcept { return mailbox_.position(); }
+    [[nodiscard]] auto settledLocateRevision() const noexcept { return mailbox_.settledLocateRevision(); }
     // The Control Bar's MIDI Indicators (Live 12 manual 2.x, the Control Bar's right end): lit while MIDI
     // has come in from an open port within the last moment (SRF-05). The application sets it.
     void setMidiIn(bool on) noexcept {
