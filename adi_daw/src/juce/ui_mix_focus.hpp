@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/dsp/masking.hpp"
+#include "adi/ui/focus_lag.hpp"
 #include "adi/ui/focus_match.hpp"
 #include "ui_look.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -76,12 +77,20 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void learnMatchPreview();
     void rebuildMatchPath();
     void clearMatchPreview();
+    bool canMeasureAlign(const std::array<const Member *, 2> &) const noexcept;
+    void measureAlign();
+    void refreshAlign(const std::array<const Member *, 2> &);
+    void pollAlign();
+    void clearAlign();
+    void showAlign(const juce::String &);
     AdiRootComponent &root_;
     juce::Viewport scroll_;
     juce::Component strip_;
     juce::ComboBox scopeDisplay_, scopeChannels_;
+    juce::TextButton alignMeasure_{"Measure Align"};
+    juce::Label alignReadout_;
     juce::Rectangle<float> plot_;
-    juce::Rectangle<int> sumLabel_;
+    juce::Rectangle<int> titleRow_, sumLabel_;
     std::vector<const SharedAnalysis::Result *> scopeSources_;
     std::optional<FocusScopeRange> scopeRange_;
     SharedAnalysis::BarScopeLease barScope_;
@@ -96,6 +105,10 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::weak_ptr<SharedAnalysis> matchBroker_;
     juce::Path matchPath_;
     juce::String matchCaption_;
+    std::optional<FocusLagRequest> alignCapture_;
+    SharedAnalysis::FocusLagLease alignJob_;
+    double alignRate_ = 0.;
+    bool alignPending_ = false;
     std::vector<Member> members_;
     std::vector<std::int64_t> choices_;
     std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;
