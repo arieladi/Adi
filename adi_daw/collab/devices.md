@@ -235,8 +235,14 @@ method); Live's files and renders stay in the director's research.
 
 ## 2026-11-22 — DEV-16: the audit's last two open points
 
-**PR requested:** head `devices/amxd-audit` (9fc81e1d), in place of 00404789. CTest at 00404789:
-270/270 at PD_FLOATSIZE 32 and 64.
+**PR requested:** head `devices/amxd-audit` (9fc81e1d), in place of 00404789.
+
+**CTest, every head checked, at PD_FLOATSIZE 32 and 64:**
+- `devices/amxd-audit` at 9fc81e1d: 270/270.
+- `devices/spectral-resonator` at 9a6ea54f, the top of the effects stack with the Auto Shift revert:
+  295/295.
+
+Tidy is clean on both.
 - **Float-form operators** (`[+ 1.]`, `[* 2.]`) were the bare Pd object, so a `set` into them errored and
   was lost. They now take the int form's front, with `[f]` cells in place of `[i]`. "set 2.5" then a
   bang into `[+ 1.]` gives 3.5.
