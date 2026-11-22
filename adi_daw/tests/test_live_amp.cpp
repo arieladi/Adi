@@ -151,17 +151,40 @@ void driven() {
     // square, the stage's asymmetry is a small part of each half cycle).
     check(low2 > 0.01 && low2 > 4 * high2, "the bias makes even harmonics at moderate drive (second at " + std::to_string(low2) +
                                                " of the fundamental, " + std::to_string(high2) + " at Gain 10)");
-    double clean2 = 0;
-    (void)thd({A::Clean, 0, 5, 5, 5, 5, 5, 0}, clean2);
-    check(clean2 < low2, "a smaller bias, a smaller second harmonic (Clean " + std::to_string(clean2) + ")");
-    // Bounded: a huge input comes out finite, within the power stage's limit.
-    A a = configured({A::Heavy, 10, 10, 10, 10, 10, 10, 12});
-    std::vector<float> big(9600, 1e6f), l(9600), r(9600);
-    for (std::size_t i = 0; i < big.size(); i += 2) {
-        big[i] = -1e6f;
+    // At equal drive (Clean at Gain 10 and Rock at Gain 4 both put the
+    // preamp at +20 dB) only the bias differs: Clean's smaller bias makes a
+    // smaller second harmonic. (The review of 17130593: compared at Gain 0
+    // the drive alone decided it.)
+    double clean2 = 0, rock2 = 0;
+    (void)thd({A::Clean, 10, 5, 5, 5, 5, 5, 0}, clean2);
+    (void)thd({A::Rock, 4, 5, 5, 5, 5, 5, 0}, rock2);
+    check(clean2 < 0.5 * rock2, "at equal drive, a smaller bias, a smaller second harmonic (Clean " + std::to_string(clean2) + ", Rock " +
+                                    std::to_string(rock2) + ")");
+    // Bounded by the power stage: |out| <= 1/d times the largest gain after
+    // it (Presence +10 dB, Output), with room for the shelf's overshoot, at
+    // the loosest setting (Clean, Volume 0) and the tightest, at three rates.
+    for (const Setting s : {Setting{A::Clean, 10, 10, 10, 10, 10, 0, 12}, Setting{A::Heavy, 10, 0, 0, 0, 10, 10, 12}}) {
+        for (double rate : {44100.0, 96000.0, 192000.0}) {
+            A a = configured(s);
+            a.prepare(rate);
+            std::vector<float> square(static_cast<std::size_t>(rate / 2)), l(square.size()), r(square.size());
+            for (std::size_t i = 0; i < square.size(); ++i) {
+                square[i] = (static_cast<std::size_t>(static_cast<double>(i) * 160 / rate) % 2) ? -1.f : 1.f;
+            }
+            a.process(square.data(), square.data(), l.data(), r.data(), square.size());
+            const auto& v = A::kVoices[s.type];
+            const double d = v.drive * std::pow(10.0, (s.volume - 5) * 3 / 20);
+            const double bound = 1.5 / d * std::pow(10.0, 10 / 20.0) * std::pow(10.0, s.output / 20);
+            double peak = 0;
+            for (float sample : l) {
+                peak = std::max(peak, static_cast<double>(std::abs(sample)));
+            }
+            check(peak <= bound, "voice " + std::to_string(s.type) + " at " + std::to_string(rate) + ": an 80 Hz full-scale square stays within the power stage's bound (" +
+                                     std::to_string(peak) + " <= " + std::to_string(bound) + ")");
+        }
     }
-    a.process(big.data(), big.data(), l.data(), r.data(), big.size());
-    check(std::all_of(l.begin(), l.end(), [](float v) { return std::isfinite(v) && std::abs(v) < 1e3f; }), "a huge input comes out finite and bounded");
+    // A plant: without the power stage the loosest setting's bound is passed.
+    check(1.5 / (0.25 * std::pow(10.0, -0.75)) * std::pow(10.0, 0.5) * std::pow(10.0, 0.6) < 1e3, "plant: the bound is tighter than the old 1e3");
 }
 
 void routing() {
@@ -225,7 +248,31 @@ void routing() {
 
 }  // namespace
 
+/// Dual switched off and on again: the right amp starts from the left's
+/// state, not its own from before (the review of 17130593: a 0.87 thump on
+/// silence).
+void dualAgain() {
+    A a;
+    a.set(A::Type, A::Rock);
+    a.set(A::Dual, 1);
+    a.prepare(kRate);
+    const auto x = sine(110, 24037, 0.5);
+    std::vector<float> l(48000), r(48000);
+    a.process(x.data(), x.data(), l.data(), r.data(), x.size());
+    a.set(A::Dual, 0);
+    const std::vector<float> quiet(48000, 0.f);
+    a.process(quiet.data(), quiet.data(), l.data(), r.data(), quiet.size());
+    a.set(A::Dual, 1);
+    a.process(quiet.data(), quiet.data(), l.data(), r.data(), quiet.size());
+    double peak = 0;
+    for (float v : r) {
+        peak = std::max(peak, static_cast<double>(std::abs(v)));
+    }
+    check(peak < 1e-3, "Dual off then on over silence: no thump on the right (" + std::to_string(peak) + ")");
+}
+
 int main() {
+    dualAgain();
     quiet();
     driven();
     routing();
