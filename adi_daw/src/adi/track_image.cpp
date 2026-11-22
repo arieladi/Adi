@@ -135,11 +135,12 @@ public:
         for(const auto& value:values)bind(query,++index,value);
         while(query.executeStep())remove(name,record(query));
     }
-    void collect(std::int64_t root) {
-        const auto row=current(db,catalog.get("tracks"),Payload{{"id",root}});
-        if(row.is_null())throw std::runtime_error("no such track to capture");
-        remove("tracks",row);
-        for(std::size_t next=0;next<pending.size();++next) {
+    void collect(const std::string& table, std::int64_t root) {
+        const auto row=current(db,catalog.get(table),Payload{{"id",root}});
+        if(row.is_null())throw std::runtime_error("no matching root row in "+table);
+        const auto first = pending.size();
+        remove(table,row);
+        for(std::size_t next=first;next<pending.size();++next) {
             // Copy: discovering a later deletion may change an earlier row.
             const auto removed=rows.at(pending[next]);
             const auto references=catalog.references.find(removed.table);
@@ -200,7 +201,8 @@ void fullRow(const Table& table,const Payload& row) {
     if(!row.is_object() || row.size()!=table.columns.size())throw std::runtime_error("captured columns differ from table "+table.name);
     for(const auto& column:table.columns)if(!row.contains(column))throw std::runtime_error("missing captured column "+column);
 }
-Image decode(SQLite::Database& db,const Catalog& catalog,std::int64_t root,const Payload& packet) {
+Image decode(SQLite::Database& db,const Catalog& catalog,const std::string& rootTable,
+             std::int64_t root,const Payload& packet) {
     if(!packet.is_object() || packet.size()!=3 || packet.at("version")!=1 || signedInteger(packet.at("root"))!=root || !packet.at("rows").is_array())
         throw std::runtime_error("invalid track contents packet");
     Image image(db,catalog);
@@ -213,7 +215,7 @@ Image decode(SQLite::Database& db,const Catalog& catalog,std::int64_t root,const
         if(name!=lower(table.name) || !image.rows.emplace(Identity{name,key.dump()},Row{name,key,before,after}).second)throw std::runtime_error("duplicate captured row");
         if(current(db,table,key)!=after)throw std::runtime_error("track restore target changed: "+name);
     }
-    const auto captured=image.rows.find({"tracks",Payload{{"id",root}}.dump()});
+    const auto captured=image.rows.find({rootTable,Payload{{"id",root}}.dump()});
     if(captured==image.rows.end() || !captured->second.after.is_null())throw std::runtime_error("track contents lack their root");
     return image;
 }
@@ -239,31 +241,86 @@ void update(SQLite::Database& db,const Table& table,const Row& row) {
     bindKey(statement,row.key,index);
     if(statement.exec()!=1)throw std::runtime_error("captured update target missing");
 }
+void removeImage(SQLite::Database& db, const Catalog& catalog, const Image& image) {
+    Atomic atomic(db);
+    for (const auto& [identity, row] : image.rows) {
+        (void)identity;
+        if (!row.after.is_null()) continue;
+        SQLite::Statement statement(db, "DELETE FROM " + quoted(catalog.get(row.table).name) +
+                                         " WHERE " + predicate(row.key));
+        bindKey(statement, row.key);
+        statement.exec();
+    }
+    for (const auto& [identity, row] : image.rows) {
+        (void)identity;
+        if (current(db, catalog.get(row.table), row.key) != row.after)
+            throw std::runtime_error("row deletion differs from captured image");
+    }
+    atomic.finish();
+}
+void restoreImage(SQLite::Database& db, const std::string& rootTable, std::int64_t root,
+                  const Payload& packet, const Payload* expectedRoot = nullptr) {
+    const Catalog catalog(db);
+    const auto image = decode(db, catalog, rootTable, root, packet);
+    if (expectedRoot) {
+        const auto& captured = image.rows.at({rootTable, Payload{{"id", root}}.dump()});
+        if (captured.before != *expectedRoot)
+            throw std::runtime_error("captured routing contents belong to another connection");
+    }
+    Atomic atomic(db);
+    for (const auto& [identity, row] : image.rows) {
+        (void)identity;
+        if (row.after.is_null()) restoreRow(db, catalog.get(row.table).name, row.before);
+    }
+    for (const auto& [identity, row] : image.rows) {
+        (void)identity;
+        if (!row.after.is_null()) update(db, catalog.get(row.table), row);
+    }
+    Image restored(db, catalog);
+    restored.collect(rootTable, root);
+    if (restored.encode(root) != packet)
+        throw std::runtime_error("captured contents contain unrelated or incomplete effects");
+    atomic.finish();
+}
 } // namespace
 Payload captureTrack(SQLite::Database& db,std::int64_t root) {
-    const Catalog catalog(db);Image image(db,catalog);image.collect(root);return image.encode(root);
+    const Catalog catalog(db);Image image(db,catalog);image.collect("tracks",root);return image.encode(root);
 }
 Payload captureTrackSource(SQLite::Database &db, std::int64_t root) {
     const Catalog catalog(db);
     Image image(db, catalog, true);
-    image.collect(root);
+    image.collect("tracks", root);
     return image.encode(root);
 }
 void deleteTrack(SQLite::Database& db,std::int64_t root) {
-    const Catalog catalog(db);Image image(db,catalog);image.collect(root);Atomic atomic(db);
-    for(const auto& [identity,row]:image.rows) {
-        (void)identity;if(!row.after.is_null())continue;
-        SQLite::Statement statement(db,"DELETE FROM "+quoted(catalog.get(row.table).name)+" WHERE "+predicate(row.key));bindKey(statement,row.key);statement.exec();
-    }
-    for(const auto& [identity,row]:image.rows){(void)identity;if(current(db,catalog.get(row.table),row.key)!=row.after)throw std::runtime_error("track delete effect differs from captured image");}
-    atomic.finish();
+    const Catalog catalog(db);
+    Image image(db, catalog);
+    image.collect("tracks", root);
+    removeImage(db, catalog, image);
 }
 void restoreTrack(SQLite::Database& db,std::int64_t root,const Payload& packet) {
-    const Catalog catalog(db);const auto image=decode(db,catalog,root,packet);Atomic atomic(db);
-    for(const auto& [identity,row]:image.rows){(void)identity;if(row.after.is_null())restoreRow(db,catalog.get(row.table).name,row.before);}
-    for(const auto& [identity,row]:image.rows){(void)identity;if(!row.after.is_null())update(db,catalog.get(row.table),row);}
-    Image restored(db,catalog);restored.collect(root);
-    if(restored.encode(root)!=packet)throw std::runtime_error("track contents contain unrelated or incomplete effects");
-    atomic.finish();
+    restoreImage(db, "tracks", root, packet);
+}
+std::vector<Payload> captureRouting(SQLite::Database& db, std::span<const std::int64_t> ids) {
+    if (ids.empty()) return {};
+    const Catalog catalog(db);
+    std::vector<Payload> packets;
+    packets.reserve(ids.size());
+    for (const auto id : ids) {
+        Image image(db, catalog);
+        image.collect("routing", id);
+        packets.push_back(image.encode(id));
+    }
+    return packets;
+}
+void deleteRouting(SQLite::Database& db, std::span<const std::int64_t> ids) {
+    if (ids.empty()) return;
+    const Catalog catalog(db);
+    Image image(db, catalog);
+    for (const auto id : ids) image.collect("routing", id);
+    removeImage(db, catalog, image);
+}
+void restoreRouting(SQLite::Database& db, const Payload& route, const Payload& packet) {
+    restoreImage(db, "routing", signedInteger(route.at("id")), packet, &route);
 }
 } // namespace adi::detail

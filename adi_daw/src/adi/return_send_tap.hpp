@@ -27,6 +27,9 @@ std::map<std::int64_t,ReturnSendTap> readReturnSendTaps(const Store&);
 std::optional<bool> explicitReturnSendTap(SQLite::Database&,std::int64_t);
 bool allowSendEdgeTapEdit(SQLite::Database&,std::int64_t,bool,std::string&);
 std::span<const OpDescriptor> returnSendTapOps();
+/// Set a mixed return to Post, or toggle an already uniform return.
+/// One journal request covers the return and every individual send override.
+[[nodiscard]] OpRequest clickReturnSendTap(std::int64_t id);
 struct PreparedReturnSend {
     bool ok=false;std::string error,sourceFile;
     std::vector<OpRequest> requests;CommitOptions options;

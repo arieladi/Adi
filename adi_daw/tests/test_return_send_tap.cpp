@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
+#include "adi/blob.hpp"
+#include "adi/row_capture.hpp"
 #include "adi/check.hpp"
 #include "adi/digest.hpp"
 #include "adi/engine/plan.hpp"
@@ -10,6 +12,7 @@
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
 #include "adi/textproj_store.hpp"
+#include "adi/ui/track_edits.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
@@ -54,6 +57,32 @@ void choiceAndHistory() {
     check(History(store).redo().ok && digestProject(store).text==after,"redo repeats one return choice exactly");
     const auto path=store.path();project.store.reset();StoreError error{};project.store=Store::open(path,error);
     check(project.store && readReturnSendTaps(*project.store).at(10).explicitChoice && History(*project.store).undo().ok && digestProject(*project.store).text==before,"return inverse and absent preference survive CBOR and reopen");
+}
+void mixedClickAndHistory() {
+    Project project;
+    auto& store=*project.store;
+    store.db().exec("ALTER TABLE routing_send_taps ADD COLUMN future BLOB DEFAULT X'';"
+                    "INSERT INTO routing_send_taps(routing_id,tap,future) "
+                    "VALUES(1,'pre_fx',X'00FF'),(2,'post_mixer',X'01FF'),(4,'post_fx',X'FF');");
+    const auto original=digestProject(store).text;
+    auto journal=OpJournal(store);
+    check(journal.commit(clickReturnSendTap(10)).ok &&
+          journal.count()==1 && readReturnSendTaps(store).at(10)==ReturnSendTap{false,true,false} &&
+          project.scalar("SELECT count(*) FROM routing WHERE id IN(1,2) AND pre_fader=0")==2 &&
+          project.scalar("SELECT count(*) FROM routing_send_taps WHERE routing_id IN(1,2)")==0 &&
+          project.scalar("SELECT count(*) FROM routing_send_taps WHERE routing_id=4")==1,
+          "one mixed switch click makes every incoming send Post");
+    const auto uniformPost=digestProject(store).text;
+    check(History(store).undo().ok && digestProject(store).text==original &&
+          project.scalar("SELECT count(*) FROM routing_send_taps WHERE routing_id=1 AND future=X'00FF'")==1 &&
+          project.scalar("SELECT count(*) FROM routing_send_taps WHERE routing_id=2 AND future=X'01FF'")==1,
+          "one Undo restores the return's exact individual rows and mixed flags");
+    check(History(store).redo().ok && digestProject(store).text==uniformPost,
+          "one Redo repeats the original mixed-to-Post decision");
+    check(journal.commit(clickReturnSendTap(10)).ok &&
+          readReturnSendTaps(store).at(10)==ReturnSendTap{true,true,false} &&
+          project.scalar("SELECT count(*) FROM routing WHERE id IN(1,2) AND pre_fader=1")==2,
+          "the next switch click makes every send Pre");
 }
 void emptyAndProducer() {
     Project project;auto& store=*project.store;
@@ -106,6 +135,87 @@ void disconnectAndProjection() {
     check(explicitPost.text.find("sendTap post")!=std::string::npos,"text projection represents an explicit Post choice");
     db.exec("DELETE FROM return_send_taps");
     check(textproj::projectStore(store).text.find("sendTap")==std::string::npos,"absent default/legacy preference is distinct from stored Post in projection");
+}
+
+void routingDependants() {
+    for (const bool moveOut : {false, true}) {
+        Project project;
+        auto& store = *project.store;
+        auto& db = store.db();
+        db.exec("DELETE FROM routing;"
+                "INSERT INTO tracks(id,kind,name) VALUES(30,'group','Group');"
+                "UPDATE tracks SET parent_id=30 WHERE id IN(1,10);"
+                "ALTER TABLE automation_lanes ADD COLUMN future BLOB;"
+                "ALTER TABLE controller_maps ADD COLUMN future BLOB;"
+                "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain,future)"
+                " VALUES(101,'routing',41,'gain_db','real',X'0001FF');"
+                "INSERT INTO controller_maps(id,target_kind,target_id,target_param,future)"
+                " VALUES(102,'routing',41,'gain_db',X'AB00CD')");
+        auto journal = OpJournal(store);
+        const auto connected = journal.commit(connect(41));
+        const auto tapped = journal.commit(op("routing.setSendTap", {{"id", 41}, {"tap", "pre_fx"}}));
+        std::array<AutomationPoint, 2> points{};
+        points[0].value = -4;
+        points[0].point_id = 1;
+        points[1].time = 5765760;
+        points[1].value = -12;
+        points[1].point_id = 2;
+        const auto blob = writeStream<AutomationPoint>(FourCC::Automation, points, 1, StreamFlags::SortedByTime);
+        if (!connected.ok || !tapped.ok || !store.putAutomationData(101, std::nullopt, blob)) {
+            throw std::runtime_error("seed routing dependants");
+        }
+        const auto before = digestProject(store).text;
+        const auto request = moveOut ? op("track.setParent", {{"id", 1}})
+                                     : op("routing.disconnect", {{"id", 41}});
+        const auto removed = journal.commit(request);
+        const auto absent = [&] {
+            return project.scalar("SELECT COUNT(*) FROM routing WHERE id=41") == 0 &&
+                project.scalar("SELECT COUNT(*) FROM routing_send_taps WHERE routing_id=41") == 0 &&
+                project.scalar("SELECT COUNT(*) FROM automation_lanes WHERE id=101") == 0 &&
+                project.scalar("SELECT COUNT(*) FROM automation_data WHERE lane_id=101") == 0 &&
+                project.scalar("SELECT COUNT(*) FROM controller_maps WHERE id=102") == 0;
+        };
+        check(removed.ok && absent() && checkProject(store).clean(),
+              moveOut ? "a move that loses a send deletes its lanes, streams and maps"
+                      : "disconnect deletes a route's lanes, streams and maps");
+        if (!removed.ok) return;
+
+        const auto after = digestProject(store).text;
+        check(History(store).undo().ok && digestProject(store).text == before &&
+              project.scalar("SELECT future=X'0001FF' FROM automation_lanes WHERE id=101") == 1 &&
+              project.scalar("SELECT future=X'AB00CD' FROM controller_maps WHERE id=102") == 1,
+              "Undo restores all routing owners and their extension cells with exact IDs");
+        check(History(store).redo().ok && absent() && digestProject(store).text == after,
+              "Redo removes the same complete routing image");
+        check(journal.commit(connect(41, moveOut ? 11 : 10)).ok &&
+              project.scalar("SELECT COUNT(*) FROM automation_lanes WHERE owner_kind='routing' AND owner_id=41") == 0 &&
+              project.scalar("SELECT COUNT(*) FROM controller_maps WHERE target_kind='routing' AND target_id=41") == 0,
+              "reused routing ID inherits no lane or controller map");
+    }
+}
+
+void legacyDisconnectReplay() {
+    Project project;
+    auto& store = *project.store;
+    auto& db = store.db();
+    db.exec("DELETE FROM routing;"
+            "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain)"
+            " VALUES(101,'routing',41,'gain_db','real')");
+    auto journal = OpJournal(store);
+    if (!journal.commit(connect(41)).ok) throw std::runtime_error("seed old route");
+    const auto row = adi::detail::captureRow(db, "routing", "id", 41);
+    const auto removed = journal.commit(op("routing.disconnect", {{"id", 41}}));
+    if (!row || !removed.ok || !History(store).undo().ok) throw std::runtime_error("seed old replay");
+    const Payload legacy{{"id", 41}, {"srcKind", "track"}, {"src", 1}, {"dstKind", "track"},
+                         {"dst", 10}, {"kind", "send"}, {"row", *row}};
+    const auto bytes = encodePayload(legacy);
+    SQLite::Statement old(db, "UPDATE ops SET inverse=? WHERE seq=?");
+    old.bind(1, bytes.data(), static_cast<int>(bytes.size()));
+    old.bind(2, removed.seqs.front());
+    old.exec();
+    check(History(store).redo().ok && project.scalar("SELECT COUNT(*) FROM automation_lanes WHERE id=101") == 1 &&
+          History(store).undo().ok && project.scalar("SELECT COUNT(*) FROM routing WHERE id=41") == 1,
+          "historic row-only disconnect replays its original effects and inverse");
 }
 
 void groupedReturns() {
@@ -182,6 +292,52 @@ void groupedReturns() {
         [](const auto& finding) { return finding.code == "route.groupReturnScope"; }),
         "integrity checking identifies a grouped send inserted from outside the group");
 }
+
+void ungroupKeepsSendsAgainstFinalForest() {
+    Project project;
+    auto& store = *project.store;
+    store.db().exec("DELETE FROM routing;"
+        "INSERT INTO tracks(id,kind,name,parent_id,index_in_parent) VALUES"
+        "(30,'group','Group',NULL,3),(31,'group','Nested',30,2),"
+        "(33,'audio','Nested audio',31,0),(34,'return','Nested return',31,1);"
+        "UPDATE tracks SET parent_id=30,index_in_parent=0 WHERE id=1;"
+        "UPDATE tracks SET parent_id=30,index_in_parent=1 WHERE id=2;"
+        "UPDATE tracks SET parent_id=30,index_in_parent=3 WHERE id=10;"
+        "UPDATE tracks SET parent_id=30,index_in_parent=4 WHERE id=11;"
+        "ALTER TABLE routing_send_taps ADD COLUMN future BLOB;");
+    auto journal = OpJournal(store);
+    const auto send = [&](int id, int source, int target, const char* mode) {
+        auto request = connect(id, target);
+        request.payload["src"] = source;
+        if (!journal.commit(request).ok ||
+            !journal.commit(op("routing.setSendTap", {{"id", id}, {"tap", mode}})).ok)
+            throw std::runtime_error("write Ungroup send fixture");
+    };
+    send(41, 1, 10, "pre_fx");
+    send(42, 2, 11, "post_fx");
+    send(43, 33, 10, "post_mixer");
+    send(44, 10, 11, "post_fx");
+    send(45, 11, 10, "pre_fx");
+    send(46, 33, 34, "pre_fx");
+    store.db().exec("UPDATE routing_send_taps SET future=X'00FEFF' WHERE routing_id IN(41,45)");
+    const auto before = digestProject(store).text;
+    const auto snapshot = SnapshotBuilder::fromStore(store);
+    const auto command = adi::ui::ungroupTrack(snapshot->tracks, 30);
+    const auto result = journal.commit(command.ops);
+    check(command.refusal.empty() && result.ok && result.seqs.size() == command.ops.size() &&
+          project.scalar("SELECT COUNT(*) FROM routing WHERE id BETWEEN 41 AND 46") == 6 &&
+          project.scalar("SELECT COUNT(*) FROM routing_send_taps WHERE future=X'00FEFF'") == 2,
+          "normal Ungroup keeps both return directions, nested sends and their exact tap rows");
+    check(project.scalar("SELECT COUNT(*) FROM tracks WHERE id IN(1,2,10,11,31) AND parent_id IS NULL") == 5 &&
+          project.scalar("SELECT COUNT(*) FROM tracks WHERE id IN(33,34) AND parent_id=31") == 2 &&
+          checkProject(store).clean(), "Ungroup moves every peer without invalidating the send scope");
+    const auto after = digestProject(store).text;
+    check(History(store).undo().ok && digestProject(store).text == before,
+          "Undo of Ungroup restores the exact tree, sends and tap bytes");
+    check(History(store).redo().ok && digestProject(store).text == after,
+          "recorded peer moves replay the same Ungroup through Redo");
+}
+
 class Tone final:public Node {
 public:void process(const NodeIo& io)noexcept override {for(std::int32_t channel=0;channel<io.channels;++channel)if(io.out[channel])std::fill_n(io.out[channel]+io.blockOffset,io.frames,0.25f);}
 };
@@ -307,6 +463,105 @@ void audible() {
         check(std::abs(left.back()-expected)<1e-5f && std::abs(right.back()-expected)<1e-5f,"actual Pre/Post return levels follow policy in both precisions");
     }
 }
+void switchingPreFxClearsSource() {
+    Project project;
+    auto& store = *project.store;
+    store.db().exec("DELETE FROM routing;"
+                    "UPDATE project SET sample_rate=48000 WHERE id=1;"
+                    "UPDATE mixer_strip SET volume_db=-12,pan=1,delay_samples=480 WHERE track_id=1;"
+                    "UPDATE tracks SET muted=1 WHERE id=1;"
+                    "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain,default_value)"
+                    " VALUES(201,'track',1,'volume','real',-18)");
+    auto journal = OpJournal(store);
+    if (!journal.commit(connect(41)).ok) throw std::runtime_error("seed switching send");
+    const auto choose = [&](const char* value) {
+        if (!journal.commit(op("routing.setSendTap", {{"id", 41}, {"tap", value}})).ok)
+            throw std::runtime_error("write switching send tap");
+    };
+
+    Tone reusedTone;
+    Session reused;
+    reused.graph().setFadeFrames(0);
+    reused.setSourcesFor([&](std::int64_t id) {
+        return id == 1 ? std::vector<Node*>{&reusedTone} : std::vector<Node*>{};
+    });
+    SessionSpec spec;
+    spec.sampleRate = 48000;
+    spec.maxFrames = 64;
+    if (!reused.load(store, {}, spec)) throw std::runtime_error("load switching send");
+    reused.transport().play();
+    const auto render = [](Session& session, int& frame) {
+        std::array<float, 64> left{}, right{};
+        float* output[]{left.data(), right.data()};
+        for (int block = 0; block < 32; ++block) {
+            AudioIo io;
+            io.out = output;
+            io.numOut = 2;
+            io.frames = 64;
+            io.streamTimeSamples = frame;
+            session.process(io);
+            frame += io.frames;
+        }
+        return std::array<float, 2>{left.back(), right.back()};
+    };
+    int reusedFrame = 0;
+    render(reused, reusedFrame);
+
+    MixerStrips liveControls, stagedControls;
+    Transport transport;
+    const auto post = rows::readModel(store);
+    const auto bound = bindStripAutomation(compileAutomation(post, 48000.0), {});
+    liveControls.sync(post, &transport, bound);
+    stagedControls.sync(post, &transport, bound);
+    auto* send = liveControls.sendFor(41);
+    auto* stagedSend = stagedControls.sendFor(41);
+    check(send && send->latencySamples() == -480 && send->captureControls().source.config.lanes,
+          "the original post send follows Track Delay and strip automation");
+    if (!send || !stagedSend) return;
+
+    for (const bool pre : {true, false, true}) {
+        choose(pre ? "pre_fx" : "post_mixer");
+        const auto next = rows::readModel(store);
+        liveControls.sync(next, &transport, bound);
+        const auto source = send->captureControls().source;
+        check(send == liveControls.sendFor(41) && send->latencySamples() == (pre ? 0 : -480) &&
+              (source.config.lanes != nullptr) == !pre && source.audible == pre &&
+              source.config.pan == (pre ? 0.0 : 1.0) && source.config.volumeDb == (pre ? 0.0 : -12.0),
+              "the same send node changes source controls and compensation with its tap");
+        if (!reused.refresh(store)) throw std::runtime_error("refresh switching send");
+        const auto hot = render(reused, reusedFrame);
+
+        Tone freshTone;
+        Session fresh;
+        fresh.graph().setFadeFrames(0);
+        fresh.setSourcesFor([&](std::int64_t id) {
+            return id == 1 ? std::vector<Node*>{&freshTone} : std::vector<Node*>{};
+        });
+        if (!fresh.load(store, {}, spec)) throw std::runtime_error("reopen switching send");
+        fresh.transport().play();
+        int freshFrame = 0;
+        const auto cold = render(fresh, freshFrame);
+        const float expected = pre ? 0.25f : 0.0f;
+        check(hot == cold && hot == std::array{expected, expected},
+              "Post to Pre FX and back matches a fresh playback session");
+    }
+    const auto pre = rows::readModel(store);
+    stagedControls.prepareControls(pre, &transport, bound, true, {})->apply();
+    const auto staged = stagedSend->captureControls().source;
+    check(staged.audible && staged.config.volumeDb == 0 && staged.config.pan == 0 && !staged.config.lanes,
+          "staged controls use the neutral Pre FX source");
+
+    auto solo = pre;
+    const auto other = std::find_if(solo.tracks.begin(), solo.tracks.end(),
+                                    [](const auto& track) { return track.id == 2; });
+    if (other == solo.tracks.end()) throw std::runtime_error("seed independent solo");
+    other->soloed = true;
+    HearingFlags flags;
+    flags.preFollowsSolo = false;
+    check(hearing(solo, planGraph(solo), flags).send.at(41),
+          "Pre FX respects the setting that lets Pre sends ignore another track's solo");
+}
+
 void replay() {
     Project first,second;first.store->db().exec("INSERT INTO session_state VALUES('selection','one')");second.store->db().exec("INSERT INTO session_state VALUES('selection','different')");
     const std::array<OpRequest,6> requests={tap(10,false),tap(11,true),connect(55,11),op("routing.setGain",{{"id",55},{"db",-12}}),op("routing.disconnect",{{"id",55}}),tap(10,true)};
@@ -323,4 +578,4 @@ void legacyMigration() {
     check(OpJournal(*upgraded).commit(tap(10,true)).ok && History(*upgraded).undo().ok && readReturnSendTaps(*upgraded).at(10).legacyMixed,"first migrated choice undoes to original legacy mixed state");
 }
 }
-int main(){try{choiceAndHistory();emptyAndProducer();metadataAndGuards();disconnectAndProjection();groupedReturns();compensatedGroupNull();audible();replay();legacyMigration();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{choiceAndHistory();mixedClickAndHistory();emptyAndProducer();metadataAndGuards();disconnectAndProjection();routingDependants();legacyDisconnectReplay();groupedReturns();ungroupKeepsSendsAgainstFinalForest();compensatedGroupNull();audible();switchingPreFxClearsSource();replay();legacyMigration();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
