@@ -132,6 +132,13 @@ detail::CapturedNotes capture(SQLite::Database& db,std::int64_t clip) {
     detail::CapturedNotes result;result.clipRow=clipRow(db,clip);result.streamRow=canonicalRow(db,clip);
     result.expressionRows=expressions(db,clip);return result;
 }
+Payload captureCreationRow(SQLite::Database& db, std::int64_t clip, std::int64_t id) {
+    if (adi::detail::captureRow(db, "event_streams", "id", id))
+        throw std::runtime_error("new notes stream identity is occupied");
+    return edit::defaultRow(db, "event_streams", {{"id", id}, {"clip_id", clip},
+        {"stream_kind", "notes"}, {"channel", nullptr}, {"controller", nullptr},
+        {"data", blob(nativeEmpty())}});
+}
 detail::SnapshotData snapshot(detail::CapturedNotes captured) {
     auto value=detail::makeSnapshot(std::move(captured));
     if(!value.ok)throw std::runtime_error(value.error);
@@ -607,12 +614,28 @@ Snapshot captureNotes(Store& store,std::int64_t clip,std::optional<std::int64_t>
         if(result.streamRow) {
             if(newStreamId && *newStreamId!=integer(result.streamRow->at("id")))throw std::runtime_error("existing canonical stream ID is authoritative");
         } else if(newStreamId) {
-            if(adi::detail::captureRow(store.db(),"event_streams","id",*newStreamId))throw std::runtime_error("new notes stream identity is occupied");
-            result.creationRow=edit::defaultRow(store.db(),"event_streams",{{"id",*newStreamId},{"clip_id",clip},
-                {"stream_kind","notes"},{"channel",nullptr},{"controller",nullptr},{"data",blob(nativeEmpty())}});
+            result.creationRow=captureCreationRow(store.db(),clip,*newStreamId);
         }
         return detail::makeSnapshot(std::move(result));
     } catch(const std::exception& exception){Snapshot result;result.error=exception.what();return result;}
+}
+Snapshot captureNotesForNewClip(Store& store, std::int64_t clip, std::int64_t newStreamId) {
+    try {
+        auto& db = store.db();
+        Read read(db);
+        if (adi::detail::captureRow(db, "clips", "id", clip))
+            throw std::runtime_error("new MIDI clip identity is occupied");
+        detail::CapturedNotes captured;
+        captured.clipRow = {{"id", clip}, {"kind", "midi"}};
+        captured.creationRow = captureCreationRow(db, clip, newStreamId);
+        captured.sourceFile = filename(store);
+        captured.head = OpJournal(store).headSeq();
+        return detail::makeSnapshot(std::move(captured));
+    } catch (const std::exception& exception) {
+        Snapshot result;
+        result.error = exception.what();
+        return result;
+    }
 }
 CommitResult commitDiff(Store& store,const PreparedDiff& prepared,Actor actor) {
     CommitResult result;
