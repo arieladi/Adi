@@ -36,6 +36,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+### 22 November — AU-08 Simplify Envelope
+
+**PR requested** for `engine/au08-simplify-envelope` at `be846d1b86e460b89cdc867cd92bafc69b09d12d`, stacked on `engine/au03-write-guards` for the sealed arrangement splice. The native preparation reduces selected sampled linear runs to linear or exponential segments within the caller's absolute playback tolerance. The bound covers the original knots and the analytic extrema between them. Retained knot identities, authored curves outside the interval, stream trailers, and exact Undo/Redo are preserved. Holds, unequal coincident points, enumerated values, and selections with no valid reduction remain untouched.
+
+Strict GCC 14 and Clang 19 each passed 1,984 checks across seven suites. A 1,001-point ramp reduced to two points, a joined linear and exponential run kept its original pivot, and the test rejected a sparse fit that exceeded tolerance between knots. Window selection and its tolerance control remain with the caller.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
