@@ -101,6 +101,52 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-22, late night, window lane — queue items 8 to 15 written; gating; items 19 to 23 parked
+
+Each branch below is pushed. Its "PR requested" follows here once its gate passes: the build at -j2 and -j1, the UI suites, the Pd-off tree as `ui.yml` builds it, and the sweeps.
+
+**Gating now, in this order:** `window/function-keys` (item 8), `window/help-menu` (item 10), `window/test-hygiene` (item 11), `window/shortcut-ids` (item 12), `window/window-places` (item 13), `window/window-kinds` (item 14). The first is in its sweeps.
+
+**Item 12, WIN-04, `window/shortcut-ids`** (on `window/function-keys`, `a6b176b9`). Two commits:
+- **Stable ids:** each command has a stable text id (`view.browser`, `edit.redo`, 122 of them) and Live's menu as its category, in place of "ADI".
+- **Chords and overrides:** a chord has one canonical text on every platform, which the key-map golden now shares. `reload()` puts `shortcuts.overrides` on top of the preset's keys. `storeUserKeys()` writes the keys that differ from the key map, only when they differ from the record, and keeps ids this build does not know.
+- **The Shortcuts page:** Settings' Shortcuts page is JUCE's key editor, grouped by Live's menus, in place of the record's text; a key changed there is written at once.
+- **Tests:** `userShortcuts`: user keys survive a Settings change; a preset switch keeps them on top; every command has one stable id that names it back; every preset's chords read back from their text.
+- **For win:** `window/help-menu` adds two commands. Whichever of the two branches lands second gives them ids (`help.manual`, `help.keyboard-shortcuts`); the stable-id check fails until it does.
+
+**Item 13, WIN-02, `window/window-places`** (from main `87ea349c`, `a5767fa0`).
+- **The rule:** one placement rule in `adi/ui/window_place.hpp`, JUCE-free. It finds the monitor by id, then area, then origin, then the one of the same size and DPI. A window opens where it was on its own monitor, in proportion when that monitor's size changed, and at the same offset, wholly on the main display, when its monitor is gone. Its size is clamped, a 40 x 18 grab of its title bar stays on a screen, and a new window cascades.
+- **Where places live:** the main window and Settings in `window.places`, saved 400 ms after a move and written only when they moved; floating windows in `ui_view`, now with their monitor's area and DPI. A project opened keeps the main window where it stands. A display change brings back a title bar no screen holds.
+- **Tests:** `placementRule` (window_state: the laptop at 1366 x 768 and 125 %, every saved place swept; a floating window's place after a kill); `windowPlaces` (shell: the main window's place after a kill; first run centred). parity-7.5 row 5.
+- **AWAITING:** where Live reopens its windows.
+
+**Item 14, WIN-03, `window/window-kinds`** (on `window/window-places`, `1f6b907a`).
+- **Owned windows:** plug-in editors and device views are owned. They have no task bar button, minimise and come back with the main window, are raised above it, and close on Esc unless the plug-in takes the key. The Mix View's window is a normal one.
+- **Auto-Open and cascading:** Auto-Open Plug-In Windows works by the wrench's rules, and plug-in windows cascade.
+- **Parity:** rows 12 to 15.
+- **Partial:** above the main window only, and not above other applications, needs each platform's owner window, which JUCE does not offer: the next step, with WI2's Mac half. AWAITING (Live 12): are plug-in windows above other applications, on the task bar, closed by Esc?
+
+**Item 15, WTS-09, `window/parity-bookkeeping`** (from main, `e8b2c4f0`): the sheets' half.
+- **The validator:** `collab/window/validate_parity.py` checks cells against the header, row ids, the six status words, `[P:<sheet>#<id>]` tags resolving, and the untagged and built floors in `parity-floors.json`. `--self-test` passes on the tree and fails on a planted bad tag (AT-19).
+- **Fixes:** it found two faults on main, both fixed here: an unescaped `|` that split 7.2-shell row 26, and 7.2-application row 6's status.
+- **Tags:** the first six tags are on the floating host's checks.
+- **For win:** please lend `tools/validate_parity.py` (this file moves there) and wire it into `ci.yml`'s validator step.
+
+**Item 11, WTS-02, `window/test-hygiene`** (on `window/input-clock`, `b17f4770`): written before this entry, gating now.
+- **For win:** please make `test_all.sh` count the JUCE suite. The paint census waits on its definition, parked.
+
+**Parked:**
+- **19, WTS-05:** blocked; the control core's contract has no seat.
+- **20, DF-W24 step 2:** waits on #674.
+- **21, DF-W31:** waits on win's full theme sets and the N56 rows.
+- **22, CT-04:** waits on the lane id in `ClipNode` (DF-E35a).
+- **23, DF-W2:** blocked, as listed.
+- **9, DF-E35a:** still no lane id on main.
+
+**Next:** items 16 to 18, WIN-05, WIN-06 and WTS-03, written now to land after 3 December.
+
+---
+
 ## 2026-11-22, night, window lane — queue item 3: DF-W18 (PR requested)
 
 **Item 3, DF-W18. PR requested.** Branch `window/input-clock`, head `b57b118e`. Title: **adi_daw: window: the window's time and keys read through one seam a test sets, InputClock (DF-W18, ADR-0231 d2)**. Body: [`collab/window/pr-bodies/window-input-clock.md`](window/pr-bodies/window-input-clock.md).
