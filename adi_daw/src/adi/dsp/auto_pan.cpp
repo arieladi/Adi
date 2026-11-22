@@ -19,8 +19,11 @@ AutoPan::AutoPan() noexcept {
 }
 
 void AutoPan::prepare(double sampleRate) noexcept {
-    clock_.prepare(std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000);
+    const double rate = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
+    clock_.prepare(rate);
     gain_ = {1, 1};
+    amount_.prepare(rate);
+    amount_.set(p_[Amount] / 100);
 }
 
 void AutoPan::set(Param p, double v) noexcept {
@@ -65,7 +68,8 @@ void AutoPan::process(const float* inL, const float* inR, float* outL, float* ou
     const bool tremolo = std::lround(p_[Mode]) == Tremolo;
     const auto choice = static_cast<std::size_t>(std::clamp<long>(std::lround(p_[Division]), 0, 11));
     const double hz = p_[Sync] >= 0.5 ? bpm_ / 60 / kDivisionQuarters[choice] : p_[Rate];
-    const double amount = p_[Amount] / 100, start = p_[Offset] / 360, apart = p_[Phase] / 360;
+    const double start = p_[Offset] / 360, apart = p_[Phase] / 360;
+    amount_.set(p_[Amount] / 100);   // moved since the last block: it glides, not steps
     const ModulatorClock::Position unused;
     for (std::size_t i = 0; i < frames; ++i) {
         // Both inputs are read before either output is written (a host may
@@ -73,7 +77,7 @@ void AutoPan::process(const float* inL, const float* inR, float* outL, float* ou
         const double l = inL && std::isfinite(inL[i]) ? inL[i] : 0.0;
         const double r = inR && std::isfinite(inR[i]) ? inR[i] : 0.0;
         const double cycles = clock_.cycles(i, false, 1, unused) + start;
-        const double left = wave(cycles), right = tremolo ? left : wave(cycles + apart);
+        const double left = wave(cycles), right = tremolo ? left : wave(cycles + apart), amount = amount_.next();
         gain_[0] = 1 - amount * (1 - (1 + left) / 2);
         gain_[1] = 1 - amount * (1 - (1 + right) / 2);
         if (outL) {

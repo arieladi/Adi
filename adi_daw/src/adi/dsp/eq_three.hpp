@@ -16,6 +16,8 @@
 // one phase and, at unity gains, sum to an allpass: a flat magnitude. A
 // killed band is gone to the crossover's own depth. Each section is a
 // direct-form-I biquad in double, its states settled on exact 0 below 1e-30.
+// Each band's gain, and so its kill, glides over about 10 ms once audio runs
+// (dsp/glide.hpp): a kill fades the band out rather than cutting it.
 //
 // WHAT IS NOT LIVE'S YET, and says so: the crossover family, the ranges and
 // defaults, the gain law near its low end, and whether Freq High may sit
@@ -25,6 +27,7 @@
 #pragma once
 
 #include "adi/dsp/biquad.hpp"
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cstddef>
@@ -65,7 +68,7 @@ private:
     // lowLp, lowHp: the first crossover; midLp, midHp: the second on its
     // high side; allpass: the second's allpass on the low band.
     Chain lowLp_, lowHp_, midLp_, midHp_, allpassLp_, allpassHp_;
-    std::array<double, 3> gain_{1, 1, 1};
+    std::array<Glide, 3> gain_{};
     double rate_ = 48000;
 };
 
