@@ -55,17 +55,22 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         auto retired = scope.getToggleState() ? SharedAnalysis::BarScopeLease{} : std::move(barScope_);
         if (!scope.getToggleState()) clearBarScopeData();
         updateMatchControls();
+        barScope_.setMidRequested(requestsScopeMid() && !showsScopeDifference());
         redraw_ = true;
         repaint();
     };
     scopeDisplay_.setTitle("Focus Scope display");
-    scopeDisplay_.setTooltip("Choose how the Focus waveforms are arranged.");
+    scopeDisplay_.setTooltip("Difference shows starred Main minus the selected channel.");
     scopeDisplay_.addItem("Overlay", static_cast<int>(ScopeDisplay::Overlay));
     scopeDisplay_.addItem("Layers", static_cast<int>(ScopeDisplay::Layers));
     scopeDisplay_.addItem("Stack", static_cast<int>(ScopeDisplay::Stack));
     scopeDisplay_.addItem("Sum", static_cast<int>(ScopeDisplay::Sum));
+    scopeDisplay_.addItem("Difference", static_cast<int>(ScopeDisplay::Difference));
     scopeDisplay_.setSelectedId(static_cast<int>(ScopeDisplay::Overlay), juce::dontSendNotification);
     scopeDisplay_.onChange = [this] {
+        updateScopeDifference();
+        barScope_.setMidRequested(requestsScopeMid() && !showsScopeDifference());
+        redraw_ = true;
         repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
     };
     addChildComponent(scopeDisplay_);
@@ -75,7 +80,8 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeChannels_.addItem("Mid", static_cast<int>(ScopeChannels::Mid));
     scopeChannels_.setSelectedId(static_cast<int>(ScopeChannels::Stereo), juce::dontSendNotification);
     scopeChannels_.onChange = [this] {
-        barScope_.setMidRequested(requestsScopeMid());
+        updateScopeDifference();
+        barScope_.setMidRequested(requestsScopeMid() && !showsScopeDifference());
         redraw_ = true;
     };
     addChildComponent(scopeChannels_);
@@ -260,6 +266,7 @@ void MixFocus::updateMatchControls() {
     clearMatch.setVisible(together && match_.has_value());
     learnMatch.setEnabled(canLearnMatch(pair));
     refreshAlign(pair);
+    updateScopeDifference();
 }
 bool MixFocus::canMeasureAlign(const std::array<const Member *, 2> &pair) const noexcept {
     if (!scopePlaying_ || suspended_ || scope.getToggleState() || alignment_ != Alignment::Ready ||
@@ -649,6 +656,11 @@ void MixFocus::frame(const SnapshotReader &reader) {
         }
     }
     if (broker && !members_.empty()) broker->requestFrame();
+    if (showsScopeDifference()) {
+        const auto locate = root_.settledLocateRevision();
+        redraw_ |= locate != differenceLocate_;
+        differenceLocate_ = locate;
+    }
     const auto locateRevision = scopeShown ? std::nullopt : root_.settledLocateRevision();
     if (redraw_ || matchLocateRevision_ != locateRevision)
         updateMatchControls();
@@ -701,7 +713,8 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
         if (!alive || pose != membershipPose_ || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
             return;
         barScope_ = std::move(acquired);
-        barScope_.setMidRequested(requestsScopeMid());
+        barScope_.setMidRequested(requestsScopeMid() && !showsScopeDifference());
+        barScope_.setDifferenceRequested(differenceRequest_);
     }
     const auto rate = barScope_.sampleRate();
     if (!(rate > 0.) || (requestedBar_ && requestedBar_->range.sampleRate != rate)) {
@@ -848,9 +861,37 @@ void MixFocus::clearScopeSum() {
     scopeRange_.reset();
     sum_.reset();
     for (auto &path : scopeSumPaths_) path.clear();
+    if (differenceRenderedRevision_) {
+        for (auto &path : scopeDifferencePaths_) path.clear();
+        differenceRenderedRevision_.reset();
+    }
 }
 bool MixFocus::requestsScopeMid() const noexcept {
     return scope.getToggleState() && scopeChannels_.getSelectedId() == static_cast<int>(ScopeChannels::Mid);
+}
+bool MixFocus::showsScopeDifference() const noexcept {
+    return scope.getToggleState() &&
+           scopeDisplay_.getSelectedId() == static_cast<int>(ScopeDisplay::Difference);
+}
+void MixFocus::updateScopeDifference() {
+    std::optional<SharedAnalysis::ScopeDifference> next;
+    if (showsScopeDifference()) {
+        const auto pair = matchMembers();
+        if (pair[0] && pair[1])
+            next = SharedAnalysis::ScopeDifference{
+                {pair[0]->id, engine::ScopePoint::PostFader, 0},
+                {pair[1]->id, engine::ScopePoint::PostFader, 0},
+                requestsScopeMid(), differenceRequest_ ? differenceRequest_->selection : 0};
+    }
+    if (next == differenceRequest_) return;
+    if (next) next->selection = ++differenceSelection_;
+    differenceRequest_ = next;
+    barScope_.setDifferenceRequested(next);
+    if (differenceRenderedRevision_) {
+        for (auto &path : scopeDifferencePaths_) path.clear();
+        differenceRenderedRevision_.reset();
+    }
+    redraw_ = true;
 }
 void MixFocus::rebuildScope() {
     clearScopeSum();
@@ -880,6 +921,40 @@ void MixFocus::rebuildScope() {
         if (high != low) trace.add({x, y(high)}, emit);
     };
     const bool aligned = alignment_ == Alignment::Ready;
+    if (showsScopeDifference()) {
+        const auto locate = root_.settledLocateRevision();
+        if (!differenceRequest_ || !aligned || !locate || !plotColumns) return;
+        std::array<FocusScopePathReducer, 2> traces;
+        const auto channels = differenceRequest_->mid ? std::size_t{1} : traces.size();
+        const auto draw = [&](std::size_t column, std::size_t columns, const FocusSumColumn &extrema) {
+            for (std::size_t channel = 0; channel < channels; ++channel)
+                appendColumn(traces[channel], pathPoint(scopeDifferencePaths_[channel]), column, columns,
+                             extrema.low[channel], extrema.high[channel]);
+        };
+        if (shownBar_ && shownBar_->projection) {
+            if (shownBar_->transportRevision < *locate) return;
+            const auto columns = shownBar_->projection->differenceColumns(*differenceRequest_);
+            if (columns.empty()) return;
+            scopeRange_ = FocusScopeRange{shownBar_->firstStamp, shownBar_->frames, shownBar_->sampleRate};
+            differenceRenderedRevision_ = shownBar_->transportRevision;
+            for (std::size_t i = 0; i < columns.size(); ++i) draw(i, columns.size(), columns[i]);
+        } else {
+            const auto pair = matchMembers();
+            if (!pair[0] || !pair[1] || !pair[0]->data || !pair[1]->data ||
+                pair[0]->data->transportRevision < *locate) return;
+            const auto &a = *pair[0]->data, &b = *pair[1]->data;
+            const std::array<const SharedAnalysis::Result *, 2> windows{&a, &b};
+            const auto range = focusScopeRange(windows);
+            if (!range) return;
+            const auto columns = std::min(plotColumns, range->frames);
+            scopeRange_ = focusProjectDifference(a, b, columns, differenceRequest_->mid,
+                [&](std::size_t i, const FocusSumColumn &extrema) { draw(i, columns, extrema); });
+            differenceRenderedRevision_ = a.transportRevision;
+        }
+        for (std::size_t channel = 0; channel < channels; ++channel)
+            traces[channel].finish(pathPoint(scopeDifferencePaths_[channel]));
+        return;
+    }
     if (scopeShown && aligned && shownBar_ && shownBar_->projection) {
         const auto &bar = *shownBar_->projection;
         const auto drawColumns = [&](std::array<juce::Path, 2> &paths, std::span<const FocusSumColumn> columns) {
@@ -1030,13 +1105,19 @@ void MixFocus::paint(juce::Graphics &g) {
     const bool scopeShown = scope.getToggleState();
     const auto display = static_cast<ScopeDisplay>(scopeDisplay_.getSelectedId());
     const bool sumOnly = display == ScopeDisplay::Sum;
+    const bool differenceOnly = scopeShown && display == ScopeDisplay::Difference;
+    bool differenceReady = false;
+    if (differenceOnly && differenceRequest_ && differenceRenderedRevision_) {
+        const auto locate = root_.settledLocateRevision();
+        differenceReady = locate && *differenceRenderedRevision_ >= *locate;
+    }
     const bool wantsSum = scopeShown && (display == ScopeDisplay::Overlay || sumOnly);
     const bool sumShown = wantsSum && (!scopeSumPaths_[0].isEmpty() || !scopeSumPaths_[1].isEmpty());
     const bool sumOverRange = wantsSum && sum_ && (sum_->peak[0] > 1. || sum_->peak[1] > 1.);
-    juce::String title = scopeShown ? "Scope" : "Together";
-    if (scopeShown && alignment_ != Alignment::Ready && !sumOnly)
+    juce::String title = differenceOnly ? "Difference (A - B)" : scopeShown ? "Scope" : "Together";
+    if (scopeShown && alignment_ != Alignment::Ready && !sumOnly && !differenceOnly)
         title += "   Individual traces";
-    else if (scopeShown && scopeRange_) {
+    else if (scopeShown && scopeRange_ && (!differenceOnly || differenceReady)) {
         if (sumOverRange) {
             title = requestsScopeMid() ? "Stereo sum over 0 dBFS" : "Sum over 0 dBFS";
             g.setColour(look::record);
@@ -1050,7 +1131,7 @@ void MixFocus::paint(juce::Graphics &g) {
     const int titleWidth = summaryBounds.isEmpty() ? plot.getWidth() : std::max(0, summaryBounds.getX() - plot.getX());
     g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
                std::max(0, plot.getY() - scroll_.getBottom()), juce::Justification::centredLeft);
-    if (!alignReadout_.isVisible() && !sumLabel_.isEmpty()) {
+    if (!differenceOnly && !alignReadout_.isVisible() && !sumLabel_.isEmpty()) {
         const auto stereoDb = [](const std::array<double, 2> &v) {
             const auto db = [](double sample) { return sample > 0. ? juce::String(20. * std::log10(sample), 1) : juce::String("-inf"); };
             return db(v[0]) + " / " + db(v[1]);
@@ -1070,6 +1151,23 @@ void MixFocus::paint(juce::Graphics &g) {
         return;
     }
     g.setColour(look::outline);
+    if (differenceOnly) {
+        g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
+        if (differenceReady) {
+            juce::Graphics::ScopedSaveState saved(g);
+            g.reduceClipRegion(plot);
+            g.setColour(look::textDim);
+            g.strokePath(scopeDifferencePaths_[1], juce::PathStrokeType(look::line));
+            g.setColour(look::text);
+            g.strokePath(scopeDifferencePaths_[0], juce::PathStrokeType(look::heavyLine));
+        } else {
+            g.setColour(look::textDim);
+            g.setFont(look::font());
+            g.drawText(differenceRequest_ ? "Waiting for aligned playback" : "Select another channel for B",
+                       plot_, juce::Justification::centred);
+        }
+        return;
+    }
     if (scopeShown) {
         const bool stacked = display == ScopeDisplay::Stack && !plot_.isEmpty() && !members_.empty();
         if (!stacked) g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());

@@ -37,7 +37,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
   private:
     friend struct MixFocusTestAccess;
     look::DensityId density_ = look::densityId();
-    enum class ScopeDisplay { Overlay = 1, Layers, Stack, Sum };
+    enum class ScopeDisplay { Overlay = 1, Layers, Stack, Sum, Difference };
     enum class ScopeChannels { Stereo = 1, Mid };
     struct Member {
         std::int64_t id{};
@@ -69,6 +69,8 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void clearScopeSum();
     void rebuildScope();
     bool requestsScopeMid() const noexcept;
+    bool showsScopeDifference() const noexcept;
+    void updateScopeDifference();
     void refreshControls();
     std::array<const Member *, 2> matchMembers() const noexcept;
     bool canLearnMatch(const std::array<const Member *, 2> &) const noexcept;
@@ -99,7 +101,10 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::optional<FocusScopeBar> requestedBar_;
     std::shared_ptr<const SharedAnalysis::BarScopeResult> shownBar_;
     std::optional<FocusSumReading> sum_;
-    std::array<juce::Path, 2> scopeSumPaths_;
+    std::array<juce::Path, 2> scopeSumPaths_, scopeDifferencePaths_;
+    std::optional<SharedAnalysis::ScopeDifference> differenceRequest_;
+    std::optional<std::uint64_t> differenceLocate_, differenceRenderedRevision_;
+    std::uint64_t differenceSelection_ = 0;
     std::optional<FocusMatchReading> match_;
     std::optional<std::uint64_t> matchLocateRevision_;
     std::weak_ptr<SharedAnalysis> matchBroker_;

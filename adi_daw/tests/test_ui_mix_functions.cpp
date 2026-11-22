@@ -51,9 +51,15 @@ struct MixFocusTestAccess {
                focus.scopeRange_->sampleRate == rate && focus.sum_;
     }
     static bool sumPulseAt(const MixFocus &focus, float position, float value) {
-        const auto plot = focus.plot_;
+        return scopePulseAt(focus.plot_, focus.scopeSumPaths_[0], position, value);
+    }
+    static bool differencePulseAt(const MixFocus &focus, float position, float value) {
+        return scopePulseAt(focus.plot_, focus.scopeDifferencePaths_[0], position, value);
+    }
+    static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
+    static bool scopePulseAt(juce::Rectangle<float> plot, const juce::Path &path, float position, float value) {
         if (plot.isEmpty()) return false;
-        juce::Path::Iterator vertices(focus.scopeSumPaths_[0]);
+        juce::Path::Iterator vertices(path);
         while (vertices.next()) {
             if (vertices.elementType != juce::Path::Iterator::lineTo) continue;
             const auto relative = (vertices.x1 - plot.getX()) / plot.getWidth();
@@ -1876,6 +1882,46 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         check(MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::sumPulseAt(focus, .875f, -.625f),
               "returning to Stereo reuses the same completed bar's stereo columns immediately");
+    }
+    juce::ComboBox *display = nullptr;
+    for (auto *component : focus.getChildren())
+        if (component->getTitle() == "Focus Scope display") display = dynamic_cast<juce::ComboBox *>(component);
+    check(display != nullptr, "Focus Scope makes its display selector available");
+    if (display && channels) {
+        focus.select(second);
+        display->setSelectedId(5, juce::sendNotificationSync);
+        frame();
+        check(display->getText() == "Difference" && !MixFocusTestAccess::hasDifference(focus),
+              "choosing Difference never shows the previous combined projection");
+        writeUntil(3 * bar);
+        check(MixFocusTestAccess::hasDifference(focus) &&
+                  MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
+                  MixFocusTestAccess::differencePulseAt(focus, .875f, .625f),
+              "Stereo Difference subtracts the selected channel from starred Main");
+        channels->setSelectedId(2, juce::sendNotificationSync);
+        frame();
+        check(!MixFocusTestAccess::hasDifference(focus),
+              "switching to Mid clears the previous Stereo Difference");
+        writeUntil(4 * bar);
+        check(MixFocusTestAccess::hasDifference(focus) &&
+                  !MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
+                  MixFocusTestAccess::differencePulseAt(focus, .875f, .3125f),
+              "Mid Difference cancels opposed stereo and halves a single-sided difference");
+        check(opens == std::array{1, 1} && broker->stats().taps == 2 && broker->stats().consumers == 1 &&
+                  broker->stats().transforms == 0,
+              "Difference adds no tap, consumer or spectrum transform");
+
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue a Difference Locate");
+        frame();
+        check(!MixFocusTestAccess::hasDifference(focus), "a pending Locate immediately clears the old Difference");
+        doc->mailbox().drain(driver);
+        frame();
+        check(!MixFocusTestAccess::hasDifference(focus),
+              "a settled Locate keeps the old Difference hidden until fresh paired audio");
+        focus.select(first);
+        frame();
+        check(!MixFocusTestAccess::hasDifference(focus),
+              "selecting starred Main as the other channel leaves Difference without a pair");
     }
     const auto visibleBounds = focus.getBounds();
     focus.setTopLeftPosition(peer.getWidth(), 0);

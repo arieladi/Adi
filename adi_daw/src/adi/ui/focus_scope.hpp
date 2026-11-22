@@ -72,9 +72,9 @@ struct FocusScopeBarBlock {
     bool advancing = false;
     std::span<const float> left, right;
 };
-inline FocusSumColumn focusEmptyExtrema() noexcept {
+inline FocusSumColumn focusEmptyExtrema(bool mid = false) noexcept {
     constexpr auto inf = std::numeric_limits<double>::infinity();
-    return {{inf, inf}, {-inf, -inf}};
+    return mid ? FocusSumColumn{{inf, 0.}, {-inf, 0.}} : FocusSumColumn{{inf, inf}, {-inf, -inf}};
 }
 
 // The two windows already passed the same stamp and transport checks as Sum.
@@ -175,7 +175,7 @@ class FocusScopeBarProjection {
             if (a != sources.end() && b != sources.end() && a != b) {
                 differenceIndexes = {static_cast<std::size_t>(a - sources.begin()),
                                      static_cast<std::size_t>(b - sources.begin())};
-                differenceBins.assign(columns, focusEmptyExtrema());
+                differenceBins.assign(columns, focusEmptyExtrema(difference->mid));
             } else {
                 difference.reset();
             }
@@ -364,14 +364,14 @@ std::optional<FocusScopeRange> focusProjectDifference(const SharedAnalysis::Resu
                                                       std::size_t columns, bool mid, PublishColumn &&publish) {
     const std::array<const SharedAnalysis::Result *, 2> pair{&a, &b};
     const auto range = focusScopeRange(pair);
-    if (!range) return {};
+    if (!range || !columns) return {};
     columns = std::min(columns, range->frames);
     const auto startA = static_cast<std::size_t>(range->first - a.firstStamp);
     const auto startB = static_cast<std::size_t>(range->first - b.firstStamp);
     for (std::size_t column = 0; column < columns; ++column) {
         const auto begin = column * range->frames / columns;
         const auto length = (column + 1) * range->frames / columns - begin;
-        auto extrema = focusEmptyExtrema();
+        auto extrema = focusEmptyExtrema(mid);
         focusIncludeDifference(extrema, std::span(a.scopeLeft).subspan(startA + begin, length),
                                std::span(a.scopeRight).subspan(startA + begin, length),
                                std::span(b.scopeLeft).subspan(startB + begin, length),
