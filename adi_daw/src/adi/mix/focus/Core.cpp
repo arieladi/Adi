@@ -278,7 +278,9 @@ struct Core::Impl {
         // per stage, then scans once for the output. Charge every transition.
         const auto fftCursorWork = stages * (p / 2) + stages + 3;
         const auto inverseWork = 2 * p + fftCursorWork;
-        const auto forwardWork = inverseWork + 1; // The spectrum includes Nyquist.
+        // Forward includes Nyquist, while packing avoids p/2 padding writes
+        // and the transition after the first butterfly stage.
+        const auto forwardWork = inverseWork - p / 2;
         // Each job pays per forwarding stream and per rendered stream.
         // A rendered band adds the products, inverse and h overlap charges.
         firForwardStreamWork = forwardWork + 2;
@@ -460,7 +462,7 @@ struct Core::Impl {
         switch(firStage) {
         case FirStage::Idle:break;
         case FirStage::ForwardStart:
-            firTransform.startForward(firInput[jobTimeBank][jobStream],firSpectrum[jobSpectrumBank][jobStream]);
+            firTransform.startHalfPaddedForward(firInput[jobTimeBank][jobStream],firSpectrum[jobSpectrumBank][jobStream]);
             firStage=FirStage::Forward;break;
         case FirStage::Forward:
             if(firTransform.busy())used=firTransform.advance(static_cast<std::size_t>(budget));
