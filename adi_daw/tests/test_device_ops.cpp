@@ -25,6 +25,7 @@
 
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
+#include "adi/rack_drums.hpp"
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
 
@@ -620,6 +621,73 @@ void testChainZones() {
           "audio racks only consult selector and drum admission uses its separate pad mapping");
 }
 
+void testDrumPadRouting() {
+    section("DEV-04 -- native Drum Rack Receive and Play mapping");
+    using namespace adi::rack;
+    using Status = DrumPadMap::Status;
+    const std::array<DrumChainMapping, 6> mappings{{
+        {0, {}, {}, {}}, {11, 36, 48, 1}, {12, 37, 127, 16},
+        {13, {}, 1, {}}, {14, 36, 0, 1}, {15, 127, 42, {}}}};
+    std::string error;
+    const auto map = DrumPadMap::compile(mappings, error);
+    check(map.has_value() && error.empty(), "owner compiles physical pads and All Notes chains");
+    if (!map)
+        return;
+    std::array<DrumDestination, 6> output{};
+    const auto was = output;
+    const auto shortBuffer = map->route(36, std::span(output).first(3));
+    check(shortBuffer.status == Status::InsufficientSpace && shortBuffer.size == 4 &&
+              output == was, "short space leaves an entire multi-pad fan-out unwritten");
+    DrumPadMap::Result first;
+    {
+        audio::CallbackScope callback;
+        first = map->route(36, output);
+    }
+    const std::array<DrumDestination, 4> expected{{
+        {0, 36, {}}, {11, 48, 1}, {13, 1, {}}, {14, 0, 1}}};
+    check(first.status == Status::Ready && first.size == expected.size() &&
+              std::equal(expected.begin(), expected.end(), output.begin()),
+          "Multi pads and All Notes chains keep row order, explicit pitch and choke tags");
+    const auto top = map->route(127, output);
+    check(top.status == Status::Ready && top.size == 3 && output[0] == DrumDestination{0, 127, {}} &&
+              output[2] == DrumDestination{15, 42, {}},
+          "the highest MIDI key can be routed and translated");
+    const auto lowest = map->route(0, output);
+    check(lowest.status == Status::Ready && lowest.size == 2 &&
+              output[0] == DrumDestination{0, 0, {}} && output[1] == DrumDestination{13, 1, {}},
+          "an unoccupied pad still reaches the All Notes chains");
+    check(map->route(-1, output).status == Status::InvalidKey &&
+              map->route(128, output).status == Status::InvalidKey,
+          "keys outside 0 to 127 receive no routes");
+
+    auto swapped = mappings;
+    std::swap(swapped[1].receive, swapped[2].receive);
+    const auto remapped = DrumPadMap::compile(swapped, error);
+    const auto after = remapped ? remapped->route(36, output) : DrumPadMap::Result{};
+    check(remapped && after.size == 4 && output[1] == DrumDestination{12, 127, 16},
+          "a pad swap changes only where the original played key routes");
+    check(map->route(36, output).size == 4 && output[1] == DrumDestination{11, 48, 1},
+          "the held routing generation keeps its original immutable assignments");
+
+    swapped[1].chain = swapped[2].chain;
+    check(!DrumPadMap::compile(swapped, error) && !error.empty(),
+          "duplicate chain identity refuses all new mappings");
+    swapped = mappings;
+    swapped[2].choke = 17;
+    check(!DrumPadMap::compile(swapped, error) && !error.empty(),
+          "a choke group above sixteen refuses all new mappings");
+    swapped = mappings;
+    swapped[2].play = 128;
+    check(!DrumPadMap::compile(swapped, error) && !error.empty(),
+          "a played pitch outside the MIDI range is refused");
+    bool rejected = false;
+    {
+        audio::CallbackScope callback;
+        rejected = !DrumPadMap::compile(mappings, error);
+    }
+    check(rejected && error == "callback", "the audio driver can route through a prepared map only");
+}
+
 // --- main ---------------------------------------------------------------------
 
 int main() {
@@ -643,6 +711,7 @@ int main() {
     testTheExpressionRoute();
     testThePanel();
     testChainZones();
+    testDrumPadRouting();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
