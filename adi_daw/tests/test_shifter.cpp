@@ -100,12 +100,12 @@ void nonFinite(){
         for(double delay:{0.,1.}){
             adi::dsp::Shifter s;s.set(adi::dsp::Shifter::Mode,mode);s.set(adi::dsp::Shifter::Coarse,5);
             s.set(adi::dsp::Shifter::Delay,delay);s.set(adi::dsp::Shifter::Feedback,50);s.set(adi::dsp::Shifter::Mix,50);s.prepare(48000);
-            std::vector<float> bad(64,std::numeric_limits<float>::quiet_NaN()),l(64),r(64);bad[10]=std::numeric_limits<float>::infinity();
+            std::vector<float> bad(64,std::numeric_limits<float>::quiet_NaN()),l(64),r(64);bad[10]=std::numeric_limits<float>::infinity();for(std::size_t k=20;k<40;++k)bad[k]=(k%2?3e38f:-3e38f);
             s.process(bad.data(),bad.data(),l.data(),r.data(),64);
             const auto after=tone(440,48000);std::vector<float> ol(after.size()),orr(after.size());
             s.process(after.data(),after.data(),ol.data(),orr.data(),after.size());
             bool finite=true;for(std::size_t i=0;i<ol.size();++i)finite=finite&&std::isfinite(ol[i])&&std::isfinite(orr[i]);
-            check(finite,"a NaN or inf input is silence: the signal after it stays finite");
+            check(finite,"a NaN, an inf or a finite 3e38 input: the signal after it stays finite");
         }
     }
 }
