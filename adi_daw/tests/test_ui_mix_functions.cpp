@@ -1381,6 +1381,105 @@ void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &d
     peer.removeChildComponent(&surface); peer.removeFromDesktop();
 }
 
+void foldedChannelBrowserSearch(AppCommands &commands, const std::filesystem::path &directory) {
+    const auto path = directory / "folded-channel-browser-search.adi";
+    StoreError status{};
+    auto store = Store::create(path, status);
+    check(store != nullptr, "a hundred-channel browser fixture creates its project");
+    if (!store) return;
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'master','Main',0);"
+        "WITH RECURSIVE channel_numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM channel_numbers WHERE n<100)"
+        " INSERT INTO tracks(id,kind,name,index_in_parent) "
+        "SELECT 100+n,'audio',CASE n "
+        "WHEN 3 THEN 'Caf\xc3\xa9 003' "
+        "WHEN 54 THEN 'Stra\xc3\x9f" "e 054' "
+        "WHEN 99 THEN '\xc3\x86ther 099' "
+        "ELSE printf('Channel %03d',n) END,n FROM channel_numbers;"
+        "INSERT INTO device_chains(id,track_id,name) VALUES(77,151,'Devices'),(78,152,'Devices');"
+        "INSERT INTO plugin_refs(id,format,uid,name) VALUES(77,'internal','owned.key','Search fixture');"
+        "INSERT INTO devices(id,chain_id,ord,name,plugin_ref_id)"
+        "VALUES(77,77,0,'P\xc3\xa9" "ch\xc3\xa9 Lead',77),(78,78,0,'Spare tool',77);");
+    store.reset();
+
+    std::string error;
+    auto document = ProjectDocument::open(path, false,
+        [](const engine::DeviceRequest &, std::string &) { return std::make_unique<KeyProbe>(); }, error);
+    check(document != nullptr, "the ordinary named tools load through the headless document");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "folded-channel-browser-search");
+    std::size_t publicationReads = 0;
+    root.devices.publication = [&] {
+        ++publicationReads;
+        return document->parameterFeed().current();
+    };
+    UiPeerRoot peer;
+    peer.setBounds(0, 0, 1400, 900);
+    root.setBounds(peer.getLocalBounds());
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    const bool softwarePeer = peer.getPeer() && !peer.getPeer()->getNativeHandle();
+    check(softwarePeer && root.setMixView(true, false),
+          "the hundred-channel search is exercised on the normal Mix View software peer");
+    root.frame();
+    auto &browser = root.mixViewPanel.channels;
+    check(browser.isShowing() && browser.trackAt(100) != 0 && browser.trackAt(101) == 0,
+          "the browser contains all one hundred tracks and Main");
+    root.arrangement.geometry.selection.track = 101;
+    root.publishSelection();
+    root.frame();
+
+    const auto search = [&](const char *query) {
+        browser.search.setText(query, false);
+        browser.search.onTextChange();
+    };
+    const auto only = [&](std::int64_t track) { return browser.trackAt(0) == track && browser.trackAt(1) == 0; };
+    const auto head = History(document->store()).head();
+    search("  cAfE 003  ");
+    check(only(103), "accent-insensitive search finds the first named channel");
+    search("STRASSE 054");
+    check(only(154), "search folds the middle channel's sharp s");
+    search("aether 099");
+    check(only(199), "search folds the end channel's ligature");
+    search("peche lead");
+    check(only(151), "a folded device name finds its differently named channel");
+    const auto reads = publicationReads;
+    for (int i = 0; i < 4; ++i) browser.frame(root.reader());
+    check(publicationReads == reads && document->sessionState().selection().track == 101,
+          "the retained query does not scan devices again or change selection on unchanged browser frames");
+    if (only(151)) browser.list.selectRow(0);
+    root.frame();
+    check(document->sessionState().selection().track == 151 && root.mixViewPanel.stack.focused() == 151 &&
+              History(document->store()).head() == head,
+          "choosing the matching channel focuses its actual Stack row without authoring any search edit");
+
+    search("cafe 003");
+    const auto renamedTrack = document->deviceAction("track.rename", {{"id", 103}, {"name", "Renamed channel"}});
+    root.frame();
+    const bool removedTrackMatch = browser.trackAt(0) == 0;
+    const auto newTrack = document->deviceAction("track.rename", {{"id", 197}, {"name", "Caf\xc3\xa9 003"}});
+    root.frame();
+    check(renamedTrack && removedTrackMatch && newTrack && only(197),
+          "a retained query uses the new folded track names after same-size snapshot updates");
+
+    search("peche lead");
+    const bool renamedTool = document->deviceAction("device.rename", {{"id", 77}, {"name", "Old tool"}});
+    root.frame();
+    const bool removedToolMatch = browser.trackAt(0) == 0;
+    const bool newTool = document->deviceAction("device.rename", {{"id", 78}, {"name", "P\xc3\xa9" "ch\xc3\xa9 Lead"}});
+    root.frame();
+    const bool movedToolMatch = only(152);
+    const bool removedTool = document->deviceAction("device.remove", {{"id", 78}});
+    root.frame();
+    check(renamedTool && removedToolMatch && newTool && movedToolMatch && removedTool &&
+              browser.trackAt(0) == 0 && document->sessionState().selection().track == 151,
+          "renamed and removed devices update the folded tool matches without moving the chosen channel");
+    peer.removeChildComponent(&root);
+    peer.removeFromDesktop();
+}
+
 void focusWorkspace(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;
     auto doc = ProjectDocument::open(directory / "focus-workspace.adi", true, device::withBuiltinDevices(), error);
@@ -2410,6 +2509,7 @@ int main() {
     parameterPages(commands, temporary.path());
     stackEqSpectrum(commands, temporary.path());
     stackLimiterReduction(commands, temporary.path());
+    foldedChannelBrowserSearch(commands, temporary.path());
     focusWorkspace(commands, temporary.path());
     focusOneBarScope(commands, temporary.path());
     cleanCompressor(commands, temporary.path());

@@ -39,6 +39,7 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     struct Entry {
         std::int64_t id;
         juce::String name;
+        juce::String searchName;
         juce::Colour colour;
         std::uint32_t depth;
         bool group;
@@ -77,7 +78,7 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     std::vector<Entry> entries_;
     std::vector<Group> groups_;
     std::vector<std::size_t> rows_;
-    juce::String query_;
+    juce::String searchQuery_;
     std::vector<std::int64_t> toolMatches_;
     std::optional<std::uint64_t> toolSearchGeneration_;
     std::vector<std::int64_t> focusMembers_;
