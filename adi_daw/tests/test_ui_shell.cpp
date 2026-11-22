@@ -3692,6 +3692,51 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     sel.toTrack = 3;
     check(root.command(AppCommands::Copy) && std::holds_alternative<clip_edit::RangeCopy>(commands.clipClipboard().held),
           "a clip's span on two tracks copies as a range");
+    // DF-W28: a Duplicate or a Paste onto clips removes the part it covers (a clip it reaches into is trimmed),
+    // in the same undo step, as Live places them (manual 6.9); Undo brings them back.
+    {
+        const auto idsOf = [&](std::int64_t track) {
+            std::vector<std::int64_t> out;
+            if (const auto *t = root.reader().findTrack(track))
+                for (const auto &c : t->clips)
+                    out.push_back(c->id);
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        OpRequest later;
+        later.opType = "clip.create";
+        later.payload = {{"id", 60}, {"track", 3}, {"kind", "midi"}, {"pos", bar / 2}, {"length", bar / 2}};
+        later.label = "Insert MIDI Clip";
+        check(document->ops().submit(later).ok && document->synchronise(), "a second half bar on 2 MIDI, right after its clip");
+        root.frame();
+        clickClip(3, 51, 0, bar / 2);
+        check(root.keyPressed(duplicateKey), "Duplicate onto the clip after it");
+        root.frame();
+        const auto duplicated = idsOf(3);
+        check(clipsOf(3) == Clips{{0, bar / 2}, {bar / 2, bar / 2}} && duplicated.size() == 2 &&
+                  std::find(duplicated.begin(), duplicated.end(), 60) == duplicated.end() &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->label == "Duplicate Clip",
+              "the duplicate replaces the clip it covers, one undo step");
+        check(root.command(AppCommands::Undo), "undo the Duplicate");
+        root.frame();
+        check(idsOf(3) == std::vector<std::int64_t>{51, 60} && clipsOf(3) == Clips{{0, bar / 2}, {bar / 2, bar / 2}},
+              "Undo brings the covered clip back");
+        clickClip(2, 50, 0, bar);
+        check(root.command(AppCommands::Copy), "copy 1 MIDI's bar");
+        marker(3, bar / 4);
+        check(root.keyPressed(pasteKey), "paste it a quarter bar into 2 MIDI's clips");
+        root.frame();
+        check(clipsOf(3) == Clips{{0, bar / 4}, {bar / 4, bar}} && document->ops().nextUndo() &&
+                  document->ops().nextUndo()->label == "Paste Clip",
+              "the clip it reaches into is trimmed, the one it covers removed, one undo step");
+        check(root.command(AppCommands::Undo), "undo the Paste");
+        root.frame();
+        check(idsOf(3) == std::vector<std::int64_t>{51, 60} && clipsOf(3) == Clips{{0, bar / 2}, {bar / 2, bar / 2}},
+              "Undo restores both");
+        check(root.command(AppCommands::Undo), "undo the second clip");
+        root.frame();
+        check(idsOf(3) == std::vector<std::int64_t>{51}, "2 MIDI as before");
+    }
     // A Duplicate over empty time works, and clears an earlier refusal.
     marker(6, 0);
     root.command(AppCommands::Paste);
