@@ -78,6 +78,8 @@ struct Job {
     // one graph render and the same output clock, range and channel layout.
     std::vector<DeliverySpec> deliveries{};
     ExportRatePolicy ratePolicy = ExportRatePolicy::RequestedRate;
+    // Analyze the selected compensated source without a private or published delivery.
+    bool analysisOnly = false;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
@@ -125,6 +127,7 @@ struct MediaVerification {
     std::vector<MediaIdentity> identities;
     bool startComplete = false;
     bool publicationVerified = false;
+    bool analysisVerified = false;
 };
 struct ReplacementBinding {
     std::filesystem::path target;
@@ -165,6 +168,8 @@ struct Result {
     std::optional<ReplacementBinding> replacement{};
     std::vector<DeliveryResult> deliveries{};
     std::optional<std::string> deliveryBlake3{};
+    std::uint64_t framesAnalyzed = 0;
+    std::optional<ExportStatistics> analysis{};
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct RunMember {

@@ -191,7 +191,9 @@ std::string deliveryName(const std::string& base, const DeliverySpec& delivery) 
 }
 
 void validate(const Job& j) {
-    if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
+    if (j.project.empty() || (!j.analysisOnly && j.directory.empty())) {
+        throw std::invalid_argument("project and output directory are required for a delivery");
+    }
     if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
         throw std::invalid_argument("unsupported export collision policy");
     if (!j.regionId && (j.beginSample < 0 || j.endSample <= j.beginSample)) throw std::invalid_argument("export range must be nonempty and nonnegative");
@@ -205,6 +207,15 @@ void validate(const Job& j) {
     if (j.regionId && *j.regionId <= 0) throw std::invalid_argument("region ID must be positive");
     if (j.source.trackId < 0 || (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
         throw std::invalid_argument("invalid direct stem source or tap");
+    if (j.ratePolicy != ExportRatePolicy::RequestedRate && j.ratePolicy != ExportRatePolicy::ProjectThenDownsample)
+        throw std::invalid_argument("unknown export sample rate policy");
+    if (j.analysisOnly) {
+        if (j.niStems || j.exactWavFilename || !j.deliveries.empty() || j.normalization.mode != NormalizeMode::Off) {
+            throw std::invalid_argument("Analyze Only accepts one source and no encoding or normalization");
+        }
+        (void)deliveryChannels(j, j.encoding.channelFold);
+        return;
+    }
     const auto fold = j.deliveries.empty() ? j.encoding.channelFold : j.deliveries.front().encoding.channelFold;
     const auto channels = deliveryChannels(j, fold);
     if (j.deliveries.empty()) {
@@ -226,8 +237,6 @@ void validate(const Job& j) {
             }
         }
     }
-    if (j.ratePolicy != ExportRatePolicy::RequestedRate && j.ratePolicy != ExportRatePolicy::ProjectThenDownsample)
-        throw std::invalid_argument("unknown export sample rate policy");
     validateNiStems(j);
     validateNormalization(j.normalization, static_cast<std::uint32_t>(j.session.sampleRate), channels);
     if (j.exactWavFilename) {
@@ -503,11 +512,13 @@ void captureMedia(const engine::ClipPlayback& playback,MediaVerification& report
     }
     report.startComplete=true;
 }
-void verifyMedia(MediaVerification& report,const Control& control) {
-    report.publicationVerified = false;
+void verifyMedia(MediaVerification& report, const Control& control, bool publication = true) {
+    auto& verified = publication ? report.publicationVerified : report.analysisVerified;
+    verified = false;
     std::map<fs::path,media::FileIdentity> selectedPaths;
     for(auto& identity:report.identities) {
-        identity.blake3BeforePublication=hashMedia(identity.path,control);
+        const auto digest = hashMedia(identity.path, control);
+        if (publication) identity.blake3BeforePublication = digest;
         for(const auto& reference:identity.references) {
             cancellation(control);
             auto selected=selectedPaths.find(reference.selectedPath);
@@ -516,11 +527,11 @@ void verifyMedia(MediaVerification& report,const Control& control) {
             if(selected->second!=identity.nativeIdentity)
                 throw std::runtime_error("export media path changed during render: "+media::pathUtf8(reference.selectedPath));
         }
-        if(*identity.blake3BeforePublication!=identity.blake3AtStart)
+        if (digest != identity.blake3AtStart)
             throw std::runtime_error("export media changed during render: "+media::pathUtf8(identity.path));
     }
     cancellation(control);
-    report.publicationVerified=true;
+    verified = true;
 }
 } // namespace
 
@@ -778,33 +789,35 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             snapshot.commit();
         }
         std::vector<Result> preparedFiles;
-        if (job.deliveries.empty()) {
-            const auto extension = containerSuffix(job.encoding.container);
-            const auto filename = job.exactWavFilename ? *job.exactWavFilename :
-                resolveName(job.nameTemplate, names) + extension;
-            result.output = job.directory / media::pathFromUtf8(filename);
-            detail::prepareOutput(result, job.collision, extension.c_str(), "export destination already exists");
-            if (prepared) prepared(result);
-        } else {
-            const auto base = resolveName(job.nameTemplate, names);
-            std::set<std::string> reserved;
-            for (const auto& delivery : job.deliveries) {
-                const auto extension = containerSuffix(delivery.encoding.container);
-                Result file;
-                file.output = job.directory / media::pathFromUtf8(deliveryName(base, delivery));
-                if (job.collision != Collision::Increment) {
-                    detail::prepareOutput(file, job.collision, extension.c_str(), "export destination already exists");
+        if (!job.analysisOnly) {
+            if (job.deliveries.empty()) {
+                const auto extension = containerSuffix(job.encoding.container);
+                const auto filename = job.exactWavFilename ? *job.exactWavFilename :
+                    resolveName(job.nameTemplate, names) + extension;
+                result.output = job.directory / media::pathFromUtf8(filename);
+                detail::prepareOutput(result, job.collision, extension.c_str(), "export destination already exists");
+            } else {
+                const auto base = resolveName(job.nameTemplate, names);
+                std::set<std::string> reserved;
+                for (const auto& delivery : job.deliveries) {
+                    const auto extension = containerSuffix(delivery.encoding.container);
+                    Result file;
+                    file.output = job.directory / media::pathFromUtf8(deliveryName(base, delivery));
+                    if (job.collision != Collision::Increment) {
+                        detail::prepareOutput(file, job.collision, extension.c_str(), "export destination already exists");
+                    }
+                    if (!reserved.insert(foldedFilename(file.output)).second) {
+                        throw std::runtime_error("Multiple deliveries resolve to the same destination");
+                    }
+                    preparedFiles.push_back(std::move(file));
                 }
-                if (!reserved.insert(foldedFilename(file.output)).second) {
-                    throw std::runtime_error("Multiple deliveries resolve to the same destination");
+                if (job.collision == Collision::Increment) prepareGroupIncrement(preparedFiles, job.directory);
+                for (const auto& file : preparedFiles) {
+                    result.deliveries.push_back({file.output, JobState::Pending, {}, {}});
                 }
-                preparedFiles.push_back(std::move(file));
-            }
-            if (job.collision == Collision::Increment) prepareGroupIncrement(preparedFiles, job.directory);
-            for (const auto& file : preparedFiles) {
-                result.deliveries.push_back({file.output, JobState::Pending, {}, {}});
             }
         }
+        if (prepared) prepared(result);
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
         const auto endpoint = session.offlineOutput(job.source.trackId, job.source.tap);
@@ -840,18 +853,26 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             fp[c] = narrow.data() + c * block;
             if (!wide.empty()) dp[c] = wide.data() + c * block;
         }
-        Stage stage(job.directory, result);
+        std::optional<Stage> stage;
         std::vector<DeliverySink> sinks;
-        if (job.deliveries.empty()) {
-            sinks.emplace_back(stage.path, "render", job, job.encoding, outputChannels, total, counter);
+        std::unique_ptr<ExportAnalysis> analysis;
+        if (job.analysisOnly) {
+            analysis = std::make_unique<ExportAnalysis>(static_cast<std::uint32_t>(outputRate), outputChannels,
+                                                        job.normalization.channelWeights);
         } else {
-            sinks.reserve(job.deliveries.size());
-            for (std::size_t index = 0; index < job.deliveries.size(); ++index) {
-                cancellation(control);
-                sinks.emplace_back(stage.path, "delivery" + std::to_string(index), job,
-                                   job.deliveries[index].encoding, outputChannels, total, counter);
+            stage.emplace(job.directory, result);
+            if (job.deliveries.empty()) {
+                sinks.emplace_back(stage->path, "render", job, job.encoding, outputChannels, total, counter);
+            } else {
+                sinks.reserve(job.deliveries.size());
+                for (std::size_t index = 0; index < job.deliveries.size(); ++index) {
+                    cancellation(control);
+                    sinks.emplace_back(stage->path, "delivery" + std::to_string(index), job,
+                                       job.deliveries[index].encoding, outputChannels, total, counter);
+                }
             }
         }
+        auto& completedFrames = job.analysisOnly ? result.framesAnalyzed : result.framesWritten;
         const bool checkFloatRange = std::ranges::any_of(sinks, &DeliverySink::requiresFloat32Range);
         std::vector<double> mono;
         const auto writeDelivery = [&](std::span<const double> samples, std::uint32_t frames) {
@@ -868,8 +889,9 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             })) {
                 throw std::runtime_error("Converted audio exceeds the output format");
             }
-            for (auto& sink : sinks) sink.append(samples, frames);
-            result.framesWritten += frames;
+            if (analysis) analysis->append(samples, frames);
+            else for (auto& sink : sinks) sink.append(samples, frames);
+            completedFrames += frames;
         };
         std::unique_ptr<DeliverySrc> converter;
         if (downsampling) converter = std::make_unique<DeliverySrc>(static_cast<unsigned>(graphRate),
@@ -880,7 +902,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             else writeDelivery(samples, frames);
         };
         auto progress = [&] {
-            if (control.progress) control.progress(id, result.framesWritten, total);
+            if (control.progress) control.progress(id, completedFrames, total);
             cancellation(control);
         };
         progress();
@@ -948,7 +970,13 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             converter->finish(service);
             progress();
         }
-        if (result.framesWritten != total) throw std::runtime_error("export produced an incomplete range");
+        if (completedFrames != total) throw std::runtime_error("export produced an incomplete range");
+        if (analysis) {
+            verifyMedia(*result.mediaVerification, control, false);
+            result.analysis = analysis->finish();
+            result.state = JobState::Completed;
+            return result;
+        }
         const auto serviceEncoding = [&] {
             cancellation(control); if (control.serviceHost) control.serviceHost(); cancellation(control);
         };
@@ -1358,6 +1386,7 @@ std::string serializeRunManifest(const RunReport& run) {
                     specs.push_back(std::move(spec));
                 }
             }
+            if (job.analysisOnly) item["job"]["analysis_only"] = true;
         }
         if (member.result) {
             const auto& result = *member.result;
@@ -1378,6 +1407,10 @@ std::string serializeRunManifest(const RunReport& run) {
                     files.push_back(std::move(delivery));
                 }
             }
+            if (member.job && member.job->analysisOnly) {
+                value["frames_analyzed"] = result.framesAnalyzed;
+                value["analysis"] = result.analysis ? exportStatistics(*result.analysis) : Json(nullptr);
+            }
             if(result.replacement) {
                 const auto& binding=*result.replacement;
                 value["replacement_preflight"]={{"target",media::pathUtf8(binding.target)},
@@ -1388,6 +1421,9 @@ std::string serializeRunManifest(const RunReport& run) {
                 const auto& verification=*result.mediaVerification;
                 value["media_verification"]={{"scope","external_audio_clips"},
                     {"start_complete",verification.startComplete},{"publication_verified",verification.publicationVerified}};
+                if (member.job && member.job->analysisOnly) {
+                    value["media_verification"]["analysis_verified"] = verification.analysisVerified;
+                }
                 item["media_identities"]=Json::array();
                 for(const auto& identity:verification.identities) {
                     Json mediaValue{{"path",media::pathUtf8(identity.path)}, {"blake3_at_start",identity.blake3AtStart},

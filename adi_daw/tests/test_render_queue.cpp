@@ -1277,6 +1277,50 @@ void convertedDeliveryClockAndMask() {
           "file conversion refuses an unsupported upsampling request before a staging write");
 }
 
+void analysisOnly() {
+    Fixture f;
+    auto job = f.job();
+    job.analysisOnly = true;
+    job.directory.clear();
+    Queue queue;
+    queue.add(job);
+    queue.run();
+    const auto result = queue.snapshot().front().result;
+    check(result.state == JobState::Completed && result.framesAnalyzed == 866 && result.framesWritten == 0 &&
+          result.output.empty() && !result.publication && fs::is_empty(f.dir.path() / "out"),
+          "Analyze Only processes the selection without a staging file or publication");
+    double peak = 0.0;
+    double squares = 0.0;
+    for (auto frame = job.beginSample; frame < job.endSample; ++frame) {
+        for (int channel = 0; channel < 2; ++channel) {
+            const auto value = static_cast<double>(source(frame, channel));
+            peak = std::max(peak, std::abs(value));
+            squares += value * value;
+        }
+    }
+    check(result.analysis && result.analysis->samplePeakDbfs && result.analysis->rmsDbfs &&
+          std::abs(*result.analysis->samplePeakDbfs - 20.0 * std::log10(peak)) < 1e-9 &&
+          std::abs(*result.analysis->rmsDbfs - 10.0 * std::log10(squares / 1732.0)) < 1e-9,
+          "analysis measures exactly the selected output samples");
+    const auto report = serializeRunManifest(queue.lastRun());
+    check(result.mediaVerification && result.mediaVerification->analysisVerified &&
+          !result.mediaVerification->publicationVerified &&
+          report.find("frames_analyzed") != std::string::npos,
+          "analysis evidence verifies its input without recording a file publication");
+
+    std::stop_source stop;
+    Control control;
+    control.stop = stop.get_token();
+    control.progress = [&](auto, auto frames, auto) { if (frames > 0) stop.request_stop(); };
+    const auto cancelled = renderWav(job, {}, control);
+    check(cancelled.state == JobState::Cancelled && cancelled.framesAnalyzed > 0 && !cancelled.analysis &&
+          cancelled.framesWritten == 0, "cancelled analysis reports progress and no finished readings");
+
+    job.normalization.mode = NormalizeMode::Peak;
+    check(renderWav(job, {}).state == JobState::Failed,
+          "Analyze Only refuses a contradictory normalization request");
+}
+
 void regionStems() {
     Fixture f;
     f.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,480480,60);"
@@ -2392,7 +2436,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); waveSpeakerMask(); losslessReadbackGate(); afterExportImport(); importSelectedDelivery(); batchFileConversion(); batchProtectsSourcesAndEarlierFiles(); convertedDeliveryClockAndMask(); analysisOnly(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
