@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/launch_gestures.hpp"
+#include "adi/engine/launch_follow.hpp"
 
 #include <algorithm>
 #include <array>
@@ -123,12 +124,87 @@ void concurrentGestures() {
     check(!failed.load() && queue.pop(input).status == Status::Empty,
           "owner and driver exchange 40,000 whole gestures under concurrent wrap and backpressure");
 }
+
+void followTargets() {
+    using Action = FollowAction;
+    using Result = FollowResult;
+    constexpr std::array<std::optional<std::int64_t>, 8> slots{
+        std::nullopt, 10, 0, 12, std::nullopt, 20, std::nullopt, 30};
+    static_assert(followGroup(slots, 2) == FollowGroup{1, 4});
+    check(followGroup(slots, 5) == FollowGroup{5, 6} && !followGroup(slots, 4) &&
+              !followGroup(slots, slots.size()),
+          "empty slots split groups and zero remains an occupied clip ID");
+    const auto expects = [&](std::size_t playing, Action action, FollowTarget target,
+                             FollowChoice choice = {}) {
+        const auto resolved = resolveFollowTarget(slots, playing, action, choice);
+        return resolved.result == Result::Launch && resolved.target == target;
+    };
+    check(expects(2, Action::Again, {2, 0}) &&
+              expects(2, Action::Previous, {1, 10}) && expects(2, Action::Next, {3, 12}) &&
+              expects(2, Action::First, {1, 10}) && expects(2, Action::Last, {3, 12}),
+          "ordered actions select a literal slot and clip within the current group");
+    check(expects(2, Action::Any, {2, 0}, {1, {}}) &&
+              expects(2, Action::Other, {1, 10}, {0, {}}) &&
+              expects(2, Action::Other, {3, 12}, {1, {}}),
+          "uniform ranks select across the whole group or omit the current slot exactly");
+    check(resolveFollowTarget(slots, 1, Action::Previous).result == Result::GroupBoundary &&
+              resolveFollowTarget(slots, 3, Action::Next).result == Result::GroupBoundary &&
+              resolveFollowTarget(slots, 5, Action::Other, {0, {}}).result == Result::GroupBoundary,
+          "group boundaries and a lone Other leave adoption policy to the driver");
+    check(expects(2, Action::Jump, {7, 30}, {{}, 7}) &&
+              resolveFollowTarget(slots, 2, Action::Jump, {{}, 4}).result == Result::Unavailable &&
+              resolveFollowTarget(slots, 2, Action::Jump, {{}, 8}).result == Result::Unavailable,
+          "Jump honors an explicit occupied destination and refuses absent destinations");
+    check(resolveFollowTarget(slots, 2, Action::None).result == Result::Unchanged &&
+              resolveFollowTarget(slots, 2, Action::Stop).result == Result::Stop &&
+              resolveFollowTarget(slots, 4, Action::Again).result == Result::Unavailable &&
+              resolveFollowTarget(slots, 2, Action::Any, {3, {}}).result == Result::Unavailable &&
+              resolveFollowTarget(slots, 2, Action::Other).result == Result::Unavailable,
+          "stop, no action, stale slots and invalid random ranks remain distinct");
+}
+
+void allFollowGroups() {
+    using Result = FollowResult;
+    bool matched = true;
+    for (unsigned mask = 0; mask < 256; ++mask) {
+        std::array<std::optional<std::int64_t>, 8> slots;
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            if ((mask & (1u << i)) != 0)
+                slots[i] = static_cast<std::int64_t>(i * 16);
+        }
+        for (std::size_t playing = 0; playing < slots.size(); ++playing) {
+            if (!slots[playing])
+                continue;
+            std::size_t rank = 0, otherRank = 0;
+            for (std::size_t target = 0; target < slots.size(); ++target) {
+                bool occupiedPath = true;
+                for (auto i = std::min(playing, target); i <= std::max(playing, target); ++i)
+                    occupiedPath = occupiedPath && slots[i].has_value();
+                if (!occupiedPath)
+                    continue;
+                const auto any = resolveFollowTarget(slots, playing, FollowAction::Any, {rank++, {}});
+                matched = matched && any.target == FollowTarget{target, *slots[target]};
+                if (target == playing)
+                    continue;
+                const auto other = resolveFollowTarget(slots, playing, FollowAction::Other,
+                                                       {otherRank++, {}});
+                matched = matched && other.target == FollowTarget{target, *slots[target]};
+            }
+            matched = matched &&
+                resolveFollowTarget(slots, playing, FollowAction::Any, {rank, {}}).result ==
+                    Result::Unavailable;
+        }
+    }
+    check(matched, "all eight-slot occupancy patterns map every admissible rank exactly once");
+}
 } // namespace
 
 int main() {
     modeEdges();
     queueBounds();
     concurrentGestures();
+    followTargets();
+    allFollowGroups();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
