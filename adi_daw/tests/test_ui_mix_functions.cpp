@@ -1556,7 +1556,6 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     pages.followSelection(false);
     root.frame();
     broker->pump();
-    const auto baseline = broker->stats();
     const auto findToggle = [](const auto &walk, juce::Component &parent) -> juce::ToggleButton * {
         if (auto *toggle = dynamic_cast<juce::ToggleButton *>(&parent); toggle && toggle->getTitle() == "Pinned tracks")
             return toggle;
@@ -1577,6 +1576,8 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     check(normal && normal->sampleRate == static_cast<double>(rate) &&
               normal->request.fftSize == normalFft && normal->hopSize == normalFft / 4,
           "ordinary Spectrum starts at its original 1024-point profile on the matched format");
+    auto ordinaryReader = broker->acquire({main, pages.detail.point(), normalFft, pages.detail.view.channel()});
+    const auto baseline = broker->stats();
     const auto attachmentsBeforeToggle = attachments;
     const auto choose = [&](bool enabled) {
         control->setToggleState(enabled, juce::dontSendNotification);
@@ -1591,8 +1592,10 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     choose(true);
     const auto single = broker->stats();
     auto firstTap = tapFor(first), wideTap = tapFor(wide);
+    // The ordinary reader still uses its 1024-point plan. Overview needs
+    // three more plans, but both primary readers share a physical tap.
     check(firstTap && wideTap && !attached(missing) && single.consumers == baseline.consumers + 2 &&
-              single.taps == baseline.taps + 2 && single.spectralPlans == baseline.spectralPlans + 2 &&
+              single.taps == baseline.taps + 2 && single.spectralPlans == baseline.spectralPlans + 3 &&
               History(doc->store()).head() == head,
           "only live non-primary pins lease two realtime spectra without authoring an edit");
     check(tapFor(main) == primaryTap && attachments == attachmentsBeforeToggle + 2,
@@ -1635,6 +1638,10 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                   picture->request.fftSize == overviewFft && picture->hopSize == overviewFft / 4 &&
                   pages.detail.view.spectrumBins().size() == static_cast<std::size_t>(overviewFft / 2 + 1),
               "visible Overview adopts its rate-sized realtime profile and shared immutable primary");
+        const auto ordinary = ordinaryReader.read();
+        check(ordinary && ordinary->request.track == main && ordinary->request.fftSize == normalFft &&
+                  ordinary->hopSize == normalFft / 4 && ordinary->generation == primaryTap->generation(),
+              "an ordinary observer retains its 1024-point plan and shares Overview's primary tap");
         const auto a = low.read(), b = high.read();
         const auto peakBin = [](const auto &bins) { return std::ranges::max_element(bins) - bins.begin(); };
         check(a && b && a->request.track == first && b->request.track == wide &&
@@ -1661,8 +1668,10 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     root.frame();
     const auto attachmentsBeforeRestore = attachments;
     choose(false);
-    check(noExtraPins() && tapFor(main) == primaryTap && attachments == attachmentsBeforeRestore,
+    check(noExtraPins() && tapFor(main) == primaryTap && attachments == attachmentsBeforeRestore &&
+              broker->stats().spectralPlans == baseline.spectralPlans,
           "turning Pinned tracks off drops pin leases and retains the primary tap");
+    ordinaryReader.reset();
     {
         adi::ui::SharedAnalysis::Request request{main, pages.detail.point(), normalFft,
                                                 pages.detail.view.channel()};
