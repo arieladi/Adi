@@ -36,6 +36,21 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PLAN TM-FC-01, Post FX bounce and editable mixer settings
+
+**PR requested** after the 3 December gate for `engine/tm-fc01-bounce-mixer` at `8bc053ca28743ad0695808ffe52352eabbae2cd4`. Stack joins range mute `d1146559` and in-place insert removal `6689b97c` at `f75567f4`. The join resolves their shared audition helper and keeps the range and device loader arguments.
+
+Regular Bounce to New Track renders Post FX and creates a fresh audio sibling with the source's static strip, split pan, signed delay, VCA association, explicit Main route and sends. Each send keeps its route settings and any explicit tap at a new identity. Baked input gain resets to 0 dB on the sibling, which starts unarmed and on Auto. All creation, copied controls, audio and range mute share one journal transaction. The existing track image and routing operations carry the captured rows.
+
+Strict GCC 14 and Clang 19 passed all seven suites, 1,834 checks each. The complete 1,024-sample master audition matched with the range replacement at +23 and -19 track delay, split pan, live Post FX and Post Mixer sends, a separate Main destination, baked input gain and a disabled Pre FX send. Same-job retry, Undo, Redo and reopen exercised the stack. An enabled Pre FX send on the sibling receives the wet file. Source automation, incoming/live inputs and sidechains stay on the original. Multi-track action waits on window-fn's selection wiring and the shared capture contract. Isolated Group/Via Main waits on engine-win's EX-02 path.
+
+ED-06 / TM-FC-02 parked on the shared capture ADR and Q-H for audio Consolidate, the clipboard/wet-source integration with window-fn for Paste Bounced Audio, and Live/Win clarification for mapping two clip-local MIDI IDs or multiple loop occurrences to the new single clip. TM-FC-03 and TM-FC-04 stay parked on the one-capture and Q-A contracts and Live frozen-clip readings.
+
+### FOR THE DIRECTOR
+
+- ED-06 MIDI Consolidate needs one output ID per audible note. Recommend preserving every original ID that can remain unique, assigning a fresh ID deterministically to a duplicate ID or a repeated loop occurrence after its first, and carrying the matching expression through the same remap. Retain the full originals on Undo.
+- TM-FC-01 Live reading on automation and Pre FX sends remains open. Recommend copying static settings in this slice and retaining the source automation on the source until Live's behavior is measured. Preserving separately processed dry sends needs the separate-stream capture contract.
+
 ## 2026-11-22 — TM-FC-01 mute the bounced source range — PR requested
 
 - Ready at `d114655929b0ef7af501894c2e9900ce4cb102ee` on `engine/tm-fc01-bounce-range-mute`, for after 3 December.
