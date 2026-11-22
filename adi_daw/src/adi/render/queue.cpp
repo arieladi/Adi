@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/render/queue.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/audio/pcm_stream.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/media/blake3.hpp"
@@ -106,6 +107,12 @@ std::string portableName(std::string name) {
     return name;
 }
 
+void validateWavEncoding(const Encoding& encoding) {
+    if (encoding.format != audio::WavFormat::Float32 && encoding.format != audio::WavFormat::Pcm16 && encoding.format != audio::WavFormat::Pcm24)
+        throw std::invalid_argument("unsupported export WAV encoding");
+    if (encoding.dither != audio::WavDither::None && encoding.dither != audio::WavDither::Triangular && encoding.dither != audio::WavDither::Rectangular)
+        throw std::invalid_argument("unsupported export dither");
+}
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
     if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
@@ -121,10 +128,7 @@ void validate(const Job& j) {
     if (j.regionId && *j.regionId <= 0) throw std::invalid_argument("region ID must be positive");
     if (j.source.trackId < 0 || (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
         throw std::invalid_argument("invalid direct stem source or tap");
-    if (j.encoding.format != audio::WavFormat::Float32 && j.encoding.format != audio::WavFormat::Pcm16 && j.encoding.format != audio::WavFormat::Pcm24)
-        throw std::invalid_argument("unsupported export WAV encoding");
-    if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
-        throw std::invalid_argument("unsupported export dither");
+    validateWavEncoding(j.encoding);
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
     if (j.exactWavFilename) {
@@ -155,6 +159,39 @@ struct Stage {
     ~Stage() { detail::discardStage(std::move(path), failure); }
     Stage(const Stage&) = delete;
     Stage& operator=(const Stage&) = delete;
+};
+class WavDelivery {
+public:
+    WavDelivery(const fs::path& output, unsigned rate, int channels, Encoding encoding, Normalization normalization,
+                std::uint64_t ordinal)
+        : output_(output), encoding_(encoding), seed_(encoding.ditherSeed ^ ordinal) {
+        if (normalization.mode == NormalizeMode::Off)
+            writer_ = std::make_unique<audio::WavWriter>(output_, rate, static_cast<std::uint16_t>(channels),
+                encoding_.format, nullptr, std::uint64_t{1} << 32, encoding_.dither, seed_);
+        else
+            normalized_ = std::make_unique<NormalizationCapture>(output_.parent_path() / "capture.f64",
+                                                                 rate, channels, std::move(normalization));
+    }
+
+    [[nodiscard]] bool normalizing() const noexcept { return bool(normalized_); }
+
+    void write(std::span<const double> samples, std::uint32_t frames) {
+        if (normalized_) normalized_->append(samples, frames);
+        else writer_->write(samples.data(), frames);
+    }
+
+    std::optional<NormalizationReport> finish(const std::function<void()>& checkpoint) {
+        if (normalized_) return normalized_->finish(output_, encoding_.format, encoding_.dither, seed_, checkpoint);
+        writer_->close();
+        return std::nullopt;
+    }
+
+private:
+    fs::path output_;
+    Encoding encoding_;
+    std::uint64_t seed_;
+    std::unique_ptr<audio::WavWriter> writer_;
+    std::unique_ptr<NormalizationCapture> normalized_;
 };
 std::int64_t addLatency(std::int64_t position, std::int64_t latency) {
     if (latency > 0 && position > std::numeric_limits<std::int64_t>::max() - latency)
@@ -531,17 +568,11 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         }
         Stage stage(job.directory, result);
         const auto staged = stage.path / "render.wav";
-        std::unique_ptr<audio::WavWriter> writer;
-        std::unique_ptr<NormalizationCapture> normalized;
-        if(job.normalization.mode==NormalizeMode::Off)
-            writer=std::make_unique<audio::WavWriter>(staged,static_cast<std::uint32_t>(job.session.sampleRate),
-                static_cast<std::uint16_t>(channels),job.encoding.format,nullptr,std::uint64_t{1}<<32,
-                job.encoding.dither,job.encoding.ditherSeed^counter);
-        else normalized=std::make_unique<NormalizationCapture>(stage.path/"capture.f64",static_cast<std::uint32_t>(job.session.sampleRate),job.session.channels,job.normalization);
-        auto write=[&](std::uint32_t frames) {
-            if(normalized)normalized->append(std::span<const double>(interleaved.data(),static_cast<std::size_t>(frames)*channels),frames);
-            else writer->write(interleaved.data(),frames);
-            result.framesWritten+=frames;
+        WavDelivery delivery(staged, static_cast<unsigned>(job.session.sampleRate), job.session.channels,
+                             job.encoding, job.normalization, counter);
+        auto write = [&](std::uint32_t frames) {
+            delivery.write(std::span<const double>(interleaved.data(), static_cast<std::size_t>(frames) * channels), frames);
+            result.framesWritten += frames;
         };
         auto progress = [&] {
             if (control.progress) control.progress(id, result.framesWritten, total);
@@ -594,7 +625,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             for (std::int32_t f = 0; f < frames; ++f) for (std::size_t c = 0; c < channels; ++c) {
                 const auto i = static_cast<std::size_t>(f);
                 const double value = dp.empty() ? static_cast<double>(fp[c][i]) : dp[c][i];
-                if (!std::isfinite(value) || (!normalized && job.encoding.format == audio::WavFormat::Float32 &&
+                if (!std::isfinite(value) || (!delivery.normalizing() && job.encoding.format == audio::WavFormat::Float32 &&
                     std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
                     throw std::runtime_error("nonfinite or out-of-range audio during export");
                 if (at + f >= first)
@@ -609,10 +640,9 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         }
         if (result.framesWritten != total) throw std::runtime_error("export produced an incomplete range");
         service(); // include reports raised by the final process call
-        if(normalized)result.normalization=normalized->finish(staged,job.encoding.format,job.encoding.dither,job.encoding.ditherSeed^counter,[&] {
-            cancellation(control);if(control.serviceHost)control.serviceHost();cancellation(control);
+        result.normalization = delivery.finish([&] {
+            cancellation(control); if (control.serviceHost) control.serviceHost(); cancellation(control);
         });
-        else writer->close();
         cancellation(control);
         detail::publishVerifiedOutput(staged, result, control, "export destination already exists");
     } catch (const Cancelled&) {
@@ -621,6 +651,71 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         result.state = JobState::Failed; result.error = e.what();
     } catch (...) {
         result.state = JobState::Failed; result.error = "unknown exception during export";
+    }
+    return result;
+}
+
+Result convertAudioFile(FileConversion job, Control control) {
+    Result result;
+    try {
+        cancellation(control);
+        validateWavEncoding(job.encoding);
+        if (job.source.empty() || job.directory.empty())
+            throw std::invalid_argument("conversion needs a source and output directory");
+        const auto source = fs::absolute(job.source);
+        const auto sourceId = mediaIdentityAt(source);
+        const auto stem = portableName(job.name.empty() ? media::pathUtf8(source.stem()) : std::move(job.name));
+        result.output = job.directory / media::pathFromUtf8(stem + ".wav");
+        detail::prepareOutput(result, job.collision, ".wav", "conversion destination already exists");
+        if (result.replacement && result.replacement->existing == sourceId)
+            throw std::invalid_argument("conversion cannot replace its input");
+        const auto original = hashMedia(source, control);
+        auto input = audio::openPcmStream(source, control.stop);
+        cancellation(control);
+        if (!input.ready()) throw std::runtime_error("Cannot decode conversion source: " + input.error);
+        const auto info = input.stream->info();
+        validateNormalization(job.normalization, info.sampleRate, static_cast<int>(info.channels));
+
+        Stage stage(job.directory, result);
+        const auto staged = stage.path / "conversion.wav";
+        WavDelivery delivery(staged, info.sampleRate, static_cast<int>(info.channels), job.encoding,
+                             job.normalization, 1);
+        constexpr std::size_t block = 4096;
+        std::vector<float> pcm(block * info.channels);
+        std::vector<double> wide(pcm.size());
+        const auto checkpoint = [&] {
+            cancellation(control);
+            if (control.serviceHost) control.serviceHost();
+            cancellation(control);
+        };
+        for (;;) {
+            checkpoint();
+            const auto read = input.stream->read(pcm, control.stop);
+            cancellation(control);
+            if (read.status == audio::PcmReadStatus::End) break;
+            if (read.status != audio::PcmReadStatus::Frames || read.frames == 0)
+                throw std::runtime_error("Cannot read conversion source: " + input.stream->error());
+            const auto samples = static_cast<std::size_t>(read.frames) * info.channels;
+            for (std::size_t i = 0; i < samples; ++i) {
+                if (!std::isfinite(pcm[i])) throw std::runtime_error("Conversion source contains nonfinite audio");
+                wide[i] = pcm[i];
+            }
+            delivery.write(std::span<const double>(wide.data(), samples), read.frames);
+            result.framesWritten += read.frames;
+            if (control.progress) control.progress(0, result.framesWritten, info.frames.value_or(0));
+        }
+        input.stream.reset();
+        if (result.framesWritten == 0) throw std::runtime_error("Conversion source is empty");
+        result.normalization = delivery.finish(checkpoint);
+        checkpoint();
+        if (mediaIdentityAt(source) != sourceId || hashMedia(source, control) != original || mediaIdentityAt(source) != sourceId)
+            throw std::runtime_error("Conversion source changed before publication");
+        detail::publishOutput(staged, result, control.publicationHooks, "conversion destination already exists");
+    } catch (const Cancelled&) {
+        result.state = JobState::Cancelled;
+    } catch (const std::exception& error) {
+        result.state = JobState::Failed;
+        result.error = error.what();
     }
     return result;
 }

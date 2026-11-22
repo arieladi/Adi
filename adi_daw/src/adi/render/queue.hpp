@@ -179,6 +179,18 @@ struct Control {
     // Per-call, off-callback diagnostic hooks; only the final user output.
     media::PublishHooks publicationHooks{};
 };
+struct FileConversion {
+    std::filesystem::path source;
+    std::filesystem::path directory;
+    std::string name; // empty uses the source stem; the writer adds .wav
+    Encoding encoding;
+    Normalization normalization{};
+    Collision collision = Collision::Fail;
+};
+/// Owner-worker conversion uses the project's normal export delivery pipeline.
+/// It preserves the file's channels and rate and does not open a project.
+[[nodiscard]] Result convertAudioFile(FileConversion, Control = {});
+
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,
                                     std::uint64_t counter = 1);
