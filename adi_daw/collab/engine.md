@@ -32,6 +32,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — joined native validation of the engine heads
+
+Local integration `f41debbd55a4d561efd2904722c2a8823733ad47` combined current MI-08, DF-E63, the same-transaction MIDI API and N63, N64, N67, DF-E55(a), ParamOps, DF-E27(f,g) and DF-E24(a). Its only merge conflict was the owned VST3 test's observer check. The joined check retains both DF-E24(a)'s auxiliary buffer observers and MI-08's completed process counter.
+
+GCC 14 warnings-as-errors passed all 15 joined headless suites. Native GCC and Clang each passed 110 VST3 checks. An additional sounding Session probe passed eight checks, and the expanded MIDI suite passed 582. It created the clip and note together, played a stored Timbre curve, submitted N63's byte-identical delete/reinsert and heard the old voice release and the replacement start with its expression removed. Undo restored the exact AEXP bytes, playback chased the restored 0.75 value, and the final note released at its original sample.
+
+Joined WTS-01 records all 384,000 samples exactly on Auto. Its one failure remains Step 2b, the DF-E64 first 256 playback samples. The remote #677 head still points to `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`; transfer and the combined green gate wait for Win's published reconciliation. The integration commits are local validation only. The individual PR-requested heads remain as logged.
+
 ## 2026-11-22 — DF-E50 built-in automation review
 
 `devices/df-e50` at `854050e33bba4f9b85719c448273e9c40ced128b` is already on main through `40cb0599`. The Engine review confirms Utility's lane is heard live and offline. With a stored +6 dB and a 0 dB lane, the exact native result is 0.250000 in both paths. The current full Built-in Devices suite passes 183 checks with GCC and Clang warnings as errors, and the WTS-01 6b engine exercise hears its scripted Utility change.
