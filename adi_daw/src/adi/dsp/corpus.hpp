@@ -24,10 +24,12 @@
 //   Gain         -36 to +12 dB on the resonance. Dry/Wet 0 to 100 %.
 //
 // The bank hears the input's mono sum. Each mode is a two-pole resonator,
-// y = 2 r cos(w) y1 - r^2 y2 + sin(w) x, whose impulse response is
-// r^n sin((n + 1) w): a unit envelope decaying to -60 dB in its T60. A mode
-// at or above 0.45 of the rate is silent. States settle on exact 0 below
-// 1e-30.
+// y = 2 r cos(w) y1 - r^2 y2 + sin(w) (48 kHz / rate) x: at 48 kHz its
+// impulse response is r^n sin((n + 1) w), a unit envelope decaying to -60 dB
+// in its T60, and at any rate a hit of a given length rings at the same
+// level. The resonance passes a tanh, so a tone held at a mode (which builds
+// up by the mode's Q) stays under full scale. A mode at or above 0.45 of the
+// rate is silent. States settle on exact 0 below 1e-30.
 //
 // WHAT IS NOT LIVE'S YET, and says so: the models' ratios beyond the
 // textbook ones, every law above, the ranges and defaults, and the
