@@ -54,7 +54,14 @@ public:
     void process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept;
 
 private:
-    static constexpr std::size_t kRing = 128;   ///< 0.2 ms at 192 kHz is 38.4 samples, and the four points
+    static constexpr std::size_t kRing = 128;   ///< 0.2 ms at 384 kHz is 76.8 samples, and the four points
+
+public:
+    /// The deepest D, in samples: 2 D and the interpolator's four points stay
+    /// inside the ring (reached only above about 600 kHz).
+    static constexpr double kMaxDepth = (static_cast<double>(kRing) - 5) / 2;
+
+private:
     struct Band {
         double b0 = 0, a1 = 0, a2 = 0, s1 = 0, s2 = 0;   ///< a band pass, b2 = -b0 (transposed DF-II)
         double run(double x) noexcept;
