@@ -20,6 +20,85 @@
 #include <variant>
 
 namespace adi::ui {
+std::optional<FocusLagPreview> focus_lag_detail::measureWide(std::span<const double> a,
+                                                            std::span<const double> b,
+                                                            std::size_t radius, double aEnergy) {
+    const auto fftSize = std::bit_ceil(b.size());
+    dsp::RealFft fft(static_cast<std::int32_t>(fftSize));
+    if (!fft.valid()) return {};
+
+    const auto support = a.size();
+    const auto weight = static_cast<double>(support);
+    const double bMean = std::accumulate(b.begin(), b.end(), 0.) / static_cast<double>(b.size());
+    double aScale = 0., bScale = 0.;
+    for (const auto sample : a) aScale = std::max(aScale, std::abs(sample));
+    for (const auto sample : b) bScale = std::max(bScale, std::abs(sample - bMean));
+    if (bScale < rmsFloor) return {};
+    const double inverseB = 1. / bScale;
+    const auto bValue = [bMean, inverseB](const double sample) { return (sample - bMean) * inverseB; };
+
+    // One product gives every integer lag. A is the fixed interior,
+    // so none of the requested offsets can wrap around the padded B.
+    std::vector<float> frame(fftSize);
+    std::vector<std::complex<float>> product(fftSize / 2 + 1), target(product.size());
+    std::transform(a.begin(), a.end(), frame.begin(),
+                   [aScale](const double sample) { return static_cast<float>(sample / aScale); });
+    const auto aFloatMean = std::accumulate(frame.begin(), frame.begin() + static_cast<std::ptrdiff_t>(support), 0.) / weight;
+    if (!fft.forward(frame, product)) return {};
+    std::transform(b.begin(), b.end(), frame.begin(),
+                   [&](const double sample) { return static_cast<float>(bValue(sample)); });
+    if (!fft.forward(frame, target)) return {};
+    for (std::size_t k = 0; k < product.size(); ++k) product[k] = std::conj(product[k]) * target[k];
+    if (!fft.inverse(product, frame)) return {};
+
+    // Keep corrections across removals so an earlier large sample cannot
+    // consume the variance of a quiet target window that no longer includes it.
+    struct Moment {
+        double sum = 0., correction = 0.;
+        void add(double value) noexcept {
+            const double next = sum + value;
+            correction += std::abs(sum) >= std::abs(value) ? (sum - next) + value : (value - next) + sum;
+            sum = next;
+        }
+        double value() const noexcept { return sum + correction; }
+    };
+    Moment sum, squares;
+    for (std::size_t i = 0; i < support; ++i) {
+        const auto sample = bValue(b[i]);
+        sum.add(sample);
+        squares.add(sample * sample);
+    }
+    const double normalisedA = aEnergy / (aScale * aScale);
+    const double scaledFloor = rmsFloor / bScale;
+    const double minimumEnergy = scaledFloor * scaledFloor * weight;
+    std::vector<double> scores(2 * radius + 1);
+    for (std::size_t offset = 0; offset < scores.size(); ++offset) {
+        const double targetSum = sum.value();
+        const double energy = squares.value() - targetSum * targetSum / weight;
+        if (energy >= minimumEnergy) {
+            const double cross = static_cast<double>(frame[offset]) - aFloatMean * targetSum;
+            scores[offset] = std::clamp(cross / std::sqrt(normalisedA * energy), -1., 1.);
+        }
+        if (offset + 1 < scores.size()) {
+            const auto old = bValue(b[offset]), next = bValue(b[offset + support]);
+            sum.add(-old);
+            sum.add(next);
+            squares.add(-old * old);
+            squares.add(next * next);
+        }
+    }
+    // An ill-conditioned FFT may be unable to separate quiet candidates.
+    // Confirm the proposed offset and current correlation with the raw data.
+    const auto candidate = selectPeak(scores, radius, support);
+    if (!candidate) return {};
+    const auto selected = static_cast<std::size_t>(static_cast<std::int32_t>(radius) + candidate->lagSamples);
+    const double rawFloor = rmsFloor * rmsFloor * weight;
+    scores[selected] = correlationAt(a, b.subspan(selected, support), aEnergy, weight, rawFloor);
+    scores[radius] = correlationAt(a, b.subspan(radius, support), aEnergy, weight, rawFloor);
+    const auto confirmed = selectPeak(scores, radius, support);
+    return confirmed && confirmed->lagSamples == candidate->lagSamples ? confirmed : std::nullopt;
+}
+
 namespace {
 constexpr std::uint32_t allOutputs = SharedAnalysis::Spectrum | SharedAnalysis::Scope | SharedAnalysis::Meters |
                                      SharedAnalysis::Phase | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s |

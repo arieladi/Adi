@@ -1883,12 +1883,12 @@ void focusLagPreviewRequests() {
     invalid.sampleRate = 44100.;
     check(!plan(&main, &invalid), "different device rates are refused");
 
-    for (const auto &pair : {std::pair{44100., 882}, std::pair{96000., 1920}, std::pair{192000., 2016}}) {
+    for (const auto &pair : {std::pair{44100., 882}, std::pair{96000., 1920}}) {
         auto fastMain = main, fastTarget = target;
         fastMain.sampleRate = fastTarget.sampleRate = pair.first;
         const auto faster = plan(&fastMain, &fastTarget);
         check(faster && faster->maxLagSamples == pair.second,
-              "the 20 ms search is rounded in device samples and capped by the worker's fixed support");
+              "the low-rate 20 ms search is rounded in device samples");
     }
     for (const auto rate : {0., 1., std::numeric_limits<double>::infinity(),
                             std::numeric_limits<double>::quiet_NaN()}) {
@@ -2259,6 +2259,129 @@ void focusLagTapReads() {
     request.sources[1].generation = b->generation();
     request.heardEnd = end + 64;
     focusLagWorkerJob(request, a, b);
+}
+void focusLagHighRateTaps() {
+    using namespace adi::ui;
+    using Status = SharedAnalysis::FocusLagStatus;
+    constexpr std::int64_t first = 1100000;
+    constexpr std::uint64_t revision = 43;
+    for (const auto rate : {192000., 768000.}) {
+        const auto radius = static_cast<std::int32_t>(std::lround(.020 * rate));
+        const auto frameCount = static_cast<std::int32_t>(rate / 8.);
+        std::vector<float> main(static_cast<std::size_t>(frameCount)), target(main.size());
+        std::uint32_t noise = 0x7c612889u;
+        for (auto &sample : main) {
+            noise = noise * 1664525u + 1013904223u;
+            sample = static_cast<float>(noise >> 16) / 65536.f - .5f;
+        }
+        const auto a = std::make_shared<ScopeTap>(rate, .25);
+        const auto b = std::make_shared<ScopeTap>(rate, .25);
+        const auto write = [&](std::int64_t stamp, std::uint64_t epoch, std::int32_t lag, float polarity,
+                               float leadingOutlier = 0.f) {
+            for (std::int32_t i = 0; i < frameCount; ++i) {
+                const auto from = i - lag;
+                target[static_cast<std::size_t>(i)] = from >= 0 && from < frameCount
+                    ? polarity * main[static_cast<std::size_t>(from)] : 0.f;
+            }
+            if (leadingOutlier != 0.f) target[static_cast<std::size_t>(frameCount - 4 * radius)] = leadingOutlier;
+            a->write(main.data(), nullptr, frameCount, stamp, true, epoch);
+            const auto split = frameCount / 3;
+            b->write(target.data(), nullptr, split, stamp, true, epoch);
+            b->write(target.data() + split, nullptr, frameCount - split, stamp + split, true, epoch);
+        };
+        const auto plan = [&](std::int64_t stamp, std::uint64_t epoch) {
+            // The ordinary spectrum windows only witness the common heard end.
+            // The worker must obtain the longer interval from both stamped taps.
+            std::array<SharedAnalysis::Result, 2> windows;
+            const std::array taps{a, b};
+            std::array<SharedAnalysis::Lease::SourcePosition, 2> heads;
+            for (std::size_t side = 0; side < taps.size(); ++side) {
+                auto &window = windows[side];
+                window.request.track = side == 0 ? 1 : 2;
+                window.request.fftSize = 1024;
+                window.windowSerial = 1;
+                window.firstStamp = stamp + frameCount - window.request.fftSize;
+                window.firstSequence = taps[side]->written() - window.request.fftSize;
+                window.generation = taps[side]->generation();
+                window.sampleRate = rate;
+                window.advancing = true;
+                window.transportRevision = epoch;
+                heads[side] = {window.generation, taps[side]->written()};
+            }
+            return focusLagPreviewRequest({&windows[0], &windows[1]}, heads, epoch, stamp + frameCount);
+        };
+
+        const bool maximumRate = rate == 768000.;
+        const auto lag = maximumRate ? 137 - radius : radius - 137;
+        write(first, revision, lag, maximumRate ? -1.f : 1.f);
+        const auto request = plan(first, revision);
+        check(request && request->maxLagSamples == radius &&
+                  request->firstStamp == first + frameCount - 4 * radius,
+              "high-rate Align plans the whole 20 ms search with 40 ms of common support");
+        if (!request) continue;
+        if (maximumRate) {
+            a->write(static_cast<const float *>(nullptr), nullptr, 32, first + frameCount, true, revision);
+            const auto preview = focusFindLagOnTaps(*request, {a, b});
+            check(preview && preview->lagSamples == lag && preview->correlation < -.99999 &&
+                      a->written() == frameCount + 32 && b->written() == frameCount,
+                  "768 kHz recovers the exact negative lag and inverted polarity from unequal continuous heads");
+
+            auto wrongRate = std::make_shared<ScopeTap>(384000., .25);
+            wrongRate->write(target.data(), nullptr, frameCount, first, true, revision);
+            auto mixed = *request;
+            mixed.sources[1].generation = wrongRate->generation();
+            check(!focusFindLagOnTaps(mixed, {a, wrongRate}), "the high-rate path refuses a mixed-rate tap pair");
+
+            const auto later = first + 3 * frameCount;
+            write(later, revision + 1, radius, 1.f);
+            const auto edge = plan(later, revision + 1);
+            check(edge && !focusFindLagOnTaps(*edge, {a, b}),
+                  "a strongest peak on the high-rate search boundary is refused");
+
+            for (std::size_t i = 0; i < main.size(); ++i)
+                main[i] = static_cast<float>(i % 127) / 127.f - .5f;
+            write(later + frameCount, revision + 2, lag, 1.f);
+            const auto periodic = plan(later + frameCount, revision + 2);
+            check(periodic && !focusFindLagOnTaps(*periodic, {a, b}),
+                  "multiple equal high-rate alignment peaks do not produce an offset");
+            continue;
+        }
+
+        SharedAnalysis broker(
+            [&](adi::engine::ScopeSource source, double) -> std::shared_ptr<const ScopeTap> {
+                return source.track == 1 ? a : b;
+            }, [](adi::engine::ScopeSource) {}, SharedAnalysis::Mode::Manual);
+        auto mainLease = broker.acquire({1});
+        auto targetLease = broker.acquire({2});
+        check(mainLease.available() && targetLease.available(), "both high-rate worker sources are already leased");
+        auto measured = broker.requestFocusLag(*request);
+        broker.pump();
+        const auto ready = measured.read();
+        check(measured && measured.status() == Status::Ready && ready && ready->lagSamples == lag &&
+                  ready->correlation > .99999,
+              "the 192 kHz worker publishes the exact positive lag outside the old range");
+
+        auto stale = broker.requestFocusLag(*request);
+        const auto afterSeek = first + 3 * frameCount;
+        write(afterSeek, revision + 1, -lag, 1.f);
+        broker.pump();
+        check(stale && stale.status() == Status::Refused && !stale.read(),
+              "a high-rate seek refuses a pending request from the previous transport revision");
+        const auto fresh = plan(afterSeek, revision + 1);
+        auto recovered = fresh ? broker.requestFocusLag(*fresh) : SharedAnalysis::FocusLagLease{};
+        broker.pump();
+        const auto next = recovered.read();
+        check(recovered && recovered.status() == Status::Ready && next && next->lagSamples == -lag &&
+                  next->correlation > .99999,
+              "the same high-rate taps can measure a new heard interval after the seek refusal");
+
+        for (auto &sample : main) sample *= 5.e-6f;
+        write(afterSeek + frameCount, revision + 2, lag, 1.f, 10000.f);
+        const auto quiet = plan(afterSeek + frameCount, revision + 2);
+        const auto quietPreview = quiet ? focusFindLagOnTaps(*quiet, {a, b}) : std::nullopt;
+        check(quietPreview && quietPreview->lagSamples == lag && quietPreview->correlation > .99999,
+              "an outlier outside the winning window does not erase its quiet target variance");
+    }
 }
 void parkedSilence() {
     Fixture f;
@@ -3909,7 +4032,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
-          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
