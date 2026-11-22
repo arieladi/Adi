@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, EX-04 project-rate capture and SoXR downsampling
+
+**PR requested** — `engine-win/export-project-rate` `44f34b96` on main `87ea349c`, after 3 December. Pins SoXR 0.1.3 to `945b592b70470e29f917f4de89b4281fbbd540c0` (LGPL-2.1-or-later). The explicit ProjectThenDownsample policy keeps a lower-rate export's graph and devices at the saved project rate. It streams the compensated selection through SoXR VHQ double before encoding and normalization. Higher-rate jobs still process at delivery rate. The requested bounds, output frame count and both rates remain observable. MSVC /W4 /WX passed 440 render, 143 WAV and 85 NI Stems checks (native AAC unavailable). The 48-to-44.1 kHz test verified correct FX preparation rate, compensation, exact 2301 output frames and identical samples across two block partitions.
+
+**Needs Win/window-fn:** the dependency fetch and default policy wiring after the independent EX-04 patches land. This uses nearest project sample for the selection origin, rounds the source span up and trims any extra delivery frame. SoXR currently sees the finite selected render, so filter behavior around the edges still needs the M6-A6G-010 Live comparison. This patch does not enable cross-format multiple deliveries.
+
 ## 2026-11-22, EX-04 MPEG-1 CBR MP3
 
 **PR requested** — `engine-win/export-mp3-cbr` `46d8c712` on main `87ea349c`, after 3 December. LAME 3.100 is archive-pinned to SHA-256 `ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e` (LGPL-2.0-or-later). LAME gets undithered interleaved doubles and emits MPEG-1 Layer III 320 CBR with an Info tag. Publication waits for all frames to pass header checks and a complete dr_mp3 read of the original length. The Win /W4 /WX build passed 436 render, 143 WAV and 85 NI Stems checks (native AAC unavailable). MP3 exercised 48 kHz stereo and 44.1 kHz mono, exact trimmed duration, and identical bytes after changing project block partition and PCM dither settings. An independent ffmpeg probe also decoded a 4201-frame direct LAME fixture to 4201 frames.
