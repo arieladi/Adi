@@ -29,10 +29,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace adi;
@@ -519,11 +521,13 @@ public:
         return {"chunk"};
     }
     [[nodiscard]] std::vector<std::uint8_t> saveState(const std::string& role) const override {
+        if (refuseSave) return {};
         if (stateless || role != "chunk") return {};
         std::vector<std::uint8_t> b(1 + 2 * sizeof(double));
         b[0] = static_cast<std::uint8_t>(patch_);
         std::memcpy(b.data() + 1, &values_[0], sizeof(double));
         std::memcpy(b.data() + 1 + sizeof(double), &values_[1], sizeof(double));
+        if (auto edit = std::exchange(afterSave, {})) edit();
         return b;
     }
     bool loadState(const std::string& role, const std::vector<std::uint8_t>& b) override {
@@ -557,8 +561,11 @@ public:
         broadcastParam(i, ParamEventKind::End, 0.0);
     }
     [[nodiscard]] int patch() const noexcept { return patch_; }
+    void changePatchSilently(int value) noexcept { patch_ = value; }
 
     bool stateless = false;
+    bool refuseSave = false;
+    mutable std::function<void()> afterSave;
     int sets = 0;
     int loads = 0;
 
@@ -944,6 +951,112 @@ void testTheStateLoopThroughTheJournal() {
     }
 }
 
+void testSnapshotAll() {
+    section("PD-03 -- save every silent changed device before a snapshot or close");
+    const adi::test::TempDirectory scratch("param_ops", "snapshot_all");
+    StoreError error = StoreError::Ok;
+    auto store = Store::createEmpty(scratch.path() / "p.adi", error);
+    check(store != nullptr, "create snapshot project");
+    if (!store) return;
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1);"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','silent.sampler','Sampler','instrument');"
+        "INSERT INTO device_chains(id,track_id) VALUES(10,1);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES"
+        "(100,10,0,1,'Sampler A'),(101,10,1,1,'Sampler B');");
+    Session session;
+    const auto loader = [](const DeviceRequest&, std::string&) -> std::unique_ptr<device::DeviceInstance> {
+        return std::make_unique<Sampler>();
+    };
+    check(session.load(*store, loader, SessionSpec{}), "load snapshot Session");
+    auto* a = dynamic_cast<Sampler*>(session.instanceFor(100));
+    auto* b = dynamic_cast<Sampler*>(session.instanceFor(101));
+    if (!a || !b) {
+        check(false, "resolve both hosted samplers");
+        return;
+    }
+    ParamOps ops;
+    eqi(static_cast<long long>(ops.attachSession(session)), 2, "attach both loaded samplers");
+    const auto rowHash = [&](std::int64_t id) {
+        SQLite::Statement row(store->db(), "SELECT state_hash FROM plugin_state WHERE device_id=? AND stream_role='chunk'");
+        row.bind(1, id);
+        return row.executeStep() ? row.getColumn(0).getString() : std::string{};
+    };
+    const auto count = [&] {
+        return store->db().execAndGet("SELECT count(*) FROM ops WHERE op_type='device.loadState'").getInt();
+    };
+
+    const auto first = ops.snapshotAll(1000);
+    check(first.ok() && first.journalOps == 2 && first.stateOps == 2 && count() == 2 &&
+          rowHash(100) == hashOfState(*a) && rowHash(101) == hashOfState(*b),
+          "first save writes one missing state row per attached device");
+    a->changePatchSilently(7);
+    const auto atSnapshot = ops.snapshotAll(1100);
+    check(a->stateEpoch() == 0 && atSnapshot.ok() && atSnapshot.journalOps == 1 &&
+          atSnapshot.stateOps == 1 && count() == 3 && rowHash(100) == hashOfState(*a),
+          "Take Snapshot saves even unsignalled edits and writes one changed chunk");
+    const auto named = History(*store).takeSnapshot("Snapshot with patch 7", 1000000, 0);
+    check(named.ok, "named history point follows the durable device state");
+
+    a->changePatchSilently(9);
+    b->changePatchSilently(4);
+    const auto beforeClose = ops.snapshotAll(1200);
+    check(a->stateEpoch() == 0 && b->stateEpoch() == 0 && beforeClose.ok() && beforeClose.journalOps == 2 &&
+          beforeClose.stateOps == 2 && count() == 5 && rowHash(100) == hashOfState(*a) &&
+          rowHash(101) == hashOfState(*b),
+          "close saves one changed chunk for each of two silent devices");
+    check(a->loads == 0 && b->loads == 0, "capturing state does not load a chunk into either live device");
+
+    const auto unchanged = ops.snapshotAll(1300);
+    check(unchanged.ok() && unchanged.journalOps == 0 && unchanged.stateOps == 0 && count() == 5,
+          "unchanged complete capture succeeds without appending history");
+
+    const auto prior = rowHash(100);
+    a->changePatchSilently(12);
+    a->refuseSave = true;
+    const auto refused = ops.snapshotAll(1400);
+    check(!refused.ok() && refused.status.error == gesture::Error::CaptureFailed && refused.failedDevice == 100 &&
+          refused.journalOps == 0 && count() == 5 && rowHash(100) == prior,
+          "refused bytes are a capture failure with a device receipt");
+    a->refuseSave = false;
+    const auto retried = ops.snapshotAll(1500);
+    check(retried.ok() && retried.stateOps == 1 && count() == 6 && rowHash(100) == hashOfState(*a),
+          "once capture resumes, retry saves the same silent edit once");
+
+
+    const auto beforeRefusal = rowHash(100);
+    a->changePatchSilently(15);
+    store->db().exec("CREATE TEMP TRIGGER fail_snapshot_insert BEFORE INSERT ON ops "
+                     "WHEN NEW.op_type='device.loadState' "
+                     "BEGIN SELECT RAISE(ABORT, 'test snapshot commit refusal'); END");
+    const auto commitRefused = ops.snapshotAll(1600);
+    check(!commitRefused.ok() && commitRefused.status.error == gesture::Error::CommitRefused &&
+          commitRefused.failedDevice == 100 && commitRefused.journalOps == 0 &&
+          count() == 6 && rowHash(100) == beforeRefusal,
+          "journal refusal leaves prior saved bytes and reports failure before publication");
+    const auto retained = ops.pendingGestures();
+    store->db().exec("DROP TRIGGER fail_snapshot_insert");
+    if (retained.size() != 1 || !retained.front().owner) {
+        check(false, "refused snapshot retains its owner and exact captured state");
+        return;
+    }
+    const auto resumed = ops.retryPendingCommit(*retained.front().owner, 1700);
+    check(resumed.status.ok() && resumed.durable && resumed.durable->ok &&
+          count() == 7 && rowHash(100) == hashOfState(*a),
+          "explicit journal retry saves the retained snapshot once");
+
+    a->changePatchSilently(21);
+    const auto captured = hashOfState(*a);
+    a->afterSave = [&] { a->changePatchSilently(22); };
+    const auto concurrent = ops.snapshotAll(1800);
+    check(concurrent.ok() && concurrent.stateOps == 1 && count() == 8 && rowHash(100) == captured &&
+          a->stateEpoch() == 0 && a->patch() == 22 && a->loads == 0,
+          "saving the sampled state does not restore it over a later silent device edit");
+    const auto latest = ops.snapshotAll(1900);
+    check(latest.ok() && latest.stateOps == 1 && count() == 9 && rowHash(100) == hashOfState(*a),
+          "the later silent edit is saved at the next explicit request");
+}
+
 }  // namespace
 
 int main() {
@@ -961,6 +1074,7 @@ int main() {
     testAppliedMovesTheBaselineWithoutAnEcho();
     testRowsFollowTheChunk();
     testASaveWritesTheFirstRow();
+    testSnapshotAll();
     testAStatelessDeviceWritesItsMoves();
     testAnUndoneChunkReseedsTheCapture();
     testTheStateLoopThroughTheJournal();

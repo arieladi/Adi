@@ -200,6 +200,21 @@ public:
     std::size_t snapshot(std::int64_t deviceId, std::int64_t nowMs,
                          std::vector<OpRequest>& out);
 
+    struct SnapshotAllResult {
+        gesture::Status status;
+        std::optional<std::int64_t> failedDevice;
+        std::size_t journalOps = 0;
+        std::size_t stateOps = 0;
+        [[nodiscard]] bool ok() const noexcept { return status.ok(); }
+    };
+
+    /// Owner thread, after attachSession. Resolve completed captured gestures,
+    /// then durably save live device state without relying on stateEpoch.
+    /// Successful zero journalOps means unchanged. Failure reports the
+    /// refused device when available and counts any prior durable writes.
+    /// Call before publishing a named snapshot, copying or closing the Store.
+    [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs);
+
     /// Session-bound: copy the first offered group's retained resources.
     /// Taking/dropping this copy cannot release common ownership. Standalone:
     /// move out the legacy blob staging vector for caller installation.
