@@ -183,7 +183,11 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
     // fast: there the fine difference slopes with the energy and pulls the
     // walk, so its period must stay within 1.5 samples of the coarse dip. A
     // sung vibrato's tremolo (+-50 % amplitude keeps every quarter above
-    // 13 %), a glide or a steady level keeps the walk.
+    // 13 %), a glide or a steady level keeps the walk. The rule errs toward
+    // dropping a reading (a tuner holds, Auto Shift keeps its correction)
+    // over showing a wrong one: an E1 dying in 40 ms keeps 4 of 14 readings
+    // at 48 kHz, a vibrato under 80 % tremolo a half to two thirds, the
+    // worst error unchanged.
     double quietest = 1e300, loudest = 0;
     for (std::size_t k = 0; k < 4; ++k) {
         const double n = static_cast<double>(size_ / 4), q = squares[k] - sum[k] * sum[k] / n;
