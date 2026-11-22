@@ -126,6 +126,12 @@ Parked device DSP switches with the devices seat and the Live policy for overlap
 
 - DEV-19 competing clip scales. I recommend the project fallback while simultaneous Arrangement clips disagree. Please include a Live reading with two local clips, a local clip overlapping an inheriting clip, and incoming played notes over each.
 
+### 22 November — DEV-24 / MX-28 physical audio callback load
+
+**PR requested** for `engine/dev24-callback-load-meter` at `72679a12103aedde0a42625e106ddc75d989eb0c` from main. The driver core times the processor once per physical callback and divides by the budget from the actual frame count and granted rate. The owner can read a coherent current and average load plus the count of observed over-budget callbacks through DeviceBridge's existing core accessor. The average uses a 250 ms time constant. Real driver XRuns remain a separate reading.
+
+GCC 14 and Clang 19 strict builds each passed 246 checks across three suites. A controlled driver fixture measures 50%, 150% and 100%, exercises a sample-rate change and an oversized refusal, and verifies the callback's allocation and floating-point control contracts. Window meter controls and Live's overload presentation await the owning seat. Per-track node timing is next.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
