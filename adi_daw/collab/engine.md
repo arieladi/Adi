@@ -36,6 +36,11 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PLAN dependencies for the decode index and source memo
+
+- **Parked PD-04 index, engine-win.** The decode index is rewritten on each cache hit under the cache mutex. On 300 local tiny index updates, the existing close-and-rename measured p50 139 us and p99 534 us. The shared durable replacement measured p50 1,042 us and p99 6,922 us. The held-lease regression also showed the existing writer can replace a held index on POSIX. Recommend an explicit optional-cache path in the shared publisher that preserves atomic replacement and refusal semantics with optional sync. The normal cache writer stays in place while engine-win owns that API.
+- **Parked TM-MD-03 integration, engine-win/Win.** The standalone source hash memo is ready at `03c440ab`. Connecting it to decode, plain and warped playback follows landing that interface and the audio-path ownership handoff.
+
 ## 2026-11-22 — DF-E35(a) and CT-01 review, DF-E17 updated — PR requested
 
 - Reviewed engine-win's take projection at `430ea825` and literal EditScope at `4c2b07f3`. The snapshot keeps main readers on the main row and includes the lane in take-node reuse. Move, trim, resize and delete respect the literal take scope. Both seats agree that a same-track move keeps the lane and a cross-track move requires an explicit detach, move and attach in one journal transaction.
