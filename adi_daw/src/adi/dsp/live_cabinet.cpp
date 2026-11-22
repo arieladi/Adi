@@ -29,7 +29,13 @@ void LiveCabinet::set(Param p, double v) noexcept {
     }
     const auto& r = ranges[static_cast<std::size_t>(index)];
     const bool whole = index == Cabinet || index == Microphone || index == MicType || index == Dual;
+    const bool wasDual = p_[Dual] >= 0.5;
     p_[static_cast<std::size_t>(index)] = std::clamp(whole ? std::round(v) : v, r.low, r.high);
+    if (index == Dual && !wasDual && p_[Dual] >= 0.5) {
+        // The right cabinet sat still while Mono ran the left alone: it
+        // starts from the left's state, not its own from before.
+        state_[1] = state_[0];
+    }
     update();
 }
 
