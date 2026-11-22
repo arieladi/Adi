@@ -8,7 +8,7 @@ device PRs do not conflict on one shared log file.
 ## FOR THE DIRECTOR
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 30 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 31 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -148,6 +148,9 @@ method); Live's files and renders stay in the director's research.
     line's Freq, Width, time and pan).
     - An impulse through one line, its band off, then on: the echo times and the band's shape.
     - Where the band sits (on the input or in the loop); a time change: a glide or a jump.
+31. **External Audio Effect (the engine's build, after 3 December).** A fresh External Audio Effect, as
+    shown: Gain's range and default, Hardware Latency's range and steps, the Audio To and Audio From
+    lists. With a loop-back cable and Dry/Wet 50 %: does the dry meet the return, or arrive early?
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -162,6 +165,25 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — standing queue item 21: External Audio Effect's canvas and panel contract — lands after 3 December
+
+**PR requested:** head `devices/ext-audio-effect-contract` (4054d859, cut from `main`), base `main`. One file,
+`pd/devices/External Audio Effect.md`.
+- **The canvas.** It passes the dry signal at unity with 0 latency on the Pd path. The engine's node
+  takes its place, recognised by the canvas's bytes.
+- **The controls and ids:** 1 Gain, 2 Dry/Wet, 3 Hardware Latency, 4 its unit (display only),
+  5 Invert. Audio To and Audio From are routing rows the engine owns. They are not parameters.
+- **The latency fields:** the hardware's own, the interface's round trip, and the engine's block. Their
+  total is reported while bypassed, and the dry is delayed to meet the return.
+- **The hand-off to the engine (MX-24, DEV-05):**
+  - the routing rows, and the node;
+  - compensation;
+  - a broken path that reports itself;
+  - real-time renders;
+  - the meters (the same publishing need as the Tuner's reading).
+- **The tests the build must carry.**
+- **Reading 31, added to the ONE list.**
 
 ## 2026-11-22 — standing queue item 20: Erosion, Vinyl Distortion and Filter Delay, cores and devices — land after 3 December
 
