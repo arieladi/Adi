@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, after the standing queue
+
+- **Parked DEV-26 native acceptance:** the installed ADI-Q binary is 0.2.2. ADI-L and ADI-Clip were absent from the installed VST3 directory. The exact three workstation builds are needed for the PLAN acceptance; the scanner and normal plug-in path already have code.
+- **Parked M3 release gates:** TM-MD-01/04/05 wait on the media ADR/ordered held work and engine audio-path ownership. PD-01/03 snapshot callers are engine/window; PD-04's dead-stage recovery needs the PD-05 session lease and Win's held publication integration.
+- **Taking EX-02 next:** export's direct taps can use the engine's existing offline tap resolver. ViaMain audibility remains an engine dependency.
+
 ## 2026-11-22, CT-04 engine take-comp splice
 
 **PR requested** — `engine-win/comp-take-splice` `2d911206` on main `87ea349c` and CT-01 `4c2b07f3`, for the after-3-December window. A literal audio or MIDI take range within one known take uses the existing immutable clip image, clock trimming and placement planner. It replaces the matching range on the same track's main lane with one guarded arranger.splice. Take name and media/clip-local data are retained, with no persisted provenance field and no track-automation edit. The four native Windows /W4 /WX suites passed 1,631 checks, including two actual audio takes, exact PCM and identical Undo/Redo. The engine reviews the edit-plan hunk. Window-fn can bind the gesture and derive highlights from the current source and main copies.
