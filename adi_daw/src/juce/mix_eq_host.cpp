@@ -191,10 +191,24 @@ public:
         }
         const ReactivationGate::Hold hold(gate_);
         prepared_=false;
+        tailRevision_.store(0, std::memory_order_release);
         refresh();backend_->prepare(rate,maximum,channels_,settings(cached_));
         sampleRate_=rate;maximum_=maximum;preparedWidth_=handedWidth_;prepared_=true;publishLatency(backend_->advertisedLatency());
     }
-    void release() override {const ReactivationGate::Hold hold(gate_);prepared_=false;backend_->release();}
+    void release() override {
+        const ReactivationGate::Hold hold(gate_);
+        prepared_=false;
+        tailRevision_.store(0, std::memory_order_release);
+        backend_->release();
+    }
+    void setOffline(bool offline) noexcept override { offline_.store(offline, std::memory_order_release); }
+    std::int64_t tailSamples() const noexcept override {
+        const auto proof = tailRevision_.load(std::memory_order_acquire);
+        if (proof && proof - 1 == revision_.load(std::memory_order_acquire) &&
+            !offline_.load(std::memory_order_acquire))
+            return 0;
+        return engine::kInfiniteTail;
+    }
     std::int32_t latencySamples() const noexcept override {return latency_.load(std::memory_order_acquire);}
     std::uint64_t latencyEpoch() const noexcept override {return latencyEpoch_.load(std::memory_order_acquire);}
     void pumpMainThread() override {
@@ -319,7 +333,10 @@ private:
         std::array<Sample*,2> main{};std::array<const Sample*,2> key{};
         for(int ch=0;ch<channels_;++ch) {
             const auto c=static_cast<std::size_t>(ch);
-            if(!output[ch])return;
+            if (!output[ch]) {
+                tailRevision_.store(0, std::memory_order_release);
+                return;
+            }
             main[c]=output[ch]+io.blockOffset;
             const auto* source=input&&input[ch]?input[ch]+io.blockOffset:nullptr;
             if(source!=main[c]){if(source)std::copy_n(source,io.frames,main[c]);else std::fill_n(main[c],io.frames,Sample{});}
@@ -327,6 +344,11 @@ private:
         }
         backend_->process(main.data(),side?key.data():nullptr,side?channels_:0,io.frames,desired,
                           io.renderBlock,io.configuredLatency);
+        // Only the audio owner publishes the revision just processed. A newer
+        // owner edit invalidates that witness and wakes even on silent input.
+        const auto proof = !io.exporting && backend_->provesZeroTail() ? cachedRevision_ + 1 : 0;
+        if (tailRevision_.load(std::memory_order_relaxed) != proof)
+            tailRevision_.store(proof, std::memory_order_release);
     }
     Values readValues() const noexcept {
         Values result{};for(std::size_t i=0;i<count;++i)result[i]=values_[i].load(std::memory_order_acquire);return result;
@@ -347,6 +369,8 @@ private:
     Values cached_{};std::uint64_t cachedRevision_=0;
     std::atomic<std::uint64_t> stateVersion_{0},revision_{0},latencyEpoch_{0};
     std::atomic<std::int32_t> latency_{0};Payload extra_=Payload::object();
+    std::atomic<std::uint64_t> tailRevision_{0};
+    std::atomic<bool> offline_{false};
 };
 } // namespace
 std::unique_ptr<DeviceInstance> makeMixEqFunction(const engine::DeviceRequest& request,std::string& error,

@@ -278,6 +278,20 @@ void cleanGraphSuspension() {
                                                              unsuspended[channel][i]));
     check(produced == restarted && peakDifference <= 1.e-7 && graph.stats().nodesSuspended == awake + 5,
           "Clean wakes on the first sample with fresh state within float tolerance of uninterrupted DSP");
+
+    device->setOffline(true);
+    check(node.tailSamples() == engine::kInfiniteTail,
+          "offline Clean keeps processing after the same silent interval that suspends in realtime");
+    programme.value = 0.f;
+    const auto suspendedBeforeRender = graph.stats().nodesSuspended;
+    for (std::int64_t i = 0; i < tailBlocks + 5; ++i) {
+        render();
+        continuousRender();
+    }
+    check(graph.stats().nodesSuspended == suspendedBeforeRender && produced == unsuspended,
+          "offline Clean runs beyond the realtime tail and preserves digital silence");
+    device->setOffline(false);
+    check(node.tailSamples() == tail, "returning to realtime restores the prepared Clean tail");
     check(allocations.load() == alloc && frees.load() == free, "drain, suspend, and wake allocate or free no DSP storage");
 }
 void thresholdEditWhileSuspended() {
