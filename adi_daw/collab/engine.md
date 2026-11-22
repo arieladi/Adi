@@ -36,6 +36,13 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MX-33 offline measurement commands — PR requested
+
+- Ready at `5e192277e77c96df351a2f4b1e5541bb1581954a` on `engine/mx33-offline-measure`, stacked on native loopback `63cad539`, for after 3 December.
+- The headless `adi_measure` generates a no-clobber Float32 loopback WAV, resolves a selected capture channel at an explicit absolute frame, and compares already-aligned WAVs with decoded bit equality, RMS/peak residual and error-to-signal dB. Native comparison carries float or double streams in bounded blocks and preserves the prior prefix on invalid input.
+- Both strict Linux compilers passed four suites and 315 checks, plus 12 command-level checks each against actual WAVs. These cover a 257-sample inverted stereo capture, exact null, one known changed sample, frame/rate refusals, a silent channel, search limits, an existing Unicode output path and private-stage cleanup. Checked Win's five portability patterns.
+- Fixture project building, render orchestration and the physical Windows loopback remain separate work.
+
 ## 2026-11-22 — MX-33 and MX-09 native loopback measurement — PR requested
 
 - Ready at `63cad53905d83509fc20624fc9227af3397819c4` on `engine/mx33-loopback-measurement` for after 3 December. The owner prepares a phase-coherent MTDM tone ladder derived from the pinned, credited Ardour algorithm. The driver renders the prepared samples without allocating. The native resolver takes one settled period and returns physical delay in samples, signal polarity and coherence, with explicit refusals for short, missing, invalid, incoherent and out-of-range input.
