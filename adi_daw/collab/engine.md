@@ -36,6 +36,10 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-14 / DF-E40(b) parked
+
+Pd reset and MIDI-effect patches wait on Win's ADR for patch kinds, Consume semantics and [clone] voice ownership.
+
 ## 2026-11-22 — TM-SV-01 engine Global Quantization
 
 **PR requested.** `engine/tm-sv01-launch-quantization` at `a676ca80c1e14a0d2e0b4f26121815073fc5789b`, based on main `87ea349c`. Title **Add saved Global Quantization and sample-accurate locates**. Lands behind the rack, macro, modulation and rack-import rows in the standing queue.
