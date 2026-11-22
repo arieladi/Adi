@@ -29,16 +29,26 @@ void target(SQLite::Database& db,std::int64_t id) {
     SQLite::Statement track(db,"SELECT kind FROM tracks WHERE id=?");track.bind(1,id);
     if(!track.executeStep() || track.getColumn(0).getString()!="return")throw std::runtime_error("send tap belongs to a return track");
 }
-Payload state(SQLite::Database& db,std::int64_t id) {
+Payload state(SQLite::Database& db,std::int64_t id,bool includeIndividual=false) {
     Payload result={{"choice",nullptr},{"routes",Payload::array()}};
     SQLite::Statement preference(db,"SELECT pre_fader FROM return_send_taps WHERE track_id=?");preference.bind(1,id);
     if(preference.executeStep())result["choice"]=preference.getColumn(0).getInt()!=0;
     SQLite::Statement edges(db,"SELECT id,pre_fader FROM routing WHERE kind='send' AND dst_kind='track' AND dst_id=? ORDER BY id");edges.bind(1,id);
     while(edges.executeStep())result["routes"].push_back({{"id",edges.getColumn(0).getInt64()},{"pre",edges.getColumn(1).getInt()!=0}});
+    if (includeIndividual) {
+        result["individual"]=Payload::array();
+        SQLite::Statement rows(db,
+            "SELECT tap.* FROM routing_send_taps tap JOIN routing r ON r.id=tap.routing_id "
+            "WHERE r.kind='send' AND r.dst_kind='track' AND r.dst_id=? ORDER BY tap.routing_id");
+        rows.bind(1,id);
+        while (rows.executeStep())
+            result["individual"].push_back(detail::captureQueryRow(rows));
+    }
     return result;
 }
 std::set<std::int64_t> edgeIds(const Payload& image) {
-    if(!image.is_object() || image.size()!=2 || (!image.at("choice").is_null() && !image.at("choice").is_boolean()) || !image.at("routes").is_array())throw std::runtime_error("invalid return tap image");
+    const bool individual=image.contains("individual");
+    if(!image.is_object() || image.size()!=(individual?3u:2u) || (!image.at("choice").is_null() && !image.at("choice").is_boolean()) || !image.at("routes").is_array())throw std::runtime_error("invalid return tap image");
     std::set<std::int64_t> ids;std::optional<std::int64_t> previous;
     for(const auto& edge:image.at("routes")) {
         if(!edge.is_object() || edge.size()!=2 || !edge.at("pre").is_boolean())throw std::runtime_error("invalid return tap edge image");
@@ -46,11 +56,25 @@ std::set<std::int64_t> edgeIds(const Payload& image) {
         if(previous && id<=*previous)throw std::runtime_error("return tap edge image must be ordered and unique");
         previous=id;ids.insert(id);
     }
+    if (individual) {
+        if (!image.at("individual").is_array()) throw std::runtime_error("invalid individual return tap image");
+        previous.reset();
+        for (const auto& row:image.at("individual")) {
+            const auto id=detail::signedInteger(row.at("routing_id"));
+            if (!ids.contains(id) || (previous && id<=*previous) ||
+                !parseIndividualTap(row.at("tap").get<std::string>()))
+                throw std::runtime_error("individual return tap image has an invalid edge");
+            previous=id;
+        }
+    }
     return ids;
 }
 void validateRestore(SQLite::Database& db,std::int64_t id,const Payload& restore) {
     if(!restore.is_object() || restore.size()!=2 || edgeIds(restore.at("current"))!=edgeIds(restore.at("target")))throw std::runtime_error("return tap restore changes its edge set");
-    if(state(db,id)!=restore.at("current"))throw std::runtime_error("return tap or incoming edge set changed before restore");
+    const bool individual=restore.at("current").contains("individual");
+    if (individual!=restore.at("target").contains("individual") ||
+        state(db,id,individual)!=restore.at("current"))
+        throw std::runtime_error("return tap or incoming edge set changed before restore");
 }
 void write(SQLite::Database& db,std::int64_t id,const Payload& image) {
     if(image.at("choice").is_null()) {
@@ -62,21 +86,81 @@ void write(SQLite::Database& db,std::int64_t id,const Payload& image) {
         SQLite::Statement update(db,"UPDATE routing SET pre_fader=? WHERE id=?");update.bind(1,edge.at("pre").get<bool>()?1:0);update.bind(2,detail::signedInteger(edge.at("id")));
         if(update.exec()!=1)throw std::runtime_error("incoming return edge disappeared");
     }
+    if (image.contains("individual")) {
+        SQLite::Statement erase(db,
+            "DELETE FROM routing_send_taps WHERE routing_id IN "
+            "(SELECT id FROM routing WHERE kind='send' AND dst_kind='track' AND dst_id=?)");
+        erase.bind(1,id);
+        erase.exec();
+        for (const auto& row:image.at("individual"))
+            detail::restoreRow(db,"routing_send_taps",row);
+    }
+}
+bool clickSelectsPre(const Payload& before) {
+    std::map<std::int64_t,IndividualSendTap> overrides;
+    for (const auto& row:before.at("individual")) {
+        const auto tap=parseIndividualTap(row.at("tap").get<std::string>());
+        if (!tap) throw std::runtime_error("unknown individual send tap");
+        overrides.emplace(detail::signedInteger(row.at("routing_id")),*tap);
+    }
+    const auto& choice=before.at("choice");
+    bool everyRawPre=!before.at("routes").empty();
+    std::set<IndividualSendTap> effective;
+    for (const auto& route:before.at("routes")) {
+        const bool rawPre=route.at("pre").get<bool>();
+        everyRawPre=everyRawPre && rawPre;
+        const auto override=overrides.find(detail::signedInteger(route.at("id")));
+        const bool pre=choice.is_null()?rawPre:choice.get<bool>();
+        effective.insert(override!=overrides.end()?override->second:
+                         pre?IndividualSendTap::PostFx:IndividualSendTap::PostMixer);
+    }
+    const bool currentPre=choice.is_null()?everyRawPre:choice.get<bool>();
+    return effective.size()<2 && !currentPre;
 }
 Payload desired(SQLite::Database& db,std::int64_t id,const Payload& payload) {
     if(payload.contains("restore")) {
-        if(payload.contains("pre"))throw std::runtime_error("return tap takes pre or restore, not both");
+        if(payload.contains("pre") || payload.contains("click"))throw std::runtime_error("return tap restore must be supplied alone");
         validateRestore(db,id,payload.at("restore"));return payload.at("restore").at("target");
     }
-    if(!payload.contains("pre") || !payload.at("pre").is_boolean())throw std::runtime_error("return tap needs a boolean choice");
-    auto after=state(db,id);after["choice"]=payload.at("pre");for(auto& edge:after["routes"])edge["pre"]=payload.at("pre");return after;
+    const bool click=payload.contains("click");
+    if (click ? (payload.contains("pre") || payload.at("click")!=true)
+              : (!payload.contains("pre") || !payload.at("pre").is_boolean()))
+        throw std::runtime_error("return tap needs a choice or a switch click");
+    auto after=state(db,id,click);
+    const bool pre=click?clickSelectsPre(after):payload.at("pre").get<bool>();
+    if (click) after["individual"]=Payload::array();
+    after["choice"]=pre;
+    for (auto& edge:after["routes"]) edge["pre"]=pre;
+    return after;
 }
 bool apply(OpContext& context,const Payload& payload,std::string& error) {
-    try {const auto id=detail::signedInteger(payload.at("id"));target(context.db,id);const auto after=desired(context.db,id,payload);write(context.db,id,after);return true;}
+    try {
+        const auto id=detail::signedInteger(payload.at("id"));
+        target(context.db,id);
+        const auto after=desired(context.db,id,payload);
+        if (payload.contains("click") && context.replay) {
+            const auto& replay=*context.replay;
+            const auto recorded=decodeFromLog(replay.inverse,error);
+            if (replay.asInverse || !replay.hasInverse || !recorded ||
+                detail::signedInteger(recorded->at("id"))!=id ||
+                recorded->at("restore").at("current")!=after ||
+                recorded->at("restore").at("target")!=state(context.db,id,true))
+                throw std::runtime_error("recorded return switch no longer matches its captured taps");
+        }
+        write(context.db,id,after);
+        return true;
+    }
     catch(const std::exception& exception){error=exception.what();return false;}
 }
 bool inverse(OpContext& context,const Payload& payload,Payload& result,std::string& error) {
-    try {const auto id=detail::signedInteger(payload.at("id"));target(context.db,id);const auto before=state(context.db,id);const auto after=desired(context.db,id,payload);result={{"id",id},{"restore",{{"current",after},{"target",before}}}};return true;}
+    try {
+        const auto id=detail::signedInteger(payload.at("id"));
+        target(context.db,id);
+        const auto after=desired(context.db,id,payload);
+        const auto before=state(context.db,id,after.contains("individual"));
+        result={{"id",id},{"restore",{{"current",after},{"target",before}}}};
+        return true;
+    }
     catch(const std::exception& exception){error=exception.what();return false;}
 }
 std::string fileIdentity(SQLite::Database& db) {
@@ -241,7 +325,8 @@ bool allowSendEdgeTapEdit(SQLite::Database& db,std::int64_t id,bool pre,std::str
     return true;
 }
 std::span<const OpDescriptor> returnSendTapOps() {
-    static const Field fields[]={{"id",FieldType::Int,true},{"pre",FieldType::Bool,false},{"restore",FieldType::Object,false}};
+    static const Field fields[]={{"id",FieldType::Int,true},{"pre",FieldType::Bool,false},
+        {"click",FieldType::Bool,false},{"restore",FieldType::Object,false}};
     static const Field individualFields[] = {
         {"id", FieldType::Int, true},
         {"tap", FieldType::Text, false},
@@ -252,6 +337,13 @@ std::span<const OpDescriptor> returnSendTapOps() {
          individualFields, false, false, setIndividualTap, captureIndividualTap, ""},
     };
     return ops;
+}
+OpRequest clickReturnSendTap(std::int64_t id) {
+    OpRequest request;
+    request.opType="return.setSendTap";
+    request.payload={{"id",id},{"click",true}};
+    request.label="Change Pre/Post";
+    return request;
 }
 PreparedReturnSend prepareSendToReturn(Store& store,std::int64_t routingId,std::int64_t sourceTrack,std::int64_t returnTrack) {
     PreparedReturnSend result;

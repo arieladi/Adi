@@ -938,12 +938,11 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
 }
 void MixerStrip::throwPrePost(std::int64_t ret) {
     // From the CURRENT cell (ADR-0201): the return's own switch thrown, one op and one undo step,
-    // which the engine spreads over every send into the return; it holds with no send (#405), so
-    // setReturnPre never refuses and there is nothing to say.
+    // which the engine spreads over every send into the return. Mixed taps choose Post first.
     const auto current = panel_.root.current();
     if (!current)
         return;
-    panel_.root.submitEdits(std::move(setReturnPre(ret, !returnPre(current->findTrack(ret))).ops));
+    panel_.root.submitEdits({clickReturnSendTap(ret)});
 }
 std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
     auto knob = std::make_unique<juce::Slider>();
