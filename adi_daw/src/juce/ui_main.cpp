@@ -901,6 +901,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return false;
         };
         // Undo and Redo commit the knob edits still held first (DF-W29).
+        root->editsHeld = [this] { return !document_->pendingParameterGestures().empty(); };
         root->settleEdits = [this] {
             const bool ok = document_->settleParameters();
             if (!ok && root_)

@@ -1611,6 +1611,9 @@ bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t now
         return command(AppCommands::ZoomBack);
     // Only the step the press made, while it is still the latest: an edit since then stays, and so
     // does what the press made under it. Going back pauses no Follow, as an undo from the menu does.
+    // A knob edit still held commits first (DF-W29), so the check sees the step that is latest.
+    if (settleEdits && !settleEdits())
+        return false;
     const auto last = submitter_.nextUndo();
     if (back->step == 0 || !last || last->txnId != back->step)
         return false;
@@ -2348,6 +2351,9 @@ std::string AdiRootComponent::undoTitle(bool redo) const {
     const std::string verb = redo ? "Redo" : "Undo";
     if (!canUndo(redo))
         return "Nothing to " + verb;
+    // A held knob edit is the step Undo takes back: its own label once committed, the verb meanwhile.
+    if (!redo && editsHeld && editsHeld())
+        return verb;
     return verb + (step && !step->label.empty() ? " " + step->label : "");
 }
 bool AdiRootComponent::fail(std::string message) {
@@ -3196,7 +3202,10 @@ bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
     const double value = std::round(std::clamp(*bpm, kMinTempo, kMaxTempo) * 100) / 100;
     if (std::abs(value - tapBpm_) < .005)
         return true;
-    // The run's step gives way to this tap's, while it is still the latest: one step for the run.
+    // The run's step gives way to this tap's, while it is still the latest: one step for the run. A
+    // knob edit still held commits first (DF-W29), so the check sees the step that is latest.
+    if (settleEdits)
+        settleEdits();
     if (const auto last = submitter_.nextUndo(); tapStep_ != 0 && last && last->txnId == tapStep_) {
         const bool paused = arrangement.followPaused;
         command(AppCommands::Undo);
