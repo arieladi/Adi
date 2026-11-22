@@ -18,6 +18,31 @@ void check(bool passed, const char* message) {
     if (!passed) { std::printf("FAIL %s\n", message); ++failures; }
 }
 
+void movingStereoOffset() {
+    for (const auto mode : {Mode::LowPass6, Mode::LowPass12, Mode::HighPass6, Mode::HighPass12, Mode::BandPass12}) {
+        Filter stereo, left, right;
+        for (auto* filter : {&stereo, &left, &right}) filter->setMode(mode);
+        bool matches = true;
+        constexpr std::array offsets{0.f, .5f, -1.f, .875f, 0.f, -.25f};
+        for (int n = 0; n < 2048; ++n) {
+            const float offset = offsets[static_cast<std::size_t>(n / 83) % offsets.size()];
+            stereo.setStereoOffset(offset);
+            if (n % 67 == 0) stereo.setStereoOffset(std::numeric_limits<float>::quiet_NaN());
+            const float cutoff = static_cast<float>(n % 127) / 126.f;
+            const float q = static_cast<float>(n % 31) / 30.f;
+            float l = static_cast<float>(n % 29 - 14) / 32, r = static_cast<float>(n % 43 - 21) / 32;
+            float refL = l, refR = r, spare = 0;
+            const float shift = .5f * offset * std::abs(offset);
+            left.process(refL, spare, std::clamp(cutoff + shift, 0.f, 1.f), q);
+            spare = 0;
+            right.process(spare, refR, std::clamp(cutoff - shift, 0.f, 1.f), q);
+            stereo.process(l, r, cutoff, q);
+            matches &= l == refL && r == refR;
+        }
+        check(matches, "moving offset, cutoff and resonance preserve both filter histories and the centered path");
+    }
+}
+
 void bandwidth() {
     // Transform the unit impulse at two test frequencies. The reference
     // readings came from an independent stereo render at 48 kHz.
@@ -157,6 +182,7 @@ void movingContours() {
 
 int main() {
     bandwidth();
+    movingStereoOffset();
     heldOutResonantImpulses();
     sampleRatesAndReset();
     resonantLevel();

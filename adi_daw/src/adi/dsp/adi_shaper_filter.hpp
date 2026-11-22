@@ -14,12 +14,17 @@ class AdiShaperFilter {
     void prepare(double sampleRate) noexcept;
     void reset() noexcept;
     void setMode(Mode mode) noexcept;
+    void setStereoOffset(float bipolar) noexcept;
     void process(float& left, float& right, float cutoff, float resonance) noexcept;
     bool finishBlock() noexcept;
 
   private:
     struct Channel {
         double pole = 0.0, band = 0.0, low = 0.0, previousBand = 0.0;
+    };
+    struct Coefficients {
+        float cutoff = -1.f;
+        double g = 0., inverseG = 0., poleGain = 0., a1 = 0., resonanceScale = 0.;
     };
     struct Knot {
         double value = 0.0, slope = 0.0;
@@ -29,12 +34,13 @@ class AdiShaperFilter {
     std::array<Channel, 2> channels_{};
     Mode mode_ = Mode::LowPass6;
     float lastCutoff_ = -1.0f, lastResonance_ = -1.0f;
-    double sampleRate_ = 0.0, g_ = 0.0, damping_ = 2.0, poleGain_ = 0.0;
-    double a1_ = 0.0, resonanceScale_ = 0.0, inverseG_ = 0.0, gentleResonance_ = 0.0;
+    std::array<Coefficients, 2> tuning_{};
+    float offset_ = 0.f;
+    double sampleRate_ = 0.0, damping_ = 2.0, gentleResonance_ = 0.0;
 
     [[nodiscard]] double warpAt(float cutoff) const noexcept;
     void tune(float cutoff, float resonance) noexcept;
-    [[nodiscard]] float tick(float input, Channel& state) const noexcept;
+    [[nodiscard]] float tick(float input, Channel& state, const Coefficients& tune) const noexcept;
 };
 
 } // namespace adi::dsp

@@ -24,6 +24,7 @@ void AdiShaperFilter::prepare(double sampleRate) noexcept {
             warp_[static_cast<std::size_t>(i)] = {g, slope};
         }
     }
+    tuning_ = {};
     lastCutoff_ = -1.0f;
     lastResonance_ = -1.0f;
     reset();
@@ -38,6 +39,17 @@ void AdiShaperFilter::setMode(Mode mode) noexcept {
     }
 }
 
+void AdiShaperFilter::setStereoOffset(float bipolar) noexcept {
+    if (!std::isfinite(bipolar)) return;
+    bipolar = std::clamp(bipolar, -1.f, 1.f);
+    // The cutoff axis spans ten octaves. Each channel can move five
+    // octaves in opposite directions, with quadratic travel from center.
+    const float offset = .5f * bipolar * std::abs(bipolar);
+    if (offset == offset_) return;
+    offset_ = offset;
+    if (lastCutoff_ >= 0.f) tune(lastCutoff_, lastResonance_);
+}
+
 double AdiShaperFilter::warpAt(float cutoff) const noexcept {
     const double position = static_cast<double>(cutoff) * intervals;
     const auto index = std::min(static_cast<int>(position), intervals - 1);
@@ -50,22 +62,32 @@ double AdiShaperFilter::warpAt(float cutoff) const noexcept {
 }
 
 void AdiShaperFilter::tune(float cutoff, float resonance) noexcept {
-    if (cutoff != lastCutoff_) {
-        lastCutoff_ = cutoff;
-        g_ = warpAt(cutoff);
-        inverseG_ = 1.0 / g_;
-        poleGain_ = g_ / (1.0 + g_);
-    }
+    lastCutoff_ = cutoff;
     if (resonance != lastResonance_) {
         lastResonance_ = resonance;
         damping_ = 2.0 - 1.995 * std::cbrt(static_cast<double>(resonance));
         gentleResonance_ = (2.0 - damping_) * (2.0 / 3.0);
     }
-    a1_ = 1.0 / (1.0 + g_ * (g_ + damping_));
-    resonanceScale_ = 1.0 / 12.0 + (4.0 / 27.0) * g_ * a1_;
+    const auto update = [&](Coefficients& coefficients, float height) {
+        if (height != coefficients.cutoff) {
+            coefficients.cutoff = height;
+            coefficients.g = warpAt(height);
+            coefficients.inverseG = 1.0 / coefficients.g;
+            coefficients.poleGain = coefficients.g / (1.0 + coefficients.g);
+        }
+        const double g = coefficients.g;
+        coefficients.a1 = 1.0 / (1.0 + g * (g + damping_));
+        coefficients.resonanceScale = 1.0 / 12.0 + (4.0 / 27.0) * g * coefficients.a1;
+    };
+    if (offset_ == 0.f) {
+        update(tuning_[0], cutoff);
+    } else {
+        update(tuning_[0], std::clamp(cutoff + offset_, 0.f, 1.f));
+        update(tuning_[1], std::clamp(cutoff - offset_, 0.f, 1.f));
+    }
 }
 
-float AdiShaperFilter::tick(float input, Channel& state) const noexcept {
+float AdiShaperFilter::tick(float input, Channel& state, const Coefficients& tune) const noexcept {
     const double x = input;
     if (x == 0.0 && std::abs(state.band) + std::abs(state.low) + std::abs(state.pole) < 1.0e-28) {
         state = {};
@@ -79,7 +101,7 @@ float AdiShaperFilter::tick(float input, Channel& state) const noexcept {
     for (int step = 0; step < 2; ++step) {
         double excitation = x;
         if (gentle) {
-            const double difference = poleGain_ * (x - state.pole);
+            const double difference = tune.poleGain * (x - state.pole);
             pole = state.pole + difference;
             state.pole = pole + difference;
             excitation = pole;
@@ -87,10 +109,10 @@ float AdiShaperFilter::tick(float input, Channel& state) const noexcept {
         // Impulse amplitude sweeps show additional damping proportional to
         // the preceding band output squared, saturating at large amplitudes.
         const double squared = state.previousBand * state.previousBand;
-        const double gain = a1_ * (1.0 + squared / 12.0) / (1.0 + resonanceScale_ * squared);
-        band = gain * (state.band + g_ * (excitation - state.low));
-        low = state.low + g_ * band;
-        if (mode_ == Mode::HighPass12) highSum += (band - state.band) * inverseG_;
+        const double gain = tune.a1 * (1.0 + squared / 12.0) / (1.0 + tune.resonanceScale * squared);
+        band = gain * (state.band + tune.g * (excitation - state.low));
+        low = state.low + tune.g * band;
+        if (mode_ == Mode::HighPass12) highSum += (band - state.band) * tune.inverseG;
         state.band = 2.0 * band - state.band;
         state.low = 2.0 * low - state.low;
         state.previousBand = band;
@@ -111,8 +133,8 @@ void AdiShaperFilter::process(float& left, float& right, float cutoff, float res
         if (!std::isfinite(resonance)) resonance = std::max(0.0f, lastResonance_);
         tune(std::clamp(cutoff, 0.0f, 1.0f), std::clamp(resonance, 0.0f, 1.0f));
     }
-    left = tick(left, channels_[0]);
-    right = tick(right, channels_[1]);
+    left = tick(left, channels_[0], tuning_[0]);
+    right = tick(right, channels_[1], tuning_[offset_ != 0.f ? 1 : 0]);
 }
 
 bool AdiShaperFilter::finishBlock() noexcept {
