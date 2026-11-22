@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 idle Realtime Average
+
+A Realtime Average holding exact zero can park after publishing a ready result inside certified stopped silence. The shared broker advances the omitted zero hops and their partial-hop phase when input resumes. Scope can join the same domain after a tap wrap and reuse the existing plan and tap. Once the average receives a nonzero window, it keeps processing its decay, including values below the display floor.
+
+The silent-parking and first-resumed-hop assertions failed first. All 785 broker checks now pass, including Scope admission during the parked interval and a continuously read reference for the first audible frame. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed the two changed units, and Clang passed the implementation.
+
+Release ZIP SHA-256 `76cb344ab591e96b49ed3ad214706a41c6da6313c683f31a1723b005a84eb8ac`. EXE SHA-256 `a457213ddff8240574acc4377d6603035c6e3320f09166856ab22bf9262ac695`. The brief covers quiet parking, stopped monitoring, Scope admission, seek and Spectrum title smoke checks. Timed CPU and live comparison remain pending.
+
+PR requested — `mixview/mx21-spectrum-parked-rt-average-lands-after-2026-12-03` at `99e9f5ef6e105e8c3def4c6223bb24e85b44ac69`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 idle Spectrum balance with transport stopped
 
 A visible two-second balance now parks after its entire history reaches exact zero inside a certified silent tap range. The retained result stays fixed with no further worker reads or publications. Restarting on the same stopped stamp preserves the complete two-second denominator and hop phase. Advancing playback starts a new interval.
