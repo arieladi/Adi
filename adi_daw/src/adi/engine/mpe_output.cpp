@@ -150,6 +150,7 @@ void MpeRouter::reset() noexcept {
 
 void MpeRouter::switchTo(ExpressionRoute route, std::int32_t frame, MpeOutList& out) noexcept {
     if (route == route_) return;
+    bool allEnded = true;
     for (Note& nt : notes_) {
         if (!nt.used) continue;
         MpeOut o;
@@ -158,8 +159,16 @@ void MpeRouter::switchTo(ExpressionRoute route, std::int32_t frame, MpeOutList& 
         o.key = nt.key;
         o.noteId = nt.id;
         o.frame = frame;
-        out.push(o);
+        if (!out.push(o)) {
+            allEnded = false;
+            continue;
+        }
+        const auto c = static_cast<std::size_t>(nt.channel);
+        if (active_[c] > 0) --active_[c];
+        if (active_[c] == 0) lastOff_[c] = ++clock_;
+        nt.used = false;
     }
+    if (!allEnded) return;
     route_ = route;
     reset();
 }
@@ -211,7 +220,6 @@ int MpeRouter::allocate() noexcept {
     for (int c = 2; c <= members_; ++c)
         if (lastOn_[static_cast<std::size_t>(c)] < lastOn_[static_cast<std::size_t>(oldest)])
             oldest = c;
-    ++shared_;
     return oldest;
 }
 
@@ -261,8 +269,9 @@ void MpeRouter::sendMcm(std::int32_t frame, MpeOutList& out) noexcept {
 void MpeRouter::route(const Event* events, std::int32_t n, std::int32_t segmentStart,
                       MpeOutList& out) noexcept {
     if (mcmPending_) {
+        const std::int64_t droppedBefore = out.dropped();
         sendMcm(segmentStart, out);
-        mcmPending_ = false;
+        if (out.dropped() == droppedBefore) mcmPending_ = false;
     }
     if (events == nullptr) return;
     for (std::int32_t i = 0; i < n; ++i) {
@@ -292,6 +301,7 @@ void MpeRouter::noteOn(const Event* events, std::int32_t n, std::int32_t i,
 
     const std::int16_t key = clampKey(e.dim);
     std::uint8_t chan = 0;
+    bool collision = false;
 
     if (route_ == ExpressionRoute::MpeMidi) {
         chan = static_cast<std::uint8_t>(allocate());
@@ -318,8 +328,12 @@ void MpeRouter::noteOn(const Event* events, std::int32_t n, std::int32_t i,
         control(chan, kCtrlTimbre, timbre, e.frame, e.noteId, out);
         control(chan, kCtrlAfterTouch, pressure, e.frame, e.noteId, out);
     } else {
-        for (const Note& nt : notes_)
-            if (nt.used && nt.key == key && nt.channel == 0) { ++collisions_; break; }
+        for (const Note& nt : notes_) {
+            if (nt.used && nt.key == key && nt.channel == 0) {
+                collision = true;
+                break;
+            }
+        }
     }
 
     MpeOut o;
@@ -329,9 +343,14 @@ void MpeRouter::noteOn(const Event* events, std::int32_t n, std::int32_t i,
     o.noteId = e.noteId;
     o.value = clampUnit(e.value);
     o.frame = e.frame;
-    out.push(o);
+    if (!out.push(o)) return;
 
     const auto c = static_cast<std::size_t>(chan);
+    if (route_ == ExpressionRoute::MpeMidi) {
+        if (active_[c] != 0) ++shared_;
+    } else if (collision) {
+        ++collisions_;
+    }
     ++active_[c];
     lastOn_[c] = ++clock_;
     slot->used = true;
@@ -359,7 +378,7 @@ void MpeRouter::noteOff(const Event& e, MpeOutList& out) noexcept {
     o.noteId = nt->id;
     o.value = clampUnit(e.value);
     o.frame = e.frame;
-    out.push(o);
+    if (!out.push(o)) return;
 
     const auto c = static_cast<std::size_t>(nt->channel);
     if (active_[c] > 0) --active_[c];
