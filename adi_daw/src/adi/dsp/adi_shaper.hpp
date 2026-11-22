@@ -3,6 +3,7 @@
 #include "adi/dsp/adi_shaper_crush.hpp"
 #include "adi/dsp/adi_shaper_drive.hpp"
 #include "adi/dsp/adi_shaper_filter.hpp"
+#include "adi/dsp/adi_shaper_follower.hpp"
 #include "adi/dsp/adi_shaper_sweep.hpp"
 #include <array>
 #include <cstddef>
@@ -21,6 +22,7 @@ class AdiShaper {
     static constexpr int modBandParameterCount = 23;
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
+    static constexpr int HoldFollowerCount = 9;
     enum Param { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -28,9 +30,14 @@ class AdiShaper {
                  SweepOn = FilterOn + modStageParameterCount, SweepLowPolarity = SweepOn + modStageParameterCount,
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
-                 Count = CrushOn + modStageParameterCount };
+                 LegacyCount = CrushOn + modStageParameterCount,
+                 HoldFollowerLow = 876, Count = HoldFollowerLow + 3 * HoldFollowerCount };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
+    static constexpr Param holdFollowerParam(Band band, AdiShaperFollower::Control control) noexcept {
+        return static_cast<Param>(HoldFollowerLow + HoldFollowerCount * static_cast<int>(band)
+                                 + static_cast<int>(control));
+    }
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
     static constexpr Param bandParam(Stage stage, Band band, BandControl control) noexcept {
@@ -130,6 +137,7 @@ class AdiShaper {
     std::array<AdiShaperSweep, 3> sweeps_;
     std::array<AdiShaperDrive, 3> drives_;
     std::array<AdiShaperCrush, 3> crush_;
+    std::array<AdiShaperFollower, 3> holdFollowers_;
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;

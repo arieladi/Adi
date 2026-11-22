@@ -101,7 +101,7 @@ void cachedPdTransport(const std::string& directory, bool native) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false) {
+                  bool crushOn = false, bool holdOn = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
@@ -114,6 +114,8 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
     const auto decl = adi::device::parsePdDeclarations(adi::builtinCanvas(uid));
     std::string error;
     std::array<Engine*, 2> paths{&native, &pd};
+    Shaper oracleRack;
+    if (holdOn) oracleRack.prepare(48000);
     for (std::size_t i = 0; i < paths.size(); ++i) {
         auto& path = *paths[i];
         path.addSearchPath(ADI_PD_PATCH_DIR);
@@ -122,6 +124,7 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         path.bindParameters(decl);
         auto send = [&](Shaper::Param id, float natural) {
             check(path.sendParameter(static_cast<int>(id) + 1, natural), "modulation message accepted");
+            if (holdOn && i == 0) oracleRack.set(id, natural);
         };
         if (onlyVolume) {
             for (int j = 0; j < 8; ++j)
@@ -143,6 +146,19 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
                      15.f + 9.f * static_cast<float>(j));
                 send(Shaper::modParam(stage, mid, static_cast<Shaper::ModControl>(Shaper::Secondary1 + j)),
                      70.f - 7.f * static_cast<float>(j));
+            }
+        }
+        if (holdOn) {
+            send(static_cast<Shaper::Param>(Shaper::CrushOn + 1), 3);
+            for (int b = 0; b < 3; ++b) {
+                const auto band = static_cast<Shaper::Band>(b);
+                using Control = adi::dsp::AdiShaperFollower::Control;
+                const float index = static_cast<float>(b);
+                const std::array controls{1.f, b == 1 ? 1.f : 0.f, 25.f + 22.f * index, index,
+                                          60.f - 12.f * index, 1.f + 3.f * index, 3.f + index,
+                                          7.f + index, 15.f + index};
+                for (std::size_t n = 0; n < controls.size(); ++n)
+                    send(Shaper::holdFollowerParam(band, static_cast<Control>(n)), controls[n]);
             }
         }
         send(Shaper::driveParam(mid, Shaper::DriveMix), 67);
@@ -187,6 +203,22 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         }
         f += n;
     }
+    if (holdOn) {
+        Shaper disabled = oracleRack;
+        for (auto band : {Shaper::Band::Low, mid, Shaper::Band::High})
+            disabled.set(Shaper::holdFollowerParam(band, adi::dsp::AdiShaperFollower::Control::On), 0);
+        std::array<std::array<float, frames>, 2> oracle{}, plain{};
+        oracleRack.process(input[0].data(), input[1].data(), oracle[0].data(), oracle[1].data(), frames);
+        disabled.process(input[0].data(), input[1].data(), plain[0].data(), plain[1].data(), frames);
+        double movement = 0;
+        for (std::size_t ch = 0; ch < 2; ++ch) {
+            for (std::size_t f = 0; f < frames; ++f) {
+                check(std::abs(oracle[ch][f] - direct[ch][f]) < 1.e-6f, "native controls produce the direct Hold follower response");
+                movement = std::max(movement, static_cast<double>(std::abs(oracle[ch][f] - plain[ch][f])));
+            }
+        }
+        check(movement > .02, "the signed Hold followers change the rendered audio");
+    }
     double errorPeak = 0, effectPeak = 0;
     for (std::size_t ch = 0; ch < 2; ++ch) {
         // The edited canvas routes the external's output to the opposite speaker.
@@ -219,6 +251,40 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         }
     }
 }
+void holdFollowerRecall() {
+    constexpr std::array defaults{0., 0., 50., 0., 50., 0., 10., 0., 20.};
+    auto source = open();
+    set(*source, 341, 1);  // An earlier project can already have Crush active.
+    auto earlier = adi::Payload::from_cbor(source->saveState("state"));
+    std::array<double, 27> expected{};
+    for (int b = 0; b < 3; ++b) {
+        for (int n = 0; n < 9; ++n) {
+            const int offset = 9 * b + n, id = 877 + offset;
+            const auto key = std::to_string(id);
+            const auto* descriptor = source->paramAt(415 + offset);
+            check(descriptor && descriptor->id == key && std::abs(source->getParam(key).real - defaults[static_cast<std::size_t>(n)]) < 1.e-5,
+                  "each band's nine controls have stable IDs and the manual detector defaults");
+            for (const auto* group : {"params", "real"})
+                if (earlier.contains(group)) earlier.at(group).erase(key);
+            const double normalized = n < 2 ? 1. : n == 3 ? (b == 0 ? .5 : 1.) : (.17 + .17 * b + .023 * n);
+            set(*source, id, normalized);
+            expected[static_cast<std::size_t>(offset)] = source->getParam(key).real;
+            check(std::abs(source->getParam(key).real - defaults[static_cast<std::size_t>(n)]) > .01,
+                  "every new control was moved before project recall");
+        }
+    }
+    auto restored = open();
+    check(restored->loadState("state", source->saveState("state")), "restore 27 Hold follower settings");
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        check(std::abs(restored->getParam(std::to_string(877 + i)).real - expected[i]) < 1.e-5,
+              "all follower settings round-trip through registered device state");
+    check(restored->loadState("state", adi::Payload::to_cbor(earlier)) && restored->getParam("341").real == 1,
+          "an earlier sparse project restores over an active Hold follower");
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        check(std::abs(restored->getParam(std::to_string(877 + i)).real - defaults[i % 9]) < 1.e-5,
+              "a missing follower restores disabled with original defaults in every band");
+}
+
 // The host splits a block at every lane event (DF-E50), and every piece of
 // the segment carries the transport of the segment's first sample. A synced
 // curve must keep its own clock after the first piece: lane values for an
@@ -266,7 +332,7 @@ void automationKeepsTheClock() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 442, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
@@ -375,6 +441,7 @@ int main() try {
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
+    holdFollowerRecall();
     automationKeepsTheClock();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");
@@ -388,6 +455,7 @@ int main() try {
     modulationPd(editedDir, false, false, true, false);
     modulationPd(editedDir, false, false, false, true);
     modulationPd(editedDir, false, false, true, true);
+    modulationPd(editedDir, false, false, false, true, true);
     std::puts("ADI-Shaper built-in state, transport and editable modulation parity passed.");
     return 0;
 } catch (const std::exception& error) {

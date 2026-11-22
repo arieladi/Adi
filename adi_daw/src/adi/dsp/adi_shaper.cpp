@@ -65,6 +65,7 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     for (auto& sweep : sweeps_) (void)sweep.prepare(sampleRate);
     for (auto& drive : drives_) drive.prepare(sampleRate);
     for (auto& crusher : crush_) (void)crusher.prepare(sampleRate);
+    for (auto& follower : holdFollowers_) follower.prepare(sampleRate);
     driveDry_ = {};
     driveSource_ = {};
     for (auto& stage : stages_) {
@@ -280,7 +281,10 @@ void AdiShaper::restart(Stage kind) noexcept {
 void AdiShaper::resetKernels(Stage kind) noexcept {
     if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
     if (kind == Stage::Sweep) for (auto& sweep : sweeps_) sweep.reset();
-    if (kind == Stage::Crush) for (auto& crusher : crush_) crusher.reset();
+    if (kind == Stage::Crush) {
+        for (auto& crusher : crush_) crusher.reset();
+        for (auto& follower : holdFollowers_) follower.reset();
+    }
     if (kind == Stage::Drive) {
         for (auto& drive : drives_) drive.reset();
         driveDry_ = {};
@@ -366,6 +370,13 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= HoldFollowerLow) {
+        const auto local = id - HoldFollowerLow;
+        auto& follower = holdFollowers_[static_cast<std::size_t>(local / HoldFollowerCount)];
+        follower.set(static_cast<AdiShaperFollower::Control>(local % HoldFollowerCount), value);
+        return;
+    }
+    if (id >= LegacyCount) return;
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         for (std::size_t i = 0; i < stages_.size(); ++i) updateStage(static_cast<Stage>(i));
@@ -466,7 +477,10 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             } else if constexpr (kind == Stage::Sweep) {
                 sweeps_[index].processStereo(l, r, primary, band.secondary.at(p));
             } else {
-                crush_[index].processStereo(l, r, primary, band.secondary.at(p));
+                const float baseHeight = band.secondary.at(p);
+                auto& follower = holdFollowers_[index];
+                const float holdHeight = follower.enabled() ? follower.apply(l, r, baseHeight) : baseHeight;
+                crush_[index].processStereo(l, r, primary, holdHeight);
             }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }
             else if (band.blend != 1.0f) {
