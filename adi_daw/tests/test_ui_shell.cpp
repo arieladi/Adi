@@ -2294,9 +2294,10 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     check(muted() == std::vector<std::int64_t>{1, 2} && submitter.nextUndo()->label == "Deactivate Track" &&
               submitter.nextUndo()->opCount == 2,
           "1 MIDI's activator, with 1 and 2 MIDI selected, deactivates both, one step");
-    check(root.keyPressed(juce::KeyPress(juce::KeyPress::F3Key, 0, 0)), "F3");
+    // Activate/Deactivate Track 3 (§42.19; no default key since WIN-01: F3 is held free).
+    check(root.command(AppCommands::ActivateTrack1 + 2), "Activate/Deactivate Track 3");
     root.frame();
-    check(muted() == std::vector<std::int64_t>{1, 2, 3}, "F3 deactivates the third track, alone");
+    check(muted() == std::vector<std::int64_t>{1, 2, 3}, "Activate/Deactivate Track 3 deactivates the third track, alone");
     render("adi-activators.png");
     root.arrangement.geometry.selection.toTrack = 0;
     check(root.keyPressed(juce::KeyPress('0', 0, 0)), "0");
@@ -12338,6 +12339,136 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     }
 }
 } // namespace
+// WIN-01: the default key map of every shortcut preset, as text the same on every platform family,
+// against its golden (ADI_UI_REFERENCES/keymap-<preset>-<family>.txt; --write-references writes it,
+// and each run leaves keymap-<preset>-<family>-actual.txt in the working directory),
+// with no key bound to two commands. Then F4, headless: the Mix View opens once and no track's
+// activator changes (MX-14), as F4 was also Activate Track 4 before.
+namespace keymap_golden {
+std::string keyText(const juce::KeyPress &k) {
+    std::string out;
+    const auto mods = k.getModifiers();
+    if (mods.isCommandDown())
+        out += "Cmd+";
+#if JUCE_MAC
+    if ((mods.getRawFlags() & juce::ModifierKeys::ctrlModifier) != 0)
+        out += "Ctrl+";
+#endif
+    if (mods.isAltDown())
+        out += "Alt+";
+    if (mods.isShiftDown())
+        out += "Shift+";
+    const int code = k.getKeyCode();
+    struct Named {
+        int code;
+        const char *name;
+    };
+    static const Named named[] = {
+        {juce::KeyPress::spaceKey, "Space"},       {juce::KeyPress::escapeKey, "Esc"},
+        {juce::KeyPress::returnKey, "Return"},     {juce::KeyPress::tabKey, "Tab"},
+        {juce::KeyPress::deleteKey, "Delete"},     {juce::KeyPress::backspaceKey, "Backspace"},
+        {juce::KeyPress::insertKey, "Insert"},     {juce::KeyPress::upKey, "Up"},
+        {juce::KeyPress::downKey, "Down"},         {juce::KeyPress::leftKey, "Left"},
+        {juce::KeyPress::rightKey, "Right"},       {juce::KeyPress::pageUpKey, "PageUp"},
+        {juce::KeyPress::pageDownKey, "PageDown"}, {juce::KeyPress::homeKey, "Home"},
+        {juce::KeyPress::endKey, "End"},           {juce::KeyPress::F1Key, "F1"},
+        {juce::KeyPress::F2Key, "F2"},             {juce::KeyPress::F3Key, "F3"},
+        {juce::KeyPress::F4Key, "F4"},             {juce::KeyPress::F5Key, "F5"},
+        {juce::KeyPress::F6Key, "F6"},             {juce::KeyPress::F7Key, "F7"},
+        {juce::KeyPress::F8Key, "F8"},             {juce::KeyPress::F9Key, "F9"},
+        {juce::KeyPress::F10Key, "F10"},           {juce::KeyPress::F11Key, "F11"},
+        {juce::KeyPress::F12Key, "F12"},           {juce::KeyPress::numberPadAdd, "Num+"},
+        {juce::KeyPress::numberPadSubtract, "Num-"}};
+    for (const auto &n : named)
+        if (n.code == code)
+            return out + n.name;
+    if (code > 32 && code < 127)
+        return out + static_cast<char>(code >= 'a' && code <= 'z' ? code - 'a' + 'A' : code);
+    return out + "#" + std::to_string(code);
+}
+} // namespace keymap_golden
+void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
+#if JUCE_MAC
+    const char *family = "mac";
+#else
+    const char *family = "pc";
+#endif
+    for (const char *preset : {"live", "cubase", "bitwig"}) {
+        std::string why;
+        check(settings.set("shortcuts.preset", std::string(preset), {}, why), "the preset set");
+        commands.reload();
+        juce::Array<juce::CommandID> ids;
+        commands.getAllCommands(ids);
+        std::map<std::string, std::vector<std::string>> byKey;
+        std::string text;
+        for (const auto id : ids) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            std::string keys;
+            for (const auto &k : info.defaultKeypresses) {
+                const auto t = keymap_golden::keyText(k);
+                keys += (keys.empty() ? "" : ", ") + t;
+                byKey[t].push_back(info.shortName.toStdString());
+            }
+            text += std::to_string(id) + " " + info.shortName.toStdString() + ": " + keys + "\n";
+        }
+        std::string clashes;
+        for (const auto &[key, names] : byKey)
+            if (names.size() > 1) {
+                clashes += key + " (";
+                for (std::size_t i = 0; i < names.size(); ++i)
+                    clashes += (i ? ", " : "") + names[i];
+                clashes += ") ";
+            }
+        check(clashes.empty(), ("no key is the default of two commands, preset " + std::string(preset) + ": " + clashes).c_str());
+        const auto stem = juce::String("keymap-") + preset + "-" + family;
+        juce::File::getCurrentWorkingDirectory().getChildFile(stem + "-actual.txt").replaceWithText(juce::String::fromUTF8(text.c_str()), false, false, "\n");
+        const auto golden = juce::File(ADI_UI_REFERENCES).getChildFile(stem + ".txt");
+        if (write) {
+            golden.getParentDirectory().createDirectory();
+            check(golden.replaceWithText(juce::String::fromUTF8(text.c_str()), false, false, "\n"), "write the key map golden");
+        } else if (golden.existsAsFile()) {
+            check(golden.loadFileAsString().toStdString() == text,
+                  ("the default key map of preset " + std::string(preset) + " matches its golden").c_str());
+        } else {
+            std::fprintf(stderr, "[shell] no key map golden for this platform family (%s): write it with --write-references\n", family);
+        }
+    }
+    std::string why;
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    commands.reload();
+    // F4, headless: the Mix View once, no activator.
+    std::string error;
+    auto document = ProjectDocument::open(dir / "f4.adi", true, {}, error);
+    check(document != nullptr, "a new project for F4");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "f4");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    commands.activate(root);
+    root.frame();
+    const auto muted = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->muted)
+                out.push_back(t->id);
+        return out;
+    };
+    const auto before = muted();
+    const auto stepBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+    const bool wasOpen = root.state().mixView;
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)), "F4");
+    document->synchronise();
+    root.frame();
+    check(root.state().mixView != wasOpen && muted() == before &&
+              (document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == stepBefore,
+          "F4 toggles the Mix View once and throws no activator: no undo step");
+    commands.detach(root);
+    document->release();
+}
+
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -15554,6 +15685,7 @@ int main(int argc, char **argv) {
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
+    trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
