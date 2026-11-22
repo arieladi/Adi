@@ -9,6 +9,7 @@
 #include <samplerate.h>
 #include <exception>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -181,6 +182,49 @@ double mapped(const std::vector<WarpAnchor>& anchors,double position,bool source
     return static_cast<double>(to(a))+(position-static_cast<double>(from(a)))*
         static_cast<double>(to(b)-to(a))/static_cast<double>(from(b)-from(a));
 }
+
+double beatsLoopBegin(NativeSource &source, std::uint64_t begin, std::uint64_t end,
+                      std::stop_token stop) {
+    const auto length = end - begin;
+    const auto middle = static_cast<double>(length) * 0.5;
+    const auto fallback = std::min(middle, static_cast<double>(length - 1));
+    const auto tolerance = static_cast<double>(length) * 0.05;
+    const auto first = static_cast<std::uint64_t>(std::floor(middle - tolerance));
+    const auto last = std::min(length - 1,
+                              static_cast<std::uint64_t>(std::ceil(middle + tolerance)));
+    if (first >= last)
+        return fallback;
+
+    // All channels share one loop clock. Choose the closest crossing seen on
+    // any channel without summing the channels, which can cancel in stereo.
+    const auto channels = source.reader.channels();
+    std::array<double, 64> previous{};
+    for (std::uint16_t channel = 0; channel < channels; ++channel)
+        previous[channel] = source.sample(static_cast<double>(begin + first), channel);
+    double best = fallback, closest = std::numeric_limits<double>::infinity();
+    for (auto i = first + 1; i <= last; ++i) {
+        if (i % blockFrames == 0)
+            cancelled(stop);
+        for (std::uint16_t channel = 0; channel < channels; ++channel) {
+            const auto prior = previous[channel];
+            const auto now = static_cast<double>(source.sample(static_cast<double>(begin + i),
+                                                               channel));
+            previous[channel] = now;
+            if (!((prior < 0 && now >= 0) || (prior > 0 && now <= 0)))
+                continue;
+            const auto crossing = static_cast<double>(i - 1) + std::abs(prior) /
+                                  (std::abs(prior) + std::abs(now));
+            const auto distance = std::abs(crossing - middle);
+            if (distance <= tolerance &&
+                (distance < closest || (distance == closest && crossing < best))) {
+                best = crossing;
+                closest = distance;
+            }
+        }
+    }
+    return best;
+}
+
 void renderBeats(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,std::stop_token stop) {
     if(!std::isfinite(plan.transientEnvelope) || plan.transientEnvelope<0 || plan.transientEnvelope>1 ||
        (plan.transientLoop!=TransientLoop::Off && plan.transientLoop!=TransientLoop::Forward && plan.transientLoop!=TransientLoop::PingPong))
@@ -202,6 +246,8 @@ void renderBeats(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,
     NativeSource source(reader,plan);std::vector<float> output(static_cast<std::size_t>(blockFrames)*reader.channels());
     const double pitch=std::exp2(plan.transposeSemis/12);
     std::size_t slice=0;
+    std::size_t loopSlice = slices.size();
+    double loopBegin = 0;
     for(std::uint64_t first=0;first<plan.anchors.back().outputFrame;) {
         cancelled(stop);const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,plan.anchors.back().outputFrame-first));
         for(std::uint32_t frame=0;frame<count;++frame) {
@@ -213,10 +259,24 @@ void renderBeats(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,
             if(readAt>=span) {
                 if(plan.transientLoop==TransientLoop::Off)readAt=-1;
                 else {
-                    const double begin=std::min(span-1,std::max(1.0,plan.outputRate*0.01)),body=span-begin;
-                    if(plan.transientLoop==TransientLoop::Forward)readAt=begin+std::fmod(readAt-begin,body);
-                    else if(body<=1)readAt=begin;
-                    else {const double phase=std::fmod(readAt-begin,2*(body-1));readAt=begin+(phase<body?phase:2*(body-1)-phase);}
+                    if (loopSlice != slice) {
+                        loopBegin = beatsLoopBegin(source, a.sourceFrame, b.sourceFrame, stop);
+                        loopSlice = slice;
+                    }
+                    const auto body = span - loopBegin;
+                    if (plan.transientLoop == TransientLoop::Forward) {
+                        readAt = loopBegin + std::fmod(readAt - loopBegin, body);
+                    } else {
+                        const auto extent = body - 1;
+                        if (extent <= 0) {
+                            readAt = loopBegin;
+                        } else {
+                            // Bounce from the final source sample to the loop
+                            // start, then forward again on the same clock.
+                            const auto phase = std::fmod(readAt - loopBegin, 2 * extent);
+                            readAt = loopBegin + (phase <= extent ? phase : 2 * extent - phase);
+                        }
+                    }
                 }
             }
             const double gain=std::exp(-12*(1-plan.transientEnvelope)*local/std::max(1.0,span));
