@@ -185,15 +185,65 @@ void robustness() {
     counting = false;
     check(allocations == 0, "processing and moved controls allocate nothing");
     check(std::all_of(o.begin(), o.end(), [](float v) { return std::isfinite(v); }), "a NaN input leaves the output finite");
-    S z;
-    std::vector<float> left(4800, 0.25f), shared(4800, -0.5f), rightOut(4800);
-    z.process(left.data(), shared.data(), shared.data(), rightOut.data(), 4800);
-    check(std::all_of(shared.begin() + 3000, shared.end(), [](float v) { return std::isfinite(v); }), "an output plane that is the other channel's input is safe");
+    // An output plane that is the other channel's input: the same samples as
+    // with planes of their own (the review: checking only for finite output
+    // could not fail).
+    std::vector<float> left(9600), right(9600), shared(9600), rightOut(9600), sepL(9600), sepR(9600);
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        left[i] = static_cast<float>(0.25 * std::sin(0.02 * static_cast<double>(i)));
+        right[i] = static_cast<float>(-0.5 * std::sin(0.007 * static_cast<double>(i)));
+    }
+    shared = right;
+    S z, w;
+    z.prepare(kRate);
+    w.prepare(kRate);
+    z.process(left.data(), shared.data(), shared.data(), rightOut.data(), shared.size());
+    w.process(left.data(), right.data(), sepL.data(), sepR.data(), right.size());
+    check(shared == sepL && rightOut == sepR, "an output plane that is the other channel's input gives the same samples as planes of their own");
 }
 
 }  // namespace
 
+/// The review of b8436141: a huge finite burst overflowed the transform and
+/// left NaN in the feedback for good; Dry/Wet stepped.
+void reviewed() {
+    S s;
+    s.prepare(kRate);
+    std::vector<float> x(48000 * 4, 0.f), l(x.size()), r(x.size());
+    double v = 1e-3;
+    for (std::size_t i = 0; i < 2001; ++i) {
+        v = std::min(v * 1.1, 1e38);
+        x[i] = static_cast<float>(i % 2 ? -v : v);
+    }
+    s.process(x.data(), x.data(), l.data(), r.data(), x.size());
+    check(std::all_of(l.begin() + 48000 * 3, l.end(), [](float y) { return std::isfinite(y); }), "after a burst growing to 1e38, the output is finite again");
+    // Dry/Wet moved at a tone's peak glides.
+    S g;
+    g.set(S::DryWet, 0);
+    g.prepare(kRate);
+    std::vector<float> t(96000), tl(96000), tr(96000);
+    for (std::size_t i = 0; i < t.size(); ++i) {
+        t[i] = static_cast<float>(0.3 * std::sin(2 * std::numbers::pi * 110 * static_cast<double>(i) / kRate));
+    }
+    constexpr std::size_t at = 48109;
+    g.process(t.data(), t.data(), tl.data(), tr.data(), at);
+    g.set(S::DryWet, 100);
+    g.process(t.data() + at, t.data() + at, tl.data() + at, tr.data() + at, t.size() - at);
+    double moving = 0, settled = 0;
+    for (std::size_t i = at; i < at + 4800; ++i) {
+        moving = std::max(moving, static_cast<double>(std::abs(tl[i] - tl[i - 1])));
+    }
+    for (std::size_t i = 24000; i < 48000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(tl[i] - tl[i - 1])));
+    }
+    for (std::size_t i = 72000; i < 96000; ++i) {
+        settled = std::max(settled, static_cast<double>(std::abs(tl[i] - tl[i - 1])));
+    }
+    check(moving <= 1.5 * settled, "Dry/Wet glides (" + std::to_string(moving) + " against " + std::to_string(settled) + ")");
+}
+
 int main() {
+    reviewed();
     delays();
     shaping();
     freeze();

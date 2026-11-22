@@ -60,6 +60,7 @@ void SpectralTime::prepare(double sampleRate) noexcept {
     }
     written_ = frameIndex_ = 0;
     frozen_ = false;
+    wet_.prepare(rate_);
     update();
 }
 
@@ -75,7 +76,7 @@ void SpectralTime::set(Param p, double v) noexcept {
 
 void SpectralTime::update() noexcept {
     feedback_ = p_[Feedback] / 100;
-    wet_ = p_[DryWet] / 100;
+    wet_.set(p_[DryWet] / 100);
     if (!ready_) {
         return;
     }
@@ -138,11 +139,15 @@ void SpectralTime::process(const float* inL, const float* inR, float* outL, floa
     for (std::size_t i = 0; i < frames; ++i) {
         // Both inputs are read before either output is written (a host may
         // hand an output plane that is an input plane).
-        const float x[2] = {inL && std::isfinite(inL[i]) ? inL[i] : 0.f, inR && std::isfinite(inR[i]) ? inR[i] : 0.f};
+        const auto bounded = [](const float* in, std::size_t at) {
+            return in && std::isfinite(in[at]) ? std::clamp(in[at], -1e6f, 1e6f) : 0.f;
+        };
+        const float x[2] = {bounded(inL, i), bounded(inR, i)};
+        const double mix = wet_.next();
         if (!ready_) {
             for (std::size_t c = 0; c < 2; ++c) {
                 if (out[c]) {
-                    out[c][i] = x[c] * static_cast<float>(1 - wet_);
+                    out[c][i] = x[c];   // inert: the input, no latency
                 }
             }
             continue;
@@ -157,7 +162,7 @@ void SpectralTime::process(const float* inL, const float* inR, float* outL, floa
             const std::size_t at = written_ % (2 * kSize);
             const float wet = lane.acc[at];
             lane.acc[at] = 0.f;
-            y[c] = static_cast<float>(delayedDry + (wet - delayedDry) * wet_);
+            y[c] = static_cast<float>(delayedDry + (wet - delayedDry) * mix);
         }
         ++written_;
         if (written_ % kHop == 0) {
