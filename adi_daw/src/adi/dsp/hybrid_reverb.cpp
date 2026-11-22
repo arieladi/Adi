@@ -176,7 +176,10 @@ void HybridReverb::stageAccumulate(std::size_t s, std::size_t target) noexcept {
 
 void HybridReverb::stageFinish(std::size_t s, const HybridImpulse *ir) noexcept {
     auto &stage = stages_[s];
-    if (!stage.live) {
+    // A stage that had no impulse for its period still sums one that arrived
+    // during it, from the whole history, as the head does (a found gap: it
+    // skipped the period, a hole of a block in the tail).
+    if (!stage.live && ir == stage.ir) {
         return;
     }
     const auto block = HybridImpulse::stageBlock[s];
