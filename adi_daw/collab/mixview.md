@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-30 parked Realtime Maximum and Sigma timing
+
+Realtime Maximum and Sigma now preserve their original hop through certified stopped silence once their histories have settled to zero. Existing views hold their picture during the silent interval. An additional Scope or opposite realtime trace can join after the tap wraps. The previously admitted view keeps its clock and the new trace waits for a complete window after its own admission.
+
+Fifteen broker assertions failed first. All 852 checks now pass, including the first audible hop, shared immutable aliases, both admission orders and exact bins against uninterrupted input. The tests show no additional FFT, tap or publication while parked. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed both changed units and Clang passed the implementation.
+
+Release ZIP SHA-256 `df0ddc5852261119008915177f965b703f56b7b859bab81ba086f80672e1ba0a`. EXE SHA-256 `3dbe31d9ba257bf2715565dd6a613e0d62ca77876645853c44c3c575e2d3ae33`. The brief covers same-stamp monitoring and a second reader joining while stopped. Timed CPU and live comparison remain pending.
+
+PR requested — `mixview/mx30-parked-realtime-hop-lands-after-2026-12-03` at `cd2ea32076387dace54b0faaf600a31015b78c6e`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 Spectrum statistics Reset
 
 The existing Reset control restarts the expanded view's integrated RMS, max crest, sample peak and clip counts from the tap's current write position. It leaves the previously published raw picture and other readers on the same source. Offsets and work skipped during certified silence are reconciled before a fresh interval starts. The expanded viewer is the sole statistics owner in the current UI. A shared broker interval cannot be cleared by either of two statistics owners.
