@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Select the detector input for each Hold band
+
+`clones/shaper-hold-input` at `2d5e13d5` — Select the split band or the full signal entering Crush. **Lands after 3 December.** Each band's selector defaults to the linked split. A quarter-level change before Crush produced byte-identical reference audio whether applied inside the rack or to its input. Reversing the two stages produced 0.0150–0.0166 stereo RMS error. Three band probes also distinguish the full stage input from the dry track input.
+
+The rack, Crush and registered Pd suites passed under MSVC /W4 /WX in both precisions. At 256 and 2,048 frames, selecting the full input brought stereo kick-and-bass RMS error from 0.002462 to 0.000282 in the middle band and from 0.002386 to 0.000280 in the low band. Unsplit and earlier linked renders were byte-identical. Reported latency was zero.
+
+At 256/2,048 frames the middle-band case used 58.5/541.8 µs median, versus 140.2/1,027.7 µs for the reference. Its p99 was 130.4/6,667.0 µs, versus 437.9/13,988.8 µs. Deadline misses were 15/25 and 90/22 respectively, per 30,720 callbacks at each size. On the low band the corresponding medians were 60.0/450.4 and 139.6/1,024.7 µs.
+
+PR requested
+
 ## 22 November 2026 — Shared manual follower coefficients and percentage conversion
 
 At a dyadic input step, the first nonzero stereo side sample gives the attack coefficient directly. On a replenished dyadic plateau, each sample immediately following exact equality gives the release coefficient. These fixtures produced 99 training and 66 separately chosen validation readings per control across 32, 44.1, 48, 88.2, 96 and 192 kHz.
