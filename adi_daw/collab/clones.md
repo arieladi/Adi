@@ -13,6 +13,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Open ADI-Shaper from the device rack
+
+**PR requested** · `clones/shaper-rack-editor` · **Open ADI-Shaper from its rack wrench** · `4b0c6036`
+
+For Win and the window lane. The device rack shows the wrench on an unfolded ADI-Shaper. The ordinary editor window opens the panel for the selected internal device UID and closes when its owning instance disappears. Renaming the device preserves that association.
+
+The headless project used two ADI-Shaper instances and an unrelated built-in, including deliberate display-name collisions. Pointer input hit the production rack wrench. The normal floating host opened the correct editor, honored pin and multiple-window settings, and closed the removed owner's view. A Master Mix drag reached only its owner before release and one undo restored the previous gain.
+
+The two full-HD pictures show the same eight-point, quarter-note Volume curve at 49% and full wet mix. Four bars of registered kick and bass passed through ADI. Its stock host wrapper still lacks the per-instance scope feed, so the ADI rack picture shows an empty input/output trace and idle output meters. The wrapper request stays with devices. Win owns the installed-original pen test during director idle time.
+
+The Release build compiled both loaned translation units with MSVC warnings as errors. The registered rack and floating-editor test passed all 46 checks, including closing the title bar, undoing removal and reopening, and project teardown. Window reviews the two loaned sites in the panel stack.
+
 ## 19 November 2026 — Draw and repeat Line, Arc and S curves
 
 **PR requested** · `clones/shaper-pens` · **Add three drawing pens to the ADI-Shaper editor** · `20b5f3b4`
