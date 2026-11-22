@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 Cumulative Average Spectrum trace
+
+Cumulative Average displays the arithmetic mean of calibrated linear bin magnitudes over the current interval. Spectrum and its pins reuse the current tap and FFT for each source. Each lease keeps its own interval, restarts at its first complete window after Clear, and starts fresh on a source or transport discontinuity. Silent windows count without running an FFT. The separate 1 s Average retains its existing response. These are display changes.
+
+Fourteen broker assertions failed first. All 759 broker, 495 Spectrum and 432 Mix Functions checks passed. The hide test uses an isolated track because a visible reader on Main can still analyse fresh Main audio after Spectrum closes. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed five changed units, and Clang passed the three implementation units.
+
+Release ZIP SHA-256 `b97b1e83cf3001938a43bbacf160f6bb195075f8c7d7a4facd0f9a6ecf11ad11`. EXE SHA-256 `95959448ce1ed29963b9d9873f02c4c98461807fa67dd8aeab4b0b65d8d91421`. The retest brief covers source selection, Clear, Freeze, seek, comparison and pinned tracks. Timed CPU measurement still waits for the quiet window.
+
+PR requested — `mixview/mx21-spectrum-cumulative-average-lands-after-2026-12-03` at `86cf0b45da5bcd81e6f7c69b8201becab81162e9`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 pinned Realtime Average
 
 The Spectrum trace menu offers Realtime Average for the primary and pinned tracks. It uses the broker's existing one-second linear-magnitude average and the current prepared-rate Overview FFT profile. Switching between Realtime and Realtime Average retains the view's own taps and plans. The dedicated 1 s Average page keeps its 1,024-point view, and Compare keeps any held reference.
