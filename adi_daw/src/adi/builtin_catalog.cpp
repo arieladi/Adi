@@ -12,7 +12,7 @@ constexpr bool ready=true;
 #else
 constexpr bool ready=false;
 #endif
-constexpr std::array<BuiltinInfo,30> entries={{
+constexpr std::array<BuiltinInfo,31> entries={{
  {.uid="org.adidaw.builtin.adi-shaper",.name="ADI-Shaper",.category="ADI",.group="Audio Effects",
   .inputs=2,.available=ready,.usesTransportPosition=true,.resetMissingParameters=true},
  {"org.adidaw.builtin.auto-filter","Auto Filter","Audio Effects","EQ & Filters",4,ready,false},
@@ -54,7 +54,9 @@ constexpr std::array<BuiltinInfo,30> entries={{
  // DEV-22 (ADR-0249 d7, after 3 December): Live's EQ Three, built, not verified (reading 26).
  {"org.adidaw.builtin.eq-three","EQ Three","Audio Effects","EQ & Filters",2,ready,false},
  // DEV-22 (ADR-0249 d7, after 3 December): Live's Tuner, built, not verified (reading 27).
- {"org.adidaw.builtin.tuner","Tuner","Audio Effects","Utilities",2,ready,false}
+ {"org.adidaw.builtin.tuner","Tuner","Audio Effects","Utilities",2,ready,false},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Erosion, built, not verified (reading 28).
+ {"org.adidaw.builtin.erosion","Erosion","Audio Effects","Drive & Color",2,ready,false}
 }};
 }
 std::span<const BuiltinInfo> builtinCatalog() noexcept{return entries;}
@@ -65,9 +67,9 @@ const BuiltinInfo* findBuiltin(std::string_view uid) noexcept {
 std::string_view builtinCanvas(std::string_view uid) noexcept {
 #if ADI_WITH_PD
     using namespace device::canonical;
-    constexpr std::array<std::string_view,30> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
+    constexpr std::array<std::string_view,31> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
         hybridReverb,multibandDynamics,overdrive,phaserFlanger,redux,resonators,reverb,saturator,shifter,utility,vocoder,
-        oneShot,std::string_view{},compressor,glueCompressor,liveGate,liveLimiter,alignDelay,autoPan,channelEq,eqThree,tuner};
+        oneShot,std::string_view{},compressor,glueCompressor,liveGate,liveLimiter,alignDelay,autoPan,channelEq,eqThree,tuner,erosion};
     for(std::size_t i=0;i<entries.size();++i)if(entries[i].uid==uid)return canvases[i];
 #else
     (void)uid;

@@ -65,6 +65,7 @@ if(ADI_WITH_PD)
     adi_embed_native_pd(channelEq "pd/devices/Channel EQ.pd")
     adi_embed_native_pd(eqThree "pd/devices/EQ Three.pd")
     adi_embed_native_pd(tuner "pd/devices/Tuner.pd")
+    adi_embed_native_pd(erosion "pd/devices/Erosion.pd")
     string(APPEND ADI_NATIVE_PD_HEADER "} // namespace adi::device::canonical\n")
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/adi_native_pd_patches.hpp"
         CONTENT "${ADI_NATIVE_PD_HEADER}")
