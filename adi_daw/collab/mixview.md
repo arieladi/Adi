@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 two-second pinned Spectrum balance
+
+The expanded Spectrum readout measures left/right RMS balance over the most recent two seconds of the primary source. Correlation still measures the current FFT window. The optional history stores positive power sums for complete hops and the exact partial oldest hop, using the samples already read by the primary lease. Compact, hidden and frozen views release the history. Freeze keeps the current picture and its numbers.
+
+The new calibrated tail check failed first. With the fixture isolated from the other visible readers, all 437 Mix Functions checks passed, including the exact R 3.3 dB boundary at 48 kHz, unchanged -1.00 current correlation, one-hop return to Centre, fresh advancing gap, no extra transform and no history in compact or hidden layout. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed all four changed units, and Clang passed the three implementation units.
+
+Release ZIP SHA-256 `7615132f440e8fe65cbf2ef4ef550d9a0789d90a5c94224c59d7909fe231a31d`. EXE SHA-256 `453b39ffc2906649c55b5684fc85b42721cf68dd1053d35cb3de3467bedcc8e8`. The brief covers balance and correlation on the same source, Freeze, resize, seek and both averaging traces. ADI uses a rectangular two-second history. Native ballistics remain for live comparison. Timed CPU waits for the quiet window.
+
+PR requested — `mixview/mx21-spectrum-two-second-balance-lands-after-2026-12-03` at `061841c3e621fdedabe44de0fc22c6843855c656`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 Cumulative Average Spectrum trace
 
 Cumulative Average displays the arithmetic mean of calibrated linear bin magnitudes over the current interval. Spectrum and its pins reuse the current tap and FFT for each source. Each lease keeps its own interval, restarts at its first complete window after Clear, and starts fresh on a source or transport discontinuity. Silent windows count without running an FFT. The separate 1 s Average retains its existing response. These are display changes.
