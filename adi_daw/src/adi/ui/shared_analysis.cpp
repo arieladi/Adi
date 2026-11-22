@@ -834,6 +834,7 @@ struct SharedAnalysis::CaptureDomain {
 };
 struct SharedAnalysis::BarScopeDomain {
     static constexpr std::size_t chunkFrames = 256;
+    static constexpr std::array<float, chunkFrames> silence{};
     struct Lane {
         engine::ScopeSource source;
         std::shared_ptr<const engine::ScopeTap> tap;
@@ -842,6 +843,7 @@ struct SharedAnalysis::BarScopeDomain {
         engine::ScopeTap::ReadResult chunk;
         std::int64_t chunkEnd = 0;
         std::array<float, chunkFrames> left, right;
+        FocusScopeLayerAdjustment adjustment;
     };
 
     BarScopeDomain(std::span<const engine::ScopeSource> sources, std::size_t width)
@@ -849,15 +851,33 @@ struct SharedAnalysis::BarScopeDomain {
         for (std::size_t i = 0; i < lanes.size(); ++i) lanes[i].source = sources[i];
     }
 
-    void invalidate() noexcept {
+    void invalidateProjection() noexcept {
         projection.reset();
         result.store({});
         if (status.load() != BarScopeStatus::Idle) status.store(BarScopeStatus::Missed);
+        waiting.store(0);
+    }
+
+    void invalidate() noexcept {
+        invalidateProjection();
         for (auto &lane : lanes) {
             lane.cursor = lane.tap ? lane.tap->cursorAtEnd() : engine::ScopeTap::Cursor{};
             lane.chunk = {};
         }
-        waiting.store(0);
+    }
+
+    void setLayerAdjustments(std::span<const FocusScopeLayerAdjustment> adjustments) noexcept {
+        const std::lock_guard lock(mutex);
+        if (!active.load()) return;
+        bool changed = false;
+        for (std::size_t i = 0; i < lanes.size(); ++i) {
+            const auto next = i < adjustments.size() ? focusScopeBoundedAdjustment(adjustments[i])
+                                                     : FocusScopeLayerAdjustment{};
+            changed = changed || lanes[i].adjustment != next;
+            lanes[i].adjustment = next;
+        }
+        // The lane cursor and staged suffix may supply the next full bar.
+        if (changed) invalidateProjection();
     }
 
     bool request(const FocusScopeRange &next, std::uint64_t expected) noexcept {
@@ -940,6 +960,43 @@ struct SharedAnalysis::BarScopeDomain {
         return true;
     }
 
+    // Each display interval pulls from the same raw bar but at a shifted
+    // stamp. A source outside those edges contributes zeros to every fold.
+    bool prepareDisplayBlocks(std::int64_t first, std::size_t &reads, std::size_t readLimit,
+                              std::size_t &samples, std::size_t &count) noexcept {
+        const auto remaining = end - first;
+        count = static_cast<std::size_t>(remaining);
+        std::size_t padded = 0;
+        for (std::size_t i = 0; i < lanes.size(); ++i) {
+            const auto &lane = lanes[i];
+            const auto offset = static_cast<std::int64_t>(lane.adjustment.offsetSamples);
+            const auto relative = first - range.first;
+            std::span<const float> left, right;
+            if (relative < offset || remaining <= -offset) {
+                // Observe the real source epoch before publishing padding.
+                if (!projection && !prepareLane(i, range.first, reads, readLimit, samples)) return false;
+                const auto available = relative < offset ? std::min(offset - relative, remaining) : remaining;
+                const auto zeros = std::min(chunkFrames, static_cast<std::size_t>(available));
+                left = right = std::span(silence).first(zeros);
+                ++padded;
+            } else {
+                const auto source = first - offset;
+                if (!prepareLane(i, source, reads, readLimit, samples)) return false;
+                const auto start = static_cast<std::size_t>(source - lane.chunk.firstStamp);
+                const auto length = static_cast<std::size_t>(std::min(lane.chunkEnd, end) - source);
+                left = std::span(lane.left).subspan(start, length);
+                right = std::span(lane.right).subspan(start, length);
+            }
+            count = std::min(count, left.size());
+            blocks[i] = {identities[i], first, 0, range.sampleRate, true, left, right, lane.adjustment.inverted};
+        }
+        if (padded) {
+            count = std::min(count, (kMaxSamplesPerFrame - samples) / padded);
+            samples += count * padded;
+        }
+        return count != 0;
+    }
+
     bool process(std::size_t &reads, std::size_t &samples) noexcept {
         std::lock_guard lock(mutex);
         if (!needsWork()) return false;
@@ -948,11 +1005,8 @@ struct SharedAnalysis::BarScopeDomain {
         try {
             while (active.load()) {
                 const auto first = range.first + static_cast<std::int64_t>(projection ? projection->frames() : 0);
-                auto finish = end;
-                for (std::size_t i = 0; i < lanes.size(); ++i) {
-                    if (!prepareLane(i, first, reads, readLimit, samples)) return false;
-                    finish = std::min(finish, lanes[i].chunkEnd);
-                }
+                std::size_t count = 0;
+                if (!prepareDisplayBlocks(first, reads, readLimit, samples, count)) return false;
                 pollDifferenceRequest();
                 const auto fold = monoRequested.load(std::memory_order_relaxed);
                 if (!projection) {
@@ -966,12 +1020,12 @@ struct SharedAnalysis::BarScopeDomain {
                 } else {
                     projection->retainMono(fold);
                 }
-                const auto count = static_cast<std::size_t>(finish - first);
                 for (std::size_t i = 0; i < lanes.size(); ++i) {
-                    const auto &lane = lanes[i];
-                    const auto start = static_cast<std::size_t>(first - lane.chunk.firstStamp);
-                    blocks[i] = {identities[i], first, revision, range.sampleRate, true,
-                        std::span(lane.left).subspan(start, count), std::span(lane.right).subspan(start, count)};
+                    auto &block = blocks[i];
+                    block.source = identities[i];
+                    block.transportRevision = revision;
+                    block.left = block.left.first(count);
+                    block.right = block.right.first(count);
                 }
                 if (!projection->append(blocks)) { invalidate(); return false; }
                 if (!projection->complete()) continue;
@@ -1535,6 +1589,12 @@ void SharedAnalysis::BarScopeLease::setDifferenceRequested(std::optional<ScopeDi
     if (!state || !domain_) return;
     state->ownerOnly();
     domain_->setDifferenceRequested(requested);
+}
+void SharedAnalysis::BarScopeLease::setLayerAdjustments(std::span<const FocusScopeLayerAdjustment> adjustments) noexcept {
+    const auto state = state_.lock();
+    if (!state || !domain_) return;
+    state->ownerOnly();
+    domain_->setLayerAdjustments(adjustments);
 }
 double SharedAnalysis::BarScopeLease::sampleRate() const noexcept { return *this ? domain_->rate.load() : 0.; }
 SharedAnalysis::BarScopeStatus SharedAnalysis::BarScopeLease::status() const noexcept {

@@ -1121,6 +1121,112 @@ void focusScopeSumProjection() {
     check(reading.peak == std::array{hot, 1.} && reading.peak == numeric.peak && reading.rms == numeric.rms,
           "the plotted stereo extrema and numeric peak/RMS agree on the same unclipped sample sum");
 }
+void focusScopeLayerPreview() {
+    using namespace adi::ui;
+    SharedAnalysis::Result a, b;
+    for (auto *source : {&a, &b}) {
+        source->advancing = true;
+        source->transportRevision = 70;
+        source->sampleRate = 48000.;
+        source->outputs = SharedAnalysis::Scope;
+    }
+    a.firstStamp = 7;
+    a.scopeLeft = {99.f, 1.f, 2.f, 3.f, 4.f};
+    a.scopeRight = {99.f, .125f, .25f, .375f, .5f};
+    b.firstStamp = 8;
+    b.scopeLeft = {4.f, 3.f, 2.f, 1.f, 99.f};
+    b.scopeRight = {.5f, .375f, .25f, .125f, 99.f};
+    constexpr std::array adjustments{FocusScopeLayerAdjustment{1, true}, FocusScopeLayerAdjustment{-1, false}};
+    const std::array<const SharedAnalysis::Result*, 2> sources{&a, &b};
+    const auto range = focusScopeRange(sources);
+    check(range && range->first == 8 && range->frames == 4,
+          "preview keeps the common stamped interval");
+    if (!range) return;
+    check(focusScopeDisplayedSample(a.scopeLeft, 1, 4, 0, adjustments[0]) == 0.f &&
+              focusScopeDisplayedSample(a.scopeLeft, 1, 4, 1, adjustments[0]) == -1.f &&
+              focusScopeDisplayedSample(b.scopeLeft, 0, 4, 3, adjustments[1]) == 0.f,
+          "opposite shifts pad the displayed interval rather than using samples outside it");
+
+    std::array<FocusSumColumn, 2> sum{};
+    FocusSumColumn difference{};
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    const auto reading = focusProjectSum(sources, *range, sum.size(),
+        [&](std::size_t column, const auto &extrema) { sum[column] = extrema; }, adjustments);
+    const auto differenceRange = focusProjectDifference(a, b, 1, FocusScopeChannels::Stereo,
+        [&](std::size_t, const auto &extrema) { difference = extrema; }, adjustments[0], adjustments[1]);
+    observeAllocationSizes = false;
+    check(differenceRange && differenceRange->first == range->first && differenceRange->frames == range->frames &&
+              sum[0].low == std::array{1., .125} && sum[0].high == std::array{3., .375} &&
+              sum[1].low == std::array{-3., -.375} && sum[1].high == std::array{-1., -.125} &&
+              reading.peak == std::array{3., .375} && reading.rms[0] == std::sqrt(5.) &&
+              difference.low == std::array{-3., -.375} && difference.high == difference.low && allocationSizeCount == 0,
+          "short Sum, Difference and readouts operate on shifted signed samples without allocation");
+}
+void focusBarLayerPreview() {
+    using namespace adi::ui;
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr std::size_t frames = 1024;
+    constexpr std::int64_t first = 10000;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 71;
+    constexpr std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    unsigned opened = 0, closed = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        ++opened;
+        return taps[static_cast<std::size_t>(source.track - 1)];
+    }, [&](Source) { ++closed; }, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 4);
+    if (!lease) { check(false, "adjusted preview uses the existing bar lease"); return; }
+    constexpr std::array adjustments{FocusScopeLayerAdjustment{257, true}, FocusScopeLayerAdjustment{-259, false}};
+    const SharedAnalysis::ScopeDifference pair{sources[0], sources[1], FocusScopeChannels::Stereo, 3};
+    lease.setLayerAdjustments(adjustments);
+    lease.setDifferenceRequested(pair);
+    check(lease.request({first, frames, rate}, revision), "a shifted bar captures the existing source pair");
+    std::array<std::array<float, frames>, 2> signals{};
+    signals[0][1] = .75f;
+    signals[0][766] = .25f;
+    signals[0][767] = .5f; // Positively shifted out of the bar.
+    signals[1][0] = 1.f;   // Negatively shifted out of the bar.
+    signals[1][517] = .75f;
+    signals[1][1023] = .125f;
+    for (std::size_t offset = 0; offset < frames; offset += 128) {
+        for (std::size_t i = 0; i < taps.size(); ++i)
+            taps[i]->write(signals[i].data() + offset, signals[i].data() + offset, 128,
+                           first + static_cast<std::int64_t>(offset), true, revision);
+        broker.pump();
+    }
+    const auto shown = lease.read();
+    check(shown && shown->projection && shown->projection->complete(),
+          "opposite bar offsets stream through multiple tap reads and finish with padding");
+    if (!shown || !shown->projection) return;
+    const auto sum = shown->projection->sumColumns();
+    const auto difference = shown->projection->differenceColumns(pair);
+    const auto moved = shown->projection->memberColumns(0);
+    check(sum.size() == 4 && difference.size() == 4 && moved.size() == 4 &&
+              moved[1].low == std::array{-.75, -.75} && moved[3].low == std::array{-.25, -.25} &&
+              sum[1].low == std::array{0., 0.} && sum[1].high == sum[1].low &&
+              sum[2].high == std::array{.125, .125} && sum[3].low == std::array{-.25, -.25} &&
+              difference[1].low == std::array{-1.5, -1.5},
+          "full-bar member, Sum and Difference keep the same shifted sample and sign at tap boundaries");
+    lease.setLayerAdjustments(adjustments);
+    check(lease.read() == shown, "unchanged preview keeps the published bar");
+    lease.setLayerAdjustments({});
+    check(lease.status() == Status::Missed && !lease.read() && shown->projection->complete(),
+          "changing preview invalidates the current bar while existing readers keep an immutable result");
+    check(lease.request({first + static_cast<std::int64_t>(frames), 4, rate}, revision),
+          "the same taps can capture the next bar after clearing preview");
+    constexpr std::array raw{.25f, .5f, .75f, 1.f};
+    for (const auto &tap : taps)
+        tap->write(raw.data(), raw.data(), 4, first + static_cast<std::int64_t>(frames), true, revision);
+    broker.pump();
+    const auto next = lease.read();
+    check(next && next->projection && next->projection->sumColumns().back().high == std::array{2., 2.} &&
+              opened == 2 && closed == 0 && broker.stats().transforms == 0,
+          "resetting preview restores the raw projection without another tap or transform");
+}
 void focusScopeFlatPath() {
     using adi::ui::FocusScopePathReducer;
     using Point = adi::ui::FocusScopePoint;
@@ -3056,7 +3162,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
