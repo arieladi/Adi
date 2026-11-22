@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — N64 track record controls in the snapshot
+
+**PR requested** · `engine/n64-recording-snapshot` · `8a32d9e382affc8cc5ed16ffe504181a0eb76535`
+**Title** — Expose track record controls in immutable snapshots.
+
+`TrackNode` now publishes the stored `recordArmed`, `monitorMode` and `inputRef`. A changed control replaces its track's node, and unrelated tracks retain pointer identity. The input reference preserves the distinction between an empty string and SQL NULL.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors with Pd. Engine, snapshot remarks, track recording, UI Seams, transport info and Session passed on both. The 154-check engine suite tests the three edits independently, immutable published state and Undo. Removing the comparison compiled and yielded five failures, including each stale control assertion. `git diff --check` passes.
+
+**Dependency** — Current main `0ea10b8e`. Window can read the values for its Arm, Monitor and input binding. N67's creation default is a separate item.
+
 ## 2026-11-22 — #677 follow-ups prepared against the published base
 
 Local `engine/df-e23-followups-local` at `167d863e6af3008d477b45803f90e478c6e251f4` contains DF-E30(a–c) and the mixed-switch rule. Ungroup judges sends against the final parent tree, disconnects capture routing-dependent automation and MIDI mappings, and Pre FX resets the send's strip controls. The mixer switch moves a mixed return to Post and the next click to Pre in separate Undo steps.
