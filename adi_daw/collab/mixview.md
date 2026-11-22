@@ -2,6 +2,31 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-22 — Cumulative Windows Release for Win
+
+The exact x64 Release at `80eacfe89c83a064e7fec26cc0c0ffc972b4218b` builds against main `0ea10b8e`. The SSD build completed. The original scratch build tree remains available. Nineteen CTests passed, including 605 broker, 453 Spectrum, 291 function-component, 129 document identity, 114 owned VST3 and 463 Focus checks. The three component-only shell modes passed 906 Mix View, 329 Arrangement and 7 Appearance checks.
+
+**PR requested.** `mixview/cumulative-20261122` at `05fedb1d`, successor to the 20 November cumulative stack. ADR-0251 keeps the Classic Scope artwork and ADI name. This preserves main's shared catalogue, Export and automation behavior.
+
+**PR requested.** `mixview/device-identity-dfm60a-20261122` at `6febf651`, after `05fedb1d`. Paste, Duplicate and Browser insert respect the retained device ID floor and exact identity on Undo. Window and Engine review their loans.
+
+**PR requested.** `mixview/focus-match-locate-20261122` at `2aec0323`, after identity. Same-position Locate waits for the applied revision and two new aligned windows. Record remains independent. Window reviews the command-drain loan.
+
+**PR requested.** `mixview/device-key-shape-dfm60b-20261122` at `b418df8f`, separate child of Focus Locate. Engine's VST3 effective key shape is already in main. The owned fixture verifies dormant stereo key activation and the real signal difference between Pre FX and Post FX.
+
+**PR requested.** `mixview/neutral-eq-suspension-dfm34-20261122` at `d8194c80`, independent of the key-shape child. Take this before the already requested FIR reuse slice. The keys, prepared host and offline gates passed.
+
+**PR requested.** `mixview/spectrogram-clear-writer-20261122` at `18281178`, then `mixview/spectrum-realtime-maximum-20261122` at `9d8c214d`. The writer fence stays local and maximum uses the shared spectrum.
+
+**PR requested.** `mixview/focus-scope-trace-20261122` at `6bbe3a26` then `mixview/focus-scope-mid-20261122` at `4af8219b`. Stereo defaults to Overlay. Mid averages the sample pair before finding extrema and has no new tap.
+
+**PR requested.** `mixview/spectrum-cumulative-maximum-current-20261122` at `3e1f7d31`, after Scope Mid. Held bins are local to the observer, Reset uses the writer fence, parked silence preserves the sibling's result and unchanged peaks retain their immutable picture.
+
+**PR requested.** `mixview/focus-align-measure-20261122` at `6637f2ae`. It can land after Cumulative Maximum. One explicit Measure uses existing aligned taps and shows timing and correlation without editing audio or the project. Apply still needs the owner witness recorded below.
+
+`mixview/review-cumulative-20261122` joins the above, the key child and the tested lazy Focus storage change. Use the individual branches for review and the joined branch for reproduction. The local brief is `ADI-Q-MixView-Cumulative-1122-80eacfe8-CLAUDE-RETEST.txt`. ZIP SHA-256 `8e3e7b90186ac2f7de55d313bdd992c508d6f616a3f5da6c9f946a6ba430a89e`. ADI.exe SHA-256 `a82c64ad9600eb77a84e4961941df01efefe2b80bb4eea2f3b16d7d06b57198f`. Scanner SHA-256 `33bdb42de0b816ce5e0bc8ad8405be3ffaf87dd44c5a17d312d5fc48388cf1bc`. The archive test passed. Win owns live testing when the director is idle.
+
+
 ## 2026-11-22 — Focus FIR reuse and dormant transform storage
 
 **PR requested.** `mixview/focus-fir-work-dfm13-20261122` at `fe18068e`, after the neutral Clean/EQ slice `d8194c80`. The optimized internal key reuses forward and inverse transforms only when the current and previous partitions permit it. Separate overlap rings retain the tails of an earlier external key. The tests-only baseline failed four work-limit assertions. The optimized Windows x64 Release passed 446 checks and compared 4,819,406 samples, with zero callback allocations or deallocations. At 192 kHz / 512 for one and ten nodes, internal-key total and worst-callback convolution work stayed below 70% of the corresponding external-key case, with exact paired audio and no missed deadlines. These counters measure work units. Real callback CPU timing remains with the matched quiet-machine run.
