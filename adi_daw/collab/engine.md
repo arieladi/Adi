@@ -98,6 +98,14 @@ Parked TM-WT-02 journal registration on the op reservation, rightmost-marker beh
 
 GCC 14 and Clang 19 strict builds each passed 342 checks across five suites. An independent half-phase formula matched all 8,201 stereo frames, between frames as well as at integer positions, across the 4,096-frame page boundaries and trimmed window edges. This qualifies the DSP change. The effect's Live listening gate remains open.
 
+### 22 November — TM-WT-03 Beats loop crossing
+
+**PR requested** for `engine/tm-wt03-beats-zero-crossing` at `c52e6ccda93c05fd2c0da42de0898d99fce63655`, stacked on the four-point Warp interpolation branch. Forward and PingPong use the closest zero crossing within five percent of the slice midpoint, shared across channels. The fallback is the midpoint bounded by the last source sample. A slice is searched only when playback actually repeats it. PingPong reflects around its endpoints in both directions.
+
+GCC 14 and Clang 19 strict builds each passed 345 checks across five suites. An antiphase stereo PCM fixture picks the closer of two crossings, enters the repeat between source frames, and mirrors the samples around the turn. A second slice exercises the midpoint fallback.
+
+Parked the remaining TM-WT-03 settings and Preserve grid on the Warp settings reservation and microfade length and listening acceptance on Live. DEV-22's device contract is present at `4054d859`; the hardware routing rows and native substitution will need the schema and the catalogue handoff. DEV-19 engine scale context can proceed without touching device DSP paths.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
