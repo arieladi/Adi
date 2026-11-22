@@ -51,7 +51,15 @@ void LivePedal::prepare(double sampleRate) noexcept {
     state_ = {};
     dcIn_ = dcOut_ = {};
     dcPole_ = std::exp(-2 * std::numbers::pi * 5 / rate_);
+    smooth_ = std::exp(-1 / (0.010 / 5 * rate_));   // about 10 ms to arrive
+    fadeStep_ = 1 / (0.200 * rate_);
     update();
+    gain_ = gainTarget_;
+    output_ = outputTarget_;
+    wet_ = wetTarget_;
+    type_ = previous_ = static_cast<int>(p_[Type]);
+    fade_ = 1;
+    fresh_ = true;
 }
 
 void LivePedal::set(Param p, double v) noexcept {
@@ -72,12 +80,22 @@ void LivePedal::update() noexcept {
     design_[1] = lowShelf(rate_, 100, p_[Bass] / 100 * 15);
     design_[2] = peaking(rate_, std::min(kMidHz[static_cast<std::size_t>(p_[MidFreq])], top), 1, p_[Mid] / 100 * 15);
     design_[3] = highShelf(rate_, std::min(3500.0, top), p_[Treble] / 100 * 15);
-    const auto& spec = kVoices[static_cast<std::size_t>(voice)];
-    gain_ = std::pow(10.0, (spec.baseDb + 30 * p_[Gain] / 100) / 20);
-    bias_ = spec.bias;
-    offset_ = curve(voice, bias_);
-    output_ = std::pow(10.0, p_[Output] / 20);
-    wet_ = p_[DryWet] / 100;
+    // Gain's part of the drive (the voice's own base is applied per voice).
+    gainTarget_ = std::pow(10.0, 30 * p_[Gain] / 100 / 20);
+    outputTarget_ = std::pow(10.0, p_[Output] / 20);
+    wetTarget_ = p_[DryWet] / 100;
+    if (fresh_) {
+        gain_ = gainTarget_;
+        output_ = outputTarget_;
+        wet_ = wetTarget_;
+        type_ = previous_ = voice;
+        fade_ = 1;
+    } else if (voice != type_) {
+        // The voice that was sounding fades out as the new one fades in.
+        previous_ = fade_ >= 1 ? type_ : previous_;
+        type_ = voice;
+        fade_ = 0;
+    }
 }
 
 double LivePedal::run(std::size_t f, std::size_t c, double x) noexcept {
@@ -92,15 +110,28 @@ double LivePedal::run(std::size_t f, std::size_t c, double x) noexcept {
 }
 
 void LivePedal::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
-    const auto voice = static_cast<int>(p_[Type]);
+    fresh_ = fresh_ && frames == 0;
     float* out[2] = {outL, outR};
+    const auto drive = [](int voice, double g, double x) {
+        const auto& spec = kVoices[static_cast<std::size_t>(voice)];
+        return curve(voice, std::pow(10.0, spec.baseDb / 20) * g * x + spec.bias) - curve(voice, spec.bias);
+    };
     for (std::size_t i = 0; i < frames; ++i) {
         // Both inputs are read before either output is written (a host may
         // hand an output plane that is an input plane).
         const double dry[2] = {inL && std::isfinite(inL[i]) ? inL[i] : 0.0, inR && std::isfinite(inR[i]) ? inR[i] : 0.0};
+        gain_ = gainTarget_ + smooth_ * (gain_ - gainTarget_);
+        output_ = outputTarget_ + smooth_ * (output_ - outputTarget_);
+        wet_ = wetTarget_ + smooth_ * (wet_ - wetTarget_);
+        if (fade_ < 1) {
+            fade_ = std::min(1.0, fade_ + fadeStep_);
+        }
         for (std::size_t c = 0; c < 2; ++c) {
             const double x = run(0, c, dry[c]);
-            const double e = curve(voice, gain_ * x + bias_) - offset_;
+            double e = drive(type_, gain_, x);
+            if (fade_ < 1) {
+                e = drive(previous_, gain_, x) + (e - drive(previous_, gain_, x)) * fade_;
+            }
             const double blocked = e - dcIn_[c] + dcPole_ * dcOut_[c];
             dcIn_[c] = e;
             dcOut_[c] = settle(blocked);
