@@ -32,6 +32,11 @@ bool alias(const fs::file_status& status) {
     return false;
 #endif
 }
+fs::path withoutTrailingSeparator(fs::path path) {
+    while (!path.empty() && path.filename().empty() && path != path.root_path())
+        path = path.parent_path();
+    return path;
+}
 bool within(const fs::path& path, const fs::path& root) {
     auto p=path.begin();
     for(auto r=root.begin();r!=root.end();++r,++p)if(p==path.end() || *p!=*r)return false;
@@ -44,7 +49,7 @@ struct Walk {
     std::set<std::pair<std::string,fs::path>> seen;
 };
 void rootStable(const Root& root) {
-    std::error_code ec;const auto now=fs::canonical(root.original,ec);
+    std::error_code ec;const auto now=withoutTrailingSeparator(fs::canonical(root.original,ec));
     if(ec || now!=root.canonical || !fs::is_directory(now,ec) || ec)
         throw Refusal(ScanPruneStatus::Incomplete,"scan root changed or cannot be checked: "+utf8(root.original));
 }
@@ -56,17 +61,17 @@ Walk resolveRoots(const ScanPruneRequest& request, ScanPruneResult& result) {
         if((root.format!="clap" && root.format!="vst3") || root.path.empty() ||
             utf8(root.path).find('\0')!=std::string::npos)
             throw Refusal(ScanPruneStatus::Invalid,"invalid scan pruning root");
-        std::error_code ec;const auto original=fs::absolute(root.path,ec).lexically_normal();
+        std::error_code ec;const auto original=withoutTrailingSeparator(fs::absolute(root.path,ec).lexically_normal());
         if(ec)throw Refusal(ScanPruneStatus::Incomplete,"cannot resolve scan root: "+utf8(root.path));
         const auto status=fs::symlink_status(original,ec);
         if(absent(ec,status)) {
             ++result.missingRootsSkipped;
             auto excluded=fs::weakly_canonical(original,ec);
-            out.excluded.push_back({root.format,ec?original:excluded});
+            out.excluded.push_back({root.format,ec?original:withoutTrailingSeparator(std::move(excluded))});
             continue;
         }
         if(ec)throw Refusal(ScanPruneStatus::Incomplete,"cannot inspect scan root: "+utf8(original)+": "+ec.message());
-        const auto canonical=fs::canonical(original,ec);
+        const auto canonical=withoutTrailingSeparator(fs::canonical(original,ec));
         if(ec==std::errc::no_such_file_or_directory) {
             ++result.missingRootsSkipped;out.excluded.push_back({root.format,original});continue;
         }
@@ -104,7 +109,7 @@ Walk walk(const ScanPruneRequest& request,Walk out, ScanPruneResult& result) {
                     auto target=fs::read_symlink(path,ec);
                     if(ec)throw Refusal(ScanPruneStatus::Incomplete,"dangling scan alias target cannot be read: "+utf8(path)+": "+ec.message());
                     if(target.is_relative())target=path.parent_path()/target;
-                    target=fs::weakly_canonical(target,ec);
+                    target=withoutTrailingSeparator(fs::weakly_canonical(target,ec));
                     if(ec)throw Refusal(ScanPruneStatus::Incomplete,"dangling scan alias target cannot be resolved: "+utf8(path)+": "+ec.message());
                     out.excluded.push_back({root.format,path});out.excluded.push_back({root.format,target});
                     continue; // confirmed dangling aliases reserve their old scope; they are not a partial walk
@@ -133,7 +138,14 @@ bool missingOwned(const Key& key,const Walk& walked,ScanPruneResult& result) {
     std::error_code ec;const auto status=fs::symlink_status(key.path,ec);
     if(!absent(ec,status)) {
         if(ec)throw Refusal(ScanPruneStatus::Incomplete,"cached module cannot be inspected: "+key.text+": "+ec.message());
-        return false;
+        if(alias(status))return false;
+        // On a case-insensitive volume the old spelling can still resolve.
+        // Only retire it when the same directory's canonical leaf was actually
+        // observed in this walk. An alias or an unobserved replacement is not
+        // evidence of a rename. Recheck this again in the deletion transaction.
+        const auto current=fs::canonical(key.path,ec);
+        return !ec && current!=key.path && current.parent_path()==key.path.parent_path() &&
+               walked.seen.contains({key.format,current});
     }
     // A vanished canonical key under a parent now replaced by an alias is not
     // evidence about its old target. Retain it even if that alias stays in-root.

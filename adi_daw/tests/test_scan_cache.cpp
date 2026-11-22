@@ -468,6 +468,20 @@ void stampsAndTransaction(const fs::path& self) {
     write(macBinary,"extensionless code changed");fs::last_write_time(macBinary,macTime);
     const auto macChanged=candidateStamp("vst3",macCanonical,hash,error);
     check(macStamp && macChanged && *macStamp!=*macChanged,"relocated macOS-style bundle stamps its extensionless Contents/MacOS binary");
+    const auto mixed=f.temp.path()/"CaseLayout.vst3";
+    fs::create_directories(mixed/"cOnTenTs"/"mAcOs");
+    const auto mixedBinary=mixed/"cOnTenTs"/"mAcOs"/"CaseLayout";
+    write(mixedBinary,"extensionless binary");
+    write(mixed/"cOnTenTs"/"readme","ordinary resource");
+    const auto mixedCanonical=fs::canonical(mixed);
+    const auto mixedBefore=candidateStamp("vst3",mixedCanonical,hash,error);
+    write(mixed/"cOnTenTs"/"readme","new ordinary resource");
+    const auto assetChanged=candidateStamp("vst3",mixedCanonical,hash,error);
+    write(mixedBinary,"new version of the extensionless binary");
+    const auto binaryChanged=candidateStamp("vst3",mixedCanonical,hash,error);
+    check(mixedBefore && assetChanged && binaryChanged && *mixedBefore==*assetChanged &&
+          *mixedBefore!=*binaryChanged,
+          "mixed-case macOS bundle layout stamps the extensionless executable and skips an ordinary asset");
     const auto path=utf8(fs::canonical(binary(bundle)));auto registry=f.registry();
     auto ticket=registry->beginScan("clap",path,1,error);if(!ticket)throw std::runtime_error(error);
     auto other=f.registry();

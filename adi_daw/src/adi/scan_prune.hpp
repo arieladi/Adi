@@ -40,8 +40,9 @@ struct ScanPruneResult {
 // second walk because legacy candidate enumeration suppresses directory errors.
 // Requires a successful pre-scan binding and the same roots/bindings at cleanup.
 // Missing optional roots are excluded; permission/partial/cancel aborts all writes.
-// Existing paths and manual/pending blocks survive. Only lexically contained
-// canonical missing keys are eligible; out-of-root aliases remain unowned.
+// Manual and pending blocks survive. Only owned missing keys and obsolete
+// spellings of canonical modules observed in the walk are eligible. Aliases
+// outside the walked roots remain unowned.
 // No PluginRegistry::open/schema changes: no admissible roots => no registry I/O;
 // no missing keys => read-only inventory, no writer. At most 1024 roots, 262144
 // walked entries and 131072 registry keys/16 MiB path text. SQL deletion is atomic;
