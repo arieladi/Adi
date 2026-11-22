@@ -55,6 +55,12 @@ void DynamicTube::prepare(double sampleRate) noexcept {
     env_ = {};
     dcIn_ = dcOut_ = {};
     dcPole_ = std::exp(-2 * std::numbers::pi * 5 / rate_);
+    for (auto* g : {&bias_, &output_, &wet_}) {
+        g->prepare(rate_);
+    }
+    // Drive moves the biased curve's DC as well as its level: over 50 ms, so
+    // the DC blocker follows it without a thump.
+    drive_.prepare(rate_, 0.050);
     update();
 }
 
@@ -73,13 +79,13 @@ void DynamicTube::update() noexcept {
     const double tilt = p_[Tone] / 100 * 12;
     pre_ = highShelf(rate_, std::min(1000.0, 0.45 * rate_), tilt);
     post_ = highShelf(rate_, std::min(1000.0, 0.45 * rate_), -tilt);
-    drive_ = level(p_[Drive]);
-    bias_ = 0.5 * p_[Bias] / 100;
+    drive_.set(level(p_[Drive]));
+    bias_.set(0.5 * p_[Bias] / 100);
     envelope_ = p_[Envelope] / 100;
     attack_ = std::exp(-1 / (p_[Attack] / 1000 * rate_));
     release_ = std::exp(-1 / (p_[Release] / 1000 * rate_));
-    output_ = level(p_[Output]);
-    wet_ = p_[DryWet] / 100;
+    output_.set(level(p_[Output]));
+    wet_.set(p_[DryWet] / 100);
 }
 
 double DynamicTube::run(const Biquad& b, State& s, double x) noexcept {
@@ -98,23 +104,24 @@ void DynamicTube::process(const float* inL, const float* inR, float* outL, float
         // Both inputs are read before either output is written (a host may
         // hand an output plane that is an input plane).
         const double dry[2] = {inL && std::isfinite(inL[i]) ? inL[i] : 0.0, inR && std::isfinite(inR[i]) ? inR[i] : 0.0};
+        const double drive = drive_.next(), bias = bias_.next(), gainOut = output_.next(), mix = wet_.next();
         for (std::size_t c = 0; c < 2; ++c) {
             const double x = run(pre_, preState_[c], dry[c]);
-            const double a = std::abs(drive_ * x);
+            const double a = std::abs(drive * x);
             env_[c] = settle(a + (a > env_[c] ? attack_ : release_) * (env_[c] - a));
             // The operating point: Bias, moved by the envelope, kept on the
             // curve's useful span.
-            const double b = std::clamp(bias_ + envelope_ * 0.5 * std::min(env_[c], 1.0), -0.9, 0.9);
+            const double b = std::clamp(bias + envelope_ * 0.5 * std::min(env_[c], 1.0), -0.9, 0.9);
             // Divided by the drive alone (every curve's slope is 1 at 0 and
             // never more), so the tube never puts out more than it is given;
             // its DC, which a biased curve makes under signal, is blocked.
-            const double e = (curve(tube, drive_ * x + b) - curve(tube, b)) / drive_;
+            const double e = (curve(tube, drive * x + b) - curve(tube, b)) / drive;
             const double y = e - dcIn_[c] + dcPole_ * dcOut_[c];
             dcIn_[c] = e;
             dcOut_[c] = settle(y);
-            const double wet = output_ * run(post_, postState_[c], y);
+            const double wet = gainOut * run(post_, postState_[c], y);
             if (out[c]) {
-                out[c][i] = static_cast<float>(dry[c] + (wet - dry[c]) * wet_);
+                out[c][i] = static_cast<float>(dry[c] + (wet - dry[c]) * mix);
             }
         }
     }

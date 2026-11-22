@@ -28,7 +28,8 @@
 // read whole samples at the set delay, so the output is the input exactly
 // delayed. Reads are linear between samples otherwise. Every random draw is at
 // a grain's start, from a fixed seed per channel, so any block size gives the
-// same samples.
+// same samples. Feedback and Dry/Wet glide over about 10 ms once audio runs
+// (dsp/glide.hpp).
 //
 // WHAT IS NOT LIVE'S YET, and says so: the ranges and defaults, the window,
 // Random Pitch's and Spray's laws, and where the feedback is taken wait on a
@@ -37,6 +38,8 @@
 // not. No latency.
 
 #pragma once
+
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cstddef>
@@ -86,7 +89,8 @@ private:
     std::array<double, Count> p_{};
     std::array<Lane, 2> lanes_;
     std::size_t size_ = 0, written_ = 0, length_ = 2, countdown_ = 0, next_ = 0;
-    double rate_ = 48000, bpm_ = 120, delay_ = 1, ratio_ = 1, feedback_ = 0, wet_ = 0.5, spray_ = 0, lowest_ = 1e300;
+    double rate_ = 48000, bpm_ = 120, delay_ = 1, ratio_ = 1, spray_ = 0, lowest_ = 1e300;
+    Glide feedback_, wet_;
 };
 
 }  // namespace adi::dsp

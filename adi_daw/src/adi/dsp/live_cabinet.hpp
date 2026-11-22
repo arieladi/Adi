@@ -15,6 +15,7 @@
 //   Dual        Mono (the channels' mean through one cabinet, to both) or
 //               Dual (a cabinet for each channel).
 //
+// Output and Dry/Wet glide over about 10 ms once audio runs (dsp/glide.hpp).
 // Each filter is a direct-form-I biquad in double, its states settled on
 // exact 0 below 1e-30, so the response is the cascade's, which the test
 // checks against the documented designs.
@@ -27,6 +28,7 @@
 #pragma once
 
 #include "adi/dsp/biquad.hpp"
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cstddef>
@@ -66,7 +68,8 @@ private:
     std::array<double, Count> p_{};
     std::array<Biquad, kSections> design_{};
     std::array<std::array<State, kSections>, 2> state_{};
-    double rate_ = 48000, output_ = 1, wet_ = 1;
+    double rate_ = 48000;
+    Glide output_, wet_;
 };
 
 }  // namespace adi::dsp
