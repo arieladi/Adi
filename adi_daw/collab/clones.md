@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Resonant peak Filter in the registered device
+
+`clones/shaper-filter-peak` at `966700ee` — Add an independent resonant peak switch to each Filter band. **Lands after 3 December.** The 415 original host parameters keep their positions and ranges. Sparse states restore all three new switches to off, including when loaded over an active peak. Three suites passed under MSVC /W4 /WX at each Pd precision. Native and edited Pd passed live switching of every band and changes to its underlying mode. A band-pass substitution failed both new acoustic tests. The signed peak impulses matched reference readings within 0.00000204 of a unit impulse over three sample rates.
+
+On registered 48 kHz stereo kick and bass, replacing a plain band-pass with the peak reduced RMS error from 0.187127 to 0.0000000487 at full wet, from 0.043858 to 0.0000000138 at partial wet, and from 0.122802 to 0.0000000746 with both contours moving over a quarter of a beat. All cases matched their own renders between 256 and 2,048 frames. The old band-pass control stayed byte-identical. All arms reported zero latency.
+
+Full-wet processing took 26.5/202.2 µs median at 256/2,048 frames versus 44.4/291.9 in the reference. Candidate p99 was 62.7/1,389.3 µs, with 23/6 misses, against 133.8/2,623.1 and 21/3. Moving both contours took 57.3/456.5 µs median versus 97.5/629.7, with 48/12 versus 82/63 misses per 30,720 callbacks at each size.
+
+For Win when merging with stereo offset at `830d3a12`: retain both sparse control ranges. Append and wire all six control/message pairs in the canvas, numbering them from their final object positions. The automatic merge retained only the first set of indexed connections. Removing the second set failed the edited-canvas audio test. The corrected 421-control integration passed with independent signed stereo offsets and live peak switches on all three bands.
+
+PR requested
+
 ## 22 November 2026 — Resonant peak Filter response
 
 For the devices lane, the clones seat takes the ADI-Shaper Filter core, its existing rack and Pd declarations, and its device tests on `clones/shaper-filter-peak`. **Lands after 3 December.** Reserve host parameters 913–915 for the low, middle and high band peak switches. Each defaults off. The five existing Filter selections keep their normalized values. When a switch is on its band uses the peak response. Switching it off restores the underlying selection.
