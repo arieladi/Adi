@@ -1528,6 +1528,12 @@
 #X msg 8260 2223 p 910 \$1;
 #X obj 8260 2260 adi.param \$0 912 0 100 100 % lin Crush_Hold_High_Detector_High_Cut;
 #X msg 8260 2287 p 911 \$1;
+#X obj 8535 20 adi.param \$0 865 0 100 0 % lin Crush_Low_Bias;
+#X msg 8535 47 p 864 \$1;
+#X obj 8535 84 adi.param \$0 866 0 100 0 % lin Crush_Mid_Bias;
+#X msg 8535 111 p 865 \$1;
+#X obj 8535 148 adi.param \$0 867 0 100 0 % lin Crush_High_Bias;
+#X msg 8535 175 p 866 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -3058,3 +3064,9 @@
 #X connect 1526 0 1 0;
 #X connect 1527 0 1528 0;
 #X connect 1528 0 1 0;
+#X connect 1529 0 1530 0;
+#X connect 1530 0 1 0;
+#X connect 1531 0 1532 0;
+#X connect 1532 0 1 0;
+#X connect 1533 0 1534 0;
+#X connect 1534 0 1 0;

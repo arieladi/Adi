@@ -915,6 +915,10 @@ void AdiShaper::set(Param id, float value) noexcept {
         }
         return;
     }
+    if (id >= CrushLowBias && id <= CrushHighBias) {
+        crush_[static_cast<std::size_t>(id - CrushLowBias)].setBias(value * .01f);
+        return;
+    }
     if (id >= SweepLowOffset && id <= SweepHighOffset) {
         sweeps_[static_cast<std::size_t>(id - SweepLowOffset)].setStereoOffset(value * .01f);
         return;
