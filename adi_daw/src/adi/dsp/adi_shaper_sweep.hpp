@@ -20,6 +20,7 @@ public:
     void setPolarity(bool negative) noexcept;
     void processStereo(float& left, float& right, float centerHeight,
                        float feedbackHeight) noexcept;
+    bool finishBlock() noexcept;
 
 private:
     using Stereo = std::array<float, 2>;
@@ -35,7 +36,9 @@ private:
     unsigned stages_ = 0;
     std::array<Tuning, intervals + 1> tuning_{};
     std::vector<Stereo> delay_;
-    std::size_t write_ = 0, valid_ = 0, mask_ = 0, delayFrames_ = 1;
+    std::size_t write_ = 0, mask_ = 0, delayFrames_ = 1;
+    std::array<std::size_t, 2> valid_{};
+    std::array<bool, 2> delayFault_{};
     Stereo low_{};
     std::array<Stereo, 16> states_{};
     float center_ = -1, feedback_ = -1, delayFraction_ = 0, highpassAmount_ = 0;

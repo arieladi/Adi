@@ -16,6 +16,7 @@ class AdiShaperDrive {
     void setMode(Mode mode) noexcept;
     void setTrims(float inputNormalized, float outputNormalized) noexcept;
     void process(float& left, float& right, float driveNormalized) noexcept;
+    bool finishBlock() noexcept;
 
   private:
     static constexpr int maxFactor = 4, inputs = 17, maxTaps = 16 * maxFactor + 1;
