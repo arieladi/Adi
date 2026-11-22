@@ -233,6 +233,46 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the ninth review: 5 findings, all fixed
+
+This round covered only the last round's changes. Five findings were confirmed and one refuted: that
+computing the seven copies every sample doubles the CPU at 768 kHz.
+- **The detector (`devices/tuner`, b4c027f2).**
+  - The fault: the onset rule (halves of the window differing by 1.5×) also caught a sung vibrato's
+    tremolo. At ±40 %, 110 Hz read 38 of 137 hops.
+  - Every bad onset reading had a near-silent quarter in its window: under 1e-30 of the loudest. A
+    ±50 % tremolo keeps every quarter above 13 %. So a window counts as an onset when its quietest
+    quarter is under 1 % of its loudest.
+  - `adi_tuner_tests` 59. Vibrato with tremolo now reads 137 of 137 hops, and the onsets stay within
+    7.8 cents. The halves rule and having no rule both fail.
+- **Auto Shift (`devices/auto-shift`, f10ea890).**
+  - The fault: the glide back to the centre, at 0.5 %, played an in-tune corrected note up to
+    8.6 cents off for 0.2 to 0.9 s.
+  - It now glides at 0.1 %: 1.7 cents, below hearing.
+  - A check driving a ratio that hovers on a band's top now tests the hysteresis. Before, nothing in
+    the suite did: the A3 check's move count could not fail, so it is dropped.
+  - `adi_auto_shift_tests` 125. Plants: the 0.5 % glide (8.6 cents off) and no hysteresis (2,250
+    moves in 3 s).
+  - Merged up the stack to `devices/spectral-resonator` (c20fa92c).
+- **The translator (`devices/amxd-audit`, f162ce3b).**
+  - `set` into a `$` message box changes its text again, rather than filling in its arguments and
+    sending.
+  - biquad~'s stability test now runs as Pd's own test, on the numbers Pd will read, in both 32-bit and
+    64-bit `t_float`. Coefficients unstable in either are refused. The earlier margin had also
+    refused stable resonances below 8 Hz; they now translate.
+  - `adi_pd_amxd_tests` 137. Two plants each fail.
+
+**New heads** (in place of the eighth review's):
+- `devices/tuner` b4c027f2, `devices/erosion` ecf7feb0, `devices/vinyl-distortion` 26cb6204,
+  `devices/filter-delay` a3a6aaa4, `devices/dj-filter` 66d3e8c3, `devices/auto-shift` f10ea890;
+- spectrum-device 07b71918, live-amp 66486705, live-cabinet 9c90fd3a, corpus 2e28e86a, drum-buss
+  e0238999, dynamic-tube c4cb36d4, grain-delay 67d93e7b, live-pedal fdc69a36, roar 5e37d549,
+  spectral-time 01038f92, spectral-resonator c20fa92c;
+- `devices/amxd-audit` f162ce3b.
+
+**CTest:** `devices/spectral-resonator` at 16f9631d passed 295/295 and `devices/amxd-audit` at 097e29a7
+passed 270/270, at PD_FLOATSIZE 32 and 64. The heads after that are running.
+
 ## 2026-11-22 — the eighth review: this round's fixes; 8 findings, all fixed
 
 Two finders covered only the last round's changes, and three skeptics checked every finding. Eight were
