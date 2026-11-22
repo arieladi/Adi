@@ -164,6 +164,35 @@ void flipAndLink() {
     std::vector<float> ol(4800), orr(4800);
     l.process(left.data(), right.data(), ol.data(), orr.data(), 4800);
     near(orr.back(), fromDb(-60), 1e-8, "linked: a loud left opens the gate for a quiet right too");
+    // A moved Floor keeps the gain between Floor and unity, and Flip's passing
+    // signal at unity, whatever the ballistics (a found defect: Flip mixed the
+    // smoothed gain with the new Floor, +6 dB or silence for a Release).
+    auto m = made(-40);
+    m.set(G::Flip, 1);
+    m.set(G::Attack, 150);
+    m.set(G::Release, 3000);
+    run(m, constant(4800, fromDb(-50)));
+    double worst = 0;
+    for (double floorDb : {0.0, -80.0, -10.0, -30.0}) {
+        m.set(G::Floor, floorDb);
+        for (float y : run(m, constant(4800, fromDb(-50)))) {
+            worst = std::max(worst, std::abs(static_cast<double>(y) / fromDb(-50) - 1.0));
+        }
+    }
+    check(worst < 1e-6, "Flip, closed: a moved Floor leaves the passing signal at unity");
+    auto n = made(-40, 3, -20);
+    n.set(G::Attack, 150);
+    n.set(G::Release, 3000);
+    run(n, constant(4800, fromDb(-30)));
+    run(n, constant(9600, fromDb(-50)));  // closing, mid-release
+    bool inside = true;
+    for (double floorDb : {-6.0, -80.0, 0.0}) {
+        n.set(G::Floor, floorDb);
+        run(n, constant(480, fromDb(-50)));
+        const double lowest = floorDb <= -80 ? 0.0 : fromDb(floorDb);
+        inside = inside && n.gain() >= lowest - 1e-12 && n.gain() <= 1.0 + 1e-12;
+    }
+    check(inside, "a Floor moved mid-release keeps the gain between Floor and unity");
 }
 
 void lookahead() {

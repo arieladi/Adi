@@ -30,8 +30,8 @@ void LiveGate::prepare(double sampleRate) noexcept {
     update();
     open_ = false;
     holdLeft_ = 0;
-    gain_ = floor_;
-    applied_ = flip_ ? 1.0 + floor_ - gain_ : gain_;
+    opening_ = 0;
+    applied_ = flip_ ? 1.0 : floor_;
 }
 
 void LiveGate::set(Param p, double v) noexcept {
@@ -88,9 +88,14 @@ void LiveGate::process(const float* inL, const float* inR, float* outL, float* o
                 open_ = false;
             }
         }
-        const double target = open_ ? 1.0 : floor_;
-        gain_ = target + (gain_ - target) * (target > gain_ ? attack_ : release_);
-        applied_ = flip_ ? 1.0 + floor_ - gain_ : gain_;
+        // The one-pole on the opening; it settles exactly, so it never decays
+        // into denormals whatever the host's floating-point mode.
+        const double target = open_ ? 1.0 : 0.0;
+        opening_ = target + (opening_ - target) * (target > opening_ ? attack_ : release_);
+        if (std::abs(opening_ - target) < 1e-12) {
+            opening_ = target;
+        }
+        applied_ = floor_ + (1.0 - floor_) * (flip_ ? 1.0 - opening_ : opening_);
         const std::size_t read = (write_ + kMaxLookahead - static_cast<std::size_t>(lookahead_)) % kMaxLookahead;
         for (int c = 0; c < 2; ++c) {
             line_[static_cast<std::size_t>(c)][write_] = x[c];
