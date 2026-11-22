@@ -72,7 +72,9 @@ void AdiShaperCrush::updateClock(float height) noexcept {
         period_ = 1;
         return;
     }
-    const float scaled = logSpan * height;
+    // The multiply rounds to float before the add. Contraction shifts the
+    // capture position on sustained contours, so force that rounding here.
+    const volatile float scaled = logSpan * height;
     const float hz = clockExponential(logMinimum + scaled) - frequencyOffset;
     step_ = static_cast<float>(std::min(static_cast<double>(hz) / rate_, 1.0));
     period_ = step_ > 0.f ? 1.0 / step_ : 0.0;
