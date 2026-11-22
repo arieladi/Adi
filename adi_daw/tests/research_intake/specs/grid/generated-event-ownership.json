@@ -1,0 +1,24 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "generated-event-ownership",
+  "kind": "notes",
+  "input": {
+    "input_note_ids": [
+      11,
+      12
+    ],
+    "operation": "transpose +7, duplicate +12, delay 65 samples",
+    "actions": [
+      "note off before delayed note on",
+      "remove processing module while notes queued",
+      "seek backwards",
+      "stop",
+      "undo remove"
+    ]
+  },
+  "question": "What cancels pending generated events and who emits the required releases?",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result.",
+  "provenance": "The director's research."
+}
