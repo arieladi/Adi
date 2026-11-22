@@ -11,6 +11,17 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-13 full-rate Focus Align preview
+
+The original 4,096-sample path still handles the rates it covered, including its allocation-free measurement. Higher rates use an 80 ms stamped capture with 40 ms of common support, two forward FFTs and one inverse of at most 65,536 points per explicit Measure request. It confirms the reported correlation against the raw samples. Nothing runs in the audio callback. The preview proposes no edit.
+
+The old branch failed five new checks. The exact Release passed 742 broker checks, including +3,703 and −3,703 sample recovery at 192 kHz, −15,223 samples with inverted polarity at 768 kHz, seek refusal and fresh recovery, mixed rates, boundary and repeat-peak rejection, and a quiet match with a large finite outlier outside its window. All 24 named CTests and 906 / 329 / 7 software-peer checks passed. MSVC /W4 /WX passed three translation units and Clang passed both production ones.
+
+ZIP SHA-256 `b738043a0c344ce7a185af37f3467655e95028cad0a91a5b028b8f0cc8db80d1`; EXE SHA-256 `4a9e3ee267ef3e4b3d5eb0e6213e18724579c005fa93f5a05d751c0fd287960c`. The Claude brief includes deterministic 48, 192 and 768 kHz stereo fixture pairs. High-rate hardware support and the FilmCraft reference cases are still open. The existing transport-owner acknowledgement still gates Align Apply.
+
+PR requested — `mixview/mx13-full-rate-align-lands-after-2026-12-03` at `910fbc138e0ab7fbb6e3dc2f31c7c29bc0854341`, also on the joined scheduled preview. Lands after 3 December.
+
+
 ### 22 November — DF-M55 Main Loudness PLR
 
 Main Loudness and its All tile show held dBTP minus integrated LUFS from the same snapshot. PLR is unavailable while either source value is unavailable. Freeze keeps each view’s PLR with that view’s readout. No new service read, interval or audio work.
