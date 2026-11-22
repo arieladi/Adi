@@ -11,6 +11,10 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — Cold WAV export
+
+- **PR requested — `mixview/cold-limiter-export-20261122` `5702daa8`.** Clip/Limiter's first offline prepare supplies the correct delay before graph compensation is built without reporting it as a running change. Subsequent owner/audio changes still notify the coalescer. The old implementation failed both cold DeviceHost cases; the exact native pipeline gate now passes 89 checks. A real cold export of 48,000 stereo frames from the untouched project completed. The guard against changes after graph admission remains in force. The comparison of live Clip mode history against committed-state export is a separate test.
+
 ## 2026-11-22 — Neutral EQ state compatibility
 
 - **PR requested — `mixview/neutral-eq-fused-default-20261122` `a5e173c2`.** The native host fixture stores the exact fused float just above 100% and reloads it without altering its bytes, then checks float/double pass-through, live suspension and wake on a real gain edit. The unmodified Release failed the two added suspension assertions. The narrow zero-tail proof accepts only that additional representation and passes all 923 checks under /WX. Neither the authored/default parameter values nor the EQ audio calculation change. Win's `b4cc808b` separately prevents fused arithmetic when new host defaults are initialized. This compatibility fix covers older saved values and works independently of that compiler setting.
