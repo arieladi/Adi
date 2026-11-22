@@ -36,6 +36,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PLAN AU-03, original curve guards around Arrangement recording
+
+**PR requested** after the 3 December gate for `engine/au03-guarded-arrangement-passes` at `da8b4adc8052ba595cb0fd6f3eff34ccb5d9b9e3`. It stacks on thinning `2782fb8a` and includes current main `73f13028`. A completed Arrangement pass spanning rendered samples uses the same sealed envelope splice as Insert Shape. Playback keeps the original curve outside `[first,last)`, including the exact old value at the right boundary. Captured tempo and envelope state are checked before publication. The requested stream identity, recorded Hold, optional thinning receipt and one Record Automation undo step are retained. A same-sample or clip-local capture keeps its native timestamp path.
+
+Strict GCC 14 and Clang 19 each passed seven suites and 1,970 checks. In both clocks, the original Bezier curve matched all exterior samples within 1e-9, and the native Hold and retouch values played inside. The sealed write refused a captured tempo change with an unchanged journal head. Undo and Redo restored exact rows and curve slices. The previous wide-timestamp capture, shape insertion, write policy and optional thinning regressions also passed.
+
+The engine endpoint and history behavior are available to the transport and Window binding. Punch and the clip-local playback-clock rule remain parked. AU-06 awaits the modulation minor and DEV-07 route authority. AU-07 depends on that ordering against Clip Gain modulation. Taking AU-08's clip-scoped Clear Envelope next.
+
 ## 2026-11-22 — PLAN AU-03, bounded write-pass thinning
 
 **PR requested** after the 3 December gate for `engine/au03-bounded-write-thinning` at `2782fb8a9383155bf706080db61356085687bfdb`. It joins guarded Insert Shape `8e44fe52` and write-pass boundaries `c85c9f34` at `e1619db6`. The native owner can pass a value tolerance and the session's sample rate when preparing a completed Arrangement pass. Linear replacement is checked on the projected playback clock with floating-point allowance. Endpoints, Hold transitions and coincident steps retain their original anchors. The journal records the number removed and the tolerance if any points were removed. With no tolerance, the original capture is retained.
