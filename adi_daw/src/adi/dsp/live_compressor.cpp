@@ -98,6 +98,24 @@ void LiveCompressor::process(const float* inL, const float* inR, float* outL, fl
         const double dryL = line_[0][read], dryR = line_[1][read];
         output_ += smooth_ * (outputTarget_ - output_);
         wet_ += smooth_ * (wetTarget_ - wet_);
+        // Every recursive state settles exactly once it is negligible (1e-30
+        // is -600 dB, under the detector's -150 dB floor), so none decays into
+        // denormals on a quiet track, whatever the host's floating-point mode.
+        if (power_ < 1e-30) {
+            power_ = 0.0;
+        }
+        if (level_ < 1e-30) {
+            level_ = 0.0;
+        }
+        if (std::abs(reductionDb_) < 1e-12) {
+            reductionDb_ = 0.0;
+        }
+        if (std::abs(wet_ - wetTarget_) < 1e-12) {
+            wet_ = wetTarget_;
+        }
+        if (std::abs(output_ - outputTarget_) < 1e-12) {
+            output_ = outputTarget_;
+        }
         const double gain = toGain(reductionDb_ + makeupDb_) * output_;
         outL[i] = static_cast<float>(dryL + wet_ * (dryL * gain - dryL));
         outR[i] = static_cast<float>(dryR + wet_ * (dryR * gain - dryR));

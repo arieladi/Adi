@@ -215,6 +215,23 @@ void robustness() {
     check(allocations == 0, "process allocates nothing");
     // RMS of a sine: its level reads 3 dB below its peak.
     near(r.gainReductionDb(), r.staticGainDb(db(0.5 / std::sqrt(2.0))), 0.05, "RMS reads a sine 3 dB below its peak");
+    // After compression, 10 s of silence: every recursive state is exactly 0
+    // (a found defect: they decayed into denormals after about 35 s, and the
+    // host sets no flush-to-zero). Dry/Wet moved to 0 settles exactly too.
+    for (int mode : {C::Peak, C::Rms}) {
+        for (int envelope : {C::Lin, C::Log}) {
+            C q = made(-20, 4, 6, mode);
+            q.set(C::Envelope, envelope);
+            q.set(C::Release, 50);
+            (void)run(q, std::vector<float>(4800, 0.9f));
+            q.set(C::DryWet, 0);
+            (void)run(q, std::vector<float>(480000, 0.0f));
+            const auto s = q.states();
+            check(s[0] == 0.0 && s[1] == 0.0 && s[2] == 0.0 && s[3] == 0.0 && s[4] == 0.0,
+                  "mode " + std::to_string(mode) + ", envelope " + std::to_string(envelope) +
+                      ": 10 s of silence leaves every state at exactly 0");
+        }
+    }
 }
 }  // namespace
 

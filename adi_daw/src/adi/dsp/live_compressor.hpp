@@ -54,6 +54,12 @@ public:
     [[nodiscard]] double staticGainDb(double levelDb) const noexcept;
     /// The current gain reduction in dB (0 or negative), for a meter.
     [[nodiscard]] double gainReductionDb() const noexcept { return reductionDb_; }
+    /// The recursive states, for tests: RMS power, Lin level, Log reduction,
+    /// and Dry/Wet's and Output's distance from their targets. Each settles
+    /// on exactly 0 once it is negligible, so none decays into denormals.
+    [[nodiscard]] std::array<double, 5> states() const noexcept {
+        return {power_, level_, reductionDb_, wet_ - wetTarget_, output_ - outputTarget_};
+    }
     void process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept;
 
 private:
