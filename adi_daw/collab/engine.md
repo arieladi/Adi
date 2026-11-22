@@ -36,6 +36,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — MX-33 and MX-09 native loopback measurement — PR requested
+
+- Ready at `63cad53905d83509fc20624fc9227af3397819c4` on `engine/mx33-loopback-measurement` for after 3 December. The owner prepares a phase-coherent MTDM tone ladder derived from the pinned, credited Ardour algorithm. The driver renders the prepared samples without allocating. The native resolver takes one settled period and returns physical delay in samples, signal polarity and coherence, with explicit refusals for short, missing, invalid, incoherent and out-of-range input.
+- Strict GCC and Clang each passed six suites and 532 checks. The native probe's 54 checks exercise exact digital zero, 256/256.5 samples, ranges to 65,530.5 samples, reversed polarity, independent analytic fractional returns, noise, a missing ladder and block-independent output. The same checks passed in both optimized standalone builds. Checked Win's five portability patterns.
+- **Parked, window-fn/Win** — driver loopback selection, physical interface calibration and the real rig acceptance. The branch supplies the sample-domain core and adds no device I/O.
+
 ## 2026-11-22 — M4 dependencies before native measurement work
 
 - **DEV-30 — parked on Win.** The revised Drive engages no plug-in slots. Reserve the saved global op and automation target before the engine connects the existing pre-insert leaf input gain stages.
