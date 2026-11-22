@@ -12423,23 +12423,53 @@ void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
     check(keysOf(AppCommands::ToggleBrowser) == std::vector<std::string>{"Cmd+Shift+F9"} && keysOf(AppCommands::Undo).empty(),
           "a preset switch keeps the user's keys on top");
     check(keysOf(AppCommands::Redo) == cubaseRedo, "and the other commands take the new preset's keys");
-    auto stored = settings.get("shortcuts.overrides");
-    stored.erase("view.nothing");
-    check(commands.userKeys() == stored, "the keys that differ from the key map are the user's");
-    settings.set("shortcuts.overrides", stored, {}, why);
-    check(commands.storeUserKeys(why) && settings.get("shortcuts.overrides") == stored, "unchanged keys write nothing new");
+    const auto held = settings.get("shortcuts.overrides");
+    auto known = held;
+    known.erase("view.nothing");
+    check(commands.userKeys() == known, "the keys that differ from the key map are the user's");
+    check(commands.storeUserKeys(why) && settings.get("shortcuts.overrides") == held,
+          "unchanged keys write nothing new, and a stable id this build does not know keeps its keys");
     commands.manager.getKeyMappings()->addKeyPress(AppCommands::Redo, *AppCommands::parseChord("Cmd+Alt+F9"));
     check(commands.storeUserKeys(why), ("a changed key is written: " + why).c_str());
     const auto written = settings.get("shortcuts.overrides");
-    check(written.contains("edit.redo") && written.size() == 3, "the record now holds Redo's keys beside the other two");
+    check(written.contains("edit.redo") && written.size() == 4 && written.contains("view.nothing"),
+          "the record now holds Redo's keys beside the other three");
     commands.reload();
     const auto redoKeys = keysOf(AppCommands::Redo);
     check(std::find(redoKeys.begin(), redoKeys.end(), "Cmd+Alt+F9") != redoKeys.end(), "and they come back after a reload");
+    // The Shortcuts page: the editor in place of the record's row, under Live's menus; a key changed there
+    // is the record's at once.
+    {
+        SettingsPanel panel(settings);
+        panel.setSize(640, 720);
+        panel.shortcutKeys = [&]() -> std::unique_ptr<juce::Component> { return std::make_unique<ShortcutsPage>(commands); };
+        panel.showPage("Shortcuts");
+        auto *page = dynamic_cast<ShortcutsPage *>(panel.shortcutsEditor());
+        const bool recordRow = std::any_of(panel.rows().begin(), panel.rows().end(),
+                                           [](const auto &row) { return row->setting.key == "shortcuts.overrides"; });
+        check(page != nullptr && page->isVisible() && !recordRow && page->getHeight() == ShortcutsPage::kHeight,
+              "the Shortcuts page shows the key editor, not the record's text");
+        const auto categories = commands.manager.getCommandCategories();
+        check(categories.contains("Edit") && categories.contains("View") && !categories.contains("ADI"),
+              "the editor's groups are Live's menus");
+        if (page != nullptr) {
+            commands.manager.getKeyMappings()->clearAllKeyPresses(AppCommands::Redo);
+            page->store();
+            const auto now = settings.get("shortcuts.overrides");
+            check(page->error().empty() && now.contains("edit.redo") && now["edit.redo"].empty(),
+                  "a key cleared in the editor is written to the record at once");
+        }
+        panel.showPage("Audio");
+        check(page != nullptr && !page->isVisible(), "the editor shows on its own page only");
+    }
     settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
     settings.set("shortcuts.preset", std::string("live"), {}, why);
     settings.set("lookfeel.followMode", std::string("page"), {}, why);
     commands.reload();
-    check(keysOf(AppCommands::Undo).size() == 1, "with no overrides Undo has its one key again");
+    juce::ApplicationCommandInfo undo(AppCommands::Undo);
+    commands.getCommandInfo(AppCommands::Undo, undo);
+    check(!undo.defaultKeypresses.isEmpty() && keysOf(AppCommands::Undo).size() == static_cast<std::size_t>(undo.defaultKeypresses.size()),
+          "with no overrides Undo has the key map's keys again");
 }
 void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
 #if JUCE_MAC

@@ -117,11 +117,45 @@ settings::Value AppCommands::userKeys() const {
     return out;
 }
 bool AppCommands::storeUserKeys(std::string &why) {
-    const auto keys = userKeys();
-    if (keys == settings_.get("shortcuts.overrides"))
+    // A stable id this build does not know (a later build's command) keeps its keys.
+    const auto held = settings_.get("shortcuts.overrides");
+    auto keys = userKeys();
+    if (held.is_object())
+        for (const auto &[stable, chords] : held.items())
+            if (commandFor(stable) == 0)
+                keys[stable] = chords;
+    if (keys == held)
         return true;
     return settings_.set("shortcuts.overrides", keys, {}, why) && settings_.save(why);
 }
+ShortcutsPage::ShortcutsPage(AppCommands &commands)
+    : commands_(commands), editor_(*commands.manager.getKeyMappings(), true) {
+    editor_.setColour(juce::KeyMappingEditorComponent::backgroundColourId, look::panel);
+    editor_.setColour(juce::KeyMappingEditorComponent::textColourId, look::text);
+    addAndMakeVisible(editor_);
+    commands_.manager.getKeyMappings()->addChangeListener(this);
+    setSize(560, kHeight);
+}
+ShortcutsPage::~ShortcutsPage() { commands_.manager.getKeyMappings()->removeChangeListener(this); }
+void ShortcutsPage::paint(juce::Graphics &g) {
+    if (error_.empty())
+        return;
+    g.setColour(look::textDim);
+    g.setFont(look::font(look::fontBody));
+    g.drawText(juce::String::fromUTF8(error_.c_str()), getLocalBounds().removeFromBottom(kErrorHeight).reduced(17, 0),
+               juce::Justification::centredLeft, true);
+}
+void ShortcutsPage::resized() { editor_.setBounds(getLocalBounds().withTrimmedBottom(kErrorHeight)); }
+void ShortcutsPage::store() {
+    std::string why;
+    const bool ok = commands_.storeUserKeys(why);
+    const std::string said = ok ? std::string() : "Your keys were not saved: " + why;
+    if (said != error_) {
+        error_ = said;
+        repaint();
+    }
+}
+void ShortcutsPage::changeListenerCallback(juce::ChangeBroadcaster *) { store(); }
 namespace {
 struct StableEntry {
     const char *id;

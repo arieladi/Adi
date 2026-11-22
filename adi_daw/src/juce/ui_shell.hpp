@@ -273,6 +273,28 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool splitAll_ = true;
     ClipClipboard clipClipboard_;
 };
+// WIN-04: the Settings window's Shortcuts page, in place of the shortcuts.overrides row: JUCE's key
+// mapping editor on the application's commands, under Live's menus, in the theme's colours. Each change
+// is written to the record at once, and only when the user's keys differ from what it holds; when the
+// write fails, why shows under the editor.
+class ShortcutsPage final : public juce::Component, private juce::ChangeListener {
+  public:
+    explicit ShortcutsPage(AppCommands &);
+    ~ShortcutsPage() override;
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    juce::KeyMappingEditorComponent &editor() noexcept { return editor_; }
+    const std::string &error() const noexcept { return error_; }
+    // Writes the user's keys now (the change message comes later, on the message loop).
+    void store();
+    static constexpr int kHeight = 440, kErrorHeight = 20;
+
+  private:
+    void changeListenerCallback(juce::ChangeBroadcaster *) override;
+    AppCommands &commands_;
+    juce::KeyMappingEditorComponent editor_;
+    std::string error_;
+};
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
 class StatusBar final : public juce::Component {

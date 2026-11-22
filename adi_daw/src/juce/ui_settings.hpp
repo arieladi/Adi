@@ -124,6 +124,10 @@ class SettingsPanel final : public juce::Component {
     // the first time the page shows, at the page's head, in place of the `midi.ports` record's row.
     std::function<std::unique_ptr<juce::Component>()> midiPorts;
     juce::Component *midiPortsTable() const noexcept { return midi_.get(); }
+    // The Shortcuts page's key editor (WIN-04), where the application has commands to map: made the first
+    // time the page shows, in place of the `shortcuts.overrides` record's row.
+    std::function<std::unique_ptr<juce::Component>()> shortcutKeys;
+    juce::Component *shortcutsEditor() const noexcept { return shortcuts_.get(); }
     // Lays the page out again where it stands (the MIDI Ports table grew or shrank), keeping its rows and
     // where it is scrolled to.
     void relayout() { layoutRows(); }
@@ -138,6 +142,7 @@ class SettingsPanel final : public juce::Component {
     std::function<std::unique_ptr<juce::Component>()> makeAudio_;
     std::unique_ptr<juce::Component> audio_;
     std::unique_ptr<juce::Component> midi_;
+    std::unique_ptr<juce::Component> shortcuts_;
     juce::Viewport scroll_;
     juce::Component content_;
     std::vector<std::unique_ptr<SettingRow>> rows_;
