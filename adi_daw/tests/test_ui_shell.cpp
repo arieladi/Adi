@@ -13196,8 +13196,8 @@ int main(int argc, char **argv) {
         };
         using C = AppCommands;
 #if JUCE_MAC
-        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
-              "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
+              "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), then Solo in Place (§18.6)");
@@ -13206,8 +13206,8 @@ int main(int argc, char **argv) {
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac");
 #else
-        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
-              "the menu bar: File, Edit, Create, View, Options, Navigate");
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
+              "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
                                                 C::Quit},
@@ -13255,7 +13255,8 @@ int main(int argc, char **argv) {
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
                       C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
-                      C::LastId == C::ExportAudio,
+                      C::HelpManual == C::ExportAudio + 1 && C::KeyboardReference == C::HelpManual + 1 &&
+                      C::LastId == C::KeyboardReference,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -13425,11 +13426,12 @@ int main(int argc, char **argv) {
         // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
         check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&
                   menuForKey(*bar, juce::KeyPress('E', alt, 0)) == names.indexOf("Edit") &&
-                  menuForKey(*bar, juce::KeyPress('n', alt, 0)) == names.indexOf("Navigate"),
-              "Alt and a menu's first letter names that menu");
+                  menuForKey(*bar, juce::KeyPress('n', alt, 0)) == names.indexOf("Navigate") &&
+                  menuForKey(*bar, juce::KeyPress('h', alt, 0)) == names.indexOf("Help"),
+              "Alt and a menu's first letter names that menu, Help's H among them (WIN-09)");
         check(menuForKey(*bar, juce::KeyPress('f', 0, 0)) < 0 &&
                   menuForKey(*bar, juce::KeyPress('f', cmd | alt, 0)) < 0 &&
-                  menuForKey(*bar, juce::KeyPress('h', alt, 0)) < 0 &&
+                  menuForKey(*bar, juce::KeyPress('q', alt, 0)) < 0 &&
                   menuForKey(*bar, juce::KeyPress('2', alt, 0)) < 0,
               "only Alt alone opens a menu, and only one that is there");
         const auto appMenu = applicationMenu(commands);
