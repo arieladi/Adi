@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 Integrated RMS and Max Crest
+
+Expanded pinned Spectrum now shows per-channel unweighted Integrated RMS and Max Crest alongside Balance and Correlation. It counts each sample once from the visible interval's admission. The crest holds the largest ratio of 50 ms RMS to running Integrated RMS after a 125 ms warm-up. The existing primary lease supplies the samples. Compact layout, Freeze and hiding release the level history. A fresh interval waits for new audio while the previous curve can stay visible.
+
+Eight broker and five software component assertions failed first. All 800 broker and 446 Mix Functions checks now pass, including the exact 5.441 dB crest fixture, nonfinite input, no added tap or transform and exact quiet-ring wake. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed all five changed units and Clang passed the three implementation units.
+
+Release ZIP SHA-256 `8f91e3948bcb44ecef68e254e42e7c60742902f7be6dc3b633acdcb345a8fd47`. EXE SHA-256 `45e28f456ed50254933a6f015751fedcf85b6fd9ec8ce8f27cccea72afdef80e`. The retest brief includes sealed 48 kHz stereo fixtures. Native presentation and timed CPU remain for live verification.
+
+PR requested — `mixview/mx21-spectrum-crest-lands-after-2026-12-03` at `9d7559acdcbdb4dfd47e16e10e407bac5ffed7f7`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-21 idle Realtime Average
 
 A Realtime Average holding exact zero can park after publishing a ready result inside certified stopped silence. The shared broker advances the omitted zero hops and their partial-hop phase when input resumes. Scope can join the same domain after a tap wrap and reuse the existing plan and tap. Once the average receives a nonzero window, it keeps processing its decay, including values below the display floor.
