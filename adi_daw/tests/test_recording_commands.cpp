@@ -63,6 +63,38 @@ struct Fixture {
         return result;
     }
 };
+void latencyCompensatedPlacement() {
+    struct DriverLatency {
+        std::int64_t input=256,output=384;
+        double errorCompensationMs=1.0;
+    } driver;
+    constexpr std::uint32_t rate=48000;
+    constexpr std::int64_t capturedAt=800;
+    constexpr std::uint32_t frames=128;
+    const auto offset=driver.input+driver.output+std::llround(driver.errorCompensationMs*rate/1000.0);
+    check(offset==688,"simulated input, output and 1 ms driver error total 688 samples");
+    struct Case {std::int64_t offset,position;};
+    for(const auto test:{Case{offset,112},Case{0,capturedAt},Case{-24,824},Case{offset+capturedAt,0}}) {
+        Fixture f;
+        auto recorded=f.capture(false,Precision::Float32,false,frames,{},capturedAt);
+        const std::array<recording::ClipIds,1> ids={{{7,8,"Latency placement"}}};
+        const auto bad=recording::prepareCommit(*f.store,recorded,ids,std::numeric_limits<std::int64_t>::min());
+        check(!bad.ok && std::filesystem::is_regular_file(recorded.tracks[0].file),
+              "an overflowing placement offset leaves the private recording available");
+        auto prepared=recording::prepareCommit(*f.store,recorded,ids,test.offset);
+        const auto committed=prepared.ok && recording::commit(*f.store,prepared).ok;
+        check(committed,"latency-compensated take commits through the normal recording commands");
+        if(!committed)continue;
+        const auto heard=f.play(Precision::Float32);
+        bool exact=recorded.startSample==capturedAt && recorded.frames==frames;
+        for(std::size_t frame=0;frame<heard.size();++frame) {
+            const auto local=static_cast<std::int64_t>(frame)-test.position;
+            const auto expected=local>=0 && local<frames ? Fixture::sample(static_cast<std::size_t>(local)) : 0.0f;
+            exact=exact && heard[frame]==expected;
+        }
+        check(exact,"corrected song position shifts the whole take without changing its recorded samples");
+    }
+}
 void publicationStagingOwnership() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
@@ -549,6 +581,7 @@ void loopReuseRefusesUnprovedExtents() {
 
 }
 int main(int argc,char** argv){try{
+    latencyCompensatedPlacement();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
