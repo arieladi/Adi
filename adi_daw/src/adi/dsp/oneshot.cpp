@@ -108,6 +108,18 @@ bool OneShot::setParam(const std::string &id, const ParamValue &v) {
         }
     return false;
 }
+void OneShot::setParamAt(int i, double n) noexcept {
+    if (i < 0 || i >= Count || !std::isfinite(n)) {
+        return;
+    }
+    values_[static_cast<std::size_t>(i)].store(normal(i, real(i, n)), std::memory_order_relaxed);
+}
+void OneShot::setRealAt(int i, double value) noexcept {
+    if (i < 0 || i >= Count || !std::isfinite(value)) {
+        return;
+    }
+    setParamAt(i, normal(i, value));
+}
 std::string OneShot::paramText(const std::string &id, double n) const {
     if (!std::isfinite(n))
         return {};

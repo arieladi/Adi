@@ -70,9 +70,22 @@ void parameter(Object* x, t_symbol*, int n, t_atom* atoms) {
     if (previousLatency != core.latency()) reportLatency(x);
 }
 void transport(Object* x, t_symbol*, int n, t_atom* atoms) {
-    if (n != 7) return;
-    for (int i = 0; i < n; ++i)
-        if (atoms[i].a_type != A_FLOAT || !std::isfinite(atom_getfloat(atoms + i))) return;
+    if (n != 7 && n != 9) {
+        return;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (atoms[i].a_type != A_FLOAT || !std::isfinite(atom_getfloat(atoms + i))) {
+            return;
+        }
+    }
+    if (n == 9) {
+        // The host's exact position for this tick: whole quarter notes plus
+        // the fraction, each exact in t_float, added in double.
+        adi::device::applyShaperPosition(x->state->core, atom_getfloat(atoms) != 0,
+            atom_getfloat(atoms + 1),
+            static_cast<double>(atom_getfloat(atoms + 7)) + static_cast<double>(atom_getfloat(atoms + 8)));
+        return;
+    }
     adi::device::applyShaperTransport(x->state->core, atom_getfloat(atoms) != 0, atom_getfloat(atoms + 1),
         atom_getfloat(atoms + 2), atom_getfloat(atoms + 3), atom_getfloat(atoms + 4),
         atom_getfloat(atoms + 5), atom_getfloat(atoms + 6));

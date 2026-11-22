@@ -19,12 +19,15 @@
 #include "adi/dsp/auto_gain.hpp"
 #include "adi/dsp/loudness.hpp"
 
+#include "true_peak_reference.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <limits>
 #include <new>
 #include <numbers>
 #include <string>
@@ -110,7 +113,20 @@ Meter::Readings measure(const Signal& x, double rate, const std::vector<double>&
 /// gating blocks and Tech 3342's algorithm exactly, with sorting.
 struct Reference {
     double integrated = -Meter::kInfinity, range = 0;
+    /// M and S at the end of every 10 ms sub-block (-inf before their windows
+    /// first fill), and the frame each sub-block ends at: the meter's maxima
+    /// are the largest of these.
+    std::vector<double> momentary, shortTerm;
+    std::vector<std::size_t> ends;
 };
+
+/// The largest of a reference's per-sub-block readings over the sub-blocks
+/// that have ended by `frames`.
+double largestBy(const std::vector<double>& readings, const std::vector<std::size_t>& ends, std::size_t frames) {
+    double largest = -Meter::kInfinity;
+    for (std::size_t k = 0; k < readings.size() && ends[k] <= frames; ++k) largest = std::max(largest, readings[k]);
+    return largest;
+}
 Reference reference(const Signal& x, double rate, const std::vector<double>& weights) {
     const auto frames = x[0].size();
     std::vector<double> e(frames, 0.0);
@@ -126,13 +142,24 @@ Reference reference(const Signal& x, double rate, const std::vector<double>& wei
             e[i] += weights[c] * z * z;
         }
     }
+    // Window means from running sums of the energy, exact to about 1e-13 of a
+    // window's energy here: every 400 ms and 3 s window without walking it.
+    std::vector<double> prefix(frames + 1, 0.0);
+    for (std::size_t i = 0; i < frames; ++i) prefix[i + 1] = prefix[i] + e[i];
     auto mean = [&](std::size_t from, std::size_t to) {
-        double sum = 0;
-        for (std::size_t i = from; i < to; ++i) sum += e[i];
-        return sum / static_cast<double>(to - from);
+        return (prefix[to] - prefix[from]) / static_cast<double>(to - from);
     };
     auto boundary = [&](std::int64_t k) { return static_cast<std::size_t>(std::llround(static_cast<double>(k) * rate / 100.0)); };
     Reference r;
+    // Every sub-block's M and S.
+    auto windowed = [&](std::int64_t k, std::int64_t length) {
+        return Meter::loudness(mean(boundary(k - length), boundary(k)));
+    };
+    for (std::int64_t k = 1; boundary(k) <= frames; ++k) {
+        r.ends.push_back(boundary(k));
+        r.momentary.push_back(k >= 40 ? windowed(k, 40) : -Meter::kInfinity);
+        r.shortTerm.push_back(k >= 300 ? windowed(k, 300) : -Meter::kInfinity);
+    }
     std::vector<double> blocks, shortTerm;
     for (std::int64_t k = 40; boundary(k) <= frames; k += 10) {
         const double l = Meter::loudness(mean(boundary(k - 40), boundary(k)));
@@ -225,15 +252,33 @@ void momentaryAndShortTerm() {
         });
         check(worst <= 0.1, "Tech 3341 case 12: M = -23 +-0.1, constant after 1 s (worst " + std::to_string(worst) + ")");
     }
-    bool file10 = true, file13 = true;
+    // Beyond the EBU's +-0.1: the maxima on the 10 ms grid are exactly the
+    // largest of the reference's per-sub-block M and S (float input aside).
+    constexpr double kGrid = 0.001;
+    bool file10 = true, file13 = true, grid10 = true, grid13 = true;
+    double worst10 = 0, worst13 = 0;
     for (int i = 0; i < 20; ++i) {   // 10 and 13, file-based: each segment measured alone
-        const auto s10 = measure(tones(rate, {{i * 0.15, -kInf}, {3, -23}, {1, -kInf}}), rate, kStereo);
+        const auto x10 = tones(rate, {{i * 0.15, -kInf}, {3, -23}, {1, -kInf}});
+        const auto s10 = measure(x10, rate, kStereo);
+        const auto r10 = reference(x10, rate, kStereo);
         file10 &= near(s10.maxShortTerm, -23, 0.1);
-        const auto s13 = measure(tones(rate, {{i * 0.02, -kInf}, {0.4, -23}, {1, -kInf}}), rate, kStereo);
+        const double d10 = std::abs(s10.maxShortTerm - largestBy(r10.shortTerm, r10.ends, x10[0].size()));
+        worst10 = std::max(worst10, d10);
+        grid10 &= d10 <= kGrid;
+        const auto x13 = tones(rate, {{i * 0.02, -kInf}, {0.4, -23}, {1, -kInf}});
+        const auto s13 = measure(x13, rate, kStereo);
+        const auto r13 = reference(x13, rate, kStereo);
         file13 &= near(s13.maxMomentary, -23, 0.1);
+        const double d13 = std::abs(s13.maxMomentary - largestBy(r13.momentary, r13.ends, x13[0].size()));
+        worst13 = std::max(worst13, d13);
+        grid13 &= d13 <= kGrid;
     }
     check(file10, "Tech 3341 case 10: max S = -23 +-0.1 for each of the 20 file segments");
     check(file13, "Tech 3341 case 13: max M = -23 +-0.1 for each of the 20 file segments");
+    check(grid10, "Tech 3341 case 10: max S within 0.001 of the reference's on the 10 ms grid (worst " +
+                      std::to_string(worst10) + ")");
+    check(grid13, "Tech 3341 case 13: max M within 0.001 of the reference's on the 10 ms grid (worst " +
+                      std::to_string(worst13) + ")");
     // 11 and 14, live: one signal, a growing maximum read after each segment.
     std::vector<Segment> s11, s14;
     std::vector<std::size_t> ends11, ends14;
@@ -244,20 +289,31 @@ void momentaryAndShortTerm() {
         s14.insert(s14.end(), {{i * 0.02, -kInf}, {0.4, -38.0 + i}, {0.4 - i * 0.02, -kInf}});
         t14 += 0.8; ends14.push_back(static_cast<std::size_t>(std::llround(t14 * rate)));
     }
+    // Each live reading is also held to the reference's largest M or S over
+    // the sub-blocks that have ended by then.
+    double worstLive = 0;
     auto live = [&](const std::vector<Segment>& s, const std::vector<std::size_t>& ends, bool shortTerm) {
         std::size_t next = 0;
         bool ok = true;
-        measure(tones(rate, s), rate, kStereo, 480, [&](Meter& m, std::size_t frames) {
+        const auto x = tones(rate, s);
+        const auto ref = reference(x, rate, kStereo);
+        measure(x, rate, kStereo, 480, [&](Meter& m, std::size_t frames) {
             if (next < ends.size() && frames == ends[next]) {
                 const auto r = m.readings();
-                ok &= near(shortTerm ? r.maxShortTerm : r.maxMomentary, -38.0 + static_cast<double>(next), 0.1);
+                const double got = shortTerm ? r.maxShortTerm : r.maxMomentary;
+                ok &= near(got, -38.0 + static_cast<double>(next), 0.1);
+                const double d = std::abs(got - largestBy(shortTerm ? ref.shortTerm : ref.momentary, ref.ends, frames));
+                worstLive = std::max(worstLive, d);
+                ok &= d <= kGrid;
                 ++next;
             }
         });
         return ok && next == ends.size();
     };
-    check(live(s11, ends11, true), "Tech 3341 case 11: live max S = -38, -37, ..., -19 +-0.1");
-    check(live(s14, ends14, false), "Tech 3341 case 14: live max M = -38, -37, ..., -19 +-0.1");
+    check(live(s11, ends11, true), "Tech 3341 case 11: live max S = -38, -37, ..., -19 +-0.1, and within 0.001 of the reference's");
+    check(live(s14, ends14, false), "Tech 3341 case 14: live max M = -38, -37, ..., -19 +-0.1, and within 0.001 of the reference's");
+    std::printf("    [measured] cases 10, 11, 13, 14: the largest gap to the reference's maxima, %.6f / %.6f / %.6f LU\n",
+                worst10, worst13, worstLive);
 }
 
 // --- Tech 3341 cases 15-23: true peak ---------------------------------------------
@@ -278,15 +334,63 @@ Signal taperedSine(double rate, double frequency, double amplitude, double phase
     return x;
 }
 
+/// THE SIGNAL'S OWN TRUE PEAK, read by tests/true_peak_reference.hpp (which
+/// shares nothing with the meter) over +-256 samples around its largest
+/// sample, in dBTP.
+double referenceTruePeakDb(const Signal& x) {
+    std::size_t at = 0;
+    for (std::size_t i = 0; i < x[0].size(); ++i) {
+        if (std::abs(x[0][i]) > std::abs(x[0][at])) {
+            at = i;
+        }
+    }
+    const std::size_t from = at > 256 ? at - 256 : 0;
+    return 20 * std::log10(adi::test::independentTruePeak(x, from, at + 256));
+}
+
+/// How far below its crest the meter's 4x interpolator reads a sine of
+/// `cycles` per sample whose crests fall `crestOffset` (0 to 1) into a sample
+/// interval: its points are the samples and the odd eighths of each interval,
+/// so the crest is d from the nearest (never more than an eighth) and the
+/// reading is cos(2 pi cycles d) low.
+double gridMissDb(double cycles, double crestOffset) {
+    double d = 1.0;
+    for (double point : {0.0, 0.125, 0.375, 0.625, 0.875, 1.0}) {
+        d = std::min(d, std::abs(crestOffset - point));
+    }
+    return -20 * std::log10(std::cos(2 * pi * cycles * d));
+}
+
 void truePeakCases() {
     const double rate = 48000;
     struct Case { int number; double divisor, amplitude, phase, expected; };
     for (const Case& c : {Case{15, 4, .5, 0, -6}, Case{16, 4, .5, 45, -6}, Case{17, 6, .5, 60, -6},
                           Case{18, 8, .5, 67.5, -6}, Case{19, 4, 1.41, 45, 3}}) {
-        const double tp = truePeakOf(taperedSine(rate, rate / c.divisor, c.amplitude, c.phase), rate);
+        const auto x = taperedSine(rate, rate / c.divisor, c.amplitude, c.phase);
+        const double tp = truePeakOf(x, rate);
         check(tp <= c.expected + 0.2 && tp >= c.expected - 0.4,
               "Tech 3341 case " + std::to_string(c.number) + ": true peak " + std::to_string(c.expected) +
                   " +0.2/-0.4 dBTP (" + std::to_string(tp) + ")");
+        // The synthesis first: the reference reads the sine's own crest.
+        const double ref = referenceTruePeakDb(x);
+        check(near(ref, 20 * std::log10(c.amplitude), 0.01),
+              "Tech 3341 case " + std::to_string(c.number) + ": the independent reference reads the crest, " +
+                  std::to_string(ref) + " dBTP");
+        // Then the meter, held to that crest: never above it, and below it by
+        // no more than its 4x grid misses this sine. Its crests fall at
+        // (90 - phase) / 360 periods, and every half period after: the same
+        // offset into a sample interval each time (each divisor is even). Case
+        // 15's are on samples (no miss); 16 to 19's at the half (an eighth
+        // from a point).
+        double crest = (90 - c.phase) / 360 * c.divisor;
+        crest -= std::floor(crest);
+        const double miss = gridMissDb(1 / c.divisor, crest);
+        std::printf("    [measured] Tech 3341 case %d: meter %+.4f, reference %+.4f dBTP (the bound: %.4f below)\n",
+                    c.number, tp, ref, miss);
+        check(tp <= ref + 0.01 && tp >= ref - miss - 0.01,
+              "Tech 3341 case " + std::to_string(c.number) + ": the meter's " + std::to_string(tp) +
+                  " dBTP is the reference's " + std::to_string(ref) + " less at most its bound of " +
+                  std::to_string(miss) + " dB");
     }
     // 20-23: at 4 fs, a sine at fs/6 of 0.5 holding one period of fs/4 at 1.0,
     // continuous in phase on both sides; low-passed and decimated by 4 at
@@ -328,6 +432,25 @@ void truePeakCases() {
         const double tp = truePeakOf(x, rate);
         check(tp <= 0.2 && tp >= -0.4, "Tech 3341 case " + std::to_string(20 + offset) +
                                            ": true peak 0.0 +0.2/-0.4 dBTP (" + std::to_string(tp) + ")");
+        // The decimated signal's own crest, read independently: the EBU's
+        // 0.0 is its design, this is what the synthesis here made. No sine's
+        // bound applies: the joins at the burst's ends put content up to the
+        // low-pass's edge, where the meter's phases roll off. So the bound is
+        // the measured miss rounded up: 0.013, 0.052, 0.013 and 0.073 dB at
+        // offsets 0 to 3, held to 0.1, which a meter reading 0.15 dB low fails.
+        const double ref = referenceTruePeakDb(x);
+        const double miss = 0.09;
+        std::printf("    [measured] Tech 3341 case %d: meter %+.4f, reference %+.4f dBTP (the bound: %.4f below)\n",
+                    20 + offset, tp, ref, miss);
+        // Measured: -0.077 dBTP, what the 511-tap low-pass leaves of the
+        // burst's 1.0 (the EBU's 0.0 is the design value, +0.2/-0.4).
+        check(near(ref, 0.0, 0.1), "Tech 3341 case " + std::to_string(20 + offset) +
+                                       ": the independent reference reads the synthesis within 0.1 of 0.0 dBTP (" +
+                                       std::to_string(ref) + ")");
+        check(tp <= ref + 0.01 && tp >= ref - miss - 0.01,
+              "Tech 3341 case " + std::to_string(20 + offset) + ": the meter's " + std::to_string(tp) +
+                  " dBTP is the reference's " + std::to_string(ref) + " less at most its bound of " +
+                  std::to_string(miss) + " dB");
     }
 }
 
@@ -420,6 +543,77 @@ void invariants() {
     check(w.readings().momentary == -kInf && w.readings().shortTerm == -kInf, "M and S read -inf until their windows fill");
 }
 
+// Robustness before the meter replaces Main's (N13 guards these too): a
+// non-finite sample reads as silence, a huge one cannot overflow the energy,
+// and the end of a programme reads the true peak of its last samples without
+// padding reaching I.
+void robustness() {
+    const double rate = 48000;
+    const auto tone = tones(rate, {{3, -20}});
+    auto feedWith = [&](Meter& meter, float middle) {
+        // 1 s of tone, a 4,800-sample block of `middle`, 2 s of tone.
+        const int n = static_cast<int>(tone[0].size());
+        std::vector<float> l(static_cast<std::size_t>(n) + 4800), r(l.size());
+        for (int i = 0; i < n; ++i) {
+            const auto at = static_cast<std::size_t>(i < 48000 ? i : i + 4800);
+            l[at] = static_cast<float>(tone[0][static_cast<std::size_t>(i)]);
+            r[at] = static_cast<float>(tone[1][static_cast<std::size_t>(i)]);
+        }
+        for (std::size_t i = 48000; i < 52800; ++i) {
+            l[i] = r[i] = middle;
+        }
+        const float* p[2] = {l.data(), r.data()};
+        meter.process(p, static_cast<int>(l.size()));
+        return meter.readings();
+    };
+    Meter withNaN, withZero, withHuge;
+    withNaN.prepare(rate, kStereo);
+    withZero.prepare(rate, kStereo);
+    withHuge.prepare(rate, kStereo);
+    const auto a = feedWith(withNaN, std::numeric_limits<float>::quiet_NaN());
+    const auto b = feedWith(withZero, 0.f);
+    check(std::isfinite(a.momentary) && std::isfinite(a.shortTerm) && std::isfinite(a.integrated) &&
+              a.momentary == b.momentary && a.shortTerm == b.shortTerm && a.integrated == b.integrated &&
+              a.range == b.range,
+          "a block of NaN reads exactly as a block of silence: M, S, I and LRA recover and stay finite");
+    const auto h = feedWith(withHuge, 3.0e38f);
+    check(std::isfinite(h.momentary) && std::isfinite(h.shortTerm) && std::isfinite(h.integrated),
+          "a block of huge samples cannot overflow the readings");
+
+    // The end of a programme: 2 s of tone at -20 dBFS, then a last pair of
+    // opposite full-scale steps, whose inter-sample overshoot only the true
+    // peak interpolator's tail can see.
+    std::vector<float> l(96000), r(96000);
+    for (std::size_t i = 0; i < l.size(); ++i) {
+        l[i] = r[i] = static_cast<float>(0.1 * std::sin(2 * std::numbers::pi * 997 * static_cast<double>(i) / rate));
+    }
+    const std::size_t e = l.size();
+    l[e - 4] = r[e - 4] = -1.f;
+    l[e - 3] = r[e - 3] = -1.f;
+    l[e - 2] = r[e - 2] = 1.f;
+    l[e - 1] = r[e - 1] = 1.f;
+    const float* p[2] = {l.data(), r.data()};
+    Meter finished, open, padded;
+    for (Meter* m : {&finished, &open, &padded}) {
+        m->prepare(rate, kStereo);
+        m->process(p, static_cast<int>(l.size()));
+    }
+    allocations = 0;
+    counting = true;
+    finished.finish();
+    counting = false;
+    check(allocations == 0, "finish() allocates nothing");
+    std::vector<float> zeros(64, 0.f);
+    const float* z[2] = {zeros.data(), zeros.data()};
+    padded.process(z, 64);
+    const auto f = finished.readings(), o = open.readings(), pz = padded.readings();
+    check(f.truePeak > o.truePeak + 0.1 && f.truePeak == pz.truePeak,
+          "finish() reads the true peak of the last samples (" + std::to_string(f.truePeak) + " dBTP, " +
+              std::to_string(o.truePeak) + " without), as padding them with silence would");
+    check(f.integrated == o.integrated && f.momentary == o.momentary && f.shortTerm == o.shortTerm,
+          "and leaves I, M and S exactly as they were: no padding reaches them");
+}
+
 }  // namespace
 
 int main() {
@@ -428,6 +622,7 @@ int main() {
     truePeakCases();
     for (double rate : {44100.0, 48000.0, 96000.0}) rangeCases(rate, rate == 48000.0);
     invariants();
+    robustness();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }
