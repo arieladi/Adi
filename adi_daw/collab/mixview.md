@@ -2,6 +2,15 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-22 — current-main integration and Windows Release gates
+
+Fetched main at `0ea10b8e`. Its catalogue service now supplies the Stack picker and Browser from one discovery job. The reconciliation keeps the landed automation menu and Export UI. The Classic Scope faceplate and controls remain intact and the interface, menus and catalogue use the ADI name. The window-loan slices follow as separate children at `6febf651` (DF-M60a) and `2aec0323` (Focus Match Locate). The paired DF-M60b candidate uses Engine's landed adapter `b1a9cee8` and adds owned dormant VST3 route coverage, including different Pre FX and Post FX signals.
+
+The aggregate review candidate is `d355911d`. Exact candidate builds are pending. The base Windows Release is compiling with the director's job cap. The candidate adds internal-key FIR transform reuse, Scope trace layouts and Mid, independent Cumulative Maximum histories and the on-demand Align preview. Headless gates are separate from the Win live retest.
+
+Remaining owner work for DF-M54. Align Apply needs a Window acknowledgement of non-Locate transport changes, including a Stop and Play between UI frames, before it can publish the agreed single Track Delay edit. Hear Removed needs one Engine-to-monitor delivery for the selected native stage's latency-aligned residual and a Window binding to the current device identity. Active Limiter suspension remains open: skipping silence advances neither its 128-sample convolver phase nor delayed audio. Carve and Focus IIR need the Engine's realized per-block key source identity and Window device-page loans. These owner points do not block the independent review build.
+
+
 ## 2026-11-20 — ADI-Shaper panel resumes after the audio fixes
 
 **PR requested.** `clones/shaper-panel-audio-reconcile-20261120` at `e37c8d4e`. Review after DF-E59, then DF-E60. This gives the pending pens and panel stack a current-main base. The rack sanitizes input before the panel captures it, preserves Time's rendering and waveform memo, and repairs the existing stage state after each callback. Both Time history writers now drop invalid samples independently by channel. The two Time assertions failed before their writer change.
