@@ -140,6 +140,16 @@ Strict GCC 14 and Clang 19 each passed 815 checks across six suites. A controlle
 
 Parked DEV-10/11/12/14/15 on Q-K and the user Pd safety, editor and voice contracts. DEV-13's native delay is already requested. Parked DEV-27 on the native protocol choices and repeatable AudioGridder server measurements. Parked TM-SV-02 on the scene/slot/launch reservations and CT-01's shared clip accessor. TM-SV-03's transient gesture admission and pure launch edge policy can proceed without storage changes.
 
+### 22 November — TM-SV-03 launch gesture admission and settled edge policy
+
+**PR requested** for `engine/tm-sv03-launch-gestures` at `39ed432576762f5ff35ebb82b217d6d27e6c9c52` from main. Trigger, Gate, Toggle and Repeat have a pure press/release result for idle and running slots. The fixed single-producer/single-driver mailbox moves a whole gesture, retaining literal addresses, velocity and the target incarnation. A scene enters as one captured identity. Saturation and a short driver buffer leave the whole gesture untouched.
+
+Strict GCC 14 and Clang 19 each passed 25 checks. Twenty-five stress runs per compiler transferred one million gestures across concurrent wrap and backpressure with no reorder or partial gesture. Driver quantization, run handover, pending edge cancellation, aborting stale incarnations, Legato, and Fade still need the slot/runtime reservation and the remaining Live readings. The next independent Session View piece is Follow Action target resolution.
+
+### FOR THE DIRECTOR
+
+- TM-SV-03 Gate and Repeat release. I recommend canceling a Gate press that is still queued when released, and ending only Repeat's retrigger hold on release. Check both across a quantization boundary in Live, including a slot already running on the same track.
+
 ## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
 
 **PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
