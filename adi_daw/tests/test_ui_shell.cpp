@@ -10892,6 +10892,56 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
           "with 2 MIDI and 3 Audio selected, a drag on 2 MIDI moves both by -6 dB, in one step");
     check(root.command(AppCommands::Undo) && std::abs(volumeOf(3)) < 1e-6 && std::abs(volumeOf(4) + 9) < 1e-6,
           "one Undo takes both back");
+    // AU-04: the right button opens the fader's menu and moves nothing (JUCE's Slider would drag on it).
+    {
+        root.frame();
+        const auto value = three->volume.getValue();
+        const auto ops = opCount();
+        const juce::ModifierKeys right(juce::ModifierKeys::rightButtonModifier);
+        const auto centre = three->volume.getLocalBounds().getCentre().toFloat();
+        three->volume.mouseDown(pressAt(three->volume, centre, right));
+        three->volume.mouseDrag(dragAt(three->volume, centre, centre.translated(0, -40), right));
+        three->volume.mouseUp(dragAt(three->volume, centre, centre.translated(0, -40), right));
+        root.frame();
+        check(three->volume.getValue() == value && !document->mixerDragging() && opCount() == ops &&
+                  std::abs(volumeOf(4) + 9) < 1e-6,
+              "a right-button drag on the fader moves nothing and writes nothing");
+        juce::PopupMenu::dismissAllActiveMenus();
+        // The menus: the fader's and, in Automation Mode, the lanes', each with the Volume lane's item.
+        const auto reenable = [](const juce::PopupMenu &menu) -> const juce::PopupMenu::Item * {
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().text == "Re-Enable Automation")
+                    return &it.getItem();
+            return nullptr;
+        };
+        check(three->volumeMenuItems().getNumItems() == 0, "with no Volume lane, the fader has no menu");
+        automation::LaneSpec spec;
+        spec.id = 90;
+        spec.ownerId = 4;
+        spec.paramRef = "volume";
+        spec.paramName = "Volume";
+        spec.valueDomain = "real";
+        auto made = automation::createLane(spec);
+        made.label = "Add Automation Lane";
+        check(document->ops().submit(made).ok && document->synchronise(), "a Volume lane on 3 Audio");
+        root.frame();
+        const auto fader = three->volumeMenuItems();
+        const auto *item = reenable(fader);
+        check(item != nullptr && !item->isEnabled && fader.getNumItems() == 1,
+              "the fader's menu is the Volume lane's Re-Enable Automation, unavailable while it follows its lane");
+        const int y = laneTop(root, 4) + 4;
+        check(root.arrangement.automationLaneAt(y) == nullptr, "outside Automation Mode a lane's menu has no envelope item");
+        root.setAutomationMode(true);
+        const auto *lane = root.arrangement.automationLaneAt(y);
+        const auto lanes = root.arrangement.contextMenuItems(false, lane);
+        check(lane != nullptr && lane->id == 90 && reenable(lanes) != nullptr &&
+                  root.arrangement.automationLaneAt(laneTop(root, 3) + 4) == nullptr,
+              "in Automation Mode, a right-click on 3 Audio's lane ends the lanes' menu with its Re-Enable Automation; "
+              "2 MIDI has no Volume lane, and no item");
+        root.setAutomationMode(false);
+        check(root.command(AppCommands::Undo), "undo the lane");
+        root.frame();
+    }
     sel.track = sel.toTrack = 0;
     root.frame();
     // Esc while dragging puts the value back, and the release commits nothing.

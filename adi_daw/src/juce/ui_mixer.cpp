@@ -291,6 +291,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     arm.setColour(juce::TextButton::buttonOnColourId, look::record);
     arm.getProperties().set("adi.lit", "record");
     pan.addMouseListener(this, false);
+    volume.addMouseListener(this, false); // its right-click: the fader's menu (AU-04)
     active.setClickingTogglesState(false);
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
     active.onClick = [this] { panel_.root.activateTrack(track_); };
@@ -970,6 +971,8 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     }
     if (e.eventComponent == &pan)
         panMenu();
+    else if (e.eventComponent == &volume)
+        volumeMenu();
     else
         panel_.contextMenu(e.getScreenPosition());
 }
@@ -1215,6 +1218,19 @@ void MixerStrip::panMenu() {
     if (const auto current = panel_.root.current())
         panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "pan"));
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
+}
+// The volume fader's menu: Live's Re-Enable Automation for the track's Volume lane (manual 25.4, AU-04). A
+// track with no Volume lane has nothing to offer, and the fader shows no menu.
+juce::PopupMenu MixerStrip::volumeMenuItems() {
+    juce::PopupMenu m;
+    if (const auto current = panel_.root.current())
+        panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "volume"));
+    return m;
+}
+void MixerStrip::volumeMenu() {
+    auto m = volumeMenuItems();
+    if (m.getNumItems() > 0)
+        m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&volume));
 }
 MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {}
 bool MixerPanel::submit(const std::string &op, Payload payload, const char *label) {
