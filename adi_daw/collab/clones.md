@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Jitter attribution over identical scoring windows
+
+The weighted 1,505-control replay of `clones/shaper-crush-jitter` at `0b6ca57e` and the source agree on which programs respond. Across 39 pairs the same six are exactly unchanged on the scored bar and 33 change. Their source changes span 0.00000317–0.009969 RMS. ADI's authored sequence spans 0.00000202–0.021274 RMS. Eight source comparisons used the full chain and 31 used the saved Crush stage. Fresh reloads of the same source state were repeatable. Five responsive startups had settled before the scored bar.
+
+In source order ten errors fell, twelve rose and seventeen were within 0.000001. In fixed order the counts were nine lower, fourteen higher and sixteen within tolerance. The one affected passing program stayed below 0.001 RMS, changing from 0.00040215 to 0.00046918. The pipelines retain 42/873 in source order and 40/873 in fixed order. Each error compares two specific renders. Independent stereo clock-distribution tests cover the timing behavior across draws.
+
 ## 22 November 2026 — Crush prefilter measurements and acceptance cases
 
 Eighty-eight signed stereo transfer measurements and five independent broadband order checks put eight identical first-order low-pass poles after bit reduction and before the fractional sample hold. The cutoff tracks the nominal hold frequency every audio frame. For each pole use the bilinear gain g/(1+g), where g = tan(π times cutoff divided by sample rate). The independently fitted maximum gain was 0.999686062335968 at 44.1, 48 and 96 kHz. A 48 kHz control step measured 0.0000000368 RMS against a current-frame coefficient. Interpolating that coefficient across just two samples missed the transition by over 0.028 peak.
