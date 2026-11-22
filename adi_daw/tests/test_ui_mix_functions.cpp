@@ -57,6 +57,18 @@ struct MixFocusTestAccess {
         return scopePulseAt(focus.plot_, focus.scopeDifferencePaths_[0], position, value);
     }
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
+    static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
+    static auto layerAdjustment(MixFocus &focus) {
+        const auto *layer = focus.selectedScopeLayer();
+        return layer ? layer->scopeAdjustment : FocusScopeLayerAdjustment{};
+    }
+    static juce::PopupMenu layerMenu(MixFocus &focus) {
+        const auto *layer = focus.selectedScopeLayer();
+        return layer ? focus.scopeLayerMenu(*layer) : juce::PopupMenu{};
+    }
+    static void chooseLayerItem(MixFocus &focus, int id) {
+        focus.applyScopeLayerAction(focus.active_, focus.membershipPose_, static_cast<MixFocus::ScopeLayerAction>(id));
+    }
     static bool scopePulseAt(juce::Rectangle<float> plot, const juce::Path &path, float position, float value) {
         if (plot.isEmpty()) return false;
         juce::Path::Iterator vertices(path);
@@ -1575,6 +1587,54 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
               "scope display choices do not acquire, release or reprocess audio sources");
     };
     checkScopeDisplays();
+    const auto checkLayerAdjustments = [&] {
+        writeSum(.25f, .25f, .25f, .25f);
+        focus.select(second);
+        const auto beforeLayer = root.current();
+        const auto beforeUndo = root.undoTitle(false);
+        const auto beforeMeasure = broker->stats();
+        const auto choose = [&](juce::String label) {
+            const auto menu = MixFocusTestAccess::layerMenu(focus);
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == label && item.isEnabled) {
+                    MixFocusTestAccess::chooseLayerItem(focus, item.itemID);
+                    return true;
+                }
+            }
+            return false;
+        };
+        const auto reading = MixFocusTestAccess::scopeReading(focus);
+        check(reading && reading->peak[0] == .5 && reading->peak[1] == .5,
+              "identical recorded layers sum to their combined level before the preview edit");
+        check(choose("Invert polarity"), "the selected layer offers a polarity preview");
+        const auto cancelled = MixFocusTestAccess::scopeReading(focus);
+        check(cancelled && cancelled->peak[0] == 0. && cancelled->peak[1] == 0.,
+              "inversion cancels equal raw layers in both channels before display binning");
+        check(choose("Later by 10 samples") && choose("Later by 1 sample") &&
+                  MixFocusTestAccess::layerAdjustment(focus) == FocusScopeLayerAdjustment{11, true},
+              "coarse and fine adjustments compose as eleven samples for this member");
+        const auto shifted = MixFocusTestAccess::scopeReading(focus);
+        check(shifted && shifted->peak[0] == .25 && shifted->rms[0] > 0. && shifted->rms[0] < .1,
+              "the delayed layer leaves only a short leading edge in the signed sum");
+        check(choose("Show milliseconds") && choose("Earlier by 0.021 ms") &&
+                  MixFocusTestAccess::layerAdjustment(focus) == FocusScopeLayerAdjustment{10, true},
+              "switching readout units retains the exact offset and one-sample step at 48 kHz");
+        focus.select(first);
+        check(MixFocusTestAccess::layerAdjustment(focus) == FocusScopeLayerAdjustment{},
+              "other members retain independent preview settings");
+        focus.select(second);
+        check(choose("Reset layer") && choose("Show samples") &&
+                  MixFocusTestAccess::layerAdjustment(focus) == FocusScopeLayerAdjustment{},
+              "reset restores this layer without changing the other controls");
+        const auto reset = MixFocusTestAccess::scopeReading(focus);
+        const auto afterMeasure = broker->stats();
+        check(reset && reset->peak[0] == .5 && beforeLayer == root.current() && root.undoTitle(false) == beforeUndo &&
+                  afterMeasure.transforms == beforeMeasure.transforms && afterMeasure.taps == beforeMeasure.taps &&
+                  afterMeasure.consumers == beforeMeasure.consumers,
+              "layer actions restore the original sum and write no project, undo, tap or transform");
+    };
+    checkLayerAdjustments();
     focus.scope.setToggleState(false, juce::dontSendNotification);
     root.frame();
     const auto checkAlignMeasure = [&] {

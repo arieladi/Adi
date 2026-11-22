@@ -88,6 +88,10 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         redraw_ = true;
     };
     addChildComponent(scopeChannels_);
+    scopeLayer_.setTitle("Selected scope layer");
+    scopeLayer_.setTooltip("Preview polarity and timing for the selected layer. Playback stays unchanged.");
+    scopeLayer_.onClick = [this] { showScopeLayerMenu(); };
+    addChildComponent(scopeLayer_);
     learnMatch.setTooltip("Capture the selected channel's spectrum difference toward the starred channel. Plays unchanged.");
     learnMatch.onClick = [this] { learnMatchPreview(); };
     clearMatch.onClick = [this] { clearMatchPreview(); updateMatchControls(); };
@@ -172,6 +176,7 @@ void MixFocus::setMembers(const std::vector<std::int64_t> &ids, bool promoteSolo
     auto retiredBar = std::move(barScope_);
     members_ = std::move(next);
     ++membershipPose_;
+    updateScopeLayerAdjustments();
     clearBarScopeData();
     clearScopeSum();
     const auto exists = [this](auto id) {
@@ -265,12 +270,96 @@ void MixFocus::updateMatchControls() {
     const bool together = !scope.getToggleState();
     scopeDisplay_.setVisible(!together);
     scopeChannels_.setVisible(!together);
+    scopeLayer_.setVisible(!together);
+    updateScopeLayerControl();
     learnMatch.setVisible(together);
     clearMatch.setVisible(together && match_.has_value());
     learnMatch.setEnabled(canLearnMatch(pair));
     refreshAlign(pair);
     updateScopeDifference();
 }
+MixFocus::Member *MixFocus::selectedScopeLayer() noexcept {
+    const auto found = std::ranges::find(members_, active_, &Member::id);
+    return found == members_.end() ? nullptr : &*found;
+}
+
+juce::PopupMenu MixFocus::scopeLayerMenu(const Member &layer) const {
+    const double sampleRate = shownBar_ ? shownBar_->sampleRate : layer.data ? layer.data->sampleRate : 0.;
+    const auto offset = layer.scopeAdjustment.offsetSamples;
+    const auto format = [&](int samples) {
+        if (scopeOffsetsInMilliseconds_ && sampleRate > 0.)
+            return juce::String(static_cast<double>(samples) * 1000. / sampleRate, 3) + " ms";
+        return juce::String(samples) + (samples == 1 || samples == -1 ? " sample" : " samples");
+    };
+    juce::PopupMenu menu;
+    menu.addSectionHeader(layer.chip->getButtonText() + "  " + (offset > 0 ? "+" : "") + format(offset));
+    const auto item = [&](ScopeLayerAction action, const juce::String &text, bool enabled = true, bool checked = false) {
+        menu.addItem(static_cast<int>(action), text, enabled, checked);
+    };
+    item(ScopeLayerAction::Invert, "Invert polarity", true, layer.scopeAdjustment.inverted);
+    item(ScopeLayerAction::EarlierCoarse, "Earlier by " + format(10));
+    item(ScopeLayerAction::EarlierFine, "Earlier by " + format(1));
+    item(ScopeLayerAction::LaterFine, "Later by " + format(1));
+    item(ScopeLayerAction::LaterCoarse, "Later by " + format(10));
+    menu.addSeparator();
+    item(ScopeLayerAction::Samples, "Show samples", true, !scopeOffsetsInMilliseconds_);
+    item(ScopeLayerAction::Milliseconds, "Show milliseconds", true, scopeOffsetsInMilliseconds_);
+    item(ScopeLayerAction::Reset, "Reset layer", layer.scopeAdjustment != FocusScopeLayerAdjustment{});
+    return menu;
+}
+
+void MixFocus::updateScopeLayerControl() {
+    if (!scope.getToggleState()) return;
+    const auto *selected = selectedScopeLayer();
+    scopeLayer_.setEnabled(selected != nullptr);
+    scopeLayer_.setButtonText(selected && selected->scopeAdjustment != FocusScopeLayerAdjustment{} ? "Layer*" : "Layer");
+}
+
+void MixFocus::showScopeLayerMenu() {
+    const auto *selected = selectedScopeLayer();
+    if (!scope.getToggleState() || !selected) return;
+    auto menu = scopeLayerMenu(*selected);
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&scopeLayer_),
+        [safe = SafePointer<MixFocus>(this), track = selected->id, membership = membershipPose_](int choice) {
+            if (safe && choice != 0)
+                safe->applyScopeLayerAction(track, membership, static_cast<ScopeLayerAction>(choice));
+        });
+}
+
+void MixFocus::applyScopeLayerAction(std::int64_t track, std::uint64_t membership, ScopeLayerAction action) {
+    if (membership != membershipPose_ || track != active_ || !scope.getToggleState()) return;
+    auto *layer = selectedScopeLayer();
+    if (!layer) return;
+    auto adjustment = layer->scopeAdjustment;
+    switch (action) {
+    case ScopeLayerAction::Invert: adjustment.inverted = !adjustment.inverted; break;
+    case ScopeLayerAction::EarlierCoarse: adjustment.offsetSamples -= 10; break;
+    case ScopeLayerAction::EarlierFine: --adjustment.offsetSamples; break;
+    case ScopeLayerAction::LaterFine: ++adjustment.offsetSamples; break;
+    case ScopeLayerAction::LaterCoarse: adjustment.offsetSamples += 10; break;
+    case ScopeLayerAction::Samples: scopeOffsetsInMilliseconds_ = false; return;
+    case ScopeLayerAction::Milliseconds: scopeOffsetsInMilliseconds_ = true; return;
+    case ScopeLayerAction::Reset: adjustment = {}; break;
+    }
+    const int limit = SharedAnalysis::kMaxFftSize;
+    adjustment.offsetSamples = std::clamp(adjustment.offsetSamples, -limit, limit);
+    if (adjustment == layer->scopeAdjustment) return;
+    layer->scopeAdjustment = adjustment;
+    updateScopeLayerControl();
+    updateScopeLayerAdjustments();
+    shownBar_.reset();
+    redraw_ = true;
+    if (scopePlaying_) rebuildScope();
+    repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
+}
+
+void MixFocus::updateScopeLayerAdjustments() {
+    scopeAdjustments_.clear();
+    scopeAdjustments_.reserve(members_.size());
+    for (const auto &layer : members_) scopeAdjustments_.push_back(layer.scopeAdjustment);
+    barScope_.setLayerAdjustments(scopeAdjustments_);
+}
+
 bool MixFocus::canMeasureAlign(const std::array<const Member *, 2> &pair) const noexcept {
     if (!scopePlaying_ || suspended_ || scope.getToggleState() || alignment_ != Alignment::Ready ||
         !isShowing() || plot_.isEmpty() || !pair[0] || !pair[1] || !pair[0]->data || !pair[1]->data)
@@ -716,6 +805,7 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
         if (!alive || pose != membershipPose_ || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
             return;
         barScope_ = std::move(acquired);
+        barScope_.setLayerAdjustments(scopeAdjustments_);
         barScope_.setMonoRequested(showsScopeDifference() ? FocusScopeChannels::Stereo : scopeChannelView());
         barScope_.setDifferenceRequested(differenceRequest_);
     }
@@ -958,7 +1048,8 @@ void MixFocus::rebuildScope() {
             if (!range) return;
             const auto columns = std::min(plotColumns, range->frames);
             scopeRange_ = focusProjectDifference(a, b, columns, differenceRequest_->fold,
-                [&](std::size_t i, const FocusSumColumn &extrema) { draw(i, columns, extrema); });
+                [&](std::size_t i, const FocusSumColumn &extrema) { draw(i, columns, extrema); },
+                pair[0]->scopeAdjustment, pair[1]->scopeAdjustment);
             differenceRenderedRevision_ = a.transportRevision;
         }
         for (std::size_t ch = 0; ch < visibleLanes; ++ch)
@@ -1011,8 +1102,8 @@ void MixFocus::rebuildScope() {
                 appendColumn(trace, emit, column, columns, extrema.low, extrema.high);
             };
             sum_ = view == FocusScopeChannels::Side
-                ? focusProjectSum<FocusScopeChannels::Side>(scopeSources_, *scopeRange_, columns, publish)
-                : focusProjectSum<FocusScopeChannels::Mid>(scopeSources_, *scopeRange_, columns, publish);
+                ? focusProjectSum<FocusScopeChannels::Side>(scopeSources_, *scopeRange_, columns, publish, scopeAdjustments_)
+                : focusProjectSum<FocusScopeChannels::Mid>(scopeSources_, *scopeRange_, columns, publish, scopeAdjustments_);
             trace.finish(emit);
         } else if (scopeRange_ && scopeShown) {
             const auto columns = std::min(plotColumns, scopeRange_->frames);
@@ -1024,7 +1115,7 @@ void MixFocus::rebuildScope() {
                         appendColumn(traces[ch], pathPoint(scopeSumPaths_[ch]), column, columns,
                                      extrema.low[lane], extrema.high[lane]);
                     }
-                });
+                }, scopeAdjustments_);
             for (std::size_t ch = 0; ch < visibleLanes; ++ch)
                 traces[ch].finish(pathPoint(scopeSumPaths_[ch]));
         } else if (scopeRange_ && !sumLabel_.isEmpty()) {
@@ -1048,11 +1139,14 @@ void MixFocus::rebuildScope() {
             FocusScopePathReducer trace;
             const auto emit = pathPoint(member.scopePaths[0]);
             for (std::size_t p = 0; p < steps; ++p) {
-                const auto from = start + p * range.frames / steps;
-                const auto to = start + (p + 1) * range.frames / steps;
+                const auto from = p * range.frames / steps;
+                const auto to = (p + 1) * range.frames / steps;
                 FocusScopeBarProjection::MonoColumn extrema;
-                for (auto i = from; i < to; ++i)
-                    extrema.include(focusScopeFoldSample(view, data.scopeLeft[i], data.scopeRight[i]));
+                for (auto i = from; i < to; ++i) {
+                    const auto left = focusScopeDisplayedSample(data.scopeLeft, start, range.frames, i, member.scopeAdjustment);
+                    const auto right = focusScopeDisplayedSample(data.scopeRight, start, range.frames, i, member.scopeAdjustment);
+                    extrema.include(focusScopeFoldSample(view, left, right));
+                }
                 appendColumn(trace, emit, p, steps, extrema.low, extrema.high);
             }
             trace.finish(emit);
@@ -1063,10 +1157,18 @@ void MixFocus::rebuildScope() {
             const auto emit = pathPoint(member.scopePaths[ch]);
             const auto &samples = sourceLane(ch) == 0 ? data.scopeLeft : data.scopeRight;
             for (std::size_t p = 0; p < steps; ++p) {
-                const auto from = start + (p * range.frames) / steps;
-                const auto to = start + ((p + 1) * range.frames) / steps;
-                const auto [low, high] = std::minmax_element(samples.data() + from, samples.data() + to);
-                appendColumn(trace, emit, p, steps, *low, *high);
+                const auto from = (p * range.frames) / steps;
+                const auto to = ((p + 1) * range.frames) / steps;
+                if (member.scopeAdjustment.offsetSamples == 0) {
+                    const auto [low, high] = std::minmax_element(samples.data() + start + from, samples.data() + start + to);
+                    appendColumn(trace, emit, p, steps, member.scopeAdjustment.inverted ? -*high : *low,
+                                 member.scopeAdjustment.inverted ? -*low : *high);
+                } else {
+                    FocusScopeBarProjection::MonoColumn extrema;
+                    for (auto i = from; i < to; ++i)
+                        extrema.include(focusScopeDisplayedSample(samples, start, range.frames, i, member.scopeAdjustment));
+                    appendColumn(trace, emit, p, steps, extrema.low, extrema.high);
+                }
             }
             trace.finish(emit);
         }
@@ -1105,6 +1207,7 @@ void MixFocus::resized() {
     alignMeasure_.setBounds(actions.removeFromLeft(w).reduced(hairline));
     scopeDisplay_.setBounds(learnMatch.getBounds());
     scopeChannels_.setBounds(clearMatch.getBounds());
+    scopeLayer_.setBounds(alignMeasure_.getBounds());
     plot_ = r.reduced(plotInset).toFloat();
     rebuildMatchPath();
     for (auto &m : members_)

@@ -38,6 +38,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     friend struct MixFocusTestAccess;
     look::DensityId density_ = look::densityId();
     enum class ScopeDisplay { Overlay = 1, Layers, Stack, Sum, Difference };
+    enum class ScopeLayerAction { Invert = 1, EarlierCoarse, EarlierFine, LaterFine, LaterCoarse, Samples, Milliseconds, Reset };
     struct Member {
         std::int64_t id{};
         juce::Colour colour;
@@ -47,6 +48,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
         std::shared_ptr<const SharedAnalysis::Result> data;
         juce::Path path;
         std::array<juce::Path, 2> scopePaths;
+        FocusScopeLayerAdjustment scopeAdjustment;
         std::vector<double> energy;
         std::optional<SharedAnalysis::Lease::SourcePosition> afterLoop;
         bool spectrumChanged{true};
@@ -70,6 +72,12 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     FocusScopeChannels scopeChannelView() const noexcept;
     bool showsScopeDifference() const noexcept;
     void updateScopeDifference();
+    [[nodiscard]] Member *selectedScopeLayer() noexcept;
+    [[nodiscard]] juce::PopupMenu scopeLayerMenu(const Member &) const;
+    void updateScopeLayerControl();
+    void showScopeLayerMenu();
+    void applyScopeLayerAction(std::int64_t track, std::uint64_t membership, ScopeLayerAction);
+    void updateScopeLayerAdjustments();
     void refreshControls();
     std::array<const Member *, 2> matchMembers() const noexcept;
     bool canLearnMatch(const std::array<const Member *, 2> &) const noexcept;
@@ -88,11 +96,13 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::Viewport scroll_;
     juce::Component strip_;
     juce::ComboBox scopeDisplay_, scopeChannels_;
-    juce::TextButton alignMeasure_{"Measure Align"};
+    juce::TextButton alignMeasure_{"Measure Align"}, scopeLayer_{"Layer"};
     juce::Label alignReadout_;
     juce::Rectangle<float> plot_;
     juce::Rectangle<int> titleRow_, sumLabel_;
     std::vector<const SharedAnalysis::Result *> scopeSources_;
+    std::vector<FocusScopeLayerAdjustment> scopeAdjustments_;
+    bool scopeOffsetsInMilliseconds_ = false;
     std::optional<FocusScopeRange> scopeRange_;
     SharedAnalysis::BarScopeLease barScope_;
     std::shared_ptr<const engine::TempoMap> barTempo_;
