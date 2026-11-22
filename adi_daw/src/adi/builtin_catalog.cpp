@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/builtin_catalog.hpp"
+#include "adi/sampler_declarations.hpp"
 #include <array>
 #if ADI_WITH_PD
 #include "adi_native_pd_patches.hpp"
@@ -11,7 +12,7 @@ constexpr bool ready=true;
 #else
 constexpr bool ready=false;
 #endif
-constexpr std::array<BuiltinInfo,20> entries={{
+constexpr std::array<BuiltinInfo,22> entries={{
  {.uid="org.adidaw.builtin.adi-shaper",.name="ADI-Shaper",.category="ADI",.group="Audio Effects",
   .inputs=2,.available=ready,.usesTransportPosition=true,.resetMissingParameters=true},
  {"org.adidaw.builtin.auto-filter","Auto Filter","Audio Effects","EQ & Filters",4,ready,false},
@@ -33,7 +34,11 @@ constexpr std::array<BuiltinInfo,20> entries={{
  {"org.adidaw.builtin.utility","Utility","Audio Effects","Utilities",2,ready,false},
  {"org.adidaw.builtin.vocoder","Vocoder","Audio Effects","Pitch & Modulation",4,ready,false},
  // DEV-21: the first of the two authorized instruments; no audio in, notes in.
- {"org.adidaw.builtin.oneshot","OneShot","Instruments","Instruments",0,ready,true,true}
+ {"org.adidaw.builtin.oneshot","OneShot","Instruments","Instruments",0,ready,true,true},
+ // DEV-21: the second authorized instrument; its declarations are not a canvas.
+ {"org.adidaw.builtin.sampler","Sampler","Instruments","Instruments",0,ready,true,true},
+ // DEV-22 (ADR-0249 d7, after 3 December): Live's Compressor, built, not verified (reading 17).
+ {"org.adidaw.builtin.compressor","Compressor","Audio Effects","Dynamics",2,ready,false}
 }};
 }
 std::span<const BuiltinInfo> builtinCatalog() noexcept{return entries;}
@@ -44,13 +49,21 @@ const BuiltinInfo* findBuiltin(std::string_view uid) noexcept {
 std::string_view builtinCanvas(std::string_view uid) noexcept {
 #if ADI_WITH_PD
     using namespace device::canonical;
-    constexpr std::array<std::string_view,20> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
+    constexpr std::array<std::string_view,22> canvases={adiShaper,autoFilter,chordComb,chorusEnsemble,colorCab,delay,eqEight,echo,
         hybridReverb,multibandDynamics,overdrive,phaserFlanger,redux,resonators,reverb,saturator,shifter,utility,vocoder,
-        oneShot};
+        oneShot,std::string_view{},compressor};
     for(std::size_t i=0;i<entries.size();++i)if(entries[i].uid==uid)return canvases[i];
 #else
     (void)uid;
 #endif
     return {};
+}
+std::string_view builtinDeclarations(std::string_view uid) noexcept {
+#if ADI_WITH_PD
+    if (uid == device::samplerUid) {
+        return device::samplerDeclarations;
+    }
+#endif
+    return builtinCanvas(uid);
 }
 }

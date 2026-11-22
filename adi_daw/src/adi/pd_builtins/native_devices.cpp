@@ -5,6 +5,7 @@
 #include "adi/dsp/adi_shaper.hpp"
 #include "adi/pd_builtins/adi_shaper_transport.hpp"
 #include "adi/dsp/auto_filter.hpp"
+#include "adi/dsp/sampler.hpp"
 #include "adi/dsp/chorus_ensemble.hpp"
 #include "adi/dsp/combchord.hpp"
 #include "adi/dsp/echo.hpp"
@@ -14,6 +15,7 @@
 #include "adi/dsp/multiband_dynamics.hpp"
 #include "adi/dsp/overdrive.hpp"
 #include "adi/dsp/phaser_flanger.hpp"
+#include "adi/dsp/live_compressor.hpp"
 #include "adi/dsp/redux.hpp"
 #include "adi/dsp/resonators.hpp"
 #include "adi/dsp/saturator.hpp"
@@ -334,6 +336,31 @@ template <class Core> class NativeDevice final : public NativePdDevice {
 // parameter N as `p N-1 <value>` in its own units, as the Pd external reads
 // it; notes keep their block-relative frames (the external's ticks cannot);
 // the sample is slot 1, published by the host's sample slots.
+// The OneShot canvas's notein/bendin wiring and pd_engine's wire quantisation,
+// for OneShot and the Sampler alike.
+void wireMidi(OneShotPdMidi& midi, const engine::MpeOut& message) noexcept {
+    const auto channel = static_cast<float>(message.channel + 1);
+    switch (message.kind) {
+    case engine::MpeOut::Kind::NoteOn: {
+        const double value = std::isfinite(message.value) ? std::clamp(message.value, 0.0, 1.0) : 0.0;
+        midi.note(static_cast<float>(message.key), static_cast<float>(std::max(1L, std::lround(value * 127.0))),
+                  channel, message.frame);
+        break;
+    }
+    case engine::MpeOut::Kind::NoteOff:
+        midi.note(static_cast<float>(message.key), 0, channel, message.frame);
+        break;
+    case engine::MpeOut::Kind::Control:
+        if (message.ctrl == engine::kCtrlPitchBend) {
+            midi.bend(static_cast<float>(message.word), channel, message.frame);
+        }
+        break;
+    case engine::MpeOut::Kind::Expression:
+    case engine::MpeOut::Kind::PolyPressure:
+        break;
+    }
+}
+
 class OneShotNative final : public NativePdDevice {
   public:
     void prepare(double sampleRate, int maxFrames) override {
@@ -360,28 +387,7 @@ class OneShotNative final : public NativePdDevice {
     void tempo(double bpm) noexcept override {
         if (std::isfinite(bpm) && bpm > 0) transport_.bpm = bpm;
     }
-    void midi(const engine::MpeOut& message) noexcept override {
-        // The canvas's notein/bendin wiring and pd_engine's wire quantisation.
-        const auto channel = static_cast<float>(message.channel + 1);
-        switch (message.kind) {
-        case engine::MpeOut::Kind::NoteOn: {
-            const double value = std::isfinite(message.value) ? std::clamp(message.value, 0.0, 1.0) : 0.0;
-            midi_.note(static_cast<float>(message.key), static_cast<float>(std::max(1L, std::lround(value * 127.0))),
-                       channel, message.frame);
-            break;
-        }
-        case engine::MpeOut::Kind::NoteOff:
-            midi_.note(static_cast<float>(message.key), 0, channel, message.frame);
-            break;
-        case engine::MpeOut::Kind::Control:
-            if (message.ctrl == engine::kCtrlPitchBend)
-                midi_.bend(static_cast<float>(message.word), channel, message.frame);
-            break;
-        case engine::MpeOut::Kind::Expression:
-        case engine::MpeOut::Kind::PolyPressure:
-            break;
-        }
-    }
+    void midi(const engine::MpeOut& message) noexcept override { wireMidi(midi_, message); }
     // OneShot keeps its own transport for the tempo; the Pd fallback is not used.
     void process(const engine::NodeIo& io, const PdTransport*) noexcept override {
         const auto* buffer = PdSampleBlock::get(1);
@@ -395,6 +401,70 @@ class OneShotNative final : public NativePdDevice {
     }
   private:
     OneShot core_;
+    OneShotPdMidi midi_;
+    engine::TransportInfo transport_{};
+    double rate_ = 0;
+    int frames_ = 0;
+    bool prepared_ = false;
+};
+
+// DEV-21: the Sampler as a built-in instrument. Slot N (1..32) is read per
+// segment from the host's sample block, as OneShot reads slot 1, and is a
+// layer of the core's slot mode; an empty slot takes no notes.
+class SamplerNative final : public NativePdDevice {
+  public:
+    SamplerNative() : core_(Sampler::slotBacked) {}
+    void prepare(double sampleRate, int maxFrames) override {
+        const bool validRate = std::isfinite(sampleRate) && sampleRate > 0;
+        const double rate = validRate ? sampleRate : 48000;
+        if (!prepared_ || rate != rate_ || maxFrames != frames_) {
+            core_.release();
+            core_.prepare(rate, maxFrames);
+            midi_.reset();
+            rate_ = rate;
+            frames_ = maxFrames;
+            prepared_ = true;
+        }
+    }
+    bool sendParameter(int id, float value) noexcept override {
+        const int index = id - 1;
+        if (!std::isfinite(value) || index < 0 || index >= core_.paramCount()) {
+            return false;
+        }
+        const auto* p = core_.paramAt(index);
+        if (p == nullptr || !(p->maxReal > p->minReal)) {
+            return false;
+        }
+        return core_.setParamAt(static_cast<std::size_t>(index), std::clamp(
+            (static_cast<double>(value) - p->minReal) / (p->maxReal - p->minReal), 0.0, 1.0));
+    }
+    int latencySamples() const noexcept override { return 0; }
+    void tempo(double bpm) noexcept override {
+        if (std::isfinite(bpm) && bpm > 0) {
+            transport_.bpm = bpm;
+        }
+    }
+    void midi(const engine::MpeOut& message) noexcept override { wireMidi(midi_, message); }
+    void process(const engine::NodeIo& io, const PdTransport*) noexcept override {
+        std::array<Sampler::SlotSample, Sampler::kSlots> slots{};
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            const auto* buffer = PdSampleBlock::get(static_cast<std::int32_t>(i + 1));
+            const auto* sample = dynamic_cast<const PdOneShotSample*>(buffer);
+            if (sample != nullptr) {
+                slots[i] = {sample->prepared.get(), buffer->seq};
+            }
+        }
+        auto child = io;
+        child.events = midi_.events();
+        child.transport = io.transport != nullptr ? io.transport : &transport_;
+        if (midi_.needsVoiceReset()) {
+            core_.resetVoices();
+        }
+        core_.processSlots(child, slots);
+        midi_.consumed();
+    }
+  private:
+    Sampler core_;
     OneShotPdMidi midi_;
     engine::TransportInfo transport_{};
     double rate_ = 0;
@@ -436,6 +506,21 @@ template <class Core> std::unique_ptr<NativePdDevice> create(std::string_view te
 }
 } // namespace
 
+std::unique_ptr<NativePdDevice> makeSamplerNative(std::string_view text) {
+    auto device = std::make_unique<SamplerNative>();
+    device->tempo(120);
+    const auto declarations = parsePdDeclarations(text);
+    if (!declarations.arrays.empty() || !declarations.problems.empty()) {
+        return nullptr;
+    }
+    for (const auto& declaration : declarations.params) {
+        if (!device->sendParameter(declaration.id, static_cast<float>(declaration.def))) {
+            return nullptr;
+        }
+    }
+    return device;
+}
+
 std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, int inChannels,
                                                   int outChannels) {
     if (outChannels != 2) return nullptr;
@@ -452,6 +537,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::chordComb)) return create<ChordCombStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::chorusEnsemble)) return create<dsp::ChorusEnsemble>(patchText, 2);
         if (sameCanvas(patchText, canonical::colorCab)) return create<ColorCabStereo>(patchText, 2);
+        if (sameCanvas(patchText, canonical::compressor)) return create<dsp::LiveCompressor>(patchText, 2);
         if (sameCanvas(patchText, canonical::hybridReverb)) return create<HybridReverbStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::delay)) return create<dsp::LiveDelay>(patchText, 2);
         if (sameCanvas(patchText, canonical::eqEight)) return create<dsp::EqEight>(patchText, 2);

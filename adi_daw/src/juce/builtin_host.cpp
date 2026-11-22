@@ -11,6 +11,7 @@
 #if ADI_WITH_PD
 #include "adi/pd_builtins/native_devices.hpp"
 #include "adi/pd_builtins/sample_bridge.hpp"
+#include "adi/sampler_declarations.hpp"
 #include "juce/pd_device.hpp"
 #endif
 #include <algorithm>
@@ -27,11 +28,19 @@ namespace {
 // under two declarations.
 using builtin_values::natural;
 using builtin_values::normalized;
+// The Sampler's native is chosen by its uid: its declarations are not a canvas
+// (DEV-21), so no canvas text can select it.
+std::unique_ptr<NativePdDevice> nativeFor(const BuiltinInfo& info) {
+    if (info.uid == samplerUid) {
+        return makeSamplerNative(builtinDeclarations(info.uid));
+    }
+    return makeNativePdDevice(builtinCanvas(info.uid), info.inputs, 2);
+}
 class BuiltinDevice final:public DeviceInstance {
 public:
     BuiltinDevice(const BuiltinInfo& info,const rows::PluginRef& reference)
-        :info_(info),declarations_(parsePdDeclarations(builtinCanvas(info.uid))),
-         native_(makeNativePdDevice(builtinCanvas(info.uid),info.inputs,2)) {
+        :info_(info),declarations_(parsePdDeclarations(builtinDeclarations(info.uid))),
+         native_(nativeFor(info)) {
         if(!native_)throw std::runtime_error("canonical built-in factory did not create "+std::string(info.name));
         identity_={reference.format,reference.uid,reference.name,reference.vendor,reference.version};
         targets_=std::make_unique<std::atomic<float>[]>(declarations_.params.size());
