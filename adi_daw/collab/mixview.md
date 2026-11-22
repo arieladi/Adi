@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 held sample peak and clip counts
+
+Expanded pinned Spectrum shows a held sample peak and strict clip count for each channel. Each finite sample contributes once from the active interval's writer position. Magnitudes above full scale count, and exactly full scale does not add a clip. The existing current-window Meters reading retains its own threshold. Both expanded level rows use the existing primary lease and appear together when there is room. The smaller layout keeps Balance and Correlation.
+
+Five broker and twelve software component assertions failed first. All 820 broker and 454 Mix Functions checks now pass, including invalid input, finite extreme peaks, ring wrap, seek, Freeze and hidden demand. The tests confirm the same tap and FFT work. All 24 named CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed four changed units and Clang passed both implementation units.
+
+Release ZIP SHA-256 `f2f01f20dcc8bbc74b8b134dca1c2306e069d27dc829c3e87dd59c25b1f1c84e`. EXE SHA-256 `bcf2b397b14fd29e9f17eee1f49c510912d6fb290b5159551345b87b71b7379b`. The brief includes a verified stereo float WAV with 560 left and 120 right overs. True-peak measurement and timed CPU are separate work.
+
+PR requested — `mixview/mx21-spectrum-sample-statistics-lands-after-2026-12-03` at `437987b379cdf65a40d563db9fe2af136ec4bc6e`, also on the joined scheduled preview. Lands after 3 December.
+
 ### 22 November — MX-30 parked Scope, Phase and raw Spectrum timing
 
 A long muted interval can wrap the tap while its visible window is parked. Scope, Phase and raw Spectrum now account for the omitted complete hops and keep the fractional hop, so same-stamp monitoring wakes at the next original boundary. When balance is visible, that first reading includes only the audible part of its new hop while retaining the full two-second denominator.
