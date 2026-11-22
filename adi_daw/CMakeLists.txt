@@ -294,6 +294,7 @@ add_library(adi_core STATIC
     src/adi/scan_stamp.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
+    src/adi/interchange/compound_file.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
@@ -2126,6 +2127,10 @@ add_test(NAME adi_audio_memory_capture_tests COMMAND adi_audio_memory_capture_te
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
+
+add_executable(adi_compound_file_tests tests/test_compound_file.cpp)
+target_link_libraries(adi_compound_file_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_compound_file_tests COMMAND adi_compound_file_tests)
 
 
 
