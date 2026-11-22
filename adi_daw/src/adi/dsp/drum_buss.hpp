@@ -7,17 +7,20 @@
 //   Comp         on or off: a fixed compressor, -18 dB threshold, 4 : 1,
 //                1 ms attack, 100 ms release, on the louder channel's peak.
 //   Drive        0 to 100 %: the input to the drive curve, 0 to +24 dB,
-//                level-matched after (the curve's slope at 0 is 1).
+//                matched at -6 dBFS (a peak of 0.5 keeps its level; quieter
+//                signals gain, as a saturating bus does; louder are held).
 //   Type         Soft (tanh), Medium (x / (1 + |x|)), Hard (x - x^3 / 3,
-//                clipped at +-1, scaled to unit slope).
-//   Crunch       0 to 100 %: the distortion of the band above 1 kHz (its
-//                cubic and higher terms, b - tanh(4 b) / 4, times 4 Crunch),
-//                added: it brightens hits without touching the low end or a
-//                quiet signal.
+//                clipped at +-1).
+//   Crunch       0 to 100 %: the square of the band above 1 kHz, its DC
+//                removed, added (2 Crunch): an octave-up brightness. A sine's
+//                square holds no fundamental, so the band's level does not
+//                move, and a quiet signal is untouched.
 //   Damp         4.5 to 20 kHz: a two-pole low pass.
-//   Transients   -100 to +100: the difference of a fast (1 ms) and a slow
-//                (50 ms) envelope, scaled, as a gain on the signal: up
-//                sharpens hits, down softens them.
+//   Transients   -100 to +100: a peak envelope of the input (0.5 ms attack,
+//                300 ms release) against itself lagged by a 10 ms one-pole;
+//                their ratio, smoothed over 0.5 ms, is a gain: up sharpens a
+//                hit's onset, down softens it, and a held tone, which keeps
+//                the two together, passes.
 //   Boom         0 to 100 %: a resonant band pass at Boom Freq (30 to 90 Hz)
 //                of the input, added; Boom Decay (0 to 100 %) sets its ring,
 //                Q 2 to 30.
@@ -74,9 +77,10 @@ private:
     std::array<double, Count> p_{};
     Biquad damp_{}, crunchBand_{}, boom_{};
     std::array<State, 2> dampState_{}, crunchState_{}, boomState_{};
-    std::array<double, 2> fast_{}, slow_{};
+    std::array<double, 2> fast_{}, slow_{}, shape_{1, 1}, crunchDcIn_{}, crunchDcOut_{};
     double rate_ = 48000, trim_ = 1, drive_ = 1, crunch_ = 0, transients_ = 0, boomGain_ = 0, output_ = 1, wet_ = 1;
-    double compEnv_ = 0, compAttack_ = 0, compRelease_ = 0, fastA_ = 0, slowA_ = 0;
+    double compEnv_ = 0, compAttack_ = 0, compRelease_ = 0, fastA_ = 0, slowA_ = 0, releaseA_ = 0, smoothA_ = 0;
+    double match_ = 1, crunchPole_ = 0;
 };
 
 }  // namespace adi::dsp

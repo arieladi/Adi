@@ -175,7 +175,47 @@ void routing() {
 
 }  // namespace
 
+/// The review of ad19a6b9: Dual switched off and on again replayed the
+/// right cabinet's old state (0.89 from silence), and no check showed that
+/// Mono feeds the channels' mean.
+void reviewed() {
+    K k;
+    k.set(K::Dual, 1);
+    k.prepare(kRate);
+    std::vector<float> zero(48000, 0.f), right(4800), l(48000), r(48000);
+    for (std::size_t i = 0; i < right.size(); ++i) {
+        right[i] = static_cast<float>(0.9 * std::sin(0.05 * static_cast<double>(i)));
+    }
+    k.process(zero.data(), right.data(), l.data(), r.data(), right.size());
+    k.set(K::Dual, 0);
+    k.process(zero.data(), zero.data(), l.data(), r.data(), zero.size());
+    k.set(K::Dual, 1);
+    k.process(zero.data(), zero.data(), l.data(), r.data(), zero.size());
+    double peak = 0;
+    for (float v : r) {
+        peak = std::max(peak, static_cast<double>(std::abs(v)));
+    }
+    check(peak < 1e-6, "Dual off then on over silence: nothing on the right (" + std::to_string(peak) + ")");
+    // Mono: the left alone at x gives half of what Dual's left gives for x.
+    std::vector<float> x(9600);
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        x[i] = static_cast<float>(0.4 * std::sin(0.031 * static_cast<double>(i)));
+    }
+    const std::vector<float> none(x.size(), 0.f);
+    K mono, dual;
+    dual.set(K::Dual, 1);
+    std::vector<float> ml(x.size()), mr(x.size()), dl(x.size()), dr(x.size());
+    mono.process(x.data(), none.data(), ml.data(), mr.data(), x.size());
+    dual.process(x.data(), none.data(), dl.data(), dr.data(), x.size());
+    double worst = 0;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        worst = std::max(worst, std::abs(static_cast<double>(ml[i]) - 0.5 * dl[i]));
+    }
+    check(worst < 1e-6 && ml == mr, "Mono feeds the channels' mean: the left alone comes out at half, in both");
+}
+
 int main() {
+    reviewed();
     responses();
     routing();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);

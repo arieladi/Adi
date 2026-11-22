@@ -22,7 +22,7 @@ std::array<double, Corpus::kModes> Corpus::ratios(Model m) noexcept {
     }
     // A circular membrane: the zeros of the Bessel functions, j_mn / j_01.
     constexpr double membrane[kModes] = {1, 1.5933, 2.1355, 2.2954, 2.6531, 2.9173, 3.1555, 3.5001,
-                                         3.5985, 3.6475, 4.0589, 4.1317, 4.2304, 4.6010, 4.8319, 4.9032};
+                                         3.5985, 3.6475, 4.0589, 4.1317, 4.2304, 4.6010, 4.6101, 4.8319};
     // A square simply supported plate: (m^2 + n^2) / 2, in order.
     constexpr double plate[kModes] = {1, 2.5, 2.5, 4, 5, 5, 6.5, 6.5, 8.5, 8.5, 9, 10, 10, 12.5, 12.5, 13};
     for (std::size_t k = 0; k < kModes; ++k) {
@@ -96,7 +96,10 @@ void Corpus::update() noexcept {
         mode.a1 = 2 * radius * std::cos(w);
         mode.a2 = -radius * radius;
         const auto n = static_cast<double>(k + 1);
-        mode.in = std::sin(w) * std::abs(std::sin(std::numbers::pi * n * hit)) * std::pow(ratio, p_[Brightness] / 200);
+        // sin(w) gives each mode a unit impulse envelope; 48 kHz / rate keeps
+        // a hit of a given length ringing at the same level at every rate
+        // (the hit has rate / 48 kHz times the samples).
+        mode.in = std::sin(w) * (48000 / rate_) * std::abs(std::sin(std::numbers::pi * n * hit)) * std::pow(ratio, p_[Brightness] / 200);
         mode.left = std::sin(std::numbers::pi * n * posL);
         mode.right = std::sin(std::numbers::pi * n * posR);
     }
@@ -122,7 +125,9 @@ void Corpus::process(const float* inL, const float* inR, float* outL, float* out
             yl += m.left * y;
             yr += m.right * y;
         }
-        const double wetL = gain_ * yl + bleed_ * x, wetR = gain_ * yr + bleed_ * x;
+        // The resonance passes a tanh: a tone held at a mode builds up by the
+        // mode's Q (thousands at a long Decay), and is held under full scale.
+        const double wetL = std::tanh(gain_ * yl) + bleed_ * x, wetR = std::tanh(gain_ * yr) + bleed_ * x;
         if (outL) {
             outL[i] = static_cast<float>(l + (wetL - l) * wet_);
         }
