@@ -21,7 +21,7 @@ Time. Beat Repeat and External Audio Effect are left out of the count; they are 
   - This seat starts Amp now, on its own branch, and stops there if the answer is no.
 
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 35 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 36 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -176,6 +176,9 @@ method); Live's files and renders stay in the director's research.
 35. **Amp (built after 3 December).** A fresh Amp, every control as shown: the Amp Type list, the
     knobs' ranges, Dual's default. Per type, a 220 Hz sine at −6 dBFS at Gain 0, 5 and 10: the first
     nine harmonics. A −60 dBFS sine swept from 50 Hz to 10 kHz at the defaults: the response.
+36. **Cabinet (built after 3 December).** A fresh Cabinet, every control as shown (the cabinet and
+    microphone lists, the mic types, Dual's default). Pink noise through each cabinet with each
+    microphone: the response from 40 Hz to 16 kHz.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
@@ -190,6 +193,21 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Cabinet — lands after 3 December
+
+**PR requested:** head `devices/live-cabinet` (ad19a6b9), base `main`, after `devices/live-amp`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.** A fixed linear filter: five cabinets (each a low cut, a box resonance, a cone peak
+  and a two-section high cut), three microphone positions, two mic types, Output, Dry/Wet, and Mono
+  or Dual.
+- **Tests:**
+  - `adi_live_cabinet_tests` 39. All thirty combinations of cabinet, microphone and mic type match
+    the documented cascade within 0.01 dB. The cascade is computed apart from the signal path. Off
+    axis and far are duller. Mono and Dual. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 38 built-ins.
+- **Reading 36, added to the ONE list.**
 
 ## 2026-11-22 — the second review: eight findings, all fixed
 
