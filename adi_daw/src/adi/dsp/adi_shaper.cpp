@@ -366,6 +366,11 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= BaseCount) {
+        if (id >= SweepLowOffset && id <= SweepHighOffset)
+            sweeps_[static_cast<std::size_t>(id - SweepLowOffset)].setStereoOffset(value * .01f);
+        return;
+    }
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         for (std::size_t i = 0; i < stages_.size(); ++i) updateStage(static_cast<Stage>(i));
