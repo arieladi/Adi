@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-04 combined codec, rate, layout and readback candidate
+
+- EX-04 combined landing candidate — PR requested, `engine-win/export-clock-codec-layouts` at `07014a6d`. Includes the tested six-format group, SoXR project-rate rendering, mono fold, explicit WAVE layout and lossless readback. The post-SRC mono WAV validates the speaker mask against its one output channel. WAV and Opus also passed a shared 96-to-48 kHz 2301-frame delivery with effects at 96 kHz. MSVC /W4 /WX: render 515, WAV 176, PCM stream 50, NI Stems 85 (native AAC unavailable). Win can review this stack as one combined export-format head. The standalone topic branches preserve their independent gates and remain available. Loop/tail selection and the export UI are still separate.
+
 ## 2026-11-22 — EX-12 shared batch audio converter
 
 - EX-12 file conversion through the six native format writers — PR requested, `engine-win/export-shared-file-delivery` at `5daa4e3a`, joining `dae10235` with `f1ebf38b`. Inputs stream through the ordinary delivery encoders at their source rate and layout, without opening a project. The ordered batch returns one result per request, protects all captured input identities and prior successful destinations from Replace, and leaves unstarted rows Pending on cancellation. MSVC: render 505, WAV 171, PCM stream 50. Verified exact WAV/AIFF PCM, playable 4096-frame Opus delivery, normalized WAV, same-size source replacement refusal, protection of a second input and of earlier output, and cancellation with the correct row ID. Lossy encoding requires an exact declared source length in this candidate. Window owns batch UI and file selection. Converter SRC and cross-stack publication fingerprinting are separate integration work.
