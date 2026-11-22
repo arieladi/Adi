@@ -116,6 +116,12 @@ double Saturator::filter(double x, const Filter &c, std::array<double, 2> &z) no
     const double y = c.b0 * x + z[0];
     z[0] = c.b1 * x - c.a1 * y + z[1];
     z[1] = c.b2 * x - c.a2 * y;
+    if (std::abs(z[0]) < 1e-30) {
+        z[0] = 0;
+    }
+    if (std::abs(z[1]) < 1e-30) {
+        z[1] = 0;
+    }
     return y;
 }
 void Saturator::process(const float *il, const float *ir, float *ol, float *orr,
@@ -150,6 +156,9 @@ void Saturator::process(const float *il, const float *ir, float *ol, float *orr,
             const double hp = input - l.dcIn + dc * l.dcOut;
             l.dcIn = input;
             l.dcOut = hp;
+            if (std::abs(l.dcOut) < 1e-30) {
+                l.dcOut = 0;
+            }
             if (p_[PreDC] >= .5)
                 input = hp;
             l.dry[l.dryPos] = in[c];

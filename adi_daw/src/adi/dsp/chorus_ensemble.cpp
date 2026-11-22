@@ -26,6 +26,13 @@
 #include <cmath>
 #include <numbers>
 namespace adi::dsp {
+namespace {
+double clean(double x) noexcept {
+    // 1e-30 is -600 dB amplitude, far below float audio; kill recursive tails
+    // before double denormals, independent of the host's floating-point mode.
+    return std::abs(x) < 1e-30 ? 0 : x;
+}
+} // namespace
 void ChorusEnsemble::prepare(double sr) {
     rate_ = std::isfinite(sr) && sr > 0 ? sr : 48000;
     for (auto &b : ring_)
@@ -79,7 +86,7 @@ void ChorusEnsemble::process(const float *il, const float *ir, float *ol, float 
         const std::array<double, 2> in{il[i], ir[i]};
         std::array<double, 2> wet{}, bass{};
         for (std::size_t c = 0; c < 2; ++c) {
-            low_[c] += hp * (in[c] - low_[c]);
+            low_[c] = clean(low_[c] + hp * (in[c] - low_[c]));
             bass[c] = p_[HighPassOn] >= .5 ? low_[c] : 0;
             for (int t = 0; t < taps; ++t) {
                 double ph = phase_ + static_cast<double>(t) / taps +
@@ -93,10 +100,10 @@ void ChorusEnsemble::process(const float *il, const float *ir, float *ol, float 
             feedback_[c] =
                 mode == 2 ? 0 : wet[c] * p_[Feedback] / 100 * (p_[Invert] >= .5 ? -1 : 1);
             const double x = in[c] - bass[c] + feedback_[c];
-            ring_[c][write_] = static_cast<float>(std::clamp(x, -4., 4.));
+            ring_[c][write_] = static_cast<float>(std::clamp(clean(x), -4., 4.));
             const double shaped =
                 warmth > 0 ? std::tanh(wet[c] * (1 + 3 * warmth)) / (1 + 3 * warmth) : wet[c];
-            warm_[c] += lp * (shaped - warm_[c]);
+            warm_[c] = clean(warm_[c] + lp * (shaped - warm_[c]));
             if (warmth > 0)
                 wet[c] = warm_[c];
         }

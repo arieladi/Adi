@@ -30,6 +30,8 @@ constexpr std::array<int, 16> delays{1339934, 962710,  1004427, 1103966, 1198575
                                      1033425, 933313,  949407,  1402754, 1379894, 1225304,
                                      1135598, 1402107, 956152,  1137737};
 constexpr double pi = std::numbers::pi;
+// Recursive states settle on exact 0 instead of decaying into subnormals.
+double clean(double x) noexcept { return std::abs(x) < 1e-30 ? 0 : x; }
 } // namespace
 LiveReverb::LiveReverb() {
     for (int i = 0; i < Count; ++i)
@@ -81,10 +83,10 @@ void LiveReverb::process(const float *inL, const float *inR, float *outL, float 
     for (std::size_t frame = 0; frame < n; ++frame) {
         const double inputL = inL[frame], inputR = inR[frame];
         double input = 0.5 * (inputL + inputR);
-        low_ += (input - low_) * lowCoefficient;
+        low_ = clean(low_ + (input - low_) * lowCoefficient);
         if (p[LowCutOn] >= 0.5)
             input -= low_;
-        high_ += (input - high_) * highCoefficient;
+        high_ = clean(high_ + (input - high_) * highCoefficient);
         if (p[HighCutOn] >= 0.5)
             input = high_;
         predelay_[write_] = static_cast<float>(input);
@@ -121,7 +123,7 @@ void LiveReverb::process(const float *inL, const float *inR, float *outL, float 
                 std::max(1., (d == 0 ? 149. : 211.) * size_ * p[Scale] * rate_ / 48000);
             const double old = read(diffusers_[d], delay);
             const double value = injected - diffusion * old;
-            diffusers_[d][write_] = static_cast<float>(value);
+            diffusers_[d][write_] = static_cast<float>(clean(value));
             injected = old + diffusion * value;
         }
         if (p[Freeze] >= 0.5 && p[Cut] >= 0.5)
@@ -143,13 +145,13 @@ void LiveReverb::process(const float *inL, const float *inR, float *outL, float 
             double value = read(tap.ring, times[t] + modulation);
             const bool flat = p[Freeze] >= 0.5 && p[Flat] >= 0.5;
             if (!flat && p[HighShelfOn] >= 0.5) {
-                tap.high += (value - tap.high) * highShelf;
+                tap.high = clean(tap.high + (value - tap.high) * highShelf);
                 const double relative =
                     std::pow(0.001, times[t] / (rate_ * p[Decay]) * (1 / p[HighShelfDecay] - 1));
                 value = tap.high + (value - tap.high) * relative;
             }
             if (!flat && p[LowShelfOn] >= 0.5) {
-                tap.low += (value - tap.low) * lowShelf;
+                tap.low = clean(tap.low + (value - tap.low) * lowShelf);
                 const double relative =
                     std::pow(0.001, times[t] / (rate_ * p[Decay]) * (1 / p[LowShelfDecay] - 1));
                 value -= tap.low * (1 - relative);
@@ -163,7 +165,7 @@ void LiveReverb::process(const float *inL, const float *inR, float *outL, float 
         for (std::size_t t = 0; t < count; ++t) {
             const double gain =
                 p[Freeze] >= 0.5 ? 1 : std::pow(0.001, times[t] / (rate_ * p[Decay]));
-            taps_[t].ring[write_] = static_cast<float>((out[t] + feedback) * gain);
+            taps_[t].ring[write_] = static_cast<float>(clean((out[t] + feedback) * gain));
             const double pan = -1 + 2 * static_cast<double>(t) / static_cast<double>(count - 1);
             lateL += out[t] * std::sqrt(0.5 - 0.495 * pan);
             lateR += out[t] * std::sqrt(0.5 + 0.495 * pan);

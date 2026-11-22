@@ -62,6 +62,12 @@ void Utility::process(const float *il, const float *ir, float *ol, float *orr,
         for (std::size_t c = 0; c < 2; ++c) {
             low1_[c] += low_ * (values[c] - low1_[c]);
             low2_[c] += low_ * (low1_[c] - low2_[c]);
+            if (std::abs(low1_[c]) < 1e-30) {
+                low1_[c] = 0;
+            }
+            if (std::abs(low2_[c]) < 1e-30) {
+                low2_[c] = 0;
+            }
             bass[c] = low2_[c];
         }
         if (p_[BassMono] >= 0.5) {
@@ -75,11 +81,14 @@ void Utility::process(const float *il, const float *ir, float *ol, float *orr,
         balance_ += (pan - balance_) * ramp;
         if (std::abs(target - gain_) < 1e-12)
             gain_ = target;
+        if (std::abs(pan - balance_) < 1e-12) {
+            balance_ = pan;
+        }
         for (std::size_t c = 0; c < 2; ++c) {
             const double x = values[c];
             const double filtered = x - dcIn_[c] + dc_ * dcOut_[c];
             dcIn_[c] = x;
-            dcOut_[c] = filtered;
+            dcOut_[c] = std::abs(filtered) < 1e-30 ? 0 : filtered;
             if (p_[DC] >= 0.5)
                 values[c] = filtered;
         }

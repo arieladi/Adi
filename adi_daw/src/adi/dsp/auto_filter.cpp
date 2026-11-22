@@ -4,6 +4,15 @@
 #include <cmath>
 #include <numbers>
 namespace adi::dsp {
+namespace {
+// Recursive states are snapped to 0 below -600 dB so a silent tail settles on exact
+// zero instead of decaying into denormals (vendored filter states: end of each block).
+void flush(double &v) noexcept {
+    if (std::abs(v) < 1e-30) {
+        v = 0;
+    }
+}
+} // namespace
 void AutoFilter::prepare(double rate) {
     rate_ = std::isfinite(rate) ? std::clamp(rate, 8000., 384000.) : 48000.;
     p_ = target_;
@@ -145,7 +154,8 @@ double AutoFilter::filter(Lane &s, double x, double freq) noexcept {
                    b = (a + s.comb.size() - 1) % s.comb.size();
         const double delayed = s.comb[a] * (1 - fraction) + s.comb[b] * fraction,
                      polarity = 1 - 2 * m;
-        s.comb[s.write] = x + delayed * .95 * res * polarity;
+        const double w = x + delayed * .95 * res * polarity;
+        s.comb[s.write] = std::abs(w) < 1e-30 ? 0 : w; // -600 dB tail floor
         s.write = (s.write + 1) % s.comb.size();
         return .5 * (x + polarity * delayed);
     }
@@ -263,8 +273,12 @@ double AutoFilter::filter(Lane &s, double x, double freq) noexcept {
 void AutoFilter::process(const float *l, const float *r, float *ol, float *orr, std::size_t n,
                          const float *scLeft, const float *scRight) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
-        for (std::size_t p = 0; p < p_.size(); ++p)
+        for (std::size_t p = 0; p < p_.size(); ++p) {
             p_[p] = target_[p] + smooth_ * (p_[p] - target_[p]);
+            if (std::abs(target_[p] - p_[p]) < 1e-12) {
+                p_[p] = target_[p];
+            }
+        }
         double input[] = {l && std::isfinite(l[i]) ? l[i] : 0, r && std::isfinite(r[i]) ? r[i] : 0};
         double key[] = {scLeft && std::isfinite(scLeft[i]) ? scLeft[i] : 0,
                         scRight && std::isfinite(scRight[i]) ? scRight[i] : 0};
@@ -311,6 +325,8 @@ void AutoFilter::process(const float *l, const float *r, float *ol, float *orr, 
                 trigger = key[c] * sc.b0 + s.sc1;
                 s.sc1 = key[c] * sc.b1 - sc.a1 * trigger + s.sc2;
                 s.sc2 = key[c] * sc.b2 - sc.a2 * trigger;
+                flush(s.sc1);
+                flush(s.sc2);
             }
             const double power = trigger * trigger;
             double target = power;
@@ -328,6 +344,9 @@ void AutoFilter::process(const float *l, const float *r, float *ol, float *orr, 
             const double ms = target > s.env ? p_[Attack] : p_[Release],
                          a = std::exp(-1. / (.001 * ms * rate_));
             s.env = target + a * (s.env - target);
+            if (s.env < 1e-30) {
+                s.env = 0; // power, so -300 dB amplitude
+            }
             double env = std::sqrt(std::max(0., s.env));
             if (p_[EnvSH] >= .5) {
                 const double slot = std::floor(beats_ / p_[EnvBeats]);
@@ -349,6 +368,35 @@ void AutoFilter::process(const float *l, const float *r, float *ol, float *orr, 
                 p_[SCListen] >= .5 ? trigger : input[c] + p_[Mix] / 100 * (wet - input[c]));
         }
         beats_ += bpm_ / 60 / rate_;
+    }
+    // The vendored filter states are flushed at the end of each block.
+    for (auto &s : lane_) {
+        for (auto &svf : s.svf) {
+            flush(svf.i1);
+            flush(svf.i2);
+        }
+        for (std::size_t k = 0; k < s.k35Low.size(); ++k) {
+            flush(s.k35Low[k].lz);
+            flush(s.k35Low[k].hz);
+            flush(s.k35Low[k].z2);
+            flush(s.k35High[k].lz);
+            flush(s.k35High[k].hz);
+            flush(s.k35High[k].z2);
+        }
+        for (auto &ladder : s.ladder) {
+            for (double &v : ladder.delay) {
+                flush(v);
+            }
+            for (double &v : ladder.stage) {
+                flush(v);
+            }
+            for (double &v : ladder.stageTanh) {
+                flush(v);
+            }
+        }
+        flush(s.onePole);
+        flush(s.onePoleBand);
+        flush(s.feedback);
     }
 }
 } // namespace adi::dsp

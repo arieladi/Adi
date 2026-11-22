@@ -35,6 +35,7 @@
 
 #include "temp_directory.hpp"
 #include "acceptance/wts01_harness.hpp"
+#include "adi/audio/floating_point_control.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/ui/arm_edits.hpp"
@@ -53,6 +54,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <new>
 #include <optional>
 #include <stdexcept>
@@ -268,10 +270,10 @@ std::filesystem::path writeSample(const std::filesystem::path& dir, const std::s
 
 // --- Part 1: each built-in alone ---------------------------------------------
 
-/// One run of `info` alone. False when it does not load or set up.
-bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const std::filesystem::path& samples,
-              std::vector<double>& times, long& allocated, double& loudest, double& changed) {
-    noiseState = 20261122u;
+/// `info` loaded and prepared as each part runs it: a sample in every slot it
+/// declares, its working state. Null (and a failed check) when it does not.
+std::unique_ptr<device::DeviceInstance> workingDevice(const BuiltinInfo& info, std::int32_t frames,
+                                                      const std::filesystem::path& samples) {
     const auto ref = referenceFor(info.uid);
     engine::DeviceRequest request;
     request.ref = &ref;
@@ -280,7 +282,7 @@ bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const st
     auto device = device::makeBuiltinDevice(request, error);
     if (!device) {
         check(false, std::string(info.name) + " loads: " + error);
-        return false;
+        return nullptr;
     }
     device->prepare(kRate, frames);
     // A sample in every slot it declares: a 5 s impulse for Hybrid Reverb (its
@@ -296,7 +298,7 @@ bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const st
         const auto state = device::captureBuiltinSample(info.uid, slot, file, file, kRate);
         if (!device->loadState(role, Payload::to_cbor(state))) {
             check(false, std::string(info.name) + " takes a sample in " + role);
-            return false;
+            return nullptr;
         }
     }
     int taken = 0, asked = 0;
@@ -307,6 +309,17 @@ bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const st
     if (asked > 0) {
         std::printf("    [setup] %s: %d of %d working controls taken; first parameter %s\n", std::string(info.name).c_str(),
                     taken, asked, device->paramCount() > 0 ? device->paramAt(0)->name.c_str() : "-");
+    }
+    return device;
+}
+
+/// One run of `info` alone. False when it does not load or set up.
+bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const std::filesystem::path& samples,
+              std::vector<double>& times, long& allocated, double& loudest, double& changed) {
+    noiseState = 20261122u;
+    auto device = workingDevice(info, frames, samples);
+    if (!device) {
+        return false;
     }
     std::vector<std::vector<float>> in(2, std::vector<float>(static_cast<std::size_t>(frames)));
     std::vector<std::vector<float>> out(2, std::vector<float>(static_cast<std::size_t>(frames)));
@@ -668,6 +681,153 @@ void contended(std::int32_t frames, double seconds, const std::vector<const char
 
 }  // namespace
 
+// --- Part 3: the tail after silence (item 3, denormal-tail) -----------------
+
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+/// The SSE status word's denormal-operand flag (DE, bit 1): set by any
+/// operation that READ a subnormal. Flush-to-zero and denormals-are-zero are
+/// cleared for the check, so a core's own state is seen as it decays.
+class DenormalWatch {
+public:
+    DenormalWatch() noexcept { _mm_setcsr(saved_ & ~0x8040u); }
+    ~DenormalWatch() { _mm_setcsr(saved_); }
+    DenormalWatch(const DenormalWatch&) = delete;
+    DenormalWatch& operator=(const DenormalWatch&) = delete;
+    static void clear() noexcept { _mm_setcsr(_mm_getcsr() & ~0x3Fu); }
+    [[nodiscard]] static bool seen() noexcept { return (_mm_getcsr() & 0x2u) != 0; }
+
+private:
+    const unsigned saved_ = _mm_getcsr();
+};
+#endif
+
+/// `info` given `signalSeconds` of noise (and notes, for an instrument), then
+/// `silenceSeconds` of digital silence with no events. Every recursive state
+/// must settle on exact 0 (or its target) rather than decay into subnormals:
+/// over the last second of silence no operation may read a subnormal (x86's
+/// denormal-operand flag, with flush-to-zero off: the core as run outside the
+/// callback's scope, in Pd or offline). Then, under the callback's own flush
+/// scope, the silence costs no more than the signal did.
+void tailAfterSilence(const BuiltinInfo& info, std::int32_t frames, double signalSeconds, double silenceSeconds,
+                      const std::filesystem::path& samples) {
+    const std::string name(info.name);
+    std::vector<std::vector<float>> in(2, std::vector<float>(static_cast<std::size_t>(frames)));
+    std::vector<std::vector<float>> out(2, std::vector<float>(static_cast<std::size_t>(frames)));
+    const float* inPointers[2] = {in[0].data(), in[1].data()};
+    float* outPointers[2] = {out[0].data(), out[1].data()};
+    const int signalBlocks = static_cast<int>(signalSeconds * kRate / frames);
+    const int silenceBlocks = static_cast<int>(silenceSeconds * kRate / frames);
+    // One block: noise or silence in; while the signal plays, a note every
+    // 100 ms held 50 ms for an instrument (its notes all end before the silence).
+    std::array<engine::Event, 2> events{};
+    const auto block = [&](device::DeviceInstance& d, int b, bool signal) {
+        int n = 0;
+        for (std::size_t c = 0; c < 2; ++c) {
+            for (auto& v : in[c]) {
+                v = signal ? noise() : 0.f;
+            }
+        }
+        const auto at = static_cast<std::int64_t>(b) * frames;
+        const auto key = static_cast<std::uint16_t>(48 + (at / 4800) % 24);
+        const auto id = static_cast<std::uint64_t>(at / 4800 + 1);
+        if (info.midi && signal && at % 4800 < frames) {
+            events[static_cast<std::size_t>(n++)] = engine::Event{0, engine::EventType::NoteOn, 0, key, id, 0, 0.8};
+        }
+        if (info.midi && at % 4800 >= 2400 && at % 4800 < 2400 + frames) {
+            events[static_cast<std::size_t>(n++)] = engine::Event{0, engine::EventType::NoteOff, 0, key, id, 0, 0.0};
+        }
+        engine::NodeIo io;
+        io.in = inPointers;
+        io.out = outPointers;
+        io.channels = 2;
+        io.frames = frames;
+        io.events = engine::EventSpan{events.data(), n};
+        return timed([&] { d.process(io); });
+    };
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+    {
+        noiseState = 20261122u;
+        auto device = workingDevice(info, frames, samples);
+        if (!device) {
+            return;
+        }
+        const DenormalWatch watch;
+        const int lastSecond = static_cast<int>(kRate / frames);
+        int touched = 0;
+        for (int b = 0; b < signalBlocks + silenceBlocks; ++b) {
+            const bool counted = b >= signalBlocks + silenceBlocks - lastSecond;
+            if (counted) {
+                DenormalWatch::clear();
+            }
+            (void)block(*device, b, b < signalBlocks);
+            if (counted && DenormalWatch::seen()) {
+                ++touched;
+            }
+        }
+        std::printf("    [tail] %-22s %4d frames: %d of the last %d silent blocks read a subnormal\n", name.c_str(),
+                    frames, touched, lastSecond);
+        check(touched == 0, name + " at " + std::to_string(frames) + " frames: after " +
+                                std::to_string(static_cast<int>(silenceSeconds)) +
+                                " s of silence its states have settled (no subnormal read in the last second)");
+    }
+#endif
+    {
+        // The callback's own scope (DF-E11): in the steady state, the silence
+        // costs no more than the signal. The last 2 s of each are compared: the
+        // signal long enough to be steady (Hybrid Reverb's history fills its
+        // 5 s impulse), the silence 30 s so the tails have settled (while a
+        // tail decays through the floors, branches that were predictable stop
+        // being so: Chord Comb's mean rises 5 % for some 10 s, then falls below
+        // the signal's). Each block's lesser time over two runs (as Stats'
+        // stall), so the machine's own preemption is not read as the core's.
+        const int window = static_cast<int>(2.0 * kRate / frames);
+        const int quietBlocks = static_cast<int>(30.0 * kRate / frames);
+        std::array<std::vector<double>, 2> loud, quiet;
+        for (std::size_t run = 0; run < 2; ++run) {
+            noiseState = 20261122u;
+            auto device = workingDevice(info, frames, samples);
+            if (!device) {
+                return;
+            }
+            const audio::ScopedFlushDenormals flush;
+            for (int b = 0; b < signalBlocks + quietBlocks; ++b) {
+                const double us = block(*device, b, b < signalBlocks);
+                if (b < signalBlocks && b >= signalBlocks - window) {
+                    loud[run].push_back(us);
+                } else if (b >= signalBlocks + quietBlocks - window) {
+                    quiet[run].push_back(us);
+                }
+            }
+        }
+        const auto steady = [](const std::array<std::vector<double>, 2>& runs) {
+            std::vector<double> least(runs[0].size());
+            for (std::size_t i = 0; i < least.size(); ++i) {
+                least[i] = std::min(runs[0][i], runs[1][i]);
+            }
+            std::sort(least.begin(), least.end());
+            return least[static_cast<std::size_t>(0.99 * static_cast<double>(least.size() - 1))];
+        };
+        const double a = steady(loud), q = steady(quiet);
+        std::printf("    [tail] %-22s %4d frames: p99 %7.2f us with signal, %7.2f us in the silence after it\n",
+                    name.c_str(), frames, a, q);
+        // No worse, within the machine's own jitter: 25 % and 5 us. Under the
+        // flush scope a subnormal costs nothing, so this catches a silence
+        // that costs more for another reason (a doubling of any real cost);
+        // the subnormals themselves are the check above's.
+        check(q <= 1.25 * a + 5.0, name + " at " + std::to_string(frames) +
+                                       " frames: its silence costs no more than its signal (p99, steady state)");
+    }
+}
+
+void eachTailAfterSilence(std::int32_t frames) {
+    adi::test::TempDirectory samples("builtin_realtime", "tail");
+    for (const auto& info : builtinCatalog()) {
+        if (info.available) {
+            tailAfterSilence(info, frames, 8.0, 60.0, samples.path());
+        }
+    }
+}
+
 // A debug build counts allocations only (its times are not the product's),
 // and runs a tenth as long so it fits its CTest timeout: every callback is
 // still counted from the first, the warm-up second included. The parts that
@@ -715,6 +875,12 @@ int main() {
                         frames, 5.0, true,
                         std::vector<const char*>(chain.begin(), chain.begin() + static_cast<std::ptrdiff_t>(n)), false);
                 }
+            }
+        }
+        if constexpr (kTimed) {
+            for (std::int32_t frames : {64, 128}) {
+                std::printf("\n[the tail after 60 s of silence, %d frames]\n", frames);
+                eachTailAfterSilence(frames);
             }
         }
     } catch (const std::exception& e) {

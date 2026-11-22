@@ -162,7 +162,13 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
                 v = std::tanh(v);
         const double level = std::max(std::abs(dry[0]), std::abs(dry[1]));
         env_ += (level - env_) * (1 - std::exp(-1 / (rate_ * (level > env_ ? .01 : .1))));
+        if (env_ < 1e-30) {
+            env_ = 0;
+        }
         gate_ = level >= gateThreshold ? 1 : gate_ * gateRelease;
+        if (gate_ < 1e-30) {
+            gate_ = 0;
+        }
         const double duckTarget =
             level > duckThreshold ? duckThreshold / std::max(level, 1e-12) : 1;
         duck_ = duckTarget < duck_ ? duckTarget : 1 - (1 - duck_) * duckRelease;
@@ -239,6 +245,11 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
                     const double x = wet[c], y = b0 * x + z[0];
                     z[0] = b1 * x - a1 * y + z[1];
                     z[1] = b0 * x - a2 * y;
+                    for (auto &s : z) {
+                        if (std::abs(s) < 1e-30) {
+                            s = 0;
+                        }
+                    }
                     wet[c] = y;
                 }
             }
@@ -262,7 +273,8 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
                                      : 0;
             const auto source = mode == 1 ? 1 - c : c;
             const double x = input[c] + fb * (wet[source] + roomFeedback[source]) + noise;
-            l.ring[write_] = static_cast<float>(std::clamp(x, -8., 8.));
+            const double y = std::clamp(x, -8., 8.);
+            l.ring[write_] = static_cast<float>(std::abs(y) < 1e-30 ? 0 : y);
         }
         if (mode == 2)
             wet = {wet[0] + wet[1], wet[0] - wet[1]};

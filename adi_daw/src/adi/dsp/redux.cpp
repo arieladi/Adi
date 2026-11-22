@@ -101,6 +101,12 @@ double Redux::sample(double input, Channel &c) noexcept {
     const double dry = input;
     c.pre1 += preCoefficient_ * (input - c.pre1);
     c.pre2 += preCoefficient_ * (c.pre1 - c.pre2);
+    if (std::abs(c.pre1) < 1e-30) {
+        c.pre1 = 0;
+    }
+    if (std::abs(c.pre2) < 1e-30) {
+        c.pre2 = 0;
+    }
     if (pre_)
         input = c.pre2;
     // Carry fractional time across every sample and every host block. No
@@ -137,6 +143,12 @@ double Redux::sample(double input, Channel &c) noexcept {
         wet += fraction * (quantize(std::min(24., lower + 1)) - a);
     c.post1 += postCoefficient_ * (wet - c.post1);
     c.post2 += postCoefficient_ * (c.post1 - c.post2);
+    if (std::abs(c.post1) < 1e-30) {
+        c.post1 = 0;
+    }
+    if (std::abs(c.post2) < 1e-30) {
+        c.post2 = 0;
+    }
     if (post_)
         wet = c.post2;
     return dry + (wet - dry) * mixCurrent_;

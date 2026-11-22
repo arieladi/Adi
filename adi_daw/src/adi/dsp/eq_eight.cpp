@@ -129,7 +129,12 @@ double EqEight::channel(double x, std::size_t c) noexcept {
         }
         const double dry = x;
         for (auto &s : band.section) {
-            auto blend = [&](double &a, double b) { a = b + smooth_ * (a - b); };
+            auto blend = [&](double &a, double b) {
+                a = b + smooth_ * (a - b);
+                if (std::abs(a - b) < 1e-12) {
+                    a = b;
+                }
+            };
             blend(s.now.b0, s.target.b0);
             blend(s.now.b1, s.target.b1);
             blend(s.now.b2, s.target.b2);
@@ -138,6 +143,12 @@ double EqEight::channel(double x, std::size_t c) noexcept {
             const double y = x * s.now.b0 + s.z1;
             s.z1 = x * s.now.b1 - s.now.a1 * y + s.z2;
             s.z2 = x * s.now.b2 - s.now.a2 * y;
+            if (std::abs(s.z1) < 1e-30) {
+                s.z1 = 0;
+            }
+            if (std::abs(s.z2) < 1e-30) {
+                s.z2 = 0;
+            }
             x = y;
         }
         x = dry + band.wet * (x - dry);

@@ -23,6 +23,13 @@
 #include <cmath>
 #include <numbers>
 namespace adi::dsp {
+namespace {
+double clean(double x) noexcept {
+    // 1e-30 is -600 dB amplitude, far below float audio; kill recursive tails
+    // before double denormals, independent of the host's floating-point mode.
+    return std::abs(x) < 1e-30 ? 0 : x;
+}
+} // namespace
 void PhaserFlanger::prepare(double sr) {
     rate_ = std::isfinite(sr) && sr > 0 ? sr : 48000;
     write_ = 0;
@@ -110,12 +117,12 @@ void PhaserFlanger::process(const float *il, const float *ir, float *ol, float *
             mod += (1 - 4 * std::abs(l.phase2 - .5) - mod) * p_[Lfo2Mix] / 100;
             const double envTarget = std::abs(in[c]),
                          ms = envTarget > l.env ? p_[Attack] : p_[Release];
-            l.env += (envTarget - l.env) * (1 - std::exp(-1000 / (rate_ * ms)));
+            l.env = clean(l.env + (envTarget - l.env) * (1 - std::exp(-1000 / (rate_ * ms))));
             mod *= p_[Amount] / 100;
             if (p_[EnvOn] >= .5)
                 mod += l.env * p_[EnvAmount] / 100;
             mod = std::clamp(mod, -1., 1.);
-            l.low += hp * (in[c] - l.low);
+            l.low = clean(l.low + hp * (in[c] - l.low));
             const double bass = p_[SafeBassOn] >= .5 ? l.low : 0, x = in[c] - bass;
             const double fb = p_[Feedback] / 100 * (p_[Invert] >= .5 ? -1 : 1);
             double wet = 0;
@@ -134,11 +141,11 @@ void PhaserFlanger::process(const float *il, const float *ir, float *ol, float *
                                  b1 = -2 * std::cos(omega) / a0;
                     auto &z = l.ap[static_cast<std::size_t>(j)];
                     const double y = b0 * wet + z[0];
-                    z[0] = b1 * wet - b1 * y + z[1];
-                    z[1] = wet - b0 * y;
+                    z[0] = clean(b1 * wet - b1 * y + z[1]);
+                    z[1] = clean(wet - b0 * y);
                     wet = y;
                 }
-                l.feedback = wet;
+                l.feedback = clean(wet);
                 // DEV-22: the phaser's wet is the classic sum, input plus the
                 // all-pass chain, halved -- that is where the notches are. Live
                 // 12.4 notches at its default 100 % wet (-8.5 dB at 997 Hz in the
@@ -154,12 +161,12 @@ void PhaserFlanger::process(const float *il, const float *ir, float *ol, float *
                 const auto at = (write_ + l.ring.size() - whole) % l.ring.size();
                 wet = l.ring[at] * (1 - frac) +
                       l.ring[(at + l.ring.size() - 1) % l.ring.size()] * frac;
-                l.ring[write_] = static_cast<float>(std::clamp(x + wet * fb, -4., 4.));
+                l.ring[write_] = static_cast<float>(std::clamp(clean(x + wet * fb), -4., 4.));
             }
             if (warmth > 0) {
                 const double shaped = std::tanh(wet * (1 + 3 * warmth)) / (1 + 3 * warmth);
-                l.warm +=
-                    (shaped - l.warm) * (1 - std::exp(-2 * pi * (18000 - 15000 * warmth) / rate_));
+                const double lp = 1 - std::exp(-2 * pi * (18000 - 15000 * warmth) / rate_);
+                l.warm = clean(l.warm + (shaped - l.warm) * lp);
                 wet = l.warm;
             }
             out[c] = gain * (in[c] * (1 - mix) + (wet + bass) * mix);

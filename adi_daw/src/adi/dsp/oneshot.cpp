@@ -200,6 +200,9 @@ std::shared_ptr<const OneShot::PreparedSample> OneShot::prepareSample(
             last = i;
         }
         envelope = .995 * envelope + .005 * level;
+        if (envelope < 1e-30) {
+            envelope = 0;
+        }
     }
     return s;
 }
@@ -300,6 +303,12 @@ double OneShot::Filter::run(double x, double g, double r, double d, int type) no
     const double v2 = b + g * v1;
     a = 2 * v1 - a;
     b = 2 * v2 - b;
+    if (std::abs(a) < 1e-30) {
+        a = 0;
+    }
+    if (std::abs(b) < 1e-30) {
+        b = 0;
+    }
     const double high = x - r * v1 - v2;
     return type == 0 ? v2 : type == 1 ? high : type == 2 ? v1 : high + v2;
 }
