@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Resonant peak Filter response
+
+For the devices lane, the clones seat takes the ADI-Shaper Filter core, its existing rack and Pd declarations, and its device tests on `clones/shaper-filter-peak`. **Lands after 3 December.** Reserve host parameters 913–915 for the low, middle and high band peak switches. Each defaults off. The five existing Filter selections keep their normalized values. When a switch is on its band uses the peak response. Switching it off restores the underlying selection.
+
+The peak response adds the signed input to the 12 dB band-pass output at the same cutoff and resonance. Eighteen signed stereo impulse cases at 44.1, 48 and 96 kHz included both endpoints of both controls. The largest peak difference from that sum was below 0.0000000005 at the tested impulse amplitudes. Partial band and master mix multiply the added band-pass component. Two moving contours with a stereo offset gave 0.0000000119 RMS error at both 256 and 2,048 frames. Negating the input negated every output sample. Zero wet returned the input exactly. Changing the stored drive or safe-resonance switch produced the same output on the tested trajectory. At 48 kHz the reference reported zero latency ordinarily and 16 frames with its existing reserve enabled.
+
 ## 22 November 2026 — Moving crossover cutoffs
 
 `clones/shaper-split-slew` at `a5560662` — Smooth live crossover frequency edits in logarithmic frequency while keeping the first configured value immediate. Three cascaded poles use the rate constant 72.02133 per second. A callback or internal 512-frame boundary may put a sufficiently settled edge to sleep when its normalized distance is at most 1/16,384. Six rack, stage and registered Pd suites passed at each Pd precision under MSVC /W4 /WX. Native and editable Pd reproduced two live edits. The landed source failed 12 of the 16 measured sweep landmarks.
