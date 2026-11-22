@@ -28,6 +28,7 @@ struct Source {
     engine::OfflineTap tap = engine::OfflineTap::PostFader;
 };
 enum class ExportContainer { Wav, Flac, Aiff, Mp3, OggVorbis };
+enum class ChannelFold { Preserve, StereoAverage };
 struct Encoding {
     audio::WavFormat format = audio::WavFormat::Pcm24;
     audio::WavDither dither = audio::WavDither::Triangular;
@@ -36,6 +37,7 @@ struct Encoding {
     std::uint64_t ditherSeed = 0;
     ExportContainer container = ExportContainer::Wav;
     float vorbisQuality = 0.5f;
+    ChannelFold channelFold = ChannelFold::Preserve;
 };
 struct DeliverySpec {
     Encoding encoding;

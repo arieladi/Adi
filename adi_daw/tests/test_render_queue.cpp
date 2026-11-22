@@ -281,6 +281,19 @@ void projectRateDelivery() {
                   "each delivery decodes to the same compensated, downsampled PCM");
         }
     }
+    job.nameTemplate = "soxr-mono-delivery-group";
+    for (auto& delivery : job.deliveries) delivery.encoding.channelFold = ChannelFold::StereoAverage;
+    const auto mono = renderWav(job, capture);
+    check(mono.state == JobState::Completed && mono.deliveries.size() == 2 && mono.framesWritten == 2301,
+          "one mono fold follows shared SoXR conversion for every requested format");
+    if (mono.state == JobState::Completed) {
+        auto decoded = audio::openPcmStream(mono.deliveries.front().output);
+        std::vector<float> folded(2301);
+        bool same = decoded.ready() && decoded.stream->info().channels == 1 &&
+            decoded.stream->read(folded).frames == folded.size() && pcm.size() == folded.size() * 2;
+        for (std::size_t i = 0; same && i < folded.size(); ++i) same = folded[i] == pcm[i * 2];
+        check(same, "post-SRC mono keeps the exact equal-channel reference");
+    }
     job.deliveries.clear();
     job.nameTemplate = "higher-direct";
     job.session.sampleRate = 96000;
@@ -843,6 +856,61 @@ void vorbisDelivery() {
     job.normalization.mode = NormalizeMode::Peak;
     check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
           "Vorbis normalization waits for decoded-output measurement");
+}
+void stereoFoldDelivery() {
+    Fixture f;
+    f.effect();
+    const std::array pairs{std::pair{0.75f, -0.75f}, std::pair{0.25f, 0.25f},
+                           std::pair{0.625f, 0.0f}, std::pair{0.0f, -0.25f}};
+    std::vector<float> stereo(8192);
+    for (std::size_t frame = 0; frame < 4096; ++frame) {
+        const auto [left, right] = pairs[frame % pairs.size()];
+        stereo[2 * frame] = left;
+        stereo[2 * frame + 1] = right;
+    }
+    audio::WavWriter input(f.dir.path() / "audio.wav", 48000, 2, audio::WavFormat::Float32);
+    input.write(stereo.data(), 4096);
+    input.close();
+    const DeviceLoader observer = [](const DeviceRequest&, std::string&) {
+        auto delay = std::make_unique<Delay>();
+        delay->delay = 29;
+        delay->gain = 2;
+        return delay;
+    };
+    auto job = f.job("mono");
+    job.session.precision = Precision::Float64;
+    job.encoding.channelFold = ChannelFold::StereoAverage;
+    job.encoding.dither = audio::WavDither::None;
+    job.encoding.format = audio::WavFormat::Pcm16;
+    const auto result = renderWav(job, observer);
+    check(result.state == JobState::Completed,
+          result.error.empty() ? "mono delivery completes" : result.error.c_str());
+    if (result.state != JobState::Completed) return;
+    audio::WavReader mono(result.output);
+    std::vector<float> actual(866);
+    check(mono.channels() == 1 && mono.sampleRate() == 48000 && mono.frames() == 866 &&
+          mono.format() == audio::WavFormat::Pcm16 && mono.read(actual.data(), 866) == 866,
+          "stereo graph delivers one PCM16 channel and preserves exact duration");
+    bool exact = true;
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        const auto [left, right] = pairs[(137 + i) % pairs.size()];
+        exact = exact && actual[i] == left + right; // stereo effect doubles before the fold
+    }
+    check(exact, "correlated, anti-phase and one-sided signals fold after compensated stereo processing");
+
+    job.nameTemplate = "mono-normalized";
+    job.encoding.format = audio::WavFormat::Float32;
+    job.normalization.mode = NormalizeMode::Peak;
+    const auto normalized = renderWav(job, observer);
+    check(normalized.state == JobState::Completed && normalized.normalization &&
+          normalized.normalization->sourceSamplePeakDb &&
+          std::abs(*normalized.normalization->sourceSamplePeakDb - 20 * std::log10(0.625)) < 1e-6,
+          "normalization measures the folded signal, after cancellation and before the encoder");
+
+    job.nameTemplate = "unsupported-fold";
+    job.session.channels = 6;
+    check(renderWav(job, observer).state == JobState::Failed && f.noStage(),
+          "an ambiguous multichannel fold is refused before staging");
 }
 void regionStems() {
     Fixture f;
@@ -1954,7 +2022,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); stereoFoldDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

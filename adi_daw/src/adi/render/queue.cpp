@@ -126,7 +126,17 @@ std::string containerSuffix(ExportContainer type) {
     return type == ExportContainer::OggVorbis ? ".ogg" : std::string(".") + containerName(type);
 }
 
-void validateEncoding(const Job& j, const Encoding& encoding) {
+int deliveryChannels(const Job& job, ChannelFold fold) {
+    switch (fold) {
+        case ChannelFold::Preserve: return job.session.channels;
+        case ChannelFold::StereoAverage:
+            if (job.session.channels > 2 || job.niStems)
+                throw std::invalid_argument("stereo fold requires an ordinary mono or stereo source");
+            return 1;
+    }
+    throw std::invalid_argument("unknown export channel fold");
+}
+void validateEncoding(const Job& j, const Encoding& encoding, int channels) {
     if (encoding.format != audio::WavFormat::Float32 && encoding.format != audio::WavFormat::Pcm16 && encoding.format != audio::WavFormat::Pcm24)
         throw std::invalid_argument("unsupported export sample encoding");
     if (!audio::validDither(encoding.dither))
@@ -135,20 +145,20 @@ void validateEncoding(const Job& j, const Encoding& encoding) {
     if (encoding.container == ExportContainer::Aiff && (j.niStems || j.exactWavFilename))
         throw std::invalid_argument("AIFF export requires a template filename and an ordinary render source");
     if (encoding.container == ExportContainer::Flac) {
-        if (j.niStems || j.exactWavFilename || j.session.channels > 8 || encoding.format == audio::WavFormat::Float32)
+        if (j.niStems || j.exactWavFilename || channels > 8 || encoding.format == audio::WavFormat::Float32)
             throw std::invalid_argument("FLAC export requires PCM16 or PCM24, 1..8 channels and a template name");
         if (!flacExportAvailable()) throw std::runtime_error("FLAC export requires the pinned libFLAC build");
     }
     if (encoding.container == ExportContainer::Mp3) {
         const auto rate = j.session.sampleRate;
-        if ((rate != 32000 && rate != 44100 && rate != 48000) || j.session.channels > 2 ||
+        if ((rate != 32000 && rate != 44100 && rate != 48000) || channels > 2 ||
             j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
             throw std::invalid_argument("MP3 needs one or two channels, 32/44.1/48 kHz, a template name and Normalize Off");
         if (!mp3ExportAvailable()) throw std::runtime_error("MP3 export requires the pinned LAME build");
     }
     if (encoding.container == ExportContainer::OggVorbis) {
         const auto rate = j.session.sampleRate;
-        if (rate < 8000 || rate > 192000 || j.session.channels > 2 ||
+        if (rate < 8000 || rate > 192000 || channels > 2 ||
             !std::isfinite(encoding.vorbisQuality) || encoding.vorbisQuality < -0.1f ||
             encoding.vorbisQuality > 1.0f ||
             j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
@@ -179,8 +189,10 @@ void validate(const Job& j) {
     if (j.regionId && *j.regionId <= 0) throw std::invalid_argument("region ID must be positive");
     if (j.source.trackId < 0 || (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
         throw std::invalid_argument("invalid direct stem source or tap");
+    const auto fold = j.deliveries.empty() ? j.encoding.channelFold : j.deliveries.front().encoding.channelFold;
+    const auto channels = deliveryChannels(j, fold);
     if (j.deliveries.empty()) {
-        validateEncoding(j, j.encoding);
+        validateEncoding(j, j.encoding, channels);
     } else {
         if (j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off) {
             throw std::invalid_argument("Multiple deliveries require a template source with Normalize Off");
@@ -188,7 +200,10 @@ void validate(const Job& j) {
         const auto base = resolveName(j.nameTemplate, {"project", "master", "group", "120", 1, "region"});
         std::set<std::string> names;
         for (const auto& delivery : j.deliveries) {
-            validateEncoding(j, delivery.encoding);
+            if (delivery.encoding.channelFold != fold) {
+                throw std::invalid_argument("Multiple deliveries must share the same channel layout");
+            }
+            validateEncoding(j, delivery.encoding, channels);
             const auto name = deliveryName(base, delivery);
             if (!names.insert(foldedFilename(media::pathFromUtf8(name))).second) {
                 throw std::invalid_argument("Multiple deliveries resolve to the same filename");
@@ -198,7 +213,7 @@ void validate(const Job& j) {
     if (j.ratePolicy != ExportRatePolicy::RequestedRate && j.ratePolicy != ExportRatePolicy::ProjectThenDownsample)
         throw std::invalid_argument("unknown export sample rate policy");
     validateNiStems(j);
-    validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
+    validateNormalization(j.normalization, static_cast<std::uint32_t>(j.session.sampleRate), channels);
     if (j.exactWavFilename) {
         if (j.niStems || j.collision == Collision::Increment)
             throw std::invalid_argument("a literal WAV filename requires a single WAV with Fail or Replace");
@@ -270,10 +285,9 @@ void prepareGroupIncrement(std::vector<Result>& files, const fs::path& directory
 class DeliverySink {
 public:
     DeliverySink(const fs::path& folder, const std::string& stem, const Job& job,
-                 const Encoding& encoding, std::uint64_t total, std::uint64_t counter)
+                 const Encoding& encoding, int channels, std::uint64_t total, std::uint64_t counter)
         : encoding_(encoding), seed_(encoding.ditherSeed ^ counter) {
         const auto rate = static_cast<unsigned>(job.session.sampleRate);
-        const auto channels = job.session.channels;
         output_ = folder / (stem + containerSuffix(encoding_.container));
         pcm_ = folder / (stem + ".wav");
         if (encoding_.container == ExportContainer::Mp3) {
@@ -737,6 +751,9 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         const auto rawEnd = addLatency(sourceEnd, latency);
         const auto total = static_cast<std::uint64_t>(outputFrames);
         const auto channels = static_cast<std::size_t>(job.session.channels);
+        const auto fold = job.deliveries.empty() ? job.encoding.channelFold : job.deliveries.front().encoding.channelFold;
+        const auto outputChannels = deliveryChannels(job, fold);
+        const bool foldStereo = static_cast<std::size_t>(outputChannels) < channels;
         const auto block = static_cast<std::size_t>(job.session.maxFrames);
         std::vector<float> narrow(channels * block);
         std::vector<double> interleaved(channels * block);
@@ -750,22 +767,30 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         Stage stage(job.directory, result);
         std::vector<DeliverySink> sinks;
         if (job.deliveries.empty()) {
-            sinks.emplace_back(stage.path, "render", job, job.encoding, total, counter);
+            sinks.emplace_back(stage.path, "render", job, job.encoding, outputChannels, total, counter);
         } else {
             sinks.reserve(job.deliveries.size());
             for (std::size_t index = 0; index < job.deliveries.size(); ++index) {
                 cancellation(control);
                 sinks.emplace_back(stage.path, "delivery" + std::to_string(index), job,
-                                   job.deliveries[index].encoding, total, counter);
+                                   job.deliveries[index].encoding, outputChannels, total, counter);
             }
         }
         const bool checkFloatRange = std::ranges::any_of(sinks, &DeliverySink::requiresFloat32Range);
+        std::vector<double> mono;
         const auto writeDelivery = [&](std::span<const double> samples, std::uint32_t frames) {
-            if (downsampling && std::ranges::any_of(samples, [&](double value) {
+            if (foldStereo) {
+                mono.resize(frames);
+                for (std::size_t i = 0; i < frames; ++i) {
+                    mono[i] = samples[i * 2] * 0.5 + samples[i * 2 + 1] * 0.5;
+                }
+                samples = mono;
+            }
+            if ((downsampling || foldStereo) && std::ranges::any_of(samples, [&](double value) {
                 return !std::isfinite(value) || (checkFloatRange &&
                     std::abs(value) > static_cast<double>(std::numeric_limits<float>::max()));
             })) {
-                throw std::runtime_error("Downsampled audio exceeds the output format");
+                throw std::runtime_error("Converted audio exceeds the output format");
             }
             for (auto& sink : sinks) sink.append(samples, frames);
             result.framesWritten += frames;
@@ -829,7 +854,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             for (std::int32_t f = 0; f < frames; ++f) for (std::size_t c = 0; c < channels; ++c) {
                 const auto i = static_cast<std::size_t>(f);
                 const double value = dp.empty() ? static_cast<double>(fp[c][i]) : dp[c][i];
-                if (!std::isfinite(value) || (!converter && checkFloatRange &&
+                if (!std::isfinite(value) || (!converter && !foldStereo && checkFloatRange &&
                     std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
                     throw std::runtime_error("nonfinite or out-of-range audio during export");
                 if (at + f >= first)
@@ -975,6 +1000,7 @@ std::string serializeRunManifest(const RunReport& run) {
                   {"journal_head", nullptr}, {"media_identities", nullptr}};
         if (member.job) {
             const auto& job = *member.job;
+            const auto fold = job.deliveries.empty() ? job.encoding.channelFold : job.deliveries.front().encoding.channelFold;
             const auto sampleRate = job.session.sampleRate>=8000 && job.session.sampleRate<=768000
                 ? static_cast<std::uint32_t>(job.session.sampleRate) : 0U;
             const auto effectiveDither = job.niStems || job.encoding.format==audio::WavFormat::Float32
@@ -982,6 +1008,7 @@ std::string serializeRunManifest(const RunReport& run) {
                 : audio::effectiveDither(job.encoding.dither,sampleRate);
             Json profile{{"sample_rate", job.session.sampleRate}, {"channels", job.session.channels},
                 {"max_frames", job.session.maxFrames},
+                {"channel_fold", fold == ChannelFold::StereoAverage ? "stereo_average" : "preserve"},
                 {"rate_policy", job.ratePolicy == ExportRatePolicy::ProjectThenDownsample ?
                     "project_then_downsample" : "requested_rate"},
                 {"processing_precision", job.session.precision == engine::Precision::Float64 ? "float64" : "float32"},
