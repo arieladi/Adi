@@ -813,6 +813,9 @@ std::optional<float> nextZoom(float now, bool in) noexcept;
 // monitors (JUCE exposes no stable EDID identifier); the one nearest a point on the screen.
 std::string displayId(const juce::Displays::Display &);
 std::string displayAt(juce::Point<int> screen);
+// WTS-01: a test launch (--smoke-output, --control-test): an instance of its own, never the running
+// copy's, which keeps its window out of the foreground and reports to stderr.
+bool isTestLaunch(const juce::String &commandLine);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {
@@ -856,6 +859,10 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     // Placed, or moved onto another display: the root takes the zoom kept for it there (N4).
     void moved() override;
     void minimisationStateChanged(bool) override;
+    // WTS-01: a test launch's window shows without taking the foreground (JUCE brings a window to the
+    // front as it shows); set before it is first shown.
+    bool quiet = false;
+    void visibilityChanged() override;
     // What the window keeps of the App settings, brought up to date: each frame does it.
     void followSettings();
     AdiRootComponent &root() noexcept { return *root_; }

@@ -3977,6 +3977,12 @@ std::string displayId(const juce::Displays::Display &d) {
     return std::to_string(a.getX()) + ":" + std::to_string(a.getY()) + ":" + std::to_string(a.getWidth()) + ":" +
            std::to_string(a.getHeight()) + ":" + std::to_string(static_cast<int>(d.dpi));
 }
+bool isTestLaunch(const juce::String &commandLine) {
+    for (const auto &token : juce::StringArray::fromTokens(commandLine, true))
+        if (const auto t = token.unquoted(); t == "--smoke-output" || t == "--control-test")
+            return true;
+    return false;
+}
 std::string displayAt(juce::Point<int> screen) {
     const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());
     return d != nullptr ? displayId(*d) : std::string();
@@ -4030,6 +4036,10 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
 #else
     setMenuBar(menu_.get());
 #endif
+}
+void AdiWindow::visibilityChanged() {
+    if (!quiet)
+        DocumentWindow::visibilityChanged();
 }
 void AdiWindow::moved() {
     DocumentWindow::moved();

@@ -13147,6 +13147,33 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
     }
 }
 } // namespace
+// WTS-01: a test launch is told by its flags, wherever they stand and however quoted: it runs as an
+// instance of its own and its window shows quietly. An ordinary launch, a project's name with the words
+// in it, is not one.
+void launchIsolation(AppCommands &commands) {
+    check(isTestLaunch("native.adi --no-audio --smoke-output native-actual.png") && isTestLaunch("--control-test") &&
+              isTestLaunch("\"my project.adi\" \"--control-test\""),
+          "--smoke-output and --control-test make a test launch, quoted or not");
+    check(!isTestLaunch("\"--smoke-output notes.adi\""), "a quoted file name holding the flag's words is a file, not the flag");
+    check(!isTestLaunch("") && !isTestLaunch("song.adi") && !isTestLaunch("--no-audio song.adi") &&
+              !isTestLaunch("smoke-output.adi") && !isTestLaunch("--smoke-outputs"),
+          "an ordinary launch, or a file named after the flag, is not");
+    std::string error;
+    test::TempDirectory temp("ui_shell", "launch");
+    auto document = ProjectDocument::open(temp.path() / "quiet.adi", true, {}, error);
+    check(document != nullptr, "a project for the quiet window");
+    if (!document)
+        return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                   document->views(), document->sessionState(), "quiet");
+    AdiWindow window(std::move(root), commands, false);
+    window.quiet = true;
+    window.setVisible(true);
+    check(window.isVisible() && !window.hasKeyboardFocus(true), "a quiet window shows and takes no focus");
+    commands.detach(window.root());
+    window.setVisible(false);
+    document->release();
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -16373,6 +16400,7 @@ int main(int argc, char **argv) {
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
+    trace("launchIsolation", [&] { launchIsolation(commands); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
