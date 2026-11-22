@@ -1088,6 +1088,19 @@ void testStepTenReviewed() {
         const auto got = sortedPrints(twoMessages("hello 3", 0, "bang", "$1 $2", "message"));
         check(got == std::vector<std::string>{"X: hello 3", "X: hello 3"}, "[hello 3( into [$1 $2(, then a bang: hello 3 both times (" + shownAll(got) + ")");
     }
+    // The fourth review: "set" into a $ message box changes its text without
+    // output (a later bang sends the new text); and stable low resonances
+    // (a 7.6 Hz pole pair of radius 0.9999, a 5 Hz highpass) are not refused.
+    {
+        const auto got = sortedPrints(twoMessages("set 5 6", 0, "bang", "$1 $2", "message"));
+        check(got == std::vector<std::string>{"X: 5 6"}, "[set 5 6( into [$1 $2(, then a bang: 5 6 once (" + shownAll(got) + ")");
+    }
+    check(translateMaxPatcher(patcher({box("obj-1", "biquad~ 1. 0. 0. -1.99979902 0.99980001", 10, 10, kSig)}, {}), AmxdKind::AudioEffect).ok(),
+          "a 7.6 Hz resonance of radius 0.9999 translates");
+    check(translateMaxPatcher(patcher({box("obj-1", "biquad~ 0.9995373 -1.9990746 0.9995373 -1.999074391 0.999074819", 10, 10, kSig)}, {}),
+                              AmxdKind::AudioEffect)
+              .ok(),
+          "a 5 Hz highpass translates");
 }
 
 void testTheOrderIsHeard() {

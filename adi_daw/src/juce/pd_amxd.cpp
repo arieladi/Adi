@@ -836,22 +836,28 @@ private:
     /// them again. A Pd message box keeps nothing. So a number or list on
     /// its way in is also stored in a [list], which a bang sends instead.
     void keepArguments(const Box& b, Fragment& f, int target) {
-        // Everything but a bang is made a list ([list] keeps a message's
-        // first word as its first element, where Pd's message box would drop
-        // it), goes on, and is stored: the box sends the same now and when
-        // banged later, a symbol too.
+        // Everything but a bang or a "set" is made a list ([list] keeps a
+        // message's first word as its first element, where Pd's message box
+        // would drop it), goes on, and is stored: the box sends the same now
+        // and when banged later, a symbol too. "set ..." goes to the box as
+        // "set ...": it changes the box's text without output, as Max's does.
         const int route = static_cast<int>(f.records.size());
-        f.records.push_back("#X obj " + at(b.x - 60, b.y - 80) + " route bang");
+        f.records.push_back("#X obj " + at(b.x - 60, b.y - 80) + " route bang set");
         f.records.push_back("#X obj " + at(b.x - 60, b.y - 40) + " list");
         f.records.push_back("#X obj " + at(b.x, b.y - 60) + " t a a");
         f.records.push_back("#X obj " + at(b.x, b.y - 70) + " list");
-        const int store = route + 1, both = route + 2, asList = route + 3;
+        f.records.push_back("#X obj " + at(b.x + 60, b.y - 70) + " list prepend set");
+        f.records.push_back("#X obj " + at(b.x + 60, b.y - 50) + " list trim");
+        const int store = route + 1, both = route + 2, asList = route + 3, again = route + 4;
         f.internal.push_back({route, 0, store, 0});
         f.internal.push_back({store, 0, target, 0});
-        f.internal.push_back({route, 1, asList, 0});
+        f.internal.push_back({route, 2, asList, 0});
         f.internal.push_back({asList, 0, both, 0});
         f.internal.push_back({both, 1, store, 1});
         f.internal.push_back({both, 0, target, 0});
+        f.internal.push_back({route, 1, again, 0});
+        f.internal.push_back({again, 0, again + 1, 0});
+        f.internal.push_back({again + 1, 0, target, 0});
         f.inlets[0] = {route, 0};
     }
 
@@ -989,16 +995,23 @@ private:
         if (!args.empty()) {
             // Pd's biquad~ silences coefficients whose poles lie outside the
             // unit circle; Max's runs away with them. Refused, not silenced.
-            const double fb1 = -std::strtod(args[3].c_str(), nullptr), fb2 = -std::strtod(args[4].c_str(), nullptr);
-            // Pd's own test (d_filter.c, sigbiquad_list), condition for condition.
-            const bool stable = fb1 * fb1 + 4 * fb2 < 0 ? fb2 >= -1
-                                                        : (fb1 <= 2 && fb1 >= -2 && 1 - fb1 - fb2 >= 0 && 1 + fb1 - fb2 >= 0);
-            if (!stable) return refuse(b, "biquad~", "unstable coefficients: Pd's biquad~ silences them, Max's runs away");
-            // On the edge (a pole on the unit circle, to 1e-6) Pd decides in
-            // its own float (32 or 64 bits) where this test runs in double:
-            // refused rather than guessed.
-            const double edge = std::min({std::abs(fb2 + 1), std::abs(1 - fb1 - fb2), std::abs(1 + fb1 - fb2), std::abs(std::abs(fb1) - 2)});
-            if (edge < 1e-6) return refuse(b, "biquad~", "a pole on the unit circle: Pd's float stability test may silence it");
+            // Pd's own test (d_filter.c, sigbiquad_list), condition for
+            // condition, on the numbers Pd will read (the text written below),
+            // in Pd's t_float: run as a 32-bit and as a 64-bit float, the two
+            // builds ADI makes. Unstable in either (on the unit circle the two
+            // can disagree) is refused rather than guessed.
+            const auto stableAs = [](auto fb1, auto fb2) {
+                using T = decltype(fb1);
+                const T disc = fb1 * fb1 + 4 * fb2;
+                if (disc < 0) return fb2 >= T(-1);
+                return fb1 <= T(2) && fb1 >= T(-2) && T(1) - fb1 - fb2 >= 0 && T(1) + fb1 - fb2 >= 0;
+            };
+            const std::string t1 = number(-std::strtod(args[3].c_str(), nullptr)), t2 = number(-std::strtod(args[4].c_str(), nullptr));
+            const bool in64 = stableAs(std::strtod(t1.c_str(), nullptr), std::strtod(t2.c_str(), nullptr));
+            const bool in32 = stableAs(std::strtof(t1.c_str(), nullptr), std::strtof(t2.c_str(), nullptr));
+            if (!in64 && !in32) return refuse(b, "biquad~", "unstable coefficients: Pd's biquad~ silences them, Max's runs away");
+            if (!in64 || !in32)
+                return refuse(b, "biquad~", "a pole on the unit circle: Pd's 32- and 64-bit stability tests disagree on it");
         }
         const auto neg = [](const std::string& v) { return number(-std::strtod(v.c_str(), nullptr)); };
         const std::string init = args.empty() ? "" : " " + neg(args[3]) + " " + neg(args[4]) + " " + args[0] + " " +
