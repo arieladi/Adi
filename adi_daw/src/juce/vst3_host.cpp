@@ -825,6 +825,15 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         pd.numSamples = n;
         for(auto& bus:inputBuses_)bus.silenceFlags=0;
         for(auto& bus:outputBuses_)bus.silenceFlags=0;
+        // Bus zero is the programme output and can alias the main input.
+        // Each auxiliary output has its own sink for this processing segment.
+        for (std::size_t i = 1; i < outputBuses_.size(); ++i) {
+            const auto& bus = outputBuses_[i];
+            for (std::int32_t c = 0; c < bus.numChannels; ++c) {
+                if (double_) std::fill_n(bus.channelBuffers64[c], n, 0.0);
+                else std::fill_n(bus.channelBuffers32[c], n, 0.0f);
+            }
+        }
         pd.numInputs = static_cast<Steinberg::int32>(inputBuses_.size());
         pd.numOutputs = static_cast<Steinberg::int32>(outputBuses_.size());
         pd.inputs = inputBuses_.empty()?nullptr:inputBuses_.data();

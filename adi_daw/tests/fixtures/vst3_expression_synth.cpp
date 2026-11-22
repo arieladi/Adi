@@ -86,6 +86,7 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <type_traits>
 #include "scanner_case_controls.hpp"
 
 using namespace Steinberg;
@@ -130,6 +131,7 @@ std::atomic<int> g_inProcess{0};
 // Owned headless auxiliary-bus observations; never contribute to the output.
 std::atomic<double> g_keyFirst{0}, g_keyLast{0};
 std::atomic<int> g_keyChannels{0},g_mainInPlace{0};
+std::atomic<int> g_auxiliaryBuffersValid{0}, g_auxiliarySinkSilent{0};
 std::atomic<std::uint64_t> g_completedProcessCalls{0};
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 std::array<std::atomic<double>, 12> g_transport{};
@@ -223,7 +225,10 @@ public:
     tresult PLUGIN_API getControllerClassId(TUID) override { return kResultFalse; }   // we ARE it
     tresult PLUGIN_API setIoMode(IoMode) override { return kResultOk; }
     int32 PLUGIN_API getBusCount(MediaType type, BusDirection dir) override {
-        if (type == kAudio) return dir == kInput ? 2 : 1; // main + optional key, stereo out
+        if (type == kAudio) {
+            if (variant_ == Variant::NoteExpr) return dir == kInput ? 4 : 3;
+            return dir == kInput ? 2 : 1;
+        }
         if (type == kEvent && dir == kInput) return 1;
         return 0;
     }
@@ -231,14 +236,25 @@ public:
         if (index < 0 || index >= getBusCount(type, dir)) return kInvalidArgument;
         bus.mediaType = type;
         bus.direction = dir;
-        bus.channelCount = type == kAudio ? (index == 1 && variant_ == Variant::Plain ? 1 : 2) : 16;
-        copy128(bus.name, type == kAudio ? (dir == kInput ? "In" : "Out") : "Notes");
-        bus.busType = index == 1 ? kAux : kMain;
-        bus.flags = index == 1 && variant_ != Variant::Plain ? 0 : BusInfo::kDefaultActive;
+        bus.channelCount = type == kAudio ? busWidth(dir, index) : 16;
+        copy128(bus.name, type == kEvent ? "Notes" : index == 0 ? (dir == kInput ? "In" : "Out")
+                : dir == kInput && index == 1 ? "Key" : "Additional");
+        bus.busType = index == 0 ? kMain : kAux;
+        bool activeByDefault = index == 0 || (variant_ == Variant::Plain && index == 1);
+        if (variant_ == Variant::NoteExpr)
+            activeByDefault = activeByDefault || (dir == kInput ? index == 3 : index == 1);
+        bus.flags = activeByDefault ? static_cast<uint32>(BusInfo::kDefaultActive) : 0u;
         return kResultOk;
     }
     tresult PLUGIN_API getRoutingInfo(RoutingInfo&, RoutingInfo&) override { return kNotImplemented; }
-    tresult PLUGIN_API activateBus(MediaType, BusDirection, int32, TBool) override { return kResultOk; }
+    tresult PLUGIN_API activateBus(MediaType type, BusDirection dir, int32 index, TBool enabled) override {
+        if (index < 0 || index >= getBusCount(type, dir)) return kInvalidArgument;
+        if (type == kAudio) {
+            auto& buses = dir == kInput ? inputsActive_ : outputsActive_;
+            buses[static_cast<std::size_t>(index)] = enabled != 0;
+        }
+        return kResultOk;
+    }
     /// Deactivated, it forgets its voices, as real plugins do: a host that
     /// reactivates one (a new rate, or a new sample size) starts it silent.
     tresult PLUGIN_API setActive(TBool state) override {
@@ -279,11 +295,16 @@ public:
     // --- IAudioProcessor -----------------------------------------------------
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement*, int32, SpeakerArrangement* outs,
                                           int32 numOuts) override {
-        return (numOuts == 1 && outs != nullptr && outs[0] == SpeakerArr::kStereo) ? kResultTrue : kResultFalse;
+        if (numOuts != getBusCount(kAudio, kOutput) || outs == nullptr || outs[0] != SpeakerArr::kStereo)
+            return kResultFalse;
+        for (int32 i = 1; i < numOuts; ++i) {
+            if (outs[i] != SpeakerArr::kMono && outs[i] != SpeakerArr::kEmpty) return kResultFalse;
+        }
+        return kResultTrue;
     }
     tresult PLUGIN_API getBusArrangement(BusDirection dir, int32 index, SpeakerArrangement& arr) override {
         if (index < 0 || index >= getBusCount(kAudio, dir)) return kInvalidArgument;
-        arr = index == 1 && variant_ == Variant::Plain ? SpeakerArr::kMono : SpeakerArr::kStereo;
+        arr = busWidth(dir, index) == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo;
         return kResultOk;
     }
     tresult PLUGIN_API canProcessSampleSize(int32 size) override {
@@ -311,6 +332,11 @@ public:
         } inside(inProcess_);
         if (data.numSamples > maxBlock_) return kInvalidArgument;
         if (data.symbolicSampleSize != sampleSize_) return kInvalidArgument;
+        if (variant_ == Variant::NoteExpr && data.numSamples > 0) {
+            const bool valid = sampleSize_ == kSample64 ? extraBuses<double>(data) : extraBuses<float>(data);
+            g_auxiliaryBuffersValid.store(valid ? 1 : 0, std::memory_order_relaxed);
+            if (!valid) return kInvalidArgument;
+        }
         if (const auto* context = data.processContext) {
             const std::array<double, 12> fields{
                 static_cast<double>(context->state), context->sampleRate,
@@ -611,6 +637,57 @@ private:
         }
     }
 
+    int32 busWidth(BusDirection dir, int32 index) const noexcept {
+        if (variant_ == Variant::Plain && index == 1) return 1;
+        if (variant_ == Variant::NoteExpr && index > 0 && (dir == kOutput || index > 1)) return 1;
+        return 2;
+    }
+
+    template <typename Sample>
+    static Sample** channels(AudioBusBuffers& bus) {
+        if constexpr (std::is_same_v<Sample, double>) return bus.channelBuffers64;
+        else return bus.channelBuffers32;
+    }
+
+    template <typename Sample>
+    bool extraBuses(ProcessData& data) {
+        if (!data.inputs || !data.outputs || data.numInputs != 4 || data.numOutputs != 3 ||
+            !inputsActive_[0] || inputsActive_[2] || !inputsActive_[3] ||
+            !outputsActive_[0] || !outputsActive_[1] || outputsActive_[2])
+            return false;
+        for (const auto direction : {kInput, kOutput}) {
+            auto* buses = direction == kInput ? data.inputs : data.outputs;
+            const auto& active = direction == kInput ? inputsActive_ : outputsActive_;
+            for (int32 i = 0; i < getBusCount(kAudio, direction); ++i) {
+                const int32 expected = active[static_cast<std::size_t>(i)] ? busWidth(direction, i) : 0;
+                auto** pointers = channels<Sample>(buses[i]);
+                if (buses[i].numChannels != expected || (expected == 0) != (pointers == nullptr))
+                    return false;
+                for (int32 c = 0; c < expected; ++c) {
+                    if (!pointers[c]) return false;
+                }
+            }
+        }
+        auto* sink = channels<Sample>(data.outputs[1])[0];
+        const auto* extra = channels<Sample>(data.inputs[3])[0];
+        for (int32 i = 0; i < data.numInputs; ++i) {
+            for (int32 c = 0; c < data.inputs[i].numChannels; ++c) {
+                if (sink == channels<Sample>(data.inputs[i])[c]) return false;
+            }
+        }
+        for (int32 c = 0; c < data.outputs[0].numChannels; ++c) {
+            if (sink == channels<Sample>(data.outputs[0])[c]) return false;
+        }
+        bool silent = true;
+        for (int32 frame = 0; frame < data.numSamples; ++frame) {
+            if (extra[frame] != Sample{}) return false;
+            silent = silent && sink[frame] == Sample{};
+            sink[frame] = static_cast<Sample>(0.75);
+        }
+        g_auxiliarySinkSilent.store(silent ? 1 : 0, std::memory_order_relaxed);
+        return true;
+    }
+
     void render(ProcessData& data) {
         if (data.numOutputs < 1 || data.outputs == nullptr) return;
         AudioBusBuffers& out = data.outputs[0];
@@ -665,6 +742,7 @@ private:
     }
 
     Variant variant_;
+    std::array<bool, 4> inputsActive_{}, outputsActive_{};
     std::atomic<uint32> refs_{1};
     IComponentHandler* handler_ = nullptr;   ///< the host's, held with a reference
     double drive_ = kDriveDefault;
@@ -818,3 +896,5 @@ extern "C" SMTG_EXPORT_SYMBOL double adiFixtureKeyLast() { return g_keyLast.load
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureKeyChannels() { return g_keyChannels.load(); }
 
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureMainInPlace() { return g_mainInPlace.load(); }
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureAuxiliaryBuffersValid() { return g_auxiliaryBuffersValid.load(); }
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureAuxiliarySinkSilent() { return g_auxiliarySinkSilent.load(); }
