@@ -35,11 +35,12 @@
 // the pitch moves. At a ratio of 1 (a shift within 0.2 cents counts as one,
 // so an in-tune note under Correction does) the tap returns to the centre (a
 // whole number of periods, then gliding at 0.1 % speed, under 2 cents, for
-// what is left) and stays there: the wet signal is the dry one. While it
-// glides, the dry signal reads the tap too (crossfaded in and out over
-// 20 ms), so even then Dry/Wet does not comb; the glide takes half a period
-// at 0.1 % (about 1 s at 220 Hz, 6 s at 82 Hz), and until it ends both are
-// off the reported latency by what is left.
+// what is left) and stays there: the wet signal is the dry one, and Dry/Wet
+// cannot comb. The glide takes half a period at 0.1 % (about 1 s at 220 Hz,
+// 6 s at 82 Hz): until it ends the wet signal is off the dry one by what is
+// left, so a Dry/Wet below 100 % combs, fading as the glide ends. (Faster
+// is heard as pitch: 0.5 % is 8.6 cents.) The dry signal is always the
+// input one reported latency late.
 //
 // THE READINGS. The detector reads the input every quarter window (1,024
 // samples at 48 kHz) from the last window (4,096); above 48 kHz it reads the
@@ -161,7 +162,6 @@ private:
     double rate_ = 48000, target_ = 0, current_ = 0, period_ = 240, ratio_ = 1, speed_ = 1, longest_ = 1600, sum_ = 0;
     double tap_ = 0, old_ = 0, shortest_ = 0, farthest_ = 0;
     int band_ = -1, oldBand_ = -1;
-    double follow_ = 0;   // how far the dry signal reads the tap (0 to 1)
     std::size_t switches_ = 0;
     bool ready_ = false;
 };
