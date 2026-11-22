@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Reduce the four-track moving Drive processing cost
+
+`clones/shaper-drive-deadline` at `44de27f0`. Four registered instances ran the same moving Drive on kick and bass at 48 kHz and 256 frames, nine trials of 8,192 callbacks per build. The median of the nine wall-clock p99s fell from 13.6193 to 4.5697 ms against a 5.3333 ms deadline. Misses fell from 1,209 to 713 of 73,728 callbacks. Three candidate trials individually exceeded the deadline at p99. Median thread cycles fell from 929,891 to 710,893. The four 192,000-frame stereo captures matched byte for byte, all four reported 16 frames of latency, and the measured-response regression suite passed.
+
+PR requested
+
 ## 22 November 2026 — Pan switching transient on held curves
 
 `clones/shaper-pan-edge` at `5c554c59` — Reproduce both ears at held Pan transitions. The level at an endpoint already matched. A signed marker showed the outgoing ear also carried 96 frames of earlier input at 48 kHz. The device now keeps that history per band. Its parameter IDs and zero reported latency are preserved.
