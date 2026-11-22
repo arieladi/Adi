@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Faster moving hold contour with the exact calibrated output
+
+`clones/shaper-crush-clock-precision` at `51901a1a` — Reduce the cost of moving Crush hold rates. Three small factor tables replace the exponential polynomial, and a new period is computed at its first capture. The tables add 4,736 shared bytes and no per-instance memory. Each supported rate still uses its original division. The 8,160,049 possible logarithmic inputs retained their rounded exponential. Across seventeen rates the steps and stereo samples matched in 835,584 comparisons, including the extreme rates. All 96 registered comparison captures were byte-identical to the calibrated device. The rack, Crush and registered native/edited-Pd suites passed at both Pd precisions under MSVC /W4 /WX.
+
+Across six alternating pairs, the wide-ramp median/p99 at 256 frames fell from 25.5/78.5 to 20.9/57.7 µs, and at 2,048 from 213.6/1,399.9 to 166.8/1,016.9 µs. Misses fell from 22 to 21 and from three to zero in 61,440 callbacks per arm and size. Registered thread cycles fell 17.6% and 20.0% with six wins in six pairs at each size. The exact-height triangle fell from 26.9 to 21.4 and from 213.4 to 166.0 µs median. Its cycles fell 19.2% and 21.2%. The calibrated wide-ramp comparison measured source medians of 77.8 and 472.5 µs.
+
+The steady fractional control measured 15.1 and 118.2 µs median, compared with 15.0 and 118.9 before this optimization. Its 256-frame misses rose from seven to nineteen, and neutral 2,048-frame misses rose from one to two. These timing changes accompany identical audio. All 873 fixed-order weighted renders have now been checked on the calibrated behavior. The score remains 40/873 and all 710 states without active Crush are identical.
+
+PR requested
+
 ## 22 November 2026 — Keep the calibrated clock rounding on fused targets
 
 `clones/shaper-crush-clock-precision` at `ca4ee5fa` — Keep the two measured clock operations separately rounded. This updates the timing repair at `de769084`. Five of 43 measured heights gave a different logarithmic argument if the compiler fused the height multiply and offset addition. At height 0.38999999 and 48 kHz, a late signed left marker measured +0.00388830. Fused arithmetic produced −0.01766950. A local rounded intermediate and five new signed source markers protect the result. Optimized assembly confirms distinct multiply and add operations. The numerical counterexample uses an explicitly fused calculation.
