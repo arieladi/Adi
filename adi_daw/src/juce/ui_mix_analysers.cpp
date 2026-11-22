@@ -336,6 +336,7 @@ MixAnalysers::MixAnalysers() {
     sourceBox.setTitle("Analyser source");
     spectrumTraceBox.addItem("Realtime", static_cast<int>(Mode::Spectrum) + 1);
     spectrumTraceBox.addItem("Realtime Maximum", static_cast<int>(Mode::SpectrumMaximum) + 1);
+    spectrumTraceBox.addItem("Cumulative Maximum", static_cast<int>(Mode::SpectrumCumulativeMaximum) + 1);
     spectrumTraceBox.setTitle("Spectrum trace");
     spectrumTraceBox.setSelectedId(static_cast<int>(Mode::Spectrum) + 1, juce::dontSendNotification);
     spectrumTraceBox.onChange = [this] {
@@ -398,7 +399,7 @@ void MixAnalysers::setPage(Page page) {
 void MixAnalysers::setMode(Mode mode) {
     if (mode == Mode::ClassicScope) mode = Mode::Scope;
     if (mode == Mode::SpectrumAverage) setPage(Page::Average);
-    else if (mode == Mode::Spectrum || mode == Mode::SpectrumMaximum) {
+    else if (mode == Mode::Spectrum || mode == Mode::SpectrumMaximum || mode == Mode::SpectrumCumulativeMaximum) {
         spectrumTraceBox.setSelectedId(static_cast<int>(mode) + 1, juce::dontSendNotification);
         setPage(Page::Spectrum);
     }

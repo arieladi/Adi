@@ -325,6 +325,109 @@ void focusScopeMidBeforeBinning() {
           "unrequested Mid has no stored columns even after re-preparation");
 }
 
+void cumulativeMaximumSpectrum() {
+    constexpr int window = 1024;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.window = adi::dsp::Window::Rectangular;
+    request.hopSize = window;
+    auto raw = f.broker.acquire(request);
+    request.outputs = SharedAnalysis::RealtimeMaximum;
+    auto realtime = f.broker.acquire(request);
+
+    tone(*f.tap, window, .9f);
+    f.broker.pump();
+    const auto oldPeak = raw.read();
+    request.outputs = SharedAnalysis::CumulativeMaximum;
+    auto cumulative = f.broker.acquire(request);
+    auto sibling = f.broker.acquire(request);
+    check(cumulative.available() && sibling.available() && f.broker.stats().domains == 1 &&
+              f.broker.stats().spectralPlans == 1 && f.acquireCalls == 1,
+          "cumulative maximum demand shares the Raw and Realtime Maximum FFT and physical tap");
+    if (!cumulative.available()) return;
+
+    f.broker.pump();
+    check(!cumulative.readMaximum(), "cumulative demand cannot use a completed window from before its admission");
+    tone(*f.tap, window, .5f, 1.f, window);
+    f.broker.pump();
+    const auto first = cumulative.readMaximum();
+    const auto rawFirst = raw.read();
+    const auto siblingFirst = sibling.readMaximum();
+    check(first && siblingFirst && rawFirst && first->window == rawFirst && siblingFirst->window == rawFirst &&
+              exactBins(first->binsDbfs, siblingFirst->binsDbfs) && exactBins(first->binsDbfs, rawFirst->binsDbfs) && oldPeak &&
+              first->binsDbfs[16] < oldPeak->binsDbfs[16] && f.broker.stats().transforms == 2,
+          "the first cumulative picture contains only new calibrated bins with no second transform");
+    if (!first) return;
+
+    std::array<float, window> loudDc{}, quiet{};
+    loudDc.fill(.75f);
+    f.tap->write(loudDc.data(), loudDc.data(), window, 2 * window, true);
+    f.broker.pump();
+    const auto peak = cumulative.readMaximum();
+    const auto rawDc = raw.read();
+    check(peak && rawDc && peak->window == rawDc && peak->binsDbfs[0] == rawDc->binsDbfs[0] &&
+              peak->binsDbfs[16] == first->binsDbfs[16] && rawDc->binsDbfs[16] < peak->binsDbfs[16],
+          "cumulative maximum retains independent peak values from separate physical windows");
+    if (!peak) return;
+
+    for (int i = 3; i <= 64; ++i) {
+        f.tap->write(quiet.data(), quiet.data(), window, i * window, true);
+        f.broker.pump();
+    }
+    const auto held = cumulative.readMaximum();
+    const auto decayed = realtime.readMaximum();
+    check(held && decayed && exactBins(held->binsDbfs, peak->binsDbfs) &&
+              decayed->binsDbfs[16] + 20.f < held->binsDbfs[16] && f.broker.stats().transforms == 3,
+          "cumulative bins stay identical through quiet hops while realtime maximum decays");
+    if (!held) return;
+
+    const auto siblingHeld = sibling.readMaximum();
+    cumulative.reset();
+    check(siblingHeld && exactBins(siblingHeld->binsDbfs, held->binsDbfs) &&
+              sibling.readMaximum() == siblingHeld && f.releaseCalls == 0,
+          "removing one cumulative observer preserves the history of another");
+    cumulative = f.broker.acquire(request);
+    f.broker.pump();
+    check(!cumulative.readMaximum(), "reopening a cumulative observer waits for a fresh window");
+    f.tap->write(quiet.data(), quiet.data(), window, 65 * window, true);
+    f.broker.pump();
+    const auto reopened = cumulative.readMaximum();
+    const auto continuing = sibling.readMaximum();
+    check(reopened && continuing && reopened->binsDbfs[0] == adi::dsp::kDbFloor &&
+              exactBins(continuing->binsDbfs, held->binsDbfs),
+          "a fresh cumulative subscription does not inherit a sibling's earlier peaks");
+    sibling.reset();
+
+    f.tap->write(loudDc.data(), loudDc.data(), window, 0, false, 2);
+    f.broker.pump();
+    const auto stopped = cumulative.readMaximum();
+    check(stopped && stopped->window->sourceEpoch > held->window->sourceEpoch &&
+              stopped->binsDbfs[16] == adi::dsp::kDbFloor && stopped->binsDbfs[0] > adi::dsp::kDbFloor,
+          "a transport discontinuity resets cumulative bins before processing the new window");
+    realtime.reset();
+    const float *silent = nullptr;
+    f.tap->write(silent, silent, window, 0, false, 2);
+    f.broker.pump();
+    const auto parked = cumulative.readMaximum();
+    const auto settled = f.broker.stats();
+    f.tap->write(silent, silent, window, 0, false, 2);
+    f.broker.pump();
+    const auto idle = f.broker.stats();
+    check(parked && stopped && exactBins(parked->binsDbfs, stopped->binsDbfs) &&
+              parked == cumulative.readMaximum() && idle.cursorReads == settled.cursorReads &&
+              idle.publications == settled.publications && idle.transforms == settled.transforms,
+          "certified parked silence retains cumulative peaks without further reads, FFTs or publications");
+
+    cumulative.reset();
+    raw.reset();
+    const auto hidden = f.broker.stats();
+    tone(*f.tap, window, .5f);
+    f.broker.pump();
+    check(hidden.consumers == 0 && hidden.spectralPlans == 0 && f.releaseCalls == 1 &&
+              f.broker.stats().workerPasses == hidden.workerPasses,
+          "hiding the final cumulative view frees analysis work");
+}
+
 void focusScopeBarTiming() {
     constexpr auto quarter = adi::textproj::kPPQ;
     const adi::engine::TempoMap constant{{{0, 120., 0}}};
@@ -2328,7 +2431,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
