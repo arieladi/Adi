@@ -3,6 +3,7 @@
 #include "adi/render/queue.hpp"
 #include "adi/render/delivery_src.hpp"
 #include "adi/render/mp3_writer.hpp"
+#include "adi/render/opus_writer.hpp"
 #include "adi/render/vorbis_writer.hpp"
 #include "adi/audio/pcm_stream.hpp"
 #include "adi/audio/wav_file.hpp"
@@ -857,6 +858,52 @@ void vorbisDelivery() {
     check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
           "Vorbis normalization waits for decoded-output measurement");
 }
+void opusDelivery() {
+    Fixture f;
+    auto job = f.job("opus");
+    job.encoding.container = ExportContainer::OggOpus;
+    job.encoding.opusBitRate = 160000;
+    job.session.precision = Precision::Float64;
+    job.endSample = job.beginSample + 4201;
+    const auto first = renderWav(job, {});
+    if (!opusExportAvailable()) {
+        check(first.state == JobState::Failed && first.error.find("pinned Xiph") != std::string::npos &&
+              f.noStage(), "source-free builds explain Opus refusal before staging");
+        return;
+    }
+    check(first.state == JobState::Completed && first.output.extension() == ".opus" &&
+          first.framesWritten == 4201 && f.noStage(),
+          first.error.empty() ? "Opus verifies a complete 4201-frame decode before publication" : first.error.c_str());
+    if (first.state != JobState::Completed) return;
+    const auto bytes = [](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    };
+    const auto payload = bytes(first.output);
+    check(payload.starts_with("OggS") && payload.find("OpusHead") != std::string::npos,
+          "output is an Ogg Opus stream");
+    job.nameTemplate = "opus-repartitioned";
+    job.encoding.dither = audio::WavDither::None;
+    job.encoding.ditherSeed = 698;
+    job.session.maxFrames = 103;
+    const auto again = renderWav(job, {});
+    check(again.state == JobState::Completed && bytes(again.output) == payload,
+          "Opus is byte-identical across graph partition and PCM-only dither changes");
+    job.nameTemplate = "opus-mono";
+    job.session.channels = 1;
+    job.endSample = job.beginSample + 719;
+    const auto mono = renderWav(job, {});
+    check(mono.state == JobState::Completed && mono.framesWritten == 719,
+          mono.error.empty() ? "short mono Opus retains authored length" : mono.error.c_str());
+    job.session.sampleRate = 44100;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "Opus capability check refuses a different clock");
+    job.session.sampleRate = 48000;
+    job.encoding.opusBitRate = 512000;
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "the stereo bitrate ceiling does not apply to a mono job");
+}
+
 void stereoFoldDelivery() {
     Fixture f;
     f.effect();
@@ -1716,6 +1763,11 @@ void multipleDeliveries() {
         vorbis.container = ExportContainer::OggVorbis;
         job.deliveries.push_back({vorbis, ""});
     }
+    if (opusExportAvailable()) {
+        auto opus = pcm;
+        opus.container = ExportContainer::OggOpus;
+        job.deliveries.push_back({opus, ""});
+    }
 
     std::uint64_t processed = 0;
     int loads = 0;
@@ -2022,7 +2074,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); stereoFoldDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); projectRateDelivery(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); flacExports(); aiffExports(); cbrMp3Delivery(); vorbisDelivery(); opusDelivery(); stereoFoldDelivery(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); multipleDeliveries(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

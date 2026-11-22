@@ -61,7 +61,9 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
   "chirlu/soxr soxr LGPL-2.1-or-later 0.1.3 945b592b70470e29f917f4de89b4281fbbd540c0 build"
-  # EX-04: the native Ogg container and Vorbis encoder.
+  # EX-04: the native Ogg container, Vorbis and Opus encoders.
+  "xiph/opus opus BSD-3-Clause v1.6.1 22244de5a79bd1d6d623c32e72bf1954b56235be build"
+  "xiph/libopusenc libopusenc BSD-3-Clause v0.3 0dba1bea736ab8bb811409dce80c994a00a2ced9 build"
   "xiph/ogg ogg BSD-3-Clause v1.3.6 be05b13e98b048f0b5a0f5fa8ce514d56db5f822 build"
   "xiph/vorbis vorbis BSD-3-Clause v1.3.7 0657aee69dec8508a0011f47f3b69d7538e9d262 build"
   # Musical tempo/phase sync only; the SDK pins standalone Asio by gitlink.

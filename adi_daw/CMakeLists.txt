@@ -504,6 +504,7 @@ endif()
 # Native FLAC sees only its configured dependencies. libFLAC 1.5.0 links an
 # already-declared Ogg target even when its WITH_OGG build option is off.
 include(cmake/VorbisExport.cmake)
+include(cmake/OpusExport.cmake)
 
 # PUBLIC: dsp/spectrum.cpp includes pffft.h, and nothing else in the tree does.
 target_link_libraries(adi_core PRIVATE adi_pffft)

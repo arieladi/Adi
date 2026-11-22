@@ -4,6 +4,7 @@
 #include "adi/render/delivery_src.hpp"
 #include "adi/render/flac_writer.hpp"
 #include "adi/render/mp3_writer.hpp"
+#include "adi/render/opus_writer.hpp"
 #include "adi/render/vorbis_writer.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
@@ -118,6 +119,7 @@ const char* containerName(ExportContainer type) {
     case ExportContainer::Aiff: return "aiff";
     case ExportContainer::Mp3: return "mp3";
     case ExportContainer::OggVorbis: return "ogg_vorbis";
+    case ExportContainer::OggOpus: return "opus";
     }
     throw std::invalid_argument("unknown export container");
 }
@@ -164,6 +166,14 @@ void validateEncoding(const Job& j, const Encoding& encoding, int channels) {
             j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off)
             throw std::invalid_argument("Vorbis needs one or two channels, 8-192 kHz, quality -0.1 to 1, a template name and Normalize Off");
         if (!vorbisExportAvailable()) throw std::runtime_error("Ogg Vorbis export requires the pinned Xiph build");
+    }
+    if (encoding.container == ExportContainer::OggOpus) {
+        if (j.session.sampleRate != 48000 || !validOpusBitRate(
+                static_cast<unsigned>(channels), encoding.opusBitRate) ||
+            j.niStems || j.exactWavFilename || j.normalization.mode != NormalizeMode::Off) {
+            throw std::invalid_argument("Opus needs mono/stereo at 48 kHz, a supported bitrate and Normalize Off");
+        }
+        if (!opusExportAvailable()) throw std::runtime_error("Opus export requires the pinned Xiph build");
     }
 }
 
@@ -295,6 +305,9 @@ public:
         } else if (encoding_.container == ExportContainer::OggVorbis) {
             vorbis_ = std::make_unique<VorbisWriter>(output_, rate, static_cast<unsigned>(channels),
                                                       total, encoding_.vorbisQuality);
+        } else if (encoding_.container == ExportContainer::OggOpus) {
+            opus_ = std::make_unique<OpusWriter>(output_, static_cast<unsigned>(channels),
+                                                  total, encoding_.opusBitRate);
         } else if (job.normalization.mode == NormalizeMode::Off) {
             wav_ = std::make_unique<audio::WavWriter>(pcm_, rate, static_cast<std::uint16_t>(channels),
                 encoding_.format, nullptr, std::uint64_t{1} << 32, encoding_.dither, seed_);
@@ -311,6 +324,7 @@ public:
     void append(std::span<const double> pcm, std::uint32_t frames) {
         if (mp3_) mp3_->write(pcm, frames);
         else if (vorbis_) vorbis_->write(pcm, frames);
+        else if (opus_) opus_->write(pcm, frames);
         else if (normalization_) normalization_->append(pcm, frames);
         else wav_->write(pcm.data(), frames);
     }
@@ -319,6 +333,7 @@ public:
         std::optional<NormalizationReport> report;
         if (mp3_) mp3_->finish(service);
         else if (vorbis_) vorbis_->finish(service);
+        else if (opus_) opus_->finish(service);
         else if (normalization_) report = normalization_->finish(pcm_, encoding_.format,
                                                                    encoding_.dither, seed_, service);
         else wav_->close();
@@ -337,6 +352,7 @@ private:
     std::unique_ptr<NormalizationCapture> normalization_;
     std::unique_ptr<Mp3Writer> mp3_;
     std::unique_ptr<VorbisWriter> vorbis_;
+    std::unique_ptr<OpusWriter> opus_;
 };
 
 std::int64_t addLatency(std::int64_t position, std::int64_t latency) {
@@ -1036,6 +1052,11 @@ std::string serializeRunManifest(const RunReport& run) {
                 profile["effective_dither"] = "none";
                 profile["vorbis_vbr_quality"] = job.encoding.vorbisQuality;
             }
+            if (job.encoding.container == ExportContainer::OggOpus) {
+                profile["wav_encoding"] = nullptr;
+                profile["effective_dither"] = "none";
+                profile["opus_bit_rate"] = job.encoding.opusBitRate;
+            }
             if (!job.deliveries.empty()) {
                 profile["container"] = "multiple";
                 profile.erase("wav_encoding");
@@ -1044,6 +1065,7 @@ std::string serializeRunManifest(const RunReport& run) {
                 profile.erase("effective_dither");
                 profile.erase("mp3_bit_rate_kbps");
                 profile.erase("vorbis_vbr_quality");
+                profile.erase("opus_bit_rate");
             }
             if (job.niStems) {
                 profile["ni_stems"] = {{"bit_rate_per_stream", job.niStems->bitRate}, {"stems", Json::array()}};
@@ -1067,6 +1089,8 @@ std::string serializeRunManifest(const RunReport& run) {
                         spec["bit_rate_kbps"] = 320;
                     } else if (encoding.container == ExportContainer::OggVorbis) {
                         spec["vbr_quality"] = encoding.vorbisQuality;
+                    } else if (encoding.container == ExportContainer::OggOpus) {
+                        spec["bit_rate"] = encoding.opusBitRate;
                     } else {
                         spec["pcm_format"] = encoding.format == audio::WavFormat::Float32 ? "float32" :
                             (encoding.format == audio::WavFormat::Pcm16 ? "pcm16" : "pcm24");
