@@ -69,6 +69,16 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_));
     };
     addChildComponent(scopeDisplay_);
+    scopeChannels_.setTitle("Focus Scope channels");
+    scopeChannels_.setTooltip("Show left and right separately or show their average as Mid.");
+    scopeChannels_.addItem("Stereo", static_cast<int>(ScopeChannels::Stereo));
+    scopeChannels_.addItem("Mid", static_cast<int>(ScopeChannels::Mid));
+    scopeChannels_.setSelectedId(static_cast<int>(ScopeChannels::Stereo), juce::dontSendNotification);
+    scopeChannels_.onChange = [this] {
+        barScope_.setMidRequested(requestsScopeMid());
+        redraw_ = true;
+    };
+    addChildComponent(scopeChannels_);
     learnMatch.setTooltip("Capture the selected channel's spectrum difference toward the starred channel. Plays unchanged.");
     learnMatch.onClick = [this] { learnMatchPreview(); };
     clearMatch.onClick = [this] { clearMatchPreview(); updateMatchControls(); };
@@ -237,6 +247,7 @@ void MixFocus::updateMatchControls() {
     }
     const bool together = !scope.getToggleState();
     scopeDisplay_.setVisible(!together);
+    scopeChannels_.setVisible(!together);
     learnMatch.setVisible(together);
     clearMatch.setVisible(together && match_.has_value());
     learnMatch.setEnabled(canLearnMatch(pair));
@@ -595,6 +606,7 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
         if (!alive || pose != membershipPose_ || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
             return;
         barScope_ = std::move(acquired);
+        barScope_.setMidRequested(requestsScopeMid());
     }
     const auto rate = barScope_.sampleRate();
     if (!(rate > 0.) || (requestedBar_ && requestedBar_->range.sampleRate != rate)) {
@@ -742,6 +754,9 @@ void MixFocus::clearScopeSum() {
     sum_.reset();
     for (auto &path : scopeSumPaths_) path.clear();
 }
+bool MixFocus::requestsScopeMid() const noexcept {
+    return scope.getToggleState() && scopeChannels_.getSelectedId() == static_cast<int>(ScopeChannels::Mid);
+}
 void MixFocus::rebuildScope() {
     clearScopeSum();
     scopeHasTrace_ = false;
@@ -752,6 +767,7 @@ void MixFocus::rebuildScope() {
             for (auto &path : member.scopePaths) path.clear();
     if (!scopePlaying_ || (!scopeShown && sumLabel_.isEmpty())) return;
 
+    const bool showMid = requestsScopeMid();
     const auto plotColumns = static_cast<std::size_t>(std::max(0.f, plot_.getWidth()));
     const auto pathPoint = [](juce::Path &path) {
         return [&path](FocusScopePoint point, bool first) {
@@ -780,18 +796,42 @@ void MixFocus::rebuildScope() {
                 trace.finish(emit);
             }
         };
+        if (showMid) {
+            const auto columns = bar.sumMidColumns();
+            if (columns.empty()) return; // The running lease can supply Mid on its next full bar.
+            const auto drawMidColumns = [&](juce::Path &path, auto points) {
+                FocusScopePathReducer trace;
+                const auto emit = pathPoint(path);
+                for (std::size_t i = 0; i < points.size(); ++i)
+                    appendColumn(trace, emit, i, points.size(), points[i].low, points[i].high);
+                trace.finish(emit);
+            };
+            drawMidColumns(scopeSumPaths_[0], columns);
+            for (std::size_t i = 0; i < members_.size(); ++i)
+                drawMidColumns(members_[i].scopePaths[0], bar.memberMidColumns(i));
+        } else {
+            drawColumns(scopeSumPaths_, bar.sumColumns());
+            for (std::size_t i = 0; i < members_.size(); ++i)
+                drawColumns(members_[i].scopePaths, bar.memberColumns(i));
+        }
         scopeRange_ = FocusScopeRange{shownBar_->firstStamp, shownBar_->frames, shownBar_->sampleRate};
         sum_ = bar.sumReading();
-        drawColumns(scopeSumPaths_, bar.sumColumns());
-        for (std::size_t i = 0; i < members_.size(); ++i)
-            drawColumns(members_[i].scopePaths, bar.memberColumns(i));
         scopeHasTrace_ = true;
         return;
     }
     if (aligned) {
         for (const auto &member : members_) scopeSources_.push_back(member.data.get());
         scopeRange_ = focusScopeRange(scopeSources_);
-        if (scopeRange_ && scopeShown) {
+        if (scopeRange_ && scopeShown && showMid) {
+            const auto columns = std::min(plotColumns, scopeRange_->frames);
+            FocusScopePathReducer trace;
+            const auto emit = pathPoint(scopeSumPaths_[0]);
+            sum_ = focusProjectSum<true>(scopeSources_, *scopeRange_, columns,
+                [&](std::size_t column, const FocusScopeBarProjection::MidColumn &extrema) {
+                    appendColumn(trace, emit, column, columns, extrema.low, extrema.high);
+                });
+            trace.finish(emit);
+        } else if (scopeRange_ && scopeShown) {
             const auto columns = std::min(plotColumns, scopeRange_->frames);
             std::array<FocusScopePathReducer, 2> traces;
             sum_ = focusProjectSum(scopeSources_, *scopeRange_, columns,
@@ -819,6 +859,20 @@ void MixFocus::rebuildScope() {
         scopeHasTrace_ = true;
         const auto steps = std::min(range.frames, plotColumns);
         const auto start = static_cast<std::size_t>(range.first - data.firstStamp);
+        if (showMid) {
+            FocusScopePathReducer trace;
+            const auto emit = pathPoint(member.scopePaths[0]);
+            for (std::size_t p = 0; p < steps; ++p) {
+                const auto from = start + p * range.frames / steps;
+                const auto to = start + (p + 1) * range.frames / steps;
+                FocusScopeBarProjection::MidColumn extrema;
+                for (auto i = from; i < to; ++i)
+                    extrema.include(focusScopeMidSample(data.scopeLeft[i], data.scopeRight[i]));
+                appendColumn(trace, emit, p, steps, extrema.low, extrema.high);
+            }
+            trace.finish(emit);
+            continue;
+        }
         for (std::size_t ch = 0; ch < member.scopePaths.size(); ++ch) {
             FocusScopePathReducer trace;
             const auto emit = pathPoint(member.scopePaths[ch]);
@@ -860,7 +914,8 @@ void MixFocus::resized() {
     scope.setBounds(actions.removeFromLeft(w).reduced(hairline));
     learnMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
     clearMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
-    scopeDisplay_.setBounds(learnMatch.getBounds().getUnion(clearMatch.getBounds()));
+    scopeDisplay_.setBounds(learnMatch.getBounds());
+    scopeChannels_.setBounds(clearMatch.getBounds());
     plot_ = r.reduced(plotInset).toFloat();
     rebuildMatchPath();
     for (auto &m : members_)
@@ -884,7 +939,7 @@ void MixFocus::paint(juce::Graphics &g) {
         title += "   Individual traces";
     else if (scopeShown && scopeRange_) {
         if (sumOverRange) {
-            title = "Sum over 0 dBFS";
+            title = requestsScopeMid() ? "Stereo sum over 0 dBFS" : "Sum over 0 dBFS";
             g.setColour(look::record);
         }
         title += shownBar_ ? "   1 bar" :

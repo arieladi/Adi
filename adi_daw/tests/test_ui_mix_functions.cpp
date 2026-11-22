@@ -1754,17 +1754,21 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
           "one-bar Scope runs at 48 kHz, 120 BPM and 4/4 on two quarter-second rings");
 
     const auto writeUntil = [&](std::int64_t target) {
-        std::array<float, chunk> pcmA{}, pcmB{};
+        std::array<float, chunk> pcmA{}, pcmB{}, rightA{}, rightB{};
         while (driver.position() < target) {
             const auto from = driver.position();
             const auto count = static_cast<std::int32_t>(std::min<std::int64_t>(chunk, target - from));
             for (std::int32_t i = 0; i < count; ++i) {
-                const auto sample = from + i;
+                const auto sample = (from + i) % bar;
                 pcmA[static_cast<std::size_t>(i)] = sample >= early && sample < early + pulseLength ? .75f : 0.f;
                 pcmB[static_cast<std::size_t>(i)] = sample >= late && sample < late + pulseLength ? -.625f : 0.f;
+                const auto index = static_cast<std::size_t>(i);
+                const bool firstBar = from + i < bar;
+                rightA[index] = firstBar ? pcmA[index] : -pcmA[index];
+                rightB[index] = firstBar ? pcmB[index] : 0.f;
             }
-            a->write(pcmA.data(), pcmA.data(), count, from, true, driver.revision());
-            b->write(pcmB.data(), pcmB.data(), count, from, true, driver.revision());
+            a->write(pcmA.data(), rightA.data(), count, from, true, driver.revision());
+            b->write(pcmB.data(), rightB.data(), count, from, true, driver.revision());
             driver.advance(count);
             broker->pump(); frame();
         }
@@ -1788,6 +1792,30 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
           "one-bar Scope keeps the same two physical taps without a spectrum transform or plan");
     check(active.consumers == 1,
           "a complete bar replaces the two short previews with one grouped reader");
+    juce::ComboBox *channels = nullptr;
+    for (auto *component : focus.getChildren())
+        if (component->getTitle() == "Focus Scope channels") channels = dynamic_cast<juce::ComboBox *>(component);
+    check(channels && channels->isVisible() && channels->getText() == "Stereo",
+          "Focus Scope defaults to Stereo and exposes the channel selector");
+    if (channels) {
+        channels->setSelectedId(2, juce::sendNotificationSync);
+        frame();
+        check(!MixFocusTestAccess::sumPulseAt(focus, .125f, .75f),
+              "selecting Mid never presents the old stereo bins as Mid");
+        writeUntil(2 * bar);
+        check(MixFocusTestAccess::scopeInterval(focus, bar, static_cast<std::size_t>(bar), rate) &&
+                  !MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+                  MixFocusTestAccess::sumPulseAt(focus, .875f, -.3125f),
+              "Mid cancels opposed stereo and halves a single-sided pulse in the displayed bar");
+        check(opens == std::array{1, 1} && broker->stats().taps == 2 && broker->stats().consumers == 1 &&
+                  broker->stats().transforms == 0,
+              "changing Focus Scope projection keeps the existing grouped reader and taps");
+        channels->setSelectedId(1, juce::sendNotificationSync);
+        frame();
+        check(MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+                  MixFocusTestAccess::sumPulseAt(focus, .875f, -.625f),
+              "returning to Stereo reuses the same completed bar's stereo columns immediately");
+    }
     const auto visibleBounds = focus.getBounds();
     focus.setTopLeftPosition(peer.getWidth(), 0);
     check(broker->stats().taps == 0 && broker->stats().consumers == 0,

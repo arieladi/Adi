@@ -774,6 +774,10 @@ struct SharedAnalysis::BarScopeDomain {
         return true;
     }
 
+    void setMidRequested(bool enabled) noexcept {
+        includeMid.store(enabled, std::memory_order_relaxed);
+    }
+
     // On the owner this runs under State::mutex, which also protects tap rebinding.
     bool needsWork() const noexcept {
         if (!active.load() || status.load() != BarScopeStatus::Pending || !rate.load()) return false;
@@ -828,10 +832,17 @@ struct SharedAnalysis::BarScopeDomain {
                     if (!prepareLane(i, first, reads, readLimit, samples)) return false;
                     finish = std::min(finish, lanes[i].chunkEnd);
                 }
+                const bool wantsMid = includeMid.load(std::memory_order_relaxed);
                 if (!projection) {
-                    for (std::size_t i = 0; i < lanes.size(); ++i) identities[i] = {lanes[i].source, lanes[i].tap->generation()};
+                    for (std::size_t i = 0; i < lanes.size(); ++i)
+                        identities[i] = {lanes[i].source, lanes[i].tap->generation()};
                     projection = std::make_shared<FocusScopeBarProjection>();
-                    if (!projection->prepare(range, identities, columns, revision)) { invalidate(); return false; }
+                    if (!projection->prepare(range, identities, columns, revision, wantsMid)) {
+                        invalidate();
+                        return false;
+                    }
+                } else if (!wantsMid) {
+                    projection->discardMid();
                 }
                 const auto count = static_cast<std::size_t>(finish - first);
                 for (std::size_t i = 0; i < lanes.size(); ++i) {
@@ -868,6 +879,7 @@ struct SharedAnalysis::BarScopeDomain {
     FocusScopeRange range;
     std::uint64_t expectedRevision = 0, revision = 0;
     std::int64_t end = 0;
+    std::atomic<bool> includeMid{false};
     std::shared_ptr<FocusScopeBarProjection> projection;
 };
 
@@ -1308,6 +1320,12 @@ bool SharedAnalysis::BarScopeLease::request(const FocusScopeRange &range, std::u
     if (!state || !domain_) return false;
     state->ownerOnly();
     return domain_->request(range, expected);
+}
+void SharedAnalysis::BarScopeLease::setMidRequested(bool enabled) noexcept {
+    const auto state = state_.lock();
+    if (!state || !domain_) return;
+    state->ownerOnly();
+    domain_->setMidRequested(enabled);
 }
 double SharedAnalysis::BarScopeLease::sampleRate() const noexcept { return *this ? domain_->rate.load() : 0.; }
 SharedAnalysis::BarScopeStatus SharedAnalysis::BarScopeLease::status() const noexcept {
